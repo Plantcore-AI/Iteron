@@ -22,8 +22,12 @@ impl Agent {
                 };
                 match op {
                     Op::Steer { text } | Op::UserInput { text } => steering.push(text),
-                    Op::Interrupt | Op::ForceCancel => {
+                    Op::Interrupt => {
                         control = InboundControl::Interrupt;
+                        break;
+                    }
+                    Op::ForceCancel => {
+                        control = InboundControl::ForceCancel;
                         break;
                     }
                     Op::Drain => {
@@ -57,6 +61,30 @@ impl Agent {
                 if let Some(interrupt) = &self.interrupt {
                     interrupt.store(true, std::sync::atomic::Ordering::Relaxed);
                 }
+            }
+            InboundControl::ForceCancel => {
+                self.force_cancel_requested = true;
+                self.force_cancel
+                    .store(true, std::sync::atomic::Ordering::Release);
+                let requested = self
+                    .force_cancel_seam
+                    .as_mut()
+                    .is_some_and(|seam| seam.request(turn));
+                self.lifecycle_event(
+                    "cancel.forced",
+                    Some(turn),
+                    LifecyclePayload {
+                        reason_code: Some(
+                            if requested {
+                                "process_reap_requested"
+                            } else {
+                                "process_reap_unwired"
+                            }
+                            .into(),
+                        ),
+                        ..LifecyclePayload::default()
+                    },
+                );
             }
             InboundControl::Drain => {
                 self.drain_requested = true;

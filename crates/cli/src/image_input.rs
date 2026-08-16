@@ -194,6 +194,146 @@ pub struct ImageAttachment {
     file_bytes: usize,
 }
 
+/// A fully inspected and encoded image that is ready for the tiny, in-memory admission step.
+///
+/// Filesystem reads, HEIC conversion, decoder work, and base64 encoding all happen while building
+/// this value.  The TUI's attachment actor sends it back to the render thread, which only checks
+/// the draft's current aggregate/count limits and assigns the visible chip id.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct PreparedImage {
+    display_name: SafeDisplayName,
+    content: ImageContent,
+    file_bytes: usize,
+}
+
+impl PreparedImage {
+    pub(crate) fn display_name(&self) -> &str {
+        self.display_name.as_str()
+    }
+
+    pub(crate) const fn media_type(&self) -> ImageMediaType {
+        self.content.media_type
+    }
+
+    pub(crate) const fn file_bytes(&self) -> usize {
+        self.file_bytes
+    }
+}
+
+impl fmt::Debug for PreparedImage {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PreparedImage")
+            .field("display_name", &self.display_name())
+            .field("media_type", &self.media_type())
+            .field("file_bytes", &self.file_bytes())
+            .field("encoded_bytes", &self.content.data.encoded_len())
+            .finish()
+    }
+}
+
+/// Cloneable, collection-independent preparation policy for a bounded worker.
+#[derive(Clone, Debug)]
+pub(crate) struct ImagePreparer {
+    limits: ImageLoadLimits,
+    routing: BinaryMediaInspectionPolicy,
+}
+
+impl ImagePreparer {
+    pub(crate) fn prepare_path(&self, path: &Path) -> Result<PreparedImage, ImageInputError> {
+        let name = SafeDisplayName::from_path(path);
+        let source_format = extension_format(path).ok_or_else(|| {
+            ImageInputError::named(ImageInputErrorKind::UnsupportedExtension, name.clone())
+        })?;
+        let bytes = read_path_capped(path, self.limits.max_file_bytes)
+            .map_err(|kind| ImageInputError::named(kind, name.clone()))?;
+        if bytes.len() > self.limits.max_file_bytes {
+            return Err(ImageInputError::named(
+                ImageInputErrorKind::FileTooLarge,
+                name,
+            ));
+        }
+        match source_format {
+            SourceFormat::Provider(expected) => {
+                self.prepare_bytes_named(name, Some(expected), &bytes)
+            }
+            SourceFormat::Heic => {
+                let normalized = match heic::transcode_to_jpeg(&bytes) {
+                    Ok(normalized) => normalized,
+                    Err(
+                        ImageInputErrorKind::InvalidImage | ImageInputErrorKind::TruncatedImage,
+                    ) if sniff_image(&bytes).is_ok() => {
+                        return Err(ImageInputError::named(
+                            ImageInputErrorKind::ExtensionMismatch,
+                            name,
+                        ));
+                    }
+                    Err(kind) => return Err(ImageInputError::named(kind, name)),
+                };
+                if normalized.len() > self.limits.max_file_bytes {
+                    return Err(ImageInputError::named(
+                        ImageInputErrorKind::FileTooLarge,
+                        name,
+                    ));
+                }
+                self.prepare_bytes_named(name, Some(ImageMediaType::Jpeg), &normalized)
+            }
+        }
+    }
+
+    pub(crate) fn prepare_bytes(
+        &self,
+        display_label: &str,
+        bytes: &[u8],
+    ) -> Result<PreparedImage, ImageInputError> {
+        let name = SafeDisplayName::from_label(display_label);
+        if bytes.len() > self.limits.max_file_bytes {
+            return Err(ImageInputError::named(
+                ImageInputErrorKind::FileTooLarge,
+                name,
+            ));
+        }
+        self.prepare_bytes_named(name, None, bytes)
+    }
+
+    fn prepare_bytes_named(
+        &self,
+        name: SafeDisplayName,
+        expected: Option<ImageMediaType>,
+        bytes: &[u8],
+    ) -> Result<PreparedImage, ImageInputError> {
+        let actual = self
+            .routing
+            .inspect_raw(bytes)
+            .map_err(|kind| ImageInputError::named(kind, name.clone()))?;
+        if expected.is_some_and(|expected| actual != expected) {
+            return Err(ImageInputError::named(
+                ImageInputErrorKind::ExtensionMismatch,
+                name,
+            ));
+        }
+        let encoded_len = canonical_base64_len(bytes.len()).ok_or_else(|| {
+            ImageInputError::named(ImageInputErrorKind::EncodedPayloadTooLarge, name.clone())
+        })?;
+        if encoded_len > self.limits.max_file_encoded_bytes {
+            return Err(ImageInputError::named(
+                ImageInputErrorKind::EncodedPayloadTooLarge,
+                name,
+            ));
+        }
+        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+        debug_assert_eq!(encoded.len(), encoded_len);
+        let content = ImageContent::new(actual, encoded).map_err(|_| {
+            ImageInputError::named(ImageInputErrorKind::ProtocolRejected, name.clone())
+        })?;
+        Ok(PreparedImage {
+            display_name: name,
+            content,
+            file_bytes: bytes.len(),
+        })
+    }
+}
+
 impl ImageAttachment {
     pub const fn id(&self) -> u32 {
         self.id
@@ -307,108 +447,52 @@ impl ImageAttachments {
         self.items.is_empty()
     }
 
-    pub fn attach_path(&mut self, path: &Path) -> Result<&ImageAttachment, ImageInputError> {
-        let name = SafeDisplayName::from_path(path);
+    pub(crate) fn preparer(&self) -> ImagePreparer {
+        ImagePreparer {
+            limits: self.limits,
+            routing: self.routing.clone(),
+        }
+    }
+
+    /// Zero-I/O admission for an attachment actor. The worker repeats this check when it returns
+    /// because the draft can change while decode is in flight, but an already-full composer must
+    /// not open, read, transcode, or encode another path merely to discover the count refusal.
+    pub(crate) fn preflight_path(&self, path: &Path) -> Result<(), ImageInputError> {
+        self.ensure_attachment_slot(SafeDisplayName::from_path(path))
+    }
+
+    pub(crate) fn preflight_label(&self, label: &str) -> Result<(), ImageInputError> {
+        self.ensure_attachment_slot(SafeDisplayName::from_label(label))
+    }
+
+    fn ensure_attachment_slot(&self, name: SafeDisplayName) -> Result<(), ImageInputError> {
         if self.items.len() >= self.limits.max_attachments {
             return Err(ImageInputError::named(
                 ImageInputErrorKind::TooManyAttachments,
                 name,
             ));
         }
-        let source_format = extension_format(path).ok_or_else(|| {
-            ImageInputError::named(ImageInputErrorKind::UnsupportedExtension, name.clone())
-        })?;
-        let remaining = self
-            .limits
-            .max_total_file_bytes
-            .saturating_sub(self.file_bytes);
-        if remaining == 0 {
-            return Err(ImageInputError::named(
-                ImageInputErrorKind::AggregateTooLarge,
-                name,
-            ));
-        }
-        let read_limit = self.limits.max_file_bytes.min(remaining);
-        let bytes = read_path_capped(path, read_limit)
-            .map_err(|kind| ImageInputError::named(kind, name.clone()))?;
-        if bytes.len() > read_limit {
-            let kind = if remaining < self.limits.max_file_bytes {
-                ImageInputErrorKind::AggregateTooLarge
-            } else {
-                ImageInputErrorKind::FileTooLarge
-            };
-            return Err(ImageInputError::named(kind, name));
-        }
-        match source_format {
-            SourceFormat::Provider(expected) => self.admit_bytes(name, Some(expected), &bytes),
-            SourceFormat::Heic => {
-                let normalized = match heic::transcode_to_jpeg(&bytes) {
-                    Ok(normalized) => normalized,
-                    Err(
-                        ImageInputErrorKind::InvalidImage | ImageInputErrorKind::TruncatedImage,
-                    ) if sniff_image(&bytes).is_ok() => {
-                        return Err(ImageInputError::named(
-                            ImageInputErrorKind::ExtensionMismatch,
-                            name,
-                        ));
-                    }
-                    Err(kind) => return Err(ImageInputError::named(kind, name)),
-                };
-                if normalized.len() > self.limits.max_file_bytes {
-                    return Err(ImageInputError::named(
-                        ImageInputErrorKind::FileTooLarge,
-                        name,
-                    ));
-                }
-                if normalized.len()
-                    > self
-                        .limits
-                        .max_total_file_bytes
-                        .saturating_sub(self.file_bytes)
-                {
-                    return Err(ImageInputError::named(
-                        ImageInputErrorKind::AggregateTooLarge,
-                        name,
-                    ));
-                }
-                self.admit_bytes(name, Some(ImageMediaType::Jpeg), &normalized)
-            }
-        }
+        Ok(())
+    }
+
+    pub fn attach_path(&mut self, path: &Path) -> Result<&ImageAttachment, ImageInputError> {
+        self.preflight_path(path)?;
+        let prepared = self.preparer().prepare_path(path)?;
+        self.admit_prepared(prepared)
     }
 
     /// Attach bytes already obtained from a bounded clipboard or terminal API.
     ///
     /// The label is display-only, sanitized, and never interpreted as a filesystem path.
+    #[cfg(test)]
     pub fn attach_bytes(
         &mut self,
         display_label: &str,
         bytes: &[u8],
     ) -> Result<&ImageAttachment, ImageInputError> {
-        let name = SafeDisplayName::from_label(display_label);
-        if self.items.len() >= self.limits.max_attachments {
-            return Err(ImageInputError::named(
-                ImageInputErrorKind::TooManyAttachments,
-                name,
-            ));
-        }
-        if bytes.len() > self.limits.max_file_bytes {
-            return Err(ImageInputError::named(
-                ImageInputErrorKind::FileTooLarge,
-                name,
-            ));
-        }
-        if bytes.len()
-            > self
-                .limits
-                .max_total_file_bytes
-                .saturating_sub(self.file_bytes)
-        {
-            return Err(ImageInputError::named(
-                ImageInputErrorKind::AggregateTooLarge,
-                name,
-            ));
-        }
-        self.admit_bytes(name, None, bytes)
+        self.preflight_label(display_label)?;
+        let prepared = self.preparer().prepare_bytes(display_label, bytes)?;
+        self.admit_prepared(prepared)
     }
 
     pub fn remove(&mut self, index: usize) -> Option<ImageAttachment> {
@@ -445,25 +529,34 @@ impl ImageAttachments {
             .map_err(|_| ImageInputError::unnamed(ImageInputErrorKind::ProtocolRejected))
     }
 
-    fn admit_bytes(
+    pub(crate) fn admit_prepared(
         &mut self,
-        name: SafeDisplayName,
-        expected: Option<ImageMediaType>,
-        bytes: &[u8],
+        prepared: PreparedImage,
     ) -> Result<&ImageAttachment, ImageInputError> {
-        let actual = self
-            .routing
-            .inspect_raw(bytes)
-            .map_err(|kind| ImageInputError::named(kind, name.clone()))?;
-        if expected.is_some_and(|expected| actual != expected) {
+        let PreparedImage {
+            display_name: name,
+            content,
+            file_bytes,
+        } = prepared;
+        self.ensure_attachment_slot(name.clone())?;
+        if file_bytes > self.limits.max_file_bytes {
             return Err(ImageInputError::named(
-                ImageInputErrorKind::ExtensionMismatch,
+                ImageInputErrorKind::FileTooLarge,
                 name,
             ));
         }
-        let encoded_len = canonical_base64_len(bytes.len()).ok_or_else(|| {
-            ImageInputError::named(ImageInputErrorKind::EncodedPayloadTooLarge, name.clone())
-        })?;
+        if file_bytes
+            > self
+                .limits
+                .max_total_file_bytes
+                .saturating_sub(self.file_bytes)
+        {
+            return Err(ImageInputError::named(
+                ImageInputErrorKind::AggregateTooLarge,
+                name,
+            ));
+        }
+        let encoded_len = content.data.encoded_len();
         let aggregate_encoded = self.encoded_bytes.checked_add(encoded_len).ok_or_else(|| {
             ImageInputError::named(ImageInputErrorKind::EncodedPayloadTooLarge, name.clone())
         })?;
@@ -475,12 +568,7 @@ impl ImageAttachments {
                 name,
             ));
         }
-        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
-        debug_assert_eq!(encoded.len(), encoded_len);
-        let content = ImageContent::new(actual, encoded).map_err(|_| {
-            ImageInputError::named(ImageInputErrorKind::ProtocolRejected, name.clone())
-        })?;
-        self.file_bytes += bytes.len();
+        self.file_bytes += file_bytes;
         self.encoded_bytes = aggregate_encoded;
         let id = self.next_id.wrapping_add(1);
         self.next_id = id;
@@ -488,7 +576,7 @@ impl ImageAttachments {
             id,
             display_name: name,
             content,
-            file_bytes: bytes.len(),
+            file_bytes,
         });
         Ok(self.items.last().expect("an attachment was just appended"))
     }

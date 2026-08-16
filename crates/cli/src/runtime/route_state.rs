@@ -7,6 +7,38 @@ const MODEL_ROUTE_FEATURE_SCHEMA: &str = "iteron:model-route-decision-features-v
 const GOVERNOR_ROUTE_BOUND_ABSENT: bool = false;
 
 impl Agent {
+    pub(crate) fn set_last_success_route_path(&mut self, path: Option<std::path::PathBuf>) {
+        self.last_success_route_path = path;
+    }
+
+    pub(super) fn persist_last_success_route(&mut self, turn: TurnId) {
+        let (Some(path), Some(selected)) = (
+            self.last_success_route_path.as_deref(),
+            self.selected_route.as_ref(),
+        ) else {
+            return;
+        };
+        let selection = crate::providers::ModelSelection {
+            provider_id: selected.route.provider_id.clone(),
+            model_id: selected.route.model_id.clone(),
+        };
+        let snapshot = crate::providers::LastSuccessRouteSnapshot::successful(
+            &selection,
+            selected.route.catalog_digest.clone(),
+            selected.route.capability_digest.clone(),
+        );
+        if snapshot.store(path).is_err() {
+            self.lifecycle_event(
+                "model.route_failed",
+                Some(turn),
+                LifecyclePayload {
+                    reason_code: Some("last_success_snapshot_persist_failed".into()),
+                    ..LifecyclePayload::default()
+                },
+            );
+        }
+    }
+
     /// Record the composition root's already-resolved initial route as one deterministic
     /// `core/model_router` decision before the route itself becomes executable.
     pub(crate) fn record_initial_model_selection(
@@ -210,12 +242,17 @@ impl Agent {
             self.record_model_router_abstention(turn, source, "invalid_route_metadata")?;
             return Err(error);
         }
+        // The session's request controls are resolved once, against the launch route, and are
+        // immutable afterwards; every route the session may use has to be able to put them on the
+        // wire. A route the operator picks from `/model` is not in the composed route set, so it
+        // can be the first one that cannot — say which control it is and what would let this route
+        // in, because "unattested" alone leaves the operator with nothing to do.
         provider
             .control_capabilities()
             .validate(&self.provider_controls)
-            .map_err(|_| KernelError::InvalidRouteMetadata {
+            .map_err(|error| KernelError::InvalidRouteMetadata {
                 field: "provider_controls",
-                reason: "new provider route does not attest the immutable request controls",
+                reason: unattested_control_reason(error),
             })
             .or_else(|error| {
                 self.record_model_router_abstention(turn, source, "unsupported_request_controls")?;
@@ -282,9 +319,9 @@ impl Agent {
         provider
             .control_capabilities()
             .validate(&self.provider_controls)
-            .map_err(|_| KernelError::InvalidRouteMetadata {
+            .map_err(|error| KernelError::InvalidRouteMetadata {
                 field: "provider_controls",
-                reason: "new provider route does not attest the immutable request controls",
+                reason: unattested_control_reason(error),
             })?;
         let selected = self.append_model_selection(
             &provider,
@@ -534,6 +571,7 @@ impl Agent {
         }
         child.authority_ceiling = self.authority_ceiling;
         child.policy_capabilities = self.policy_capabilities;
+        child.token_calibration = self.token_calibration.clone();
         if let Some(pricing) = &self.pricing_port {
             child.set_pricing_port(pricing.clone());
         }
@@ -569,6 +607,59 @@ impl Agent {
             return Err(KernelError::UnpricedUsdCeiling);
         }
         Ok(())
+    }
+}
+
+/// Operator-facing explanation of the one request control a candidate route cannot send.
+///
+/// Each arm names the control that failed and the single configuration knob that would let this
+/// route in, because the controls themselves cannot be relaxed while the session is running: they
+/// are part of the resolved, durably recorded settings, so the repair is always at the next launch.
+fn unattested_control_reason(error: iteron_provider::ControlError) -> &'static str {
+    use iteron_provider::ControlError;
+
+    match error {
+        ControlError::UnsupportedServiceTier(_) => {
+            "the selected route does not offer this session's service tier; request controls are \
+             fixed for the life of a session, so relaunch with provider_governor.service_tier at \
+             the provider default to use this route"
+        }
+        ControlError::UnsupportedVerbosity(_) => {
+            "the selected route does not accept this session's response verbosity; request \
+             controls are fixed for the life of a session, so relaunch with \
+             provider_governor.response_verbosity at the model default to use this route"
+        }
+        ControlError::UnsupportedCompression(_) => {
+            "the selected route does not accept this session's request compression; request \
+             controls are fixed for the life of a session, so relaunch with \
+             provider_governor.request_compression set to none to use this route"
+        }
+        ControlError::UnsupportedCacheBreakpoint(_) => {
+            "the selected route cannot mark prompt-cache breakpoints, which this session sends; \
+             request controls are fixed for the life of a session, so relaunch with \
+             provider_governor.prompt_cache.breakpoint set to none to use this route"
+        }
+        ControlError::UnsupportedCacheTtl(_) => {
+            "the selected route does not offer this session's prompt-cache lifetime; request \
+             controls are fixed for the life of a session, so relaunch with \
+             provider_governor.prompt_cache.ttl_seconds set to 0 to use this route"
+        }
+        ControlError::UnsupportedCacheScope(_) => {
+            "the selected route cannot preserve this session's prompt-cache scope; request \
+             controls are fixed for the life of a session, so relaunch with a \
+             provider_governor.prompt_cache.scope this route supports to use it"
+        }
+        ControlError::CacheToolInvalidationNotAttested => {
+            "the selected route does not invalidate its prompt cache when the tool catalog \
+             changes, which this session requires; request controls are fixed for the life of a \
+             session, so relaunch with provider_governor.prompt_cache.invalidate_on_tool_change \
+             set to false to use this route"
+        }
+        ControlError::IdempotencyNotAttested => {
+            "the selected route does not attest duplicate-safe requests, which this session's \
+             hedging requires; request controls are fixed for the life of a session, so relaunch \
+             with provider_governor.hedge.enabled set to false to use this route"
+        }
     }
 }
 

@@ -91,7 +91,7 @@ static FAMILIES: &[Family] = &[
     fixed!(22, "orchestration_map", Orchestration, "Map effort onto orchestration eligibility.", Indirect, Indirect, OfflineSearch),
     full!(23, "prompt_cache", Provider, "Enable or disable prompt-cache breakpoint emission for one built provider route.", Conditional, Conditional, OfflineSearch),
     fixed!(24, "compaction_adaptive", Context, "Adapt compaction to model and transcript state.", Indirect, Indirect, RuntimeAdaptive),
-    fixed!(25, "compaction_keep_recent", Context, "Choose the verbatim recent-turn retention window.", Indirect, Indirect, OfflineSearch),
+    fixed!(25, "compaction_keep_recent", Context, "Choose an optional explicit recent-message floor over token-based retention.", Indirect, Indirect, OfflineSearch),
     fixed!(26, "token_estimator", Context, "Estimate tokens for admission and compaction.", Conditional, Indirect, CatalogCurated),
     full!(27, "summary_profile", Context, "Choose the compaction summary shape and budget.", Indirect, Indirect, OfflineSearch),
     fixed!(28, "compaction_failure", Context, "Choose bounded behavior when compaction fails.", Conditional, Conditional, FixedInvariant),

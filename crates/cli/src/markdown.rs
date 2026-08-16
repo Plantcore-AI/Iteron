@@ -20,6 +20,10 @@ const MAX_LIST_CONTINUATION_LINES: usize = 64;
 /// Display width charged to a table cell that a row does not have. Zero, so a ragged row cannot
 /// widen a column it contributes nothing to.
 const ABSENT_TABLE_CELL_WIDTH: usize = 0;
+/// Maximum allocation unit retained by a streaming block that cannot yet be parsed conclusively.
+/// The complete source remains in the caller's answer buffer; this projection grows in bounded
+/// chunks and never copies the accumulated MiB-scale tail on each provider delta.
+const MAX_STREAM_PENDING_CHUNK_BYTES: usize = 8 * 1024;
 
 /// An inline run within a paragraph/heading/list item.
 #[derive(Debug, Clone, PartialEq)]
@@ -59,93 +63,238 @@ pub enum MdBlock {
         headers: Vec<Vec<Inline>>,
         rows: Vec<Vec<Vec<Inline>>>,
     },
+    /// Append-only source whose block semantics are not stable yet. A blank top-level line or the
+    /// terminal answer replaces it with ordinary parsed blocks. Keeping chunks here gives the TUI
+    /// immediate exact text without repeatedly parsing/copying an unfinished paragraph or fence.
+    StreamingPending {
+        fenced: bool,
+        chunks: Vec<String>,
+    },
 }
 
 /// A parsed markdown document.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MarkdownDoc {
     pub blocks: Vec<MdBlock>,
+    /// Exact provider/source bytes when the document has reached a terminal parse boundary.
+    ///
+    /// Reconstructing markdown from semantic blocks is necessarily lossy (and historically added
+    /// a trailing newline). Keeping the source lets terminal reconciliation and export preserve
+    /// the authoritative answer byte-for-byte. Streaming documents leave this unset until
+    /// [`StreamingParse::finalize`] so append-only deltas do not clone the accumulated answer.
+    pub(crate) source: Option<String>,
 }
 
 /// Incremental block-parse state for an append-only document (a streaming assistant answer).
 ///
-/// Re-parsing the whole accumulated answer on every delta batch is quadratic in answer length; this
-/// keeps a settled prefix so each batch only pays for the tail it actually changed. The result is
-/// exactly `MarkdownDoc::parse` of the same text — see `settled_prefix_len` for why the prefix can
-/// never be re-interpreted.
+/// Re-parsing the whole accumulated answer on every delta batch is quadratic in answer length.
+/// This state scans only newly appended characters, parses each top-level-settled prefix once, and
+/// represents the still-ambiguous tail as bounded chunks. [`Self::finalize`] performs the one
+/// terminal parse needed to make the document exactly equal to [`MarkdownDoc::parse`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct StreamingParse {
     /// Blocks at the front of the document that no later input can change.
     settled_blocks: usize,
     /// Bytes of source already folded into those blocks.
     settled_len: usize,
+    /// Bytes already inspected by the incremental top-level boundary scanner.
+    observed_len: usize,
+    /// Whether the scanner is inside a fenced block at `observed_len`.
+    in_fence: bool,
+    /// Whether the unresolved top-level block began with a fence. This is sticky until the next
+    /// stable blank-line boundary, so rendering never rescans the accumulated pending tail.
+    pending_fenced: bool,
+    /// Whether the current incomplete source line contains a non-whitespace character.
+    line_non_whitespace: bool,
+    /// First three non-indent characters of the current line, sufficient to recognize a fence.
+    line_prefix: [char; 3],
+    line_prefix_len: u8,
+    /// Cumulative bytes passed to the full block parser. Used by the regression test to prove that
+    /// provider chunking cannot turn one answer into quadratic parse work.
+    parsed_source_bytes: usize,
 }
 
 impl StreamingParse {
-    /// Re-parse only the unsettled tail of `text` into `doc`.
+    /// Parse newly settled source and append newly arrived ambiguous bytes without revisiting the
+    /// accumulated tail.
     ///
     /// `text` must be the same source this state was last advanced with, extended at the end. A
     /// shorter `text` means the source was replaced, and the state rebuilds from scratch.
     pub fn extend(&mut self, doc: &mut MarkdownDoc, text: &str) {
+        // A live projection is intentionally source-less: copying `text` here would make a long
+        // answer quadratic in the number of provider deltas.
+        doc.source = None;
+        if text.len() < self.observed_len || !text.is_char_boundary(self.observed_len) {
+            *self = Self::default();
+            doc.blocks.clear();
+        }
+
+        let previous_observed = self.observed_len;
+        let boundary = self.observe_appended(text);
+        if boundary > self.settled_len {
+            // Retire the old ambiguous projection, parse the newly stable region exactly once, and
+            // start a fresh pending projection for any bytes after the boundary.
+            doc.blocks.truncate(self.settled_blocks);
+            let stable = &text[self.settled_len..boundary];
+            self.parsed_source_bytes = self.parsed_source_bytes.saturating_add(stable.len());
+            doc.blocks.extend(parse_blocks(stable));
+            self.settled_blocks = doc.blocks.len();
+            self.settled_len = boundary;
+            if boundary < text.len() {
+                doc.blocks
+                    .push(streaming_pending(&text[boundary..], self.pending_fenced));
+            }
+            return;
+        }
+
+        if self.settled_len == text.len() {
+            doc.blocks.truncate(self.settled_blocks);
+            return;
+        }
+        if doc.blocks.len() == self.settled_blocks {
+            doc.blocks.push(streaming_pending(
+                &text[self.settled_len..],
+                self.pending_fenced,
+            ));
+            return;
+        }
+        let appended_from = previous_observed.max(self.settled_len);
+        if appended_from < text.len()
+            && let Some(MdBlock::StreamingPending { fenced, chunks }) =
+                doc.blocks.get_mut(self.settled_blocks)
+        {
+            append_pending_chunks(chunks, &text[appended_from..]);
+            *fenced = self.pending_fenced;
+        }
+    }
+
+    /// Replace the pending projection with the exact terminal parse. The unresolved source is
+    /// charged once, irrespective of how many provider deltas formed it.
+    pub fn finalize(&mut self, doc: &mut MarkdownDoc, text: &str) {
         if text.len() < self.settled_len {
             *self = Self::default();
             doc.blocks.clear();
         }
-        let boundary = settled_prefix_len(text, self.settled_len);
-        // Everything after the settled prefix was parsed from a tail that has since grown; drop it
-        // and re-derive. A newly settled span is parsed exactly once, then never again.
         doc.blocks.truncate(self.settled_blocks);
-        if boundary > self.settled_len {
-            doc.blocks
-                .extend(parse_blocks(&text[self.settled_len..boundary]));
-            self.settled_blocks = doc.blocks.len();
-            self.settled_len = boundary;
+        let pending = &text[self.settled_len..];
+        self.parsed_source_bytes = self.parsed_source_bytes.saturating_add(pending.len());
+        doc.blocks.extend(parse_blocks(pending));
+        self.settled_blocks = doc.blocks.len();
+        self.settled_len = text.len();
+        self.observed_len = text.len();
+        // One terminal copy is linear and gives every downstream semantic/export projection the
+        // exact authoritative bytes, including the absence of a final newline.
+        doc.source = Some(text.to_owned());
+    }
+
+    fn observe_appended(&mut self, text: &str) -> usize {
+        let mut boundary = self.settled_len;
+        for (relative, character) in text[self.observed_len..].char_indices() {
+            let end = self.observed_len + relative + character.len_utf8();
+            if character == '\n' {
+                let fence = self.line_prefix_len == 3 && self.line_prefix == ['`', '`', '`'];
+                if fence {
+                    if !self.in_fence {
+                        self.pending_fenced = true;
+                    }
+                    self.in_fence = !self.in_fence;
+                } else if !self.in_fence && !self.line_non_whitespace {
+                    boundary = end;
+                    self.pending_fenced = false;
+                }
+                self.line_non_whitespace = false;
+                self.line_prefix = ['\0'; 3];
+                self.line_prefix_len = 0;
+            } else if !self.line_non_whitespace && character.is_whitespace() {
+                continue;
+            } else {
+                self.line_non_whitespace = true;
+                if self.line_prefix_len < 3 {
+                    self.line_prefix[usize::from(self.line_prefix_len)] = character;
+                    self.line_prefix_len += 1;
+                    if self.line_prefix_len == 3 && self.line_prefix == ['`', '`', '`'] {
+                        self.pending_fenced = true;
+                    }
+                }
+            }
         }
-        doc.blocks.extend(parse_blocks(&text[self.settled_len..]));
+        self.observed_len = text.len();
+        boundary
+    }
+
+    #[cfg(test)]
+    pub(crate) fn parsed_source_bytes(&self) -> usize {
+        self.parsed_source_bytes
+    }
+
+    pub(crate) fn settled_blocks(&self) -> usize {
+        self.settled_blocks
+    }
+
+    pub(crate) fn settled_len(&self) -> usize {
+        self.settled_len
+    }
+
+    pub(crate) fn pending_fenced(&self) -> bool {
+        self.pending_fenced
     }
 }
 
-/// One past the last blank line the block parser sees at TOP level, scanning from `from`.
-///
-/// `parse_blocks` is one left-to-right pass whose only cross-line state is the paragraph it is
-/// accumulating, and a blank line always flushes that. Every multi-line construct — fenced code, a
-/// blockquote run, list continuations, a table body — also terminates at a blank line, and the
-/// parser's only lookahead (the `|---|` row under a table header) cannot reach past one. So at a
-/// top-level blank line the parser holds no state whatsoever and nothing it has already emitted can
-/// change: for an append-only source that position is a safe resume point. A blank line INSIDE a
-/// fence is not one, because an unterminated fence keeps absorbing whatever arrives next.
-///
-/// `from` must itself be such a position (or 0), so the scan may start with the fence closed.
-fn settled_prefix_len(text: &str, from: usize) -> usize {
-    let mut offset = from;
-    let mut settled = from;
-    let mut in_fence = false;
-    for line in text[from..].split_inclusive('\n') {
-        offset += line.len();
-        let complete = line.ends_with('\n');
-        let body = line.trim_end_matches('\n').trim_end_matches('\r');
-        let trimmed = body.trim_start();
-        if trimmed.starts_with("```") {
-            in_fence = !in_fence;
-            continue;
+fn streaming_pending(text: &str, fenced: bool) -> MdBlock {
+    let mut chunks = Vec::new();
+    append_pending_chunks(&mut chunks, text);
+    MdBlock::StreamingPending { fenced, chunks }
+}
+
+fn append_pending_chunks(chunks: &mut Vec<String>, mut appended: &str) {
+    let max_chunk_bytes = iteron_tunables::param_integer(
+        "cli.markdown.max_stream_pending_chunk_bytes",
+        MAX_STREAM_PENDING_CHUNK_BYTES,
+    )
+    .clamp(1, MAX_STREAM_PENDING_CHUNK_BYTES);
+    while !appended.is_empty() {
+        if let Some(last) = chunks.last_mut()
+            && last.len() < max_chunk_bytes
+        {
+            let available = max_chunk_bytes - last.len();
+            let mut take = available.min(appended.len());
+            while take > 0 && !appended.is_char_boundary(take) {
+                take -= 1;
+            }
+            if take > 0 {
+                last.push_str(&appended[..take]);
+                appended = &appended[take..];
+                continue;
+            }
         }
-        // Only a COMPLETE blank line settles: a trailing partial line is still being written.
-        if !in_fence && complete && trimmed.is_empty() {
-            settled = offset;
+        let mut take = max_chunk_bytes.min(appended.len());
+        while take > 0 && !appended.is_char_boundary(take) {
+            take -= 1;
         }
+        if take == 0 {
+            take = appended
+                .char_indices()
+                .nth(1)
+                .map_or(appended.len(), |(index, _)| index);
+        }
+        chunks.push(appended[..take].to_owned());
+        appended = &appended[take..];
     }
-    settled
 }
 
 impl MarkdownDoc {
     pub fn parse(text: &str) -> Self {
         MarkdownDoc {
             blocks: parse_blocks(text),
+            source: Some(text.to_owned()),
         }
     }
 
     /// Reconstruct approximate markdown source (for `/export`).
     pub fn to_text(&self) -> String {
+        if let Some(source) = &self.source {
+            return source.clone();
+        }
         let mut out = String::new();
         for b in &self.blocks {
             match b {
@@ -219,9 +368,18 @@ impl MarkdownDoc {
                         out.push('\n');
                     }
                 }
+                MdBlock::StreamingPending { chunks, .. } => {
+                    for chunk in chunks {
+                        out.push_str(chunk);
+                    }
+                }
             }
         }
         out
+    }
+
+    pub(crate) fn exact_source(&self) -> Option<&str> {
+        self.source.as_deref()
     }
 }
 
@@ -901,6 +1059,27 @@ pub(crate) fn render_doc_with_hyperlinks(
             }
             MdBlock::Table { headers, rows } => {
                 out.append(render_table(headers, rows, width, theme, hyperlinks));
+            }
+            MdBlock::StreamingPending { fenced, chunks } => {
+                // Pending source is intentionally literal: styling delimiters before their close
+                // would require reparsing an arbitrarily long block on every delta. The terminal
+                // parse replaces this projection with the exact semantic blocks once.
+                let style = if *fenced {
+                    Style::default().fg(theme.fg).bg(theme.code_bg)
+                } else {
+                    Style::default().fg(theme.fg)
+                };
+                let spans = chunks
+                    .iter()
+                    .map(|chunk| AnnotatedSpan {
+                        span: Span::styled(
+                            terminal_safe_text(&chunk.replace(['\r', '\n'], " ")),
+                            style,
+                        ),
+                        hyperlink: None,
+                    })
+                    .collect::<Vec<_>>();
+                out.append(wrap_annotated_spans(&spans, width));
             }
         }
     }
@@ -1848,26 +2027,23 @@ mod tests {
     );
 
     #[test]
-    fn streaming_parse_matches_a_full_reparse_at_every_delta_boundary() {
-        // The renderer used to re-parse the whole accumulated answer on every delta batch, which is
-        // quadratic in answer length. The incremental parser replaces it and must therefore be
-        // indistinguishable from that re-parse at EVERY byte a delta could stop on — including
-        // mid-fence, mid-table and mid-list, where a naive resume point would re-interpret text the
-        // full parser had already committed.
+    fn streaming_parse_finalizes_exactly_after_every_possible_delta_boundary() {
+        // Ambiguous live tails are literal projections; the terminal boundary must replace them
+        // with exactly the same semantic document a one-shot parse produces.
         let mut state = StreamingParse::default();
-        let mut doc = MarkdownDoc { blocks: Vec::new() };
+        let mut doc = MarkdownDoc {
+            blocks: Vec::new(),
+            source: None,
+        };
         for end in 0..=STREAMED_ANSWER.len() {
             if !STREAMED_ANSWER.is_char_boundary(end) {
                 continue;
             }
             let prefix = &STREAMED_ANSWER[..end];
             state.extend(&mut doc, prefix);
-            assert_eq!(
-                doc.blocks,
-                MarkdownDoc::parse(prefix).blocks,
-                "incremental parse of the first {end} bytes must equal a full re-parse"
-            );
         }
+        state.finalize(&mut doc, STREAMED_ANSWER);
+        assert_eq!(doc.blocks, MarkdownDoc::parse(STREAMED_ANSWER).blocks);
     }
 
     #[test]
@@ -1876,7 +2052,10 @@ mod tests {
         // property that makes the cost constant: the settled prefix advances, and the only thing
         // that holds it back is an open fence, which really can still absorb whatever arrives next.
         let mut state = StreamingParse::default();
-        let mut doc = MarkdownDoc { blocks: Vec::new() };
+        let mut doc = MarkdownDoc {
+            blocks: Vec::new(),
+            source: None,
+        };
         let head = "first paragraph\n\nsecond paragraph\n\n";
         state.extend(&mut doc, head);
         assert_eq!(state.settled_len, head.len());
@@ -1889,7 +2068,10 @@ mod tests {
             head.len(),
             "a blank line inside an unterminated fence is not a resume point"
         );
-        assert_eq!(doc.blocks, MarkdownDoc::parse(&open_fence).blocks);
+        let mut exact_state = state;
+        let mut exact_doc = doc.clone();
+        exact_state.finalize(&mut exact_doc, &open_fence);
+        assert_eq!(exact_doc.blocks, MarkdownDoc::parse(&open_fence).blocks);
 
         let closed_fence = format!("{open_fence}```\n\ntail\n");
         state.extend(&mut doc, &closed_fence);
@@ -1899,6 +2081,7 @@ mod tests {
             "closing the fence settles everything up to the blank line after it"
         );
         assert_eq!(state.settled_blocks, 3);
+        state.finalize(&mut doc, &closed_fence);
         assert_eq!(doc.blocks, MarkdownDoc::parse(&closed_fence).blocks);
     }
 
@@ -1907,10 +2090,54 @@ mod tests {
         // `cur_text` is cleared at every stream boundary. A shorter source is therefore a new
         // document, not an extension, and a stale settled prefix would slice into unrelated bytes.
         let mut state = StreamingParse::default();
-        let mut doc = MarkdownDoc { blocks: Vec::new() };
+        let mut doc = MarkdownDoc {
+            blocks: Vec::new(),
+            source: None,
+        };
         state.extend(&mut doc, "one\n\ntwo\n\nthree\n");
         state.extend(&mut doc, "x\n");
         assert_eq!(state.settled_len, 0);
+        state.finalize(&mut doc, "x\n");
         assert_eq!(doc.blocks, MarkdownDoc::parse("x\n").blocks);
+    }
+
+    #[test]
+    fn megabyte_unfinished_paragraph_and_fence_have_linear_parse_work_and_exact_final_render() {
+        for source in [
+            "x".repeat(1024 * 1024),
+            format!("```rust\n{}", "x".repeat(1024 * 1024)),
+        ] {
+            let mut state = StreamingParse::default();
+            let mut doc = MarkdownDoc {
+                blocks: Vec::new(),
+                source: None,
+            };
+            let mut end = 0;
+            while end < source.len() {
+                end = (end + 257).min(source.len());
+                while !source.is_char_boundary(end) {
+                    end -= 1;
+                }
+                state.extend(&mut doc, &source[..end]);
+            }
+            assert_eq!(
+                state.parsed_source_bytes(),
+                0,
+                "an unfinished top-level block must not enter the full parser per delta"
+            );
+            state.finalize(&mut doc, &source);
+            let expected = MarkdownDoc::parse(&source);
+            assert_eq!(doc.blocks, expected.blocks);
+            assert_eq!(doc.to_text(), expected.to_text());
+            assert!(
+                state.parsed_source_bytes() <= source.len(),
+                "terminal semantic parse is linear in source bytes"
+            );
+            assert_eq!(
+                render_doc(&doc, 80, &Theme::dark()),
+                render_doc(&expected, 80, &Theme::dark()),
+                "terminal rendering is byte-for-byte identical to a one-shot semantic parse"
+            );
+        }
     }
 }

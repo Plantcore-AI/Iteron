@@ -143,6 +143,10 @@ impl App {
     }
 
     pub(super) fn close_picker_restore_theme(&mut self) {
+        if let Some(job) = self.session_picker_job.take() {
+            job.abort();
+        }
+        self.session_picker_backing = None;
         if let Some(pk) = self.picker.take()
             && let Some(theme) = pk.saved_theme
         {
@@ -230,7 +234,7 @@ impl App {
         &mut self,
         code: KeyCode,
         modifiers: KeyModifiers,
-        repo: &Path,
+        _repo: &Path,
     ) -> bool {
         if self.picker.is_none()
             || !modifiers.contains(KeyModifiers::ALT)
@@ -249,7 +253,7 @@ impl App {
         // remains identical to a separately reported Esc.
         self.close_picker_restore_theme();
         self.editor.insert(ch);
-        self.refresh_completion(repo);
+        self.schedule_completion();
         true
     }
 
@@ -263,7 +267,7 @@ impl App {
         &mut self,
         code: KeyCode,
         modifiers: KeyModifiers,
-        repo: &Path,
+        _repo: &Path,
         standard_mode: bool,
         unbound: bool,
     ) -> bool {
@@ -289,7 +293,7 @@ impl App {
         }
         self.interrupting = true;
         self.editor.insert(ch);
-        self.refresh_completion(repo);
+        self.schedule_completion();
         true
     }
 }

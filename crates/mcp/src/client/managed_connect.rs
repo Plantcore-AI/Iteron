@@ -1,13 +1,13 @@
 //! Cancellable stdio startup kept separate from the already-large client implementation.
 
-use super::{McpClient, lifecycle::OwnedProcess};
+use super::{McpClient, lifecycle::OwnedProcess, multiplex::ResponseRouter};
 use crate::{
     McpError,
     protocol_version::{REQUESTED_PROTOCOL_VERSION, negotiate_initialize_result},
     tool_filter::validate_server_name,
 };
 use serde_json::json;
-use std::{process::Stdio, time::Duration};
+use std::{process::Stdio, sync::Arc, time::Duration};
 use tokio::{io::BufReader, sync::Mutex};
 
 const READ_BUFFER_BYTES: usize = 8 * 1024;
@@ -67,17 +67,21 @@ pub(super) async fn connect(
         return Err(McpError::Spawn("no stdout".into()));
     };
 
-    let mut client = McpClient {
-        process: Some(process),
-        stdin: Mutex::new(stdin),
-        stdout: Mutex::new(BufReader::with_capacity(
+    let stdin = Arc::new(Mutex::new(stdin));
+    let responses = ResponseRouter::spawn(
+        BufReader::with_capacity(
             iteron_tunables::param_integer(
                 "mcp.client.managed_connect.read_buffer_bytes",
                 READ_BUFFER_BYTES,
             ),
             stdout,
-        )),
-        calls: Mutex::new(()),
+        ),
+        Arc::clone(&stdin),
+    );
+    let mut client = McpClient {
+        process: Some(process),
+        stdin,
+        responses,
         next_id: std::sync::atomic::AtomicU64::new(1),
         request_timeout,
         deadlines,

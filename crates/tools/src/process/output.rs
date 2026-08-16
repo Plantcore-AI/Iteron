@@ -1,4 +1,3 @@
-use super::RETAINED_OUTPUT_BYTES_PER_STREAM;
 use serde::Serialize;
 use std::collections::VecDeque;
 
@@ -21,6 +20,7 @@ pub(super) struct OutputRing {
     observed_cursor: u64,
     retained_limit: usize,
     observed_limit: u64,
+    deltas: usize,
     limit_notified: bool,
     closed: bool,
 }
@@ -31,11 +31,9 @@ impl Default for OutputRing {
             bytes: VecDeque::new(),
             oldest_cursor: 0,
             observed_cursor: 0,
-            retained_limit: iteron_tunables::param_usize(
-                "tools.process.mod.retained_output_bytes_per_stream",
-                RETAINED_OUTPUT_BYTES_PER_STREAM,
-            ),
+            retained_limit: super::retained_output_bytes_per_stream(),
             observed_limit: super::max_observed_output_bytes_per_stream(),
+            deltas: 0,
             limit_notified: false,
             closed: false,
         }
@@ -49,6 +47,7 @@ impl OutputRing {
 
     /// Retain a fixed tail and report exactly once when the total-observation ceiling is crossed.
     pub(super) fn push(&mut self, chunk: &[u8]) -> bool {
+        self.deltas = self.deltas.saturating_add(1);
         self.observed_cursor = self
             .observed_cursor
             .saturating_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
@@ -57,7 +56,9 @@ impl OutputRing {
             self.bytes.pop_front();
             self.oldest_cursor = self.oldest_cursor.saturating_add(1);
         }
-        if self.observed_cursor > self.observed_limit && !self.limit_notified {
+        if (self.observed_cursor > self.observed_limit || self.deltas > super::max_exec_deltas())
+            && !self.limit_notified
+        {
             self.limit_notified = true;
             return true;
         }

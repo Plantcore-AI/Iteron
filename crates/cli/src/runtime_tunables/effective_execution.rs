@@ -62,6 +62,14 @@ fn decode_inner(
     let fan_breadth = optional_integer(view, "fan_breadth")?
         .map(|value| usize::try_from(value).map_err(|_| range("fan_breadth", "$")))
         .transpose()?;
+    let fan_concurrency = usize::try_from(view.integer("fan_concurrency")?)
+        .map_err(|_| range("fan_concurrency", "$"))?;
+    let workflow_max_concurrency = usize_field(workflow, "workflow_aggregate", "max_concurrency")?;
+    if fan_concurrency != workflow_max_concurrency {
+        return Err(EffectiveExecutionError::InvalidOwner(
+            "fan concurrency differs from the immutable workflow aggregate",
+        ));
+    }
     let worker_min_turns = optional_integer(view, "worker_min_turns")?
         .map(|value| u32::try_from(value).map_err(|_| range("worker_min_turns", "$")))
         .transpose()?;
@@ -212,7 +220,7 @@ fn decode_inner(
             max_calls: usize_field(workflow, "workflow_aggregate", "max_calls")?,
             max_tokens: optional_u64_field(workflow, "workflow_aggregate", "max_tokens")?,
             max_wall_seconds: u64_field(workflow, "workflow_aggregate", "max_wall_seconds")?,
-            max_concurrency: usize_field(workflow, "workflow_aggregate", "max_concurrency")?,
+            max_concurrency: workflow_max_concurrency,
         },
         decomposition,
         fan_breadth,

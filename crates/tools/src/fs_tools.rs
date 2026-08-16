@@ -408,50 +408,16 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
                 let Some(policy) = policy else {
                     return err_result(id, "list_dir: runtime policy was not installed".into());
                 };
-                let rel = call.input.get("path").and_then(|x| x.as_str()).unwrap_or(".");
-                match resolve_in_root(&root, rel) {
-                    Err(e) => err_result(id, e),
-                    Ok(base) => {
-                        let mut out = Vec::new();
-                        let mut output_bytes = 0usize;
-                        let mut emitted_entries = 0usize;
-                        for entry in WalkDir::new(&base)
-                            .max_depth(policy.list_dir.max_depth)
-                            .into_iter()
-                            .filter_entry(|e| !is_ignored(e.file_name().to_str().unwrap_or("")))
-                            .flatten()
-                        {
-                            if entry.file_type().is_file() {
-                                if emitted_entries >= policy.list_dir.max_entries {
-                                    append_bounded_marker(
-                                        &mut out,
-                                        policy.list_dir.output_max_bytes,
-                                        format!(
-                                            "… (truncated at {} entries; narrow the path)",
-                                            policy.list_dir.max_entries
-                                        ),
-                                    );
-                                    break;
-                                }
-                                let line = crate::display_path(&root, entry.path());
-                                let framed = line.len().saturating_add(usize::from(!out.is_empty()));
-                                if output_bytes.saturating_add(framed)
-                                    > policy.list_dir.output_max_bytes
-                                {
-                                    append_bounded_marker(
-                                        &mut out,
-                                        policy.list_dir.output_max_bytes,
-                                        "… (truncated at the pinned output-byte ceiling)".into(),
-                                    );
-                                    break;
-                                }
-                                output_bytes = output_bytes.saturating_add(framed);
-                                out.push(line);
-                                emitted_entries = emitted_entries.saturating_add(1);
-                            }
-                        }
-                        ok_result(id, out.join("\n"))
-                    }
+                let rel = call
+                    .input
+                    .get("path")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or(".")
+                    .to_owned();
+                match tokio::task::spawn_blocking(move || list_directory(&root, &rel, policy.list_dir)).await {
+                    Ok(Ok(output)) => ok_result(id, output),
+                    Ok(Err(error)) => err_result(id, error),
+                    Err(error) => err_result(id, format!("list_dir worker failed: {error}")),
                 }
             })
         },
@@ -468,7 +434,10 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
             input_schema: serde_json::json!({
                 "type":"object",
                 "required":["pattern"],
-                "properties":{"pattern":{"type":"string","description":"glob relative to the repo root, e.g. src/**/*.rs"}},
+                "properties":{
+                    "pattern":{"type":"string","description":"glob relative to `path`, e.g. src/**/*.rs"},
+                    "path":{"type":"string","description":"optional search root relative to the repo root, or an absolute host path; default '.'"}
+                },
             }),
             purity: Purity::Pure,
             capability: Capability::ReadOnly,
@@ -483,50 +452,18 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
                 let Some(pattern) = call.input.get("pattern").and_then(|x| x.as_str()) else {
                     return err_result(id, "glob: a `pattern` is required".into());
                 };
-                let mut out = Vec::new();
-                let mut output_bytes = 0usize;
-                let mut emitted_results = 0usize;
-                for entry in WalkDir::new(&root)
-                    .max_depth(policy.glob.max_depth)
-                    .into_iter()
-                    .filter_entry(|e| !is_ignored(e.file_name().to_str().unwrap_or("")))
-                    .flatten()
-                {
-                    if entry.file_type().is_file()
-                        && let Ok(p) = entry.path().strip_prefix(&root)
-                    {
-                        let rel = p.to_string_lossy().replace('\\', "/");
-                        if glob_match(pattern, &rel) {
-                            if emitted_results >= policy.glob.max_results {
-                                append_bounded_marker(
-                                    &mut out,
-                                    policy.glob.output_max_bytes,
-                                    format!(
-                                        "… (truncated at {} matches; narrow the pattern)",
-                                        policy.glob.max_results
-                                    ),
-                                );
-                                break;
-                            }
-                            let framed = rel.len().saturating_add(usize::from(!out.is_empty()));
-                            if output_bytes.saturating_add(framed) > policy.glob.output_max_bytes {
-                                append_bounded_marker(
-                                    &mut out,
-                                    policy.glob.output_max_bytes,
-                                    "… (truncated at the pinned output-byte ceiling)".into(),
-                                );
-                                break;
-                            }
-                            output_bytes = output_bytes.saturating_add(framed);
-                            out.push(rel);
-                            emitted_results = emitted_results.saturating_add(1);
-                        }
-                    }
+                let pattern = pattern.to_owned();
+                let path = call
+                    .input
+                    .get("path")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or(".")
+                    .to_owned();
+                match tokio::task::spawn_blocking(move || glob_files(&root, &path, &pattern, policy.glob)).await {
+                    Ok(Ok(output)) => ok_result(id, output),
+                    Ok(Err(error)) => err_result(id, error),
+                    Err(error) => err_result(id, format!("glob worker failed: {error}")),
                 }
-                if out.is_empty() {
-                    return ok_result(id, format!("no files match `{pattern}`"));
-                }
-                ok_result(id, out.join("\n"))
             })
         },
     )?;
@@ -534,11 +471,112 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
     Ok(())
 }
 
+fn list_directory(
+    root: &Path,
+    relative: &str,
+    policy: crate::DirectoryListPolicy,
+) -> Result<String, String> {
+    let base = resolve_in_root(root, relative)?;
+    let mut out = Vec::new();
+    let mut output_bytes = 0usize;
+    let mut emitted_entries = 0usize;
+    for entry in WalkDir::new(&base)
+        .max_depth(policy.max_depth)
+        .into_iter()
+        .filter_entry(|entry| !is_ignored(entry.file_name().to_str().unwrap_or("")))
+        .flatten()
+    {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        if emitted_entries >= policy.max_entries {
+            append_bounded_marker(
+                &mut out,
+                policy.output_max_bytes,
+                format!(
+                    "… (truncated at {} entries; narrow the path)",
+                    policy.max_entries
+                ),
+            );
+            break;
+        }
+        let line = crate::display_path(root, entry.path());
+        let framed = line.len().saturating_add(usize::from(!out.is_empty()));
+        if output_bytes.saturating_add(framed) > policy.output_max_bytes {
+            append_bounded_marker(
+                &mut out,
+                policy.output_max_bytes,
+                "… (truncated at the pinned output-byte ceiling)".into(),
+            );
+            break;
+        }
+        output_bytes = output_bytes.saturating_add(framed);
+        out.push(line);
+        emitted_entries = emitted_entries.saturating_add(1);
+    }
+    Ok(out.join("\n"))
+}
+
+fn glob_files(
+    root: &Path,
+    relative: &str,
+    pattern: &str,
+    policy: crate::GlobPolicy,
+) -> Result<String, String> {
+    let base = resolve_in_root(root, relative)?;
+    let mut out = Vec::new();
+    let mut output_bytes = 0usize;
+    let mut emitted_results = 0usize;
+    for entry in WalkDir::new(&base)
+        .max_depth(policy.max_depth)
+        .into_iter()
+        .filter_entry(|entry| !is_ignored(entry.file_name().to_str().unwrap_or("")))
+        .flatten()
+    {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let Ok(relative_to_base) = entry.path().strip_prefix(&base) else {
+            continue;
+        };
+        let candidate = relative_to_base.to_string_lossy().replace('\\', "/");
+        if !glob_match(pattern, &candidate) {
+            continue;
+        }
+        if emitted_results >= policy.max_results {
+            append_bounded_marker(
+                &mut out,
+                policy.output_max_bytes,
+                format!(
+                    "… (truncated at {} matches; narrow the pattern)",
+                    policy.max_results
+                ),
+            );
+            break;
+        }
+        let line = crate::display_path(root, entry.path());
+        let framed = line.len().saturating_add(usize::from(!out.is_empty()));
+        if output_bytes.saturating_add(framed) > policy.output_max_bytes {
+            append_bounded_marker(
+                &mut out,
+                policy.output_max_bytes,
+                "… (truncated at the pinned output-byte ceiling)".into(),
+            );
+            break;
+        }
+        output_bytes = output_bytes.saturating_add(framed);
+        out.push(line);
+        emitted_results = emitted_results.saturating_add(1);
+    }
+    if out.is_empty() {
+        Ok(format!("no files match `{pattern}`"))
+    } else {
+        Ok(out.join("\n"))
+    }
+}
+
 fn is_ignored(name: &str) -> bool {
-    matches!(
-        name,
-        ".git" | "target" | "node_modules" | ".venv" | "venv" | "dist" | "build" | "__pycache__"
-    )
+    iteron_ctx::source::is_default_pruned_component(name)
 }
 
 /// Match a `/`-separated path against a glob: `?`=one char, `*`=any run WITHIN a segment (never `/`),
@@ -611,14 +649,21 @@ pub(crate) fn register_outline(r: &mut Registry) -> Result<(), ToolError> {
                     .get("query")
                     .and_then(|value| value.as_str())
                     .unwrap_or("");
-                let map = iteron_ctx::repo_outline_for_task_with_limits(
-                    &root,
-                    policy.repo_map.max_files,
-                    policy.repo_map.max_depth,
-                    policy.repo_map.max_tokens,
-                    query,
-                );
-                ok_result(id, map)
+                let query = query.to_owned();
+                match tokio::task::spawn_blocking(move || {
+                    iteron_ctx::repo_outline_for_task_with_limits(
+                        &root,
+                        policy.repo_map.max_files,
+                        policy.repo_map.max_depth,
+                        policy.repo_map.max_tokens,
+                        &query,
+                    )
+                })
+                .await
+                {
+                    Ok(map) => ok_result(id, map),
+                    Err(error) => err_result(id, format!("repo_map worker failed: {error}")),
+                }
             })
         },
     )

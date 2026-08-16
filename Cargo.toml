@@ -30,7 +30,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.0.7"
+version = "0.0.8"
 edition = "2024"
 license = "Apache-2.0"
 publish = false
@@ -50,7 +50,7 @@ quote = "1"
 proc-macro2 = { version = "1", features = ["span-locations"] }
 syn = { version = "2", features = ["full", "parsing", "visit"] }
 toml = "1.1"
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["http2", "json", "stream", "rustls-tls"] }
 futures-util = "0.3"
 sha2 = "0.10"
 hmac = "0.12"

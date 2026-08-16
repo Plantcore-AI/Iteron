@@ -698,16 +698,33 @@ struct EffectPrimitive {
 // Turn-end checkpointing now shares `checkpoint_at_turn_end` between ordinary completion and
 // drain. The helper itself owns the exact open/copy/settle sequence, so it is the one admitted
 // physical checkpoint dispatch site.
+//
+// `gate_concurrent_deferred_batch` is the batched PreToolUse equivalent of `dispatch_one`: it
+// refuses to start without the HookEffectJournal, opens every kernel effect ticket in model order
+// before `join_all` can poll a command, and settles every ticket in that same order afterward.
+// Admitting the enclosing function keeps concurrent non-conflicting tool gates possible without
+// weakening either durable effect boundary.
+//
+// Session/submission compatibility hooks moved to the resident AppServer so RunEnded/InputReady
+// need not await them. `run_lifecycle_gate` fails closed without the shared HookEffectJournal;
+// `run_legacy_hook` uses that same journal and publishes its terminal lifecycle independently.
+// The AppServer source is therefore scanned alongside the runtime rather than becoming an
+// unaudited composition-root escape hatch.
 const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     EffectPrimitive {
         needle: ".run_cancellable_journaled(",
-        allowed_in: &["brokered_hook"],
+        allowed_in: &["run_legacy_hook"],
         guidance: "a lifecycle hook starts an operator-controlled process; route it through \
                    Agent::brokered_hook so it crosses the effect boundary",
     },
     EffectPrimitive {
         needle: ".run_lifecycle_cancellable_journaled(",
-        allowed_in: &["brokered_lifecycle_gate_correlated", "dispatch_one"],
+        allowed_in: &[
+            "brokered_lifecycle_gate_correlated",
+            "dispatch_one",
+            "gate_concurrent_deferred_batch",
+            "run_lifecycle_gate",
+        ],
         guidance: "a lifecycle hook starts operator-controlled processes; synchronous gates use \
                    the universal effect boundary, while bounded asynchronous observe/augment \
                    dispatch must hold the fsynced HookEffectJournal before starting a command",
@@ -750,7 +767,7 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
                    the copy and settled after it",
     },
     EffectPrimitive {
-        needle: ".run_bounded_verify(",
+        needle: ".run_bounded_verify_observed(",
         allowed_in: &["dispatch_verify"],
         guidance: "a verifier oracle runs repository-controlled code; reach it through \
                    Agent::run_verify, which owns the intent/terminal pair",
@@ -822,6 +839,7 @@ fn effect_source_paths(root: &std::path::Path) -> Vec<PathBuf> {
         .map(|relative| root.join(relative))
         .collect();
     sources.extend(runtime_source_paths(root));
+    sources.push(root.join("crates/cli/src/app_server.rs"));
     sources
 }
 

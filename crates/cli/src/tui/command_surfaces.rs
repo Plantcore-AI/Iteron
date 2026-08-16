@@ -386,6 +386,7 @@ pub(super) fn schedule_slash_export(
 pub(super) fn apply_transcript_effect_event(
     app: &mut App,
     session: &mut Session,
+    directory: &ProviderDirectory,
     event: transcript_effect::Event,
 ) {
     if let Some(shell) = event.shell {
@@ -414,11 +415,272 @@ pub(super) fn apply_transcript_effect_event(
                 transcript_effect::ControlKind::Side,
                 Some(app_server::ControlReply::SideStatus { status, closed }),
             ) => show_side_status(app, status.as_deref(), closed),
-            (kind, Some(app_server::ControlReply::Refused(reason))) => {
-                let action = match kind {
-                    transcript_effect::ControlKind::Compact => "compaction",
-                    transcript_effect::ControlKind::Side => "side conversation",
+            (
+                transcript_effect::ControlKind::Workflow,
+                Some(app_server::ControlReply::Workflows(reply)),
+            ) => {
+                app.workflows_panel.update_inventory(reply.runs);
+                app.workflows_panel.finish_action(
+                    reply
+                        .notice
+                        .unwrap_or_else(|| "workflow owner state refreshed".into()),
+                );
+            }
+            (
+                transcript_effect::ControlKind::Effort(requested),
+                Some(app_server::ControlReply::State(snapshot)),
+            ) => {
+                app.effort = snapshot.effort;
+                clear_last_turn_telemetry_from(app, &snapshot);
+                session.adopt(*snapshot);
+                app.note(
+                    block::NoticeLevel::Ok,
+                    format!("effort set to {}", requested.label()),
+                );
+            }
+            (
+                transcript_effect::ControlKind::PermissionMode(requested),
+                Some(app_server::ControlReply::State(snapshot)),
+            ) => {
+                app.mode = snapshot.mode;
+                session.adopt(*snapshot);
+                app.note(
+                    block::NoticeLevel::Ok,
+                    format!("mode set to {}", requested.label()),
+                );
+            }
+            (
+                transcript_effect::ControlKind::Capability {
+                    capability,
+                    verdict,
+                },
+                Some(app_server::ControlReply::State(snapshot)),
+            ) => {
+                app.mode = snapshot.mode;
+                session.adopt(*snapshot);
+                let verdict = match verdict {
+                    Verdict::Auto => "allow",
+                    Verdict::Ask => "ask",
+                    Verdict::Deny => "deny",
                 };
+                app.note(
+                    block::NoticeLevel::Ok,
+                    format!("permission rule: {} → {verdict}", cap_label(capability)),
+                );
+            }
+            (
+                transcript_effect::ControlKind::Model {
+                    selection,
+                    provider_name,
+                    context_window_tokens,
+                    changed,
+                },
+                Some(app_server::ControlReply::State(snapshot)),
+            ) => {
+                app.model = snapshot.model.clone();
+                let applied = ModelSelection {
+                    provider_id: selection.provider_id.clone(),
+                    model_id: snapshot.model.clone(),
+                };
+                app.route = app.route.reselect(directory, &applied);
+                app.model_context_window = context_window_tokens;
+                if changed {
+                    clear_last_turn_telemetry_from(app, &snapshot);
+                }
+                session.adopt(*snapshot);
+                let persisted_provider = applied.provider_id.clone();
+                let persisted_model = applied.model_id.clone();
+                std::mem::drop(tokio::task::spawn_blocking(move || {
+                    crate::config::update_user_config(move |config| {
+                        crate::config::apply_setting(config, "provider", &persisted_provider)?;
+                        crate::config::apply_setting(config, "model", &persisted_model)
+                    })
+                }));
+                app.note(
+                    block::NoticeLevel::Ok,
+                    format!(
+                        "model set to {}:{} · {provider_name} backend",
+                        applied.provider_id, applied.model_id
+                    ),
+                );
+                if changed {
+                    app.note(
+                        block::NoticeLevel::Warn,
+                        "switching model re-reads the history uncached (new prefix cache)",
+                    );
+                }
+            }
+            (
+                transcript_effect::ControlKind::Adopt {
+                    fresh,
+                    events,
+                    selection,
+                    substituted,
+                    context_window_tokens,
+                    ..
+                },
+                Some(app_server::ControlReply::Adopted {
+                    adopted,
+                    snapshot,
+                    tunables_checkpoint,
+                    compaction_trigger_tokens,
+                    blocked,
+                }),
+            ) => {
+                project_recorded_transcript(app, &events);
+                session.adopt_run(
+                    adopted.rollout_path.clone(),
+                    *tunables_checkpoint,
+                    compaction_trigger_tokens,
+                    (*snapshot).clone(),
+                );
+                // The exact title is hydrated off-thread elsewhere; the run id is an immediate,
+                // truthful cache and avoids a record read on this completion path.
+                app.session_name = if fresh {
+                    "New session".into()
+                } else {
+                    adopted.run_id.clone()
+                };
+                app.mode = snapshot.mode;
+                app.effort = snapshot.effort;
+                app.model = snapshot.model.clone();
+                app.cost = snapshot.cost.clone();
+                app.turns = if fresh { 0 } else { adopted.turns };
+                app.route = app.route.reselect(
+                    directory,
+                    &ModelSelection {
+                        provider_id: selection.provider_id.clone(),
+                        model_id: snapshot.model.clone(),
+                    },
+                );
+                app.model_context_window = context_window_tokens;
+                clear_last_turn_telemetry_from(app, &snapshot);
+                app.status = if fresh {
+                    "ready".into()
+                } else {
+                    format!("idle · resumed {}", adopted.run_id)
+                };
+                if let Some(reason) = substituted {
+                    app.note(
+                        block::NoticeLevel::Warn,
+                        format!(
+                            "{reason}; this session continues on {}:{}",
+                            selection.provider_id, selection.model_id
+                        ),
+                    );
+                }
+                app.note(
+                    block::NoticeLevel::Ok,
+                    if fresh {
+                        format!(
+                            "new session {} · left {}",
+                            adopted.run_id, adopted.previous_run_id
+                        )
+                    } else {
+                        format!(
+                            "resumed {} here · {} · {} · {}:{} · left {}",
+                            adopted.run_id,
+                            block::plural(adopted.messages, "message"),
+                            block::plural(adopted.turns as usize, "turn"),
+                            selection.provider_id,
+                            snapshot.model,
+                            adopted.previous_run_id
+                        )
+                    },
+                );
+                if let Some(reason) = blocked {
+                    app.note(block::NoticeLevel::Err, reason);
+                    app.prepare_resume_handoff(&adopted.run_id);
+                    app.status = "idle · resume needs a new terminal".into();
+                }
+            }
+            (
+                transcript_effect::ControlKind::Adopt { run_id, .. },
+                Some(app_server::ControlReply::Refused(reason)),
+            ) => {
+                app.note(block::NoticeLevel::Err, reason);
+                app.prepare_resume_handoff(&run_id);
+                app.status = "idle · resume needs a new terminal".into();
+            }
+            (transcript_effect::ControlKind::Adopt { .. }, _) => {
+                app.status = "idle · session not resumed".into();
+                app.note(
+                    block::NoticeLevel::Warn,
+                    "session adoption ended without a usable runtime reply",
+                );
+            }
+            (
+                transcript_effect::ControlKind::OperatorStatus {
+                    tunables_argument: None,
+                },
+                Some(app_server::ControlReply::OperatorStatus(snapshot)),
+            ) => status_command::render(app, session, *snapshot),
+            (
+                transcript_effect::ControlKind::OperatorStatus {
+                    tunables_argument: Some(argument),
+                },
+                Some(app_server::ControlReply::OperatorStatus(snapshot)),
+            ) => open_tunables_picker_with_runtime_policy(
+                app,
+                session,
+                &argument,
+                snapshot.runtime.runtime_policy.as_ref(),
+            ),
+            (
+                transcript_effect::ControlKind::TurnBudget { set },
+                Some(app_server::ControlReply::TurnBudget(state)),
+            ) => {
+                if set.is_some() {
+                    app.note(
+                        block::NoticeLevel::Ok,
+                        format!(
+                            "turn ceiling is now {} ({} used, {} left this session)",
+                            state.max_turns,
+                            state.used,
+                            state.remaining()
+                        ),
+                    );
+                } else {
+                    app.panel(
+                        "◷",
+                        "turn budget",
+                        vec![
+                            kv("ceiling", &state.max_turns.to_string()),
+                            kv(
+                                "used",
+                                &format!("{} (this session, subagents included)", state.used),
+                            ),
+                            kv("remaining", &state.remaining().to_string()),
+                            block::PanelRow::Note(
+                                "/budget <turns> raises the ceiling without restarting".into(),
+                            ),
+                        ],
+                    );
+                }
+            }
+            (
+                transcript_effect::ControlKind::WorkflowsInventory,
+                Some(app_server::ControlReply::Workflows(reply)),
+            ) => {
+                app.workflows_panel.update_inventory(reply.runs);
+                if let Some(notice) = reply.notice {
+                    app.workflows_panel.finish_action(notice);
+                }
+                app.workflows_panel.open();
+            }
+            (transcript_effect::ControlKind::Mcp, Some(app_server::ControlReply::Mcp(reply))) => {
+                mcp_command::render_reply(app, *reply)
+            }
+            (
+                transcript_effect::ControlKind::Jobs { command },
+                Some(app_server::ControlReply::Jobs(value)),
+            ) => jobs::render_control_reply(app, &command, &value),
+            (
+                transcript_effect::ControlKind::Memory,
+                Some(app_server::ControlReply::Memory(reply)),
+            ) => command_dispatch::render_memory_reply(app, reply),
+            (kind, Some(app_server::ControlReply::Refused(reason))) => {
+                let action = kind.label();
                 let prefix = if control.cancellation_requested {
                     "cancelled"
                 } else {

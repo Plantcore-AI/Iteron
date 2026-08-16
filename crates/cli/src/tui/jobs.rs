@@ -22,127 +22,79 @@ pub(super) struct AttachedJob {
     stderr_cursor: u64,
 }
 
-pub(super) async fn handle(app: &mut App, session: &mut Session, arg: &str) {
+pub(super) fn queue(
+    app: &mut App,
+    session: &Session,
+    effects: &mut transcript_effect::Supervisor,
+    interrupt: &Arc<AtomicBool>,
+    arg: &str,
+) {
     let input = arg.trim();
-    match input.split_once(' ') {
-        None if matches!(input, "" | "list") => inventory(app, session).await,
-        None if input == "clean" => clean(app, session).await,
-        None if input == "refresh" => refresh(app, session).await,
-        None if input == "detach" => detach(app),
-        Some(("attach", job_id)) => attach(app, session, job_id.trim()).await,
-        Some(("stop", job_id)) => stop(app, session, job_id.trim()).await,
-        Some(("eof", job_id)) => write(app, session, job_id.trim(), String::new(), true).await,
+    let control = match input.split_once(' ') {
+        None if matches!(input, "" | "list") => app_server::JobControl::Inventory,
+        None if input == "clean" => app_server::JobControl::Clean,
+        None if input == "refresh" => {
+            let Some(attached) = app.attached_job.clone() else {
+                app.note(
+                    block::NoticeLevel::Warn,
+                    "no job is attached; use `/jobs attach ID`",
+                );
+                return;
+            };
+            app_server::JobControl::Attach {
+                job_id: attached.job_id,
+                stdout_cursor: attached.stdout_cursor,
+                stderr_cursor: attached.stderr_cursor,
+            }
+        }
+        None if input == "detach" => {
+            detach(app);
+            return;
+        }
+        Some(("attach", job_id)) if !job_id.trim().is_empty() => app_server::JobControl::Attach {
+            job_id: job_id.trim().to_owned(),
+            stdout_cursor: 0,
+            stderr_cursor: 0,
+        },
+        Some(("stop", job_id)) if !job_id.trim().is_empty() => app_server::JobControl::Stop {
+            job_id: job_id.trim().to_owned(),
+        },
+        Some(("eof", job_id)) if !job_id.trim().is_empty() => app_server::JobControl::Write {
+            job_id: job_id.trim().to_owned(),
+            input: String::new(),
+            eof: true,
+        },
         Some(("write", rest)) => {
             let Some((job_id, text)) = rest.trim().split_once(' ') else {
                 usage(app);
                 return;
             };
-            write(app, session, job_id, text.to_owned(), false).await;
+            app_server::JobControl::Write {
+                job_id: job_id.to_owned(),
+                input: text.to_owned(),
+                eof: false,
+            }
         }
-        _ => usage(app),
-    }
-}
-
-async fn clean(app: &mut App, session: &mut Session) {
-    match session
-        .control(app_server::Control::Job(app_server::JobControl::Clean))
-        .await
-    {
-        Some(app_server::ControlReply::Jobs(value)) => {
-            let count = value.as_array().map_or(0, Vec::len);
-            app.note(
-                block::NoticeLevel::Info,
-                format!(
-                    "cleaned {count} retained background job{}",
-                    if count == 1 { "" } else { "s" }
-                ),
-            );
-            inventory(app, session).await;
+        _ => {
+            usage(app);
+            return;
         }
-        Some(app_server::ControlReply::Refused(reason)) => {
-            app.note(block::NoticeLevel::Err, reason)
-        }
-        _ => app.note(
-            block::NoticeLevel::Err,
-            "the background-process supervisor is no longer reachable",
-        ),
-    }
-}
-
-async fn inventory(app: &mut App, session: &mut Session) {
-    match session
-        .control(app_server::Control::Job(app_server::JobControl::Inventory))
-        .await
-    {
-        Some(app_server::ControlReply::Jobs(value)) => render_inventory(app, &value),
-        Some(app_server::ControlReply::Refused(reason)) => {
-            app.note(block::NoticeLevel::Err, reason)
-        }
-        _ => app.note(
-            block::NoticeLevel::Err,
-            "the background-process supervisor is no longer reachable",
-        ),
-    }
-}
-
-async fn attach(app: &mut App, session: &mut Session, job_id: &str) {
-    if job_id.is_empty() {
-        usage(app);
-        return;
-    }
-    request_page(app, session, job_id.to_owned(), 0, 0).await;
-}
-
-async fn refresh(app: &mut App, session: &mut Session) {
-    let Some(attached) = app.attached_job.clone() else {
+    };
+    let request = transcript_effect::Request::Control {
+        sender: session.control_sender(),
+        control: app_server::Control::Job(control),
+        interrupt: interrupt.clone(),
+        kind: transcript_effect::ControlKind::Jobs {
+            command: input.to_owned(),
+        },
+    };
+    if effects.start(request).is_ok() {
+        app.status = "job control pending…".into();
+    } else {
         app.note(
             block::NoticeLevel::Warn,
-            "no job is attached; use `/jobs attach ID`",
+            "job control not queued: another local effect is pending",
         );
-        return;
-    };
-    request_page(
-        app,
-        session,
-        attached.job_id,
-        attached.stdout_cursor,
-        attached.stderr_cursor,
-    )
-    .await;
-}
-
-async fn request_page(
-    app: &mut App,
-    session: &mut Session,
-    job_id: String,
-    stdout_cursor: u64,
-    stderr_cursor: u64,
-) {
-    match session
-        .control(app_server::Control::Job(app_server::JobControl::Attach {
-            job_id: job_id.clone(),
-            stdout_cursor,
-            stderr_cursor,
-        }))
-        .await
-    {
-        Some(app_server::ControlReply::Jobs(value)) => {
-            let next_stdout = cursor(&value, "stdout", "next_cursor").unwrap_or(stdout_cursor);
-            let next_stderr = cursor(&value, "stderr", "next_cursor").unwrap_or(stderr_cursor);
-            app.attached_job = Some(AttachedJob {
-                job_id: job_id.clone(),
-                stdout_cursor: next_stdout,
-                stderr_cursor: next_stderr,
-            });
-            render_page(app, &job_id, &value);
-        }
-        Some(app_server::ControlReply::Refused(reason)) => {
-            app.note(block::NoticeLevel::Err, reason)
-        }
-        _ => app.note(
-            block::NoticeLevel::Err,
-            "the background-process supervisor is no longer reachable",
-        ),
     }
 }
 
@@ -156,19 +108,47 @@ fn detach(app: &mut App) {
     }
 }
 
-async fn stop(app: &mut App, session: &mut Session, job_id: &str) {
-    if job_id.is_empty() {
-        usage(app);
-        return;
-    }
-    match session
-        .control(app_server::Control::Job(app_server::JobControl::Stop {
-            job_id: job_id.to_owned(),
-        }))
-        .await
-    {
-        Some(app_server::ControlReply::Jobs(value)) => {
-            render_page(app, job_id, &value);
+pub(super) fn render_control_reply(app: &mut App, command: &str, value: &serde_json::Value) {
+    let input = command.trim();
+    match input.split_once(' ') {
+        None if matches!(input, "" | "list") => render_inventory(app, value),
+        None if input == "clean" => {
+            let count = value.as_array().map_or(0, Vec::len);
+            app.note(
+                block::NoticeLevel::Info,
+                format!(
+                    "cleaned {count} retained background job{}",
+                    if count == 1 { "" } else { "s" }
+                ),
+            );
+        }
+        None if input == "refresh" => {
+            let Some(attached) = app.attached_job.clone() else {
+                return;
+            };
+            let next_stdout =
+                cursor(value, "stdout", "next_cursor").unwrap_or(attached.stdout_cursor);
+            let next_stderr =
+                cursor(value, "stderr", "next_cursor").unwrap_or(attached.stderr_cursor);
+            app.attached_job = Some(AttachedJob {
+                job_id: attached.job_id.clone(),
+                stdout_cursor: next_stdout,
+                stderr_cursor: next_stderr,
+            });
+            render_page(app, &attached.job_id, value);
+        }
+        Some(("attach", job_id)) => {
+            let job_id = job_id.trim();
+            app.attached_job = Some(AttachedJob {
+                job_id: job_id.to_owned(),
+                stdout_cursor: cursor(value, "stdout", "next_cursor").unwrap_or(0),
+                stderr_cursor: cursor(value, "stderr", "next_cursor").unwrap_or(0),
+            });
+            render_page(app, job_id, value);
+        }
+        Some(("stop", job_id)) => {
+            let job_id = job_id.trim();
+            render_page(app, job_id, value);
             if app
                 .attached_job
                 .as_ref()
@@ -177,68 +157,42 @@ async fn stop(app: &mut App, session: &mut Session, job_id: &str) {
                 app.attached_job = None;
             }
         }
-        Some(app_server::ControlReply::Refused(reason)) => {
-            app.note(block::NoticeLevel::Err, reason)
+        Some(("write" | "eof", rest)) => {
+            let job_id = rest.split_whitespace().next().unwrap_or("unknown");
+            app.panel(
+                "›",
+                &format!("job input — {job_id}"),
+                vec![
+                    kv(
+                        "accepted bytes",
+                        &value
+                            .get("accepted_bytes")
+                            .and_then(serde_json::Value::as_u64)
+                            .unwrap_or(iteron_tunables::param_integer(
+                                "cli.tui.jobs.missing_counter",
+                                MISSING_COUNTER,
+                            ))
+                            .to_string(),
+                    ),
+                    kv(
+                        "stdin",
+                        if value
+                            .get("stdin_closed")
+                            .and_then(serde_json::Value::as_bool)
+                            .unwrap_or(iteron_tunables::param_bool(
+                                "cli.tui.jobs.stdin_closed_unknown",
+                                STDIN_CLOSED_UNKNOWN,
+                            ))
+                        {
+                            "closed"
+                        } else {
+                            "open"
+                        },
+                    ),
+                ],
+            );
         }
-        _ => app.note(
-            block::NoticeLevel::Err,
-            "the background-process supervisor is no longer reachable",
-        ),
-    }
-}
-
-async fn write(app: &mut App, session: &mut Session, job_id: &str, input: String, eof: bool) {
-    if job_id.is_empty() {
-        usage(app);
-        return;
-    }
-    match session
-        .control(app_server::Control::Job(app_server::JobControl::Write {
-            job_id: job_id.to_owned(),
-            input,
-            eof,
-        }))
-        .await
-    {
-        Some(app_server::ControlReply::Jobs(value)) => app.panel(
-            "›",
-            &format!("job input — {job_id}"),
-            vec![
-                kv(
-                    "accepted bytes",
-                    &value
-                        .get("accepted_bytes")
-                        .and_then(serde_json::Value::as_u64)
-                        .unwrap_or(iteron_tunables::param_integer(
-                            "cli.tui.jobs.missing_counter",
-                            MISSING_COUNTER,
-                        ))
-                        .to_string(),
-                ),
-                kv(
-                    "stdin",
-                    if value
-                        .get("stdin_closed")
-                        .and_then(serde_json::Value::as_bool)
-                        .unwrap_or(iteron_tunables::param_bool(
-                            "cli.tui.jobs.stdin_closed_unknown",
-                            STDIN_CLOSED_UNKNOWN,
-                        ))
-                    {
-                        "closed"
-                    } else {
-                        "open"
-                    },
-                ),
-            ],
-        ),
-        Some(app_server::ControlReply::Refused(reason)) => {
-            app.note(block::NoticeLevel::Err, reason)
-        }
-        _ => app.note(
-            block::NoticeLevel::Err,
-            "the background-process supervisor is no longer reachable",
-        ),
+        _ => usage(app),
     }
 }
 

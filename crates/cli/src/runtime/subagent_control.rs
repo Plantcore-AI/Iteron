@@ -61,6 +61,7 @@ impl Agent {
         // admitting must make the child refuse at its first safe point, not one poll interval in.
         self.pump_child_stop(&stop);
         child.set_interrupt(stop.clone());
+        child.set_force_cancel(self.force_cancel.clone());
         // A dispatched subagent is read-only + SingleAgent effort, so it never orchestrates:
         // `run_leaf` is behavior-identical to `run` here and keeps `run_orchestrated` OUT of every
         // child's call graph, so a caller may own/spawn the child without pulling the parent writer
@@ -147,6 +148,7 @@ impl Agent {
             .filter(|route| route.id() != current_route_id)
             .cloned()
             .collect();
+        cx.token_calibration = self.token_calibration.clone();
         cx.context_port = self.context_port.clone();
         cx.deferred_tool_eager_limit = self.deferred_tool_eager_limit;
         cx.context_budget_policy = self.context_budget_policy;
@@ -160,6 +162,7 @@ impl Agent {
         cx.lifecycle_emitter = self.lifecycle_emitter.clone();
         cx.lifecycle_telemetry = self.lifecycle_telemetry.clone();
         cx.lifecycle_hooks = self.lifecycle_hooks.clone();
+        cx.activity = self.activity.clone();
         cx.hooks = self.hooks.clone();
         cx.hook_effect_journal = self.hook_effect_journal.clone();
         cx.environment_context = self.composition_environment_context.clone();

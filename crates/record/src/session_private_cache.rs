@@ -31,7 +31,7 @@ struct CacheManifest {
     handle: PrivateContentHandle,
 }
 
-struct StagedCache {
+pub(super) struct StagedCache {
     store: PrivateContentDerivativeStore,
     seq: Seq,
     handle: PrivateContentHandle,
@@ -39,7 +39,11 @@ struct StagedCache {
 }
 
 impl StagedCache {
-    fn commit(self) -> Result<(), RecordError> {
+    pub(super) fn manifest(&self) -> &[u8] {
+        &self.manifest
+    }
+
+    pub(super) fn commit(self) -> Result<(), RecordError> {
         let desired = [(self.seq, self.handle.digest)];
         retry_content_busy(|| self.store.retain(&desired))
             .map(|_| ())
@@ -157,6 +161,13 @@ fn stage(
     })
 }
 
+pub(super) fn stage_index_line(
+    runs_dir: &Path,
+    meta: &SessionMeta,
+) -> Result<StagedCache, RecordError> {
+    stage(runs_dir, meta, ContentReferenceSurface::SessionIndex)
+}
+
 fn hydrate(
     runs_dir: &Path,
     bytes: &[u8],
@@ -201,6 +212,26 @@ pub(crate) fn read_index_line(runs_dir: &Path, bytes: &[u8]) -> Result<SessionMe
     hydrate(runs_dir, bytes, ContentReferenceSurface::SessionIndex)
 }
 
+/// Extract the bounded owner identity needed to consult the direct delta reference. This does not
+/// trust or expose cached content; a row selected as latest is still fully hydrated through the
+/// private-content gate before it can be returned.
+pub(crate) fn index_line_owner(bytes: &[u8]) -> Result<RunId, RecordError> {
+    let manifest: CacheManifest = serde_json::from_slice(bytes)?;
+    let (expected_class, expected_seq) = surface_spec(ContentReferenceSurface::SessionIndex)?;
+    if manifest.version != MANIFEST_VERSION
+        || manifest.surface != ContentReferenceSurface::SessionIndex
+        || manifest.seq != expected_seq.0
+        || manifest.handle.class != expected_class
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "invalid session index cache manifest",
+        )
+        .into());
+    }
+    Ok(manifest.owner)
+}
+
 pub(super) fn write_sidecar(
     runs_dir: &Path,
     path: &Path,
@@ -227,9 +258,20 @@ pub(super) fn write_index<'a>(
     metas: impl IntoIterator<Item = &'a SessionMeta>,
 ) -> Result<(), RecordError> {
     let mut ordered: Vec<&SessionMeta> = metas.into_iter().collect();
-    ordered.sort_by(|left, right| left.run_id.0.cmp(&right.run_id.0));
+    ordered.sort_by(|left, right| {
+        right
+            .updated_at
+            .cmp(&left.updated_at)
+            .then_with(|| {
+                right
+                    .updated_at_subsec_nanos
+                    .cmp(&left.updated_at_subsec_nanos)
+            })
+            .then_with(|| right.run_id.0.cmp(&left.run_id.0))
+    });
     let mut staged = Vec::with_capacity(ordered.len());
-    let mut bytes = Vec::new();
+    let mut bytes = Vec::from(super::SESSION_INDEX_HEADER);
+    bytes.push(b'\n');
     for meta in ordered {
         let next = stage(runs_dir, meta, ContentReferenceSurface::SessionIndex)?;
         let physical_len = next.manifest.len().checked_add(1).ok_or_else(|| {

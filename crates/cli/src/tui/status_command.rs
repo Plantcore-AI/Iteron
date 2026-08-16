@@ -6,22 +6,11 @@ use super::*;
 /// run actually carries, while leaving the row wide enough for its label and value.
 const STATUS_DIGEST_PREFIX_CHARS: usize = 12;
 
-pub(super) async fn handle(app: &mut App, session: &mut Session) {
-    let snapshot = match session.control(app_server::Control::OperatorStatus).await {
-        Some(app_server::ControlReply::OperatorStatus(snapshot)) => *snapshot,
-        Some(app_server::ControlReply::Refused(reason)) => {
-            app.note(block::NoticeLevel::Err, reason);
-            return;
-        }
-        _ => {
-            app.note(
-                block::NoticeLevel::Err,
-                "the resident runtime could not provide an authoritative status snapshot",
-            );
-            return;
-        }
-    };
-
+pub(super) fn render(
+    app: &mut App,
+    session: &Session,
+    snapshot: app_server::OperatorStatusSnapshot,
+) {
     let run = session
         .rollout_path()
         .file_stem()
@@ -40,6 +29,13 @@ pub(super) async fn handle(app: &mut App, session: &mut Session) {
             .map_or_else(|| "not observed yet".to_owned(), effort_application_detail),
     ));
     rows.extend([
+        kv(
+            "status line",
+            &canonical_statusline_with_tokens(
+                app,
+                Some(snapshot.runtime.settled_budget.tokens_used),
+            ),
+        ),
         kv("mode", &permission_mode_row_value(session)),
         kv("workspace", &status_workspace(session.workspace())),
         kv("session", &session.session_id().to_string()),

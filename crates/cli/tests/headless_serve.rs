@@ -144,6 +144,15 @@ impl PausedProvider {
         let address = listener.local_addr().unwrap();
         let (seen_tx, request_seen) = sync_channel(1);
         let (release, release_rx) = sync_channel(1);
+        // The replay-fallback fixture must exceed the ring's aggregate byte bound even though
+        // production now coalesces adjacent deltas. Single-response parity keeps its exact text;
+        // the flood uses bounded 4 KiB chunks for a ~17 MiB logical answer, below the 32 MiB
+        // provider-output ceiling and above the 16 MiB replay-byte budget.
+        let content = if chunks == 1 {
+            "parity reply".to_owned()
+        } else {
+            "x".repeat(4 * 1024)
+        };
         let thread = thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("provider accepts one request");
             stream.set_read_timeout(Some(io_timeout())).unwrap();
@@ -152,7 +161,7 @@ impl PausedProvider {
             release_rx
                 .recv_timeout(timeout())
                 .expect("test releases the provider response");
-            write_success(&mut stream, chunks);
+            write_success(&mut stream, chunks, &content);
         });
         Self {
             api_root: format!("http://{address}/v1"),
@@ -209,9 +218,8 @@ fn read_http_request(stream: &mut TcpStream) {
     }
 }
 
-fn write_success(stream: &mut TcpStream, chunks: usize) {
+fn write_success(stream: &mut TcpStream, chunks: usize, content: &str) {
     let mut body = String::new();
-    let content = if chunks == 1 { "parity reply" } else { "x" };
     for _ in 0..chunks {
         body.push_str(&format!(
             "data: {{\"id\":\"headless\",\"object\":\"chat.completion.chunk\",\"choices\":[{{\"index\":0,\"delta\":{{\"role\":\"assistant\",\"content\":\"{content}\"}},\"finish_reason\":null}}],\"usage\":null}}\n\n"

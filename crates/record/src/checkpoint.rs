@@ -4,7 +4,9 @@
 //! working tree so a `/rewind` can restore files, keyed to a record `Seq` (the snapshot ledger is
 //! recorded as `EventKind::Checkpoint`). The snapshot is a git object on a private ref
 //! `refs/core/<run>/<seq>`, taken with git PLUMBING only — `write-tree`/`commit-tree`/
-//! `update-ref`, and a private temp index so the operator's own index is never touched.
+//! `update-ref`, and a private index of Core's own so the operator's index is never touched. That
+//! index is kept between checkpoints, under the run's runtime state directory, because re-hashing
+//! an unchanged tree every turn was the dominant cost of taking a snapshot at all.
 //!
 //! It is external hook/filter-command-free by construction (ADR-007 §4): every Git invocation
 //! redirects hooks to the platform null device, and every content-transforming command runs with a
@@ -58,6 +60,13 @@ const MAX_TEMP_ATTEMPTS: u64 = 32;
 const MAX_SELECTIVE_RESTORE_PATHS: usize = 1_024;
 const SELECTIVE_RESTORE_CHUNK: usize = 64;
 const INTERNAL_EXCLUDE_PREFIX: &str = ":(top,literal,exclude)";
+/// Where per-run isolated-Git roots live inside the runtime state directory. Its own name is not a
+/// run id, and the runs directory is enumerated by `*.jsonl` file, so this cannot be mistaken for a
+/// rollout.
+const CHECKPOINT_INDEX_DIR: &str = "checkpoint-index";
+const ISOLATED_GIT_DIR: &str = "git";
+const ISOLATED_INDEX_FILE: &str = "index";
+const ISOLATED_IDENTITY_FILE: &str = "identity";
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug)]
@@ -170,6 +179,50 @@ const NULL_DEVICE: &str = "NUL";
 #[cfg(not(windows))]
 const NULL_DEVICE: &str = "/dev/null";
 
+/// macOS ships `/usr/bin/git` as an `xcrun` stub rather than Git: every invocation re-resolves the
+/// active developer directory before exec'ing the real binary behind it.
+#[cfg(target_os = "macos")]
+fn xcrun_git_stub() -> &'static str {
+    "/usr/bin/git"
+}
+/// The binary that stub forwards to when the Command Line Tools are the active developer directory.
+#[cfg(target_os = "macos")]
+fn command_line_tools_git() -> &'static str {
+    "/Library/Developer/CommandLineTools/usr/bin/git"
+}
+
+/// Skip the `xcrun` stub when the binary it fronts is right there.
+///
+/// Measured on an Apple laptop: 12.5 ms per spawn through `/usr/bin/git` against 4.93 ms for
+/// `/Library/Developer/CommandLineTools/usr/bin/git`. One checkpoint spawns ten Git processes, so
+/// the stub costs 124.6 ms of pure process startup on every turn and buys nothing — the stub's job
+/// is to find exactly the binary this names.
+///
+/// This narrows the trust boundary rather than widening it: the preferred path is a compile-time
+/// absolute constant, so no PATH entry and no repository-controlled input can steer it. If the
+/// resolved path is anything other than the stub, or the binary is missing or not executable, the
+/// PATH result stands unchanged.
+#[cfg(target_os = "macos")]
+fn prefer_direct_git(resolved: PathBuf) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    if resolved != Path::new(xcrun_git_stub()) {
+        return resolved;
+    }
+    let direct = Path::new(command_line_tools_git());
+    let usable = std::fs::metadata(direct)
+        .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0);
+    if usable {
+        direct.to_path_buf()
+    } else {
+        resolved
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn prefer_direct_git(resolved: PathBuf) -> PathBuf {
+    resolved
+}
+
 /// Resolve Git only through absolute PATH entries; a repository-local `git` reached through `.` is
 /// executable content and therefore outside the checkpoint trust boundary.
 fn resolve_git_executable(path: Option<&OsStr>) -> Option<PathBuf> {
@@ -187,7 +240,7 @@ fn resolve_git_executable(path: Option<&OsStr>) -> Option<PathBuf> {
             if std::fs::metadata(&candidate).is_ok_and(|metadata| metadata.is_file())
                 && let Ok(canonical) = candidate.canonicalize()
             {
-                return Some(canonical);
+                return Some(prefer_direct_git(canonical));
             }
         }
     }
@@ -319,10 +372,41 @@ struct IsolatedGit {
     object_dir: PathBuf,
     exclude_file: Option<PathBuf>,
     workspace: PathBuf,
+    /// A root allocated in the shared temp directory belongs to this one operation and is deleted
+    /// with it. A root under the run's own state directory outlives the operation on purpose — its
+    /// index is the thing being kept — so `Drop` must leave it alone.
+    ephemeral: bool,
 }
 
 impl IsolatedGit {
+    /// A single-shot isolated Git whose root is deleted when the operation ends. Used by rewind and
+    /// inventory, which read a named tree into a scratch index and have nothing worth keeping.
     fn create(run: &RunId, at: Seq, workspace: &Path) -> Result<Self, RecordError> {
+        Self::open(run, at, workspace, None)
+    }
+
+    /// Open the isolated Git, keeping its index across calls when `persistent_base` is given.
+    ///
+    /// `git add -A` prices a checkpoint by what it has to hash, not by what changed: against a
+    /// fresh index it re-hashes the entire non-ignored tree. Measured in this repository, 219.0 ms
+    /// cold against 20.1 ms with the previous turn's index still in place — 10.9x, paid once per
+    /// turn. The index is the whole reason this directory outlives the operation, so it is placed
+    /// under the run's own runtime state directory (keyed by run id) rather than in the shared
+    /// temp directory.
+    ///
+    /// That location is also what keeps the snapshot identical: the runtime state directory is
+    /// either outside the workspace, or excluded from staging by the pathspec `checkpoint_inner`
+    /// builds from the very same path. Either way nothing written here can enter a checkpoint tree.
+    ///
+    /// Reuse is conditional on identity. The index describes one workspace hashed one way into one
+    /// object database; if any of those three changed, it is discarded and rebuilt rather than
+    /// trusted, because a stale index would silently produce the wrong tree.
+    fn open(
+        run: &RunId,
+        at: Seq,
+        workspace: &Path,
+        persistent_base: Option<&Path>,
+    ) -> Result<Self, RecordError> {
         let object_dir = run_repo_git(workspace, &["rev-parse", "--git-path", "objects"])?;
         let object_dir = PathBuf::from(object_dir.trim());
         let object_dir = if object_dir.is_absolute() {
@@ -389,32 +473,31 @@ impl IsolatedGit {
             Err(error) => return Err(error.into()),
         };
 
-        let root = create_private_temp_dir(run, at)?;
-        let git_dir = root.join("git");
-        let template = root.join("empty-template");
-        if let Err(error) = std::fs::create_dir(&template) {
-            let _ = std::fs::remove_dir_all(&root);
+        let identity = isolated_identity(object_format, &object_dir, workspace);
+        let (root, ephemeral) = match persistent_base {
+            Some(base) => (persistent_checkpoint_root(run, base)?, false),
+            None => (create_private_temp_dir(run, at)?, true),
+        };
+        let git_dir = root.join(ISOLATED_GIT_DIR);
+        let index = root.join(ISOLATED_INDEX_FILE);
+        if !reusable_isolated_root(&root, &git_dir, &identity) {
+            if let Err(error) = build_isolated_root(&root, &git_dir, object_format, &identity) {
+                if ephemeral {
+                    let _ = std::fs::remove_dir_all(&root);
+                }
+                return Err(error);
+            }
+        } else if let Err(error) = clear_stale_index_lock(&index) {
             return Err(error.into());
         }
-        let mut init = hardened_git_command();
-        init.current_dir(&root)
-            .arg("init")
-            .arg("--bare")
-            .arg("--quiet")
-            .arg(format!("--object-format={object_format}"))
-            .arg(format!("--template={}", template.display()))
-            .arg(&git_dir);
-        if let Err(error) = finish_git(&mut init, "init isolated checkpoint repository") {
-            let _ = std::fs::remove_dir_all(&root);
-            return Err(error);
-        }
         Ok(Self {
-            index: root.join("index"),
+            index,
             root,
             git_dir,
             object_dir,
             exclude_file,
             workspace: workspace.to_path_buf(),
+            ephemeral,
         })
     }
 
@@ -478,8 +561,134 @@ impl IsolatedGit {
 
 impl Drop for IsolatedGit {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.root);
+        if self.ephemeral {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
     }
+}
+
+/// What the persistent index was built against. Reuse requires all three to still hold: the object
+/// format decides how blobs hash, the object database is where the index's blobs were written, and
+/// the workspace is what its cached stat data describes. `v1` guards the layout of this file itself,
+/// so a future change to what is kept in the root invalidates every existing root exactly once.
+fn isolated_identity(object_format: &str, object_dir: &Path, workspace: &Path) -> String {
+    let workspace = workspace
+        .canonicalize()
+        .unwrap_or_else(|_| workspace.to_path_buf());
+    format!(
+        "v1\n{object_format}\n{}\n{}\n",
+        object_dir.to_string_lossy(),
+        workspace.to_string_lossy()
+    )
+}
+
+/// The identity stamp is written last and removed first, so it vouches only for a root that was
+/// built to completion. A half-built or foreign root simply fails this check and is rebuilt.
+fn reusable_isolated_root(root: &Path, git_dir: &Path, identity: &str) -> bool {
+    git_dir.is_dir()
+        && std::fs::read_to_string(root.join(ISOLATED_IDENTITY_FILE))
+            .is_ok_and(|recorded| recorded == identity)
+}
+
+fn build_isolated_root(
+    root: &Path,
+    git_dir: &Path,
+    object_format: &str,
+    identity: &str,
+) -> Result<(), RecordError> {
+    let _ = std::fs::remove_file(root.join(ISOLATED_IDENTITY_FILE));
+    let _ = std::fs::remove_dir_all(git_dir);
+    // An index built against a different workspace, object format, or object database describes
+    // nothing here; keeping it would be the one way this optimisation could change a tree.
+    let _ = std::fs::remove_file(root.join(ISOLATED_INDEX_FILE));
+    let _ = std::fs::remove_file(index_lock(&root.join(ISOLATED_INDEX_FILE)));
+    let template = root.join("empty-template");
+    let _ = std::fs::remove_dir_all(&template);
+    std::fs::create_dir(&template)?;
+    let mut init = hardened_git_command();
+    init.current_dir(root)
+        .arg("init")
+        .arg("--bare")
+        .arg("--quiet")
+        .arg(format!("--object-format={object_format}"))
+        .arg(format!("--template={}", template.display()))
+        .arg(git_dir);
+    finish_git(&mut init, "init isolated checkpoint repository")?;
+    std::fs::write(root.join(ISOLATED_IDENTITY_FILE), identity)?;
+    Ok(())
+}
+
+fn index_lock(index: &Path) -> PathBuf {
+    let mut lock = index.as_os_str().to_os_string();
+    lock.push(".lock");
+    PathBuf::from(lock)
+}
+
+/// A persistent root introduces a failure the per-operation temp directory could not have: a Git
+/// process killed between taking `index.lock` and releasing it leaves the run unable to checkpoint
+/// ever again. Checkpoints within a run are serialised by the turn loop and every Git invocation
+/// here is deadline-bounded, so a lock older than that deadline cannot belong to a live command of
+/// ours and is cleared. A younger lock is left alone and Git reports the contention itself.
+fn clear_stale_index_lock(index: &Path) -> io::Result<()> {
+    let lock = index_lock(index);
+    let Ok(metadata) = std::fs::symlink_metadata(&lock) else {
+        return Ok(());
+    };
+    if !metadata.file_type().is_file() {
+        return Ok(());
+    }
+    let stale_after = iteron_tunables::param_duration(
+        "record.checkpoint.git_command_timeout",
+        GIT_COMMAND_TIMEOUT,
+    )
+    .saturating_mul(2);
+    let aged = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.elapsed().ok())
+        .is_some_and(|age| age >= stale_after);
+    if aged {
+        match std::fs::remove_file(&lock) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+/// The stable isolated-Git root for `run`, under Core's own runtime state directory.
+///
+/// Keyed by run id, so concurrent runs — including a workflow's subagents, which share their
+/// parent's state directory — never share an index.
+fn persistent_checkpoint_root(run: &RunId, base: &Path) -> io::Result<PathBuf> {
+    let parent = base.join(CHECKPOINT_INDEX_DIR);
+    create_private_dir(&parent)?;
+    let root = parent.join(sanitize(&run.0));
+    create_private_dir(&root)?;
+    Ok(root)
+}
+
+/// Create, or re-assert, a directory only this user can read — the same 0700 property
+/// `create_private_temp_dir` gives the ephemeral root. A pre-existing entry that is not a real
+/// directory is removed rather than followed: a symlink standing where the index root belongs would
+/// aim Core's writes somewhere it never resolved.
+fn create_private_dir(path: &Path) -> io::Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_dir() => {}
+        Ok(_) => {
+            std::fs::remove_file(path)?;
+            std::fs::create_dir_all(path)?;
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => std::fs::create_dir_all(path)?,
+        Err(error) => return Err(error),
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
 }
 
 /// Restrict a run id to characters that are safe in a git ref path / temp filename.
@@ -729,7 +938,9 @@ fn checkpoint_inner(
         .map(|path| runtime_state_relative(workspace, path))
         .transpose()?
         .flatten();
-    let isolated = IsolatedGit::create(run, at, workspace)?;
+    // The one caller that keeps its index: a checkpoint runs at every turn end, and the runtime
+    // state directory it already names is both Core-owned and guaranteed out of the snapshot.
+    let isolated = IsolatedGit::open(run, at, workspace, runtime_state_dir)?;
     isolated.stage_all(excluded_runtime_dir.as_deref())?;
     let tree = isolated.run(&["write-tree"])?;
     let tree = tree.trim();
@@ -1191,6 +1402,98 @@ mod tests {
         assert!(
             !listing.lines().any(|path| path.starts_with(".iteron/")),
             "an excluded state directory stays out of the snapshot: {listing}"
+        );
+        std::fs::remove_dir_all(&ws).ok();
+    }
+
+    /// The isolated Git root is per-run, not per-checkpoint, so its index survives to the next turn
+    /// and `git add` re-hashes only what changed. The optimisation is only allowed to change the
+    /// cost: an unchanged workspace must still produce exactly the tree the cold index produced, a
+    /// real edit must still be seen, and the index itself must stay out of the snapshot it speeds up.
+    #[test]
+    fn a_reused_checkpoint_index_keeps_the_tree_it_made_cold() {
+        if !git_available() {
+            eprintln!("skipping: git not available");
+            return;
+        }
+        let ws = tmp_repo("warm-index");
+        test_git(&ws, &["init", "-q"]);
+        std::fs::write(ws.join("kept.txt"), "kept").unwrap();
+        let runs = ws.join(".iteron").join("runs");
+        std::fs::create_dir_all(&runs).unwrap();
+        let run = RunId("warm".into());
+
+        let cold = checkpoint_excluding_runtime_state(&run, Seq(1), &ws, &runs).unwrap();
+        let root = runs.join(CHECKPOINT_INDEX_DIR).join("warm");
+        let index = root.join(ISOLATED_INDEX_FILE);
+        assert!(
+            index.is_file(),
+            "the checkpoint index must outlive the checkpoint that built it"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&root).unwrap().permissions().mode() & 0o777,
+                0o700,
+                "a persistent root keeps the private property of the temp root it replaced"
+            );
+        }
+
+        let warm = checkpoint_excluding_runtime_state(&run, Seq(2), &ws, &runs).unwrap();
+        assert_eq!(
+            cold.tree_ref, warm.tree_ref,
+            "reusing the index must not change what is snapshotted"
+        );
+
+        std::fs::write(ws.join("kept.txt"), "changed").unwrap();
+        let edited = checkpoint_excluding_runtime_state(&run, Seq(3), &ws, &runs).unwrap();
+        assert_ne!(
+            warm.tree_ref, edited.tree_ref,
+            "a warm index must still see a real edit"
+        );
+
+        let listing = test_git(&ws, &["ls-tree", "-r", "--name-only", &edited.tree_ref]);
+        assert!(listing.lines().any(|path| path == "kept.txt"));
+        assert!(
+            !listing
+                .lines()
+                .any(|path| path.starts_with(".iteron/runs/")),
+            "the persistent index never enters the snapshot it accelerates: {listing}"
+        );
+        std::fs::remove_dir_all(&ws).ok();
+    }
+
+    /// An index describes one workspace hashed one way into one object database. When the recorded
+    /// identity no longer matches, the root is rebuilt rather than reused — a stale index is the one
+    /// way keeping it could produce the wrong tree.
+    #[test]
+    fn a_checkpoint_index_with_a_foreign_identity_is_rebuilt_not_trusted() {
+        if !git_available() {
+            eprintln!("skipping: git not available");
+            return;
+        }
+        let ws = tmp_repo("identity-mismatch");
+        test_git(&ws, &["init", "-q"]);
+        std::fs::write(ws.join("kept.txt"), "kept").unwrap();
+        let runs = ws.join(".iteron").join("runs");
+        std::fs::create_dir_all(&runs).unwrap();
+        let run = RunId("identity".into());
+
+        let cold = checkpoint_excluding_runtime_state(&run, Seq(1), &ws, &runs).unwrap();
+        let root = runs.join(CHECKPOINT_INDEX_DIR).join("identity");
+        std::fs::write(
+            root.join(ISOLATED_IDENTITY_FILE),
+            "v1\nsha1\n/elsewhere/objects\n/elsewhere\n",
+        )
+        .unwrap();
+
+        let rebuilt = checkpoint_excluding_runtime_state(&run, Seq(2), &ws, &runs).unwrap();
+        assert_eq!(cold.tree_ref, rebuilt.tree_ref);
+        let recorded = std::fs::read_to_string(root.join(ISOLATED_IDENTITY_FILE)).unwrap();
+        assert!(
+            !recorded.contains("/elsewhere"),
+            "the rebuilt root records this workspace, not the foreign one: {recorded}"
         );
         std::fs::remove_dir_all(&ws).ok();
     }

@@ -338,12 +338,21 @@ pub(crate) async fn run_auth_status(provider_id: Option<String>) -> anyhow::Resu
     // different questions. Deriving `(active)` from the filter argument would mark whatever the
     // operator asked about as active, which is the opposite of what they are asking.
     let active = user_file.provider.clone();
-    for entry in directory.entries() {
-        if let Some(filter) = &provider_id
-            && filter != entry.id()
-        {
-            continue;
-        }
+    // With no argument this is a listing, so it reports what the operator can act on: every
+    // provider he declared, plus the built-ins this machine actually holds a credential for. A
+    // built-in with no credential is a known endpoint, not an account, and printing six of them
+    // buries the two lines that matter. Naming one explicitly is a question rather than a listing
+    // and always answers, even when it is filtered out of the listing — that is how an operator
+    // finds the variable to export for a provider he has not set up yet.
+    let listed: Vec<_> = match &provider_id {
+        Some(filter) => directory
+            .entries()
+            .iter()
+            .filter(|entry| entry.id() == filter)
+            .collect(),
+        None => directory.offerable_entries().collect(),
+    };
+    for entry in listed {
         let status = entry.instance.credential_status();
         println!(
             "{}{}",
@@ -354,7 +363,13 @@ pub(crate) async fn run_auth_status(provider_id: Option<String>) -> anyhow::Resu
                 ""
             }
         );
+        // Which of these lines the operator is responsible for. Without it the report is nine
+        // providers with no way to tell what he wrote from what the binary ships.
+        println!("  origin:      {}", entry.origin().label());
         println!("  api_root:    {}", entry.instance.api_root().as_str());
+        // The service actually reached. Several entries sharing one host are access methods for one
+        // account, not separate vendors, which is what three DeepSeek spellings otherwise imply.
+        println!("  service:     {}", entry.service_key());
         println!("  credential:  {} {}", status.kind.label(), status.name);
         println!(
             "  present:     {}",

@@ -6,47 +6,48 @@ use super::*;
 /// segments than a screen holds, and the totals printed above the list stay readable only if the
 /// list itself stops.
 const LEDGER_SEGMENT_ROWS: usize = 24;
-/// Workspace-review summary lines printed for uncommitted changes. A wide refactor names thousands
-/// of paths; the counts appended below the list still describe every one of them.
-const WORKSPACE_REVIEW_SUMMARY_ROWS: usize = 120;
-/// Checkpoint and turn-start events offered as rewind targets. The scan walks newest first, so the
-/// cut drops only the oldest events, which are the least likely destinations.
-const REWIND_TARGET_ROWS: usize = 30;
-/// Irrecoverable paths listed in a rewind preview. Enough evidence to judge a refused destructive
-/// apply without paging an entire deleted tree into the panel.
-const IRRECOVERABLE_PREVIEW_ROWS: usize = 20;
+fn queue_command_control(
+    app: &mut App,
+    session: &Session,
+    effects: &mut transcript_effect::Supervisor,
+    interrupt: &Arc<AtomicBool>,
+    control: app_server::Control,
+    kind: transcript_effect::ControlKind,
+) {
+    let label = kind.label();
+    let request = transcript_effect::Request::Control {
+        sender: session.control_sender(),
+        control,
+        interrupt: interrupt.clone(),
+        kind,
+    };
+    if effects.start(request).is_ok() {
+        app.status = format!("{label} pending…");
+    } else {
+        app.note(
+            block::NoticeLevel::Warn,
+            format!("{label} not queued: another local effect is pending"),
+        );
+    }
+}
 
-pub(super) async fn handle_registered_command(
+pub(super) fn handle_registered_command(
     app: &mut App,
     session: &mut Session,
     directory: &ProviderDirectory,
     transcript_effects: &mut transcript_effect::Supervisor,
+    interrupt: &Arc<AtomicBool>,
     command: SlashCommand,
     arg: &str,
 ) {
     match command {
-        SlashCommand::Help => {
-            let mut rows: Vec<block::PanelRow> = commands::COMMANDS
-                .iter()
-                .map(|c| item("/", &format!("{} {}", c.name, c.args), c.help))
-                .collect();
-            rows.push(block::PanelRow::Note("keys: drag selects · wheel/trackpad scrolls transcript · ↑↓ prompt history · Ctrl-R prompt search · Ctrl-F transcript · Ctrl-G external editor · ←→/Ctrl-A/E/U/K/W edit · @file · !shell · Shift+Tab permission mode · Ctrl-C interrupt".into()));
-            rows.push(block::PanelRow::Note(
-                "operator config: tui_keymap supports standard/vim and five conflict-checked actions; lifecycle keys remain reserved".into(),
-            ));
-            rows.push(block::PanelRow::Note(
-                "while running: Enter steer · Tab queue · Ctrl-J newline · Alt-Up edit queued · Ctrl-End follow".into(),
-            ));
-            app.panel("?", "commands", rows);
-        }
+        SlashCommand::Help => show_help(app),
         SlashCommand::Clear => clear_conversation(app),
         SlashCommand::Effort => {
             if arg.is_empty() {
                 open_picker(app, session, directory, "effort"); // interactive picker (R7.a)
             } else if let Some(e) = iteron_protocol::Effort::parse(arg) {
-                if commit_effort(app, session, e).await {
-                    app.push(fg(Color::Green), format!("effort set to {}", e.label()));
-                }
+                queue_effort(app, session, transcript_effects, interrupt, e);
             } else {
                 app.push(
                     fg(Color::Red),
@@ -75,7 +76,14 @@ pub(super) async fn handle_registered_command(
                     }
                 };
                 match directory.clear_model_unavailable_for_retry(&selection) {
-                    Ok(true) => apply_model_selection(app, session, directory, selection).await,
+                    Ok(true) => queue_model_selection(
+                        app,
+                        session,
+                        directory,
+                        transcript_effects,
+                        interrupt,
+                        selection,
+                    ),
                     Ok(false) => app.note(
                         block::NoticeLevel::Warn,
                         "that model is not blocked; normal /model selection is unchanged",
@@ -87,9 +95,14 @@ pub(super) async fn handle_registered_command(
                 }
             } else {
                 match directory.resolve_model(arg, Some(&app.route.provider_id)) {
-                    Ok(selection) => {
-                        apply_model_selection(app, session, directory, selection).await
-                    }
+                    Ok(selection) => queue_model_selection(
+                        app,
+                        session,
+                        directory,
+                        transcript_effects,
+                        interrupt,
+                        selection,
+                    ),
                     Err(error) => app.note(
                         block::NoticeLevel::Err,
                         format!("cannot select model: {error}"),
@@ -101,7 +114,16 @@ pub(super) async fn handle_registered_command(
             open_picker(app, session, directory, "theme");
         }
         SlashCommand::Status => {
-            status_command::handle(app, session).await;
+            queue_command_control(
+                app,
+                session,
+                transcript_effects,
+                interrupt,
+                app_server::Control::OperatorStatus,
+                transcript_effect::ControlKind::OperatorStatus {
+                    tunables_argument: None,
+                },
+            );
         }
         SlashCommand::Cost => {
             app.panel(
@@ -126,48 +148,14 @@ pub(super) async fn handle_registered_command(
                     }
                 }
             };
-            match session
-                .control(app_server::Control::TurnBudget { set })
-                .await
-            {
-                Some(app_server::ControlReply::TurnBudget(state)) => {
-                    if set.is_some() {
-                        app.note(
-                            block::NoticeLevel::Ok,
-                            format!(
-                                "turn ceiling is now {} ({} used, {} left this session)",
-                                state.max_turns,
-                                state.used,
-                                state.remaining()
-                            ),
-                        );
-                    } else {
-                        app.panel(
-                            "◷",
-                            "turn budget",
-                            vec![
-                                kv("ceiling", &state.max_turns.to_string()),
-                                kv(
-                                    "used",
-                                    &format!("{} (this session, subagents included)", state.used),
-                                ),
-                                kv("remaining", &state.remaining().to_string()),
-                                block::PanelRow::Note(
-                                    "/budget <turns> raises the ceiling without restarting".into(),
-                                ),
-                            ],
-                        );
-                    }
-                }
-                Some(app_server::ControlReply::Refused(reason)) => app.note(
-                    block::NoticeLevel::Err,
-                    format!("the turn ceiling was not changed: {reason}"),
-                ),
-                _ => app.note(
-                    block::NoticeLevel::Err,
-                    "the runtime is no longer reachable",
-                ),
-            }
+            queue_command_control(
+                app,
+                session,
+                transcript_effects,
+                interrupt,
+                app_server::Control::TurnBudget { set },
+                transcript_effect::ControlKind::TurnBudget { set },
+            );
         }
         SlashCommand::Context => {
             if matches!(arg.trim(), "stats" | "ledger" | "decisions") {
@@ -300,7 +288,7 @@ pub(super) async fn handle_registered_command(
                 }
                 app.panel("◇", "context decision ledger", rows);
             } else {
-                context_chips::handle(app, session, arg).await;
+                context_chips::handle(app, session, arg);
             }
         }
         SlashCommand::Telemetry => {
@@ -411,9 +399,7 @@ pub(super) async fn handle_registered_command(
             if arg.is_empty() {
                 open_picker(app, session, directory, "mode"); // interactive picker (Shift+Tab still cycles)
             } else if let Some(m) = PermissionMode::parse(arg) {
-                if commit_permission_mode(app, session, m).await {
-                    app.push(fg(Color::Green), format!("mode set to {}", m.label()));
-                }
+                queue_permission_mode(app, session, transcript_effects, interrupt, m);
             } else {
                 app.push(
                     fg(Color::Red),
@@ -449,20 +435,14 @@ pub(super) async fn handle_registered_command(
                     let cap = sub.next().and_then(parse_cap);
                     match (verdict, cap) {
                         (Some(v), Some(c)) => {
-                            let verdict_label = match v {
-                                Verdict::Auto => "allow",
-                                Verdict::Ask => "ask",
-                                Verdict::Deny => "deny",
-                            };
-                            if commit_permission_capability(app, session, c, v).await {
-                                app.note(
-                                    block::NoticeLevel::Ok,
-                                    format!(
-                                        "permission rule: {} → {verdict_label}",
-                                        cap_label(c)
-                                    ),
-                                );
-                            }
+                            queue_permission_capability(
+                                app,
+                                session,
+                                transcript_effects,
+                                interrupt,
+                                c,
+                                v,
+                            );
                         }
                         _ => app.push(fg(Color::Red), "usage: /permissions [allow|ask|deny <read_only|reversible_local|code_executing|trust_mutating|irreversible_external>]"),
                     }
@@ -471,31 +451,24 @@ pub(super) async fn handle_registered_command(
         }
         SlashCommand::AllowCode => match arg {
             "on" | "true" | "" => {
-                if commit_permission_capability(
+                queue_permission_capability(
                     app,
                     session,
+                    transcript_effects,
+                    interrupt,
                     Capability::CodeExecuting,
                     Verdict::Auto,
-                )
-                .await
-                {
-                    app.push(
-                        fg(Color::Yellow),
-                        "code execution ALLOWED (egress-off sandbox)",
-                    );
-                }
+                );
             }
             "off" | "false" => {
-                if commit_permission_capability(
+                queue_permission_capability(
                     app,
                     session,
+                    transcript_effects,
+                    interrupt,
                     Capability::CodeExecuting,
                     Verdict::Ask,
-                )
-                .await
-                {
-                    app.push(fg(Color::Yellow), "code execution now asks per call");
-                }
+                );
             }
             _ => app.push(fg(Color::Red), "usage: /allow-code on|off"),
         },
@@ -657,26 +630,14 @@ pub(super) async fn handle_registered_command(
                     if text.is_empty() {
                         app.push(fg(Color::Red), "usage: /memory add <fact>");
                     } else {
-                        match session
-                            .control(app_server::Control::Memory(app_server::MemoryControl::Add(
-                                text.clone(),
-                            )))
-                            .await
-                        {
-                            Some(app_server::ControlReply::Memory(
-                                app_server::MemoryControlReply::Added { id },
-                            )) => app.push(
-                                fg(Color::Green),
-                                format!("remembered ({id}) — available in this session"),
-                            ),
-                            Some(app_server::ControlReply::Refused(reason)) => {
-                                app.push(fg(Color::Red), reason)
-                            }
-                            _ => app.push(
-                                fg(Color::Red),
-                                "the memory authority is no longer reachable",
-                            ),
-                        }
+                        queue_command_control(
+                            app,
+                            session,
+                            transcript_effects,
+                            interrupt,
+                            app_server::Control::Memory(app_server::MemoryControl::Add(text)),
+                            transcript_effect::ControlKind::Memory,
+                        );
                     }
                 }
                 Some("update") => {
@@ -692,32 +653,17 @@ pub(super) async fn handle_registered_command(
                     if id.is_empty() || text.is_empty() {
                         app.push(fg(Color::Red), "usage: /memory update <id> <fact>");
                     } else {
-                        match session
-                            .control(app_server::Control::Memory(
-                                app_server::MemoryControl::Update {
-                                    id: id.clone(),
-                                    text,
-                                },
-                            ))
-                            .await
-                        {
-                            Some(app_server::ControlReply::Memory(
-                                app_server::MemoryControlReply::Updated { old_id, id },
-                            )) => app.push(
-                                fg(Color::Green),
-                                format!("updated {old_id} → {id} — available in this session"),
-                            ),
-                            Some(app_server::ControlReply::Memory(
-                                app_server::MemoryControlReply::Missing { id },
-                            )) => app.push(fg(Color::Red), format!("no memory {id}")),
-                            Some(app_server::ControlReply::Refused(reason)) => {
-                                app.push(fg(Color::Red), reason)
-                            }
-                            _ => app.push(
-                                fg(Color::Red),
-                                "the memory authority is no longer reachable",
-                            ),
-                        }
+                        queue_command_control(
+                            app,
+                            session,
+                            transcript_effects,
+                            interrupt,
+                            app_server::Control::Memory(app_server::MemoryControl::Update {
+                                id,
+                                text,
+                            }),
+                            transcript_effect::ControlKind::Memory,
+                        );
                     }
                 }
                 Some("list") | None => {
@@ -743,26 +689,14 @@ pub(super) async fn handle_registered_command(
                 }
                 Some("forget") | Some("rm") => {
                     let id = sub.next().unwrap_or("").to_owned();
-                    match session
-                        .control(app_server::Control::Memory(
-                            app_server::MemoryControl::Delete(id.clone()),
-                        ))
-                        .await
-                    {
-                        Some(app_server::ControlReply::Memory(
-                            app_server::MemoryControlReply::Deleted { id },
-                        )) => app.push(fg(Color::Green), format!("forgot {id}")),
-                        Some(app_server::ControlReply::Memory(
-                            app_server::MemoryControlReply::Missing { id },
-                        )) => app.push(fg(Color::Red), format!("no memory {id}")),
-                        Some(app_server::ControlReply::Refused(reason)) => {
-                            app.push(fg(Color::Red), reason)
-                        }
-                        _ => app.push(
-                            fg(Color::Red),
-                            "the memory authority is no longer reachable",
-                        ),
-                    }
+                    queue_command_control(
+                        app,
+                        session,
+                        transcript_effects,
+                        interrupt,
+                        app_server::Control::Memory(app_server::MemoryControl::Delete(id)),
+                        transcript_effect::ControlKind::Memory,
+                    );
                 }
                 Some(x) => app.push(
                     fg(Color::Red),
@@ -772,73 +706,22 @@ pub(super) async fn handle_registered_command(
         }
         SlashCommand::Diff => {
             let stat = arg.trim() == "stat";
-            match crate::workspace_review::observe(session.workspace()).await {
-                Ok(review) if review.is_empty() => {
-                    app.note(block::NoticeLevel::Info, "no uncommitted changes");
-                }
-                Ok(review) => {
-                    let mut rows = review
-                        .summary()
-                        .into_iter()
-                        .take(iteron_tunables::param_integer(
-                            "cli.tui.command_dispatch.workspace_review_summary_rows",
-                            WORKSPACE_REVIEW_SUMMARY_ROWS,
-                        ))
-                        .map(block::PanelRow::Note)
-                        .collect::<Vec<_>>();
-                    let blind = review.changes.invisible_to_bare_diff().len();
-                    rows.push(block::PanelRow::Note(format!(
-                        "{} path(s) total · {blind} invisible to bare git diff",
-                        review.changes.entries.len()
-                    )));
-                    app.panel("±", "complete change set", rows);
-                    if !stat {
-                        match review.verified_diffs() {
-                            Ok(documents) => {
-                                for document in documents {
-                                    let text = iteron_record::redact::scrub(document);
-                                    for diff in iteron_protocol::FileDiff::from_unified(&text) {
-                                        app.push_block(block::BlockKind::Diff(diff));
-                                    }
-                                }
-                            }
-                            Err(error) => app.note(block::NoticeLevel::Err, error),
-                        }
-                    }
-                }
-                Err(error) => app.push(
-                    fg(Color::Red),
-                    format!("could not read complete bounded change set: {error}"),
-                ),
-            }
+            workspace_command::queue_diff(app, session.workspace().to_path_buf(), stat);
         }
         SlashCommand::Sessions => {
-            handle_sessions_command(app, session, directory, arg).await;
+            handle_sessions_command(app, session, directory, arg);
         }
         SlashCommand::Workflows => {
-            match session
-                .control(app_server::Control::Workflow(
-                    app_server::WorkflowControl::Inventory,
-                ))
-                .await
-            {
-                Some(app_server::ControlReply::Workflows(reply)) => {
-                    app.workflows_panel.update_inventory(reply.runs);
-                    if let Some(notice) = reply.notice {
-                        app.workflows_panel.finish_action(notice);
-                    }
-                    app.workflows_panel.open();
-                }
-                Some(app_server::ControlReply::Refused(reason)) => {
-                    app.note(block::NoticeLevel::Err, reason)
-                }
-                _ => app.note(
-                    block::NoticeLevel::Err,
-                    "the workflow owner is no longer reachable",
-                ),
-            }
+            queue_command_control(
+                app,
+                session,
+                transcript_effects,
+                interrupt,
+                app_server::Control::Workflow(app_server::WorkflowControl::Inventory),
+                transcript_effect::ControlKind::WorkflowsInventory,
+            );
         }
-        SlashCommand::Jobs => jobs::handle(app, session, arg).await,
+        SlashCommand::Jobs => jobs::queue(app, session, transcript_effects, interrupt, arg),
         SlashCommand::Fork => {
             // Fork the CURRENT session at its tail into a new branch (shared past, divergent future).
             let path = session.rollout_path().to_path_buf();
@@ -862,7 +745,7 @@ pub(super) async fn handle_registered_command(
                                 block::NoticeLevel::Ok,
                                 format!("forked {child} · adopting the divergent branch"),
                             );
-                            adopt_session(app, session, directory, &child.0).await;
+                            start_adopt_session(app, session, directory, child.0);
                         }
                         Err(e) => app.push(fg(Color::Red), format!("fork failed: {e}")),
                     }
@@ -884,7 +767,7 @@ pub(super) async fn handle_registered_command(
             let mut rows: Vec<block::PanelRow> = cat
                 .defs()
                 .iter()
-                .map(|s| item("◇", &s.name, &s.description))
+                .map(|s| item("◇", &s.name, &skill_hint(&s.description)))
                 .collect();
             if rows.is_empty() {
                 rows.push(block::PanelRow::Note(
@@ -934,23 +817,16 @@ pub(super) async fn handle_registered_command(
                 open_tunables_picker(app, session, arg);
                 return;
             }
-            let runtime_policy = match session.control(app_server::Control::OperatorStatus).await {
-                Some(app_server::ControlReply::OperatorStatus(snapshot)) => {
-                    snapshot.runtime.runtime_policy.clone()
-                }
-                Some(app_server::ControlReply::Refused(reason)) => {
-                    app.note(block::NoticeLevel::Err, reason);
-                    return;
-                }
-                _ => {
-                    app.note(
-                        block::NoticeLevel::Err,
-                        "the resident runtime could not provide its current tunables overlay",
-                    );
-                    return;
-                }
-            };
-            open_tunables_picker_with_runtime_policy(app, session, arg, runtime_policy.as_ref());
+            queue_command_control(
+                app,
+                session,
+                transcript_effects,
+                interrupt,
+                app_server::Control::OperatorStatus,
+                transcript_effect::ControlKind::OperatorStatus {
+                    tunables_argument: Some(arg.to_owned()),
+                },
+            );
         }
         SlashCommand::Lab => {
             experiment_lab::handle(app, session, arg);
@@ -1007,7 +883,7 @@ pub(super) async fn handle_registered_command(
             app.panel("⚙", &format!("{} tools available", rows.len()), rows);
         }
         SlashCommand::Mcp => {
-            mcp_command::handle(app, session, arg).await;
+            mcp_command::queue(app, session, transcript_effects, interrupt, arg);
         }
         SlashCommand::Hooks => {
             let hooks = iteron_protocol::home::operator()
@@ -1086,284 +962,20 @@ pub(super) async fn handle_registered_command(
             }
         }
         SlashCommand::Rewind => {
-            let path = session.rollout_path().to_path_buf();
-            let _content_owner = match iteron_record::acquire_verified_rollout_owner(&path) {
-                Ok(owner) => owner,
-                Err(error) => {
-                    app.push(
-                        fg(Color::Red),
-                        format!("cannot acquire checkpoint content gate: {error}"),
-                    );
-                    return;
-                }
-            };
-            let runs = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
-            let stem = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("")
-                .to_string();
-            let events = match iteron_record::replay(&path) {
-                Ok(events) if !events.is_empty() => events,
-                Ok(_) => {
-                    app.push(fg(Color::Red), "nothing to rewind yet");
-                    return;
-                }
-                Err(error) => {
-                    app.push(fg(Color::Red), format!("cannot read this session: {error}"));
-                    return;
-                }
-            };
-            let tail = events.last().map(|event| event.seq.0).unwrap_or_default();
-            let request = match crate::workspace_review::parse_rewind_request(arg) {
-                Ok(Some(request)) => request,
-                Ok(None) => {
-                    let mut rows = vec![block::PanelRow::Note(format!(
-                        "preview: /rewind <seq> [all|code|conversation] [keep|delete] · add `apply` only after review (0..{tail})"
-                    ))];
-                    for event in events
-                        .iter()
-                        .rev()
-                        .filter(|event| {
-                            matches!(
-                                event.kind,
-                                iteron_protocol::EventKind::Checkpoint { .. }
-                                    | iteron_protocol::EventKind::TurnStart
-                            )
-                        })
-                        .take(iteron_tunables::param_integer(
-                            "cli.tui.command_dispatch.rewind_target_rows",
-                            REWIND_TARGET_ROWS,
-                        ))
-                    {
-                        let kind = if matches!(
-                            event.kind,
-                            iteron_protocol::EventKind::Checkpoint { .. }
-                        ) {
-                            "files + conversation"
-                        } else {
-                            "conversation"
-                        };
-                        rows.push(item(
-                            "•",
-                            &format!("seq {}", event.seq.0),
-                            &format!("turn {} · {kind}", event.turn.0),
-                        ));
-                    }
-                    app.panel("↩", "rewind points", rows);
-                    return;
-                }
-                Err(error) => {
-                    app.note(block::NoticeLevel::Err, error);
-                    return;
-                }
-            };
-            if request.at.0 > tail {
-                app.note(
-                    block::NoticeLevel::Err,
-                    format!("rewind seq {} is past this run's tail {tail}", request.at.0),
-                );
-                return;
-            }
-            let run = iteron_protocol::RunId(stem);
-            let snapshot =
-                crate::workspace_review::checkpoint_at_or_before(&events, &run, request.at);
-            let mut file_preview = None;
-            if request.scope.touches_files() {
-                let Some(snapshot) = snapshot.as_ref() else {
-                    app.note(
-                        block::NoticeLevel::Err,
-                        "no workspace checkpoint exists at or before that sequence",
-                    );
-                    return;
-                };
-                let review = match crate::workspace_review::observe(session.workspace()).await {
-                    Ok(review) => review,
-                    Err(error) => {
-                        app.note(block::NoticeLevel::Err, error);
-                        return;
-                    }
-                };
-                let preview = match crate::workspace_review::preview_restore(
-                    &review,
-                    snapshot,
-                    session.workspace(),
-                    request.scope,
-                    request.unrecorded,
-                ) {
-                    Ok(preview) => preview,
-                    Err(error) => {
-                        app.note(block::NoticeLevel::Err, error);
-                        return;
-                    }
-                };
-                let mut rows = vec![block::PanelRow::Note(preview.describe())];
-                rows.push(kv("checkpoint", &format!("seq {}", snapshot.at.0)));
-                rows.push(kv(
-                    "result",
-                    if preview.inexact { "overlay" } else { "exact" },
-                ));
-                rows.push(kv(
-                    "evidence",
-                    if preview.is_conclusive() {
-                        "complete"
-                    } else {
-                        "incomplete — destructive apply refused"
-                    },
-                ));
-                for entry in preview
-                    .irrecoverable()
-                    .iter()
-                    .take(iteron_tunables::param_integer(
-                        "cli.tui.command_dispatch.irrecoverable_preview_rows",
-                        IRRECOVERABLE_PREVIEW_ROWS,
-                    ))
-                {
-                    rows.push(item("−", &entry.path, "would be deleted"));
-                }
-                app.panel("↩", "rewind preview", rows);
-                file_preview = Some(preview);
-            } else {
-                app.panel(
-                    "↩",
-                    "rewind preview",
-                    vec![block::PanelRow::Note(format!(
-                        "conversation branches at seq {}; no file is touched",
-                        request.at.0
-                    ))],
-                );
-            }
-            if request.disposition == crate::workspace_review::RewindDisposition::Preview {
-                app.note(
-                    block::NoticeLevel::Info,
-                    format!(
-                        "preview only · repeat `/rewind {} {} {} apply` to proceed",
-                        request.at.0,
-                        match request.scope {
-                            iteron_changeset::Scope::CodeAndConversation => "all",
-                            iteron_changeset::Scope::CodeOnly => "code",
-                            iteron_changeset::Scope::ConversationOnly => "conversation",
-                        },
-                        match request.unrecorded {
-                            iteron_changeset::Unrecorded::Keep => "keep",
-                            iteron_changeset::Unrecorded::Delete => "delete",
-                        }
-                    ),
-                );
-                return;
-            }
-            if request.unrecorded == iteron_changeset::Unrecorded::Delete
-                && file_preview
-                    .as_ref()
-                    .is_some_and(|preview| !preview.is_conclusive())
-            {
-                app.note(
-                    block::NoticeLevel::Err,
-                    "destructive rewind refused because the preview was incomplete",
-                );
-                return;
-            }
-
-            // Before overwriting even one tracked path, retain an exact local safety snapshot. It
-            // is a Git object/ref, not a remote backup, and is described only as rollback material.
-            let safety = if request.scope.touches_files() {
-                let safety_run = iteron_protocol::RunId(format!("rewind-safety-{}", run.0));
-                match iteron_record::checkpoint_excluding_runtime_state(
-                    &safety_run,
-                    iteron_protocol::Seq(tail.saturating_add(1)),
-                    session.workspace(),
-                    &runs,
-                ) {
-                    Ok(snapshot) => Some(snapshot),
-                    Err(error) => {
-                        app.note(
-                            block::NoticeLevel::Err,
-                            format!("could not create pre-rewind safety checkpoint: {error}"),
-                        );
-                        return;
-                    }
-                }
-            } else {
-                None
-            };
-            if let Some(target) = snapshot.as_ref()
-                && let Err(error) = iteron_record::rewind_workspace_with_policy(
-                    target,
-                    session.workspace(),
-                    request.unrecorded == iteron_changeset::Unrecorded::Delete,
-                )
-            {
-                let rollback = safety.as_ref().map(|safety| {
-                    iteron_record::rewind_workspace_with_policy(safety, session.workspace(), true)
-                });
-                app.note(
-                    block::NoticeLevel::Err,
-                    format!("workspace rewind failed: {error}; safety rollback: {rollback:?}"),
-                );
-                return;
-            }
-
-            if request.scope.touches_conversation() {
-                match iteron_record::fork(
-                    &runs,
-                    &run,
-                    request.at,
-                    &iteron_protocol::TenantId::default(),
-                ) {
-                    Ok(child) => {
-                        app.note(
-                            block::NoticeLevel::Ok,
-                            format!("rewound to seq {} · adopting {child}", request.at.0),
-                        );
-                        adopt_session(app, session, directory, &child.0).await;
-                    }
-                    Err(error) => {
-                        if let Some(safety) = safety.as_ref() {
-                            let _ = iteron_record::rewind_workspace_with_policy(
-                                safety,
-                                session.workspace(),
-                                true,
-                            );
-                        }
-                        app.note(
-                            block::NoticeLevel::Err,
-                            format!("conversation rewind failed: {error}"),
-                        );
-                    }
-                }
-            } else {
-                app.note(
-                    block::NoticeLevel::Ok,
-                    format!(
-                        "workspace restored to checkpoint seq {} · conversation kept",
-                        snapshot
-                            .as_ref()
-                            .map(|snapshot| snapshot.at.0)
-                            .unwrap_or_default()
-                    ),
-                );
-            }
+            workspace_command::queue_rewind(
+                app,
+                session.workspace().to_path_buf(),
+                session.rollout_path().to_path_buf(),
+                arg.to_owned(),
+            );
         }
         SlashCommand::Resume => {
             if arg.is_empty() {
                 open_session_picker(app, session);
             } else {
-                let runs = session
-                    .rollout_path()
-                    .parent()
-                    .map(Path::to_path_buf)
-                    .unwrap_or_default();
-                let exists = iteron_record::list(&runs, &iteron_protocol::TenantId::default())
-                    .iter()
-                    .any(|session| session.run_id.0 == arg);
-                if exists {
-                    adopt_session(app, session, directory, arg).await;
-                } else {
-                    app.note(
-                        block::NoticeLevel::Err,
-                        format!("no recorded session with run id `{}`", ui_safe_text(arg)),
-                    );
-                }
+                // The adoption worker performs the one-run indexed lookup and reports a typed
+                // miss; never enumerate every session merely to validate one id on the TUI loop.
+                start_adopt_session(app, session, directory, arg.to_owned());
             }
         }
         SlashCommand::Quit => app.quit = true,
@@ -1376,4 +988,61 @@ pub(super) async fn handle_registered_command(
             "side conversations require the interactive terminal dispatcher",
         ),
     }
+}
+
+pub(super) fn show_help(app: &mut App) {
+    let mut rows: Vec<block::PanelRow> = commands::COMMANDS
+        .iter()
+        .map(|c| item("/", &format!("{} {}", c.name, c.args), c.help))
+        .collect();
+    rows.push(block::PanelRow::Note("keys: drag selects · wheel/trackpad scrolls transcript · ↑↓ prompt history · Ctrl-R prompt search · Ctrl-F transcript · Ctrl-G external editor · ←→/Ctrl-A/E/U/K/W edit · @file · !shell · Shift+Tab permission mode · Ctrl-C interrupt".into()));
+    rows.push(block::PanelRow::Note(
+        "operator config: tui_keymap supports standard/vim and five conflict-checked actions; lifecycle keys remain reserved".into(),
+    ));
+    rows.push(block::PanelRow::Note(
+        "while running: Enter steer · Tab queue · Ctrl-J newline · Alt-Up edit queued · Ctrl-End follow".into(),
+    ));
+    app.panel("?", "commands", rows);
+}
+
+pub(super) fn render_memory_reply(app: &mut App, reply: app_server::MemoryControlReply) {
+    match reply {
+        app_server::MemoryControlReply::Added { id } => app.push(
+            fg(Color::Green),
+            format!("remembered ({id}) — available in this session"),
+        ),
+        app_server::MemoryControlReply::Updated { old_id, id } => app.push(
+            fg(Color::Green),
+            format!("updated {old_id} → {id} — available in this session"),
+        ),
+        app_server::MemoryControlReply::Deleted { id } => {
+            app.push(fg(Color::Green), format!("forgot {id}"));
+        }
+        app_server::MemoryControlReply::Missing { id } => {
+            app.push(fg(Color::Red), format!("no memory {id}"));
+        }
+    }
+}
+
+/// One scannable line for a `/skills` row.
+///
+/// A `SKILL.md` description is prose written for the model — several sentences, and in CJK a
+/// "120 character" description is ~360 bytes. Rendered verbatim, every row wrapped to three or
+/// more lines and the panel stopped being a list. opencode truncates its list rows for the same
+/// reason; the full text is one `use_skill` away. Counts CHARACTERS, so the budget means the same
+/// thing in every script.
+fn skill_hint(description: &str) -> String {
+    // Roughly one row at a common terminal width, minus the label column.
+    let skill_hint_chars =
+        iteron_tunables::param_usize("cli.tui.command_dispatch.skill_hint_chars", 88);
+    let flat: String = description.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= skill_hint_chars {
+        return flat;
+    }
+    let mut out: String = flat
+        .chars()
+        .take(skill_hint_chars.saturating_sub(1))
+        .collect();
+    out.push('…');
+    out
 }

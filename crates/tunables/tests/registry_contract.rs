@@ -848,7 +848,7 @@ fn defaults_resolvers_and_provenance_match_production_truth() {
     assert_eq!(integer_default("max_turns"), 600);
     assert_eq!(integer_default("max_wall_secs"), 14_400);
     assert_eq!(integer_default("max_consecutive_tool_errors"), 25);
-    assert_eq!(integer_default("deferred_discovery_threshold"), 12);
+    assert_eq!(integer_default("deferred_discovery_threshold"), 4);
     assert_eq!(
         family("allow_code").default.value,
         Some(TunableValue::Boolean { value: true })
@@ -865,7 +865,7 @@ fn defaults_resolvers_and_provenance_match_production_truth() {
         object_integer("compaction_trigger", "fallback_trigger_tokens"),
         120_000
     );
-    assert_eq!(integer_default("compaction_keep_recent"), 6);
+    assert_eq!(integer_default("compaction_keep_recent"), 0);
     for (id, expected, environment) in [
         ("retry_backoff_base", 500, "ITERON_RETRY_BASE_MS"),
         ("retry_backoff_cap", 30_000, "ITERON_RETRY_CAP_MS"),
@@ -890,7 +890,7 @@ fn defaults_resolvers_and_provenance_match_production_truth() {
         assert_eq!(family.source.bindings[0].locator, environment);
     }
 
-    assert_eq!(integer_default("provider_connect_tls_timeout"), 30);
+    assert_eq!(integer_default("provider_connect_tls_timeout"), 10);
     assert_eq!(integer_default("stream_idle_watchdog"), 120_000);
     assert_eq!(
         object_integer("http_pool_keepalive_idle_policy", "pool_idle_seconds"),
@@ -905,7 +905,7 @@ fn defaults_resolvers_and_provenance_match_production_truth() {
             "provider_discovery_account_probe_cache_policy",
             "eager_budget_milliseconds"
         ),
-        1_500
+        0
     );
     assert_eq!(
         object_integer(
@@ -1492,11 +1492,11 @@ fn external_constraint_policy_ledger_is_exact_unique_and_executable() {
         observed_nonnumeric_budget_domains,
         nonnumeric_budget_domains
     );
-    assert_eq!(keys.len(), 196);
-    assert_eq!(whole_value_count, 180);
+    assert_eq!(keys.len(), 197);
+    assert_eq!(whole_value_count, 181);
     assert_eq!(whole_catalog.len(), 16);
-    assert_eq!(relation_counts, [99, 91, 6]);
-    assert_eq!(action_counts, [99, 18, 79]);
+    assert_eq!(relation_counts, [100, 91, 6]);
+    assert_eq!(action_counts, [100, 18, 79]);
     assert_eq!(
         whole_catalog,
         BTreeSet::from([
@@ -1597,7 +1597,7 @@ fn external_constraint_policy_ledger_is_exact_unique_and_executable() {
         counts,
         BTreeMap::from([
             (ExternalCeiling::BenchmarkProtocol, 6),
-            (ExternalCeiling::ContextWindow, 21),
+            (ExternalCeiling::ContextWindow, 22),
             (ExternalCeiling::OperatorAuthority, 36),
             (ExternalCeiling::ParentCost, 6),
             (ExternalCeiling::ParentTokens, 10),

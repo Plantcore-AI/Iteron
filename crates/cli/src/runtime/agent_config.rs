@@ -105,6 +105,7 @@ impl Agent {
         let compiled_policy_bundle = crate::bundle_adapter::baseline_compiled_bundle();
         let context_estimator =
             iteron_ctx::RequestEstimator::for_route(provider.provider_instance_id(), &model);
+        let token_calibration = super::context_runtime::load_token_calibration(&runtime_state_dir);
         #[cfg(test)]
         let context_budget_policy = {
             // Bare-Agent tests deliberately exercise the unbound constructor, but the coding
@@ -126,12 +127,16 @@ impl Agent {
         };
         #[cfg(not(test))]
         let context_budget_policy = iteron_ctx::ContextBudgetPolicy::default();
+        let force_cancel_seam = registry
+            .process_control()
+            .and_then(super::force_cancel::ForceCancelSeam::for_process_control);
         Agent {
             provider,
             registry,
             tool_output_spill: None,
             rollout,
             runtime_state_dir,
+            last_success_route_path: None,
             ledger: Ledger::new(),
             budget,
             model,
@@ -162,7 +167,11 @@ impl Agent {
             compacted_in_run: false,
             last_compaction_turn: None,
             context_estimator,
+            token_calibration,
+            token_estimate_baselines: std::collections::VecDeque::new(),
+            context_refresh_requested: false,
             deferred_tool_eager_limit: None,
+            advertised_tool_specs_cache: None,
             context_budget_policy,
             context_materialization_policy: iteron_ctx::ContextMaterializationPolicy::default(),
             context_source_evidence: Vec::new(),
@@ -186,6 +195,8 @@ impl Agent {
             verification_quarantine_restored: false,
             latest_workspace_checkpoint: None,
             last_workspace_checkpoint_turn: None,
+            turn_mutated_workspace: false,
+            turn_orchestration_requested: false,
             verification_rollback_point: None,
             bypass_permissions: false,
             sensitive_env_names: Vec::new(),
@@ -205,8 +216,13 @@ impl Agent {
             diagnostics: DiagnosticEmitter::default(),
             record_failed: false,
             effect_admissions: effect_admission::EffectAdmissions::default(),
+            live_unresolved_effects: 0,
+            recovery_effect_replay_required: true,
             interrupt: None,
             interrupt_requested: false,
+            force_cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            force_cancel_requested: false,
+            force_cancel_seam,
             max_tool_concurrency: iteron_tunables::param_integer(
                 "cli.runtime.default_max_tool_concurrency",
                 DEFAULT_MAX_TOOL_CONCURRENCY,
@@ -218,6 +234,8 @@ impl Agent {
             ),
             session_spawn_ledger: std::sync::Arc::new(SessionSpawnLedger::default()),
             ui_tx: None,
+            frontend_saturation: super::frontend::FrontendChannelHealth::default(),
+            activity: super::turn_activity::ActivitySink::default(),
             workflow_progress_tx: None,
             workflow_launcher: None,
             mcp_runtime: None,

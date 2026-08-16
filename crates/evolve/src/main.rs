@@ -1,6 +1,6 @@
 use iteron_evolve::{
     BaseModelId, OfflineTranscriptConfig, TranscriptProducerKind, conformance, gate,
-    run_offline_transcript_with_config, verify_offline_transcript,
+    run_offline_transcript_with_activity, verify_offline_transcript,
 };
 use std::path::PathBuf;
 
@@ -9,7 +9,8 @@ struct Cli {
     config: OfflineTranscriptConfig,
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let program = std::env::args()
         .next()
         .unwrap_or_else(|| "evolve-transcript".to_owned());
@@ -34,10 +35,33 @@ fn main() {
         }
     };
 
-    match run_offline_transcript_with_config(&cli.root, &cli.config).and_then(|result| {
-        let verified = verify_offline_transcript(&result.transcript_path)?;
-        Ok((result, verified))
-    }) {
+    let (activity, activity_rx) = iteron_evolve::activity_channel(None);
+    let activity_output = std::thread::spawn(move || {
+        while let Ok(event) = activity_rx.recv() {
+            eprintln!("activity={} state={:?}", event.id, event.state);
+        }
+    });
+    let cancellation = activity.cancellation();
+    let signal_owner = tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            cancellation.cancel();
+        }
+    });
+    let worker_activity = activity.clone();
+    let outcome = tokio::task::spawn_blocking(move || {
+        run_offline_transcript_with_activity(&cli.root, &cli.config, Some(&worker_activity))
+            .and_then(|result| {
+                let verified = verify_offline_transcript(&result.transcript_path)?;
+                Ok((result, verified))
+            })
+    })
+    .await
+    .map_err(|error| format!("offline transcript worker failed: {error}"))
+    .and_then(|result| result.map_err(|error| error.to_string()));
+    signal_owner.abort();
+    drop(activity);
+    let _ = activity_output.join();
+    match outcome {
         Ok((result, verified)) => {
             println!("transcript={}", result.transcript_path.display());
             println!(

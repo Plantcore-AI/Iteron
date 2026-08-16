@@ -7,6 +7,48 @@ interfaces may change between releases.
 
 ## [Unreleased]
 
+## [0.0.8] - 2026-08-16
+
+### Fixed
+
+- Streamed shell output is assembled on line boundaries and labelled once per run
+  of a stream, so a chunk boundary no longer splits a line, or a UTF-8 sequence,
+  across two transcript blocks.
+- A notice now breaks on its own newlines. Row wrapping measured display width
+  only, and a newline is zero cells wide, so every multi-line notice in the
+  product rendered as one run-on line.
+- Cancelling a turn no longer disables the session. A forced stop settled its
+  effect as an unknown outcome, which set a process-lifetime gate that nothing
+  cleared, and every later submission failed on it. The unknown terminal is still
+  recorded and automatic retry is still forbidden; only the gate on the
+  operator's own next turn is lifted.
+- The per-turn workspace checkpoint no longer fails on every turn in a
+  repository that ignores the runtime state directory by its directory name, and
+  reuses its index across a run instead of rebuilding it.
+- Compaction derives its trigger from the model's real context window and output
+  reservation. The absolute fallback is now only for a window no catalog proves.
+- The Anthropic wire accepts a turn that ends with complete tool calls, matching
+  the OpenAI adapter. Fail-closed is retained for every other terminal.
+- A route that never connected can fail over: the shipped rule set was missing
+  the class it classifies.
+
+### Changed
+
+- Tool output collapses to a fixed five rows — two from the head, the elision
+  line, two from the tail — instead of choosing its size from the terminal's
+  width. Reasoning collapses to one line so the layout does not jump.
+- A built-in provider with no credential is no longer offered. Every offered
+  entry says whether it is built in or came from the operator's config, and
+  entries are grouped by service.
+- Startup posture collapses to one line; the bypass notice stays separate
+  because a default that auto-approves everything has to announce itself.
+- A prompt that asks for orchestration in the operator's own words opts that
+  turn in, without touching the session's effort or thinking budget.
+- Unknown languages are no longer guessed at by the highlighter, and word-level
+  status colouring is gone: the renderer marks lexical shape, not English words.
+- Operator-visible strings name the product Iteron.
+
+
 ## [0.0.7] - 2026-08-15
 
 ### Fixed

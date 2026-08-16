@@ -271,6 +271,7 @@ impl Agent {
             ));
         }
         let interrupted = self.drain.load(std::sync::atomic::Ordering::Relaxed)
+            || self.force_cancel.load(std::sync::atomic::Ordering::Acquire)
             || self
                 .interrupt
                 .as_ref()
@@ -439,9 +440,12 @@ impl Agent {
                             .checked_add(Duration::from_secs(self.budget.max_wall_secs))
                             .unwrap_or_else(Instant::now)
                     }),
-                    self.interrupt.clone(),
-                    self.drain.clone(),
-                    None,
+                    ProviderCancellation {
+                        interrupt: self.interrupt.clone(),
+                        force_cancel: self.force_cancel.clone(),
+                        drain: self.drain.clone(),
+                        attempt: None,
+                    },
                     &governed_request,
                     &mut guarded,
                 )
@@ -477,12 +481,29 @@ impl Agent {
                 let random = jitter.next01();
                 let jitter_delay =
                     iteron_sched::full_jitter(&self.retry_policy, retry_index, random);
+                let interactive_retry_ceiling = iteron_provider::max_interactive_retry_after();
+                if let Some(hint) = error.retry_after()
+                    && hint > interactive_retry_ceiling
+                {
+                    self.lifecycle_event(
+                        "model.retry_cancelled",
+                        Some(turn),
+                        LifecyclePayload {
+                            duration_us: Some(u64::try_from(hint.as_micros()).unwrap_or(u64::MAX)),
+                            reason_code: Some("retry_after_exceeds_interactive_ceiling".into()),
+                            ..LifecyclePayload::default()
+                        },
+                    );
+                    return Err(iteron_provider::ProviderError::RetryAfterTooLong {
+                        retry_after_ms: u64::try_from(hint.as_millis()).unwrap_or(u64::MAX),
+                        limit_ms: u64::try_from(interactive_retry_ceiling.as_millis())
+                            .unwrap_or(u64::MAX),
+                    }
+                    .into());
+                }
                 let delay = error
                     .retry_after()
-                    .map(|hint| {
-                        hint.min(Duration::from_millis(self.retry_policy.cap_ms))
-                            .max(jitter_delay)
-                    })
+                    .map(|hint| hint.max(jitter_delay))
                     .unwrap_or(jitter_delay);
                 self.lifecycle_event(
                     "model.retry_scheduled",
@@ -493,6 +514,12 @@ impl Agent {
                         reason_code: Some("typed_transient_pre_stream_failure".into()),
                         ..LifecyclePayload::default()
                     },
+                );
+                self.activity.retry(
+                    turn,
+                    retry_index.saturating_add(1),
+                    self.retry_policy.max_attempts,
+                    delay,
                 );
                 let wait_started = Instant::now();
                 if let Err(cancelled) = self.wait_provider_retry(delay).await {
@@ -542,7 +569,11 @@ impl Agent {
                 return Err(KernelError::InferenceBudgetExhausted("max_usd"));
             }
             fallback_index = index.saturating_add(1);
+            let failover_activity = self
+                .activity
+                .span(super::turn_activity::ActivityStage::Failover, Some(turn));
             let next = self.activate_fallback_provider_route(turn, index, failover_class)?;
+            failover_activity.complete();
             provider = next.provider.clone();
             route_id = next.id();
             governed_request.model = next.route.model_id;
@@ -582,12 +613,17 @@ impl Agent {
 /// [`Agent::admit_provider_effect`] immediately before the caller snapshots these fields. Nothing
 /// in the callback can replace the provider or extend the deadline, so repeating those checks here
 /// would add no authority; the single-attempt assertion remains defense in depth at dispatch.
+pub(super) struct ProviderCancellation {
+    pub(super) interrupt: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    pub(super) force_cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pub(super) drain: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pub(super) attempt: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+}
+
 pub(super) async fn execute_admitted_provider_turn(
     provider: std::sync::Arc<dyn Provider>,
     deadline: Instant,
-    interrupt: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
-    drain: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    attempt_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    cancellation: ProviderCancellation,
     request: &TurnRequest,
     on_item: &mut (dyn FnMut(StreamItem) + Send),
 ) -> Result<iteron_provider::TurnResult, KernelError> {
@@ -598,11 +634,14 @@ pub(super) async fn execute_admitted_provider_turn(
     if remaining.is_zero() {
         return Err(iteron_provider::ProviderError::DeadlineExceeded.into());
     }
-    let mut cancels = vec![drain.as_ref()];
-    if let Some(interrupt) = interrupt.as_deref() {
+    let mut cancels = vec![
+        cancellation.force_cancel.as_ref(),
+        cancellation.drain.as_ref(),
+    ];
+    if let Some(interrupt) = cancellation.interrupt.as_deref() {
         cancels.push(interrupt);
     }
-    if let Some(attempt_cancel) = attempt_cancel.as_deref() {
+    if let Some(attempt_cancel) = cancellation.attempt.as_deref() {
         cancels.push(attempt_cancel);
     }
     let turn = iteron_provider::turn_cancellable_any(
@@ -665,9 +704,33 @@ pub(super) fn provider_outcome_is_unobservable(error: &iteron_provider::Provider
         error,
         iteron_provider::ProviderError::Interrupted
             | iteron_provider::ProviderError::DeadlineExceeded
+            | iteron_provider::ProviderError::Timeout { .. }
             | iteron_provider::ProviderError::Stream(_)
             | iteron_provider::ProviderError::Decode(_)
     )
+}
+
+pub(super) fn provider_failure_stage(error: &KernelError) -> &'static str {
+    match error {
+        KernelError::Provider(iteron_provider::ProviderError::Timeout { stage }) => match stage {
+            iteron_provider::ProviderTimeoutStage::DnsConnect => "timeout_dns_or_connect",
+            iteron_provider::ProviderTimeoutStage::ResponseHeaders => "timeout_headers",
+            iteron_provider::ProviderTimeoutStage::StreamIdle => "timeout_stream_idle",
+            iteron_provider::ProviderTimeoutStage::RequestTotal => "timeout_request_total",
+            iteron_provider::ProviderTimeoutStage::ErrorBody => "timeout_error_body",
+        },
+        KernelError::Provider(iteron_provider::ProviderError::DeadlineExceeded) => {
+            "timeout_run_deadline"
+        }
+        KernelError::Provider(iteron_provider::ProviderError::Interrupted) => "interrupted",
+        KernelError::Provider(iteron_provider::ProviderError::ConnectFailed) => {
+            "connect_failed_pre_acceptance"
+        }
+        KernelError::Provider(iteron_provider::ProviderError::Decode(_)) => "decode",
+        KernelError::Provider(iteron_provider::ProviderError::Stream(_)) => "stream",
+        KernelError::Provider(iteron_provider::ProviderError::Http(_)) => "transport",
+        _ => "provider_error",
+    }
 }
 
 pub(super) fn retryable_pre_stream_provider_error(
@@ -682,7 +745,9 @@ pub(super) fn retryable_pre_stream_provider_error(
     };
     let proven_terminal = matches!(
         error,
-        iteron_provider::ProviderError::Api { .. } | iteron_provider::ProviderError::ApiResponse(_)
+        iteron_provider::ProviderError::ConnectFailed
+            | iteron_provider::ProviderError::Api { .. }
+            | iteron_provider::ProviderError::ApiResponse(_)
     );
     (proven_terminal && error.retry_disposition() == iteron_provider::RetryDisposition::Transient)
         .then_some(error)

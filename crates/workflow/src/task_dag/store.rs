@@ -312,6 +312,58 @@ impl TaskDagStore {
         Ok(receipt)
     }
 
+    /// Validate and publish one small semantic command group with one durability barrier. A cloned
+    /// reducer applies each command in order before any byte is written, so failure leaves both
+    /// disk and the live projection unchanged; success appends all newline-delimited entries,
+    /// syncs once, then swaps in the staged projection.
+    pub fn submit_batch(
+        &mut self,
+        commands: Vec<(CommandId, Command)>,
+    ) -> Result<Vec<ApplyReceipt>, DagError> {
+        if commands.is_empty() || commands.len() > 16 {
+            return Err(DagError::Invalid(
+                "command batch must contain 1..=16 entries",
+            ));
+        }
+        if let Some(reason) = &self.poisoned {
+            return Err(DagError::Poisoned(reason.clone()));
+        }
+        let mut staged_dag = self.dag.clone();
+        let mut encoded = Vec::new();
+        let mut receipts = Vec::with_capacity(commands.len());
+        for (command_id, command) in commands {
+            match staged_dag.prepare(command_id, command)? {
+                Prepared::Replay(receipt) => receipts.push(receipt),
+                Prepared::New(entry) => {
+                    let entry = *entry;
+                    let line = encode_line(&StoredLine::Command {
+                        entry: entry.clone(),
+                    })?;
+                    encoded.extend_from_slice(&line);
+                    receipts.push(ApplyReceipt {
+                        sequence: entry.sequence,
+                        replayed: false,
+                    });
+                    staged_dag.commit(entry);
+                }
+            }
+        }
+        if encoded.is_empty() {
+            return Ok(receipts);
+        }
+        if self.bytes.saturating_add(encoded.len() as u64) > max_log_bytes() {
+            return Err(DagError::Capacity { kind: "log bytes" });
+        }
+        if let Err(error) = append_synced(&mut self.file, &encoded) {
+            let reason = error.to_string();
+            self.poisoned = Some(reason.clone());
+            return Err(DagError::DurabilityUnknown(reason));
+        }
+        self.bytes = self.bytes.saturating_add(encoded.len() as u64);
+        self.dag = staged_dag;
+        Ok(receipts)
+    }
+
     #[cfg(all(test, unix))]
     pub(super) fn inject_next_append_fault(&mut self, fault: TestAppendFault) {
         self.next_append_fault = Some(fault);

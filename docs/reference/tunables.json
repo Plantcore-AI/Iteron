@@ -1,12 +1,12 @@
 {
   "digest": {
     "algorithm": "sha256",
-    "value": "06081579593ce43dce6b376ed8876f2a29c4e6cc89c350d6beeb52d3f5068d24"
+    "value": "888709a96acca2151b94e0276e80597d70aa6e2317947d53aa544b26a550b467"
   },
   "payload": {
     "schema_version": 4,
     "registry_id": "iteron-tunables",
-    "registry_revision": 18,
+    "registry_revision": 19,
     "canonicalization": "iteron-tunables-json-v4",
     "family_count": 160,
     "scalar_catalogs": [
@@ -216,7 +216,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "f65f29e3c5cc1ba6f8056af2d92d6a0ad48a69e9ea2b99eef281ad27ec6cd996"
+          "value": "c199098b41c97c59c44ea9abc8ac6d1924a0fbf9ba98515d6ebf4e633750952e"
         },
         "schema_version": 3,
         "ordinal": 2,
@@ -236,7 +236,7 @@
         "requirements": {
           "provider": "selected_route",
           "capabilities": [
-            "provider_model_metadata"
+            "inference"
           ]
         },
         "strategy_slots": [
@@ -1494,7 +1494,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "ae864f96538e358b8ef04bda2aad1ce9e69c89fd7eb4b5560423f10c69fa7902"
+          "value": "8e0f9366110e66a50e6a789a82f7c8bd644e98b5d8f18b6adac4b253058dac4e"
         },
         "schema_version": 3,
         "ordinal": 13,
@@ -1512,7 +1512,6 @@
         "requirements": {
           "provider": "selected_route",
           "capabilities": [
-            "provider_model_metadata",
             "context_read"
           ]
         },
@@ -1541,8 +1540,8 @@
                 "value": {
                   "type": "decimal",
                   "value": {
-                    "coefficient": 8,
-                    "scale": 1
+                    "coefficient": 1,
+                    "scale": 0
                   }
                 }
               },
@@ -1607,8 +1606,8 @@
                       "scale": 2
                     },
                     "max": {
-                      "coefficient": 9,
-                      "scale": 1
+                      "coefficient": 1,
+                      "scale": 0
                     },
                     "max_scale": 4,
                     "unit": "ratio"
@@ -2262,7 +2261,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "161611b4d30a2a2c67eb53b91b63d5c11ed2f61e51f2fd3cf9fc185873eec18e"
+          "value": "dc02b4946edcfe4d55735dd7b2b8960a62ebf3ff7ae15ffa915429a14527a8fd"
         },
         "schema_version": 3,
         "ordinal": 19,
@@ -2280,7 +2279,7 @@
         "requirements": {
           "provider": "selected_route",
           "capabilities": [
-            "provider_model_metadata"
+            "inference"
           ]
         },
         "strategy_slots": [
@@ -2865,7 +2864,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "37babf002b59c0c6d54d701ccf8b8d46e685e5f0339d0dcdeaf2e120f91c5282"
+          "value": "5e1782825d53b8b4488696b8f8c98acbb15b248ea9f406e3bc8efd1fa540ff2d"
         },
         "schema_version": 3,
         "ordinal": 24,
@@ -2904,8 +2903,8 @@
                 "value": {
                   "type": "decimal",
                   "value": {
-                    "coefficient": 8,
-                    "scale": 1
+                    "coefficient": 1,
+                    "scale": 0
                   }
                 }
               },
@@ -2913,7 +2912,7 @@
                 "name": "keep_recent_messages",
                 "value": {
                   "type": "integer",
-                  "value": 6
+                  "value": 0
                 }
               },
               {
@@ -2955,8 +2954,8 @@
                       "scale": 2
                     },
                     "max": {
-                      "coefficient": 9,
-                      "scale": 1
+                      "coefficient": 1,
+                      "scale": 0
                     },
                     "max_scale": 4,
                     "unit": "ratio"
@@ -3034,7 +3033,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "7a3a6f0ae1cf1e721b7163aea17bebe3079d91eb3027437fcc0b3b15c026d60e"
+          "value": "592440e468752215824d4a76e2f32e8e237954da703175f2d89505193d07fcfc"
         },
         "schema_version": 3,
         "ordinal": 25,
@@ -3042,7 +3041,7 @@
         "semantic_key": "iteron.control.context.recent_turn_retention",
         "aliases": [],
         "domain": "context",
-        "summary": "Choose the verbatim recent-turn retention window.",
+        "summary": "Choose an optional explicit recent-message floor over token-based retention.",
         "activation": {
           "predicate": {
             "type": "always"
@@ -3067,7 +3066,7 @@
           "requirement": "optional",
           "value": {
             "type": "integer",
-            "value": 6
+            "value": 0
           }
         },
         "source": {
@@ -3113,7 +3112,7 @@
             "swe_bench_pro": "indirect",
             "terminal_bench_2_1": "indirect"
           },
-          "rationale": "Choose the verbatim recent-turn retention window."
+          "rationale": "Choose an optional explicit recent-message floor over token-based retention."
         },
         "implementation_status": "full",
         "optimization": {
@@ -4776,7 +4775,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "d7e515f1d46da6e7f1a556ef3e59a330ab6363005e64efd383354d0efe20df18"
+          "value": "65010238a8a18bc808881c39b81c347b152e99b699ffa804ddcb8f518a73431b"
         },
         "schema_version": 3,
         "ordinal": 39,
@@ -4815,7 +4814,7 @@
                 "name": "timeout_seconds",
                 "value": {
                   "type": "integer",
-                  "value": 3600
+                  "value": 120
                 }
               },
               {
@@ -7429,7 +7428,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "28ab5cbf5ca67a51ffa5b2fac6b2edb226567fd4d7c2406894ae24238306094a"
+          "value": "9729538d933559f2c57fe34241ed67c363d1d6968697eca56ea6a85885d74d67"
         },
         "schema_version": 3,
         "ordinal": 59,
@@ -7520,7 +7519,7 @@
           "type": "effective",
           "adapter": "execution_facts",
           "owner": "workflow_execution_policy",
-          "getter": "effective_provider",
+          "getter": "effective_execution",
           "strategy_slot": "core/scheduler",
           "evidence": "run_genesis_tunables_v2"
         }
@@ -8598,7 +8597,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "2ee53b34008411dde683acd414711a4bcfcea3c735546cf0e42a3cb1e3720ef2"
+          "value": "200f40c6b766b4be873a80a1fd3066466c002651b272873d1eb3e8b5464b629e"
         },
         "schema_version": 3,
         "ordinal": 67,
@@ -8633,7 +8632,7 @@
           "requirement": "optional",
           "value": {
             "type": "integer",
-            "value": 30
+            "value": 10
           }
         },
         "source": {
@@ -9124,7 +9123,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "442069582dab0f9c1cd70574b5e0f779dfe5fed724512c43e56f1cb3b92d75e0"
+          "value": "5c2cbf9222928f8b10fb8d6ca3c0bece0eb648e89e5ebd8867ad1cbf5d37bf26"
         },
         "schema_version": 3,
         "ordinal": 70,
@@ -9161,7 +9160,7 @@
                 "name": "eager_budget_milliseconds",
                 "value": {
                   "type": "integer",
-                  "value": 1500
+                  "value": 0
                 }
               },
               {
@@ -9212,7 +9211,7 @@
                   "type": "scalar",
                   "domain": {
                     "type": "integer",
-                    "min": 1,
+                    "min": 0,
                     "max": 60000,
                     "unit": "milliseconds"
                   }
@@ -11730,7 +11729,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "83c06ba06becea9439eb4608232f4b4197ccfd845d5e3617eced2bf22ed6e1af"
+          "value": "c593dda1a4b41f8305f74bff44404505c14876fc24835b5b78c56e2112a35169"
         },
         "schema_version": 3,
         "ordinal": 87,
@@ -11763,6 +11762,39 @@
           "value": {
             "type": "list",
             "items": [
+              {
+                "type": "object",
+                "fields": [
+                  {
+                    "name": "error_class",
+                    "value": {
+                      "type": "text",
+                      "value": "provider.connect_failed"
+                    }
+                  },
+                  {
+                    "name": "eligible",
+                    "value": {
+                      "type": "boolean",
+                      "value": true
+                    }
+                  },
+                  {
+                    "name": "dispatch_state",
+                    "value": {
+                      "type": "enum",
+                      "value": "pre_dispatch"
+                    }
+                  },
+                  {
+                    "name": "version",
+                    "value": {
+                      "type": "text",
+                      "value": "1.0.0"
+                    }
+                  }
+                ]
+              },
               {
                 "type": "object",
                 "fields": [
@@ -13050,7 +13082,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "6aaace7ba6938c217cd8c9d937c4b70a61320cdcb329fb25f1975838ef792a31"
+          "value": "72ee9cd405ddfb5e4487b3a7cf1440346cccd1c7af783ec9d3453b5ea400d899"
         },
         "schema_version": 3,
         "ordinal": 96,
@@ -13068,7 +13100,6 @@
         "requirements": {
           "provider": "selected_route",
           "capabilities": [
-            "provider_model_metadata",
             "context_read"
           ]
         },
@@ -13315,6 +13346,16 @@
               "violation": {
                 "type": "degrade_attested",
                 "policy_id": "iteron://tunables/degrade/provider-attested-preferred-v1"
+              }
+            },
+            {
+              "type": "external_ceiling",
+              "field": "model_window_tokens",
+              "ceiling": "context_window",
+              "projection": "whole_value",
+              "relation": "upper_bound",
+              "violation": {
+                "type": "clamp_numeric"
               }
             }
           ]
@@ -20109,7 +20150,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "90afe859c2c2f8f873d7bc0fce68b46e9b7e0b27873c8ed8ab0fef0a241f365d"
+          "value": "ef0e7f8b807e23e8016df26982a21e1104ba5a664a8fa2b906c20f94ab1fbcd6"
         },
         "schema_version": 3,
         "ordinal": 148,
@@ -20143,7 +20184,7 @@
           "requirement": "optional",
           "value": {
             "type": "integer",
-            "value": 12
+            "value": 4
           }
         },
         "source": {

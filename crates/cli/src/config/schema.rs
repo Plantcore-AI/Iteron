@@ -25,7 +25,7 @@ impl std::fmt::Display for FileConfigSchemaError {
             ),
             Self::FutureVersion { found, supported } => write!(
                 f,
-                "config schema_version {found} is newer than this Core binary supports (maximum {supported}); upgrade Core or use a version-{supported} config"
+                "config schema_version {found} is newer than this Iteron binary supports (maximum {supported}); upgrade Iteron or use a version-{supported} config"
             ),
             Self::InvalidDocument => write!(f, "config must be a JSON object"),
             Self::CurrentSchema(message) => write!(f, "invalid config: {message}"),
@@ -89,7 +89,7 @@ pub(super) fn parse(text: &str) -> Result<FileConfig, FileConfigSchemaError> {
     // never silent: a typo'd budget knob must still be visible to the operator who wrote it.
     for key in config.unknown.keys() {
         eprintln!(
-            "warning: ignoring unknown top-level config key `{key}` (this Core binary does not know it; check for a typo or upgrade Core)"
+            "warning: ignoring unknown top-level config key `{key}` (this Iteron binary does not know it; check for a typo or upgrade Iteron)"
         );
     }
     if source_version < FILE_CONFIG_SCHEMA_VERSION {
@@ -177,8 +177,8 @@ mod tests {
             }
         );
         let message = error.to_string();
-        assert!(message.contains("newer than this Core binary supports"));
-        assert!(message.contains("upgrade Core"));
+        assert!(message.contains("newer than this Iteron binary supports"));
+        assert!(message.contains("upgrade Iteron"));
 
         let repo = fixture_repo("future");
         let config_dir = repo.join(iteron_protocol::home::HOME_DIR);
@@ -198,7 +198,7 @@ mod tests {
                 supported: FILE_CONFIG_SCHEMA_VERSION,
             }) if *found == future_version
         ));
-        assert!(format!("{surfaced:#}").contains("upgrade Core"));
+        assert!(format!("{surfaced:#}").contains("upgrade Iteron"));
         std::fs::remove_dir_all(repo).ok();
     }
 

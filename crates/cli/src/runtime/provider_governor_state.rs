@@ -188,14 +188,62 @@ impl Agent {
         let Some(governor) = &self.provider_governor else {
             return Ok(None);
         };
+        let queue_started = Instant::now();
+        let total_permits = u64::try_from(governor.policy().max_in_flight_per_route)
+            .unwrap_or(iteron_protocol::MAX_ACTIVITY_PROGRESS_UNITS)
+            .min(iteron_protocol::MAX_ACTIVITY_PROGRESS_UNITS);
+        let mut queued_activity: Option<turn_activity::ActivitySpan> = None;
         loop {
             match governor.admit(route_id, Instant::now()) {
                 Admission::Admitted(permit) => {
+                    let snapshot = governor.snapshot(Instant::now());
+                    let in_flight = snapshot
+                        .routes
+                        .iter()
+                        .find(|route| route.route_id == route_id)
+                        .map_or(0, |route| route.in_flight);
+                    let available = governor
+                        .policy()
+                        .max_in_flight_per_route
+                        .saturating_sub(in_flight);
+                    if let Some(mut queued) = queued_activity.take() {
+                        queued
+                            .progress(u64::try_from(available).unwrap_or(u64::MAX), total_permits);
+                        queued.complete();
+                    }
+                    self.lifecycle_event(
+                        "model.route_selected",
+                        Some(turn),
+                        LifecyclePayload {
+                            count: Some(u64::try_from(available).unwrap_or(u64::MAX)),
+                            duration_us: Some(elapsed_us(queue_started)),
+                            reason_code: Some("provider_permit_admitted".into()),
+                            ..LifecyclePayload::default()
+                        },
+                    );
                     self.emit_circuit_transition(turn, permit.transition);
                     self.record_provider_governor_state(turn, route_id, permit.transition, None)?;
                     return Ok(Some(permit));
                 }
                 Admission::Deferred { wait, reason } => {
+                    if queued_activity.is_none() {
+                        let snapshot = governor.snapshot(Instant::now());
+                        let in_flight = snapshot
+                            .routes
+                            .iter()
+                            .find(|route| route.route_id == route_id)
+                            .map_or(0, |route| route.in_flight);
+                        let available = governor
+                            .policy()
+                            .max_in_flight_per_route
+                            .saturating_sub(in_flight);
+                        let mut activity = self
+                            .activity
+                            .span(turn_activity::ActivityStage::QueuedForProvider, Some(turn));
+                        activity
+                            .progress(u64::try_from(available).unwrap_or(u64::MAX), total_permits);
+                        queued_activity = Some(activity);
+                    }
                     // A deferred admission rejects this physical scheduling attempt without
                     // opening a provider effect. Keep it inside the canonical 192-event
                     // vocabulary and distinguish the retryable decision in the bounded reason.
@@ -211,7 +259,16 @@ impl Agent {
                             ..LifecyclePayload::default()
                         },
                     );
-                    self.wait_provider_retry(wait).await?;
+                    let waited = self.wait_provider_retry(wait).await;
+                    match waited {
+                        Ok(()) => {}
+                        Err(error) => {
+                            if let Some(queued) = queued_activity.take() {
+                                queued.fail(iteron_protocol::ActivityDetailCode::RoutePermit);
+                            }
+                            return Err(error);
+                        }
+                    }
                 }
                 Admission::Rejected(reason) => {
                     self.lifecycle_event(
@@ -270,7 +327,8 @@ impl Agent {
         };
         let point = if matches!(
             error,
-            iteron_provider::ProviderError::KnownModelUnavailable { .. }
+            iteron_provider::ProviderError::ConnectFailed
+                | iteron_provider::ProviderError::KnownModelUnavailable { .. }
                 | iteron_provider::ProviderError::KnownAccountUnavailable { .. }
         ) {
             iteron_provider::FailurePoint::PreDispatch
@@ -558,7 +616,8 @@ mod objective_rank_tests {
                     capability: Capability::ReadOnly,
                 })
                 .into_iter()
-                .collect(),
+                .collect::<Vec<_>>()
+                .into(),
             max_tokens: 1024,
             cache_system: false,
             thinking_budget: 0,

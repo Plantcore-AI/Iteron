@@ -116,7 +116,7 @@ impl AgentSpawner for ProviderSpawner {
             system: SUBAGENT_SYSTEM.to_string(),
             messages: vec![Message::user_text(call.prompt.clone())],
             input_images: Vec::new(),
-            tools: Vec::new(),
+            tools: Vec::new().into(),
             max_tokens: self.max_tokens,
             cache_system: false,
             thinking_budget: effort.thinking_budget(),
@@ -182,6 +182,13 @@ impl ProgressSink for StdoutProgressSink {
             },
             // Streamed per-turn activity is not surfaced by the plain renderer (design §3.5).
             ProgressEvent::AgentActivity { .. } => return,
+            ProgressEvent::AgentCancelling {
+                index,
+                cleanup_deadline_ms,
+            } => format!(
+                "[cancelling] #{index} · cleanup deadline {}",
+                fmt_duration(cleanup_deadline_ms)
+            ),
             ProgressEvent::AgentFinished {
                 index,
                 label,
@@ -455,20 +462,18 @@ impl ProgressSink for PartialWorkSink {
 /// [`WorkflowRunUiEvent`] — the interactive-TUI counterpart of [`live::CardProgressSink`], which owns its
 /// card directly because it also owns the terminal.
 ///
-/// The channel is unbounded on purpose: `emit` is called from the engine's single JS-driver thread
-/// and the contract says it must not block. Backpressure is applied downstream, by the frontend's
-/// bounded event queue, which is also where a drop policy can distinguish a cosmetic tick from an
-/// authoritative terminal row. A send to a frontend that has gone away is discarded, never an
-/// error: losing the renderer must not stop a run the operator already paid for.
+/// `emit` is called from the engine's single JS-driver thread and must not block. The channel is
+/// therefore bounded and uses `try_send`; authoritative terminal state is not carried by this
+/// cosmetic progress seam but by the supervisor's awaited settled channel.
 pub struct UiProgressSink {
     run_id: String,
-    tx: tokio::sync::mpsc::UnboundedSender<WorkflowRunUiEvent>,
+    tx: tokio::sync::mpsc::Sender<WorkflowRunUiEvent>,
 }
 
 impl UiProgressSink {
     pub fn new(
         run_id: impl Into<String>,
-        tx: tokio::sync::mpsc::UnboundedSender<WorkflowRunUiEvent>,
+        tx: tokio::sync::mpsc::Sender<WorkflowRunUiEvent>,
     ) -> Self {
         UiProgressSink {
             run_id: run_id.into(),
@@ -479,7 +484,7 @@ impl UiProgressSink {
 
 impl ProgressSink for UiProgressSink {
     fn emit(&self, event: ProgressEvent) {
-        let _ = self.tx.send(WorkflowRunUiEvent::Progress {
+        let _ = self.tx.try_send(WorkflowRunUiEvent::Progress {
             run_id: self.run_id.clone(),
             event: ui_safe_progress(event),
         });
@@ -529,7 +534,7 @@ impl ProgressSink for FanoutProgressSink {
 pub fn in_turn_progress_sink(
     degraded: Arc<DegradedAgentSink>,
     run_id: &str,
-    frontend: Option<tokio::sync::mpsc::UnboundedSender<WorkflowRunUiEvent>>,
+    frontend: Option<tokio::sync::mpsc::Sender<WorkflowRunUiEvent>>,
 ) -> Arc<dyn ProgressSink> {
     match frontend {
         Some(tx) => Arc::new(FanoutProgressSink::new(vec![
@@ -1066,7 +1071,9 @@ pub struct WorkflowSupervisor {
     /// `Arc<WorkflowSupervisor>`), so `&self` is all `launch` receives.
     me: std::sync::Weak<WorkflowSupervisor>,
     inner: std::sync::Mutex<SupervisorInner>,
-    settled: tokio::sync::mpsc::UnboundedSender<RunSettled>,
+    settled: tokio::sync::mpsc::Sender<RunSettled>,
+    activity: std::sync::Mutex<Option<tokio::sync::mpsc::Sender<iteron_protocol::ActivityEvent>>>,
+    activity_saturated: std::sync::atomic::AtomicU64,
 }
 
 impl WorkflowSupervisor {
@@ -1075,12 +1082,27 @@ impl WorkflowSupervisor {
     pub const OWNERSHIP: &'static str = "This session owns the run. Ending the session stops it at the engine's next safe point; \
          its journal is kept, so `iteron workflow resume <run-id>` continues it in a new process.";
 
-    pub fn new(settled: tokio::sync::mpsc::UnboundedSender<RunSettled>) -> Arc<Self> {
+    pub fn new(settled: tokio::sync::mpsc::Sender<RunSettled>) -> Arc<Self> {
         Arc::new_cyclic(|me| WorkflowSupervisor {
             me: me.clone(),
             inner: std::sync::Mutex::new(SupervisorInner::default()),
             settled,
+            activity: std::sync::Mutex::new(None),
+            activity_saturated: std::sync::atomic::AtomicU64::new(0),
         })
+    }
+
+    pub fn set_activity(&self, sender: tokio::sync::mpsc::Sender<iteron_protocol::ActivityEvent>) {
+        *self.activity.lock().unwrap() = Some(sender);
+    }
+
+    fn publish_activity(&self, event: iteron_protocol::ActivityEvent) {
+        debug_assert!(event.validate().is_ok());
+        let sender = self.activity.lock().unwrap().clone();
+        if sender.is_some_and(|sender| sender.try_send(event).is_err()) {
+            self.activity_saturated
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
     }
 
     /// Snapshot the newest session-owned runs in registration order. The response has an explicit
@@ -1123,6 +1145,7 @@ impl WorkflowSupervisor {
                 "workflow run `{run_id}` is not owned by this session"
             ));
         };
+        let ordinal = run.ordinal;
         match &mut run.state {
             SupervisedState::Running {
                 handle, cancelling, ..
@@ -1130,6 +1153,13 @@ impl WorkflowSupervisor {
                 run.partial.note_kill();
                 handle.cancel();
                 *cancelling = true;
+                self.publish_activity(workflow_background_activity(
+                    ordinal,
+                    "stopping",
+                    iteron_protocol::ActivityState::Cancelling,
+                    Some(1),
+                    Some(iteron_workflow::default_stop_deadline_ms()),
+                ));
                 Ok(supervised_run_info(run_id, run))
             }
             SupervisedState::Settled { .. } => {
@@ -1202,7 +1232,7 @@ impl WorkflowSupervisor {
         let reaped_name = name.clone();
         runtime.spawn(async move {
             let outcome = handle.join().await;
-            owner.settle(&reaped_id, &reaped_name, outcome);
+            owner.settle(&reaped_id, &reaped_name, outcome).await;
         });
 
         Launched::Detached(DetachedRun {
@@ -1215,8 +1245,8 @@ impl WorkflowSupervisor {
 
     /// Record a settled run: persist its terminal sidecar, keep its model-facing summary, announce
     /// it. Called from the reaper, and from [`Self::shutdown`] for a run that ignored its cancel.
-    fn settle(&self, run_id: &str, name: &str, outcome: anyhow::Result<RunReport>) {
-        let (workflows_dir, degraded, partial) = {
+    async fn settle(&self, run_id: &str, name: &str, outcome: anyhow::Result<RunReport>) {
+        let (workflows_dir, degraded, partial, ordinal) = {
             let inner = self.inner.lock().unwrap();
             match inner.runs.get(run_id) {
                 // Already settled (shutdown got there first). Settling twice would publish a second
@@ -1226,10 +1256,18 @@ impl WorkflowSupervisor {
                     run.workflows_dir.clone(),
                     run.degraded.clone(),
                     run.partial.clone(),
+                    run.ordinal,
                 ),
                 None => return,
             }
         };
+        self.publish_activity(workflow_background_activity(
+            ordinal,
+            "persisting-result",
+            iteron_protocol::ActivityState::Running,
+            None,
+            None,
+        ));
 
         // Render first, WITHOUT the lock: both summaries are pure and the report can be large.
         let (report, state, notice, status, model_summary, terminal) = match outcome {
@@ -1327,6 +1365,26 @@ impl WorkflowSupervisor {
                 false
             }
         };
+        self.publish_activity(workflow_background_activity(
+            ordinal,
+            "persisting-result",
+            if result_persisted {
+                iteron_protocol::ActivityState::Succeeded
+            } else {
+                iteron_protocol::ActivityState::Failed
+            },
+            None,
+            None,
+        ));
+        if report.stopped {
+            self.publish_activity(workflow_background_activity(
+                ordinal,
+                "stopped",
+                iteron_protocol::ActivityState::Cancelled,
+                None,
+                None,
+            ));
+        }
 
         let notification = workflow_task_notification(
             name,
@@ -1337,12 +1395,15 @@ impl WorkflowSupervisor {
             &report,
         );
 
-        let _ = self.settled.send(RunSettled {
-            run_id: run_id.to_string(),
-            terminal,
-            notice,
-            notification,
-        });
+        let _ = self
+            .settled
+            .send(RunSettled {
+                run_id: run_id.to_string(),
+                terminal,
+                notice,
+                notification,
+            })
+            .await;
     }
 
     /// Cancel every run still live, wait `grace` for them to settle through their reapers, and write
@@ -1353,7 +1414,7 @@ impl WorkflowSupervisor {
     /// recorded with its real report rather than the synthetic one below.
     pub async fn shutdown(
         &self,
-        settled: &mut tokio::sync::mpsc::UnboundedReceiver<RunSettled>,
+        settled: &mut tokio::sync::mpsc::Receiver<RunSettled>,
         grace: std::time::Duration,
     ) -> ShutdownReport {
         let live: Vec<String> = {
@@ -1381,6 +1442,13 @@ impl WorkflowSupervisor {
                 // Sample BEFORE the cancel, for the reason `note_kill` documents: afterwards the
                 // engine has already retired the in-flight rows and the count reads zero.
                 run.partial.note_kill();
+                self.publish_activity(workflow_background_activity(
+                    run.ordinal,
+                    "stopping",
+                    iteron_protocol::ActivityState::Cancelling,
+                    Some(live.len()),
+                    Some(u64::try_from(grace.as_millis()).unwrap_or(u64::MAX)),
+                ));
                 handle.cancel();
             }
         }
@@ -1419,6 +1487,13 @@ impl WorkflowSupervisor {
                     );
                     let _ = persist_result(&run.workflows_dir, &id, &unreported_run(&id, &message));
                     run.state = SupervisedState::Failed { error: message };
+                    self.publish_activity(workflow_background_activity(
+                        run.ordinal,
+                        "stopped",
+                        iteron_protocol::ActivityState::Failed,
+                        None,
+                        None,
+                    ));
                     lines.push(format!(
                         "workflow `{}` (run {id}) did not stop within {}s and was recorded as \
                          stopped at exit; resume it with `iteron workflow resume {id}`",
@@ -1434,6 +1509,52 @@ impl WorkflowSupervisor {
             }
         }
         ShutdownReport { lines }
+    }
+}
+
+fn workflow_background_activity(
+    ordinal: u64,
+    phase: &'static str,
+    state: iteron_protocol::ActivityState,
+    stopping_count: Option<usize>,
+    deadline_after_ms: Option<u64>,
+) -> iteron_protocol::ActivityEvent {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+        });
+    let persisting = phase == "persisting-result";
+    iteron_protocol::ActivityEvent {
+        schema_version: iteron_protocol::ACTIVITY_SCHEMA_VERSION,
+        id: format!("workflow-{ordinal}:{phase}"),
+        parent_id: Some(format!("workflow-{ordinal}")),
+        kind: if persisting {
+            iteron_protocol::ActivityKind::Persistence
+        } else {
+            iteron_protocol::ActivityKind::Cancellation
+        },
+        state,
+        owner: iteron_protocol::ActivityOwner::Workflow,
+        started_at_unix_ms: now,
+        updated_at_unix_ms: now,
+        attempt: 0,
+        limit: 0,
+        next_retry_at_unix_ms: None,
+        deadline_unix_ms: deadline_after_ms.map(|delay| now.saturating_add(delay)),
+        cancelability: if persisting {
+            iteron_protocol::ActivityCancelability::Cooperative
+        } else {
+            iteron_protocol::ActivityCancelability::Strong
+        },
+        detail_code: persisting
+            .then_some(iteron_protocol::ActivityDetailCode::WorkflowResultPersist),
+        progress: stopping_count.map(|count| iteron_protocol::ActivityProgress {
+            completed: 0,
+            total: u64::try_from(count.max(1))
+                .unwrap_or(iteron_protocol::MAX_ACTIVITY_PROGRESS_UNITS)
+                .min(iteron_protocol::MAX_ACTIVITY_PROGRESS_UNITS),
+        }),
     }
 }
 
@@ -1761,7 +1882,7 @@ fn recent_journal_summary(workflows_dir: &Path, run_id: &str) -> Option<(bool, u
         )
         .read_to_end(&mut bytes)
         .ok()?;
-    if bytes.len() as u64
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX)
         > iteron_tunables::param_integer(
             "cli.workflow.max_recent_journal_bytes",
             MAX_RECENT_JOURNAL_BYTES,
@@ -2475,6 +2596,7 @@ return await agent('inspect', {agentType: 'generic', model: 'parent-model'});
             ProgressEvent::AgentQueued { .. } => "agent_queued",
             ProgressEvent::AgentStarted { .. } => "agent_started",
             ProgressEvent::AgentActivity { .. } => "agent_activity",
+            ProgressEvent::AgentCancelling { .. } => "agent_cancelling",
             ProgressEvent::AgentFinished { .. } => "agent_finished",
         }
     }
@@ -2507,12 +2629,18 @@ return await agent('inspect', {agentType: 'generic', model: 'parent-model'});
                 label: format!("started \u{1b}[2J {secret}"),
                 phase: Some(format!("build \u{1b}[2Jindex {secret}")),
                 model: Some(format!("model-x \u{1b}[2J {secret}")),
+                queued_ms: 17,
+                available_permits: 2,
             },
             ProgressEvent::AgentActivity {
                 index: 1,
                 tokens: 1_200,
                 tool_calls: 3,
                 last_tool_summary: Some(format!("read \u{1b}[2J {secret}")),
+            },
+            ProgressEvent::AgentCancelling {
+                index: 1,
+                cleanup_deadline_ms: 2_000,
             },
             ProgressEvent::AgentFinished {
                 index: 1,
@@ -2551,6 +2679,7 @@ return await agent('inspect', {agentType: 'generic', model: 'parent-model'});
             ProgressEvent::AgentActivity {
                 last_tool_summary, ..
             } => last_tool_summary.clone().into_iter().collect(),
+            ProgressEvent::AgentCancelling { .. } => Vec::new(),
             ProgressEvent::AgentFinished {
                 label,
                 result_preview,
@@ -2580,7 +2709,7 @@ return await agent('inspect', {agentType: 'generic', model: 'parent-model'});
             "the coverage fixture must hold each variant exactly once"
         );
 
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
         let sink = UiProgressSink::new("wf_seam", tx);
         for event in &variants {
             sink.emit(event.clone());
@@ -2615,6 +2744,23 @@ return await agent('inspect', {agentType: 'generic', model: 'parent-model'});
                 variant_tag(&event),
                 "the gate must not change what KIND of thing happened"
             );
+            if let (
+                ProgressEvent::AgentCancelling {
+                    index: expected_index,
+                    cleanup_deadline_ms: expected_deadline,
+                },
+                ProgressEvent::AgentCancelling {
+                    index,
+                    cleanup_deadline_ms,
+                },
+            ) = (&event, &projected)
+            {
+                assert_eq!(
+                    (index, cleanup_deadline_ms),
+                    (expected_index, expected_deadline)
+                );
+                continue;
+            }
             let strings = strings_of(&projected);
             assert!(
                 !strings.is_empty(),
@@ -2641,6 +2787,8 @@ return await agent('inspect', {agentType: 'generic', model: 'parent-model'});
             label: "x".repeat(10_000),
             phase: None,
             model: None,
+            queued_ms: 0,
+            available_permits: 0,
         });
         let ProgressEvent::AgentStarted { label, .. } = projected else {
             panic!("the variant is preserved");
@@ -2764,7 +2912,7 @@ return await agent('inspect', {agentType: 'generic', model: 'parent-model'});
         // Frontend attached: the operator gets the row AND the model still gets the reason. Losing
         // either one is a silent lie to somebody.
         let attached = Arc::new(DegradedAgentSink::new());
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
         in_turn_progress_sink(attached.clone(), "wf_attached", Some(tx)).emit(starved());
         assert_eq!(
             attached.reasons(),
@@ -2880,7 +3028,7 @@ return await agent('inspect', {agentType: 'generic', model: 'parent-model'});
     const ENDLESS_SCRIPT: &str =
         "export const meta = { name: 'owned', description: '', phases: [] };\nwhile (true) {}\n";
 
-    async fn settled_line(rx: &mut tokio::sync::mpsc::UnboundedReceiver<RunSettled>) -> RunSettled {
+    async fn settled_line(rx: &mut tokio::sync::mpsc::Receiver<RunSettled>) -> RunSettled {
         tokio::time::timeout(std::time::Duration::from_secs(20), rx.recv())
             .await
             .expect("the reaper announced the run within the test timeout")
@@ -2889,7 +3037,7 @@ return await agent('inspect', {agentType: 'generic', model: 'parent-model'});
 
     #[tokio::test]
     async fn an_unrequested_run_still_belongs_to_the_turn_even_with_an_owner_installed() {
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, _rx) = tokio::sync::mpsc::channel(16);
         let owner = WorkflowSupervisor::new(tx);
         let prepared = prepared_for("owner-default", OWNED_SCRIPT, false);
         let dir = prepared.workflows_dir.clone();
@@ -2903,7 +3051,7 @@ return await agent('inspect', {agentType: 'generic', model: 'parent-model'});
 
     #[tokio::test]
     async fn a_backgrounded_run_is_detached_and_its_result_is_readable_only_by_collecting_it() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
         let owner = WorkflowSupervisor::new(tx);
         let prepared = prepared_for("owner-detach", OWNED_SCRIPT, true);
         let dir = prepared.workflows_dir.clone();
@@ -2946,7 +3094,7 @@ return await agent('inspect', {agentType: 'generic', model: 'parent-model'});
 
     #[tokio::test]
     async fn collecting_a_run_this_session_never_started_is_answered_not_guessed() {
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, _rx) = tokio::sync::mpsc::channel(16);
         let owner = WorkflowSupervisor::new(tx);
         let Collected::Unknown(message) = owner.collect("wf-never-existed") else {
             panic!("an unknown id is unknown, not a result");
@@ -2961,7 +3109,7 @@ return await agent('inspect', {agentType: 'generic', model: 'parent-model'});
 
     #[tokio::test]
     async fn a_session_that_ends_with_a_live_run_stops_it_and_records_a_terminal_state() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
         let owner = WorkflowSupervisor::new(tx);
         let prepared = prepared_for("owner-shutdown", ENDLESS_SCRIPT, true);
         let dir = prepared.workflows_dir.clone();
@@ -2991,7 +3139,7 @@ return await agent('inspect', {agentType: 'generic', model: 'parent-model'});
 
     #[tokio::test]
     async fn a_session_with_no_live_run_reports_nothing_at_exit() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
         let owner = WorkflowSupervisor::new(tx);
         assert!(
             owner
@@ -3003,7 +3151,7 @@ return await agent('inspect', {agentType: 'generic', model: 'parent-model'});
 
     #[tokio::test]
     async fn cancelling_a_detached_run_stops_it_and_the_owner_still_records_it() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
         let owner = WorkflowSupervisor::new(tx);
         let prepared = prepared_for("owner-cancel", ENDLESS_SCRIPT, true);
         let dir = prepared.workflows_dir.clone();
@@ -3048,14 +3196,14 @@ return await agent('inspect', {agentType: 'generic', model: 'parent-model'});
     /// the only way out. Every call announces itself, which is what lets a test act at a known point
     /// in the run instead of racing it.
     struct ScriptedSpawner {
-        started: tokio::sync::mpsc::UnboundedSender<String>,
+        started: tokio::sync::mpsc::Sender<String>,
         calls: AtomicUsize,
         fail_on: Option<&'static str>,
         block_on: Option<&'static str>,
     }
 
     impl ScriptedSpawner {
-        fn new(started: tokio::sync::mpsc::UnboundedSender<String>) -> Self {
+        fn new(started: tokio::sync::mpsc::Sender<String>) -> Self {
             ScriptedSpawner {
                 started,
                 calls: AtomicUsize::new(0),
@@ -3079,7 +3227,7 @@ return await agent('inspect', {agentType: 'generic', model: 'parent-model'});
     impl AgentSpawner for ScriptedSpawner {
         async fn spawn(&self, call: AgentCall) -> AgentOutcome {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            let _ = self.started.send(call.prompt.clone());
+            let _ = self.started.try_send(call.prompt.clone());
             if self.fail_on == Some(call.prompt.as_str()) {
                 return AgentOutcome::null("provider exploded");
             }
@@ -3093,7 +3241,7 @@ return await agent('inspect', {agentType: 'generic', model: 'parent-model'});
         }
     }
 
-    async fn next_started(rx: &mut tokio::sync::mpsc::UnboundedReceiver<String>) -> String {
+    async fn next_started(rx: &mut tokio::sync::mpsc::Receiver<String>) -> String {
         tokio::time::timeout(std::time::Duration::from_secs(20), rx.recv())
             .await
             .expect("the spawner reported a call within the test timeout")
@@ -3113,8 +3261,8 @@ return await agent('inspect', {agentType: 'generic', model: 'parent-model'});
 
     #[tokio::test]
     async fn killing_a_detached_run_returns_the_agents_that_had_already_finished() {
-        let (settled_tx, mut settled_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (started_tx, mut started_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (settled_tx, mut settled_rx) = tokio::sync::mpsc::channel(16);
+        let (started_tx, mut started_rx) = tokio::sync::mpsc::channel(16);
         let owner = WorkflowSupervisor::new(settled_tx);
         let prepared = prepared_with(
             "owner-kill-partial",
@@ -3158,8 +3306,8 @@ return await agent('inspect', {agentType: 'generic', model: 'parent-model'});
 
     #[tokio::test]
     async fn one_agent_failing_does_not_kill_the_run_or_its_siblings() {
-        let (settled_tx, mut settled_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (started_tx, _started_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (settled_tx, mut settled_rx) = tokio::sync::mpsc::channel(16);
+        let (started_tx, _started_rx) = tokio::sync::mpsc::channel(16);
         let owner = WorkflowSupervisor::new(settled_tx);
         let spawner = Arc::new(ScriptedSpawner::new(started_tx).failing_on("boom"));
         let prepared = prepared_with("owner-one-failure", FAN_SCRIPT, true, spawner.clone());
@@ -3211,6 +3359,8 @@ return await agent('inspect', {agentType: 'generic', model: 'parent-model'});
             label: format!("agent-{index}"),
             phase: None,
             model: None,
+            queued_ms: 0,
+            available_permits: 0,
         };
         let finished = |index: usize, state, preview: Option<&str>| ProgressEvent::AgentFinished {
             index,
@@ -3343,7 +3493,7 @@ return await agent('inspect', {agentType: 'generic', model: 'parent-model'});
 
     #[tokio::test]
     async fn cancelling_a_run_whose_summary_was_evicted_still_admits_the_run_existed() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
         let owner = WorkflowSupervisor::new(tx);
         let prepared = prepared_for("owner-evicted-cancel", OWNED_SCRIPT, true);
         let dir = prepared.workflows_dir.clone();

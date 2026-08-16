@@ -4,11 +4,13 @@
 //! and a MIS-lex is worse than monochrome. So this is NOT seven bespoke lexers: it is ONE generic
 //! token scanner driven by a small per-language config (`LangSpec`: comment/string syntax + keyword
 //! set). It colors the lexically-universal classes (strings, comments, numbers, keywords, and a
-//! Capitalized→Type / ident-before-`(`→Func heuristic); an unknown language falls back to
-//! strings/comments/numbers only — no keyword guessing, so it never mis-highlights. State that must
-//! cross lines (block-comment depth for nesting langs, Python triple-quote) lives in `LexState` with
-//! error recovery: an unterminated single/double string just ends at the line and resets, never
-//! propagating a wrong multi-line state.
+//! Capitalized→Type / ident-before-`(`→Func heuristic); an unknown language gets NO grammar at all
+//! and is emitted as ONE plain text run, which is the only thing that makes the "never
+//! mis-highlights" claim true. It used to fall back to guessed `#`/`//`/`/* */`/`'`/`"` syntax, so
+//! one apostrophe in an unlabelled log greened the rest of the line — a mis-lex, i.e. exactly what
+//! this design exists to avoid. State that must cross lines (block-comment depth for nesting langs,
+//! Python triple-quote) lives in `LexState` with error recovery: an unterminated single/double
+//! string just ends at the line and resets, never propagating a wrong multi-line state.
 
 use crate::theme::{SynClass, Theme};
 use ratatui::text::Span;
@@ -44,11 +46,18 @@ struct LangSpec {
     types_capitalized: bool,
 }
 
+/// The unknown-language spec: EMPTY, on purpose. Nothing is declared, so nothing is lexed and the
+/// line renders as a single `SynClass::Text` run (see `is_inert`). The previous value guessed
+/// `#`/`//` line comments, `/* */` blocks and `'`/`"` strings for content whose language we do not
+/// know — one apostrophe in an unlabelled log then greened the rest of the line, which is precisely
+/// the mis-lex the module header promises never happens. An operator who genuinely wants heuristic
+/// highlighting for some known-but-unlisted language can still install one through the
+/// `cli.highlight.generic` tunable; the DEFAULT never guesses.
 const GENERIC: LangSpec = LangSpec {
-    line_comments: &["#", "//"],
-    block: Some(("/*", "*/")),
+    line_comments: &[],
+    block: None,
     nest_block: false,
-    strings: &['"', '\''],
+    strings: &[],
     triple: false,
     keywords: &[],
     types_capitalized: false,
@@ -545,6 +554,20 @@ fn spec_for(lang: Option<&str>) -> LangSpec {
     }
 }
 
+/// A spec that declares no comments, no strings, no keywords and no capitalization heuristic has
+/// nothing to lex: emitting the whole line as one `SynClass::Text` run is then the only rendering
+/// that cannot be wrong. This is what turns the module header's "never mis-highlights" claim into
+/// code for the unknown-language path (and for near-plain languages such as markdown, whose `#` is
+/// a heading and whose bare digits are not literals).
+fn is_inert(spec: &LangSpec) -> bool {
+    spec.line_comments.is_empty()
+        && spec.block.is_none()
+        && spec.strings.is_empty()
+        && spec.keywords.is_empty()
+        && !spec.triple
+        && !spec.types_capitalized
+}
+
 /// Highlight one line into styled spans, advancing `st` for multi-line constructs.
 pub fn code_spans(
     lang: Option<&str>,
@@ -552,7 +575,27 @@ pub fn code_spans(
     st: &mut LexState,
     theme: &Theme,
 ) -> Vec<Span<'static>> {
+    // Rendering-cost bound, not a correctness rule: a minified/base64/one-line-JSON line would
+    // otherwise cost a `Vec<char>` plus one span per token. Runtime-settable because the right
+    // ceiling depends on the operator's terminal and content, not on this grammar.
+    let max_highlight_line_bytes =
+        iteron_tunables::param_usize("cli.highlight.max_highlight_line_bytes", 4096);
+
+    let plain = |line: &str| {
+        vec![Span::styled(
+            line.to_owned(),
+            theme.syn_style(SynClass::Text),
+        )]
+    };
+    if line.len() > max_highlight_line_bytes {
+        return plain(line);
+    }
+
     let spec = spec_for(lang);
+    // Unknown / near-plain language: nothing declared, so nothing is guessed.
+    if is_inert(&spec) {
+        return plain(line);
+    }
     let chars: Vec<char> = line.chars().collect();
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut i = 0;
@@ -886,6 +929,46 @@ mod tests {
         let mut st = LexState::new();
         let out = classes("cobol", "MOVE X TO Y. * comment", &mut st).join("");
         assert_eq!(out, "MOVE X TO Y. * comment");
+    }
+
+    #[test]
+    fn unknown_language_emits_one_plain_run_and_never_guesses_syntax() {
+        // The regression: GENERIC declared `'`/`"` strings and `#`/`//` comments, so ONE apostrophe
+        // in an unlabelled log greened the rest of the line and a `#` greyed it.
+        let theme = Theme::dark();
+        for (lang, line) in [
+            (None, "it's 12:04 and the # of retries is 3 // done"),
+            (Some("cobol"), "don't guess * this"),
+            (Some(""), "a 'quote that never closes"),
+        ] {
+            let mut st = LexState::new();
+            let spans = code_spans(lang, line, &mut st, &theme);
+            assert_eq!(spans.len(), 1, "one run for {lang:?}");
+            assert_eq!(spans[0].content, line, "lossless");
+            assert_eq!(
+                spans[0].style.fg,
+                theme.syn_style(SynClass::Text).fg,
+                "plain text, not string/comment/number"
+            );
+            assert_eq!(st.triple, None);
+            assert_eq!(st.block_depth, 0);
+        }
+    }
+
+    #[test]
+    fn very_long_line_is_not_scanned() {
+        // Cost bound, not correctness: past MAX_HIGHLIGHT_LINE_BYTES the line is emitted verbatim.
+        let theme = Theme::dark();
+        let long = format!("let x = \"{}\";", "a".repeat(8192));
+        let mut st = LexState::new();
+        let spans = code_spans(Some("rust"), &long, &mut st, &theme);
+        assert_eq!(spans.len(), 1, "one unscanned run");
+        assert_eq!(spans[0].content, long, "lossless");
+        // and a line just under the bound is still highlighted
+        let short = format!("let x = \"{}\";", "a".repeat(64));
+        let mut st = LexState::new();
+        let spans = code_spans(Some("rust"), &short, &mut st, &theme);
+        assert!(spans.len() > 1, "normal lines still lex");
     }
 
     #[test]

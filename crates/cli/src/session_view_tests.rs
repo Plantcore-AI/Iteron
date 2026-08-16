@@ -117,17 +117,17 @@ fn a_missing_run_is_an_error_not_an_empty_transcript() {
 fn listing_degrades_to_replay_and_reports_truncation() {
     let runs = runs_dir("list");
     for index in 0..3 {
-        write_run(&runs.0, &RunId(format!("run-{index}")), &["hi"]);
+        write_tagged_run(&runs.0, &RunId(format!("run-{index}")), None, &["hi"]);
     }
     // No `sessions.index` is written by this path, so the listing is already the degraded one.
-    let all = list_sessions(&runs.0, &TenantId::default(), None, MAX_SESSIONS_PER_PAGE);
+    let all = list_sessions(&runs.0, &TenantId::default(), None, MAX_SESSIONS_PER_PAGE).unwrap();
     assert_eq!(all.schema_version, SESSION_VIEW_SCHEMA_VERSION);
     assert_eq!(all.total, 3, "the replay path still answers");
     assert!(!all.truncated);
     assert_eq!(all.sessions.len(), 3);
 
-    let paged = list_sessions(&runs.0, &TenantId::default(), None, 2);
-    assert_eq!(paged.total, 3);
+    let paged = list_sessions(&runs.0, &TenantId::default(), None, 2).unwrap();
+    assert_eq!(paged.total, 2);
     assert!(paged.truncated, "a page must say it is a page");
     assert_eq!(paged.sessions.len(), 2);
 }
@@ -136,8 +136,8 @@ fn listing_degrades_to_replay_and_reports_truncation() {
 #[test]
 fn the_page_bound_cannot_be_exceeded_by_the_caller() {
     let runs = runs_dir("bound");
-    write_run(&runs.0, &RunId("only".into()), &["hi"]);
-    let document = list_sessions(&runs.0, &TenantId::default(), None, usize::MAX);
+    write_tagged_run(&runs.0, &RunId("only".into()), None, &["hi"]);
+    let document = list_sessions(&runs.0, &TenantId::default(), None, usize::MAX).unwrap();
     assert_eq!(document.sessions.len(), 1);
     assert!(!document.truncated);
 }

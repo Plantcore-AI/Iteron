@@ -8,7 +8,16 @@ pub(super) fn submit_composer(
     // A drop that arrived as keystrokes rather than as a bracketed paste is still a drop. Convert
     // it before anything reads the draft, so the rest of this function sees the chips and anchors
     // the paste lane would have produced.
-    attach_bare_image_paths(app, session.workspace());
+    if app.attachment_job.is_some() {
+        app.note(
+            block::NoticeLevel::Info,
+            "attachment still preparing · submission will remain in the composer",
+        );
+        return;
+    }
+    if queue_bare_image_path(app, session.workspace(), AttachmentFollowup::SubmitComposer) {
+        return;
+    }
     let raw = app.editor.text();
     let mentions = match image_input::parse_image_mentions(&raw) {
         Ok(mentions) => mentions,
@@ -20,22 +29,6 @@ pub(super) fn submit_composer(
             return;
         }
     };
-    let mut staged: ImageAttachments = app.editor.attachments().clone();
-    for mention in &mentions {
-        let reference = mention.reference().path();
-        let path = if reference.is_absolute() {
-            reference.to_path_buf()
-        } else {
-            session.workspace().join(reference)
-        };
-        if let Err(error) = staged.attach_path(&path) {
-            app.note(
-                block::NoticeLevel::Warn,
-                format!("image attachment refused: {error}"),
-            );
-            return;
-        }
-    }
     // File mentions resolve on the same terms, into the same kind of staged clone, and are
     // contained by `file_input::FileAttachments` — which routes every path through the workspace
     // containment `read_file` uses. A refusal here leaves the draft and its chips untouched.
@@ -49,9 +42,173 @@ pub(super) fn submit_composer(
             return;
         }
     };
+    if !mentions.is_empty() || !file_mentions.is_empty() {
+        // The interactive TUI always has a Tokio runtime and takes the bounded background actor
+        // path. Pure synchronous embeddings and unit tests do not: falling back to the same
+        // preparation function there keeps the public synchronous submission seam usable instead
+        // of panicking inside `spawn_blocking` before any admission result can be produced.
+        if tokio::runtime::Handle::try_current().is_ok() {
+            queue_composer_submission_preparation(app, session, raw, mentions, file_mentions);
+        } else {
+            let workspace = session.workspace().to_path_buf();
+            let image_paths = resolved_image_paths(&workspace, &mentions);
+            let file_paths = file_mentions
+                .iter()
+                .map(|mention| mention.path().to_path_buf())
+                .collect::<Vec<_>>();
+            match prepare_submission_attachments(
+                app.editor.attachments().preparer(),
+                app.editor.files().preparer(),
+                workspace,
+                image_paths,
+                file_paths,
+            ) {
+                Ok((images, files)) => submit_prepared_composer(
+                    app,
+                    session,
+                    notifier,
+                    raw,
+                    mentions,
+                    file_mentions,
+                    images,
+                    files,
+                ),
+                Err(error) => app.note(block::NoticeLevel::Warn, error),
+            }
+        }
+        return;
+    }
+    submit_prepared_composer(
+        app,
+        session,
+        notifier,
+        raw,
+        mentions,
+        file_mentions,
+        Vec::new(),
+        Vec::new(),
+    );
+}
+
+fn queue_composer_submission_preparation(
+    app: &mut App,
+    session: &Session,
+    raw: String,
+    image_mentions: Vec<image_input::ImageMention>,
+    file_mentions: Vec<file_input::FileMention>,
+) {
+    app.attachment_generation = app.attachment_generation.wrapping_add(1);
+    let generation = app.attachment_generation;
+    let draft_revision = app.editor.persistence_revision();
+    let image_preparer = app.editor.attachments().preparer();
+    let file_preparer = app.editor.files().preparer();
+    let workspace = session.workspace().to_path_buf();
+    let image_paths = resolved_image_paths(&workspace, &image_mentions);
+    let file_paths = file_mentions
+        .iter()
+        .map(|mention| mention.path().to_path_buf())
+        .collect::<Vec<_>>();
+    let origin = AttachmentOrigin::ComposerSubmission {
+        raw,
+        draft_revision,
+        image_mentions,
+        file_mentions,
+    };
+    app.attachment_effect_state = AttachmentEffectState::Queued;
+    app.note(
+        block::NoticeLevel::Info,
+        "submission attachments queued · reading and decoding in background",
+    );
+    app.attachment_job = Some(tokio::task::spawn_blocking(move || {
+        let result = prepare_submission_attachments(
+            image_preparer,
+            file_preparer,
+            workspace,
+            image_paths,
+            file_paths,
+        )
+        .map(|(images, files)| AttachmentWorkerOutput::PreparedSubmission { images, files });
+        AttachmentEffectResult {
+            generation,
+            origin,
+            result,
+        }
+    }));
+}
+
+fn resolved_image_paths(
+    workspace: &std::path::Path,
+    mentions: &[image_input::ImageMention],
+) -> Vec<std::path::PathBuf> {
+    mentions
+        .iter()
+        .map(|mention| {
+            let path = mention.reference().path();
+            if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                workspace.join(path)
+            }
+        })
+        .collect()
+}
+
+fn prepare_submission_attachments(
+    image_preparer: image_input::ImagePreparer,
+    file_preparer: file_input::FilePreparer,
+    workspace: std::path::PathBuf,
+    image_paths: Vec<std::path::PathBuf>,
+    file_paths: Vec<std::path::PathBuf>,
+) -> Result<
+    (
+        Vec<image_input::PreparedImage>,
+        Vec<file_input::PreparedFile>,
+    ),
+    String,
+> {
+    let mut images = Vec::with_capacity(image_paths.len());
+    for path in image_paths {
+        images.push(
+            image_preparer
+                .prepare_path(&path)
+                .map_err(|error| format!("image attachment refused: {error}"))?,
+        );
+    }
+    let mut files = Vec::with_capacity(file_paths.len());
+    for path in file_paths {
+        files.push(
+            file_preparer
+                .prepare_path(&workspace, &path)
+                .map_err(|error| format!("file attachment refused: {error}"))?,
+        );
+    }
+    Ok((images, files))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn submit_prepared_composer(
+    app: &mut App,
+    session: &Session,
+    notifier: &mut notification::TerminalNotifier,
+    raw: String,
+    mentions: Vec<image_input::ImageMention>,
+    file_mentions: Vec<file_input::FileMention>,
+    prepared_images: Vec<image_input::PreparedImage>,
+    prepared_files: Vec<file_input::PreparedFile>,
+) {
+    let mut staged: ImageAttachments = app.editor.attachments().clone();
+    for prepared in prepared_images {
+        if let Err(error) = staged.admit_prepared(prepared) {
+            app.note(
+                block::NoticeLevel::Warn,
+                format!("image attachment refused: {error}"),
+            );
+            return;
+        }
+    }
     let mut staged_files: file_input::FileAttachments = app.editor.files().clone();
-    for mention in &file_mentions {
-        if let Err(error) = staged_files.attach_path(session.workspace(), mention.path()) {
+    for prepared in prepared_files {
+        if let Err(error) = staged_files.admit_prepared(prepared) {
             app.note(
                 block::NoticeLevel::Warn,
                 format!("file attachment refused: {error}"),

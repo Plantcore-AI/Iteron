@@ -29,46 +29,53 @@ const MAX_OUTLINE_ENTRIES: usize = 16_384;
 /// Is this line a top-level declaration worth putting in the skeleton? Language-agnostic:
 /// matches the common `def/class/fn/function/struct/impl/type/trait/interface/pub` shapes at a
 /// shallow indent (top-level or one level in). Deliberately simple and inclusive.
+#[cfg(test)]
 fn is_decl(line: &str) -> bool {
+    is_decl_with_keywords(
+        line,
+        iteron_tunables::param_str_list("ctx.outline.declaration_keywords", DECLARATION_KEYWORDS),
+    )
+}
+
+const DECLARATION_KEYWORDS: &[&str] = &[
+    "def ",
+    "class ",
+    "fn ",
+    "pub fn ",
+    "pub struct ",
+    "struct ",
+    "impl ",
+    "trait ",
+    "pub trait ",
+    "enum ",
+    "pub enum ",
+    "type ",
+    "pub type ",
+    "mod ",
+    "pub mod ",
+    "const ",
+    "pub const ",
+    "static ",
+    "pub static ",
+    "macro_rules! ",
+    "interface ",
+    "function ",
+    "func ",
+    "public ",
+    "export function ",
+    "export class ",
+    "export const ",
+    "async def ",
+    "module ",
+];
+
+fn is_decl_with_keywords(line: &str, keywords: &[&str]) -> bool {
     let t = line.trim_start();
     let indent = line.len() - t.len();
     if indent > 4 {
         return false; // only top-level-ish declarations
     }
-    const KWS: &[&str] = &[
-        "def ",
-        "class ",
-        "fn ",
-        "pub fn ",
-        "pub struct ",
-        "struct ",
-        "impl ",
-        "trait ",
-        "pub trait ",
-        "enum ",
-        "pub enum ",
-        "type ",
-        "pub type ",
-        "mod ",
-        "pub mod ",
-        "const ",
-        "pub const ",
-        "static ",
-        "pub static ",
-        "macro_rules! ",
-        "interface ",
-        "function ",
-        "func ",
-        "public ",
-        "export function ",
-        "export class ",
-        "export const ",
-        "async def ",
-        "module ",
-    ];
-    iteron_tunables::param_str_list("ctx.outline.kws", KWS)
-        .iter()
-        .any(|k| t.starts_with(k))
+    keywords.iter().any(|keyword| t.starts_with(keyword))
 }
 
 #[derive(Debug)]
@@ -145,18 +152,7 @@ fn is_code_file(name: &str) -> bool {
 }
 
 fn is_ignored(name: &str) -> bool {
-    matches!(
-        name,
-        ".git"
-            | "target"
-            | "node_modules"
-            | ".venv"
-            | "venv"
-            | "dist"
-            | "build"
-            | "__pycache__"
-            | ".iteron"
-    )
+    name == ".iteron" || crate::source::is_default_pruned_component(name)
 }
 
 /// Build a skeleton of the repo rooted at `root`, fit to roughly `token_budget` tokens. Files
@@ -234,6 +230,8 @@ fn repo_outline_for_task_at_limits(
         ),
     );
     let identifiers = query_identifiers(&bounded_query);
+    let declaration_keywords =
+        iteron_tunables::param_str_list("ctx.outline.declaration_keywords", DECLARATION_KEYWORDS);
     let mut files: Vec<OutlineFile> = Vec::new();
     let mut rejected = 0usize;
     let mut bounded_omitted = 0usize;
@@ -305,7 +303,7 @@ fn repo_outline_for_task_at_limits(
         let decls: Vec<String> = content
             .lines()
             .enumerate()
-            .filter(|(_, l)| is_decl(l))
+            .filter(|(_, line)| is_decl_with_keywords(line, declaration_keywords))
             .map(|(i, l)| format!("  {}: {}", i + 1, l.trim()))
             .take(40) // cap per file so one large in-bound file can't dominate
             .collect();

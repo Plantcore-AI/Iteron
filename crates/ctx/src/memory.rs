@@ -33,7 +33,9 @@
 //! no randomness. `FileMemory` is that default impl behind the `MemoryStrategy` trait (CHOICE MEM-4,
 //! ADR-011), so the recall policy can later be swapped without touching the kernel.
 
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::{fmt, fs, io::Write};
 
 use iteron_protocol::Capability;
@@ -41,6 +43,7 @@ use iteron_protocol::capability_set::CapabilitySet;
 use iteron_protocol::slot::{SlotId, SlotObservation, SlotOutcome, StrategySlot, decide_narrowed};
 use iteron_protocol::trust::Trust;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::source::{
     SourceEntryKind, SourceError, SourceScope, list_directory_bounded, read_bounded_utf8,
@@ -385,6 +388,14 @@ pub struct MemStore {
     /// The directory under which repo instruction files (`AGENTS.md`/`CLAUDE.md`/
     /// `.iteron/instructions.md`) are discovered, when this store carries them.
     instr_root: Option<PathBuf>,
+    resource_index: Arc<crate::ResourceMetadataIndex>,
+    body_cache: Arc<Mutex<MemoryBodyCache>>,
+}
+
+#[derive(Debug, Default)]
+struct MemoryBodyCache {
+    entries: HashMap<PathBuf, ([u8; 32], String)>,
+    order: VecDeque<PathBuf>,
 }
 
 impl MemStore {
@@ -414,6 +425,8 @@ impl MemStore {
             tier,
             trust,
             instr_root: None,
+            resource_index: Arc::new(crate::ResourceMetadataIndex::default()),
+            body_cache: Arc::new(Mutex::new(MemoryBodyCache::default())),
         }
     }
 
@@ -588,8 +601,10 @@ impl MemStore {
         entries
     }
 
-    /// Degrade path: one `FactRef` per `.md` file (excluding the index itself). Title and summary
-    /// are derived from the body; a bidi-suspicious body is skipped rather than listed.
+    /// Degrade path: one metadata-only `FactRef` per `.md` file (excluding the index itself).
+    /// Without a `MEMORY.md` there is no trusted summary to rank, so the stable slug is the title
+    /// and the body remains unopened until the shortlist selects it. Body Unicode validation still
+    /// occurs in `read_body` before any selected bytes enter model context.
     fn list_facts(&self) -> Vec<FactRef> {
         let Ok(Some(listing)) = list_directory_bounded(
             &self.source_root,
@@ -614,26 +629,13 @@ impl MemStore {
                 Some(s) if s != "MEMORY" => s.to_string(),
                 _ => continue,
             };
-            let Ok(Some(body)) = self.read_source(
-                &path,
-                iteron_tunables::param_usize(
-                    "ctx.memory.max_memory_source_bytes",
-                    iteron_tunables::param_integer(
-                        "ctx.memory.max_memory_source_bytes",
-                        MAX_MEMORY_SOURCE_BYTES,
-                    ),
-                ),
-            ) else {
-                continue;
-            };
-            if suspicious_unicode(&body) {
+            if !is_safe_slug(&stem) {
                 continue;
             }
-            let (title, summary) = derive_title_summary(&body, &stem);
             out.push(FactRef {
+                title: stem.replace(['-', '_'], " "),
                 slug: stem,
-                title,
-                summary,
+                summary: String::new(),
                 tier: self.tier,
             });
         }
@@ -650,9 +652,25 @@ impl MemStore {
         if !is_safe_slug(slug) {
             return None;
         }
+        let path = self.fact_path(slug);
+        let indexed = self
+            .cacheable_regular_path(&path)
+            .then(|| self.resource_index.refresh_one(&path).ok().flatten())
+            .flatten();
+        if let Some(indexed) = &indexed
+            && let Some((digest, body)) = self
+                .body_cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .entries
+                .get(&path)
+            && digest == &indexed.sha256
+        {
+            return Some(body.clone());
+        }
         let raw = self
             .read_source(
-                &self.fact_path(slug),
+                &path,
                 iteron_tunables::param_usize(
                     "ctx.memory.max_memory_source_bytes",
                     iteron_tunables::param_integer(
@@ -665,10 +683,42 @@ impl MemStore {
         if suspicious_unicode(&raw) {
             return None;
         }
-        Some(iteron_protocol::text::head(
+        let body = iteron_protocol::text::head(
             raw.trim(),
             iteron_tunables::param_usize("ctx.memory.max_fact_bytes", MAX_FACT_BYTES),
-        ))
+        );
+        if let Some(indexed) = indexed {
+            let mut cache = self
+                .body_cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let limit =
+                iteron_tunables::param_usize("ctx.memory.body_cache_entries", 256).clamp(1, 1_024);
+            while cache.entries.len() >= limit && !cache.entries.contains_key(&path) {
+                let Some(oldest) = cache.order.pop_front() else {
+                    break;
+                };
+                cache.entries.remove(&oldest);
+            }
+            if !cache.entries.contains_key(&path) {
+                cache.order.push_back(path.clone());
+            }
+            cache.entries.insert(path, (indexed.sha256, body.clone()));
+        }
+        Some(body)
+    }
+
+    fn cacheable_regular_path(&self, path: &Path) -> bool {
+        let Ok(metadata) = fs::symlink_metadata(path) else {
+            return false;
+        };
+        if !metadata.is_file() || metadata.file_type().is_symlink() {
+            return false;
+        }
+        match (self.source_root.canonicalize(), path.canonicalize()) {
+            (Ok(root), Ok(resolved)) => resolved.starts_with(root),
+            _ => false,
+        }
     }
 
     fn modified_unix_secs(&self, slug: &str) -> Option<u64> {
@@ -683,6 +733,21 @@ impl MemStore {
             .duration_since(std::time::UNIX_EPOCH)
             .ok()
             .map(|duration| duration.as_secs())
+    }
+
+    fn body_available(&self, slug: &str) -> bool {
+        if !is_safe_slug(slug) {
+            return false;
+        }
+        let path = self.fact_path(slug);
+        fs::symlink_metadata(&path).is_ok_and(|metadata| {
+            if metadata.file_type().is_symlink() {
+                self.tier == MemTier::User
+                    && fs::metadata(&path).is_ok_and(|target| target.is_file())
+            } else {
+                metadata.is_file()
+            }
+        })
     }
 }
 
@@ -1589,6 +1654,7 @@ impl MemoryRecallStrategy {
     }
 }
 
+#[derive(Clone)]
 struct MemoryRetrievalScores {
     lexical_ppm: Vec<i64>,
     structural_ppm: Vec<i64>,
@@ -1598,6 +1664,43 @@ struct MemoryRetrievalScores {
 }
 
 fn memory_retrieval_scores(input: &MemorySlotObservation) -> MemoryRetrievalScores {
+    const CACHE_LIMIT: usize = 128;
+    #[derive(Default)]
+    struct ScoreCache {
+        entries: HashMap<[u8; 32], MemoryRetrievalScores>,
+        order: VecDeque<[u8; 32]>,
+    }
+    static CACHE: OnceLock<Mutex<ScoreCache>> = OnceLock::new();
+    let encoded = serde_json::to_vec(input).unwrap_or_default();
+    let key: [u8; 32] = Sha256::digest(encoded).into();
+    let cache = CACHE.get_or_init(|| Mutex::new(ScoreCache::default()));
+    if let Some(scores) = cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .entries
+        .get(&key)
+        .cloned()
+    {
+        return scores;
+    }
+    let scores = compute_memory_retrieval_scores(input);
+    let mut cache = cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let limit = iteron_tunables::param_usize("ctx.memory.cache_limit", CACHE_LIMIT).clamp(1, 1_024);
+    while cache.entries.len() >= limit {
+        if let Some(oldest) = cache.order.pop_front() {
+            cache.entries.remove(&oldest);
+        } else {
+            break;
+        }
+    }
+    cache.order.push_back(key);
+    cache.entries.insert(key, scores.clone());
+    scores
+}
+
+fn compute_memory_retrieval_scores(input: &MemorySlotObservation) -> MemoryRetrievalScores {
     let query = tokenize(&input.task);
     let docs = input
         .candidates
@@ -1799,17 +1902,22 @@ impl MergeAudit {
 
 impl FileMemory {
     /// Merge every injectable store's index into one slug-keyed map, higher-precedence stores
-    /// (later in `stores`) overriding earlier ones on a slug collision, and load each body once.
-    /// Stripped dependency stores are excluded entirely (never injected).
+    /// (later in `stores`) overriding earlier ones on a slug collision. Body reads are deferred to
+    /// the bounded metadata shortlist. Stripped dependency stores are excluded entirely.
     fn merge_with_audit(stores: &[MemStore]) -> MergeAudit {
-        // slug -> Merged, then sorted by slug for a stable, reproducible order.
+        // Hash/map ownership avoids the previous repeated `position` + `remove` scans. Store order
+        // remains the precedence rule and BTreeMap yields the same stable slug ordering.
         let mut audit = MergeAudit::default();
+        let mut merged_by_slug = BTreeMap::<String, Merged>::new();
+        let mut title_owner = HashMap::<String, String>::new();
         for (store_id, store) in stores.iter().enumerate() {
             if store.is_stripped() {
                 continue;
             }
             for fact_ref in store.index_entries() {
-                let body = store.read_body(&fact_ref.slug);
+                // Index merge is metadata-only. Bodies are opened after a bounded first-stage
+                // shortlist, never while enumerating every candidate.
+                let body = None;
                 let modified_unix_secs = store.modified_unix_secs(&fact_ref.slug);
                 let slug = fact_ref.slug.clone();
                 let merged = Merged {
@@ -1820,12 +1928,11 @@ impl FileMemory {
                     modified_unix_secs,
                 };
 
-                if let Some(index) = audit
-                    .merged
-                    .iter()
-                    .position(|candidate| candidate.fact_ref.slug == slug)
-                {
-                    let superseded = audit.merged.remove(index);
+                if let Some(superseded) = merged_by_slug.remove(&slug) {
+                    let old_title = normalized_memory_title(&superseded.fact_ref.title);
+                    if title_owner.get(&old_title) == Some(&slug) {
+                        title_owner.remove(&old_title);
+                    }
                     audit.exclude(
                         superseded,
                         MemoryRecallExclusionKind::Superseded,
@@ -1837,30 +1944,30 @@ impl FileMemory {
                 // contradictory claims. Store ordering is already the explicit precedence rule,
                 // so deny the lower-precedence claim rather than injecting both into the prompt.
                 let title_key = normalized_memory_title(&merged.fact_ref.title);
-                if let Some(index) = audit.merged.iter().position(|candidate| {
-                    candidate.store_id != store_id
-                        && normalized_memory_title(&candidate.fact_ref.title) == title_key
-                }) {
-                    let contradicted = audit.merged.remove(index);
-                    let exclusion = if contradicted.body == merged.body
-                        && contradicted.fact_ref.summary == merged.fact_ref.summary
-                    {
+                if let Some(other_slug) = title_owner.get(&title_key).cloned()
+                    && other_slug != slug
+                    && merged_by_slug
+                        .get(&other_slug)
+                        .is_some_and(|candidate| candidate.store_id != store_id)
+                    && let Some(contradicted) = merged_by_slug.remove(&other_slug)
+                {
+                    let exclusion = if contradicted.fact_ref.summary == merged.fact_ref.summary {
                         MemoryRecallExclusionKind::Superseded
                     } else {
                         MemoryRecallExclusionKind::Contradiction
                     };
                     audit.exclude(contradicted, exclusion, Some(&slug));
                 }
-                audit.merged.push(merged);
+                title_owner.insert(title_key, slug.clone());
+                merged_by_slug.insert(slug, merged);
             }
         }
-        audit
-            .merged
-            .sort_by(|a, b| a.fact_ref.slug.cmp(&b.fact_ref.slug));
+        audit.merged = merged_by_slug.into_values().collect();
 
         let mut index = 0;
         while index < audit.merged.len() {
-            if audit.merged[index].body.is_none() {
+            let candidate = &audit.merged[index];
+            if !stores[candidate.store_id].body_available(&candidate.fact_ref.slug) {
                 let expired = audit.merged.remove(index);
                 audit.exclude(expired, MemoryRecallExclusionKind::Expired, None);
             } else {
@@ -1868,6 +1975,81 @@ impl FileMemory {
             }
         }
         audit
+    }
+
+    fn materialize_shortlist(
+        audit: &mut MergeAudit,
+        stores: &[MemStore],
+        task: &str,
+        retrieval_policy: &crate::MemoryRetrievalPolicy,
+    ) {
+        const DEFAULT_SHORTLIST_FLOOR: usize = 32;
+        const DEFAULT_SHORTLIST_CEILING: usize = 128;
+        let query = tokenize(task);
+        let docs = audit
+            .merged
+            .iter()
+            .map(|candidate| {
+                tokenize(&format!(
+                    "{} {}",
+                    candidate.fact_ref.title, candidate.fact_ref.summary
+                ))
+            })
+            .collect::<Vec<_>>();
+        let refs = docs.iter().map(Vec::as_slice).collect::<Vec<_>>();
+        let scores = bm25(
+            &query,
+            &refs,
+            f64::from(retrieval_policy.bm25_k1_milli) / 1_000.0,
+            f64::from(retrieval_policy.bm25_b_ppm) / f64::from(crate::memory_runtime::SCORE_SCALE),
+        );
+        let mut ranked = scores.into_iter().enumerate().collect::<Vec<_>>();
+        ranked.sort_by(|left, right| {
+            right
+                .1
+                .partial_cmp(&left.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| {
+                    audit.merged[left.0]
+                        .fact_ref
+                        .slug
+                        .cmp(&audit.merged[right.0].fact_ref.slug)
+                })
+        });
+        let floor = iteron_tunables::param_usize(
+            "ctx.memory.default_shortlist_floor",
+            DEFAULT_SHORTLIST_FLOOR,
+        );
+        let ceiling = iteron_tunables::param_usize(
+            "ctx.memory.default_shortlist_ceiling",
+            DEFAULT_SHORTLIST_CEILING,
+        )
+        .max(1);
+        let wanted = usize::try_from(retrieval_policy.recall_limit)
+            .unwrap_or(ceiling)
+            .saturating_mul(4)
+            .max(floor)
+            .min(ceiling)
+            .min(audit.merged.len());
+        let shortlisted = ranked
+            .into_iter()
+            .take(wanted)
+            .map(|(index, _)| index)
+            .collect::<HashSet<_>>();
+        let mut expired = Vec::new();
+        for (index, candidate) in audit.merged.iter_mut().enumerate() {
+            if !shortlisted.contains(&index) {
+                continue;
+            }
+            candidate.body = stores[candidate.store_id].read_body(&candidate.fact_ref.slug);
+            if candidate.body.is_none() {
+                expired.push(index);
+            }
+        }
+        for index in expired.into_iter().rev() {
+            let candidate = audit.merged.remove(index);
+            audit.exclude(candidate, MemoryRecallExclusionKind::Expired, None);
+        }
     }
 
     fn merge(stores: &[MemStore]) -> Vec<Merged> {
@@ -1924,6 +2106,7 @@ impl FileMemory {
         retrieval_policy: crate::MemoryRetrievalPolicy,
     ) -> MemoryRecallAudit {
         let mut merge = FileMemory::merge_with_audit(stores);
+        FileMemory::materialize_shortlist(&mut merge, stores, task, &retrieval_policy);
         let deduplicated_candidates = u32::try_from(
             merge
                 .excluded
@@ -2035,21 +2218,23 @@ fn memory_recall_audit_from_decision(
     for (rank, (index, _)) in ranked.into_iter().enumerate() {
         ranks[index] = u32::try_from(rank.saturating_add(1)).unwrap_or(u32::MAX);
     }
+    let candidate_indexes = observation
+        .candidates
+        .iter()
+        .enumerate()
+        .map(|(index, candidate)| (candidate.slug.as_str(), index))
+        .collect::<HashMap<_, _>>();
     let selected_indexes = selected
         .iter()
-        .filter_map(|slug| {
-            observation
-                .candidates
-                .iter()
-                .position(|candidate| &candidate.slug == slug)
-        })
+        .filter_map(|slug| candidate_indexes.get(slug.as_str()).copied())
         .collect::<Vec<_>>();
+    let selected_slugs = selected.iter().map(String::as_str).collect::<HashSet<_>>();
     let novelty_deduplicated = observation
         .candidates
         .iter()
         .enumerate()
         .filter(|(index, candidate)| {
-            !selected.contains(&candidate.slug)
+            !selected_slugs.contains(candidate.slug.as_str())
                 && selected_indexes.iter().any(|selected| {
                     token_jaccard_ppm(&score_set.docs[*index], &score_set.docs[*selected])
                         >= observation.retrieval_policy.novelty_dedup_threshold_ppm
@@ -2099,7 +2284,8 @@ impl FileMemory {
         reference_unix_secs: u64,
         retrieval_policy: crate::MemoryRetrievalPolicy,
     ) -> (MemorySegment, MemoryRecallAudit) {
-        let merge = FileMemory::merge_with_audit(stores);
+        let mut merge = FileMemory::merge_with_audit(stores);
+        FileMemory::materialize_shortlist(&mut merge, stores, task, &retrieval_policy);
         let merged = &merge.merged;
         let deduplicated_candidates = u32::try_from(
             merge
@@ -2213,9 +2399,13 @@ impl FileMemory {
             Err(_) => (Vec::new(), MemoryRecallDisposition::Abstained),
         };
 
+        let gathered_by_slug = gathered
+            .iter()
+            .map(|(fact, _)| (fact.slug.as_str(), fact))
+            .collect::<HashMap<_, _>>();
         let mut recalled: Vec<Fact> = Vec::new();
         for slug in &selected {
-            let Some((fact, _)) = gathered.iter().find(|(fact, _)| &fact.slug == slug) else {
+            let Some(fact) = gathered_by_slug.get(slug.as_str()).copied() else {
                 continue;
             };
             included.push(fact.trust);
@@ -2926,12 +3116,31 @@ mod tests {
         let alpha = entries.iter().find(|e| e.slug() == "alpha").unwrap();
         assert_eq!(
             alpha.title(),
-            "Alpha fact",
-            "a leading # heading becomes the title"
+            "alpha",
+            "metadata-only fallback derives its title without opening the body"
         );
-        assert_eq!(alpha.summary(), "the first body line");
+        assert_eq!(alpha.summary(), "");
         let beta = entries.iter().find(|e| e.slug() == "beta").unwrap();
-        assert_eq!(beta.title(), "beta", "no heading -> slug is the title");
+        assert_eq!(beta.title(), "beta");
+    }
+
+    #[test]
+    fn metadata_only_fallback_lists_an_oversized_body_without_opening_it() {
+        let root = tmp("degrade-lazy").join("mem");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("cold-fact.md"),
+            vec![b'x'; MAX_MEMORY_SOURCE_BYTES + 1],
+        )
+        .unwrap();
+        let store = MemStore::new(root, MemTier::User, true);
+        let entries = store.index_entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].slug(), "cold-fact");
+        assert!(
+            store.read_body("cold-fact").is_none(),
+            "the selected body still obeys its immutable read ceiling"
+        );
     }
 
     // ----- Lexical recall: ordering, budget bound, index always present -----
@@ -3330,7 +3539,10 @@ mod tests {
 
         let entries = store.index_entries();
         assert!(entries.iter().any(|entry| entry.slug() == "small"));
-        assert!(entries.iter().all(|entry| entry.slug() != "large"));
+        assert!(
+            entries.iter().any(|entry| entry.slug() == "large"),
+            "metadata-only fallback lists the slug without opening the oversized body"
+        );
         assert!(FileMemory.read_fact(&[store], "large").is_err());
         std::fs::remove_dir_all(repo).ok();
     }

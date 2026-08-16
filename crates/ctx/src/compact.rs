@@ -19,11 +19,40 @@
 
 use iteron_protocol::{Block, Message, Role, ToolSpec};
 
-/// Fallback admission trigger used when no model window is proven and no window-relative
-/// threshold can be derived.
+/// Last-resort admission trigger, used ONLY when no model context window is proven and no
+/// window-relative threshold can be derived.
+///
+/// It MUST be read as an UPPER BOUND on a blind guess, never as a target, and any proven window
+/// OVERRIDES it — see [`CompactionPolicy::effective_trigger_tokens`], which derives the trigger
+/// from `window - reserved_output` and does not consult this constant at all. The bound is not
+/// theoretical: this number is LARGER than the entire context window of many models the harness
+/// can be pointed at, and a run on a model whose window was absent from every catalog compacted
+/// zero times across seven turns and then died on a provider context error, precisely because
+/// 120_000 could never be reached before that model's real window was.
 const DEFAULT_TRIGGER_TOKENS: usize = 120_000;
-/// Trailing messages kept verbatim, so the turn in progress survives compaction intact.
-const DEFAULT_KEEP_RECENT: usize = 6;
+
+/// Fraction of the usable window at which admission-side compaction becomes mandatory.
+///
+/// 80%: the remaining fifth absorbs both this estimator's error against the provider's real
+/// tokenizer and the growth of one more assistant answer plus its tool results before the next
+/// admission check. 85% leaves too little for a single large tool result to land without
+/// overshooting into a hard refusal; 75% is already what the end-of-turn hysteresis applies ON TOP
+/// of this number, and stacking two 75% ratios makes a long-window model compact far earlier than
+/// its window warrants. The percentage is optimizable; that it is strictly below 100 is not — a
+/// trigger at the full usable window fires only once the request has already been refused.
+fn trigger_usable_ratio_percent() -> u64 {
+    iteron_tunables::param_integer("ctx.compact.trigger_usable_ratio_percent", 80_u64).clamp(1, 100)
+}
+
+/// Hard context-retention bounds. They are structural memory/admission ceilings rather than
+/// optimizer choices; the ratio inside them remains tunable.
+fn min_recent_retention_tokens() -> usize {
+    2_000
+}
+
+fn max_recent_retention_tokens() -> usize {
+    15_000
+}
 
 /// Provenance for the request-size number. This is never labelled as provider tokenization: it is
 /// a fast, deterministic admission estimate used before a request exists.
@@ -157,6 +186,7 @@ pub struct RequestEstimator {
     transcript: TranscriptComponents,
     lsp_tool_ids: std::collections::BTreeSet<String>,
     tools: Option<CachedToolEstimate>,
+    prepared_tools: Option<CachedPreparedToolEstimate>,
 }
 
 #[derive(Debug, Clone)]
@@ -164,6 +194,13 @@ struct CachedToolEstimate {
     /// Advertised tool names in order. A registry has no API that mutates an already-registered
     /// spec, so the name sequence is a complete key for the advertised set.
     names: Vec<String>,
+    tokens: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CachedPreparedToolEstimate {
+    identity: u64,
+    count: usize,
     tokens: usize,
 }
 
@@ -189,6 +226,7 @@ impl RequestEstimator {
             self.profile = profile;
             self.invalidate_transcript();
             self.tools = None;
+            self.prepared_tools = None;
         }
     }
 
@@ -281,6 +319,41 @@ impl RequestEstimator {
             self.profile.provenance(),
         )
     }
+
+    /// Estimate a request from an already prepared, revisioned tool-schema snapshot.
+    ///
+    /// `tool_tokens` is the immutable snapshot's precomputed token count; this path never walks
+    /// `ToolSpec` or serializes `input_schema`. `tool_cache_identity` must change whenever the
+    /// visible schema revision/set changes. The count/tokens are retained alongside that identity
+    /// so an accidental identity collision refreshes rather than reusing stale accounting.
+    pub fn estimate_with_tool_tokens(
+        &mut self,
+        system: &str,
+        messages: &[Message],
+        tool_count: usize,
+        tool_tokens: usize,
+        tool_cache_identity: u64,
+    ) -> ContextEstimate {
+        let supplied = CachedPreparedToolEstimate {
+            identity: tool_cache_identity,
+            count: tool_count,
+            tokens: tool_tokens,
+        };
+        if self.prepared_tools != Some(supplied) {
+            self.prepared_tools = Some(supplied);
+        }
+        let prepared = self
+            .prepared_tools
+            .expect("the prepared tool estimate was installed above");
+        assemble_estimate(
+            self.profile.estimate(system),
+            prepared.tokens,
+            self.transcript_components(messages),
+            messages.len(),
+            prepared.count,
+            self.profile.provenance(),
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -288,7 +361,7 @@ pub struct CompactionPolicy {
     /// Compact when the estimated request tokens exceed this fallback. When model-window
     /// metadata is available the default policy derives a window-relative threshold instead.
     pub trigger_tokens: usize,
-    /// Always keep the last N messages verbatim (recent context is highest-signal).
+    /// Optional explicit message-count floor. Zero selects model-usable token retention.
     pub keep_recent: usize,
     /// Automatic compaction may be disabled without disabling the explicit `/compact` command.
     pub enabled: bool,
@@ -314,10 +387,7 @@ impl Default for CompactionPolicy {
             ),
             keep_recent: iteron_tunables::param_usize(
                 "ctx.compact.default_keep_recent",
-                iteron_tunables::param_integer(
-                    "ctx.compact.default_keep_recent",
-                    DEFAULT_KEEP_RECENT,
-                ),
+                iteron_tunables::param_integer("ctx.compact.default_keep_recent", 0_usize),
             ),
             enabled: iteron_tunables::param_bool("ctx.compact.default_enabled", true),
             hysteresis: crate::CompactionHysteresis::default(),
@@ -367,8 +437,22 @@ impl CompactionPolicy {
 
     /// Resolve the actual trigger from durable policy plus the catalog-proven model window. The
     /// calculation is deliberately provider-free and integer-only so replaying the same facts
-    /// produces the same threshold. Twenty percent of usable input space remains as compaction
-    /// headroom; the provider output reservation is never counted as available input space.
+    /// produces the same threshold. The provider output reservation is never counted as available
+    /// input space; routine end-of-turn compaction applies its own hysteresis below this hard
+    /// admission trigger.
+    ///
+    /// Precedence, highest first:
+    /// 1. an operator-authored fixed trigger ([`Self::set_fixed_trigger_tokens`]) — an exact
+    ///    instruction outranks every derivation;
+    /// 2. a PROVEN model window — the trigger is a fraction of the usable window and the absolute
+    ///    fallback is not consulted, in either direction;
+    /// 3. [`DEFAULT_TRIGGER_TOKENS`], the blind upper bound, only when the window is genuinely
+    ///    unknown.
+    ///
+    /// The reservation subtracted here is the SAME one the kernel is about to send, not a capped
+    /// approximation of it. That is load-bearing: it keeps this trigger strictly below the local
+    /// admission refusal (`estimated_input + reserved > window`), so a model that reserves a large
+    /// output cannot end up refused before it was ever offered a compaction.
     pub fn effective_trigger_tokens(
         &self,
         model_context_window: Option<u64>,
@@ -380,9 +464,30 @@ impl CompactionPolicy {
         let Some(window) = model_context_window.filter(|window| *window > 0) else {
             return self.trigger_tokens;
         };
-        let usable = window.saturating_sub(u64::from(reserved_output_tokens));
-        let derived = usable.saturating_mul(4) / 5;
-        usize::try_from(derived).unwrap_or(usize::MAX).max(1)
+        let usable = window
+            .saturating_sub(u64::from(reserved_output_tokens))
+            .max(1);
+        let trigger = usable.saturating_mul(trigger_usable_ratio_percent()) / 100;
+        usize::try_from(trigger).unwrap_or(usize::MAX).max(1)
+    }
+
+    /// Verbatim recent-tail budget derived from the same replayed model-window and output-reserve
+    /// facts as admission. The percentage is optimizable; the 2k..15k clamp is a host ceiling.
+    pub fn recent_retention_tokens(
+        &self,
+        model_context_window: Option<u64>,
+        reserved_output_tokens: u32,
+    ) -> usize {
+        let usable = model_context_window
+            .filter(|window| *window > 0)
+            .map(|window| window.saturating_sub(u64::from(reserved_output_tokens)))
+            .unwrap_or_else(|| u64::try_from(self.trigger_tokens).unwrap_or(u64::MAX));
+        let ratio =
+            iteron_tunables::param_integer("ctx.compact.recent_retention_ratio_percent", 25_usize)
+                .clamp(1, 100);
+        usize::try_from(usable.saturating_mul(u64::try_from(ratio).unwrap_or(100)) / 100)
+            .unwrap_or(usize::MAX)
+            .clamp(min_recent_retention_tokens(), max_recent_retention_tokens())
     }
 
     /// Estimate the transcript's token cost.
@@ -392,9 +497,7 @@ impl CompactionPolicy {
 
     /// Should we compact this transcript?
     pub fn should_compact(&self, messages: &[Message]) -> bool {
-        self.enabled
-            && messages.len() > self.keep_recent + 2
-            && self.transcript_tokens(messages) > self.trigger_tokens
+        self.enabled && messages.len() > 2 && self.transcript_tokens(messages) > self.trigger_tokens
     }
 
     /// Build the plan. Returns None if there is nothing worth compacting.
@@ -402,7 +505,7 @@ impl CompactionPolicy {
         if !self.should_compact(messages) {
             return None;
         }
-        self.plan_unconditional(messages)
+        self.plan_unconditional_with_window(messages, None, 0)
     }
 
     /// Build a plan using the complete request projection: effective system, tool schemas, and
@@ -417,10 +520,10 @@ impl CompactionPolicy {
             return None;
         }
         let estimate = estimate_request_context(system, messages, tools);
-        if messages.len() <= self.keep_recent + 2 || estimate.total_tokens <= self.trigger_tokens {
+        if messages.len() <= 2 || estimate.total_tokens <= self.trigger_tokens {
             return None;
         }
-        self.plan_unconditional(messages)
+        self.plan_unconditional_with_window(messages, None, 0)
     }
 
     /// The end-of-turn trigger: close enough to the real trigger that the next submission would
@@ -452,10 +555,10 @@ impl CompactionPolicy {
         }
         let estimate = estimate_request_context(system, messages, tools);
         let trigger = self.approaching_trigger_tokens(model_context_window, reserved_output_tokens);
-        if messages.len() <= self.keep_recent + 2 || estimate.total_tokens <= trigger {
+        if messages.len() <= 2 || estimate.total_tokens <= trigger {
             return None;
         }
-        self.plan_unconditional(messages)
+        self.plan_unconditional_with_window(messages, model_context_window, reserved_output_tokens)
     }
 
     /// The emergency valve, inside the turn loop: this projection plus its output reservation no
@@ -473,7 +576,7 @@ impl CompactionPolicy {
         if !self.enabled {
             return None;
         }
-        if messages.len() <= self.keep_recent + 2 {
+        if messages.len() <= 2 {
             return None;
         }
         let estimate = estimate_request_context(system, messages, tools);
@@ -491,7 +594,7 @@ impl CompactionPolicy {
         if fits {
             return None;
         }
-        self.plan_unconditional(messages)
+        self.plan_unconditional_with_window(messages, model_context_window, reserved_output_tokens)
     }
 
     /// Window-aware kernel path. A missing window uses the documented fallback; a known window
@@ -526,23 +629,46 @@ impl CompactionPolicy {
             return None;
         }
         let trigger = self.effective_trigger_tokens(model_context_window, reserved_output_tokens);
-        if messages.len() <= self.keep_recent + 2 || estimate.total_tokens <= trigger {
+        if messages.len() <= 2 || estimate.total_tokens <= trigger {
             return None;
         }
-        self.plan_unconditional(messages)
+        self.plan_unconditional_with_window(messages, model_context_window, reserved_output_tokens)
     }
 
     /// Plan a compaction UNCONDITIONALLY, ignoring the token trigger — the operator `/compact`
     /// path (design r5-design-tui-commands §3.6). Same middle-selection + tool_result-boundary
     /// safety as `plan`.
     pub fn force_plan(&self, messages: &[Message]) -> Option<CompactionPlan> {
-        self.plan_unconditional(messages)
+        self.plan_unconditional_with_window(messages, None, 0)
     }
 
-    fn plan_unconditional(&self, messages: &[Message]) -> Option<CompactionPlan> {
+    fn plan_unconditional_with_window(
+        &self,
+        messages: &[Message],
+        model_context_window: Option<u64>,
+        reserved_output_tokens: u32,
+    ) -> Option<CompactionPlan> {
         let task_anchor = messages.first()?.clone();
         let n = messages.len();
-        let mut keep_from = n.saturating_sub(self.keep_recent);
+        let mut keep_from = if self.keep_recent > 0 {
+            n.saturating_sub(self.keep_recent)
+        } else {
+            let budget = self.recent_retention_tokens(model_context_window, reserved_output_tokens);
+            let mut cursor = n;
+            let mut retained = 0usize;
+            while cursor > 1 {
+                let next = message_content_tokens(&messages[cursor - 1]);
+                // Keep at least the newest message even when one payload alone exceeds the token
+                // budget. It is the turn being continued and cannot be summarized out from under
+                // replay; all older messages still obey the bounded budget.
+                if cursor < n && retained.saturating_add(next) > budget {
+                    break;
+                }
+                cursor -= 1;
+                retained = retained.saturating_add(next);
+            }
+            cursor
+        };
         // Do not begin the kept tail on a user message carrying tool_results — that would orphan
         // the assistant tool_use turn before it (which is now summarized away), producing an
         // API-invalid transcript (code review). Walk keep_from back past any such boundary.
@@ -809,6 +935,21 @@ mod tests {
     }
 
     #[test]
+    fn default_retention_is_token_bounded_instead_of_six_messages() {
+        let policy = CompactionPolicy::default();
+        assert_eq!(policy.keep_recent, 0);
+        let mut messages = vec![Message::user_text("task")];
+        messages.extend((0..8).map(|_| big_user(100_000)));
+        let plan = policy.force_plan(&messages).expect("large middle compacts");
+        assert_eq!(
+            plan.keep_verbatim.len(),
+            1,
+            "the newest oversized turn remains replayable without retaining six oversized turns"
+        );
+        assert_eq!(plan.to_summarize.len(), 7);
+    }
+
+    #[test]
     fn request_estimate_counts_effective_system_tools_and_framing() {
         let messages = vec![Message::user_text("small"); 5];
         let tools = vec![ToolSpec {
@@ -916,6 +1057,21 @@ mod tests {
     }
 
     #[test]
+    fn prepared_tool_tokens_reuse_identity_and_invalidate_on_revision() {
+        let mut estimator = RequestEstimator::new();
+        let messages = vec![Message::user_text("task")];
+        let first = estimator.estimate_with_tool_tokens("system", &messages, 2, 777, 41);
+        let unchanged = estimator.estimate_with_tool_tokens("system", &messages, 2, 777, 41);
+        assert_eq!(first, unchanged);
+        assert_eq!(first.tool_tokens, 777);
+
+        let changed = estimator.estimate_with_tool_tokens("system", &messages, 1, 333, 42);
+        assert_eq!(changed.tool_tokens, 333);
+        assert_eq!(changed.framing_tokens + 12, first.framing_tokens);
+        assert_ne!(changed.total_tokens, first.total_tokens);
+    }
+
+    #[test]
     fn estimated_and_uncached_window_plans_agree() {
         let policy = CompactionPolicy::default();
         let messages = vec![big_user(9_000); policy.keep_recent + 3];
@@ -977,6 +1133,17 @@ mod tests {
     }
 
     #[test]
+    fn recent_retention_is_one_quarter_of_usable_context_with_hard_clamps() {
+        let policy = CompactionPolicy::default();
+        assert_eq!(policy.recent_retention_tokens(Some(4_096), 2_048), 2_000);
+        assert_eq!(policy.recent_retention_tokens(Some(32_768), 8_192), 6_144);
+        assert_eq!(
+            policy.recent_retention_tokens(Some(1_000_000), 8_192),
+            15_000
+        );
+    }
+
+    #[test]
     fn explicit_trigger_remains_fixed_across_model_windows() {
         let mut policy = CompactionPolicy::default();
         policy.set_fixed_trigger_tokens(42_000);
@@ -990,7 +1157,7 @@ mod tests {
     #[test]
     fn large_window_does_not_compact_at_the_legacy_default() {
         let policy = CompactionPolicy::default();
-        let messages = vec![big_user(53_000); policy.keep_recent + 3];
+        let messages = vec![big_user(150_000); 3];
         let estimate = estimate_request_context("system", &messages, &[]);
         assert!(estimate.total_tokens > 120_000);
         assert!(
@@ -1001,13 +1168,13 @@ mod tests {
     }
 
     #[test]
-    fn small_window_compacts_before_input_admission_boundary() {
+    fn small_window_compacts_only_after_crossing_the_usable_admission_boundary() {
         let policy = CompactionPolicy::default();
-        let messages = vec![big_user(2_200); policy.keep_recent + 3];
+        let messages = vec![big_user(30_000); 3];
         let estimate = estimate_request_context("system", &messages, &[]);
         let usable = 32_768usize - 8_192;
-        assert!(estimate.total_tokens < usable);
         assert!(estimate.total_tokens > policy.effective_trigger_tokens(Some(32_768), 8_192));
+        assert!(estimate.total_tokens > usable);
         assert!(
             policy
                 .plan_for_request_with_window("system", &messages, &[], Some(32_768), 8_192,)
@@ -1021,12 +1188,21 @@ mod tests {
         // window bought an extra synchronous summary round before the operator's own request.
         // The emergency valve declines it; only the end-of-turn path takes it.
         let policy = CompactionPolicy::default();
-        // The unidentified-route fallback is one token per UTF-8 byte. Keep this projection
-        // between the 60% trigger and the 75% admission boundary under that conservative owner.
-        let messages = vec![big_user(2_200); policy.keep_recent + 3];
+        // Find a deterministic fixture between the proactive 75% threshold and the hard usable
+        // admission boundary. Exact token-estimator calibration may evolve without invalidating
+        // the policy contract this test exercises.
+        let messages = (10_000..=40_000)
+            .step_by(250)
+            .map(|bytes| vec![big_user(bytes); 3])
+            .find(|candidate| {
+                let estimate = estimate_request_context("system", candidate, &[]);
+                estimate.total_tokens > policy.approaching_trigger_tokens(Some(32_768), 8_192)
+                    && estimate.total_tokens.saturating_add(8_192) <= 32_768
+            })
+            .expect("bounded fixture between proactive and admission thresholds");
         let estimate = estimate_request_context("system", &messages, &[]);
-        assert!(estimate.total_tokens.saturating_add(8_192) < 32_768);
-        assert!(estimate.total_tokens > policy.effective_trigger_tokens(Some(32_768), 8_192));
+        assert!(estimate.total_tokens.saturating_add(8_192) <= 32_768);
+        assert!(estimate.total_tokens > policy.approaching_trigger_tokens(Some(32_768), 8_192));
         assert!(
             policy
                 .plan_before_overflow("system", &messages, &[], Some(32_768), 8_192)
@@ -1044,7 +1220,7 @@ mod tests {
     #[test]
     fn the_emergency_valve_still_fires_when_the_projection_cannot_be_admitted() {
         let policy = CompactionPolicy::default();
-        let messages = vec![big_user(10_000); policy.keep_recent + 3];
+        let messages = vec![big_user(30_000); 3];
         let estimate = estimate_request_context("sys", &messages, &[]);
         assert!(estimate.total_tokens.saturating_add(8_192) > 32_768);
         assert!(

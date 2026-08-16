@@ -136,17 +136,18 @@ impl Bubblewrap {
             .stderr(Stdio::piped())
             .kill_on_drop(true); // code review F4: never leak a running process on timeout/return
         crate::configure_process_group(&mut cmd);
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| SandboxError::Spawn(e.to_string()))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| SandboxError::Spawn("child stdout was not piped".into()))?;
-        let stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| SandboxError::Spawn("child stderr was not piped".into()))?;
+        let mut child = cmd.spawn().map_err(|e| {
+            crate::publish_output_io_failure(conf, None);
+            SandboxError::Spawn(e.to_string())
+        })?;
+        let stdout = child.stdout.take().ok_or_else(|| {
+            crate::publish_output_io_failure(conf, Some(crate::OutputStream::Stdout));
+            SandboxError::Spawn("child stdout was not piped".into())
+        })?;
+        let stderr = child.stderr.take().ok_or_else(|| {
+            crate::publish_output_io_failure(conf, Some(crate::OutputStream::Stderr));
+            SandboxError::Spawn("child stderr was not piped".into())
+        })?;
         crate::collect_child_output(child, stdout, stderr, conf).await
     }
 

@@ -160,7 +160,7 @@ impl TempDraft {
             && metadata.file_type().is_symlink()
         {
             return Err(std::io::Error::other(
-                "Core temporary directory cannot be a symlink",
+                "Iteron temporary directory cannot be a symlink",
             ));
         }
         fs::create_dir_all(&directory)?;

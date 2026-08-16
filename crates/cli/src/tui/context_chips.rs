@@ -9,7 +9,7 @@ const UNREPORTED_INPUT_TOKENS: u64 = 0;
 const PREVIEW_BYTES: usize = 4 * 1024;
 const PREVIEW_LINES: usize = 24;
 
-pub(super) async fn handle(app: &mut App, session: &Session, arg: &str) {
+pub(super) fn handle(app: &mut App, session: &Session, arg: &str) {
     let input = arg.trim();
     if input.is_empty() || input == "stats" {
         show_stats(app, session);
@@ -21,6 +21,17 @@ pub(super) async fn handle(app: &mut App, session: &Session, arg: &str) {
     }
     if input == "help" {
         show_help(app);
+        return;
+    }
+    if input == "refresh" {
+        let removed = app.editor.clear_contexts();
+        app.note(
+            block::NoticeLevel::Ok,
+            format!(
+                "context refreshed · cleared {} from the next turn; add current sources again",
+                block::plural(removed, "context chip")
+            ),
+        );
         return;
     }
     if let Some(raw) = input.strip_prefix("preview ") {
@@ -50,13 +61,13 @@ pub(super) async fn handle(app: &mut App, session: &Session, arg: &str) {
         return;
     }
     if let Some(rest) = input.strip_prefix("add ") {
-        add(app, session, rest.trim()).await;
+        add(app, session, rest.trim());
         return;
     }
     usage_error(app);
 }
 
-async fn add(app: &mut App, session: &Session, input: &str) {
+fn add(app: &mut App, session: &Session, input: &str) {
     if let Some(raw_path) = input.strip_prefix("file ") {
         add_path(app, session, ContextKind::File, raw_path);
         return;
@@ -75,36 +86,11 @@ async fn add(app: &mut App, session: &Session, input: &str) {
             usage_error(app);
             return;
         }
-        match diff_document(session.workspace(), scope).await {
-            Ok((label, document)) => {
-                let attached = app
-                    .editor
-                    .attach_context(ContextKind::Diff, &label, document)
-                    .map(|chip| {
-                        (
-                            chip.id(),
-                            chip.display_name().to_owned(),
-                            chip.text_bytes(),
-                            short_digest(chip.digest()).to_owned(),
-                        )
-                    });
-                match attached {
-                    Ok((id, name, bytes, digest)) => app.note(
-                        block::NoticeLevel::Ok,
-                        format!(
-                            "attached {} context as [File #{}] · {} bytes · sha256:{} · deleting \
-                             the tag removes its chip",
-                            name, id, bytes, digest
-                        ),
-                    ),
-                    Err(error) => app.note(
-                        block::NoticeLevel::Err,
-                        format!("diff context refused: {error}"),
-                    ),
-                }
-            }
-            Err(error) => app.note(block::NoticeLevel::Err, error),
-        }
+        queue_context_diff_effect(app, session.workspace().to_path_buf(), scope.to_owned());
+        app.note(
+            block::NoticeLevel::Info,
+            "diff context queued · collecting in background",
+        );
         return;
     }
     usage_error(app);
@@ -116,42 +102,24 @@ fn add_path(app: &mut App, session: &Session, kind: ContextKind, raw_path: &str)
         usage_error(app);
         return;
     }
-    let result = if kind == ContextKind::File {
-        app.editor
-            .attach_file_path(session.workspace(), Path::new(raw_path))
-    } else {
-        app.editor
-            .attach_context_path(kind, session.workspace(), Path::new(raw_path))
-    }
-    .map(|chip| {
-        (
-            chip.id(),
-            chip.display_name().to_owned(),
-            chip.text_bytes(),
-            short_digest(chip.digest()).to_owned(),
-        )
-    });
-    match result {
-        Ok((id, name, bytes, digest)) => app.note(
-            block::NoticeLevel::Ok,
-            format!(
-                "attached {} {} as [File #{}] · {} bytes · sha256:{} · deleting the tag removes \
-                 its chip",
-                kind.label(),
-                name,
-                id,
-                bytes,
-                digest
-            ),
-        ),
-        Err(error) => app.note(
-            block::NoticeLevel::Err,
-            format!("{} context refused: {error}", kind.label()),
-        ),
-    }
+    let path = PathBuf::from(raw_path);
+    queue_file_path_effect(
+        app,
+        kind,
+        session.workspace().to_path_buf(),
+        path,
+        AttachmentOrigin::ContextFile,
+    );
+    app.note(
+        block::NoticeLevel::Info,
+        format!("{} context queued · reading in background", kind.label()),
+    );
 }
 
-async fn diff_document(workspace: &Path, scope: &str) -> Result<(String, String), String> {
+pub(super) async fn diff_document(
+    workspace: &Path,
+    scope: &str,
+) -> Result<(String, String), String> {
     let review = crate::workspace_review::observe(workspace).await?;
     // Verify every non-empty document before it is allowed to become model context. This prevents
     // a partial/torn subprocess response from being presented as a complete review snapshot.
@@ -305,6 +273,11 @@ fn show_help(app: &mut App) {
                 "/",
                 "context delete N",
                 "remove exactly one text context chip",
+            ),
+            item(
+                "/",
+                "context refresh",
+                "clear all injected snapshots before rebuilding next-turn context",
             ),
             block::PanelRow::Note(
                 "quoted paths with spaces are accepted; integrations are frozen at attach time"

@@ -36,6 +36,12 @@ pub(crate) const ANTHROPIC_CONTENT_BLOCKS_FORMAT: &str = "anthropic.messages.con
 /// What the parser emits as it consumes the stream. The kernel/scheduler reacts to these.
 #[derive(Debug, Clone, PartialEq)]
 pub enum StreamItem {
+    /// Successful response headers arrived. This is not a token and never selects a hedged
+    /// winner; it lets callers separate connect/header time from model prefill.
+    Accepted,
+    /// Fixed, secret-free adapter compatibility diagnostic. Providers must never place response
+    /// body text in this variant.
+    CompatibilityNotice(&'static str),
     /// Incremental assistant text (surface to the operator as it arrives).
     TextDelta(String),
     /// Incremental reasoning (extended thinking).
@@ -563,8 +569,21 @@ impl StreamParser {
                     StopReason::ToolUse if !has_tool_use => {
                         return Err("tool_use stop reason contained no complete tool call".into());
                     }
-                    StopReason::EndTurn
-                    | StopReason::StopSequence
+                    // `end_turn` carrying a COMPLETE tool call is a known wire-compatibility shape,
+                    // not a protocol violation: the block itself is whole, only the terminal label
+                    // disagrees. The OpenAI-compatible adapter already normalizes the same shape
+                    // (finish_reason=stop with complete tool calls), so rejecting it here would
+                    // discard a dispatchable turn that another adapter accepts. Announce the
+                    // normalization on the stream and continue as `tool_use`. The remaining
+                    // terminals stay fail-closed below: they assert the model stopped for a reason
+                    // that is incompatible with dispatching anything.
+                    StopReason::EndTurn if has_tool_use => {
+                        items.push(StreamItem::CompatibilityNotice(
+                            "provider returned stop_reason=end_turn with complete tool calls; treating it as tool_use",
+                        ));
+                        self.stop_reason = StopReason::ToolUse;
+                    }
+                    StopReason::StopSequence
                     | StopReason::Refusal
                     | StopReason::PauseTurn
                     | StopReason::Unknown(_)
@@ -1208,5 +1227,59 @@ live-secret-from-provider";
         assert_eq!(error, REDACTED_PROVIDER_STREAM_ERROR);
         assert!(!error.contains(secret));
         assert!(!error.contains("overloaded_error"));
+    }
+
+    /// A COMPLETE tool call under `end_turn` is normalized, not rejected: the block is whole and
+    /// only the terminal label disagrees, exactly as the OpenAI-compatible adapter already treats
+    /// `finish_reason=stop` with complete tool calls. Every other disagreeing terminal stays
+    /// fail-closed, because those assert a stop that is incompatible with dispatching anything.
+    #[test]
+    fn end_turn_with_a_complete_tool_call_is_normalized_but_other_terminals_still_fail_closed() {
+        let tool_call = |terminal: &str| {
+            vec![
+                message_start(4),
+                frame(
+                    "content_block_start",
+                    serde_json::json!({"index":0,"content_block":{"type":"tool_use","id":"tu_1","name":"read_file","input":{}}}),
+                ),
+                frame(
+                    "content_block_delta",
+                    serde_json::json!({"index":0,"delta":{"type":"input_json_delta","partial_json":"{\"path\":\"src/main.rs\"}"}}),
+                ),
+                frame("content_block_stop", serde_json::json!({"index":0})),
+                message_delta(terminal, 6),
+                frame("message_stop", serde_json::json!({})),
+            ]
+        };
+
+        let items = parse_sse_stream(&tool_call("end_turn")).unwrap();
+        assert!(items.iter().any(|item| matches!(
+            item,
+            StreamItem::CompatibilityNotice(notice)
+                if notice.contains("end_turn") && notice.contains("tool_use")
+        )));
+        let Some(StreamItem::TurnComplete {
+            blocks,
+            stop_reason,
+            ..
+        }) = items.last()
+        else {
+            panic!("expected a complete turn");
+        };
+        assert_eq!(*stop_reason, StopReason::ToolUse);
+        assert!(
+            blocks
+                .iter()
+                .any(|block| matches!(block, Block::ToolUse(call) if call.name == "read_file"))
+        );
+
+        for terminal in ["stop_sequence", "refusal", "pause_turn", "future_terminal"] {
+            assert!(
+                parse_sse_stream(&tool_call(terminal))
+                    .unwrap_err()
+                    .contains("disagreed with the Anthropic stop reason"),
+                "{terminal} must stay fail-closed"
+            );
+        }
     }
 }

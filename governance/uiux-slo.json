@@ -1,0 +1,122 @@
+{
+  "schema_id": "iteron-uiux-slo/1",
+  "measurement_required": true,
+  "startup": {
+    "warm_first_frame_p50_ms": 150,
+    "warm_first_frame_p95_ms": 300,
+    "cold_10000_sessions_p95_ms": 500,
+    "first_paint_to_initial_submission_p95_ms": 100,
+    "prepaint_network_requests": 0
+  },
+  "interaction": {
+    "key_handler_p95_ms": 4,
+    "key_handler_p99_ms": 8,
+    "key_to_paint_p99_ms": 50,
+    "activity_visible_after_ms": 250,
+    "activity_elapsed_after_ms": 1000,
+    "activity_remedy_after_ms": 2000
+  },
+  "stream": {
+    "event_to_paint_p95_ms": 50,
+    "event_to_paint_p99_ms": 100,
+    "provider_terminal_to_answer_complete_p95_ms": 50,
+    "provider_terminal_to_finalizing_p95_ms": 100,
+    "final_text_exact": true
+  },
+  "cancellation": {
+    "visual_ack_p95_ms": 50,
+    "cooperative_observed_p95_ms": 500,
+    "force_terminal_p95_ms": 1000,
+    "force_requires_stronger_authority": true
+  },
+  "provider": {
+    "connect_timeout_ms": 10000,
+    "response_header_timeout_ms": 60000,
+    "stream_idle_timeout_ms": 120000,
+    "first_token_slow_after_ms": 3000,
+    "first_token_stall_after_ms": 12000,
+    "interactive_retry_wait_ceiling_ms": 60000,
+    "default_max_in_flight_per_route": 4,
+    "http2_required": true,
+    "accepted_before_token_required": true
+  },
+  "context": {
+    "core_tools_eager": true,
+    "deferred_tools_monotonic": true,
+    "skill_listing_bytes": 6000,
+    "cache_usage_must_be_measured": true
+  },
+  "boundedness": {
+    "all_production_event_queues_bounded": true,
+    "all_user_visible_output_bounded": true
+  },
+  "render": {
+    "target_fps": 30,
+    "maximum_fps": 63,
+    "frame_coalesce_ms": 16,
+    "streaming_frame_p99_ms": 16,
+    "idle_cpu_milli_percent": 500,
+    "streaming_single_core_milli_percent": 5000
+  },
+  "picker": {
+    "shell_p95_ms": 100,
+    "warm_first_page_p95_ms": 300,
+    "cold_first_page_p95_ms": 800,
+    "page_size": 25,
+    "prefetch_distance": 5
+  },
+  "shell": {
+    "byte_to_paint_p95_ms": 50,
+    "foreground_yield_ms": 10000,
+    "nonempty_stdin_wait_ms": 250,
+    "delta_bytes": 8192,
+    "maximum_deltas": 10000,
+    "exit_tail_grace_ms": 100,
+    "pipe_drain_ms": 2000
+  },
+  "storage": {
+    "append_p95_ms": 10,
+    "turn_barrier_p95_ms": 50,
+    "asynchronous_index_p95_ms": 500,
+    "input_ready_waits_for_rebuildable_index": false
+  },
+  "required_activity_kinds": [
+    "boot",
+    "config",
+    "agent_discovery",
+    "plugin_verification",
+    "provider_refresh",
+    "first_paint",
+    "history_hydrate",
+    "session_index",
+    "workflow_rehydrate",
+    "submission_admission",
+    "context_assembly",
+    "hook_gate",
+    "route_permit",
+    "request_serialization",
+    "transport_connect",
+    "request_sent",
+    "waiting_first_byte",
+    "waiting_first_token",
+    "reasoning",
+    "responding",
+    "tool_proposed",
+    "tool_hook",
+    "tool_approval",
+    "tool_queued",
+    "tool_running",
+    "tool_post_processing",
+    "retry_backoff",
+    "route_failover",
+    "compaction",
+    "verification",
+    "checkpoint",
+    "record_commit",
+    "stop_hooks",
+    "workflow_result_persist",
+    "answer_complete",
+    "finalizing",
+    "input_ready"
+  ]
+}

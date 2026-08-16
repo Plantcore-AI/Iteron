@@ -186,15 +186,21 @@ impl Provider for RetryProvider {
                     }
                     let r01 = jitter_source.next01();
                     let jitter = full_jitter(&self.policy, attempt, r01);
-                    // Retry-After is a server lower-bound hint. Respect it up to the configured
-                    // cap so an untrusted or accidental multi-hour value cannot make a bounded
-                    // agent run hang indefinitely.
+                    let interactive_retry_ceiling = iteron_provider::max_interactive_retry_after();
+                    if let Some(hint) = e.retry_after()
+                        && hint > interactive_retry_ceiling
+                    {
+                        return Err(ProviderError::RetryAfterTooLong {
+                            retry_after_ms: u64::try_from(hint.as_millis()).unwrap_or(u64::MAX),
+                            limit_ms: u64::try_from(interactive_retry_ceiling.as_millis())
+                                .unwrap_or(u64::MAX),
+                        });
+                    }
+                    // Retry-After is a server lower bound, not a value the local jitter cap may
+                    // shorten. The explicit interactive ceiling above remains the upper bound.
                     let delay = e
                         .retry_after()
-                        .map(|hint| {
-                            hint.min(std::time::Duration::from_millis(self.policy.cap_ms))
-                                .max(jitter)
-                        })
+                        .map(|hint| hint.max(jitter))
                         .unwrap_or(jitter);
                     self.sleep(delay).await;
                     attempt += 1;
@@ -341,7 +347,7 @@ mod tests {
                 system: "system".into(),
                 messages: vec![],
                 input_images: Vec::new(),
-                tools: vec![],
+                tools: Vec::new().into(),
                 max_tokens: 10,
                 cache_system: false,
                 thinking_budget: 0,
@@ -429,7 +435,7 @@ mod tests {
                     system: "system".into(),
                     messages: vec![],
                     input_images: Vec::new(),
-                    tools: vec![],
+                    tools: Vec::new().into(),
                     max_tokens: 10,
                     cache_system: false,
                     thinking_budget: 0,
@@ -489,7 +495,7 @@ mod tests {
             system: "s".into(),
             messages: vec![],
             input_images: Vec::new(),
-            tools: vec![],
+            tools: Vec::new().into(),
             max_tokens: 10,
             cache_system: false,
             thinking_budget: 0,
@@ -531,7 +537,7 @@ mod tests {
             system: "s".into(),
             messages: vec![],
             input_images: Vec::new(),
-            tools: vec![],
+            tools: Vec::new().into(),
             max_tokens: 10,
             cache_system: false,
             thinking_budget: 0,
@@ -578,7 +584,7 @@ mod tests {
             system: "s".into(),
             messages: vec![],
             input_images: Vec::new(),
-            tools: vec![],
+            tools: Vec::new().into(),
             max_tokens: 10,
             cache_system: false,
             thinking_budget: 0,
@@ -609,7 +615,7 @@ mod tests {
             system: "s".into(),
             messages: vec![],
             input_images: Vec::new(),
-            tools: vec![],
+            tools: Vec::new().into(),
             max_tokens: 10,
             cache_system: false,
             thinking_budget: 0,
@@ -645,7 +651,7 @@ mod tests {
             system: "s".into(),
             messages: vec![],
             input_images: Vec::new(),
-            tools: vec![],
+            tools: Vec::new().into(),
             max_tokens: 10,
             cache_system: false,
             thinking_budget: 0,
@@ -721,7 +727,7 @@ mod tests {
                 system: "s".into(),
                 messages: vec![],
                 input_images: Vec::new(),
-                tools: vec![],
+                tools: Vec::new().into(),
                 max_tokens: 10,
                 cache_system: false,
                 thinking_budget: 0,
@@ -734,7 +740,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn respects_retry_after_hint_but_clamps_it_to_policy_cap() {
+    async fn respects_retry_after_hint_without_shortening_it_to_the_jitter_cap() {
         struct HintThenOk {
             calls: AtomicU32,
         }
@@ -794,7 +800,7 @@ mod tests {
             system: "s".into(),
             messages: vec![],
             input_images: Vec::new(),
-            tools: vec![],
+            tools: Vec::new().into(),
             max_tokens: 10,
             cache_system: false,
             thinking_budget: 0,
@@ -804,7 +810,7 @@ mod tests {
         assert!(rp.turn(&req, &mut |_| {}).await.is_ok());
         assert_eq!(
             observed.lock().unwrap().as_slice(),
-            &[std::time::Duration::from_secs(2)]
+            &[std::time::Duration::from_secs(60)]
         );
     }
 
@@ -873,7 +879,7 @@ mod tests {
             system: "s".into(),
             messages: vec![],
             input_images: Vec::new(),
-            tools: vec![],
+            tools: Vec::new().into(),
             max_tokens: 10,
             cache_system: false,
             thinking_budget: 0,
@@ -896,7 +902,7 @@ mod tests {
             system: "s".into(),
             messages: vec![],
             input_images: Vec::new(),
-            tools: vec![],
+            tools: Vec::new().into(),
             max_tokens: 10,
             cache_system: false,
             thinking_budget: 0,
@@ -960,7 +966,7 @@ mod tests {
             system: "s".into(),
             messages: vec![],
             input_images: Vec::new(),
-            tools: vec![],
+            tools: Vec::new().into(),
             max_tokens: 10,
             cache_system: false,
             thinking_budget: 0,

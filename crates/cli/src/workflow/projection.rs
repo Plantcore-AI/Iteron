@@ -150,6 +150,8 @@ pub fn ui_safe_progress(event: ProgressEvent) -> ProgressEvent {
             label,
             phase,
             model,
+            queued_ms,
+            available_permits,
         } => ProgressEvent::AgentStarted {
             index,
             label: safe_line(
@@ -173,6 +175,8 @@ pub fn ui_safe_progress(event: ProgressEvent) -> ProgressEvent {
                     UI_LABEL_MAX,
                 ),
             ),
+            queued_ms,
+            available_permits,
         },
         ProgressEvent::AgentActivity {
             index,
@@ -184,6 +188,13 @@ pub fn ui_safe_progress(event: ProgressEvent) -> ProgressEvent {
             tokens,
             tool_calls,
             last_tool_summary: safe_line_opt(last_tool_summary, TOOL_SUMMARY_MAX),
+        },
+        ProgressEvent::AgentCancelling {
+            index,
+            cleanup_deadline_ms,
+        } => ProgressEvent::AgentCancelling {
+            index,
+            cleanup_deadline_ms,
         },
         ProgressEvent::AgentFinished {
             index,

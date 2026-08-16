@@ -15,7 +15,14 @@ venv/
 *.log
 .data/
 runs/
-.iteron/
+# I-45. Two lines, and the second one is load-bearing. The natural `.iteron/` ignores
+# the same files but also makes `.iteron` an *ignored directory entry*; `git add` treats
+# a pathspec naming one as a fatal error, not a no-op, and the turn-end checkpoint stages
+# with `add -A -- . :(top,literal,exclude).iteron/runs`, which names it exactly. The plain
+# form therefore turned every checkpoint in this repository into a hard failure. Same
+# pattern `exclude_state_dir_from_git` (crates/record/src/lib.rs) writes to info/exclude.
+/.iteron/**
+!/.iteron/**/
 /governance/schema-compat/fixtures/record/.content/**/owner-locks/
 
 # os

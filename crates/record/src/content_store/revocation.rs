@@ -197,11 +197,10 @@ impl ContentRevocationGuard {
         }
         // Do not rebuild while holding the tenant content lock: the private session-cache writer
         // must acquire that same lock to publish its CAS handle and would fail Busy here. Removing
-        // the global manifest is the fail-closed propagation step. The next `session::list` lazily
-        // rebuilds projections after this guard drops, and every replay/hydration still crosses
-        // the durable tombstone gate.
-        remove_durable(&self.layout.runs_dir.join("sessions.index"))?;
-        crate::cache_io::sync_dir(&self.layout.runs_dir)?;
+        // both the sorted base and the O(1) delta generation is the fail-closed propagation step.
+        // A latency-sensitive read reports rebuild-required; explicit maintenance after this
+        // guard drops rebuilds only projections that still cross the tombstone gate successfully.
+        crate::session::invalidate_rebuildable_indexes(&self.layout.runs_dir)?;
         Ok(())
     }
 

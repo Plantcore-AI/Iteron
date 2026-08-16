@@ -1,7 +1,6 @@
 //! Ownership and restoration of terminal process state.
 
-use super::{keyboard_enhancement, mouse_capture, terminal_input};
-use crate::theme;
+use super::{keyboard_enhancement, mouse_capture};
 use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
 use crossterm::{cursor, execute, terminal};
 use std::io::Write;
@@ -157,13 +156,8 @@ impl TermGuard {
         replace_terminal_title_to(&mut std::io::stdout(), capabilities, title, &TITLE_ACTIVE)
     }
 
-    pub(super) fn negotiate_keyboard(
-        &self,
-        terminal_input: &mut terminal_input::TerminalInput,
-        environment: &theme::capabilities::Environment,
-    ) -> std::io::Result<bool> {
-        self.keyboard
-            .negotiate(terminal_input.supports_keyboard_enhancement(environment))
+    pub(super) fn enable_keyboard_enhancement(&self) -> std::io::Result<bool> {
+        self.keyboard.negotiate(true)
     }
 
     pub(super) fn toggle_mouse_capture(&mut self) -> std::io::Result<mouse_capture::State> {

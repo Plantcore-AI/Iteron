@@ -6,6 +6,58 @@ use std::process::Stdio;
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt};
 
+#[derive(Clone, Default)]
+pub(crate) struct ProcessCancellation {
+    inner: std::sync::Arc<ProcessCancellationInner>,
+}
+
+#[derive(Default)]
+struct ProcessCancellationInner {
+    cancelled: std::sync::atomic::AtomicBool,
+    changed: tokio::sync::Notify,
+}
+
+impl ProcessCancellation {
+    pub(crate) fn cancel(&self) {
+        self.inner
+            .cancelled
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.inner.changed.notify_waiters();
+    }
+
+    async fn cancelled(&self) {
+        loop {
+            if self
+                .inner
+                .cancelled
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
+                return;
+            }
+            let changed = self.inner.changed.notified();
+            if self
+                .inner
+                .cancelled
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
+                return;
+            }
+            changed.await;
+        }
+    }
+}
+
+tokio::task_local! {
+    static PROCESS_CANCELLATION: ProcessCancellation;
+}
+
+pub(crate) async fn scope_process_cancellation<F: std::future::Future>(
+    cancellation: ProcessCancellation,
+    future: F,
+) -> F::Output {
+    PROCESS_CANCELLATION.scope(cancellation, future).await
+}
+
 /// Bounds the post-kill drain of stdout/stderr. The child group is already dead, so the pipes
 /// should close immediately; this only fires when a process escaped the group and still holds an
 /// inherited descriptor, and must not become a second full-length timeout.
@@ -95,6 +147,7 @@ async fn capture_bounded<R: AsyncRead + Unpin>(
 }
 
 pub async fn run_process(spec: &ProcessSpec) -> Result<ProcessOutput, ProcessError> {
+    let cancellation = PROCESS_CANCELLATION.try_with(Clone::clone).ok();
     let label = spec.program.display().to_string();
     let mut command = tokio::process::Command::new(&spec.program);
     command
@@ -120,26 +173,44 @@ pub async fn run_process(spec: &ProcessSpec) -> Result<ProcessOutput, ProcessErr
         program: label.clone(),
         source,
     })?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| ProcessError::MissingPipe(label.clone(), "stdout"))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| ProcessError::MissingPipe(label.clone(), "stderr"))?;
+    let Some(stdout) = child.stdout.take() else {
+        iteron_sandbox::terminate_process_group_and_reap(&mut child).await;
+        return Err(ProcessError::MissingPipe(label, "stdout"));
+    };
+    let Some(stderr) = child.stderr.take() else {
+        iteron_sandbox::terminate_process_group_and_reap(&mut child).await;
+        return Err(ProcessError::MissingPipe(label, "stderr"));
+    };
     let stdout_task = tokio::spawn(capture_bounded(stdout, spec.max_output_bytes));
     let stderr_task = tokio::spawn(capture_bounded(stderr, spec.max_output_bytes));
 
-    let (timed_out, exit_code) = match tokio::time::timeout(spec.timeout, child.wait()).await {
-        Ok(result) => {
-            let status = result.map_err(|source| ProcessError::Wait {
-                program: label.clone(),
+    enum WaitOutcome {
+        Status(std::io::Result<std::process::ExitStatus>),
+        TimedOut,
+        Cancelled,
+    }
+    let waited = tokio::select! {
+        result = tokio::time::timeout(spec.timeout, child.wait()) => match result {
+            Ok(status) => WaitOutcome::Status(status),
+            Err(_) => WaitOutcome::TimedOut,
+        },
+        () = async {
+            match &cancellation {
+                Some(cancellation) => cancellation.cancelled().await,
+                None => std::future::pending().await,
+            }
+        } => WaitOutcome::Cancelled,
+    };
+    let (timed_out, exit_code) = match waited {
+        WaitOutcome::Status(Ok(status)) => (false, status.code().unwrap_or(-1)),
+        WaitOutcome::Status(Err(source)) => {
+            iteron_sandbox::terminate_process_group_and_reap(&mut child).await;
+            return Err(ProcessError::Wait {
+                program: label,
                 source,
-            })?;
-            (false, status.code().unwrap_or(-1))
+            });
         }
-        Err(_) => {
+        WaitOutcome::TimedOut | WaitOutcome::Cancelled => {
             iteron_sandbox::terminate_process_group_and_reap(&mut child).await;
             (true, -1)
         }
@@ -299,6 +370,50 @@ mod tests {
         assert!(noisy.success());
         assert_eq!(noisy.stdout.len(), 32);
         assert!(noisy.stdout_truncated);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn evaluation_cancellation_reaps_the_process_group_before_returning() {
+        let root = std::env::temp_dir().join(format!(
+            "iteron-eval-cancel-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let spec = ProcessSpec {
+            program: PathBuf::from("sh"),
+            args: vec![
+                "-c".into(),
+                "printf started > started; (sleep 1; printf escaped > escaped) & wait".into(),
+            ],
+            cwd: Some(root.clone()),
+            clear_env: false,
+            inherit_env: Vec::new(),
+            env: Vec::new(),
+            timeout: Duration::from_secs(30),
+            max_output_bytes: 64,
+        };
+        let cancellation = ProcessCancellation::default();
+        let cancel = cancellation.clone();
+        let wait_for_spawn = async {
+            for _ in 0..100 {
+                if root.join("started").exists() {
+                    cancel.cancel();
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            panic!("fixture process never crossed spawn");
+        };
+        let (output, ()) = tokio::join!(
+            scope_process_cancellation(cancellation, run_process(&spec)),
+            wait_for_spawn
+        );
+        assert!(output.unwrap().timed_out);
+        tokio::time::sleep(Duration::from_millis(1_100)).await;
+        assert!(!root.join("escaped").exists());
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[cfg(unix)]

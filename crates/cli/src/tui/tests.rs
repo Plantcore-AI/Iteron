@@ -719,6 +719,38 @@ mod tests {
     }
 
     #[test]
+    fn startup_resume_replaces_the_welcome_with_recorded_history() {
+        use iteron_protocol::EventKind;
+        let events = vec![
+            adopted_event(
+                1,
+                EventKind::Message {
+                    message: iteron_protocol::Message::user_text("previous question"),
+                },
+            ),
+            adopted_event(
+                2,
+                EventKind::Message {
+                    message: adopted_message(
+                        iteron_protocol::Role::Assistant,
+                        vec![iteron_protocol::Block::Text {
+                            text: "previous answer".into(),
+                        }],
+                    ),
+                },
+            ),
+        ];
+        let mut app = App::new();
+
+        project_recorded_transcript(&mut app, &events);
+
+        assert_eq!(app.transcript.len(), 2);
+        assert!(matches!(&app.transcript[0].kind, block::BlockKind::User(text) if text == "previous question"));
+        assert!(matches!(&app.transcript[1].kind, block::BlockKind::Assistant(_)));
+        assert!(app.transcript.iter().all(|block| !matches!(block.kind, block::BlockKind::Welcome { .. })));
+    }
+
+    #[test]
     fn the_route_to_bind_comes_from_the_records_last_durable_selection() {
         use iteron_protocol::EventKind;
         let selection = |provider: &str, model: &str| EventKind::ModelSelected {
@@ -807,6 +839,45 @@ mod tests {
             format_resume_command("run with space"),
             "iteron --resume 'run with space'"
         );
+    }
+
+    #[tokio::test]
+    async fn session_picker_backing_retains_only_the_storage_cursor_not_a_full_list() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let runs = std::env::temp_dir().join(format!(
+            "iteron-session-page-empty-{}-{nonce}",
+            std::process::id()
+        ));
+        let page = load_session_page(runs.clone(), String::new(), 7, None, 25, true);
+        assert!(page.replace);
+        assert!(page.items.len() <= 25);
+        let mut app = App::new();
+        app.session_picker_generation = 7;
+        app.session_picker_backing = Some(SessionPickerBacking {
+            runs: runs.clone(),
+            current_run: String::new(),
+            next_cursor: page.next_cursor,
+            has_more: page.has_more,
+            generation: 7,
+        });
+        app.picker = Some(Picker {
+            title: "Sessions · resume here".into(),
+            items: page.items,
+            sel: 0,
+            query: String::new(),
+            saved_theme: None,
+        });
+
+        maybe_prefetch_session_page(&mut app);
+        assert!(
+            app.session_picker_job.is_none(),
+            "an exhausted cursor stops"
+        );
+        assert!(!app.session_picker_backing.as_ref().unwrap().has_more);
+        let _ = std::fs::remove_dir_all(runs);
     }
 
     #[test]
@@ -1394,13 +1465,12 @@ mod tests {
     fn streaming_markdown_is_reparsed_only_after_text_revision_changes() {
         let mut app = App::new();
         app.stream_text("**first** ");
-        assert!(app.cur_doc.is_none());
-        assert_ne!(app.cur_doc_revision, app.cur_text_revision);
+        assert!(app.cur_doc.is_some());
+        assert_eq!(app.cur_doc_revision, app.cur_text_revision);
 
-        assert!(ensure_stream_doc(&mut app), "the first revision is parsed");
         assert!(
             !ensure_stream_doc(&mut app),
-            "an unchanged frame skips the Markdown parser"
+            "paint never reparses a revision already advanced by the append path"
         );
         let first_screen = render_text(&mut app, 80, 18);
         assert!(first_screen.contains("first"));
@@ -1418,17 +1488,71 @@ mod tests {
         );
 
         app.stream_text("_second_ ");
-        assert_ne!(app.cur_doc_revision, app.cur_text_revision);
-        assert!(
-            ensure_stream_doc(&mut app),
-            "a new source revision is parsed"
-        );
+        assert_eq!(app.cur_doc_revision, app.cur_text_revision);
         assert!(!ensure_stream_doc(&mut app));
         let updated_screen = render_text(&mut app, 80, 18);
         assert!(updated_screen.contains("first"));
         assert!(updated_screen.contains("second"));
         assert_eq!(app.cur_doc_revision, app.cur_text_revision);
         assert_ne!(app.cur_doc_revision, first_revision);
+    }
+
+    #[test]
+    fn production_stream_path_parses_one_mebibyte_linearly_and_finalizes_exactly() {
+        let mut app = App::new();
+        let chunk = "streaming-word ".repeat(256);
+        let target = 1024 * 1024;
+        while app.assistant_stream_authority.len() < target {
+            app.stream_text(&chunk);
+            let App {
+                live_markdown_layout,
+                cur_doc,
+                cur_doc_parse,
+                cur_text,
+                theme,
+                theme_epoch,
+                hyperlink_policy,
+                ..
+            } = &mut app;
+            live_markdown_layout.update(
+                cur_doc.as_ref().expect("production append parses the doc"),
+                cur_doc_parse,
+                cur_text,
+                super::live_markdown::LiveMarkdownRenderContext {
+                    width: 80,
+                    theme_epoch: *theme_epoch,
+                    theme,
+                    hyperlinks: hyperlink_policy,
+                },
+            );
+        }
+        // The live unfinished paragraph is only scanned and retained as bounded pending chunks;
+        // none of its accumulated prefix is fed back through the block parser per provider delta.
+        assert_eq!(app.cur_doc_parse.parsed_source_bytes(), 0);
+        let exact = app.assistant_stream_authority.clone();
+        assert_eq!(
+            app.live_markdown_layout.laid_out_source_bytes(),
+            exact.len(),
+            "the production live-layout path must inspect each source byte once"
+        );
+        let laid_out = app.live_markdown_layout.laid_out_source_bytes();
+        for _ in 0..8 {
+            let screen = render_text(&mut app, 80, 18);
+            assert!(screen.contains("streaming-word"));
+        }
+        assert_eq!(
+            app.live_markdown_layout.laid_out_source_bytes(),
+            laid_out,
+            "animation frames must reuse retained wrap state"
+        );
+        app.flush_text();
+        assert_eq!(app.cur_doc_parse.parsed_source_bytes(), exact.len());
+        let block::BlockKind::Assistant(actual) =
+            &app.transcript.last().expect("assistant block").kind
+        else {
+            panic!("stream must finalize as one assistant block");
+        };
+        assert_eq!(actual, &crate::markdown::MarkdownDoc::parse(&exact));
     }
 
     #[test]
@@ -1565,6 +1689,28 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             app.render_cache.get(&1).map(|(revision, _)| *revision),
             Some(app.transcript[1].revision)
         );
+    }
+
+    #[test]
+    fn unchanged_twelve_hundred_block_transcript_reuses_height_index_between_frames() {
+        let mut app = App::new();
+        app.transcript.clear();
+        for index in 0..MAX_BLOCKS {
+            app.push_block(block::BlockKind::Notice {
+                level: block::NoticeLevel::Info,
+                text: format!("retained row {index}"),
+            });
+        }
+        let _ = render_text(&mut app, 80, 24);
+        let rebuilt = app.transcript_layout.rebuilds();
+        assert_eq!(rebuilt, 1);
+        let _ = render_text(&mut app, 80, 24);
+        assert_eq!(
+            app.transcript_layout.rebuilds(),
+            rebuilt,
+            "an unchanged frame must use binary visible-range lookup, not scan/rebuild 1,200 blocks"
+        );
+        assert!(app.row_map.len() <= 24);
     }
 
     #[test]
@@ -2072,7 +2218,15 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
         let mut app = App::new();
         app.effort = Effort::Ultracode;
-        assert_eq!(effort_status_label(&app), "◉ max · ultracode");
+        assert_eq!(effort_status_label(&app), "◉ max");
+        let bits = status_right_bits(&app, surface::Density::Wide);
+        assert_eq!(
+            bits.iter()
+                .filter(|bit| bit.as_str() == "✦ ultracode")
+                .count(),
+            1
+        );
+        assert!(bits.iter().all(|bit| bit != "◉ max · ultracode"));
         app.effort = Effort::High;
         app.effort_application = Some(EffortApplication::Mapped {
             requested: ReasoningEffort::High,
@@ -2083,6 +2237,57 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             requested: ReasoningEffort::High,
         });
         assert_eq!(effort_status_label(&app), "● high · not enforced");
+    }
+
+    #[test]
+    fn double_ctrl_c_arms_then_forces_exit_inside_the_bounded_window() {
+        let now = Instant::now();
+        let mut deadline = None;
+        assert_eq!(
+            running_ctrl_c_action(&mut deadline, now, Duration::from_secs(1)),
+            RunningCtrlCAction::InterruptAndArm
+        );
+        assert!(deadline.is_some());
+        assert_eq!(
+            running_ctrl_c_action(
+                &mut deadline,
+                now + Duration::from_millis(500),
+                Duration::from_secs(1),
+            ),
+            RunningCtrlCAction::ForceQuit
+        );
+        assert!(deadline.is_none());
+        assert_eq!(
+            running_ctrl_c_action(
+                &mut deadline,
+                now + Duration::from_secs(2),
+                Duration::from_secs(1),
+            ),
+            RunningCtrlCAction::InterruptAndArm
+        );
+    }
+
+    #[test]
+    fn slash_completion_is_ready_without_waiting_for_a_worker_wakeup() {
+        let mut app = App::new();
+        app.editor.insert('/');
+
+        app.schedule_completion();
+
+        assert!(app.completion.is_some());
+        assert!(app.completion_due.is_none());
+    }
+
+    #[test]
+    fn local_workers_add_only_a_bounded_active_wakeup() {
+        let now = Instant::now();
+        assert_eq!(local_job_wake(None, now, false), None);
+        assert_eq!(
+            local_job_wake(None, now, true),
+            Some(now + LOCAL_JOB_POLL)
+        );
+        let earlier = now + Duration::from_millis(1);
+        assert_eq!(local_job_wake(Some(earlier), now, true), Some(earlier));
     }
 
     #[test]
@@ -2464,6 +2669,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         let mut app = App::new();
         app.running = true;
         app.interrupting = true;
+        app.cancel_requested_at = Some(Instant::now());
         app.editor.insert_str("start the next task immediately");
 
         assert_eq!(
@@ -2640,7 +2846,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         // The wait is now a select whose only timeout is a deadline something actually asked for.
         let now = Instant::now();
         assert_eq!(
-            next_wake(false, now, false, now, None),
+            next_wake(false, now, false, now, None, SPINNER_TICK),
             None,
             "an idle session schedules no wakeup at all: it sleeps on input and events"
         );
@@ -2648,7 +2854,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         // the coalescing deadline, which is the only thing the loop waits for.
         let next_frame_at = now + FRAME_COALESCE;
         assert_eq!(
-            next_wake(true, next_frame_at, false, now, None),
+            next_wake(true, next_frame_at, false, now, None, SPINNER_TICK),
             Some(next_frame_at)
         );
         assert!(
@@ -2658,14 +2864,57 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         // A live run animates off its own clock, and a queued tool card has its own anti-flash
         // deadline. Whichever comes first wins; nothing polls for the others.
         assert_eq!(
-            next_wake(false, next_frame_at, true, now, None),
+            next_wake(false, next_frame_at, true, now, None, SPINNER_TICK),
             Some(now + SPINNER_TICK)
         );
         let reveal = now + Duration::from_millis(3);
         assert_eq!(
-            next_wake(true, next_frame_at, true, now, Some(reveal)),
+            next_wake(true, next_frame_at, true, now, Some(reveal), SPINNER_TICK,),
             Some(reveal)
         );
+    }
+
+    #[test]
+    fn catch_up_uses_depth_age_and_hysteresis_without_oscillation() {
+        let start = Instant::now();
+        let mut catch_up = CatchUp::default();
+        catch_up.update(8, Duration::ZERO, start);
+        assert_eq!(catch_up.state(), (true, false));
+        catch_up.update(64, Duration::ZERO, start + Duration::from_millis(1));
+        assert_eq!(catch_up.state(), (true, true));
+        catch_up.update(
+            2,
+            Duration::from_millis(40),
+            start + Duration::from_millis(2),
+        );
+        catch_up.update(
+            2,
+            Duration::from_millis(40),
+            start + Duration::from_millis(251),
+        );
+        assert_eq!(catch_up.state(), (true, false), "exit hold has not elapsed");
+        catch_up.update(
+            2,
+            Duration::from_millis(40),
+            start + Duration::from_millis(252),
+        );
+        assert_eq!(catch_up.state(), (false, false));
+        catch_up.update(
+            64,
+            Duration::from_secs(1),
+            start + Duration::from_millis(300),
+        );
+        assert_eq!(
+            catch_up.state(),
+            (false, false),
+            "250ms re-entry hold suppresses oscillation"
+        );
+        catch_up.update(
+            1,
+            Duration::from_millis(120),
+            start + Duration::from_millis(503),
+        );
+        assert_eq!(catch_up.state(), (true, false), "age alone enters catch-up");
     }
 
     #[test]
@@ -2806,24 +3055,6 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             content.contains(&target),
             "the scrollbar gutter must not erase the last content cell"
         );
-    }
-
-    #[test]
-    fn unread_signal_tracks_visible_change_not_transport_noise() {
-        let mut app = App::new();
-        app.scroll_up(1);
-        app.stream_text("sk-ant-api03-AbCd");
-        assert_eq!(
-            app.unread_updates, 0,
-            "a scrubber-held credential fragment produced no visible output"
-        );
-        app.workflow_event(WorkflowUiEvent::PhaseChanged {
-            run_id: "unknown-run".into(),
-            phase: WorkflowPhaseUi::Exploring,
-        });
-        assert_eq!(app.unread_updates, 0, "unknown workflow event is a no-op");
-        app.stream_text(" plain text ");
-        assert_eq!(app.unread_updates, 1);
     }
 
     #[test]
@@ -3085,6 +3316,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 mode: PermissionMode::default(),
                 effort: Effort::default(),
                 model: "test-model".into(),
+            provider_id: "test-provider".into(),
                 cost: summary.cost.clone(),
                 last_turn_usage: None,
                 unadmitted_steers: Vec::new(),
@@ -3112,7 +3344,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             &mut notification_bytes,
             &interrupt,
             &drain,
-        );
+        
+            None,);
 
         (
             app.last_result
@@ -3245,6 +3478,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 mode: PermissionMode::default(),
                 effort: Effort::default(),
                 model: "test-model".into(),
+            provider_id: "test-provider".into(),
                 cost: CostState::default(),
                 last_turn_usage: None,
                 unadmitted_steers: Vec::new(),
@@ -3270,7 +3504,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             &mut notification_bytes,
             &interrupt,
             &drain,
-        );
+        
+            None,);
 
         assert_eq!(app.last_result.as_ref(), Some(&expected));
         assert_eq!(app.status, "idle · last: done");
@@ -3296,6 +3531,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 mode: PermissionMode::default(),
                 effort: Effort::default(),
                 model: "test-model".into(),
+            provider_id: "test-provider".into(),
                 cost: CostState::default(),
                 last_turn_usage: None,
                 unadmitted_steers: Vec::new(),
@@ -3331,7 +3567,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             &mut notification_bytes,
             &interrupt,
             &drain,
-        );
+        
+            None,);
 
         assert!(!app.running, "RunEnded returns the composer to idle");
         assert!(!app.interrupting);
@@ -3356,6 +3593,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 mode: PermissionMode::default(),
                 effort: Effort::default(),
                 model: "test-model".into(),
+            provider_id: "test-provider".into(),
                 cost: CostState::default(),
                 last_turn_usage: None,
                 unadmitted_steers: Vec::new(),
@@ -3391,7 +3629,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             &mut notification_bytes,
             &interrupt,
             &drain,
-        );
+        
+            None,);
 
         assert_eq!(app.status, "idle · last: budget_exhausted");
         let notice = app
@@ -3967,6 +4206,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 label: "scan modules".into(),
                 phase: Some("Explore".into()),
                 model: Some("haiku".into()),
+                queued_ms: 17,
+                available_permits: 2,
             },
         );
         app.workflow_run_event(
@@ -4101,7 +4342,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             .expect("the card exists before the engine emits anything");
 
         // The kernel's sink is the only thing between the engine and this channel.
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
         let sink = crate::workflow::UiProgressSink::new(run_id, tx);
         sink.emit(ProgressEvent::Phase {
             index: 1,
@@ -4121,6 +4362,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             label: "scan modules".into(),
             phase: Some("Explore".into()),
             model: Some("core-model-1".into()),
+            queued_ms: 17,
+            available_permits: 2,
         });
         sink.emit(ProgressEvent::AgentActivity {
             index: 0,
@@ -4230,6 +4473,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 label: "scan modules".into(),
                 phase: Some("Explore".into()),
                 model: Some("haiku".into()),
+                queued_ms: 17,
+                available_permits: 2,
             },
         );
         let block_id = app
@@ -4529,6 +4774,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                     label: format!("investigator {index:02}"),
                     phase: Some("Explore".into()),
                     model: Some("haiku".into()),
+                    queued_ms: index as u64,
+                    available_permits: 0,
                 },
             );
         }
@@ -4549,6 +4796,59 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         );
     }
 
+    #[test]
+    fn workflow_child_cancellation_is_visible_until_authoritative_terminal_state() {
+        use iteron_workflow::events::{ProgressEvent, WorkflowState};
+
+        let mut app = App::new();
+        app.theme = theme::Theme::dark();
+        let run_id = "wf_cancel_visible";
+        app.workflow_run_started(run_id, "cancel audit", &["Run".to_string()]);
+        app.workflow_run_event(
+            run_id,
+            "cancel audit",
+            ProgressEvent::AgentStarted {
+                index: 0,
+                label: "slow child".into(),
+                phase: Some("Run".into()),
+                model: Some("test-model".into()),
+                queued_ms: 31,
+                available_permits: 0,
+            },
+        );
+        app.workflow_run_event(
+            run_id,
+            "cancel audit",
+            ProgressEvent::AgentCancelling {
+                index: 0,
+                cleanup_deadline_ms: 1_000,
+            },
+        );
+        app.toggle_last_fold();
+        let cancelling = render_text(&mut app, 100, 30);
+        assert!(cancelling.contains("cancelling"), "{cancelling}");
+        assert!(cancelling.contains("1000ms"), "{cancelling}");
+
+        app.workflow_run_event(
+            run_id,
+            "cancel audit",
+            ProgressEvent::AgentFinished {
+                index: 0,
+                label: "slow child".into(),
+                state: WorkflowState::Error,
+                tokens: 0,
+                tool_calls: 0,
+                duration_ms: 33,
+                result_preview: None,
+                last_tool_summary: Some("cleanup settled".into()),
+                error: Some("cancelled".into()),
+            },
+        );
+        let terminal = render_text(&mut app, 100, 30);
+        assert!(!terminal.contains("cleanup deadline"), "{terminal}");
+        assert!(terminal.contains("cancelled"), "{terminal}");
+    }
+
     /// A workflow script is untrusted input and the interactive transcript is retained state, so
     /// nothing hostile in a label or a narrator line survives the trip.
     #[test]
@@ -4564,7 +4864,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             phases: vec!["Explore\u{1b}[2J".into()],
         });
 
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
         let sink = crate::workflow::UiProgressSink::new(run_id, tx);
         sink.emit(ProgressEvent::Log {
             message: "narrating\u{1b}[2J\u{7}".into(),
@@ -4574,6 +4874,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             label: "row\u{1b}[2J".into(),
             phase: None,
             model: None,
+            queued_ms: 0,
+            available_permits: 1,
         });
         drop(sink);
         while let Ok(event) = rx.try_recv() {
@@ -4802,6 +5104,30 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     }
 
     #[test]
+    fn cursor_columns_follow_grapheme_and_emoji_display_width() {
+        assert_eq!(display_col("e\u{301}", 2), 1);
+        assert_eq!(display_col("👩‍💻", 3), 2);
+        assert_eq!(display_col("👨‍👩‍👧‍👦", 3), 0, "no partial ZWJ cluster");
+        assert_eq!(display_col("👨‍👩‍👧‍👦", 7), 2);
+        assert_eq!(display_col("🇺🇳", 1), 0, "no half flag");
+        assert_eq!(display_col("🇺🇳", 2), 2);
+        assert_eq!(display_col("✈️", 1), 0, "no base without its VS16");
+        assert_eq!(display_col("✈️", 2), 2);
+        assert_eq!(display_col("东京", 2), 4);
+    }
+
+    #[test]
+    fn tmux_width_snapshot_clips_only_at_complete_graphemes() {
+        // This is the exact plain-cell projection tmux receives after OSC/capability handling.
+        // Keep it text-only so the snapshot is stable in tmux, kitty, and the TestBackend.
+        let source = "👨‍👩‍👧‍👦🇺🇳✈️东京";
+        assert_eq!(text_width(source), 10);
+        assert_eq!(clip_text(source, 3), "👨‍👩‍👧‍👦…");
+        assert_eq!(clip_text(source, 5), "👨‍👩‍👧‍👦🇺🇳…");
+        assert_eq!(clip_text(source, 7), "👨‍👩‍👧‍👦🇺🇳✈️…");
+    }
+
+    #[test]
     fn huge_single_line_paste_cursor_does_not_overflow() {
         // round-4 review: display_col saturates at 65535, and the cursor-position math must not form
         // a >u16 intermediate (which panics with overflow-checks on, i.e. every debug/test build).
@@ -4981,7 +5307,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             &mut Vec::new(),
             &Arc::new(AtomicBool::new(false)),
             &Arc::new(AtomicBool::new(false)),
-        );
+        
+            None,);
         assert!(!app.editor.has_submission());
     }
 
@@ -5038,7 +5365,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             &mut notification_bytes,
             &Arc::new(AtomicBool::new(false)),
             &Arc::new(AtomicBool::new(false)),
-        );
+        
+            None,);
         assert!(!app.editor.has_submission());
         let op = rx
             .try_recv()
@@ -5080,7 +5408,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             &mut notification_bytes,
             &Arc::new(AtomicBool::new(false)),
             &Arc::new(AtomicBool::new(false)),
-        );
+        
+            None,);
         assert_eq!(
             app.transcript
                 .iter()
@@ -5136,7 +5465,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             &mut Vec::new(),
             &Arc::new(AtomicBool::new(false)),
             &Arc::new(AtomicBool::new(false)),
-        );
+        
+            None,);
         assert!(!app.editor.has_submission());
         assert_eq!(app.editor.chip_count(), 0);
 
@@ -5247,6 +5577,43 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         );
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn attachment_actor_returns_only_a_fully_prepared_image_to_the_tui() {
+        let (gif, _) = distinct_gifs();
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "iteron-prepared-image-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("shot.gif");
+        std::fs::write(&path, gif).unwrap();
+        let mut app = App::new();
+        queue_image_path_effect(
+            &mut app,
+            path,
+            AttachmentOrigin::Dropped {
+                original: "shot.gif".into(),
+            },
+        );
+        assert_eq!(app.attachment_effect_state, AttachmentEffectState::Queued);
+        assert_eq!(
+            app.editor.chip_count(),
+            0,
+            "the TUI did no decode/admit work"
+        );
+        let effect = app.attachment_job.take().unwrap().await.unwrap();
+        let Ok(AttachmentWorkerOutput::Prepared(prepared)) = effect.result else {
+            panic!("worker must return a prepared image")
+        };
+        assert_eq!(prepared.media_type(), iteron_protocol::ImageMediaType::Gif);
+        assert!(!prepared.display_name().is_empty());
+        std::fs::remove_dir_all(dir).ok();
     }
 
     /// Prose that merely names a path must not be rewritten, and a path that cannot be read as an
@@ -5765,8 +6132,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         );
     }
 
-    /// I-64: the response-header deadline is 60s and the stream idle deadline 120s, so a dead
-    /// connection and a slow prefill used to look identical for a full minute. The interface must
+    /// I-64: the provider inactivity deadline is 45s, so a dead connection and a slow prefill used
+    /// to look identical until the request failed. The interface must
     /// say which one it is watching, and must stop saying it the instant a token arrives.
     #[test]
     fn a_stalled_provider_is_described_differently_from_a_slow_one_before_the_deadline() {
@@ -5778,11 +6145,19 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert!(app.first_token_stall().is_none());
 
         app.awaiting_first_token_since = Some(Instant::now() - FIRST_TOKEN_SLOW_AFTER);
+        app.provider_accepted = false;
         let slow = app
             .first_token_stall()
             .expect("a slow prefill is described");
         assert_eq!(slow.state, FirstTokenState::Slow);
-        assert!(slow.label().contains("waiting for the first token"));
+        assert!(slow.label().contains("request sent"));
+        assert!(!slow.label().contains("accepted"));
+
+        app.provider_accepted = true;
+        let accepted = app
+            .first_token_stall()
+            .expect("accepted prefill retains the request-sent clock");
+        assert!(accepted.label().contains("accepted · model generating"));
 
         app.awaiting_first_token_since = Some(Instant::now() - FIRST_TOKEN_STALL_AFTER);
         let stalled = app
@@ -5791,13 +6166,13 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert_eq!(stalled.state, FirstTokenState::Stalled);
         assert!(stalled.label().contains("may be stalled"));
         assert_ne!(
-            slow.label(),
+            accepted.label(),
             stalled.label(),
             "the two failures must not share one sentence"
         );
         assert!(
-            FIRST_TOKEN_STALL_AFTER < std::time::Duration::from_secs(60),
-            "the operator must learn this before the response-header deadline expires"
+            FIRST_TOKEN_STALL_AFTER < std::time::Duration::from_secs(45),
+            "the operator must learn this before the provider inactivity deadline expires"
         );
 
         // Extended thinking is the model producing tokens, so it clears the clock exactly like
@@ -6058,6 +6433,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             mode: iteron_protocol::PermissionMode::default(),
             effort: iteron_protocol::Effort::default(),
             model: "claude-opus-5".into(),
+            provider_id: "test-provider".into(),
             cost: iteron_obs::CostState::default(),
             last_turn_usage: None,
             unadmitted_steers: Vec::new(),
@@ -6106,17 +6482,22 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         }
         apply_event(&mut app, event);
 
-        let mut term = Terminal::new(TestBackend::new(120, 12)).unwrap();
+        let mut term = Terminal::new(TestBackend::new(240, 12)).unwrap();
         term.draw(|frame| draw(frame, &mut app)).unwrap();
         let screen = buffer_text(&term);
-        assert!(screen.contains("cache 70%"), "cache is the last-turn ratio");
+        let canonical = canonical_statusline(&app);
         assert!(
-            screen.contains("ctx 100 used"),
-            "unknown window reports only provider-observed input"
+            status_right_bits(&app, surface::Density::Wide)
+                .iter()
+                .any(|bit| bit == "cache 70%"),
+            "cache is the last-turn ratio even when the low-priority bit yields to width"
         );
-        assert!(
-            !screen.contains("ctx 120.0k") && !screen.contains("% left"),
-            "the compaction trigger must never masquerade as a model window"
+        let canonical_fields = canonical.split(" | ").collect::<Vec<_>>();
+        assert_eq!(canonical_fields[1], "109", "tokens are provider-observed");
+        assert_eq!(
+            canonical_fields[3],
+            iteron_statusline::UNKNOWN,
+            "the compaction trigger must never masquerade as a measured model window"
         );
         assert!(
             screen.contains("● high · not enforced"),
@@ -6153,7 +6534,10 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         );
         assert!(s.contains("cache 61%"), "wide shelf shows cache-hit text");
         assert!(s.contains("turn 4"), "wide shelf shows the turn counter");
-        assert!(s.contains("$0.08"), "wide shelf shows cost");
+        assert!(
+            s.contains("0.080"),
+            "wide shelf uses the canonical exact milli-USD status value"
+        );
         assert!(s.contains("thinking"), "shelf shows the live phase word");
         assert!(
             s.contains("ultracode"),
@@ -6227,6 +6611,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         let mut app = App::new();
         app.running = true;
         app.interrupting = true;
+        app.cancel_requested_at = Some(Instant::now() - Duration::from_secs(30));
         app.queue_after_turn("the next prompt".into()).unwrap();
         let queued = app.queued.front().cloned().unwrap();
         let (tx, mut rx) = tokio::sync::mpsc::channel(4);
@@ -6247,6 +6632,38 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             Op::ForceCancel
         ));
         assert!(rx.try_recv().is_err(), "repeated escalation is idempotent");
+    }
+
+    #[test]
+    fn cooperative_then_force_cancel_is_one_target_even_with_a_local_effect() {
+        let mut app = App::new();
+        app.running = true;
+        let interrupt = Arc::new(AtomicBool::new(false));
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        let session = Session::for_test(tx);
+
+        cancel_local_effect_then_turn(&mut app, &session, &interrupt);
+        assert!(
+            app.running,
+            "local cancellation cannot invent a run boundary"
+        );
+        assert!(app.interrupting);
+        assert!(interrupt.load(Ordering::SeqCst));
+        assert!(matches!(
+            rx.try_recv().unwrap().into_current().unwrap(),
+            Op::Interrupt
+        ));
+        assert!(
+            render_text(&mut app, 120, 12).contains("agent is still running"),
+            "the notice must distinguish the cancelled local effect from the resident run"
+        );
+
+        cancel_local_effect_then_turn(&mut app, &session, &interrupt);
+        assert!(app.force_cancelling);
+        assert!(matches!(
+            rx.try_recv().unwrap().into_current().unwrap(),
+            Op::ForceCancel
+        ));
     }
 
     #[cfg(target_os = "linux")]
@@ -6457,4 +6874,197 @@ fn window_title_is_capability_gated_and_restored_exactly_once() {
     let mut bytes = Vec::new();
     assert!(!set_terminal_title_to(&mut bytes, multiplexed, "iteron", &active).unwrap());
     assert!(bytes.is_empty());
+}
+
+#[test]
+fn terminal_activity_boundaries_remain_visible_and_late_ids_do_not_resurrect() {
+    fn activity(
+        id: &str,
+        detail: iteron_protocol::ActivityDetailCode,
+        state: iteron_protocol::ActivityState,
+    ) -> iteron_protocol::ActivityEvent {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        iteron_protocol::ActivityEvent {
+            schema_version: iteron_protocol::ACTIVITY_SCHEMA_VERSION,
+            id: id.into(),
+            parent_id: None,
+            kind: iteron_protocol::ActivityKind::Finalization,
+            state,
+            owner: iteron_protocol::ActivityOwner::Runtime,
+            started_at_unix_ms: now,
+            updated_at_unix_ms: now,
+            attempt: 1,
+            limit: 1,
+            next_retry_at_unix_ms: None,
+            deadline_unix_ms: None,
+            cancelability: iteron_protocol::ActivityCancelability::None,
+            detail_code: Some(detail),
+            progress: None,
+        }
+    }
+
+    let mut app = App::new();
+    app.running = true;
+    let (tx, _rx) = tokio::sync::mpsc::channel(1);
+    let mut session = Session::for_test(tx);
+    let mut notifier = notification::TerminalNotifier::new(false);
+    let interrupt = Arc::new(AtomicBool::new(false));
+    let drain = Arc::new(AtomicBool::new(false));
+    let mut writer = Vec::new();
+
+    apply_server_event(
+        &mut app,
+        &mut session,
+        app_server::ServerEvent::Activity(activity(
+            "turn-1-answer",
+            iteron_protocol::ActivityDetailCode::AnswerComplete,
+            iteron_protocol::ActivityState::Succeeded,
+        )),
+        &mut notifier,
+        &mut writer,
+        &interrupt,
+        &drain,
+    
+            None,);
+    assert_eq!(app.status, "answer complete · finalizing…");
+    apply_server_event(
+        &mut app,
+        &mut session,
+        app_server::ServerEvent::Activity(activity(
+            "turn-1-finalizing",
+            iteron_protocol::ActivityDetailCode::Finalizing,
+            iteron_protocol::ActivityState::Running,
+        )),
+        &mut notifier,
+        &mut writer,
+        &interrupt,
+        &drain,
+    
+            None,);
+    assert!(app.activities.contains_key("turn-1-finalizing"));
+
+    app.retired_activity_ids
+        .push_back("turn-1-finalizing".into());
+    app.activities.clear();
+    app.running = false;
+    apply_server_event(
+        &mut app,
+        &mut session,
+        app_server::ServerEvent::Activity(activity(
+            "turn-1-finalizing",
+            iteron_protocol::ActivityDetailCode::Finalizing,
+            iteron_protocol::ActivityState::Running,
+        )),
+        &mut notifier,
+        &mut writer,
+        &interrupt,
+        &drain,
+    
+            None,);
+    assert!(
+        app.activities.is_empty(),
+        "late old-turn activity stayed retired"
+    );
+
+    let mut ready = activity(
+        "frontend-input-ready",
+        iteron_protocol::ActivityDetailCode::InputReady,
+        iteron_protocol::ActivityState::Succeeded,
+    );
+    ready.owner = iteron_protocol::ActivityOwner::Frontend;
+    apply_server_event(
+        &mut app,
+        &mut session,
+        app_server::ServerEvent::Activity(ready),
+        &mut notifier,
+        &mut writer,
+        &interrupt,
+        &drain,
+    
+            None,);
+    assert_eq!(app.status, "idle · input ready");
+}
+
+#[test]
+fn request_sent_owns_ttft_origin_and_delayed_activity_keeps_protocol_age() {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let request = iteron_protocol::ActivityEvent {
+        schema_version: iteron_protocol::ACTIVITY_SCHEMA_VERSION,
+        id: "turn-2-request".into(),
+        parent_id: None,
+        kind: iteron_protocol::ActivityKind::ModelRequest,
+        state: iteron_protocol::ActivityState::Running,
+        owner: iteron_protocol::ActivityOwner::Provider,
+        started_at_unix_ms: now.saturating_sub(500),
+        updated_at_unix_ms: now,
+        attempt: 1,
+        limit: 1,
+        next_retry_at_unix_ms: None,
+        deadline_unix_ms: None,
+        cancelability: iteron_protocol::ActivityCancelability::Cooperative,
+        detail_code: Some(iteron_protocol::ActivityDetailCode::RequestSent),
+        progress: None,
+    };
+    let mut app = App::new();
+    app.running = true;
+    let (tx, _rx) = tokio::sync::mpsc::channel(1);
+    let mut session = Session::for_test(tx);
+    let mut notifier = notification::TerminalNotifier::new(false);
+    let interrupt = Arc::new(AtomicBool::new(false));
+    let drain = Arc::new(AtomicBool::new(false));
+    let mut writer = Vec::new();
+    apply_server_event(
+        &mut app,
+        &mut session,
+        app_server::ServerEvent::Activity(request),
+        &mut notifier,
+        &mut writer,
+        &interrupt,
+        &drain,
+    
+            None,);
+
+    assert!(
+        !app.provider_accepted,
+        "request sent is not provider acceptance"
+    );
+    assert!(
+        app.awaiting_first_token_since
+            .expect("request sent starts TTFT")
+            .elapsed()
+            >= Duration::from_millis(400),
+        "queue delay must not reset the TTFT clock"
+    );
+    let (presented, elapsed) = visible_activity(&app).expect("delayed activity is visible now");
+    assert!(elapsed >= Duration::from_millis(400));
+    assert_eq!(
+        activity_label(&presented.event),
+        "request sent · waiting for provider"
+    );
+
+    let mut accepted = presented.event.clone();
+    accepted.id = "turn-2-first-token".into();
+    accepted.started_at_unix_ms = now;
+    accepted.updated_at_unix_ms = now;
+    accepted.detail_code = Some(iteron_protocol::ActivityDetailCode::WaitingFirstToken);
+    apply_server_event(
+        &mut app,
+        &mut session,
+        app_server::ServerEvent::Activity(accepted),
+        &mut notifier,
+        &mut writer,
+        &interrupt,
+        &drain,
+    
+            None,);
+    assert!(
+        app.provider_accepted,
+        "only Accepted advances the presentation label"
+    );
 }

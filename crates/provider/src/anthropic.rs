@@ -65,7 +65,7 @@ impl Anthropic {
         Self::with_client(key, api_root, client)
     }
 
-    fn with_client(
+    pub(crate) fn with_client(
         key: String,
         api_root: ApiRoot,
         client: crate::catalog::RuntimeHttpClient,
@@ -142,18 +142,6 @@ impl Anthropic {
             serde_json::json!(req.system)
         };
 
-        let tools: Vec<serde_json::Value> = req
-            .tools
-            .iter()
-            .map(|t| {
-                serde_json::json!({
-                    "name": t.name,
-                    "description": t.description,
-                    "input_schema": t.input_schema,
-                })
-            })
-            .collect();
-
         // The system block alone leaves the transcript uncached, and by turn five the transcript
         // is over 90% of the request. Roll a second breakpoint along with the conversation: it
         // sits on the last block of the second-to-last message, so turn N reads every prior turn
@@ -185,7 +173,7 @@ impl Anthropic {
             "model": req.model,
             "max_tokens": req.max_tokens,
             "system": system,
-            "tools": tools,
+            "tools": req.tools.anthropic().as_ref(),
             "messages": messages,
             "stream": true,
         });
@@ -654,38 +642,100 @@ fn required_native_string<'a>(
     Ok(value)
 }
 
-/// Split a chunk of SSE text into complete `SseFrame`s. SSE frames are separated by a blank
-/// line; each has an `event:` and a `data:` field. Returns (frames, leftover).
-fn split_frames(buf: &str) -> (Vec<SseFrame>, String) {
-    let mut frames = Vec::new();
-    let mut rest = buf;
-    while let Some((idx, separator_len)) = frame_boundary(rest) {
-        let (block, after) = rest.split_at(idx);
-        let mut event = String::new();
-        let mut data_lines = Vec::new();
-        for line in block.lines() {
-            if let Some(e) = line.strip_prefix("event:") {
-                event = e.trim().to_string();
-            } else if let Some(d) = line.strip_prefix("data:") {
-                data_lines.push(d.trim());
-            }
-        }
-        let data = data_lines.join("\n");
-        if !event.is_empty() && !data.is_empty() {
-            frames.push(SseFrame { event, data });
-        }
-        rest = &after[separator_len..];
-    }
-    (frames, rest.to_string())
+#[derive(Default)]
+struct AnthropicSseDecoder {
+    pending: Vec<u8>,
+    cursor: usize,
 }
 
-fn frame_boundary(buf: &str) -> Option<(usize, usize)> {
-    match (buf.find("\n\n"), buf.find("\r\n\r\n")) {
+impl AnthropicSseDecoder {
+    fn push(&mut self, bytes: &[u8]) -> Result<Vec<SseFrame>, ProviderError> {
+        self.pending.extend_from_slice(bytes);
+        let mut frames = Vec::new();
+        while let Some((idx, separator_len)) = frame_boundary(&self.pending[self.cursor..]) {
+            if idx
+                > iteron_tunables::param_integer(
+                    "provider.anthropic.max_sse_frame_bytes",
+                    MAX_SSE_FRAME_BYTES,
+                )
+            {
+                return Err(ProviderError::Decode(format!(
+                    "Anthropic SSE frame exceeded {MAX_SSE_FRAME_BYTES} bytes"
+                )));
+            }
+            let block_start = self.cursor;
+            let block_end = block_start.saturating_add(idx);
+            let block =
+                std::str::from_utf8(&self.pending[block_start..block_end]).map_err(|_| {
+                    ProviderError::Decode("Anthropic stream contained invalid UTF-8".into())
+                })?;
+            self.cursor = block_end.saturating_add(separator_len);
+            let mut event = String::new();
+            let mut data_lines = Vec::new();
+            for line in block.lines() {
+                if let Some(e) = line.strip_prefix("event:") {
+                    event = e.trim().to_string();
+                } else if let Some(d) = line.strip_prefix("data:") {
+                    data_lines.push(d.trim());
+                }
+            }
+            let data = data_lines.join("\n");
+            if !event.is_empty() && !data.is_empty() {
+                frames.push(SseFrame { event, data });
+            }
+        }
+        if self.pending.len().saturating_sub(self.cursor)
+            > iteron_tunables::param_integer(
+                "provider.anthropic.max_sse_frame_bytes",
+                MAX_SSE_FRAME_BYTES,
+            )
+        {
+            return Err(ProviderError::Decode(format!(
+                "Anthropic SSE frame exceeded {MAX_SSE_FRAME_BYTES} bytes"
+            )));
+        }
+        if self.cursor >= 64 * 1024 && self.cursor >= self.pending.len() / 2 {
+            self.pending.drain(..self.cursor);
+            self.cursor = 0;
+        }
+        Ok(frames)
+    }
+
+    fn finish(&self) -> Result<(), ProviderError> {
+        let pending = std::str::from_utf8(&self.pending[self.cursor..]).map_err(|_| {
+            ProviderError::Decode(
+                "Anthropic stream ended with an incomplete or invalid UTF-8 code point".into(),
+            )
+        })?;
+        if pending.trim().is_empty() {
+            Ok(())
+        } else {
+            Err(ProviderError::Decode(
+                "Anthropic stream ended with an incomplete SSE frame".into(),
+            ))
+        }
+    }
+}
+
+fn frame_boundary(buf: &[u8]) -> Option<(usize, usize)> {
+    let lf = buf.windows(2).position(|window| window == b"\n\n");
+    let crlf = buf.windows(4).position(|window| window == b"\r\n\r\n");
+    match (lf, crlf) {
         (Some(lf), Some(crlf)) if crlf < lf => Some((crlf, 4)),
         (Some(lf), _) => Some((lf, 2)),
         (None, Some(crlf)) => Some((crlf, 4)),
         (None, None) => None,
     }
+}
+
+#[cfg(test)]
+fn split_frames(buf: &str) -> (Vec<SseFrame>, String) {
+    let mut decoder = AnthropicSseDecoder::default();
+    let frames = decoder.push(buf.as_bytes()).unwrap();
+    let rest = std::str::from_utf8(&decoder.pending[decoder.cursor..])
+        .unwrap()
+        .to_owned();
+    (frames, rest)
 }
 
 #[async_trait::async_trait]
@@ -756,28 +806,53 @@ impl Provider for Anthropic {
         {
             request = request.header("anthropic-beta", header);
         }
-        let header_timeout = deadline.saturating_duration_since(Instant::now()).min(
-            iteron_tunables::param_duration(
-                "provider.anthropic.response_header_timeout",
-                RESPONSE_HEADER_TIMEOUT,
-            ),
-        );
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(ProviderError::Timeout {
+                stage: crate::ProviderTimeoutStage::RequestTotal,
+            });
+        }
+        let header_timeout = remaining.min(iteron_tunables::param_duration(
+            "provider.anthropic.response_header_timeout",
+            RESPONSE_HEADER_TIMEOUT,
+        ));
         let resp = tokio::time::timeout(header_timeout, request.send())
             .await
-            .map_err(|_| ProviderError::Http("Anthropic response headers timed out".into()))?
-            .map_err(|e| ProviderError::Http(e.to_string()))?;
+            .map_err(|_| ProviderError::Timeout {
+                stage: crate::ProviderTimeoutStage::ResponseHeaders,
+            })?
+            .map_err(|e| {
+                if e.is_connect() {
+                    ProviderError::ConnectFailed
+                } else if e.is_timeout() {
+                    ProviderError::Timeout {
+                        stage: crate::ProviderTimeoutStage::DnsConnect,
+                    }
+                } else {
+                    ProviderError::Http(e.to_string())
+                }
+            })?;
+
+        // The downgrade is recorded on the client (a once-only flag) but is NOT put on the
+        // stream: this stream is a frozen machine contract, and a transport diagnostic is not part
+        // of the model's answer. A lifecycle exporter can read the flag; the wire stays stable.
+        let _ = self.client.observe_response_version(resp.version());
 
         let status = resp.status();
         let response_retry_after = crate::retry_after_from_headers(resp.headers());
         let response_request_id = crate::request_id_from_headers(resp.headers());
         if !status.is_success() {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(ProviderError::Timeout {
+                    stage: crate::ProviderTimeoutStage::RequestTotal,
+                });
+            }
             let error = tokio::time::timeout(
-                deadline.saturating_duration_since(Instant::now()).min(
-                    iteron_tunables::param_duration(
-                        "provider.anthropic.response_header_timeout",
-                        RESPONSE_HEADER_TIMEOUT,
-                    ),
-                ),
+                remaining.min(iteron_tunables::param_duration(
+                    "provider.anthropic.response_header_timeout",
+                    RESPONSE_HEADER_TIMEOUT,
+                )),
                 crate::api_error_from_response(
                     resp,
                     AdapterKind::AnthropicMessages,
@@ -785,9 +860,12 @@ impl Provider for Anthropic {
                 ),
             )
             .await
-            .map_err(|_| ProviderError::Http("Anthropic error body timed out".into()))?;
+            .map_err(|_| ProviderError::Timeout {
+                stage: crate::ProviderTimeoutStage::ErrorBody,
+            })?;
             return Err(error);
         }
+        on_item(StreamItem::Accepted);
 
         // Quota state is on the success headers, so it is knowable here — before a single token
         // has arrived and long before the 429 that used to be its first symptom (I-53).
@@ -796,11 +874,9 @@ impl Provider for Anthropic {
         }
 
         let mut stream = resp.bytes_stream();
-        // Buffer RAW bytes: a UTF-8 char can be split across network chunks, and decoding each
-        // chunk in isolation corrupts it (code review F2). We decode only the complete-UTF-8
-        // prefix and carry the trailing partial bytes to the next iteration.
-        let mut byte_buf: Vec<u8> = Vec::new();
-        let mut buf = String::new(); // decoded text awaiting frame-splitting
+        // Keep raw bytes behind an advancing cursor. UTF-8 is decoded only for complete SSE
+        // frames, so split code points remain intact without shifting the pending tail per frame.
+        let mut decoder = AnthropicSseDecoder::default();
         let mut parser = StreamParser::with_route_scope(self.route_scope.clone())
             .map_err(ProviderError::Configuration)?; // persistent across chunks
         let mut result: Option<TurnResult> = None;
@@ -813,19 +889,19 @@ impl Provider for Anthropic {
             // would otherwise hang the run forever (code review F3). Bound each read.
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                return Err(ProviderError::Http(
-                    "Anthropic stream exceeded total deadline".into(),
-                ));
+                return Err(ProviderError::Timeout {
+                    stage: crate::ProviderTimeoutStage::RequestTotal,
+                });
             }
             let wait = remaining.min(transport.stream_idle);
             let next = tokio::time::timeout(wait, stream.next())
                 .await
-                .map_err(|_| {
-                    if wait == remaining {
-                        ProviderError::Http("Anthropic stream exceeded total deadline".into())
+                .map_err(|_| ProviderError::Timeout {
+                    stage: if wait == remaining {
+                        crate::ProviderTimeoutStage::RequestTotal
                     } else {
-                        ProviderError::Http("stream stalled: no bytes for 120s".into())
-                    }
+                        crate::ProviderTimeoutStage::StreamIdle
+                    },
                 })?;
             let Some(chunk) = next else { break };
             let bytes = chunk.map_err(|e| ProviderError::Http(e.to_string()))?;
@@ -837,27 +913,7 @@ impl Provider for Anthropic {
                     "Anthropic stream exceeded {max_stream_bytes} bytes"
                 )));
             }
-            byte_buf.extend_from_slice(&bytes);
-            // Decode the longest valid-UTF-8 prefix; keep any trailing incomplete char in byte_buf.
-            let valid = match std::str::from_utf8(&byte_buf) {
-                Ok(s) => {
-                    buf.push_str(s);
-                    byte_buf.len()
-                }
-                Err(e) => {
-                    if e.error_len().is_some() {
-                        return Err(ProviderError::Decode(
-                            "Anthropic stream contained invalid UTF-8".into(),
-                        ));
-                    }
-                    let up_to = e.valid_up_to();
-                    buf.push_str(std::str::from_utf8(&byte_buf[..up_to]).unwrap());
-                    up_to
-                }
-            };
-            byte_buf.drain(..valid);
-            let (frames, leftover) = split_frames(&buf);
-            buf = leftover;
+            let frames = decoder.push(&bytes)?;
             for frame in &frames {
                 if result.is_some() {
                     return Err(ProviderError::Decode(
@@ -905,38 +961,15 @@ impl Provider for Anthropic {
                     on_item(item);
                 }
             }
-            if buf.len()
-                > iteron_tunables::param_integer(
-                    "provider.anthropic.max_sse_frame_bytes",
-                    MAX_SSE_FRAME_BYTES,
-                )
-            {
-                return Err(ProviderError::Decode(format!(
-                    "Anthropic SSE frame exceeded {MAX_SSE_FRAME_BYTES} bytes"
-                )));
-            }
             // message_stop is the protocol terminal. Do not wait for the peer to close an HTTP
             // connection it may keep alive; all complete frames from this chunk were validated.
             if let Some(result) = result.take() {
-                if !buf.trim().is_empty() || !byte_buf.is_empty() {
-                    return Err(ProviderError::Decode(
-                        "Anthropic message_stop was followed by an incomplete frame".into(),
-                    ));
-                }
+                decoder.finish()?;
                 return Ok(result);
             }
         }
 
-        if !byte_buf.is_empty() {
-            return Err(ProviderError::Decode(
-                "Anthropic stream ended with an incomplete UTF-8 code point".to_string(),
-            ));
-        }
-        if !buf.trim().is_empty() {
-            return Err(ProviderError::Decode(
-                "Anthropic stream ended with an incomplete SSE frame".to_string(),
-            ));
-        }
+        decoder.finish()?;
 
         result.ok_or_else(|| ProviderError::Decode("stream ended before message_stop".into()))
     }
@@ -953,7 +986,7 @@ mod tests {
             system: "system".into(),
             messages: Vec::new(),
             input_images: Vec::new(),
-            tools: Vec::new(),
+            tools: Vec::new().into(),
             max_tokens: 100,
             cache_system: true,
             thinking_budget: 9_000,

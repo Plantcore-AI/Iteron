@@ -143,6 +143,7 @@ pub struct KernelSpawnerContext {
     /// the resolved per-route ceiling by the workflow width.
     pub(crate) provider_governor: Option<iteron_provider::ProviderGovernor>,
     pub(crate) fallback_provider_routes: Vec<super::GovernedProviderRoute>,
+    pub(crate) token_calibration: iteron_ctx::TokenCalibrationStore,
     /// Exact immutable V1/V2 checkpoint inherited from the trusted composition root. `None` is
     /// kept only so construction can finish before a caller supplies the held pin; spawning fails
     /// closed rather than consulting the resolver or ambient defaults when it remains absent.
@@ -264,6 +265,9 @@ pub struct KernelSpawnerContext {
     pub(super) lifecycle_emitter: Option<iteron_obs::lifecycle::LifecycleEmitter>,
     pub(super) lifecycle_telemetry: Option<iteron_obs::otel::lifecycle::LifecycleTelemetryRuntime>,
     pub(super) lifecycle_hooks: Option<super::lifecycle_hooks::LifecycleHookDispatcher>,
+    /// Shared content-free live activity projection. Children and host-owned writer settlement use
+    /// the same bounded sink as the parent; no workflow status waits on frontend consumption.
+    pub(super) activity: super::turn_activity::ActivitySink,
     /// Trusted operator Hook policy and its session-owned external-effect journal. A read-only
     /// child cannot run model-requested code, but operator Hooks remain host policy and therefore
     /// apply uniformly to every model/tool/context boundary in the lineage.
@@ -374,6 +378,7 @@ impl KernelSpawnerContext {
             provider_governor_policy: iteron_provider::GovernorPolicy::default(),
             provider_governor: None,
             fallback_provider_routes: Vec::new(),
+            token_calibration: iteron_ctx::TokenCalibrationStore::default(),
             tunables_pin: None,
             pricing_port: None,
             usd_budget: None,
@@ -429,6 +434,7 @@ impl KernelSpawnerContext {
             lifecycle_emitter: None,
             lifecycle_telemetry: None,
             lifecycle_hooks: None,
+            activity: super::turn_activity::ActivitySink::default(),
             hooks: Hooks::default(),
             hook_effect_journal: None,
             environment_context: None,
@@ -685,6 +691,8 @@ impl KernelSpawner {
         sub.lifecycle_emitter = cx.lifecycle_emitter.clone();
         sub.lifecycle_telemetry = cx.lifecycle_telemetry.clone();
         sub.lifecycle_hooks = cx.lifecycle_hooks.clone();
+        sub.activity = cx.activity.clone();
+        sub.token_calibration = cx.token_calibration.clone();
         if cx.usd_budget.is_some() {
             sub.usd_budget = cx.usd_budget.clone();
         }

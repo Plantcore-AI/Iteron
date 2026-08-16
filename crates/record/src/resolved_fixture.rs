@@ -136,7 +136,7 @@ fn all_family_input() -> ResolutionInput {
                 "effort_reasoning_map" => effort_reasoning_map(),
                 "token_estimator" => token_estimator(),
                 "compaction_trigger" => compaction_trigger(),
-                "compaction_keep_recent" => ResolutionValue::Integer { value: 6 },
+                "compaction_keep_recent" => ResolutionValue::Integer { value: 0 },
                 "compaction_adaptive" => compaction_adaptive(),
                 "summary_profile" => summary_profile(),
                 id @ ("route_topology"
@@ -146,6 +146,7 @@ fn all_family_input() -> ResolutionInput {
                 | "writer_fan_turn_split"
                 | "worker_min_turns"
                 | "wall_split"
+                | "fan_concurrency"
                 | "child_ceiling"
                 | "direct_child_allocation"
                 | "subagent_effort_inheritance"
@@ -451,7 +452,7 @@ fn effort_reasoning_map() -> ResolutionValue {
 fn compaction_trigger() -> ResolutionValue {
     object([
         ("mode", enumv("adaptive")),
-        ("usable_window_ratio", decimal(8, 1)),
+        ("usable_window_ratio", decimal(1, 0)),
         ("fallback_trigger_tokens", integer(120_000)),
         ("output_reserve_tokens", integer(8_192)),
     ])
@@ -459,8 +460,8 @@ fn compaction_trigger() -> ResolutionValue {
 
 fn compaction_adaptive() -> ResolutionValue {
     object([
-        ("usable_window_ratio", decimal(8, 1)),
-        ("keep_recent_messages", integer(6)),
+        ("usable_window_ratio", decimal(1, 0)),
+        ("keep_recent_messages", integer(0)),
         ("output_reserve_tokens", integer(8_192)),
     ])
 }
@@ -503,6 +504,7 @@ fn execution_runtime_owner_value(family: &str, route: &RouteIdentity) -> Resolut
             ("fan_denominator", integer(3)),
             ("minimum_fan_seconds", integer(1)),
         ]),
+        "fan_concurrency" => integer(1),
         "child_ceiling" => child_ceiling(),
         "direct_child_allocation" => object([
             ("writer_turn_numerator", integer(1)),

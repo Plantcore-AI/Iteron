@@ -232,6 +232,13 @@ impl Agent {
                     if verdict.outcome == iteron_verify::VerificationOutcome::Cancelled {
                         return Ok(verdict);
                     }
+                    // Drain admits the physical verifier that was already running, not the rest
+                    // of a repeat/quorum batch. Once that verifier has supplied an authoritative
+                    // terminal verdict, return it to the run loop so the checkpoint can be made
+                    // before another external command is dispatched.
+                    if self.requested_control() == InboundControl::Drain {
+                        return Ok(verdict);
+                    }
                     last_detail = truncate_tail(
                         &verdict.detail,
                         self.verification_policy.feedback.command_output_bytes,
@@ -613,6 +620,21 @@ impl Agent {
             Some(turn),
             LifecyclePayload::default(),
         );
+        let attempt = self.verify_attempts.saturating_add(1);
+        let limit = self.verification_policy.retry.max_attempts;
+        let timeout = Duration::from_secs(self.verification_policy.verifier_timeout_secs);
+        let verification_activity = self.activity.span_attempt(
+            turn_activity::ActivityStage::Verification,
+            turn,
+            attempt,
+            limit,
+            timeout,
+        );
+        self.ui(UiEvent::Notice(format!(
+            "verify: `{}` · attempt {attempt}/{limit} · timeout {}s",
+            iteron_protocol::text::head(command, 240),
+            timeout.as_secs()
+        )));
         let started = Instant::now();
         let dispatch = self.dispatch_verify(command).await;
         let (settlement, verdict) = match dispatch {
@@ -666,6 +688,13 @@ impl Agent {
                 ..LifecyclePayload::default()
             },
         );
+        if verdict.passed() {
+            verification_activity.complete();
+        } else if verdict.outcome == iteron_verify::VerificationOutcome::TimedOut {
+            verification_activity.timeout(iteron_protocol::ActivityDetailCode::Verification);
+        } else {
+            verification_activity.fail(iteron_protocol::ActivityDetailCode::Verification);
+        }
         Ok(verdict)
     }
 
@@ -677,6 +706,14 @@ impl Agent {
             return self.run_bounded_verify(oracle).await;
         }
 
+        let attempt = self.verify_attempts.saturating_add(1);
+        let command_identity = format!("verify:{}", &verification_command_digest(command)[..16]);
+        let (output_observer, output_receiver) = iteron_sandbox::OutputObserver::bounded(
+            command_identity,
+            attempt,
+            iteron_sandbox::OutputObserver::DEFAULT_QUEUE_CAPACITY,
+        );
+
         let mut oracle = iteron_verify::TestOracle::new(
             iteron_sandbox::platform_sandbox(),
             self.workspace.clone(),
@@ -684,7 +721,8 @@ impl Agent {
         )
         .with_sensitive_env_names(self.sensitive_env_names.clone())
         .with_output_tail_bytes(self.verification_policy.feedback.oracle_output_bytes)
-        .with_timeout_secs(self.verification_policy.verifier_timeout_secs);
+        .with_timeout_secs(self.verification_policy.verifier_timeout_secs)
+        .with_output_observer(output_observer.clone());
         if let Some(remaining) = self.run_time_remaining() {
             // The sandbox API uses whole seconds. Round its cleanup-aware process timeout up,
             // then enforce the exact (possibly sub-second) deadline in `run_bounded_verify`.
@@ -698,18 +736,40 @@ impl Agent {
                 rounded_up_secs.min(self.verification_policy.verifier_timeout_secs),
             );
         }
-        self.run_bounded_verify(std::sync::Arc::new(oracle)).await
+        self.run_bounded_verify_observed(
+            std::sync::Arc::new(oracle),
+            Some(output_observer),
+            Some(output_receiver),
+        )
+        .await
     }
 
     /// Evaluate one oracle under the run's exact absolute deadline and cooperative cancellation.
     /// A short poll interval also lets the ordered submission queue surface `Interrupt`/`Drain`
     /// while a verification command is active. The injected oracle exists only in test builds;
     /// production always reaches this through the sandbox-backed `TestOracle` above.
+    #[cfg(test)]
     pub(super) async fn run_bounded_verify(
         &mut self,
         oracle: std::sync::Arc<dyn iteron_verify::Oracle>,
     ) -> VerifyDispatch {
-        let verifier_deadline = Instant::now()
+        self.run_bounded_verify_observed(oracle, None, None).await
+    }
+
+    async fn run_bounded_verify_observed(
+        &mut self,
+        oracle: std::sync::Arc<dyn iteron_verify::Oracle>,
+        output_observer: Option<iteron_sandbox::OutputObserver>,
+        mut output_receiver: Option<iteron_sandbox::OutputObserverReceiver>,
+    ) -> VerifyDispatch {
+        enum VerifyPoll {
+            Verdict(iteron_verify::Verdict),
+            Output(Option<iteron_sandbox::OutputObservation>),
+            Tick,
+        }
+
+        let verification_started = Instant::now();
+        let verifier_deadline = verification_started
             .checked_add(Duration::from_secs(
                 self.verification_policy.verifier_timeout_secs,
             ))
@@ -719,14 +779,33 @@ impl Agent {
         // process can exist. The boundary needs this distinction: a cancellation before the first
         // poll provably dispatched nothing, while one after it leaves an unobservable outcome.
         let mut dispatched = false;
+        let mut next_visible_heartbeat = Duration::from_secs(1);
+        let mut last_output_notice = verification_started;
+        let mut visible_output_bytes = [0_usize; 2];
+        let output_limit = self
+            .verification_policy
+            .feedback
+            .command_output_bytes
+            .min(1_048_576);
         let mut evaluation = Box::pin(async move { oracle.evaluate().await });
         loop {
-            let queue_cancelled = self.collect_inbound_ops(TurnId(self.seq_turn));
+            let _ = self.collect_inbound_ops(TurnId(self.seq_turn));
+            let control = self.requested_control();
             let flag_cancelled = self
                 .interrupt
                 .as_ref()
                 .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed));
-            if queue_cancelled.interrupts() || flag_cancelled {
+            // Drain is quiescence, not cancellation. An already-admitted verifier must produce
+            // its authoritative verdict before the drain checkpoint is taken; only interactive
+            // interrupt/force-cancel may drop the oracle mid-dispatch.
+            if matches!(
+                control,
+                InboundControl::Interrupt | InboundControl::ForceCancel
+            ) || flag_cancelled
+            {
+                if let Some(observer) = &output_observer {
+                    observer.cancel();
+                }
                 let verdict = iteron_verify::Verdict::cancelled(
                     "verification cancelled by the operator before a verdict",
                 );
@@ -736,12 +815,18 @@ impl Agent {
             let verifier_remaining = verifier_deadline.saturating_duration_since(Instant::now());
             let run_remaining = self.run_time_remaining();
             if run_remaining.is_some_and(|duration| duration.is_zero()) {
+                if let Some(observer) = &output_observer {
+                    observer.cancel();
+                }
                 let verdict = iteron_verify::Verdict::timed_out(
                     "verification exceeded the absolute run deadline",
                 );
                 return VerifyDispatch::from_drop(dispatched, verdict);
             }
             if verifier_remaining.is_zero() {
+                if let Some(observer) = &output_observer {
+                    observer.cancel();
+                }
                 let verdict = iteron_verify::Verdict::timed_out(
                     "verification exceeded its configured verifier timeout",
                 );
@@ -756,17 +841,34 @@ impl Agent {
             ));
 
             dispatched = true;
-            match tokio::time::timeout(poll_for, &mut evaluation).await {
-                Ok(verdict) => {
+            let observation = async {
+                match output_receiver.as_mut() {
+                    Some(receiver) => receiver.recv().await,
+                    None => std::future::pending().await,
+                }
+            };
+            let polled = tokio::select! {
+                biased;
+                verdict = &mut evaluation => VerifyPoll::Verdict(verdict),
+                observation = observation => VerifyPoll::Output(observation),
+                () = tokio::time::sleep(poll_for) => VerifyPoll::Tick,
+            };
+            match polled {
+                VerifyPoll::Verdict(verdict) => {
                     // Cancellation wins a boundary race with a just-completed oracle. This keeps
                     // an operator stop from being converted into Done merely because both became
                     // ready in the same scheduler tick.
-                    let queue_cancelled = self.collect_inbound_ops(TurnId(self.seq_turn));
+                    let _ = self.collect_inbound_ops(TurnId(self.seq_turn));
+                    let control = self.requested_control();
                     let flag_cancelled = self
                         .interrupt
                         .as_ref()
                         .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed));
-                    if queue_cancelled.interrupts() || flag_cancelled {
+                    if matches!(
+                        control,
+                        InboundControl::Interrupt | InboundControl::ForceCancel
+                    ) || flag_cancelled
+                    {
                         // The oracle completed; only its verdict is being discarded in favour of
                         // the operator's stop. The sandboxed process demonstrably ended, so the
                         // effect terminal is observed even though the caller sees Cancelled.
@@ -776,11 +878,74 @@ impl Agent {
                     }
                     return VerifyDispatch::Observed(verdict);
                 }
-                Err(_) => {
+                VerifyPoll::Output(Some(iteron_sandbox::OutputObservation::Chunk(chunk))) => {
+                    let stream_index = match chunk.stream {
+                        iteron_sandbox::OutputStream::Stdout => 0,
+                        iteron_sandbox::OutputStream::Stderr => 1,
+                    };
+                    let remaining_capacity =
+                        output_limit.saturating_sub(visible_output_bytes[stream_index]);
+                    if remaining_capacity > 0 {
+                        let take = chunk.bytes.len().min(remaining_capacity);
+                        visible_output_bytes[stream_index] =
+                            visible_output_bytes[stream_index].saturating_add(take);
+                        let decoded = String::from_utf8_lossy(&chunk.bytes[..take]);
+                        let scrubbed = iteron_record::redact::scrub(&decoded);
+                        let bounded = strict_utf8_head(&scrubbed, 8 * 1024);
+                        let stream = match chunk.stream {
+                            iteron_sandbox::OutputStream::Stdout => "stdout",
+                            iteron_sandbox::OutputStream::Stderr => "stderr",
+                        };
+                        self.ui(UiEvent::Notice(format!(
+                            "verify {stream} · attempt {}/{}: {bounded}",
+                            chunk.attempt, self.verification_policy.retry.max_attempts,
+                        )));
+                        let elapsed = verification_started.elapsed();
+                        self.activity.heartbeat(
+                            turn_activity::ActivityStage::Verification,
+                            TurnId(self.seq_turn),
+                            elapsed.as_secs().max(1),
+                            self.verification_policy.verifier_timeout_secs.max(1),
+                            remaining,
+                        );
+                        last_output_notice = Instant::now();
+                    }
+                }
+                VerifyPoll::Output(Some(iteron_sandbox::OutputObservation::Terminal(_)))
+                | VerifyPoll::Output(None) => {
+                    // The verdict remains authoritative. Stop polling progress as soon as its
+                    // independent terminal watch fires so queued lossy chunks cannot resurrect a
+                    // stale verification status after completion.
+                    output_receiver = None;
+                }
+                VerifyPoll::Tick => {
                     // The pinned oracle future remains alive across polling ticks. On an absolute
                     // deadline or cancellation return it is dropped; platform sandbox children
                     // are configured kill-on-drop, while their own rounded timeout remains the
                     // cleanup-aware backstop.
+                    let elapsed = verification_started.elapsed();
+                    if elapsed >= next_visible_heartbeat
+                        && last_output_notice.elapsed() >= Duration::from_secs(1)
+                    {
+                        let elapsed_secs = elapsed.as_secs().max(1);
+                        let total_secs = self.verification_policy.verifier_timeout_secs.max(1);
+                        self.activity.heartbeat(
+                            turn_activity::ActivityStage::Verification,
+                            TurnId(self.seq_turn),
+                            elapsed_secs,
+                            total_secs,
+                            remaining,
+                        );
+                        self.ui(UiEvent::Notice(format!(
+                            "verify: attempt {}/{} · {}s elapsed · {}s remaining",
+                            self.verify_attempts.saturating_add(1),
+                            self.verification_policy.retry.max_attempts,
+                            elapsed_secs,
+                            remaining.as_secs()
+                        )));
+                        next_visible_heartbeat =
+                            next_visible_heartbeat.saturating_add(Duration::from_secs(1));
+                    }
                 }
             }
         }

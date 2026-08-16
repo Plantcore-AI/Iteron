@@ -40,8 +40,8 @@ use owner::OwnerSnapshot;
 use std::path::Path;
 
 /// Exact context owner projection shared by value and constraint collection. `actual_window` is
-/// provider-attested family 96; `execution_window` is also available when metadata is unknown and
-/// matches `EffectiveCore`'s compaction-trigger + family-19 fallback path byte-for-byte.
+/// provider-attested; `execution_window` is the conservative local ceiling used when metadata is
+/// unknown and matches `EffectiveCore`'s compaction-trigger + family-19 fallback byte-for-byte.
 pub(super) fn context_owner_window(
     input: &ProviderProcessFactsInput<'_>,
 ) -> Result<(Option<usize>, usize, u32), ProviderProcessFactError> {

@@ -7,10 +7,10 @@
 //! inside a pseudo-terminal and observes the versioned-client handshake the fix introduces.
 //!
 //! When the interactive frontend is entered, it now attaches to the runtime as a versioned
-//! client: it negotiates the SQ/EQ protocol version and announces it on the pre-TUI diagnostic
-//! stream *before* it takes over the terminal, then submits only version-stamped envelopes
-//! through its `AppServerClient`. Because the announcement precedes raw-mode entry, it appears
-//! at the head of the terminal byte stream, ahead of the alternate screen.
+//! client: it negotiates the SQ/EQ protocol version before terminal takeover, then submits only
+//! version-stamped envelopes through its `AppServerClient`. A successful handshake is intentionally
+//! silent; operators see the first frame, while a rejected handshake remains a visible pre-TUI
+//! diagnostic.
 //!
 //! A frontend that co-composes the runtime (the pre-fix behavior) performs no such handshake
 //! and emits no such line. On the pre-fix base this test file's target does not exist, so the
@@ -180,17 +180,23 @@ fn capture_until(scratch: &Scratch, server_version: Option<u32>, needle: &str) -
 }
 
 #[test]
-fn tui_announces_a_versioned_app_server_client_handshake() {
+fn tui_completes_the_versioned_handshake_without_debug_noise() {
     let scratch = Scratch::new();
-    let expected = format!(
-        "app server: TUI attached as a versioned client (SQ/EQ protocol v{PROTOCOL_VERSION})"
-    );
-    let (capture, found) = capture_until(&scratch, None, &expected);
+    let expected = "ask about this codebase or describe a task";
+    let (capture, found) = capture_until(&scratch, None, expected);
 
     assert!(
         found,
-        "the TUI must announce a versioned App Server client handshake; expected:\n  {expected}\ngot terminal bytes:\n{}",
+        "a successfully attached TUI must paint its first editable frame; expected:\n  {expected}\ngot terminal bytes:\n{}",
         String::from_utf8_lossy(&capture)
+    );
+    assert!(
+        contains(&capture, b"\x1b[?1049h"),
+        "a successful handshake must enter the alternate-screen TUI"
+    );
+    assert!(
+        !contains(&capture, b"app server: TUI attached as a versioned client"),
+        "successful handshakes are protocol state, not operator-facing debug noise"
     );
 }
 

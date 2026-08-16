@@ -214,6 +214,92 @@ pub struct FileAttachment {
     digest: String,
 }
 
+/// A fully resolved and read text attachment. Building it may touch the filesystem; admitting it
+/// is a bounded in-memory operation suitable for the TUI thread.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct PreparedFile {
+    kind: ContextKind,
+    display_name: SafeDisplayName,
+    content: FileContent,
+    digest: String,
+}
+
+impl PreparedFile {
+    pub(crate) fn display_name(&self) -> &str {
+        self.display_name.as_str()
+    }
+
+    pub(crate) fn text_bytes(&self) -> usize {
+        self.content.text.len()
+    }
+}
+
+impl fmt::Debug for PreparedFile {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PreparedFile")
+            .field("kind", &self.kind)
+            .field("display_name", &self.display_name())
+            .field("relative_path", &self.content.path)
+            .field("text_bytes", &self.text_bytes())
+            .field("digest", &self.digest)
+            .finish()
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct FilePreparer {
+    limits: FileLoadLimits,
+}
+
+impl FilePreparer {
+    pub(crate) fn prepare_path(
+        self,
+        workspace: &Path,
+        requested: &Path,
+    ) -> Result<PreparedFile, FileInputError> {
+        self.prepare_typed_path(ContextKind::File, workspace, requested)
+    }
+
+    pub(crate) fn prepare_typed_path(
+        self,
+        kind: ContextKind,
+        workspace: &Path,
+        requested: &Path,
+    ) -> Result<PreparedFile, FileInputError> {
+        let name = SafeDisplayName::from_path(requested);
+        let relative = workspace_relative(workspace, requested)
+            .map_err(|kind| FileInputError::named(kind, name.clone()))?;
+        let resolved = iteron_tools::resolve_in_root(workspace, &relative).map_err(|_| {
+            FileInputError::named(FileInputErrorKind::OutsideWorkspace, name.clone())
+        })?;
+        let bytes = read_path_capped(&resolved, self.limits.max_file_bytes).map_err(|kind| {
+            FileInputError::named(FileInputErrorKind::from_read(kind), name.clone())
+        })?;
+        if bytes.len() > self.limits.max_file_bytes {
+            return Err(FileInputError::named(
+                FileInputErrorKind::FileTooLarge,
+                name,
+            ));
+        }
+        let text = String::from_utf8(bytes)
+            .map_err(|_| FileInputError::named(FileInputErrorKind::NotText, name.clone()))?;
+        if text.contains('\0') {
+            return Err(FileInputError::named(FileInputErrorKind::NotText, name));
+        }
+        let digest = digest_text(&text);
+        let content = FileContent::new(relative, text).map_err(|_| {
+            FileInputError::named(FileInputErrorKind::InvalidReference, name.clone())
+        })?;
+        Ok(PreparedFile {
+            kind,
+            display_name: name,
+            content,
+            digest,
+        })
+    }
+}
+
 impl FileAttachment {
     pub const fn id(&self) -> u32 {
         self.id
@@ -294,6 +380,12 @@ impl FileAttachments {
         self.items.is_empty()
     }
 
+    pub(crate) const fn preparer(&self) -> FilePreparer {
+        FilePreparer {
+            limits: self.limits,
+        }
+    }
+
     pub fn get(&self, id: u32) -> Option<&FileAttachment> {
         self.items.iter().find(|item| item.id == id)
     }
@@ -309,6 +401,7 @@ impl FileAttachments {
     /// may be read is [`iteron_tools::resolve_in_root`], not this function. Everything before that
     /// call only reduces the path to the relative form that call expects, and refuses shapes that
     /// have no relative form at all.
+    #[cfg(test)]
     pub fn attach_path(
         &mut self,
         workspace: &Path,
@@ -320,73 +413,17 @@ impl FileAttachments {
     /// Snapshot an operator-named text document under an IDE/LSP provenance class. This is the
     /// filesystem handoff used by editor integrations: Core reads and freezes the document now,
     /// then submits those exact bytes even if the integration's scratch file changes later.
+    #[cfg(test)]
     pub fn attach_typed_path(
         &mut self,
         kind: ContextKind,
         workspace: &Path,
         requested: &Path,
     ) -> Result<&FileAttachment, FileInputError> {
-        let name = SafeDisplayName::from_path(requested);
-        if self.items.len() >= self.limits.max_attachments {
-            return Err(FileInputError::named(
-                FileInputErrorKind::TooManyAttachments,
-                name,
-            ));
-        }
-        let relative = workspace_relative(workspace, requested)
-            .map_err(|kind| FileInputError::named(kind, name.clone()))?;
-        if self
-            .items
-            .iter()
-            .any(|item| item.relative_path() == relative)
-        {
-            return Err(FileInputError::named(
-                FileInputErrorKind::AlreadyAttached,
-                name,
-            ));
-        }
-        // The same resolution `read_file` performs, for the same reason it always was: the chip
-        // must attach exactly what the tool would read. It is no longer a containment check.
-        let resolved = iteron_tools::resolve_in_root(workspace, &relative).map_err(|_| {
-            FileInputError::named(FileInputErrorKind::OutsideWorkspace, name.clone())
-        })?;
-
-        let remaining = self.limits.max_total_bytes.saturating_sub(self.text_bytes);
-        if remaining == 0 {
-            return Err(FileInputError::named(
-                FileInputErrorKind::AggregateTooLarge,
-                name,
-            ));
-        }
-        let read_limit = self.limits.max_file_bytes.min(remaining);
-        // The reader stops one byte past the limit, so "too large" is a fact we can state without
-        // ever holding the whole file.
-        let bytes = read_path_capped(&resolved, read_limit).map_err(|kind| {
-            FileInputError::named(FileInputErrorKind::from_read(kind), name.clone())
-        })?;
-        if bytes.len() > read_limit {
-            let kind = if remaining < self.limits.max_file_bytes {
-                FileInputErrorKind::AggregateTooLarge
-            } else {
-                FileInputErrorKind::FileTooLarge
-            };
-            return Err(FileInputError::named(kind, name));
-        }
-        let text = String::from_utf8(bytes)
-            .map_err(|_| FileInputError::named(FileInputErrorKind::NotText, name.clone()))?;
-        // An embedded NUL is valid UTF-8 and is still not a file anyone reads. `FileContent::new`
-        // refuses it either way — this only decides which of two true sentences the operator sees,
-        // so the message says "not text" rather than "invalid reference".
-        if text.contains('\0') {
-            return Err(FileInputError::named(FileInputErrorKind::NotText, name));
-        }
-        // The protocol re-checks the path shape and the text. A failure here is a reference this
-        // contract cannot represent — a name carrying a bidi override, say — not a read failure.
-        let content = FileContent::new(relative, text).map_err(|_| {
-            FileInputError::named(FileInputErrorKind::InvalidReference, name.clone())
-        })?;
-
-        self.admit(kind, name, content)
+        let prepared = self
+            .preparer()
+            .prepare_typed_path(kind, workspace, requested)?;
+        self.admit_prepared(prepared)
     }
 
     /// Attach bytes supplied by a trusted local integration (Git review, IDE selection, or LSP
@@ -468,6 +505,62 @@ impl FileAttachments {
             digest,
         });
         Ok(self.items.last().expect("an attachment was just appended"))
+    }
+
+    pub(crate) fn admit_prepared(
+        &mut self,
+        prepared: PreparedFile,
+    ) -> Result<&FileAttachment, FileInputError> {
+        let PreparedFile {
+            kind,
+            display_name: name,
+            content,
+            digest,
+        } = prepared;
+        if self.items.len() >= self.limits.max_attachments {
+            return Err(FileInputError::named(
+                FileInputErrorKind::TooManyAttachments,
+                name,
+            ));
+        }
+        if content.text.len() > self.limits.max_file_bytes {
+            return Err(FileInputError::named(
+                FileInputErrorKind::FileTooLarge,
+                name,
+            ));
+        }
+        if content.text.len() > self.limits.max_total_bytes.saturating_sub(self.text_bytes) {
+            return Err(FileInputError::named(
+                FileInputErrorKind::AggregateTooLarge,
+                name,
+            ));
+        }
+        if self
+            .items
+            .iter()
+            .any(|item| item.relative_path() == content.path)
+        {
+            return Err(FileInputError::named(
+                FileInputErrorKind::AlreadyAttached,
+                name,
+            ));
+        }
+        self.text_bytes += content.text.len();
+        let id = self.next_id.checked_add(1).ok_or_else(|| {
+            FileInputError::named(FileInputErrorKind::TooManyAttachments, name.clone())
+        })?;
+        self.next_id = id;
+        self.items.push(FileAttachment {
+            id,
+            kind,
+            display_name: name,
+            content,
+            digest,
+        });
+        Ok(self
+            .items
+            .last()
+            .expect("a prepared file was just appended"))
     }
 
     pub fn remove(&mut self, index: usize) -> Option<FileAttachment> {

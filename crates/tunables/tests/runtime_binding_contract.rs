@@ -200,7 +200,7 @@ fn registry_inventory_is_bounded_deterministic_and_copies_no_ambient_state() {
     );
 
     let constraints = runtime_constraint_requirements();
-    assert_eq!(constraints.len(), 196);
+    assert_eq!(constraints.len(), 197);
     assert!(constraints.iter().any(|item| {
         item.family_id == "max_turns" && item.ceiling == ExternalCeiling::ParentTurns
     }));

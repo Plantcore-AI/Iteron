@@ -13,12 +13,24 @@ use std::sync::{Arc, Mutex};
 pub(crate) const TOOL_SEARCH: &str = "tool_search";
 /// Number of task-ranked schemas shown eagerly when the complete admitted catalog is larger.
 /// Every remaining schema stays reachable through [`TOOL_SEARCH`].
-pub const DEFAULT_DEFERRED_TOOL_EAGER_LIMIT: usize = 12;
+pub const DEFAULT_DEFERRED_TOOL_EAGER_LIMIT: usize = 4;
 /// Schemas returned by one `tool_search` call when the model names no `limit`, kept well under
 /// [`MAX_SEARCH_RESULTS`] so an unscoped search cannot flood the next request.
 const DEFAULT_SEARCH_RESULTS: usize = 8;
 const MAX_QUERY_BYTES: usize = 256;
 const MAX_SEARCH_RESULTS: usize = 32;
+/// The stable ordinary coding surface. Specialised schemas remain one `tool_search` away, while
+/// these authority-admitted primitives never disappear between tasks and invalidate prompt-cache
+/// identity merely because task-ranking changed.
+const CORE_EAGER_TOOLS: &[&str] = &[
+    "read_file",
+    "write_file",
+    "edit",
+    "bash",
+    "grep",
+    "glob",
+    "list_dir",
+];
 
 #[derive(Clone, Default)]
 pub(crate) struct DeferredToolCatalog {
@@ -77,8 +89,17 @@ impl DeferredToolCatalog {
                 iteron_tunables::param_str("tools.tool_search.tool_search", TOOL_SEARCH).to_owned(),
             );
         }
+        for name in CORE_EAGER_TOOLS {
+            if admitted.contains(*name) {
+                state.exposed.insert((*name).to_owned());
+                visible.insert((*name).to_owned());
+            }
+        }
         let ranked = ranked_names(&state, admitted, task);
         for name in ranked.into_iter().take(eager_limit) {
+            // Prompt-cache identity may grow after a discovery but must never shrink merely
+            // because the next task text ranked a different prefix.
+            state.exposed.insert(name.clone());
             visible.insert(name);
         }
         visible
@@ -238,20 +259,28 @@ mod tests {
             .collect::<BTreeSet<_>>();
         let initial = registry.specs_for_task(&admitted, "inspect rust source", Some(1));
         assert!(initial.iter().any(|spec| spec.name == TOOL_SEARCH));
-        assert!(!initial.iter().any(|spec| spec.name == "bash"));
+        let hidden = admitted
+            .iter()
+            .find(|name| {
+                name.as_str() != TOOL_SEARCH
+                    && !CORE_EAGER_TOOLS.contains(&name.as_str())
+                    && !initial.iter().any(|spec| spec.name == **name)
+            })
+            .cloned()
+            .expect("coding registry has a deferred schema");
 
         let result = registry
             .run(ToolUse {
                 id: "search-1".into(),
                 name: TOOL_SEARCH.into(),
-                input: serde_json::json!({"query": "shell command bash", "limit": 4}),
+                input: serde_json::json!({"query": hidden, "limit": 4}),
             })
             .await;
         assert!(!result.is_error, "{}", result.content);
-        assert!(result.content.contains("\"bash\""));
+        assert!(result.content.contains(&format!("\"{hidden}\"")));
 
         let next = registry.specs_for_task(&admitted, "inspect rust source", Some(1));
-        assert!(next.iter().any(|spec| spec.name == "bash"));
+        assert!(next.iter().any(|spec| spec.name == hidden));
     }
 
     #[tokio::test]
@@ -283,5 +312,32 @@ mod tests {
             .collect::<BTreeSet<_>>();
         let visible = registry.specs_for_task(&admitted, "unrelated", Some(1));
         assert_eq!(visible.len(), 2);
+    }
+
+    #[test]
+    fn authority_admitted_core_is_visible_for_empty_and_specific_tasks() {
+        let registry = Registry::coding_agent(std::env::temp_dir()).unwrap();
+        let admitted = registry
+            .specs()
+            .into_iter()
+            .map(|spec| spec.name)
+            .collect::<BTreeSet<_>>();
+
+        for task in ["", "inspect the context compactor"] {
+            let visible = registry.specs_for_task(&admitted, task, Some(1));
+            for core in CORE_EAGER_TOOLS {
+                assert!(
+                    visible.iter().any(|spec| spec.name == *core),
+                    "{core} missing for task {task:?}"
+                );
+            }
+        }
+
+        let admitted = [TOOL_SEARCH.to_owned(), "read_file".to_owned()]
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let visible = registry.specs_for_task(&admitted, "", Some(1));
+        assert!(visible.iter().any(|spec| spec.name == "read_file"));
+        assert!(!visible.iter().any(|spec| spec.name == "bash"));
     }
 }

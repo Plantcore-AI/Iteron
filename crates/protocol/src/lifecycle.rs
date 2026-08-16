@@ -30,9 +30,15 @@ pub struct LifecycleCatalogVersion(pub u16);
 pub const LIFECYCLE_CATALOG_VERSION: LifecycleCatalogVersion = LifecycleCatalogVersion(1);
 
 /// A validated stable lower-snake/dot catalog identifier.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
-pub struct LifecycleEventId(String);
+pub struct LifecycleEventId {
+    value: String,
+    /// Closed-catalog identity cached at construction. This is deliberately excluded from every
+    /// equality/order/hash/wire operation below: well-formed future/reserved ids remain valid
+    /// values with `None`, and the stable public identity is still the string alone.
+    catalog_index: Option<u16>,
+}
 
 impl LifecycleEventId {
     pub fn new(value: impl Into<String>) -> Result<Self, LifecycleIdError> {
@@ -52,11 +58,47 @@ impl LifecycleEventId {
         {
             return Err(LifecycleIdError);
         }
-        Ok(Self(value))
+        let catalog_index = registry::event_index(&value);
+        Ok(Self {
+            value,
+            catalog_index,
+        })
     }
 
     pub fn as_str(&self) -> &str {
-        &self.0
+        &self.value
+    }
+
+    /// O(1) catalog metadata for a registered identifier. Syntactically valid future identifiers
+    /// keep returning `None`, preserving the existing fail-closed envelope validation contract.
+    pub fn spec(&self) -> Option<LifecycleEventSpec> {
+        self.catalog_index.map(registry::event_spec_by_index)
+    }
+}
+
+impl PartialEq for LifecycleEventId {
+    fn eq(&self, other: &Self) -> bool {
+        self.value == other.value
+    }
+}
+
+impl Eq for LifecycleEventId {}
+
+impl PartialOrd for LifecycleEventId {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for LifecycleEventId {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.value.cmp(&other.value)
+    }
+}
+
+impl std::hash::Hash for LifecycleEventId {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::hash::Hash::hash(&self.value, state);
     }
 }
 
@@ -70,13 +112,13 @@ impl TryFrom<String> for LifecycleEventId {
 
 impl From<LifecycleEventId> for String {
     fn from(value: LifecycleEventId) -> Self {
-        value.0
+        value.value
     }
 }
 
 impl fmt::Display for LifecycleEventId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
+        formatter.write_str(&self.value)
     }
 }
 
@@ -221,6 +263,7 @@ pub enum LifecycleReservation {
     MemoryCapability,
     EvaluationCapability,
     ProviderRetryCapability,
+    ReplayCapability,
     SessionFailureCapability,
 }
 
@@ -323,7 +366,7 @@ impl LifecycleEventEnvelope {
         if self.catalog_version != LIFECYCLE_CATALOG_VERSION {
             return Err("unsupported lifecycle catalog version");
         }
-        let Some(spec) = event_spec(self.event_id.as_str()) else {
+        let Some(spec) = self.event_id.spec() else {
             return Err("unregistered lifecycle event id");
         };
         if self.event_version != spec.schema_version {
@@ -341,7 +384,7 @@ mod tests {
 
     #[test]
     fn catalog_shape_is_exact_and_unique() {
-        assert_eq!(EVENT_COUNT, 192);
+        assert_eq!(EVENT_COUNT, 195);
         let unique = EVENTS
             .iter()
             .copied()
@@ -372,7 +415,7 @@ mod tests {
                 .iter()
                 .filter(|spec| spec.hook_capability == HookCapability::Observe)
                 .count(),
-            160
+            163
         );
     }
 

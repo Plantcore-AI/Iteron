@@ -35,6 +35,11 @@ pub mod types;
 
 use research_execution::response_validation as research_validation;
 
+pub use iteron_evolve::{
+    ACTIVITY_SCHEMA_VERSION, ActivityCancellation, ActivityDelivery, ActivityError, ActivityEvent,
+    ActivityPublisher, ActivityReceiver, activity_channel,
+};
+
 pub use adapter_registry::{
     AdapterOperation, AdapterPin, AdapterRegistryEntry, BenchmarkAdapterRegistry,
     EXTERNAL_NATIVE_ID, EXTERNAL_NATIVE_VERSION, ITERON_CLI_ID, ITERON_CLI_VERSION,
@@ -100,7 +105,10 @@ pub use runner::hermetic::{
     hermetic_seed_schedule_sha256, hermetic_sidecar_path, run_evaluation_hermetic,
     run_hermetic_fixture_cli,
 };
-pub use runner::{EvalOptions, ParallelEvalOptions, run_evaluation, run_evaluation_parallel};
+pub use runner::{
+    EvalOptions, ParallelEvalOptions, run_evaluation, run_evaluation_parallel,
+    run_evaluation_parallel_with_activity,
+};
 pub use scoreboard::{
     EvidenceScoreRow, EvidenceScoreboard, SCOREBOARD_SCHEMA_ID, SCOREBOARD_SCHEMA_VERSION,
     ScoreboardError, generate_evidence_scoreboard,

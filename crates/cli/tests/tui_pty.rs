@@ -8,6 +8,7 @@ use std::os::unix::ffi::OsStrExt as _;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
+use std::sync::{Condvar, LazyLock, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -16,6 +17,11 @@ use std::time::{Duration, Instant};
 // the bounded harness watchdog for observing their terminal effects.
 const STEP_TIMEOUT: Duration = Duration::from_secs(15);
 const PROVIDER_TIMEOUT: Duration = Duration::from_secs(15);
+// Provider fixtures are created before `PtyHarness` acquires its process-wide permit. A full
+// all-target run can therefore leave a fixture waiting behind several batches of live PTYs even
+// though its own request completes immediately once admitted. Keep that scheduler-only wait
+// separate from the per-request/release watchdog above.
+const PROVIDER_ACCEPT_TIMEOUT: Duration = Duration::from_secs(120);
 const PROVIDER_IO_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_CAPTURE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_PROVIDER_REQUEST_BYTES: usize = 1024 * 1024;
@@ -36,6 +42,42 @@ const CURSOR_POSITION_QUERY: &[u8] = b"\x1b[6n";
 /// A glyph from the startup banner, i.e. proof that a real frame reached the terminal.
 const FIRST_FRAME_MARKER: &[u8] = "ask about this codebase or describe a task".as_bytes();
 static SCRATCH_ID: AtomicU64 = AtomicU64::new(0);
+const MAX_CONCURRENT_PTYS: usize = 4;
+static PTY_CAPACITY: LazyLock<(Mutex<usize>, Condvar)> =
+    LazyLock::new(|| (Mutex::new(0), Condvar::new()));
+
+/// Whole-workspace test runs otherwise launch all 24 PTYs, provider fixtures, parsers and reader
+/// threads together. That scheduler storm measures host contention instead of terminal behavior
+/// and used to miss bounded protocol deadlines that pass in isolation. Hold a small process-wide
+/// permit for each live harness while keeping every production timeout unchanged.
+struct PtyPermit;
+
+impl PtyPermit {
+    fn acquire() -> Self {
+        let (active, ready) = &*PTY_CAPACITY;
+        let mut active = active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        while *active >= MAX_CONCURRENT_PTYS {
+            active = ready
+                .wait(active)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+        *active += 1;
+        Self
+    }
+}
+
+impl Drop for PtyPermit {
+    fn drop(&mut self) {
+        let (active, ready) = &*PTY_CAPACITY;
+        let mut active = active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *active = active.saturating_sub(1);
+        ready.notify_one();
+    }
+}
 
 struct Scratch {
     root: PathBuf,
@@ -496,7 +538,7 @@ impl BlockingBashToolProvider {
 }
 
 fn accept_provider_connection(listener: &TcpListener) -> TcpStream {
-    let deadline = Instant::now() + PROVIDER_TIMEOUT;
+    let deadline = Instant::now() + PROVIDER_ACCEPT_TIMEOUT;
     loop {
         match listener.accept() {
             Ok((stream, _)) => {
@@ -570,6 +612,7 @@ struct PtyHarness {
     keyboard_fixture: KeyboardFixture,
     keyboard_query_answered: bool,
     cursor_queries_answered: usize,
+    _permit: PtyPermit,
 }
 
 #[derive(Clone, Copy)]
@@ -588,6 +631,7 @@ enum ThemeFixture {
 enum KeyboardFixture {
     Unsupported,
     Kitty,
+    Silent,
 }
 
 /// The subset of terminal state that Core changes when it enters raw mode.
@@ -652,6 +696,28 @@ impl PtyHarness {
         )
     }
 
+    fn spawn_silent_keyboard_link_fixture(scratch: &Scratch, cols: u16, rows: u16) -> Self {
+        Self::spawn_with_terminal(
+            scratch,
+            cols,
+            rows,
+            true,
+            ThemeFixture::TerminalOverride,
+            KeyboardFixture::Silent,
+        )
+    }
+
+    fn spawn_kitty_osc11_fixture(scratch: &Scratch, cols: u16, rows: u16) -> Self {
+        Self::spawn_with_terminal(
+            scratch,
+            cols,
+            rows,
+            false,
+            ThemeFixture::Osc11Auto,
+            KeyboardFixture::Kitty,
+        )
+    }
+
     fn spawn_configured(scratch: &Scratch, cols: u16, rows: u16, link_fixture: bool) -> Self {
         Self::spawn_with_theme(
             scratch,
@@ -687,6 +753,43 @@ impl PtyHarness {
         theme_fixture: ThemeFixture,
         keyboard_fixture: KeyboardFixture,
     ) -> Self {
+        Self::spawn_with_terminal_options(
+            scratch,
+            cols,
+            rows,
+            link_fixture,
+            theme_fixture,
+            keyboard_fixture,
+            None,
+            true,
+        )
+    }
+
+    fn spawn_resume_fixture(scratch: &Scratch, run_id: &str, cols: u16, rows: u16) -> Self {
+        Self::spawn_with_terminal_options(
+            scratch,
+            cols,
+            rows,
+            true,
+            ThemeFixture::TerminalOverride,
+            KeyboardFixture::Unsupported,
+            Some(run_id),
+            false,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_with_terminal_options(
+        scratch: &Scratch,
+        cols: u16,
+        rows: u16,
+        link_fixture: bool,
+        theme_fixture: ThemeFixture,
+        keyboard_fixture: KeyboardFixture,
+        resume_run: Option<&str>,
+        submit_initial_task: bool,
+    ) -> Self {
+        let permit = PtyPermit::acquire();
         let pair = native_pty_system()
             .openpty(PtySize {
                 rows,
@@ -733,6 +836,10 @@ impl PtyHarness {
         command.arg(scratch.repo());
         command.arg("--runs-dir");
         command.arg(scratch.runs());
+        if let Some(run_id) = resume_run {
+            command.arg("--resume");
+            command.arg(run_id);
+        }
         command.arg("--provider");
         command.arg(if link_fixture {
             LINK_PROVIDER_ID
@@ -751,7 +858,9 @@ impl PtyHarness {
             command.env("TERM_PROGRAM", "WezTerm");
             command.env("NO_PROXY", "127.0.0.1,localhost");
             command.env(LINK_TEST_KEY_ENV, LINK_TEST_KEY);
-            command.arg(CLIENT_PARITY_TASK.trim());
+            if submit_initial_task {
+                command.arg(CLIENT_PARITY_TASK.trim());
+            }
         } else {
             // These fixtures exercise only terminal and local-tool paths, but production route
             // admission still requires the bundled GLM credential owner to be present. Keep the
@@ -799,6 +908,7 @@ impl PtyHarness {
             keyboard_fixture,
             keyboard_query_answered: false,
             cursor_queries_answered: 0,
+            _permit: permit,
         }
     }
 
@@ -823,10 +933,13 @@ impl PtyHarness {
         {
             self.keyboard_query_answered = true;
             let response = match self.keyboard_fixture {
-                KeyboardFixture::Unsupported => b"\x1b[?1;2c".as_slice(),
-                KeyboardFixture::Kitty => b"\x1b[?1u\x1b[?1;2c".as_slice(),
+                KeyboardFixture::Unsupported => Some(b"\x1b[?1;2c".as_slice()),
+                KeyboardFixture::Kitty => Some(b"\x1b[?1u\x1b[?1;2c".as_slice()),
+                KeyboardFixture::Silent => None,
             };
-            self.send(response);
+            if let Some(response) = response {
+                self.send(response);
+            }
         }
     }
 
@@ -1108,6 +1221,9 @@ fn custom_external_editor_round_trip_restores_tui_and_preserves_terminal_cleanup
     );
 
     scratch.configure_invalid_keymap();
+    // Production watches config metadata off the input/render path at a bounded 100 ms cadence.
+    // Let that background watcher publish its atomic change bit before the first fallback key.
+    thread::sleep(Duration::from_millis(150));
     pty.send(b"\x07"); // first key after the rewrite must route through the safe built-in map.
     pty.wait_until("invalid hot reload and built-in keymap fallback", |pty| {
         let screen = pty.screen_text();
@@ -1486,7 +1602,7 @@ fn capability_probes_are_written_after_the_first_painted_frame() {
     // answer it, or whether it answers at all. A wall-clock bound would instead mostly measure how
     // loaded the machine running this suite happens to be.
     let scratch = Scratch::new("probe-after-first-frame");
-    let mut pty = PtyHarness::spawn_osc11_fixture(&scratch, 80, 24);
+    let mut pty = PtyHarness::spawn_kitty_osc11_fixture(&scratch, 80, 24);
     pty.wait_until("both deferred capability probes", |pty| {
         find_sequence(&pty.capture, KEYBOARD_ENHANCEMENT_QUERY).is_some()
             && find_sequence(&pty.capture, OSC11_QUERY).is_some()
@@ -1518,6 +1634,75 @@ fn capability_probes_are_written_after_the_first_painted_frame() {
     assert_termios_restored(&pty);
     pty.close_and_drain();
     pty.assert_terminal_restored();
+}
+
+#[test]
+fn unanswered_keyboard_probe_does_not_delay_initial_submission() {
+    let provider = LinkProvider::spawn_client_parity_fixture();
+    let scratch = Scratch::new("silent-keyboard-initial-submit");
+    scratch.configure_link_provider(&provider.api_root);
+    let mut pty = PtyHarness::spawn_silent_keyboard_link_fixture(&scratch, 80, 24);
+
+    pty.wait_until(
+        "initial task completes while keyboard probe is unanswered",
+        |pty| {
+            let screen = pty.screen_text();
+            screen.contains("parity reply")
+                && screen.contains("idle · input ready")
+                && find_sequence(&pty.capture, KEYBOARD_ENHANCEMENT_QUERY).is_some()
+        },
+    );
+    let first_frame = find_sequence(&pty.capture, FIRST_FRAME_MARKER).expect("first frame painted");
+    let query = find_sequence(&pty.capture, KEYBOARD_ENHANCEMENT_QUERY).expect("query written");
+    assert!(
+        first_frame < query,
+        "probe is emitted only after first paint"
+    );
+    assert!(
+        sequence_count(&pty.capture, KEYBOARD_ENHANCEMENT_PUSH) <= 1,
+        "family evidence may enable exactly one enhancement frame without waiting for the reply"
+    );
+
+    pty.send(b"\x1b");
+    let status = pty.wait_for_exit();
+    assert!(status.success(), "normal TUI exit failed: {status}");
+    assert_termios_restored(&pty);
+    pty.close_and_drain();
+    pty.assert_terminal_restored();
+    provider.finish();
+}
+
+#[test]
+fn input_ready_does_not_wait_for_rebuildable_session_index() {
+    let provider = LinkProvider::spawn_client_parity_fixture();
+    let scratch = Scratch::new("input-ready-before-reindex");
+    scratch.configure_link_provider(&provider.api_root);
+    // A directory at the rebuildable index path makes both reading and atomic replacement fail,
+    // while leaving the authoritative rollout directory writable. The initial task must still
+    // reach its RunEnded/input-ready boundary; an index repair is never run authority.
+    std::fs::create_dir_all(scratch.runs().join("sessions.index"))
+        .expect("install an intentionally unrebuildable index fixture");
+    let mut pty = PtyHarness::spawn_link_fixture(&scratch, 80, 24);
+
+    pty.wait_until(
+        "input-ready is independent of session-index repair",
+        |pty| {
+            let screen = pty.screen_text();
+            screen.contains("parity reply") && screen.contains("idle · input ready")
+        },
+    );
+    assert!(
+        scratch.runs().join("sessions.index").is_dir(),
+        "the assertion must precede any successful rebuild of the fixture"
+    );
+
+    pty.send(b"\x1b");
+    let status = pty.wait_for_exit();
+    assert!(status.success(), "normal TUI exit failed: {status}");
+    assert_termios_restored(&pty);
+    pty.close_and_drain();
+    pty.assert_terminal_restored();
+    provider.finish();
 }
 
 #[test]
@@ -1568,7 +1753,7 @@ fn capable_terminal_receives_clickable_markdown_link_with_unchanged_visible_text
 
     pty.wait_until("OSC 8 Markdown response", |pty| {
         let screen = pty.screen_text();
-        screen.contains("Read the guide now.") && screen.contains("done")
+        screen.contains("Read the guide now.") && screen.contains("idle · input ready")
     });
     let capture = std::str::from_utf8(&pty.capture).expect("terminal stream is valid UTF-8");
     let opener = format!("\u{1b}]8;;{LINK_TARGET}\u{7}");
@@ -1603,7 +1788,7 @@ fn client_parity_scripted_task_reaches_tui_done_presentation() {
 
     pty.wait_until("shared client-parity task completion", |pty| {
         let screen = pty.screen_text();
-        screen.contains("parity reply") && screen.contains("done")
+        screen.contains("parity reply") && screen.contains("idle · input ready")
     });
     assert!(
         String::from_utf8_lossy(&pty.capture).contains("Iteron · Return exactly: parity reply"),
@@ -1628,7 +1813,7 @@ fn capable_terminal_receives_one_bounded_osc9_notification_per_run() {
     pty.wait_until("completed run and its OSC 9 notification", |pty| {
         pty.screen_text()
             .contains("Notification fixture row remains intact.")
-            && pty.screen_text().contains("done")
+            && pty.screen_text().contains("idle · input ready")
             && sequence_count(&pty.capture, OSC9_RUN_COMPLETE) > 0
     });
     pty.drain_ready();
@@ -1668,7 +1853,7 @@ fn missing_usage_completion_uses_the_server_run_boundary_without_double_notifica
     pty.wait_until("missing-usage run completion and OSC 9 frame", |pty| {
         pty.screen_text()
             .contains("Missing-usage completion still notifies.")
-            && pty.screen_text().contains("done")
+            && pty.screen_text().contains("idle · input ready")
             && sequence_count(&pty.capture, OSC9_RUN_COMPLETE) > 0
     });
     pty.drain_ready();
@@ -1703,7 +1888,7 @@ fn default_off_ignores_project_attempt_to_enable_completion_notifications() {
     pty.wait_until("completed turn with notifications disabled", |pty| {
         pty.screen_text()
             .contains("Notification fixture row remains intact.")
-            && pty.screen_text().contains("done")
+            && pty.screen_text().contains("idle · input ready")
     });
     pty.drain_ready();
     assert_eq!(
@@ -1755,8 +1940,8 @@ fn active_ctrl_d_drains_to_a_checkpoint_and_idle_ctrl_d_still_exits() {
         let screen = pty.screen_text();
         screen.contains("draining active work now") || screen.contains("last: drained")
     });
-    pty.wait_until("durable drained terminal", |pty| {
-        pty.screen_text().contains("drained")
+    pty.wait_until("durable drained terminal returns input", |pty| {
+        pty.screen_text().contains("idle · input ready")
     });
     provider
         .release
@@ -1867,6 +2052,53 @@ fn esc_interrupt_keeps_real_pty_input_live_dispatches_the_next_prompt_and_then_e
     provider.finish();
 }
 
+#[test]
+fn startup_resume_projects_the_recorded_conversation_into_the_real_terminal() {
+    let provider = LinkProvider::spawn_client_parity_fixture();
+    let scratch = Scratch::new("resume-history");
+    scratch.configure_link_provider(&provider.api_root);
+    let mut first = PtyHarness::spawn_link_fixture(&scratch, 96, 26);
+    first.wait_until("the first session records an assistant answer", |pty| {
+        pty.screen_text().contains("parity reply") && pty.screen_text().contains("idle")
+    });
+    first.send(b"\x1b");
+    assert!(first.wait_for_exit().success());
+    assert_termios_restored(&first);
+    first.close_and_drain();
+    first.assert_terminal_restored();
+    provider.finish();
+
+    let run_id = std::fs::read_dir(scratch.runs())
+        .expect("read resume fixture rollouts")
+        .filter_map(Result::ok)
+        .find_map(|entry| {
+            (entry
+                .path()
+                .extension()
+                .is_some_and(|extension| extension == "jsonl"))
+            .then(|| entry.path().file_stem()?.to_str().map(str::to_owned))
+            .flatten()
+        })
+        .expect("the first session persisted one rollout");
+    let mut resumed = PtyHarness::spawn_resume_fixture(&scratch, &run_id, 96, 26);
+    resumed.wait_until("the resumed first frame contains the prior answer", |pty| {
+        let screen = pty.screen_text();
+        screen.contains("parity reply") && screen.contains(CLIENT_PARITY_TASK.trim())
+    });
+    assert!(
+        !resumed
+            .screen_text()
+            .contains("Iteron · Build, explain, and verify"),
+        "the fresh-session welcome must be replaced by durable history:\n{}",
+        resumed.screen_text()
+    );
+    resumed.send(b"\x1b");
+    assert!(resumed.wait_for_exit().success());
+    assert_termios_restored(&resumed);
+    resumed.close_and_drain();
+    resumed.assert_terminal_restored();
+}
+
 fn interrupt_running_bash_tool_from_real_pty(key: &[u8], label: &str) {
     let scratch = Scratch::new(label);
     let provider = BlockingBashToolProvider::spawn(&scratch.repo());
@@ -1878,7 +2110,7 @@ fn interrupt_running_bash_tool_from_real_pty(key: &[u8], label: &str) {
     });
     pty.send(key);
     pty.wait_until("the interrupted tool returns the composer to idle", |pty| {
-        pty.screen_text().contains("idle · last: interrupted")
+        pty.screen_text().contains("idle · input ready")
     });
 
     // The shell intentionally launched a delayed background descendant. Waiting past that delay
@@ -1897,11 +2129,67 @@ fn interrupt_running_bash_tool_from_real_pty(key: &[u8], label: &str) {
     pty.close_and_drain();
     pty.assert_terminal_restored();
     provider.finish();
+
+    let interrupted = std::fs::read_dir(scratch.runs())
+        .expect("read interrupted rollout directory")
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .path()
+                .extension()
+                .is_some_and(|extension| extension == "jsonl")
+        })
+        .any(|entry| {
+            iteron_record::replay(&entry.path())
+                .expect("interrupted rollout replays")
+                .iter()
+                .any(|event| {
+                    matches!(
+                        &event.kind,
+                        iteron_protocol::EventKind::Done { outcome } if outcome == "Interrupted"
+                    )
+                })
+        });
+    assert!(
+        interrupted,
+        "the durable terminal authority must retain the interrupted outcome"
+    );
 }
 
 #[test]
 fn ctrl_c_interrupts_a_running_bash_tool_and_kills_its_descendants() {
     interrupt_running_bash_tool_from_real_pty(b"\x03", "ctrl-c-bash-tool");
+}
+
+#[test]
+fn double_ctrl_c_forces_exit_while_a_bash_tool_is_still_running() {
+    let scratch = Scratch::new("double-ctrl-c-bash-tool");
+    let provider = BlockingBashToolProvider::spawn(&scratch.repo());
+    let escaped = provider.escaped.clone();
+    scratch.configure_link_provider(&provider.api_root);
+    let mut pty = PtyHarness::spawn_link_fixture(&scratch, 96, 26);
+    pty.wait_until("the model-declared bash child is running", |pty| {
+        provider.started.is_file() && pty.screen_text().contains("Bash")
+    });
+
+    let forced_at = Instant::now();
+    pty.send(b"\x03\x03");
+    let status = pty.wait_for_exit();
+    assert!(status.success(), "forced TUI exit failed: {status}");
+    assert!(
+        forced_at.elapsed() < Duration::from_secs(2),
+        "double Ctrl-C waited through the normal workflow shutdown grace"
+    );
+    assert_termios_restored(&pty);
+    pty.close_and_drain();
+    pty.assert_terminal_restored();
+    provider.finish();
+
+    thread::sleep(Duration::from_millis(2200));
+    assert!(
+        !escaped.exists(),
+        "bounded forced shutdown left the bash descendant alive"
+    );
 }
 
 #[test]
@@ -1919,10 +2207,7 @@ fn fullscreen_wheel_scrolls_session_and_ctrl_t_toggles_native_selection() {
     // the current session instead of exposing shell scrollback from before Core started.
     pty.wait_until("full-screen application mouse mode", |pty| {
         let screen = pty.parser.screen();
-        screen.alternate_screen()
-            && screen.mouse_protocol_mode() != vt100::MouseProtocolMode::None
-            && screen.contents().contains("mouse:on")
-            && screen.contents().contains("wheel:transcript")
+        screen.alternate_screen() && screen.mouse_protocol_mode() != vt100::MouseProtocolMode::None
     });
     let (cursor_row, _) = pty.parser.screen().cursor_position();
     assert!(
@@ -1938,12 +2223,10 @@ fn fullscreen_wheel_scrolls_session_and_ctrl_t_toggles_native_selection() {
         alternate < first_frame,
         "alternate-screen ownership must precede the landing frame"
     );
-    // The first frame intentionally precedes capability negotiation. Synchronize the scripted
-    // command with the fixture's keyboard reply so the harness does not type into Crossterm's
-    // startup query; a human terminal normally answers this in the same write/read exchange.
-    pty.wait_until("startup keyboard capability reply", |pty| {
-        pty.keyboard_query_answered
-    });
+    // This ordinary xterm fixture is outside the closed progressive-keyboard allowlist, so there
+    // is no capability query to synchronize with. Dedicated kitty/silent fixtures cover the
+    // post-paint query and unanswered-query paths.
+    assert!(!pty.keyboard_query_answered);
 
     // A long local-only shell card must overflow Core's own transcript viewport.
     pty.send(b"!seq 1 80 | sed 's/^/fold-me-/'");
@@ -1976,16 +2259,12 @@ fn fullscreen_wheel_scrolls_session_and_ctrl_t_toggles_native_selection() {
     pty.send(b"\x14");
     pty.wait_until("Ctrl-T native selection mode", |pty| {
         let screen = pty.parser.screen();
-        screen.alternate_screen()
-            && screen.mouse_protocol_mode() == vt100::MouseProtocolMode::None
-            && screen.contents().contains("selection:on")
+        screen.alternate_screen() && screen.mouse_protocol_mode() == vt100::MouseProtocolMode::None
     });
     pty.send(b"\x14");
     pty.wait_until("Ctrl-T restores application mouse mode", |pty| {
         let screen = pty.parser.screen();
-        screen.alternate_screen()
-            && screen.mouse_protocol_mode() != vt100::MouseProtocolMode::None
-            && screen.contents().contains("mouse:on")
+        screen.alternate_screen() && screen.mouse_protocol_mode() != vt100::MouseProtocolMode::None
     });
     for _ in 0..24 {
         pty.send(b"\x1b[<65;1;1M"); // SGR wheel down
@@ -2052,11 +2331,9 @@ fn unsupported_keyboard_keeps_ctrl_j_fallback_without_stack_sequences() {
     let scratch = Scratch::new("ctrl-j-keyboard-fallback");
     let mut pty = PtyHarness::spawn(&scratch, 80, 24);
     wait_for_ready(&mut pty);
-    // Same deferral as the Kitty fixture: the query is written after the frame, so the answer is
-    // waited for rather than assumed to have already happened by the time the surface appears.
-    pty.wait_until("the deferred keyboard capability query", |pty| {
-        pty.keyboard_query_answered
-    });
+    // Unknown terminal families take the portable path immediately instead of paying the
+    // capability detector's two-second negative timeout.
+    assert!(find_sequence(&pty.capture, KEYBOARD_ENHANCEMENT_QUERY).is_none());
     assert_eq!(
         sequence_count(&pty.capture, KEYBOARD_ENHANCEMENT_PUSH),
         0,
@@ -2152,6 +2429,9 @@ fn sigterm_from_open_picker_restores_terminal() {
     let scratch = Scratch::new("sigterm");
     let mut pty = PtyHarness::spawn_kitty_keyboard_fixture(&scratch, 80, 24);
     wait_for_ready(&mut pty);
+    pty.wait_until("keyboard enhancement is active before SIGTERM", |pty| {
+        sequence_count(&pty.capture, KEYBOARD_ENHANCEMENT_PUSH) == 1
+    });
 
     pty.send(b"/effort\r");
     pty.wait_until("cursor-owning Effort picker", |pty| {
@@ -2181,6 +2461,9 @@ fn sighup_from_open_picker_restores_keyboard_and_terminal_modes() {
     let scratch = Scratch::new("sighup");
     let mut pty = PtyHarness::spawn_kitty_keyboard_fixture(&scratch, 80, 24);
     wait_for_ready(&mut pty);
+    pty.wait_until("keyboard enhancement is active before SIGHUP", |pty| {
+        sequence_count(&pty.capture, KEYBOARD_ENHANCEMENT_PUSH) == 1
+    });
 
     pty.send(b"/effort\r");
     pty.wait_until("cursor-owning Effort picker", |pty| {

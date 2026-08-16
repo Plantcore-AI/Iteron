@@ -275,7 +275,10 @@ impl Default for ContextMaterializationPolicy {
             max_bytes: iteron_protocol::context::MAX_CONTEXT_GRANT_BYTES,
             memory: MemBudget::default(),
             memory_retrieval: crate::MemoryRetrievalPolicy::default(),
-            skill_listing_bytes: 2_000,
+            skill_listing_bytes: iteron_tunables::param_usize(
+                "ctx.runtime_policy.default_skill_listing_bytes",
+                6_000,
+            ),
             instruction_discovery: crate::InstructionDiscoveryPolicy::owner(),
         }
     }

@@ -19,6 +19,7 @@ use iteron_protocol::slot::SlotId;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
+mod activity;
 mod admission;
 mod base_model;
 mod checkpoint_algebra;
@@ -58,6 +59,11 @@ mod verifier_eval;
 #[cfg(test)]
 mod verifier_tests;
 
+pub use activity::{
+    ACTIVITY_SCHEMA_VERSION, ActivityCancellation, ActivityDelivery, ActivityDetailCode,
+    ActivityError, ActivityEvent, ActivityProgress, ActivityPublisher, ActivityReceiver,
+    ActivityState, activity_channel,
+};
 pub use admission::{
     CapabilityAdmission, CapabilityAdmissionError, EffectiveCapabilities, ManifestAdmissionPolicy,
     ParentCapabilityCeiling,
@@ -146,7 +152,8 @@ pub use trajectory_projection::{
 pub use transcript::{
     OfflineTranscriptConfig, OfflineTranscriptResult, TranscriptEvent, TranscriptProducerKind,
     TranscriptRecord, TranscriptRunError, run_offline_transcript,
-    run_offline_transcript_with_config, verify_offline_transcript,
+    run_offline_transcript_with_activity, run_offline_transcript_with_config,
+    verify_offline_transcript,
 };
 pub use verifier::{
     AttestationKey, EvolutionVerifier, MAX_ATTESTATION_KEY_BYTES, MAX_TRUSTED_PRODUCERS,

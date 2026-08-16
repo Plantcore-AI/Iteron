@@ -12,9 +12,8 @@ use iteron_protocol::{Capability, Purity, ToolResult, ToolSpec, Trust};
 use std::path::Path;
 
 fn load_skill(id: String, name: &str, root: &Path, operator_home: Option<&Path>) -> ToolResult {
-    let catalog = SkillCatalog::discover_for_operator(operator_home, root);
-    match catalog.get(name) {
-        Some(skill) => {
+    match SkillCatalog::load_one_for_operator(operator_home, root, name) {
+        Ok(Some(skill)) => {
             let trust = skill.trust;
             ToolResult {
                 tool_use_id: id,
@@ -30,7 +29,8 @@ fn load_skill(id: String, name: &str, root: &Path, operator_home: Option<&Path>)
                 latency_ms: 0,
             }
         }
-        None => err_result(id, format!("no skill `{name}` (see the skills index)")),
+        Ok(None) => err_result(id, format!("no skill `{name}` (see the skills index)")),
+        Err(error) => err_result(id, format!("cannot load skill `{name}`: {error}")),
     }
 }
 

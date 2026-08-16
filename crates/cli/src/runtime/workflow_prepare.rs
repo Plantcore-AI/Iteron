@@ -107,14 +107,22 @@ impl Agent {
             );
         }
         let script = match (inline, path) {
-            (Some(source), None) => source.to_string(),
+            (Some(source), None) => normalize_workflow_script(source),
             (None, Some(rel)) => {
                 let full = self.workspace.join(rel);
-                std::fs::read_to_string(&full)
-                    .map_err(|error| format!("Workflow: cannot read scriptPath `{rel}`: {error}"))?
+                let source = std::fs::read_to_string(&full).map_err(|error| {
+                    format!("Workflow: cannot read scriptPath `{rel}`: {error}")
+                })?;
+                normalize_workflow_script(&source)
             }
             _ => unreachable!("selector_count enforces one workflow source"),
         };
+        iteron_workflow::validate_script(&script).map_err(|error| {
+            format!(
+                "Workflow: script rejected before launch: {error}. Fix the ESM and retry \
+                 `Workflow` directly; no run started."
+            )
+        })?;
         let args = input
             .get("args")
             .cloned()
@@ -524,5 +532,47 @@ impl Agent {
             ));
         }
         Ok(summary)
+    }
+}
+
+fn normalize_workflow_script(source: &str) -> String {
+    let trimmed = source.trim();
+    let Some(first_newline) = trimmed.find('\n') else {
+        return source.to_owned();
+    };
+    let opening = &trimmed[..first_newline];
+    if !opening.starts_with("```") || opening[3..].contains('`') {
+        return source.to_owned();
+    }
+    let body_and_fence = &trimmed[first_newline + 1..];
+    let Some(last_newline) = body_and_fence.rfind('\n') else {
+        return source.to_owned();
+    };
+    if body_and_fence[last_newline + 1..].trim() != "```" {
+        return source.to_owned();
+    }
+    body_and_fence[..last_newline].to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_workflow_script;
+
+    #[test]
+    fn normalization_removes_only_one_outer_markdown_fence() {
+        let source = "```javascript\nexport const meta = { name: 'direct' };\nreturn await agent('work');\n```";
+        assert_eq!(
+            normalize_workflow_script(source),
+            "export const meta = { name: 'direct' };\nreturn await agent('work');"
+        );
+    }
+
+    #[test]
+    fn normalization_preserves_unfenced_script_bytes_and_inner_fences() {
+        let source = "  export const meta = { name: 'direct' };\nconst prompt = '```text';\nreturn agent(prompt);\n";
+        assert_eq!(normalize_workflow_script(source), source);
+
+        let malformed_outer = "```javascript\nreturn agent('work');\n````";
+        assert_eq!(normalize_workflow_script(malformed_outer), malformed_outer);
     }
 }

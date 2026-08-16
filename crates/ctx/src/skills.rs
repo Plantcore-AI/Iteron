@@ -14,9 +14,13 @@
 //! frontmatter and body is bidi/invisible-Unicode scanned; a suspicious skill is rejected, not run.
 
 use crate::instructions::suspicious_unicode;
-use crate::source::{SourceEntryKind, SourceScope, list_directory_bounded, read_bounded_utf8};
+use crate::source::{
+    SourceEntryKind, SourcePrefix, SourceScope, list_directory_bounded, read_bounded_utf8,
+    read_bounded_utf8_prefix,
+};
 use iteron_protocol::Trust;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 #[path = "skills_metadata.rs"]
 mod metadata;
@@ -25,6 +29,15 @@ pub use metadata::{SKILL_REFUSED_TOOLS, SkillMetadata, active_paths_from_text};
 /// Discovery ceilings apply before parsing or prompt construction.
 const MAX_SKILL_DIRS: usize = 1_024;
 const MAX_SKILL_SOURCE_BYTES: usize = 256 * 1024;
+const MAX_SKILL_METADATA_BYTES: usize = 16 * 1024;
+
+fn max_skill_metadata_bytes() -> usize {
+    iteron_tunables::param_usize(
+        "ctx.skills.max_skill_metadata_bytes",
+        MAX_SKILL_METADATA_BYTES,
+    )
+    .clamp(1, MAX_SKILL_METADATA_BYTES)
+}
 const MAX_CODEX_CONFIG_BYTES: usize = 256 * 1024;
 
 /// A matched Codex config entry with no `enabled` key leaves the skill enabled: the entry exists
@@ -92,6 +105,169 @@ pub struct SkillCatalog {
     errors: Vec<SkillError>,
 }
 
+/// Stable, rebuildable skill snapshot. Callers may paint with
+/// [`snapshot_for`](Self::snapshot_for) and run
+/// [`refresh_for_operator`](Self::refresh_for_operator) off the presentation path; ordinary turns
+/// reuse the immutable per-source-set snapshot without reopening skill bodies.
+#[derive(Default)]
+pub struct SkillCatalogCache {
+    current: Mutex<Option<(SkillCatalogKey, SkillCatalogStamp, Arc<SkillCatalog>)>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SkillCatalogKey {
+    operator_home: Option<PathBuf>,
+    repo: PathBuf,
+    dependencies: Vec<(PathBuf, PathBuf)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SkillCatalogStamp(Vec<SkillSourceStamp>);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SkillSourceStamp {
+    path: PathBuf,
+    bytes: u64,
+    modified_unix_nanos: u128,
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+}
+
+impl SkillCatalogCache {
+    pub fn snapshot_for(
+        &self,
+        operator_home: Option<&Path>,
+        repo: &Path,
+        dependencies: &[(PathBuf, PathBuf)],
+    ) -> Option<Arc<SkillCatalog>> {
+        let key = skill_catalog_key(operator_home, repo, dependencies);
+        lock(&self.current)
+            .as_ref()
+            .filter(|(current, _, _)| current == &key)
+            .map(|(_, _, catalog)| Arc::clone(catalog))
+    }
+
+    pub fn refresh_for_operator(
+        &self,
+        operator_home: Option<&Path>,
+        repo: &Path,
+        dependencies: &[(PathBuf, PathBuf)],
+    ) -> Result<Arc<SkillCatalog>, String> {
+        let key = skill_catalog_key(operator_home, repo, dependencies);
+        let paths = skill_source_paths(operator_home, repo, dependencies);
+        let stamp = skill_catalog_stamp(&paths)
+            .map_err(|error| format!("cannot refresh skill metadata index: {error}"))?;
+        if let Some((current_key, current_stamp, catalog)) = lock(&self.current).as_ref()
+            && current_key == &key
+            && current_stamp == &stamp
+        {
+            return Ok(Arc::clone(catalog));
+        }
+        let catalog = Arc::new(
+            SkillCatalog::discover_metadata_for_operator_with_dependencies(
+                operator_home,
+                repo,
+                dependencies,
+            ),
+        );
+        *lock(&self.current) = Some((key, stamp, Arc::clone(&catalog)));
+        Ok(catalog)
+    }
+}
+
+fn skill_catalog_key(
+    operator_home: Option<&Path>,
+    repo: &Path,
+    dependencies: &[(PathBuf, PathBuf)],
+) -> SkillCatalogKey {
+    SkillCatalogKey {
+        operator_home: operator_home.map(Path::to_path_buf),
+        repo: repo.to_path_buf(),
+        dependencies: dependencies.to_vec(),
+    }
+}
+
+fn skill_catalog_stamp(paths: &[PathBuf]) -> std::io::Result<SkillCatalogStamp> {
+    let mut stamp = Vec::with_capacity(paths.len());
+    for path in paths {
+        let metadata = std::fs::metadata(path)?;
+        if !metadata.is_file() {
+            continue;
+        }
+        #[cfg(unix)]
+        use std::os::unix::fs::MetadataExt as _;
+        stamp.push(SkillSourceStamp {
+            path: path.clone(),
+            bytes: metadata.len(),
+            modified_unix_nanos: metadata
+                .modified()
+                .ok()
+                .and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |value| value.as_nanos()),
+            #[cfg(unix)]
+            device: metadata.dev(),
+            #[cfg(unix)]
+            inode: metadata.ino(),
+        });
+    }
+    Ok(SkillCatalogStamp(stamp))
+}
+
+fn skill_source_paths(
+    operator_home: Option<&Path>,
+    repo: &Path,
+    dependencies: &[(PathBuf, PathBuf)],
+) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(home) = operator_home {
+        roots.extend([
+            home.join(".iteron/skills"),
+            home.join(".agents/skills"),
+            home.join(".codex/skills"),
+            home.join(".codex/skills/.system"),
+        ]);
+    }
+    roots.extend([
+        iteron_protocol::home::path(repo, "skills"),
+        repo.join(".agents/skills"),
+    ]);
+    roots.extend(dependencies.iter().map(|(_, directory)| directory.clone()));
+    let limit = iteron_tunables::param_usize("ctx.skills.max_skill_dirs", MAX_SKILL_DIRS);
+    let mut paths = Vec::new();
+    for root in roots {
+        let Ok(entries) = std::fs::read_dir(&root) else {
+            continue;
+        };
+        for entry in entries.take(limit.saturating_sub(paths.len())) {
+            let Ok(entry) = entry else { continue };
+            let source = entry.path().join("SKILL.md");
+            if std::fs::symlink_metadata(&source).is_ok_and(|metadata| metadata.is_file()) {
+                paths.push(source);
+            }
+        }
+        if paths.len() >= limit {
+            break;
+        }
+    }
+    if let Some(home) = operator_home {
+        let config = home.join(".codex/config.toml");
+        if config.is_file() && paths.len() < limit {
+            paths.push(config);
+        }
+    }
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 impl SkillCatalog {
     /// Discover all operator-portable skill roots plus Core's repository roots.
     ///
@@ -131,6 +307,46 @@ impl SkillCatalog {
         cat.scan(repo, &agents_project, SkillTier::Project);
         for (root, directory) in dependencies {
             cat.scan(root, directory, SkillTier::Dependency);
+        }
+        if let Some(home) = operator_home {
+            cat.apply_codex_config(home);
+        }
+        cat.sort_and_dedup();
+        cat
+    }
+
+    /// Discover only the bounded frontmatter needed for prompt listing. Skill bodies remain on
+    /// disk and are opened by [`Self::load_one_for_operator`] only after an explicit tool call.
+    pub fn discover_metadata_for_operator_with_dependencies(
+        operator_home: Option<&Path>,
+        repo: &Path,
+        dependencies: &[(PathBuf, PathBuf)],
+    ) -> Self {
+        let mut cat = SkillCatalog::default();
+        if let Some(home) = operator_home {
+            cat.scan_metadata(
+                &home.join(".iteron/skills"),
+                &home.join(".iteron/skills"),
+                SkillTier::User,
+            );
+            cat.scan_metadata(
+                &home.join(".agents/skills"),
+                &home.join(".agents/skills"),
+                SkillTier::User,
+            );
+            let codex_skills = home.join(".codex/skills");
+            cat.scan_metadata(&codex_skills, &codex_skills, SkillTier::User);
+            let codex_system = codex_skills.join(".system");
+            cat.scan_metadata(&codex_system, &codex_system, SkillTier::User);
+        }
+        cat.scan_metadata(
+            repo,
+            &iteron_protocol::home::path(repo, "skills"),
+            SkillTier::Project,
+        );
+        cat.scan_metadata(repo, &repo.join(".agents/skills"), SkillTier::Project);
+        for (root, directory) in dependencies {
+            cat.scan_metadata(root, directory, SkillTier::Dependency);
         }
         if let Some(home) = operator_home {
             cat.apply_codex_config(home);
@@ -263,6 +479,14 @@ impl SkillCatalog {
     }
 
     fn scan(&mut self, root: &Path, dir: &Path, tier: SkillTier) {
+        self.scan_with_mode(root, dir, tier, false);
+    }
+
+    fn scan_metadata(&mut self, root: &Path, dir: &Path, tier: SkillTier) {
+        self.scan_with_mode(root, dir, tier, true);
+    }
+
+    fn scan_with_mode(&mut self, root: &Path, dir: &Path, tier: SkillTier, metadata_only: bool) {
         let scope = if tier == SkillTier::User {
             SourceScope::User
         } else {
@@ -312,26 +536,49 @@ impl SkillCatalog {
                 continue;
             }
             let skill_md = p.join("SKILL.md");
-            let raw = match read_bounded_utf8(
-                root,
-                &skill_md,
-                iteron_tunables::param_usize(
-                    "ctx.skills.max_skill_source_bytes",
-                    iteron_tunables::param_integer(
+            let raw = if metadata_only {
+                match read_bounded_utf8_prefix(root, &skill_md, max_skill_metadata_bytes(), scope) {
+                    Ok(Some(prefix)) => match metadata_document(prefix) {
+                        Ok(raw) => raw,
+                        Err(reason) => {
+                            self.errors.push(SkillError {
+                                source: skill_md.display().to_string(),
+                                reason,
+                            });
+                            continue;
+                        }
+                    },
+                    Ok(None) => continue,
+                    Err(error) => {
+                        self.errors.push(SkillError {
+                            source: skill_md.display().to_string(),
+                            reason: error.reason().to_string(),
+                        });
+                        continue;
+                    }
+                }
+            } else {
+                match read_bounded_utf8(
+                    root,
+                    &skill_md,
+                    iteron_tunables::param_usize(
                         "ctx.skills.max_skill_source_bytes",
-                        MAX_SKILL_SOURCE_BYTES,
+                        iteron_tunables::param_integer(
+                            "ctx.skills.max_skill_source_bytes",
+                            MAX_SKILL_SOURCE_BYTES,
+                        ),
                     ),
-                ),
-                scope,
-            ) {
-                Ok(Some(raw)) => raw,
-                Ok(None) => continue,
-                Err(error) => {
-                    self.errors.push(SkillError {
-                        source: skill_md.display().to_string(),
-                        reason: error.reason().to_string(),
-                    });
-                    continue;
+                    scope,
+                ) {
+                    Ok(Some(raw)) => raw,
+                    Ok(None) => continue,
+                    Err(error) => {
+                        self.errors.push(SkillError {
+                            source: skill_md.display().to_string(),
+                            reason: error.reason().to_string(),
+                        });
+                        continue;
+                    }
                 }
             };
             match parse_skill(&raw, &p, tier) {
@@ -349,6 +596,109 @@ impl SkillCatalog {
 
     pub fn get(&self, name: &str) -> Option<&SkillDef> {
         self.defs.iter().find(|d| d.name == name)
+    }
+
+    /// Load one exact skill without constructing the full catalog. At most the fixed native,
+    /// portable, Codex, and project candidate paths are opened, in the same precedence order as
+    /// [`discover_for_operator`].
+    pub fn load_one_for_operator(
+        operator_home: Option<&Path>,
+        repo: &Path,
+        name: &str,
+    ) -> Result<Option<SkillDef>, String> {
+        if !valid_skill_slug(name) {
+            return Err("skill name is not a plain slug".into());
+        }
+        let mut candidates = Vec::new();
+        if let Some(home) = operator_home {
+            candidates.extend([
+                (
+                    home.to_path_buf(),
+                    home.join(".iteron/skills"),
+                    SkillTier::User,
+                ),
+                (
+                    home.to_path_buf(),
+                    home.join(".agents/skills"),
+                    SkillTier::User,
+                ),
+                (
+                    home.to_path_buf(),
+                    home.join(".codex/skills"),
+                    SkillTier::User,
+                ),
+                (
+                    home.to_path_buf(),
+                    home.join(".codex/skills/.system"),
+                    SkillTier::User,
+                ),
+            ]);
+        }
+        candidates.extend([
+            (
+                repo.to_path_buf(),
+                iteron_protocol::home::path(repo, "skills"),
+                SkillTier::Project,
+            ),
+            (
+                repo.to_path_buf(),
+                repo.join(".agents/skills"),
+                SkillTier::Project,
+            ),
+        ]);
+        let mut first_error = None;
+        for (root, directory, tier) in candidates {
+            let skill_dir = directory.join(name);
+            let path = skill_dir.join("SKILL.md");
+            let scope = if tier == SkillTier::User {
+                SourceScope::User
+            } else {
+                SourceScope::Repository
+            };
+            let raw = match read_bounded_utf8(
+                &root,
+                &path,
+                iteron_tunables::param_usize(
+                    "ctx.skills.max_skill_source_bytes",
+                    MAX_SKILL_SOURCE_BYTES,
+                ),
+                scope,
+            ) {
+                Ok(Some(raw)) => raw,
+                Ok(None) => continue,
+                Err(error) => {
+                    first_error.get_or_insert_with(|| error.reason().to_owned());
+                    continue;
+                }
+            };
+            let mut definition = match parse_skill(&raw, &skill_dir, tier) {
+                Ok(definition) if definition.name == name => definition,
+                Ok(_) => {
+                    first_error.get_or_insert_with(|| {
+                        "skill frontmatter name differs from the requested slug".to_owned()
+                    });
+                    continue;
+                }
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                    continue;
+                }
+            };
+            definition.source_path = path;
+            if let Some(home) = operator_home {
+                let mut catalog = SkillCatalog {
+                    defs: vec![definition],
+                    errors: Vec::new(),
+                };
+                catalog.apply_codex_config(home);
+                return Ok(catalog.defs.pop());
+            }
+            return Ok(Some(definition));
+        }
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(None),
+        }
     }
     pub fn defs(&self) -> &[SkillDef] {
         &self.defs
@@ -374,6 +724,21 @@ impl SkillCatalog {
 
     /// Build the model-facing index for a bounded set of repository-relative active paths.
     pub fn listing_for_paths(&self, budget_bytes: usize, active_paths: &[PathBuf]) -> String {
+        self.listing_for_task(budget_bytes, "", active_paths)
+    }
+
+    /// Relevance-ranked listing. Exact path-scoped matches come first, followed by textual task
+    /// relevance and then the stable name order. The default hard envelope is 6 KiB.
+    pub fn listing_for_task(
+        &self,
+        budget_bytes: usize,
+        task: &str,
+        active_paths: &[PathBuf],
+    ) -> String {
+        let budget_bytes = budget_bytes.min(
+            iteron_tunables::param_usize("ctx.skills.max_listing_bytes", 6_000)
+                .clamp(512, 64 * 1024),
+        );
         if !self
             .defs
             .iter()
@@ -384,10 +749,51 @@ impl SkillCatalog {
         let mut out = String::from(
             "\n\nAvailable skills (use the `use_skill` tool to load one when relevant):\n",
         );
-        for d in &self.defs {
-            if !d.metadata.model_visible(active_paths) {
-                continue;
-            }
+        if out.len() > budget_bytes {
+            return String::new();
+        }
+        let terms = task
+            .split(|character: char| !character.is_ascii_alphanumeric())
+            .filter(|term| !term.is_empty())
+            .map(str::to_ascii_lowercase)
+            .take(64)
+            .collect::<Vec<_>>();
+        let mut visible = self
+            .defs
+            .iter()
+            .filter(|definition| definition.metadata.model_visible(active_paths))
+            .map(|definition| {
+                let text = format!(
+                    "{} {} {}",
+                    definition.name,
+                    definition.description,
+                    definition
+                        .metadata
+                        .when_to_use
+                        .as_deref()
+                        .unwrap_or_default()
+                )
+                .to_ascii_lowercase();
+                let relevance = terms
+                    .iter()
+                    .filter(|term| text.contains(term.as_str()))
+                    .count();
+                (!definition.metadata.paths.is_empty(), relevance, definition)
+            })
+            .collect::<Vec<_>>();
+        visible.sort_by(|left, right| {
+            right
+                .0
+                .cmp(&left.0)
+                .then_with(|| right.1.cmp(&left.1))
+                .then_with(|| left.2.name.cmp(&right.2.name))
+        });
+        let visible_len = visible.len();
+        let omitted = iteron_tunables::param_str(
+            "ctx.skills.omitted",
+            "- … (more skills omitted; listing bounded)\n",
+        );
+        for (index, (_, _, d)) in visible.into_iter().enumerate() {
             let argument_hint = d
                 .metadata
                 .argument_hint
@@ -407,8 +813,11 @@ impl SkillCatalog {
                 one_line(&d.description, 120),
                 when_to_use
             );
-            if out.len() + line.len() > budget_bytes {
-                out.push_str("- … (more skills omitted; listing bounded)\n");
+            let reserve = usize::from(index + 1 < visible_len).saturating_mul(omitted.len());
+            if out.len() + line.len() + reserve > budget_bytes {
+                if out.len() + omitted.len() <= budget_bytes {
+                    out.push_str(omitted);
+                }
                 break;
             }
             out.push_str(&line);
@@ -461,10 +870,7 @@ fn parse_skill(raw: &str, dir: &Path, tier: SkillTier) -> Result<SkillDef, Strin
         return Err("no skill name".into());
     }
     // A skill name must be a plain slug (it is echoed into the prompt + used as a tool arg).
-    if !name
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
-    {
+    if !valid_skill_slug(&name) {
         return Err(format!("skill name `{name}` is not a plain slug"));
     }
     Ok(SkillDef {
@@ -480,6 +886,31 @@ fn parse_skill(raw: &str, dir: &Path, tier: SkillTier) -> Result<SkillDef, Strin
         metadata,
         source_path: dir.join("SKILL.md"),
     })
+}
+
+fn metadata_document(prefix: SourcePrefix) -> Result<String, String> {
+    let text = prefix.text.trim_start();
+    let Some(rest) = text.strip_prefix("---") else {
+        // A body-only skill has no listing metadata beyond its stable directory slug. Its body is
+        // intentionally not opened until `use_skill` selects that exact slug.
+        return Ok(String::new());
+    };
+    let Some(end) = rest.find("\n---") else {
+        return Err(if prefix.truncated {
+            format!("skill frontmatter exceeds {MAX_SKILL_METADATA_BYTES} bytes")
+        } else {
+            "skill frontmatter is not terminated".into()
+        });
+    };
+    let complete = 3_usize.saturating_add(end).saturating_add(4);
+    Ok(text[..complete].to_owned())
+}
+
+fn valid_skill_slug(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
 }
 
 fn same_skill_path(configured: &Path, discovered: &Path) -> bool {
@@ -696,6 +1127,30 @@ mod tests {
         assert!(s.framed().contains("project skill"));
         assert_eq!(cat.governing_trust(), Some(Trust::Workspace));
         let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn runtime_catalog_reads_frontmatter_without_opening_the_skill_body() {
+        let root = tmp("metadata-only");
+        let home = root.join("home");
+        let repo = root.join("repo");
+        let skill_dir = home.join(".iteron/skills/lazy-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::create_dir_all(&repo).unwrap();
+        let mut bytes = b"---\nname: lazy-skill\ndescription: metadata stays hot\n---\n".to_vec();
+        bytes.extend(std::iter::repeat_n(b'x', MAX_SKILL_SOURCE_BYTES + 1));
+        std::fs::write(skill_dir.join("SKILL.md"), bytes).unwrap();
+
+        let cache = SkillCatalogCache::default();
+        let catalog = cache
+            .refresh_for_operator(Some(&home), &repo, &[])
+            .expect("frontmatter-only refresh accepts a cold oversized body");
+        assert!(catalog.listing(4_000).contains("lazy-skill"));
+        assert!(
+            SkillCatalog::load_one_for_operator(Some(&home), &repo, "lazy-skill").is_err(),
+            "explicit body loading retains the immutable source-byte ceiling"
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

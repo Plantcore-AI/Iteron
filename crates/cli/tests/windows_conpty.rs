@@ -845,13 +845,6 @@ fn native_conpty_projects_link_and_exactly_one_capability_selected_notification(
             let screen = pty.screen_text();
             screen.contains("Read the Windows guide now.")
                 && screen.contains("done")
-                && contains(
-                    &pty.capture,
-                    format!(
-                        "app server: TUI attached as a versioned client (SQ/EQ protocol v{PROTOCOL_VERSION})"
-                    )
-                    .as_bytes(),
-                )
                 && pty.parser.screen().alternate_screen()
                 && contains(&pty.capture, exact_link_chunk.as_bytes())
                 && sequence_count(&pty.capture, OSC9_RUN_COMPLETE) == 1
@@ -1054,11 +1047,9 @@ fn native_conpty_rejects_version_skew_before_terminal_takeover() {
 fn native_conpty_handshake_unicode_resize_and_positive_keyboard_capability() {
     let scratch = Scratch::new();
     let mut pty = ConPty::spawn_keyboard_supported(&scratch, 100, 32);
-    let handshake = format!(
-        "app server: TUI attached as a versioned client (SQ/EQ protocol v{PROTOCOL_VERSION})"
-    );
-    pty.wait_until("shared App Server version handshake", |pty| {
-        contains(&pty.capture, handshake.as_bytes())
+    pty.wait_until("first frame after App Server version handshake", |pty| {
+        pty.screen_text()
+            .contains("ask about this codebase or describe a task")
     });
     pty.wait_until("alternate-screen TUI", |pty| {
         pty.parser.screen().alternate_screen()

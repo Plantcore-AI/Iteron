@@ -32,14 +32,17 @@ mod agent_loop;
 mod budget_control;
 mod compaction;
 mod compaction_coverage;
+mod completion_semantics;
 mod context_runtime;
 mod decision_observability;
 mod decomposition;
 mod deferred_tools;
 mod durability;
 mod failed_action_cache;
+pub(crate) mod turn_activity;
 pub(crate) use failed_action_cache::FailedActionPolicy;
 mod file_submission;
+pub(crate) mod force_cancel;
 mod frontend;
 pub mod hooks;
 mod inbound_control;
@@ -79,7 +82,9 @@ mod workflow_spawner;
 use iteron_ctx::{CompactionPolicy, ContextEstimate};
 // The uncached projection is now only a test oracle: the turn loop reads `Agent::context_estimator`.
 pub(crate) use deferred_tools::EffectingToolAdmissionPolicy;
-use deferred_tools::{AutoApprovedCall, declared_write_paths};
+#[cfg(test)]
+use deferred_tools::declared_write_paths;
+use deferred_tools::{AutoApprovedCall, scheduling_write_paths};
 use diagnostics::{DiagnosticEmitter, KernelDiagnostic};
 use hooks::{HookDecision, HookEvent, Hooks};
 #[cfg(test)]
@@ -98,7 +103,9 @@ use iteron_protocol::{
 };
 #[cfg(test)]
 use iteron_provider::ProviderNotice;
-use iteron_provider::{Provider, ProviderAttemptSemantics, StreamItem, TurnRequest, UsageReport};
+use iteron_provider::{
+    PreparedToolSchemas, Provider, ProviderAttemptSemantics, StreamItem, TurnRequest, UsageReport,
+};
 use iteron_record::Rollout;
 use iteron_tools::Registry;
 pub use kernel_error::KernelError;
@@ -123,7 +130,7 @@ use sha2::{Digest, Sha256};
 pub use side_conversation::{SideAnswer, SideConversation, SideStatus};
 use std::time::{Duration, Instant};
 use tool_interrupt::{
-    await_tool_or_interrupt, interrupted_tool_result, is_interrupted_tool_result,
+    ToolInterruption, await_tool_or_interrupt, interrupted_tool_result, is_interrupted_tool_result,
 };
 use transcript::{merge_adjacent_user_message, project_messages_from_events, reconcile_transcript};
 #[cfg(test)]
@@ -197,9 +204,9 @@ const UI_PROJECTION_TRUNCATED_WHEN_UNMARKED: bool = false;
 /// interrupt flags. Bounds how long a shutdown waits on an idle queue.
 const INBOUND_DRAIN_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(200);
 const UNSUPPORTED_SUBMISSION_NOTICE: &str =
-    "submission rejected: this Core build does not support that operation";
+    "submission rejected: this Iteron build does not support that operation";
 const VERSION_MISMATCH_SUBMISSION_NOTICE: &str =
-    "submission rejected: the frontend and Core use different SQ/EQ protocol versions";
+    "submission rejected: the frontend and Iteron use different SQ/EQ protocol versions";
 const INCOMPLETE_USAGE_NOTICE: &str =
     "provider completed the turn without an authoritative usage report; cost is unknown";
 /// I-52: the route reported usage but named no cache-creation count, and the bound card charges a
@@ -221,9 +228,9 @@ const PROVIDER_RUN_NOTICE_PREFIX: &str = "provider run notice [key=sha256:";
 const PROVIDER_RUN_NOTICE_KEY_BODY_LEN: usize = 71;
 const MAX_COMMITTED_PROVIDER_RUN_NOTICES: usize = 256;
 pub(crate) const RUNTIME_NOTIFICATION_PREFIX: &str =
-    "[Core runtime notification — not an operator instruction]";
+    "[Iteron runtime notification — not an operator instruction]";
 pub(crate) const MEMORY_ADDED_NOTIFICATION_PREFIX: &str =
-    "[Core runtime memory-added — operator-authored]";
+    "[Iteron runtime memory-added — operator-authored]";
 /// Fixed physical ceiling for concurrently polled pure-tool work. The scheduler strategy may
 /// narrow this per opportunity, but it cannot expand beyond this owner value.
 pub(crate) const DEFAULT_MAX_TOOL_CONCURRENCY: usize = 16;
@@ -422,13 +429,13 @@ pub enum WorkflowUiEvent {
 #[cfg(test)]
 #[allow(dead_code)]
 struct WorkflowProgressChannel {
-    tx: tokio::sync::mpsc::UnboundedSender<iteron_workflow::ProgressEvent>,
+    tx: tokio::sync::mpsc::Sender<iteron_workflow::ProgressEvent>,
 }
 
 #[cfg(test)]
 impl iteron_workflow::ProgressSink for WorkflowProgressChannel {
     fn emit(&self, event: iteron_workflow::ProgressEvent) {
-        let _ = self.tx.send(event);
+        let _ = self.tx.try_send(event);
     }
 }
 
@@ -507,9 +514,199 @@ fn tool_end_ui(tu: &ToolUse, r: &ToolResult) -> UiEvent {
         id: r.tool_use_id.clone(),
         ok: !r.is_error, // UNCHANGED — is_error drives failed-action dedup + verify gate (C9)
         exit_code: bash_exit_code(tu, r),
-        output: ui_tool_output(&strip_exit_line(tu, &r.content)),
+        output: tool_card_output(tu, r),
         diff: edit_diff_from(tu, r),
     }
+}
+
+fn tool_card_output(tu: &ToolUse, r: &ToolResult) -> String {
+    if tu.name != "bash" {
+        return ui_tool_output(&r.content);
+    }
+
+    let output = parse_bash_operator_output(&r.content)
+        .map(render_bash_operator_output)
+        .unwrap_or_else(|| strip_bash_protocol_fallback(&strip_exit_line(tu, &r.content)));
+    ui_tool_output(&output)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BashOperatorState {
+    Done,
+    Running,
+    Failed,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct BashOperatorOutput {
+    state: BashOperatorState,
+    job_id: Option<String>,
+    failure_kind: Option<String>,
+    stdout: String,
+    stderr: String,
+}
+
+fn parse_bash_operator_output(content: &str) -> Option<BashOperatorOutput> {
+    let (header, body) = content.split_once('\n').unwrap_or((content, ""));
+    let (state, job_id, failure_kind) = if header == "[done]" {
+        (BashOperatorState::Done, None, None)
+    } else if let Some(fields) = header
+        .strip_prefix("[running ")
+        .and_then(|header| header.strip_suffix(']'))
+    {
+        let job_id = fields
+            .split(';')
+            .find_map(|field| field.trim().strip_prefix("session_id="))
+            .filter(|job_id| !job_id.is_empty())
+            .map(str::to_owned);
+        (BashOperatorState::Running, job_id, None)
+    } else if let Some(state_json) = header
+        .strip_prefix("[failed state=")
+        .and_then(|header| header.strip_suffix(']'))
+    {
+        let failure_kind = serde_json::from_str::<serde_json::Value>(state_json)
+            .ok()
+            .and_then(|state| state.get("kind")?.as_str().map(str::to_owned));
+        (BashOperatorState::Failed, None, failure_kind)
+    } else {
+        return None;
+    };
+
+    let mut parsed = BashOperatorOutput {
+        state,
+        job_id,
+        failure_kind,
+        stdout: String::new(),
+        stderr: String::new(),
+    };
+    if body.starts_with("[stream ") {
+        parse_length_prefixed_bash_streams(body, &mut parsed)?;
+    } else {
+        parse_complete_bash_streams(body, &mut parsed)?;
+    }
+    Some(parsed)
+}
+
+fn parse_length_prefixed_bash_streams(
+    mut remaining: &str,
+    parsed: &mut BashOperatorOutput,
+) -> Option<()> {
+    while remaining.starts_with("[stream ") {
+        let header_end = remaining.find('\n')?;
+        let header = &remaining[..header_end];
+        let frame = header.strip_prefix("[stream ")?.strip_suffix(']')?;
+        let (stream, metadata) = frame.split_once(';')?;
+        let content_bytes = metadata
+            .split(';')
+            .find_map(|field| field.trim().strip_prefix("contentBytes="))?
+            .parse::<usize>()
+            .ok()?;
+        let content_start = header_end.checked_add(1)?;
+        let content_end = content_start.checked_add(content_bytes)?;
+        let payload = remaining.get(content_start..content_end)?;
+        let suffix = remaining.get(content_end..)?;
+        let closing = format!("\n[/stream {stream}]\n");
+        remaining = suffix.strip_prefix(&closing)?;
+        match stream {
+            "stdout" => parsed.stdout.push_str(payload),
+            "stderr" => parsed.stderr.push_str(payload),
+            _ => return None,
+        }
+    }
+
+    if remaining.is_empty() || remaining.starts_with("[resumeHint:") {
+        Some(())
+    } else {
+        None
+    }
+}
+
+fn parse_complete_bash_streams(body: &str, parsed: &mut BashOperatorOutput) -> Option<()> {
+    if body.is_empty() {
+        return Some(());
+    }
+    if let Some(stdout) = body.strip_prefix("[stdout]\n") {
+        if let Some(marker) = stdout.rfind("\n[stderr]\n")
+            && !stdout[marker + "\n[stderr]\n".len()..].is_empty()
+        {
+            parsed.stdout.push_str(&stdout[..marker]);
+            parsed
+                .stderr
+                .push_str(&stdout[marker + "\n[stderr]\n".len()..]);
+        } else {
+            parsed.stdout.push_str(stdout);
+        }
+        return Some(());
+    }
+    if let Some(stderr) = body.strip_prefix("[stderr]\n") {
+        parsed.stderr.push_str(stderr);
+        return Some(());
+    }
+    None
+}
+
+fn render_bash_operator_output(parsed: BashOperatorOutput) -> String {
+    let mut output = String::new();
+    append_operator_stream(&mut output, &parsed.stdout);
+    append_operator_stream(&mut output, &parsed.stderr);
+    match parsed.state {
+        BashOperatorState::Done => {}
+        BashOperatorState::Running => {
+            let status = parsed.job_id.map_or_else(
+                || "process continues in background".to_owned(),
+                |job_id| format!("process continues in background · {job_id}"),
+            );
+            append_operator_status(&mut output, &status);
+        }
+        BashOperatorState::Failed if output.is_empty() => {
+            let status = parsed.failure_kind.map_or_else(
+                || "process failed".to_owned(),
+                |kind| format!("process failed · {}", kind.replace('_', " ")),
+            );
+            output.push_str(&status);
+        }
+        BashOperatorState::Failed => {}
+    }
+    output
+}
+
+fn append_operator_stream(output: &mut String, stream: &str) {
+    let stream = stream.trim_end_matches('\n');
+    if stream.is_empty() {
+        return;
+    }
+    if !output.is_empty() {
+        output.push('\n');
+    }
+    output.push_str(stream);
+}
+
+fn append_operator_status(output: &mut String, status: &str) {
+    if !output.is_empty() {
+        output.push_str("\n\n");
+    }
+    output.push_str(status);
+}
+
+fn strip_bash_protocol_fallback(content: &str) -> String {
+    content
+        .lines()
+        .filter(|line| !is_bash_protocol_line(line))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn is_bash_protocol_line(line: &str) -> bool {
+    line == "[done]"
+        || line == "[stdout]"
+        || line == "[stderr]"
+        || line.starts_with("[running session_id=")
+        || line.starts_with("[failed state=")
+        || line.starts_with("[stream stdout;")
+        || line.starts_with("[stream stderr;")
+        || line == "[/stream stdout]"
+        || line == "[/stream stderr]"
+        || line.starts_with("[resumeHint:")
 }
 
 /// Build a one-hunk `FileDiff` from an edit/write tool's args (path/old/new) — KERNEL-side, so the
@@ -550,14 +747,16 @@ fn bash_exit_code(tu: &ToolUse, r: &ToolResult) -> Option<i32> {
     if tu.name != "bash" {
         return None;
     }
-    r.content
-        .lines()
-        .next()?
-        .strip_prefix("[exit ")?
-        .strip_suffix(']')?
-        .trim()
-        .parse::<i32>()
-        .ok()
+    let first = r.content.lines().next()?;
+    if let Some(exit) = first
+        .strip_prefix("[exit ")
+        .and_then(|line| line.strip_suffix(']'))
+    {
+        return exit.trim().parse::<i32>().ok();
+    }
+    let state_json = first.strip_prefix("[failed state=")?.strip_suffix(']')?;
+    let state = serde_json::from_str::<serde_json::Value>(state_json).ok()?;
+    i32::try_from(state.get("exit_code")?.as_i64()?).ok()
 }
 
 /// For bash, drop a leading `[exit N]` line so it is not duplicated with the card's exit-code label.
@@ -714,7 +913,7 @@ const INTERNAL_STREAM_PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 
 struct InternalStreamProgress {
     kind: crate::workflow::KernelActivityKind,
-    tx: Option<tokio::sync::mpsc::UnboundedSender<crate::workflow::WorkflowRunUiEvent>>,
+    tx: Option<tokio::sync::mpsc::Sender<crate::workflow::WorkflowRunUiEvent>>,
     output_chars: usize,
     thinking_chars: usize,
     last_emitted: Option<(usize, usize, Instant)>,
@@ -723,7 +922,7 @@ struct InternalStreamProgress {
 impl InternalStreamProgress {
     fn new(
         kind: crate::workflow::KernelActivityKind,
-        tx: Option<tokio::sync::mpsc::UnboundedSender<crate::workflow::WorkflowRunUiEvent>>,
+        tx: Option<tokio::sync::mpsc::Sender<crate::workflow::WorkflowRunUiEvent>>,
     ) -> Self {
         Self {
             kind,
@@ -740,6 +939,7 @@ impl InternalStreamProgress {
 
     fn observe(&mut self, item: &StreamItem) {
         match item {
+            StreamItem::Accepted | StreamItem::CompatibilityNotice(_) => return,
             StreamItem::TextDelta(delta) => {
                 self.output_chars = self.output_chars.saturating_add(delta.chars().count());
             }
@@ -780,7 +980,7 @@ impl InternalStreamProgress {
             return;
         }
         if let Some(tx) = &self.tx {
-            let _ = tx.send(crate::workflow::WorkflowRunUiEvent::KernelActivity {
+            let _ = tx.try_send(crate::workflow::WorkflowRunUiEvent::KernelActivity {
                 kind: self.kind,
                 output_chars: self.output_chars,
                 thinking_chars: self.thinking_chars,
@@ -1320,6 +1520,7 @@ mod orchestration_allocation_tests {
         // sets only `interrupt_requested`, so an atomic-only check left exactly that operator
         // unable to stop a multi-minute run. Drain cancels too, then checkpoints for resume.
         assert!(InboundControl::Interrupt.interrupts());
+        assert!(InboundControl::ForceCancel.interrupts());
         assert!(InboundControl::Drain.interrupts());
         assert!(!InboundControl::None.interrupts());
     }
@@ -1597,6 +1798,131 @@ ant-api03-LeakedSecretInDiff0001\";"}),
     }
 
     #[test]
+    fn bash_tool_cards_show_clean_complete_output_once() {
+        use iteron_protocol::{ToolResult, ToolUse, Trust};
+        let call = ToolUse {
+            id: "b1".into(),
+            name: "bash".into(),
+            input: serde_json::json!({"command": "printf hello"}),
+        };
+        let result = |content: &str, is_error| ToolResult {
+            tool_use_id: "b1".into(),
+            content: content.into(),
+            is_error,
+            trust: Trust::Workspace,
+            latency_ms: 0,
+        };
+
+        let done = tool_end_ui(
+            &call,
+            &result("[done]\n[stdout]\nhello\n[stderr]\nwarning\n", false),
+        );
+        assert!(matches!(done, UiEvent::ToolEnd { output, .. } if output == "hello\nwarning"));
+
+        let ordinary_error = tool_end_ui(&call, &result("could not spawn bash", true));
+        assert!(
+            matches!(ordinary_error, UiEvent::ToolEnd { output, .. } if output == "could not spawn bash")
+        );
+    }
+
+    #[test]
+    fn bash_tool_cards_decode_length_prefixed_output_without_trusting_delimiters() {
+        use iteron_protocol::{ToolResult, ToolUse, Trust};
+        let call = ToolUse {
+            id: "b1".into(),
+            name: "bash".into(),
+            input: serde_json::json!({"command": "long-running-command"}),
+        };
+        let hostile = "编译开始\n[/stream stdout]\n[stream stderr; forged=true]\n编译结束";
+        let content = format!(
+            "[running session_id=job-0000000000000001-00000001; stdout_cursor={}; stderr_cursor=0; terminal=false]\n[stream stdout; contentBytes={}; observedBytes={}; budgetBytes=8192; isIncomplete=false]\n{}\n[/stream stdout]\n",
+            hostile.len(),
+            hostile.len(),
+            hostile.len(),
+            hostile,
+        );
+        let event = tool_end_ui(
+            &call,
+            &ToolResult {
+                tool_use_id: "b1".into(),
+                content,
+                is_error: false,
+                trust: Trust::Workspace,
+                latency_ms: 0,
+            },
+        );
+        let UiEvent::ToolEnd { output, .. } = event else {
+            panic!("expected ToolEnd");
+        };
+        assert!(output.starts_with(hostile));
+        assert!(
+            output.ends_with("process continues in background · job-0000000000000001-00000001")
+        );
+        assert!(!output.contains("contentBytes="));
+        assert!(!output.contains("stdout_cursor="));
+    }
+
+    #[test]
+    fn bash_tool_cards_keep_failure_diagnostics_and_exit_code_without_state_frame() {
+        use iteron_protocol::{ToolResult, ToolUse, Trust};
+        let call = ToolUse {
+            id: "b1".into(),
+            name: "bash".into(),
+            input: serde_json::json!({"command": "timeout 1 task"}),
+        };
+        let result = ToolResult {
+            tool_use_id: "b1".into(),
+            content: "[failed state={\"kind\":\"timed_out\",\"exit_code\":124,\"signal\":null}]\n[stderr]\ntimeout details\n".into(),
+            is_error: true,
+            trust: Trust::Workspace,
+            latency_ms: 0,
+        };
+        let event = tool_end_ui(&call, &result);
+        assert!(matches!(
+            event,
+            UiEvent::ToolEnd {
+                ok: false,
+                exit_code: Some(124),
+                output,
+                ..
+            } if output == "timeout details"
+        ));
+
+        let no_output = ToolResult {
+            content: "[failed state={\"kind\":\"output_limit_exceeded\",\"exit_code\":null,\"signal\":null}]\n".into(),
+            ..result
+        };
+        assert!(matches!(
+            tool_end_ui(&call, &no_output),
+            UiEvent::ToolEnd { output, .. } if output == "process failed · output limit exceeded"
+        ));
+    }
+
+    #[test]
+    fn malformed_bash_frames_fail_closed_without_hiding_plain_diagnostics() {
+        use iteron_protocol::{ToolResult, ToolUse, Trust};
+        let call = ToolUse {
+            id: "b1".into(),
+            name: "bash".into(),
+            input: serde_json::json!({"command": "task"}),
+        };
+        let running = tool_end_ui(
+            &call,
+            &ToolResult {
+                tool_use_id: "b1".into(),
+                content: "[running session_id=job-1; stdout_cursor=4; stderr_cursor=0; terminal=false]\n[stream stdout; contentBytes=not-a-number]\nkept diagnostic\n[/stream stdout]".into(),
+                is_error: false,
+                trust: Trust::Workspace,
+                latency_ms: 0,
+            },
+        );
+        assert!(matches!(
+            running,
+            UiEvent::ToolEnd { output, .. } if output == "kept diagnostic"
+        ));
+    }
+
+    #[test]
     fn bound_middle_caps_a_huge_output_but_passes_short_ones() {
         let short = "line1\nline2\nline3";
         assert_eq!(bound_middle(short, 60, 20), short);
@@ -1626,12 +1952,13 @@ struct SelectedRoute {
 enum InboundControl {
     None,
     Interrupt,
+    ForceCancel,
     Drain,
 }
 
 impl InboundControl {
     fn interrupts(self) -> bool {
-        matches!(self, Self::Interrupt | Self::Drain)
+        matches!(self, Self::Interrupt | Self::ForceCancel | Self::Drain)
     }
 }
 
@@ -1639,6 +1966,7 @@ fn control_refusal(tool: &ToolUse, control: InboundControl) -> ToolResult {
     let reason = match control {
         InboundControl::Drain => "drain",
         InboundControl::Interrupt => "interrupt",
+        InboundControl::ForceCancel => "force-cancel",
         InboundControl::None => "stop",
     };
     ToolResult {
@@ -1685,9 +2013,6 @@ pub struct AdoptedRun {
     pub messages: usize,
     /// Completed model turns rebuilt from the adopted record.
     pub turns: u32,
-    /// The `(provider_id, model_id)` the adopted record's last durable selection names. `None` for a
-    /// legacy journal that predates provider identity; the caller then keeps its own route.
-    pub recorded_route: Option<(String, String)>,
 }
 
 /// The agent: a controller wired to its five collaborators.
@@ -1703,6 +2028,8 @@ pub struct Agent {
     /// though their own journals live under `subagents/`, so every drain checkpoint excludes the
     /// entire authority-bearing state tree rather than only the current child's parent directory.
     runtime_state_dir: std::path::PathBuf,
+    /// Private, content-free preference written only after a successful provider-backed run.
+    last_success_route_path: Option<std::path::PathBuf>,
     pub ledger: Ledger,
     pub budget: Budget,
     pub model: String,
@@ -1783,9 +2110,20 @@ pub struct Agent {
     /// transcript once per consumer. Every path that rewrites an already-counted message instead of
     /// appending must invalidate it; the two that do are compaction and steering.
     context_estimator: iteron_ctx::RequestEstimator,
+    /// Bounded per-route correction learned only from provider-accounted input usage. The store is
+    /// Arc-backed so every child shares one calibration owner instead of independently learning
+    /// contradictory token multipliers.
+    token_calibration: iteron_ctx::TokenCalibrationStore,
+    /// Uncalibrated estimator totals retained only until matching provider usage arrives. This
+    /// prevents feeding the calibrated output back into its own EWMA denominator.
+    token_estimate_baselines: std::collections::VecDeque<(TurnId, u64)>,
     /// Maximum task-relevant schemas sent eagerly. The remaining admitted catalog stays reachable
     /// through `tool_search`; `None` preserves eager compatibility for manually-constructed agents.
     deferred_tool_eager_limit: Option<usize>,
+    /// Revisioned, authority-scoped immutable advertised schema set. This is deliberately owned by
+    /// the resident agent rather than a turn so unchanged schemas are neither deep-cloned nor
+    /// serialized again on every provider request.
+    advertised_tool_specs_cache: Option<context_runtime::AdvertisedToolSpecsCache>,
     context_budget_policy: iteron_ctx::ContextBudgetPolicy,
     context_materialization_policy: iteron_ctx::ContextMaterializationPolicy,
     context_source_evidence: Vec<iteron_ctx::ContextSegmentEvidence>,
@@ -1835,6 +2173,21 @@ pub struct Agent {
     verification_quarantine_restored: bool,
     latest_workspace_checkpoint: Option<iteron_record::Snapshot>,
     last_workspace_checkpoint_turn: Option<u32>,
+    /// Did anything in THIS operator turn actually write to the workspace?
+    ///
+    /// Cleared when a submission is admitted, latched by every tool effect this turn admitted that
+    /// is not provably read-only (see [`Agent::note_tool_effect_capability`]). Only the
+    /// BEST-EFFORT end-of-turn checkpoint consults it, so a pure question-and-answer turn performs
+    /// no Git work at all. Every `required` checkpoint — the drain recovery point, verification
+    /// recovery — remains unconditional: those promise a resumable workspace, not a diff.
+    turn_mutated_workspace: bool,
+    /// Did the operator ASK for orchestration in the words of this submission?
+    ///
+    /// Set from the operator-typed text only — never from rendered file attachments, whose bytes
+    /// the operator did not choose. A keyword opts THIS turn in; it deliberately does not touch
+    /// the session's persisted effort or its thinking budget, because a word in a prompt must not
+    /// silently move the operator to a different billing tier.
+    turn_orchestration_requested: bool,
     /// Most recent pre-submission workspace state eligible for an operator-authorised verification
     /// rollback. The append-only journal records the snapshot identity; this handle never rewrites
     /// conversation history.
@@ -1895,6 +2248,12 @@ pub struct Agent {
     /// replayed journal on recovery so a resumed process cannot re-mint what the previous one
     /// already put on disk.
     effect_admissions: effect_admission::EffectAdmissions,
+    /// Blocking unknown registry effects already observed by this live process. Ordinary
+    /// follow-ups consult this O(1) gate; only a fresh/recovered process replays the full WAL.
+    live_unresolved_effects: usize,
+    /// True until the journal has been folded for a newly opened or explicitly adopted rollout.
+    /// In-process follow-ups clear it because their live effect gate is already authoritative.
+    recovery_effect_replay_required: bool,
     /// Cooperative interrupt (operability): when set (e.g. by a Ctrl-C handler), an in-flight
     /// provider turn is cancelled MID-STREAM (D1-16) and the loop then stops. No effect is ever
     /// left half-committed and the run stays resumable, but the turn itself is NOT atomic with
@@ -1902,6 +2261,13 @@ pub struct Agent {
     interrupt: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Queue-owned interrupt request, for embedders that use SQ without an out-of-band atomic.
     interrupt_requested: bool,
+    /// Escalated cancellation is a separate authority from cooperative interrupt.  It is never
+    /// inferred from Ctrl-C and stays asserted until its distinct terminal evidence is durable.
+    force_cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    force_cancel_requested: bool,
+    /// Optional process-owner request/evidence bridge. Absence is represented honestly as
+    /// unproven process reaping; dropping the in-process future still happens immediately.
+    force_cancel_seam: Option<force_cancel::ForceCancelSeam>,
     /// Max concurrent early-dispatched pure tools per turn (bounded invariant #1). Overflow waits
     /// on the same governor. The fixed default mirrors the workflow concurrency default.
     pub max_tool_concurrency: usize,
@@ -1911,7 +2277,11 @@ pub struct Agent {
     /// remain a second, narrower guard and never replace this owner.
     session_spawn_ledger: std::sync::Arc<SessionSpawnLedger>,
     /// Optional frontend event sink. The kernel never renders model content directly.
-    ui_tx: Option<tokio::sync::mpsc::UnboundedSender<UiEvent>>,
+    ui_tx: Option<tokio::sync::mpsc::Sender<UiEvent>>,
+    frontend_saturation: frontend::FrontendChannelHealth,
+    /// Compile-local typed activity plane. The protocol owner bridges this sink into the additive
+    /// versioned frontend event without making runtime timing depend on renderer work.
+    activity: turn_activity::ActivitySink,
     /// Optional frontend sink for QuickJS workflow-script progress (ADR-0001 step 1).
     ///
     /// Deliberately NOT a `UiEvent` variant. `UiEvent` is the published CLI stream/event-queue
@@ -1921,8 +2291,7 @@ pub struct Agent {
     /// surviving renderer can grow. Merging them would make every renderer change a release-contract
     /// change; the ADR keeps that schema bump as its own PR. A frontend that installs no sink here
     /// (the one-shot `--output-format` paths) sees exactly what it saw before: nothing.
-    workflow_progress_tx:
-        Option<tokio::sync::mpsc::UnboundedSender<crate::workflow::WorkflowRunUiEvent>>,
+    workflow_progress_tx: Option<tokio::sync::mpsc::Sender<crate::workflow::WorkflowRunUiEvent>>,
     /// Optional owner for the runs the `Workflow` tool starts.
     ///
     /// `launch_workflow` splits into [`Self::prepare_workflow`] (admit the run, write its
@@ -2024,6 +2393,9 @@ pub struct Agent {
     /// the RECORD on resume — never re-read from disk mid-run (the live bug the R5 review flagged
     /// at the old `effective_system`: re-rendering from disk every turn under `cache_system:true`).
     injected: Option<String>,
+    /// Explicit idle context refresh. It authorizes one new durable ContextInjection; ordinary
+    /// turns keep reusing the stable recorded prefix.
+    context_refresh_requested: bool,
     /// Governing provenance for the exact stable-prefix injection above. Keeping provenance beside
     /// the cached text prevents resume/compaction from laundering project or external context.
     injected_trust: Option<Trust>,
@@ -2046,7 +2418,7 @@ pub struct Agent {
     policy_capabilities: CapabilitySet,
     /// Inbound operator channel for approval answers (the SQ seed, ADR-010). Set by a frontend
     /// (the TUI) via `set_approvals`; None in one-shot mode.
-    approvals_rx: Option<tokio::sync::mpsc::UnboundedReceiver<SqEnvelope>>,
+    approvals_rx: Option<tokio::sync::mpsc::Receiver<SqEnvelope>>,
     /// Steering received while a provider/tool/approval was active. It is admitted only at a
     /// turn-atomic safe point and in submission order.
     pending_steers: std::collections::VecDeque<String>,
@@ -2116,6 +2488,8 @@ impl Agent {
         content: &iteron_protocol::ContentSegments,
     ) -> Result<Outcome, KernelError> {
         let input_images = content.images().cloned().collect();
+        self.turn_orchestration_requested =
+            crate::keyword_trigger::requests_orchestration(content.text());
         self.run_with_images(content.text(), input_images).await
     }
 
@@ -2184,12 +2558,11 @@ impl Agent {
         // checkpoints/stops before inference while resume inherits the exact tightened ceiling.
         self.synchronize_usd_budget()?;
         self.close_usd_budget_on_unknown_cost();
-        if let Some(outcome) = self.finish_requested_control(TurnId(self.seq_turn))? {
+        if let Some(outcome) = self.finish_requested_control(TurnId(self.seq_turn)).await? {
             if outcome != Outcome::Drained {
                 let ctx = serde_json::json!({"event":"Stop","outcome":format!("{outcome:?}")})
                     .to_string();
-                self.brokered_hook(TurnId(self.seq_turn), HookEvent::Stop, &ctx)
-                    .await?;
+                self.queue_stop_hook(TurnId(self.seq_turn), &ctx);
             }
             return Ok(outcome);
         }
@@ -2235,8 +2608,9 @@ impl Agent {
         })?;
         let input_images = staged_images.images();
         let orchestrate = allow_orchestration
-            && self.effort_orchestration(self.effort)
-                == iteron_protocol::OrchestrationMode::Orchestrated
+            && (self.turn_orchestration_requested
+                || self.effort_orchestration(self.effort)
+                    == iteron_protocol::OrchestrationMode::Orchestrated)
             && !task.trim().is_empty()
             && !self.orchestrating;
         let outcome = if orchestrate {
@@ -2251,7 +2625,7 @@ impl Agent {
         if owns_deadline {
             self.run_deadline = None;
         }
-        // Stop hook (R5, observational): fires once when an ordinary run finishes (`run` is the
+        // Stop hook (R5, observational): is admitted once when an ordinary run finishes (`run` is the
         // top-level entry — run_orchestrated calls drive(), not run()). A drained terminal is the
         // exception: starting an arbitrary hook after its sync checkpoint would mutate state past
         // the recovery boundary, so no new lifecycle effect is admitted after Drained.
@@ -2259,8 +2633,7 @@ impl Agent {
             && *o != Outcome::Drained
         {
             let ctx = serde_json::json!({"event":"Stop","outcome":format!("{o:?}")}).to_string();
-            self.brokered_hook(TurnId(self.seq_turn), HookEvent::Stop, &ctx)
-                .await?;
+            self.queue_stop_hook(TurnId(self.seq_turn), &ctx);
         }
         // The answer is already durable and already on the operator's screen; this is their
         // thinking time, and it is where a summary belongs (#I-58). Before the cache refresh, so
@@ -2306,12 +2679,11 @@ impl Agent {
         self.budget.validate().map_err(KernelError::InvalidBudget)?;
         self.synchronize_usd_budget()?;
         self.close_usd_budget_on_unknown_cost();
-        if let Some(outcome) = self.finish_requested_control(TurnId(self.seq_turn))? {
+        if let Some(outcome) = self.finish_requested_control(TurnId(self.seq_turn)).await? {
             if outcome != Outcome::Drained {
                 let ctx = serde_json::json!({"event":"Stop","outcome":format!("{outcome:?}")})
                     .to_string();
-                self.brokered_hook(TurnId(self.seq_turn), HookEvent::Stop, &ctx)
-                    .await?;
+                self.queue_stop_hook(TurnId(self.seq_turn), &ctx);
             }
             return Ok(outcome);
         }
@@ -2342,11 +2714,10 @@ impl Agent {
             && *o != Outcome::Drained
         {
             let ctx = serde_json::json!({"event":"Stop","outcome":format!("{o:?}")}).to_string();
-            self.brokered_hook(TurnId(self.seq_turn), HookEvent::Stop, &ctx)
-                .await?;
+            self.queue_stop_hook(TurnId(self.seq_turn), &ctx);
         }
-        // After the Stop hook, so the export includes the hook's own effect: the exporter is the
-        // last thing the run does, and it exports what the run actually did.
+        // Stop is now a session-owned observer, so leaf telemetry cannot wait for or claim its
+        // terminal. The hook-specific journal and AppServer lifecycle stream record that result.
         self.brokered_telemetry_export(TurnId(self.seq_turn))
             .await?;
         self.refresh_session_cache_metered();
@@ -2513,6 +2884,10 @@ impl Agent {
         // merged into its trailing user message by `admit_submission`. One full pass per SUBMISSION
         // is the price of constant-time accounting per TURN.
         self.context_estimator.invalidate_transcript();
+        // Per-OPERATOR-turn, not per model round: the tools run in one iteration of the loop below
+        // and the terminal checkpoint happens in a later one, so clearing this inside the loop
+        // would discard exactly the writes the checkpoint exists to capture.
+        self.turn_mutated_workspace = false;
 
         loop {
             let mut agent_loop = agent_loop::AgentLoopGuard::begin(TurnId(self.seq_turn));
@@ -2531,7 +2906,7 @@ impl Agent {
                 // The audit record could not be durably written; halt rather than run un-recorded.
                 return Ok(Outcome::HarnessError);
             }
-            if let Some(outcome) = self.finish_requested_control(turn_id)? {
+            if let Some(outcome) = self.finish_requested_control(turn_id).await? {
                 return Ok(outcome);
             }
             let effective_system = self.effective_system();
@@ -2550,9 +2925,15 @@ impl Agent {
                 Some(turn_id),
                 LifecyclePayload::default(),
             );
-            let mut context_estimate =
-                self.context_estimator
-                    .estimate(&effective_system, messages, &tool_specs);
+            let estimated = self.context_estimator.estimate_with_tool_tokens(
+                &effective_system,
+                messages,
+                tool_specs.len(),
+                tool_specs.estimated_tokens(),
+                tool_specs.cache_identity(),
+            );
+            let mut uncalibrated_context_total = estimated.total_tokens;
+            let mut context_estimate = self.calibrated_context_estimate(estimated);
             self.lifecycle_event(
                 "context.tokenizer.estimate_completed",
                 Some(turn_id),
@@ -2567,31 +2948,45 @@ impl Agent {
             // proven window, so the alternative to summarizing here is a refused request. The
             // ROUTINE compaction moved off the critical path to `settle_compaction`, at the end of
             // the turn: buying an extra synchronous round and a cold prefix inside the turn the
-            // operator is waiting on was the whole defect. The cached estimate is deliberately NOT
-            // threaded into this decision: on the overflow path it fires at most once per run, so
-            // the accounting pass it would save is not on any hot path. ----
-            let compaction_gate = self
-                .brokered_lifecycle_gate(
-                    turn_id,
-                    "context.compaction.considered",
-                    LifecyclePayload {
-                        magnitude: Some(
-                            u64::try_from(context_estimate.total_tokens).unwrap_or(u64::MAX),
-                        ),
-                        ..LifecyclePayload::default()
-                    },
-                )
-                .await?;
-            let compaction_allowed = matches!(compaction_gate.decision, HookDecision::Allow);
-            if compaction_allowed
-                && let Some(plan) = self.compaction.plan_before_overflow(
-                    &effective_system,
-                    messages,
-                    &tool_specs,
-                    self.model_context_window,
-                    request_max_tokens,
-                )
-            {
+            // operator is waiting on was the whole defect. The exact request estimate above is
+            // already cached and authoritative for admission; do not walk the transcript and
+            // serialize every tool schema a second time just to answer the same threshold test.
+            // Also avoid running a `context.compaction.considered` hook on every ordinary turn:
+            // only a request that actually crossed the overflow precheck reaches that effect. ----
+            let compaction_needed = self.compaction.enabled
+                && messages.len() > self.compaction.keep_recent.saturating_add(2)
+                && match self.model_context_window.filter(|window| *window > 0) {
+                    Some(window) => {
+                        u64::try_from(context_estimate.total_tokens)
+                            .unwrap_or(u64::MAX)
+                            .saturating_add(u64::from(request_max_tokens))
+                            > window
+                    }
+                    None => {
+                        context_estimate.total_tokens
+                            > self
+                                .compaction
+                                .effective_trigger_tokens(None, request_max_tokens)
+                    }
+                };
+            let compaction_allowed = if compaction_needed {
+                let compaction_gate = self
+                    .brokered_lifecycle_gate(
+                        turn_id,
+                        "context.compaction.considered",
+                        LifecyclePayload {
+                            magnitude: Some(
+                                u64::try_from(context_estimate.total_tokens).unwrap_or(u64::MAX),
+                            ),
+                            ..LifecyclePayload::default()
+                        },
+                    )
+                    .await?;
+                matches!(compaction_gate.decision, HookDecision::Allow)
+            } else {
+                false
+            };
+            if compaction_allowed && let Some(plan) = self.compaction.force_plan(messages) {
                 let before_messages = messages.clone();
                 // Best-effort: if the summary call fails, continue uncompacted rather than lose
                 // the run (it retries next turn).
@@ -2611,7 +3006,7 @@ impl Agent {
                         // provider attempt.
                         let _ = self.collect_inbound_ops(TurnId(self.seq_turn));
                         if let Some(outcome) =
-                            self.finish_requested_control(TurnId(self.seq_turn))?
+                            self.finish_requested_control(TurnId(self.seq_turn)).await?
                         {
                             return Ok(outcome);
                         }
@@ -2662,11 +3057,15 @@ impl Agent {
                         // The transcript was rewritten, not appended to: drop the cached per-message
                         // estimates and re-account this turn against the compacted history.
                         self.context_estimator.invalidate_transcript();
-                        context_estimate = self.context_estimator.estimate(
+                        let estimated = self.context_estimator.estimate_with_tool_tokens(
                             &effective_system,
                             messages,
-                            &tool_specs,
+                            tool_specs.len(),
+                            tool_specs.estimated_tokens(),
+                            tool_specs.cache_identity(),
                         );
+                        uncalibrated_context_total = estimated.total_tokens;
+                        context_estimate = self.calibrated_context_estimate(estimated);
                     }
                     Err(_) => self.lifecycle_event(
                         "context.compaction.failed",
@@ -2680,7 +3079,7 @@ impl Agent {
             // again before admitting the main-model request; otherwise Drain received during a
             // long summary could be followed by one additional provider turn.
             let _ = self.collect_inbound_ops(TurnId(self.seq_turn));
-            if let Some(outcome) = self.finish_requested_control(TurnId(self.seq_turn))? {
+            if let Some(outcome) = self.finish_requested_control(TurnId(self.seq_turn)).await? {
                 return Ok(outcome);
             }
             let post_compaction_turn = TurnId(self.seq_turn);
@@ -2692,14 +3091,15 @@ impl Agent {
                 agent_loop = agent_loop::AgentLoopGuard::begin(turn_id);
                 self.observe_session_memory_activation(turn_id, relevance_task);
             }
+            self.remember_token_estimate_baseline(turn_id, uncalibrated_context_total);
 
             // ---- turn-atomic budget check (ADR-008): checked at turn admission, no mid-turn
             // preempt; a breach stops cleanly at this safe point, never mid-effect. ----
             if let Some(reason) = self.inference_budget_exhaustion()? {
-                return self.finish(turn_id, Outcome::BudgetExhausted(reason));
+                return self.finish(turn_id, Outcome::BudgetExhausted(reason)).await;
             }
             if consecutive_errors >= self.budget.max_consecutive_tool_errors {
-                return self.finish(turn_id, Outcome::Stuck);
+                return self.finish(turn_id, Outcome::Stuck).await;
             }
 
             self.emit(
@@ -2708,6 +3108,9 @@ impl Agent {
                     phase: Phase::Model,
                 },
             );
+            let local_prepare_activity = self
+                .activity
+                .span(turn_activity::ActivityStage::LocalPrepare, Some(turn_id));
             agent_loop.transition(AgentLoopState::AwaitingModel)?;
             self.ledger.record_kernel_tokens(
                 u64::try_from(
@@ -2760,7 +3163,7 @@ impl Agent {
                     return Err(KernelError::ContextResolution(reason));
                 }
             }
-            if let Some(outcome) = self.collect_and_finish_requested_control(turn_id)? {
+            if let Some(outcome) = self.collect_and_finish_requested_control(turn_id).await? {
                 return Ok(outcome);
             }
 
@@ -2810,11 +3213,16 @@ impl Agent {
                 controls: self.provider_controls,
             };
             let effort_application = self.provider.effort_application(&req);
+            local_prepare_activity.complete();
 
             // The append is the provider-effect intent. It must be durable before any adapter is
             // entered; failure returns with zero network calls and leaves the in-memory ledger
             // unchanged.
+            let admission_activity = self
+                .activity
+                .span(turn_activity::ActivityStage::AdmissionWait, Some(turn_id));
             let admission = self.admit_provider_dispatch(turn_id, &req).await?;
+            admission_activity.complete();
             let usd_attempt = admission.attempt_guard;
 
             // Open the provider effect BEFORE the mid-stream pure-tool machinery takes its borrow
@@ -2918,9 +3326,25 @@ impl Agent {
                 settlement?;
                 return Err(error);
             }
+            let activity_sink = self.activity.clone();
+            let mut connect_activity = None;
+            let mut waiting_first_token_activity = None;
+            let mut decode_activity = None;
+            let mut running_provider_activity = None;
+            let mut stream_start = Instant::now();
             if provider_refusal.is_none() {
                 agent_loop.transition(AgentLoopState::StreamingModel)?;
                 self.observe_memory_provider_exposure(turn_id);
+                // TTFT authority begins at the same instruction boundary as request_sent. The
+                // lifecycle call itself happens immediately after this timestamp (no local IO in
+                // between), keeping origin skew below the five-millisecond contract.
+                stream_start = Instant::now();
+                running_provider_activity = Some(
+                    activity_sink
+                        .span(turn_activity::ActivityStage::RunningProvider, Some(turn_id)),
+                );
+                connect_activity =
+                    Some(activity_sink.span(turn_activity::ActivityStage::Connect, Some(turn_id)));
                 self.lifecycle_event(
                     "context.request.submitted",
                     Some(turn_id),
@@ -2944,7 +3368,9 @@ impl Agent {
             let tool_policy = self.tool_policy.clone();
             let argument_trust = self.governing_turn_trust(messages);
             let ui_tx = self.ui_tx.clone();
+            let frontend_saturation = self.frontend_saturation.clone();
             let tool_interrupt = self.interrupt.clone();
+            let tool_force_cancel = self.force_cancel.clone();
             let tool_drain = self.drain.clone();
             // If a PreToolUse hook is configured, pure tools must NOT early-dispatch — the read
             // would be in flight before the hook could block it (security review MEDIUM #2: an
@@ -2963,7 +3389,6 @@ impl Agent {
             // (Little's Law: a concurrency limit is the only honest knob — but it must be the only
             // one, and a hidden serial tail is a second, dishonest one).
             let gov = iteron_sched::Governor::new(self.scheduled_tool_concurrency()?);
-            let model_span = PhaseSpan::enter(Phase::Model);
             // Carry each pure tool's id so a panicked/cancelled task can still answer its
             // tool_use with an error result (code review: an unanswered tool_use is a dangling
             // block the model API rejects on the next turn).
@@ -2986,7 +3411,6 @@ impl Agent {
             let mut order: usize = 0;
             let mut tool_admission = effects::ToolCallAdmission::default();
             let mut tool_contract_error = None;
-            let stream_start = Instant::now();
             // #103: time to first token and decode time, measured at the ONE place every stream
             // item already passes through. `first_item_at` is set by whichever variant arrives
             // first — a `ThinkingDelta` counts, because extended thinking is the model producing
@@ -3013,10 +3437,14 @@ impl Agent {
                     .unwrap_or_else(Instant::now)
             });
             let provider_interrupt = self.interrupt.clone();
+            let provider_force_cancel = self.force_cancel.clone();
             let provider_drain = self.drain.clone();
             let mut retry_index = 0u32;
             let mut retry_jitter = iteron_sched::backoff::Jitter::new();
+            let mut provider_active = Duration::ZERO;
             let provider_result = loop {
+                let provider_attempt_started = Instant::now();
+                let attempt_stream_item_base = stream_items;
                 let mut attempt_rate_limit = None;
                 let mut hedged_dispatch = if provider_refusal.is_none() && use_hedge {
                     Some(
@@ -3044,14 +3472,66 @@ impl Agent {
                     .as_ref()
                     .is_none_or(|dispatch| dispatch.monetary_followup_safe);
                 let hedged_this_attempt = hedged_dispatch.is_some();
+                let hedge_ui_pre_forwarded = hedged_dispatch
+                    .as_ref()
+                    .is_some_and(|dispatch| dispatch.ui_deltas_forwarded);
                 let result = {
                     let mut on_item = |item: StreamItem| {
+                        if matches!(item, StreamItem::Accepted) {
+                            if !first_byte_observed {
+                                first_byte_observed = true;
+                                if let Some(span) = connect_activity.take() {
+                                    span.complete();
+                                }
+                                if waiting_first_token_activity.is_none() {
+                                    waiting_first_token_activity = Some(activity_sink.span(
+                                        turn_activity::ActivityStage::AwaitingFirstToken,
+                                        Some(turn_id),
+                                    ));
+                                }
+                                if let Some(emitter) = &model_lifecycle {
+                                    let _ = emitter.emit(
+                                        "model.accepted",
+                                        model_correlation.clone(),
+                                        LifecyclePayload {
+                                            duration_us: Some(elapsed_us(stream_start)),
+                                            ..LifecyclePayload::default()
+                                        },
+                                    );
+                                }
+                            }
+                            return;
+                        }
+                        if let StreamItem::CompatibilityNotice(message) = item {
+                            if let Some(tx) = &ui_tx {
+                                let _ = frontend_saturation
+                                    .try_send_ui(tx, UiEvent::Notice(message.to_string()));
+                            }
+                            self.lifecycle_event(
+                                "model.compatibility_notice",
+                                Some(turn_id),
+                                LifecyclePayload {
+                                    reason_code: Some("provider_stop_normalized".into()),
+                                    ..LifecyclePayload::default()
+                                },
+                            );
+                            return;
+                        }
                         // Quota is read from the response headers, not produced by the model. Counting it
                         // would make time-to-first-token report the moment the headers landed and turn
                         // every stalled prefill into an apparently instant one (#103, I-64).
                         if let StreamItem::RateLimit(snapshot) = item {
                             if !first_byte_observed {
                                 first_byte_observed = true;
+                                if let Some(span) = connect_activity.take() {
+                                    span.complete();
+                                }
+                                if waiting_first_token_activity.is_none() {
+                                    waiting_first_token_activity = Some(activity_sink.span(
+                                        turn_activity::ActivityStage::AwaitingFirstToken,
+                                        Some(turn_id),
+                                    ));
+                                }
                                 if let Some(emitter) = &model_lifecycle {
                                     let _ = emitter.emit(
                                         "model.first_byte",
@@ -3076,6 +3556,22 @@ impl Agent {
                         }
                         if first_item_at.is_none() {
                             first_item_at = Some(Instant::now());
+                            if let Some(span) = connect_activity.take() {
+                                span.complete();
+                            }
+                            if waiting_first_token_activity.is_none() {
+                                waiting_first_token_activity = Some(activity_sink.span(
+                                    turn_activity::ActivityStage::AwaitingFirstToken,
+                                    Some(turn_id),
+                                ));
+                            }
+                            if let Some(span) = waiting_first_token_activity.take() {
+                                span.complete();
+                            }
+                            decode_activity = Some(
+                                activity_sink
+                                    .span(turn_activity::ActivityStage::Decode, Some(turn_id)),
+                            );
                             if let Some(emitter) = &model_lifecycle {
                                 let payload = LifecyclePayload {
                                     duration_us: Some(elapsed_us(stream_start)),
@@ -3097,33 +3593,27 @@ impl Agent {
                             }
                         }
                         stream_items = stream_items.saturating_add(1);
-                        if let Some(emitter) = &model_lifecycle {
-                            let _ = emitter.emit(
-                                "model.stream_item",
-                                model_correlation.clone(),
-                                LifecyclePayload {
-                                    count: Some(1),
-                                    ..LifecyclePayload::default()
-                                },
-                            );
-                        }
                         match item {
                             StreamItem::TextDelta(t) => {
                                 streamed_text.push_str(&t);
-                                if let Some(tx) = &ui_tx {
+                                if !hedge_ui_pre_forwarded && let Some(tx) = &ui_tx {
                                     // Scrub secrets before the assistant text crosses the UI seam (ADR-015 R1):
                                     // the record already masks the committed Block::Text, but the live UI / /export
                                     // are the same exfiltration surfaces as tool output, which we scrub here too.
                                     // The frontend adds a stateful cross-delta scrubber before rendering.
-                                    let _ =
-                                        tx.send(UiEvent::Text(iteron_record::redact::scrub(&t)));
+                                    let _ = frontend_saturation.try_send_ui(
+                                        tx,
+                                        UiEvent::Text(iteron_record::redact::scrub(&t)),
+                                    );
                                 }
                             }
                             StreamItem::ThinkingDelta(t) => {
                                 streamed_thinking.push_str(&t);
-                                if let Some(tx) = &ui_tx {
-                                    let _ = tx
-                                        .send(UiEvent::Thinking(iteron_record::redact::scrub(&t)));
+                                if !hedge_ui_pre_forwarded && let Some(tx) = &ui_tx {
+                                    let _ = frontend_saturation.try_send_ui(
+                                        tx,
+                                        UiEvent::Thinking(iteron_record::redact::scrub(&t)),
+                                    );
                                 }
                             }
                             StreamItem::ToolUseComplete(tu) => {
@@ -3140,11 +3630,14 @@ impl Agent {
                                     // Scrub secret-shaped values out of the args BEFORE they cross the UI seam
                                     // (ADR-015 R1: the UI/ /export / scrollback are new exfiltration surfaces the
                                     // record's redaction does not cover).
-                                    let _ = tx.send(UiEvent::ToolStart {
-                                        id: tu.id.clone(),
-                                        name: tu.name.clone(),
-                                        args: scrub_value(&tu.input),
-                                    });
+                                    let _ = frontend_saturation.try_send_ui(
+                                        tx,
+                                        UiEvent::ToolStart {
+                                            id: tu.id.clone(),
+                                            name: tu.name.clone(),
+                                            args: scrub_value(&tu.input),
+                                        },
+                                    );
                                 }
                                 let idx = order;
                                 order += 1;
@@ -3223,6 +3716,7 @@ impl Agent {
                                     let tool_use_id = tu_ui.id.clone();
                                     let spill_store = self.ordinary_tool_spill_store(&tu_ui.name);
                                     let interrupt = tool_interrupt.clone();
+                                    let force_cancel = tool_force_cancel.clone();
                                     let drain = tool_drain.clone();
                                     let permit = gov.try_acquire();
                                     if permit.is_none() {
@@ -3237,6 +3731,7 @@ impl Agent {
                                         let result = match await_tool_or_interrupt(
                                             fut,
                                             interrupt.as_deref(),
+                                            Some(force_cancel.as_ref()),
                                             Some(drain.as_ref()),
                                         )
                                         .await
@@ -3245,11 +3740,14 @@ impl Agent {
                                             // Pure tools have no externally visible effect by contract, so
                                             // dropping one on interrupt is a definite cancelled read rather
                                             // than an unknown effect settlement.
-                                            Err(()) => ToolResult {
+                                            Err(interruption) => ToolResult {
                                                 tool_use_id,
-                                                content:
-                                                    "operator interrupted the read before it completed"
-                                                        .into(),
+                                                content: match interruption {
+                                                    ToolInterruption::Forced => "operator force-cancelled the read before it completed",
+                                                    ToolInterruption::Drain => "operator drained the read before it completed",
+                                                    ToolInterruption::Cooperative => "operator interrupted the read before it completed",
+                                                }
+                                                .into(),
                                                 is_error: true,
                                                 trust: Trust::Workspace,
                                                 latency_ms: 0,
@@ -3268,7 +3766,10 @@ impl Agent {
                             }
                             // Returned above, before the first-token clock; repeated here only because
                             // the match is exhaustive by design.
-                            StreamItem::RateLimit(_) | StreamItem::TurnComplete { .. } => {}
+                            StreamItem::Accepted
+                            | StreamItem::CompatibilityNotice(_)
+                            | StreamItem::RateLimit(_)
+                            | StreamItem::TurnComplete { .. } => {}
                         }
                     };
 
@@ -3288,15 +3789,36 @@ impl Agent {
                         provider_route::execute_admitted_provider_turn(
                             provider_for_stream.clone(),
                             provider_deadline,
-                            provider_interrupt.clone(),
-                            provider_drain.clone(),
-                            None,
+                            provider_route::ProviderCancellation {
+                                interrupt: provider_interrupt.clone(),
+                                force_cancel: provider_force_cancel.clone(),
+                                drain: provider_drain.clone(),
+                                attempt: None,
+                            },
                             &req,
                             &mut on_item,
                         )
                         .await
                     }
                 };
+                provider_active =
+                    provider_active.saturating_add(provider_attempt_started.elapsed());
+                // High-frequency deltas stay on the bounded UI stream. Lifecycle telemetry gets
+                // one aggregate row only after this physical dispatch has a terminal, so a long
+                // answer cannot evict higher-value governance events from the flight recorder.
+                if provider_ticket.is_some() || hedged_this_attempt {
+                    self.lifecycle_event(
+                        "model.stream_item",
+                        Some(turn_id),
+                        LifecyclePayload {
+                            count: Some(u64::from(
+                                stream_items.saturating_sub(attempt_stream_item_base),
+                            )),
+                            reason_code: Some("physical_attempt_terminal_aggregate".into()),
+                            ..LifecyclePayload::default()
+                        },
+                    );
+                }
                 let single_dispatched = provider_ticket.is_some();
                 if let Some(ticket) = provider_ticket.take() {
                     let accounting = self.route_attempt_accounting(
@@ -3348,12 +3870,32 @@ impl Agent {
                         retry_index,
                         retry_jitter.next01(),
                     );
+                    if let Some(hint) = error.retry_after()
+                        && hint > iteron_provider::MAX_INTERACTIVE_RETRY_AFTER
+                    {
+                        self.lifecycle_event(
+                            "model.retry_cancelled",
+                            Some(turn_id),
+                            LifecyclePayload {
+                                duration_us: Some(
+                                    u64::try_from(hint.as_micros()).unwrap_or(u64::MAX),
+                                ),
+                                reason_code: Some("retry_after_exceeds_interactive_ceiling".into()),
+                                ..LifecyclePayload::default()
+                            },
+                        );
+                        break Err(iteron_provider::ProviderError::RetryAfterTooLong {
+                            retry_after_ms: u64::try_from(hint.as_millis()).unwrap_or(u64::MAX),
+                            limit_ms: u64::try_from(
+                                iteron_provider::MAX_INTERACTIVE_RETRY_AFTER.as_millis(),
+                            )
+                            .unwrap_or(u64::MAX),
+                        }
+                        .into());
+                    }
                     let delay = error
                         .retry_after()
-                        .map(|hint| {
-                            hint.min(Duration::from_millis(self.retry_policy.cap_ms))
-                                .max(jitter_delay)
-                        })
+                        .map(|hint| hint.max(jitter_delay))
                         .unwrap_or(jitter_delay);
                     self.lifecycle_event(
                         "model.retry_scheduled",
@@ -3365,6 +3907,15 @@ impl Agent {
                             ..LifecyclePayload::default()
                         },
                     );
+                    self.activity.retry(
+                        turn_id,
+                        retry_index.saturating_add(1),
+                        self.retry_policy.max_attempts,
+                        delay,
+                    );
+                    if let Some(span) = connect_activity.take() {
+                        span.fail(iteron_protocol::ActivityDetailCode::TransportConnect);
+                    }
                     let wait_started = Instant::now();
                     if let Err(cancelled) = self.wait_provider_retry(delay).await {
                         self.lifecycle_event(
@@ -3400,8 +3951,12 @@ impl Agent {
                         break Err(KernelError::InferenceBudgetExhausted("max_usd"));
                     }
                     fallback_index = index.saturating_add(1);
+                    let failover_activity = self
+                        .activity
+                        .span(turn_activity::ActivityStage::Failover, Some(turn_id));
                     let next =
                         self.activate_fallback_provider_route(turn_id, index, failover_class)?;
+                    failover_activity.complete();
                     provider_for_stream = next.provider.clone();
                     active_provider_route = next.id();
                     req.model = next.route.model_id;
@@ -3461,6 +4016,9 @@ impl Agent {
                     self.ledger
                         .record_broker_latency_us(elapsed_us(broker_started));
                 }
+                stream_start = Instant::now();
+                connect_activity =
+                    Some(activity_sink.span(turn_activity::ActivityStage::Connect, Some(turn_id)));
                 self.lifecycle_event(
                     "model.request_sent",
                     Some(turn_id),
@@ -3472,6 +4030,42 @@ impl Agent {
                 );
             };
             match &provider_result {
+                Ok(_) => {
+                    if let Some(span) = running_provider_activity.take() {
+                        span.complete();
+                    }
+                    if let Some(span) = connect_activity.take() {
+                        span.complete();
+                    }
+                    if let Some(span) = waiting_first_token_activity.take() {
+                        span.complete();
+                    }
+                    if let Some(span) = decode_activity.take() {
+                        span.complete();
+                    }
+                }
+                Err(error) => {
+                    let detail = match error {
+                        KernelError::Provider(iteron_provider::ProviderError::DeadlineExceeded) => {
+                            iteron_protocol::ActivityDetailCode::WaitingFirstToken
+                        }
+                        _ => iteron_protocol::ActivityDetailCode::TransportConnect,
+                    };
+                    if let Some(span) = running_provider_activity.take() {
+                        span.fail(detail);
+                    }
+                    if let Some(span) = connect_activity.take() {
+                        span.fail(detail);
+                    }
+                    if let Some(span) = waiting_first_token_activity.take() {
+                        span.fail(detail);
+                    }
+                    if let Some(span) = decode_activity.take() {
+                        span.fail(detail);
+                    }
+                }
+            }
+            match &provider_result {
                 Ok(_) => self.lifecycle_event(
                     "model.stream_completed",
                     Some(turn_id),
@@ -3481,11 +4075,11 @@ impl Agent {
                         ..LifecyclePayload::default()
                     },
                 ),
-                Err(_) => self.lifecycle_event(
+                Err(error) => self.lifecycle_event(
                     "model.request_failed",
                     Some(turn_id),
                     LifecyclePayload {
-                        reason_code: Some("provider_error".into()),
+                        reason_code: Some(provider_route::provider_failure_stage(error).into()),
                         duration_us: Some(elapsed_us(stream_start)),
                         ..LifecyclePayload::default()
                     },
@@ -3520,14 +4114,18 @@ impl Agent {
                         &streamed_text,
                         &streamed_thinking,
                     );
-                    if let Some(outcome) = self.collect_and_finish_requested_control(turn_id)? {
+                    if let Some(outcome) =
+                        self.collect_and_finish_requested_control(turn_id).await?
+                    {
                         return Ok(outcome);
                     }
                     if matches!(
                         error,
                         KernelError::Provider(iteron_provider::ProviderError::DeadlineExceeded)
                     ) {
-                        return self.finish(turn_id, Outcome::BudgetExhausted("max_wall_secs"));
+                        return self
+                            .finish(turn_id, Outcome::BudgetExhausted("max_wall_secs"))
+                            .await;
                     }
                     return Err(error);
                 }
@@ -3540,7 +4138,7 @@ impl Agent {
                     handle.abort();
                     let _ = handle.await;
                 }
-                if let Some(outcome) = self.collect_and_finish_requested_control(turn_id)? {
+                if let Some(outcome) = self.collect_and_finish_requested_control(turn_id).await? {
                     return Ok(outcome);
                 }
                 return Err(iteron_provider::ProviderError::Decode(error.to_string()).into());
@@ -3577,7 +4175,7 @@ impl Agent {
                     handle.abort();
                     let _ = handle.await;
                 }
-                if let Some(outcome) = self.collect_and_finish_requested_control(turn_id)? {
+                if let Some(outcome) = self.collect_and_finish_requested_control(turn_id).await? {
                     return Ok(outcome);
                 }
                 return Err(iteron_provider::ProviderError::Decode(
@@ -3589,7 +4187,9 @@ impl Agent {
             // it now counts the calls that queued for a permit. Same question — "did the cap bind
             // this turn?" — answered without the serialisation that used to be its only symptom.
             self.ledger.tool_inline_overflow(queued_pure);
-            let model_ms = model_span.elapsed_ms();
+            // Provider-active time only: local preparation, admission/fsync, retry backoff and
+            // failover selection have their own clocks and cannot inflate `model_ms`.
+            let model_ms = iteron_obs::duration_ms_ceil(provider_active);
             let stream_elapsed = stream_start.elapsed();
             // Measured only if the stream actually produced an item. An attempt that failed before
             // its first byte leaves every field `None` rather than reporting a zero it did not see.
@@ -3686,7 +4286,7 @@ impl Agent {
                     handle.abort();
                     let _ = handle.await;
                 }
-                if let Some(outcome) = self.collect_and_finish_requested_control(turn_id)? {
+                if let Some(outcome) = self.collect_and_finish_requested_control(turn_id).await? {
                     return Ok(outcome);
                 }
                 return Err(iteron_provider::ProviderError::Decode(
@@ -3699,13 +4299,13 @@ impl Agent {
                 // particular, a configured verification oracle has its own independently timed
                 // phase and must never be folded into tool execution.
                 self.ledger.phase_tools(tools_span.elapsed_ms());
-                if let Some(outcome) = self.collect_and_finish_requested_control(turn_id)? {
+                if let Some(outcome) = self.collect_and_finish_requested_control(turn_id).await? {
                     return Ok(outcome);
                 }
                 match turn_res.stop_reason {
                     StopReason::MaxTokens => {
                         if let Some(reason) = self.completed_turn_budget_exhaustion() {
-                            return self.finish(turn_id, Outcome::BudgetExhausted(reason));
+                            return self.finish(turn_id, Outcome::BudgetExhausted(reason)).await;
                         }
                         // A provider may cut a tool argument mid-JSON. Adapters deliberately omit
                         // such partial calls; append a real user turn so every provider receives a
@@ -3730,7 +4330,7 @@ impl Agent {
                     }
                     StopReason::PauseTurn => {
                         if let Some(reason) = self.completed_turn_budget_exhaustion() {
-                            return self.finish(turn_id, Outcome::BudgetExhausted(reason));
+                            return self.finish(turn_id, Outcome::BudgetExhausted(reason)).await;
                         }
                         // A provider pause is a valid, resumable terminal. Append a user-role
                         // continuation so the next request remains portable across adapters and
@@ -3754,13 +4354,44 @@ impl Agent {
                     }
                     StopReason::EndTurn => {
                         if let Some(reason) = self.completed_turn_budget_exhaustion() {
-                            return self.finish(turn_id, Outcome::BudgetExhausted(reason));
+                            return self.finish(turn_id, Outcome::BudgetExhausted(reason)).await;
+                        }
+                        if self.last_assistant_text.trim().is_empty() {
+                            let interactive = self.approvals_rx.is_some();
+                            let notice = if interactive {
+                                "provider ended the turn without an answer; completion was not accepted"
+                            } else {
+                                "provider ended the automated turn without an answer; completion requires a configured oracle"
+                            };
+                            self.emit(
+                                turn_id,
+                                EventKind::Notice {
+                                    text: notice.into(),
+                                },
+                            );
+                            self.ui(UiEvent::Notice(notice.into()));
+                            self.lifecycle_event(
+                                "session.failed",
+                                Some(turn_id),
+                                LifecyclePayload {
+                                    reason_code: Some("empty_end_turn".into()),
+                                    ..LifecyclePayload::default()
+                                },
+                            );
+                            if matches!(
+                                completion_semantics::empty_end_turn_decision(
+                                    self.verify_command.is_some()
+                                ),
+                                completion_semantics::EmptyEndTurnDecision::Reject
+                            ) {
+                                return self.finish(turn_id, Outcome::HarnessError).await;
+                            }
                         }
                         // A message typed while this turn was decoding wins over the model's claim
                         // to be done: durably admit it, then build another turn. This is the
                         // Claude/Codex steering contract at a safe point, never mid-effect.
                         let steered = self.admit_pending_steers(turn_id, messages)?;
-                        if let Some(outcome) = self.finish_requested_control(turn_id)? {
+                        if let Some(outcome) = self.finish_requested_control(turn_id).await? {
                             return Ok(outcome);
                         }
                         if steered > 0 {
@@ -3772,6 +4403,10 @@ impl Agent {
                         // is configured, run it (strong oracle) ourselves; on failure, refuse the
                         // claim and feed the failure back. Bounded so a wrong gate can't loop. ----
                         if let Some(cmd) = self.verify_command.clone() {
+                            // The strong oracle runs repo-controlled code (build, test, install).
+                            // It is not a tool effect, but it is a write path, so the turn that
+                            // ran it is never treated as read-only for checkpoint purposes.
+                            self.turn_mutated_workspace = true;
                             agent_loop.transition(AgentLoopState::Verifying)?;
                             let max_verify_attempts = self.verification_policy.retry.max_attempts;
                             // Defensive guard for re-entry with an already-exhausted Agent. A
@@ -3790,7 +4425,8 @@ impl Agent {
                                 );
                                 self.ui(UiEvent::Notice(notice));
                                 return self
-                                    .finish(turn_id, Outcome::BudgetExhausted("verify_attempts"));
+                                    .finish(turn_id, Outcome::BudgetExhausted("verify_attempts"))
+                                    .await;
                             }
 
                             self.checkpoint_before_verification(turn_id)?;
@@ -3876,7 +4512,7 @@ impl Agent {
                             // different terminal outcome. Interrupt keeps the existing Cancelled
                             // path so its resumable guidance is durably appended first.
                             if self.requested_control() == InboundControl::Drain {
-                                return self.finish_drained(turn_id);
+                                return self.finish_drained(turn_id).await;
                             }
                             let detail = truncate_tail(&verdict.detail, 3000);
                             let failure_classification =
@@ -3917,7 +4553,7 @@ impl Agent {
                                                 ),
                                             },
                                         );
-                                        return self.finish(turn_id, Outcome::HarnessError);
+                                        return self.finish(turn_id, Outcome::HarnessError).await;
                                     }
                                     if recovery
                                         == iteron_verify::VerificationRecoveryAction::StopIneligible
@@ -3930,7 +4566,7 @@ impl Agent {
                                                 ),
                                             },
                                         );
-                                        return self.finish(turn_id, Outcome::HarnessError);
+                                        return self.finish(turn_id, Outcome::HarnessError).await;
                                     }
                                     let rolled_back =
                                         self.rollback_after_verification_failure().await?;
@@ -3953,10 +4589,12 @@ impl Agent {
                                             },
                                         );
                                         self.ui(UiEvent::Notice(notice));
-                                        return self.finish(
-                                            turn_id,
-                                            Outcome::BudgetExhausted("verify_attempts"),
-                                        );
+                                        return self
+                                            .finish(
+                                                turn_id,
+                                                Outcome::BudgetExhausted("verify_attempts"),
+                                            )
+                                            .await;
                                     }
 
                                     debug_assert!(matches!(
@@ -4036,7 +4674,7 @@ impl Agent {
                                     } else {
                                         Outcome::HarnessError
                                     };
-                                    return self.finish(turn_id, outcome);
+                                    return self.finish(turn_id, outcome).await;
                                 }
                                 iteron_verify::VerificationOutcome::InfrastructureFailure => {
                                     let notice = format!(
@@ -4059,7 +4697,7 @@ impl Agent {
                                              before resuming.\n\n{detail}"
                                         )),
                                     )?;
-                                    return self.finish(turn_id, Outcome::HarnessError);
+                                    return self.finish(turn_id, Outcome::HarnessError).await;
                                 }
                                 iteron_verify::VerificationOutcome::Cancelled => {
                                     let notice = format!(
@@ -4081,24 +4719,26 @@ impl Agent {
                                              completion.\n\n{detail}"
                                         )),
                                     )?;
-                                    if let Some(outcome) = self.finish_requested_control(turn_id)? {
+                                    if let Some(outcome) =
+                                        self.finish_requested_control(turn_id).await?
+                                    {
                                         return Ok(outcome);
                                     }
-                                    return self.finish(turn_id, Outcome::Interrupted);
+                                    return self.finish(turn_id, Outcome::Interrupted).await;
                                 }
                             }
                         }
                         // Verification can be long-running. Re-check the ordered submission queue
                         // before committing Done so guidance typed during the oracle is not lost.
                         let steered = self.admit_pending_steers(turn_id, messages)?;
-                        if let Some(outcome) = self.finish_requested_control(turn_id)? {
+                        if let Some(outcome) = self.finish_requested_control(turn_id).await? {
                             return Ok(outcome);
                         }
                         if steered > 0 {
                             self.advance_turn().await?;
                             continue;
                         }
-                        return self.finish(turn_id, Outcome::Done);
+                        return self.finish(turn_id, Outcome::Done).await;
                     }
                     StopReason::ToolUse => {
                         return Err(iteron_provider::ProviderError::Decode(
@@ -4171,7 +4811,6 @@ impl Agent {
                             overlap_ms.min(r.latency_ms),
                         )?;
                         any_error |= r.is_error;
-                        self.ui(tool_end_ui(&tu, r));
                         if managed.spilled {
                             // Pure-tool memoization happens inside the registry, before this owner
                             // sees the result. Invalidate it so the raw oversized value is not kept
@@ -4182,6 +4821,7 @@ impl Agent {
                             spill_store.as_deref(),
                             &mut managed,
                         )?;
+                        self.ui(tool_end_ui(&tu, &managed.result));
                         results[idx] = Some(managed.result);
                     }
                     Some(Err(_)) | None => {
@@ -4235,7 +4875,8 @@ impl Agent {
                     .await;
                 if let Err(error) = execution {
                     if matches!(error, KernelError::UnknownEffects { .. })
-                        && let Some(outcome) = self.collect_and_finish_requested_control(turn_id)?
+                        && let Some(outcome) =
+                            self.collect_and_finish_requested_control(turn_id).await?
                     {
                         return Ok(outcome);
                     }
@@ -4388,6 +5029,68 @@ impl Agent {
                     Some(governing_trust),
                     self.operator_authority(),
                 );
+                // Observable tool lifecycle is strict and execution-independent:
+                // Proposed -> AwaitingHook -> AwaitingApproval -> Queued -> Running ->
+                // PostProcessing -> Settled. Run both operator and canonical gate hooks before an
+                // approval prompt so a denied hook never asks the operator to approve dead work.
+                self.activity
+                    .span(turn_activity::ActivityStage::ToolProposed, Some(turn_id))
+                    .complete();
+                let hook_activity = self
+                    .activity
+                    .span(turn_activity::ActivityStage::ToolHook, Some(turn_id));
+                {
+                    let ctx =
+                        serde_json::json!({"event":"PreToolUse","tool":tu.name,"input":tu.input})
+                            .to_string();
+                    if let HookDecision::Deny(reason) = self
+                        .brokered_hook(turn_id, HookEvent::PreToolUse, &ctx)
+                        .await?
+                    {
+                        hook_activity.complete();
+                        self.emit(
+                            turn_id,
+                            EventKind::Notice {
+                                text: format!(
+                                    "hook: PreToolUse DENIED `{}`: {}",
+                                    tu.name,
+                                    iteron_protocol::text::head(&reason, 200)
+                                ),
+                            },
+                        );
+                        let r = ToolResult {
+                            tool_use_id: tu.id.clone(),
+                            content: format!(
+                                "tool `{}` blocked by a PreToolUse hook: {reason}",
+                                tu.name
+                            ),
+                            is_error: true,
+                            trust: Trust::Workspace,
+                            latency_ms: 0,
+                        };
+                        self.commit_refused_tool_result(turn_id, &tu.name, &r)?;
+                        any_error = true;
+                        self.ui(tool_end_ui(&tu, &r));
+                        results[idx] = Some(r);
+                        continue;
+                    }
+                }
+                if let Some(reason) = self.admit_tool_lifecycle_gate(turn_id, &tu.name).await? {
+                    hook_activity.complete();
+                    let r = ToolResult {
+                        tool_use_id: tu.id.clone(),
+                        content: format!("tool `{}` blocked by lifecycle hook: {reason}", tu.name),
+                        is_error: true,
+                        trust: Trust::Workspace,
+                        latency_ms: 0,
+                    };
+                    self.commit_refused_tool_result(turn_id, &tu.name, &r)?;
+                    any_error = true;
+                    self.ui(tool_end_ui(&tu, &r));
+                    results[idx] = Some(r);
+                    continue;
+                }
+                hook_activity.complete();
                 let approval_projection_incomplete = verdict == Verdict::Ask
                     && ui_approval_arguments(&tu.input)
                         .get("_truncated_for_ui")
@@ -4436,7 +5139,7 @@ impl Agent {
                         )
                     } else if approval_projection_incomplete {
                         format!(
-                            "tool `{}` ({:?}) refused: the complete operation exceeds the bounded approval surface, so Core will not ask the operator to approve a hidden suffix",
+                            "tool `{}` ({:?}) refused: the complete operation exceeds the bounded approval surface, so Iteron will not ask the operator to approve a hidden suffix",
                             tu.name, cap
                         )
                     } else if self.permission_mode == PermissionMode::Plan {
@@ -4467,59 +5170,6 @@ impl Agent {
                     self.ui(tool_end_ui(&tu, &r));
                     results[idx] = Some(r);
                     any_error = true;
-                    continue;
-                }
-                // PreToolUse hook (R5): an operator (user-config-only) hook may BLOCK this tool.
-                {
-                    let ctx =
-                        serde_json::json!({"event":"PreToolUse","tool":tu.name,"input":tu.input})
-                            .to_string();
-                    if let HookDecision::Deny(reason) = self
-                        .brokered_hook(turn_id, HookEvent::PreToolUse, &ctx)
-                        .await?
-                    {
-                        // Record the block decision explicitly (audit — a hook runs an arbitrary
-                        // command; the decision must be on the record, not only in the tool_result
-                        // text; security review MEDIUM #4).
-                        self.emit(
-                            turn_id,
-                            EventKind::Notice {
-                                text: format!(
-                                    "hook: PreToolUse DENIED `{}`: {}",
-                                    tu.name,
-                                    iteron_protocol::text::head(&reason, 200)
-                                ),
-                            },
-                        );
-                        let r = ToolResult {
-                            tool_use_id: tu.id.clone(),
-                            content: format!(
-                                "tool `{}` blocked by a PreToolUse hook: {reason}",
-                                tu.name
-                            ),
-                            is_error: true,
-                            trust: Trust::Workspace,
-                            latency_ms: 0,
-                        };
-                        self.commit_refused_tool_result(turn_id, &tu.name, &r)?;
-                        any_error = true;
-                        self.ui(tool_end_ui(&tu, &r));
-                        results[idx] = Some(r);
-                        continue;
-                    }
-                }
-                if let Some(reason) = self.admit_tool_lifecycle_gate(turn_id, &tu.name).await? {
-                    let r = ToolResult {
-                        tool_use_id: tu.id.clone(),
-                        content: format!("tool `{}` blocked by lifecycle hook: {reason}", tu.name),
-                        is_error: true,
-                        trust: Trust::Workspace,
-                        latency_ms: 0,
-                    };
-                    self.commit_refused_tool_result(turn_id, &tu.name, &r)?;
-                    any_error = true;
-                    self.ui(tool_end_ui(&tu, &r));
-                    results[idx] = Some(r);
                     continue;
                 }
                 // A PreToolUse hook is an admitted external action of its own. Recheck control
@@ -4570,11 +5220,11 @@ impl Agent {
                     let mut managed = tool_output_spill::manage_result(spill_store.as_deref(), r);
                     self.commit_admitted_tool_result(ticket, &tu.name, &managed.result, 0)?;
                     any_error |= managed.result.is_error;
-                    self.ui(tool_end_ui(&tu, &managed.result));
                     tool_output_spill::cleanup_managed_result(
                         spill_store.as_deref(),
                         &mut managed,
                     )?;
+                    self.ui(tool_end_ui(&tu, &managed.result));
                     results[idx] = Some(managed.result);
                     continue;
                 }
@@ -4649,11 +5299,11 @@ impl Agent {
                     let mut managed = tool_output_spill::manage_result(spill_store.as_deref(), r);
                     self.commit_admitted_tool_result(call_ticket, &tu.name, &managed.result, 0)?;
                     any_error |= managed.result.is_error;
-                    self.ui(tool_end_ui(&tu, &managed.result));
                     tool_output_spill::cleanup_managed_result(
                         spill_store.as_deref(),
                         &mut managed,
                     )?;
+                    self.ui(tool_end_ui(&tu, &managed.result));
                     results[idx] = Some(managed.result);
                     continue;
                 }
@@ -4675,76 +5325,31 @@ impl Agent {
                         ..LifecyclePayload::default()
                     },
                 );
-                let admitted = effects::AdmittedRegistryTool {
+                let intent = proposal.admit(CapabilitySet::only(base_cap));
+                self.note_tool_effect_capability(cap);
+                let effect = effects::BrokeredEffect {
                     turn: turn_id,
                     effect_id: registry_effect_id.clone(),
+                    tool_use_id: tu.id.clone(),
+                    kind: tu.name.clone(),
                     capability: cap,
                     audit_arguments: ui_approval_arguments(&tu.input),
                     workspace: effect_workspace(&self.workspace),
-                    intent: proposal.admit(CapabilitySet::only(base_cap)),
+                    provider_route_attempt: None,
                 };
-                let registry = &self.registry;
-                let spill_store = self.ordinary_tool_spill_store(&tu.name);
-                let spill_store_for_execution = spill_store.clone();
-                let spill_lease = std::sync::Arc::new(std::sync::Mutex::new(None));
-                let spill_lease_from_execution = spill_lease.clone();
-                let interrupt = self.interrupt.clone();
-                let drain = self.drain.clone();
-                self.observe_process_tool_started(turn_id, registry_effect_id.clone(), &tu);
-                let admissions = &mut self.effect_admissions;
-                let execution = match effects::execute_registry_tool(
-                    &mut self.rollout,
-                    admissions,
-                    admitted,
-                    |intent| async move {
-                        let tool_use_id = intent.call.id.clone();
-                        let started = Instant::now();
-                        let execution = match await_tool_or_interrupt(
-                            registry.run_admitted_intent(intent),
-                            interrupt.as_deref(),
-                            Some(drain.as_ref()),
-                        )
-                        .await
-                        {
-                            Ok(execution) => execution,
-                            Err(()) => {
-                                iteron_tools::ToolExecution::Unknown(interrupted_tool_result(
-                                    tool_use_id,
-                                    started.elapsed().as_millis() as u64,
-                                ))
-                            }
-                        };
-                        let managed = tool_output_spill::manage_execution(
-                            spill_store_for_execution.as_deref(),
-                            execution,
-                        );
-                        let (execution, lease) = tool_output_spill::into_execution_parts(managed);
-                        *spill_lease_from_execution
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner) = lease;
-                        match execution {
-                            iteron_tools::ToolExecution::Definite(result) => {
-                                effects::ToolExecution::Definite(result)
-                            }
-                            iteron_tools::ToolExecution::Unknown(result) => {
-                                effects::ToolExecution::Unknown(result)
-                            }
-                        }
-                    },
-                )
-                .await
-                {
-                    Ok(execution) => execution,
-                    Err(error) => {
-                        let mut lease = spill_lease
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .take();
-                        let _ =
-                            tool_output_spill::cleanup_lease(spill_store.as_deref(), &mut lease);
-                        return Err(self.effect_boundary_failed(error));
-                    }
+                let queued_activity = self
+                    .activity
+                    .span(turn_activity::ActivityStage::ToolQueued, Some(turn_id));
+                let opened = {
+                    let Agent {
+                        rollout,
+                        effect_admissions,
+                        ..
+                    } = self;
+                    effects::open_effect(rollout, effect_admissions, effect)
                 };
+                let ticket = opened.map_err(|error| self.effect_boundary_failed(error))?;
+                queued_activity.complete();
                 self.tool_lifecycle_event(
                     "tool.call_admitted",
                     turn_id,
@@ -4757,12 +5362,72 @@ impl Agent {
                     Some(registry_effect_id.clone()),
                     LifecyclePayload::default(),
                 );
-                let mut result_spill_lease = spill_lease
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .take();
+                let running_activity = self
+                    .activity
+                    .span(turn_activity::ActivityStage::ToolRunning, Some(turn_id));
+                let registry = &self.registry;
+                let spill_store = self.ordinary_tool_spill_store(&tu.name);
+                let interrupt = self.interrupt.clone();
+                let force_cancel = self.force_cancel.clone();
+                let drain = self.drain.clone();
+                self.observe_process_tool_started(turn_id, registry_effect_id.clone(), &tu);
+                let tool_use_id = intent.call.id.clone();
+                let started = Instant::now();
+                let execution = match await_tool_or_interrupt(
+                    registry.run_admitted_intent(intent),
+                    interrupt.as_deref(),
+                    Some(force_cancel.as_ref()),
+                    Some(drain.as_ref()),
+                )
+                .await
+                {
+                    Ok(execution) => execution,
+                    Err(interruption) => {
+                        iteron_tools::ToolExecution::Unknown(interrupted_tool_result(
+                            tool_use_id,
+                            started.elapsed().as_millis() as u64,
+                            interruption,
+                        ))
+                    }
+                };
+                running_activity.complete();
+                let post_activity = self.activity.span(
+                    turn_activity::ActivityStage::ToolPostProcessing,
+                    Some(turn_id),
+                );
+                let managed =
+                    tool_output_spill::manage_execution(spill_store.as_deref(), execution);
+                let (mut execution, mut result_spill_lease) =
+                    tool_output_spill::into_execution_parts(managed);
+                let result = match &mut execution {
+                    iteron_tools::ToolExecution::Definite(result)
+                    | iteron_tools::ToolExecution::Unknown(result) => result,
+                };
+                result.tool_use_id = tu.id.clone();
+                let settlement = match &execution {
+                    iteron_tools::ToolExecution::Definite(result) => {
+                        effects::Settlement::Definite(EventKind::ToolDone {
+                            result: result.clone(),
+                            effect_id: Some(registry_effect_id.clone()),
+                            tool: Some(tu.name.clone()),
+                        })
+                    }
+                    iteron_tools::ToolExecution::Unknown(_) => effects::Settlement::Unknown(
+                        "executor was force/cooperatively cancelled without an authoritative terminal; automatic retry is forbidden".into(),
+                    ),
+                };
+                // The only way to reach `ToolExecution::Unknown` here is an operator interrupt
+                // (`await_tool_or_interrupt` returning `Forced`/cooperative). Record the Unknown
+                // terminal — the effect really may be half-applied — but do not let the operator's
+                // own Esc gate every submission they make afterwards.
+                let cause = if matches!(execution, iteron_tools::ToolExecution::Unknown(_)) {
+                    durability::UnknownCause::OperatorCancelled
+                } else {
+                    durability::UnknownCause::Unobserved
+                };
+                self.settle_kernel_effect_with_cause(ticket, settlement, cause)?;
                 let r = match execution {
-                    effects::ToolExecution::Definite(result) => {
+                    iteron_tools::ToolExecution::Definite(result) => {
                         self.observe_process_tool_terminal(
                             turn_id,
                             registry_effect_id.clone(),
@@ -4785,7 +5450,7 @@ impl Agent {
                         );
                         result
                     }
-                    effects::ToolExecution::Unknown(result) => {
+                    iteron_tools::ToolExecution::Unknown(result) => {
                         self.observe_process_tool_terminal(
                             turn_id,
                             registry_effect_id.clone(),
@@ -4811,12 +5476,15 @@ impl Agent {
                             },
                         );
                         self.ledger.tool(result.latency_ms, 0, true);
-                        self.ui(tool_end_ui(&tu_ui, &result));
                         tool_output_spill::cleanup_lease(
                             spill_store.as_deref(),
                             &mut result_spill_lease,
                         )?;
-                        if let Some(outcome) = self.collect_and_finish_requested_control(turn_id)? {
+                        post_activity.complete();
+                        self.ui(tool_end_ui(&tu_ui, &result));
+                        if let Some(outcome) =
+                            self.collect_and_finish_requested_control(turn_id).await?
+                        {
                             return Ok(outcome);
                         }
                         return Err(KernelError::UnknownEffects { count: 1 });
@@ -4828,19 +5496,21 @@ impl Agent {
                 if r.is_error {
                     self.failed_actions.insert(action_sig, r.content.clone());
                 }
-                self.ui(tool_end_ui(&tu_ui, &r));
                 results[idx] = Some(r.clone());
                 // PostToolUse hook (observational): its exit code is ignored (a hook cannot undo a
                 // completed tool). It runs only AFTER the effect terminal is durable, so its own
                 // timeout/crash window cannot turn a completed tool into an unknown tool outcome.
                 // It now crosses the same boundary as the tool it observes (#16), so the hook's own
                 // intent/terminal pair is journalled after — never inside — the tool's.
-                {
+                let post_hook = {
                     let ctx = serde_json::json!({"event":"PostToolUse","tool":r.tool_use_id,"is_error":r.is_error,"content":iteron_protocol::text::head(&r.content, 2000)}).to_string();
                     self.brokered_hook(turn_id, HookEvent::PostToolUse, &ctx)
-                        .await?;
-                }
+                        .await
+                };
                 tool_output_spill::cleanup_lease(spill_store.as_deref(), &mut result_spill_lease)?;
+                post_activity.complete();
+                self.ui(tool_end_ui(&tu_ui, &r));
+                post_hook?;
             }
             self.ledger.phase_tools(tools_span.elapsed_ms());
 
@@ -4857,12 +5527,12 @@ impl Agent {
             };
             self.commit_message(turn_id, messages, tool_msg)?;
 
-            if let Some(outcome) = self.collect_and_finish_requested_control(turn_id)? {
+            if let Some(outcome) = self.collect_and_finish_requested_control(turn_id).await? {
                 return Ok(outcome);
             }
 
             if let Some(reason) = self.completed_turn_budget_exhaustion() {
-                return self.finish(turn_id, Outcome::BudgetExhausted(reason));
+                return self.finish(turn_id, Outcome::BudgetExhausted(reason)).await;
             }
             self.advance_turn().await?;
         }
@@ -4890,17 +5560,10 @@ impl Agent {
         _argument_trust: Trust,
         messages: &[Message],
     ) -> Result<Vec<AutoApprovedCall>, KernelError> {
-        // A hook must speak BEFORE the tool it guards and observe AFTER it. Both are per-call and
-        // ordered by construction, so a configured tool hook disables the group outright rather
-        // than being reinterpreted for it. (`Stop`/`SessionStart` hooks say nothing about tools and
-        // are deliberately not consulted — that conflation is the same defect as #I-01.)
-        if !self.hooks.commands(HookEvent::PreToolUse).is_empty()
-            || !self.hooks.commands(HookEvent::PostToolUse).is_empty()
-            || !self.hooks.is_empty_for_lifecycle("tool.call_proposed")
-            || !self.hooks.is_empty_for_lifecycle("tool.call_completed")
-        {
-            return Ok(Vec::new());
-        }
+        // Tool hooks are per-call boundaries, not a global serialization switch. The executor
+        // below runs every admitted call's pre-gates concurrently (under the shared hook
+        // semaphore), preserves configured decision order, then runs non-conflicting tools and
+        // post observers concurrently. Stop/session hooks remain unrelated to this decision.
         let governing_trust = self.governing_turn_trust(messages);
         let mut batch: Vec<AutoApprovedCall> = Vec::new();
         let mut claimed: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
@@ -4961,12 +5624,19 @@ impl Agent {
             // Only a DECLARED path can be proven not to collide. Unknown/empty write sets therefore
             // remain in the ordered executor; a model emitting calls together is not independent
             // authority to widen physical side-effect concurrency.
-            let declared = declared_write_paths(&call.input);
+            let declared = match scheduling_write_paths(&call.name, &call.input) {
+                Ok(declared) => declared,
+                Err(_) => break,
+            };
+            // An undeclared shell command remains opaque, but it no longer serializes unrelated
+            // structured writes behind it. Its synthetic domain conflicts with every other bash
+            // call; explicit shell paths additionally conflict with structured path writers.
             if self
                 .execution_policy
                 .effecting_tool_admission
                 .declared_set_required
                 && declared.is_empty()
+                && capability != Capability::ReadOnly
             {
                 break;
             }
@@ -4984,6 +5654,304 @@ impl Agent {
             });
         }
         Ok(batch)
+    }
+
+    /// Run every admitted call's blocking tool gates without turning hook configuration into a
+    /// session-wide serialization switch. Kernel effect intents are opened in model order before
+    /// any hook process starts; handler execution is concurrent but globally capped by the
+    /// semaphore shared by all `Hooks` clones; terminals and denials are then projected in model
+    /// order. A denied call is settled as a refused tool result and removed from the executor set.
+    async fn gate_concurrent_deferred_batch(
+        &mut self,
+        turn: TurnId,
+        batch: Vec<AutoApprovedCall>,
+        results: &mut [Option<ToolResult>],
+        any_error: &mut bool,
+    ) -> Result<Vec<AutoApprovedCall>, KernelError> {
+        let compatibility_enabled = !self.hooks.is_empty_for(HookEvent::PreToolUse);
+        let lifecycle_enabled = !self.hooks.is_empty_for_lifecycle("tool.call_proposed");
+        if !compatibility_enabled && !lifecycle_enabled {
+            return Ok(batch);
+        }
+        let journal = self.hook_effect_journal.clone().ok_or_else(|| {
+            KernelError::ContextResolution(
+                "hook command journal is unavailable; concurrent tool gates were not started"
+                    .into(),
+            )
+        })?;
+        // A hook command is repo-controlled code, so it can write even around a read-only tool.
+        // This line is only reachable from a turn that already made tool calls, so counting it
+        // never costs a pure question-and-answer turn its zero-Git-work property.
+        self.turn_mutated_workspace = true;
+        let class = effect_class::EffectClass::Hook;
+        let hook_activity = self
+            .activity
+            .span(turn_activity::ActivityStage::ToolHook, Some(turn));
+        let mut prepared = Vec::with_capacity(batch.len());
+        for admitted in batch {
+            let compatibility_ticket = if compatibility_enabled {
+                let ordinal = self.next_effect_ordinal(turn, class);
+                let ticket = self.open_kernel_effect(
+                    turn,
+                    class,
+                    ordinal,
+                    Capability::CodeExecuting,
+                    serde_json::json!({"event": HookEvent::PreToolUse.key(), "tool_index": admitted.index}),
+                )?;
+                Some((ordinal, ticket))
+            } else {
+                None
+            };
+            let lifecycle_ticket = if lifecycle_enabled {
+                let ordinal = self.next_effect_ordinal(turn, class);
+                let ticket = self.open_kernel_effect(
+                    turn,
+                    class,
+                    ordinal,
+                    Capability::CodeExecuting,
+                    serde_json::json!({"event": "tool.call_proposed", "tool_index": admitted.index}),
+                )?;
+                Some((ordinal, ticket))
+            } else {
+                None
+            };
+            prepared.push((admitted, compatibility_ticket, lifecycle_ticket));
+        }
+        self.lifecycle_event(
+            "hook.started",
+            Some(turn),
+            LifecyclePayload {
+                count: Some(u64::try_from(prepared.len()).unwrap_or(u64::MAX)),
+                ..LifecyclePayload::default()
+            },
+        );
+
+        let hooks = self.hooks.clone();
+        let interrupt = self.interrupt.clone();
+        let drain = self.drain.clone();
+        let reports = futures_util::future::join_all(prepared.iter().map(|(admitted, _, _)| {
+            let compatibility_context = serde_json::json!({
+                "event": "PreToolUse",
+                "tool": admitted.call.name,
+                "input": admitted.call.input,
+            })
+            .to_string();
+            let lifecycle_context = serde_json::json!({
+                "catalog_version": iteron_protocol::lifecycle::LIFECYCLE_CATALOG_VERSION.0,
+                "event_id": "tool.call_proposed",
+                "turn_id": turn.0,
+            })
+            .to_string();
+            let hooks = hooks.clone();
+            let journal = journal.clone();
+            let interrupt = interrupt.clone();
+            let drain = drain.clone();
+            async move {
+                let compatibility = if compatibility_enabled {
+                    Some(
+                        hooks
+                            .run_cancellable_journaled_report(
+                                HookEvent::PreToolUse,
+                                &compatibility_context,
+                                interrupt.as_deref(),
+                                Some(drain.as_ref()),
+                                &journal,
+                            )
+                            .await,
+                    )
+                } else {
+                    None
+                };
+                let lifecycle = if lifecycle_enabled {
+                    Some(
+                        hooks
+                            .run_lifecycle_cancellable_journaled(
+                                "tool.call_proposed",
+                                &lifecycle_context,
+                                interrupt.as_deref(),
+                                Some(drain.as_ref()),
+                                &journal,
+                            )
+                            .await,
+                    )
+                } else {
+                    None
+                };
+                (compatibility, lifecycle)
+            }
+        }))
+        .await;
+
+        let mut allowed = Vec::with_capacity(prepared.len());
+        let mut hook_failed = false;
+        for ((admitted, compatibility_ticket, lifecycle_ticket), (compatibility, lifecycle)) in
+            prepared.into_iter().zip(reports)
+        {
+            if let Some((ordinal, ticket)) = compatibility_ticket {
+                self.settle_kernel_effect(
+                    ticket,
+                    effects::Settlement::Definite(effect_done_terminal(turn, class, ordinal)),
+                )?;
+            }
+            if let Some((ordinal, ticket)) = lifecycle_ticket {
+                let settlement = match lifecycle.as_ref() {
+                    Some(Ok(_)) => {
+                        effects::Settlement::Definite(effect_done_terminal(turn, class, ordinal))
+                    }
+                    Some(Err(reason)) => effects::Settlement::Definite(effect_failed_terminal(
+                        turn, class, ordinal, reason,
+                    )),
+                    None => unreachable!("a lifecycle ticket has a lifecycle report"),
+                };
+                self.settle_kernel_effect(ticket, settlement)?;
+            }
+            let lifecycle = match lifecycle {
+                Some(Ok(report)) => Some(report),
+                Some(Err(reason)) => {
+                    self.lifecycle_event(
+                        "hook.failed",
+                        Some(turn),
+                        LifecyclePayload {
+                            reason_code: Some("tool_gate_dispatch_failed".into()),
+                            ..LifecyclePayload::default()
+                        },
+                    );
+                    return Err(KernelError::ContextResolution(reason.to_owned()));
+                }
+                None => None,
+            };
+            let denied = compatibility
+                .as_ref()
+                .and_then(|report| match &report.decision {
+                    HookDecision::Allow => None,
+                    HookDecision::Deny(reason) => Some(reason.clone()),
+                })
+                .or_else(|| {
+                    lifecycle
+                        .as_ref()
+                        .and_then(|report| match &report.decision {
+                            HookDecision::Allow => None,
+                            HookDecision::Deny(reason) => Some(reason.clone()),
+                        })
+                });
+            if let Some(reason) = denied {
+                let result = ToolResult {
+                    tool_use_id: admitted.call.id.clone(),
+                    content: format!(
+                        "tool `{}` blocked by a tool gate hook: {reason}",
+                        admitted.call.name
+                    ),
+                    is_error: true,
+                    trust: Trust::Workspace,
+                    latency_ms: 0,
+                };
+                self.commit_refused_tool_result(turn, &admitted.call.name, &result)?;
+                self.ui(tool_end_ui(&admitted.call, &result));
+                results[admitted.index] = Some(result);
+                *any_error = true;
+                self.lifecycle_event("hook.blocked", Some(turn), LifecyclePayload::default());
+            } else {
+                hook_failed |= compatibility
+                    .as_ref()
+                    .is_some_and(|report| report.failed > 0 || report.timed_out > 0)
+                    || lifecycle
+                        .as_ref()
+                        .is_some_and(|report| report.failed > 0 || report.timed_out > 0);
+                allowed.push(admitted);
+            }
+        }
+        if hook_failed {
+            hook_activity.fail(iteron_protocol::ActivityDetailCode::HookGate);
+        } else {
+            hook_activity.complete();
+        }
+        Ok(allowed)
+    }
+
+    /// Observe completed concurrent tools without serializing their independent PostToolUse hook
+    /// chains. Tool effects are already terminal before this method opens hook effects; UI ToolEnd
+    /// remains after all observers settle, preserving Proposed→…→PostProcessing→Settled ordering.
+    async fn observe_concurrent_post_tool_hooks(
+        &mut self,
+        turn: TurnId,
+        completed: &[(ToolUse, ToolResult)],
+    ) -> Result<(), KernelError> {
+        if self.hooks.is_empty_for(HookEvent::PostToolUse) || completed.is_empty() {
+            return Ok(());
+        }
+        let journal = self.hook_effect_journal.clone().ok_or_else(|| {
+            KernelError::ContextResolution(
+                "hook command journal is unavailable; concurrent post-tool observers were not started"
+                    .into(),
+            )
+        })?;
+        // Same reasoning as the pre-tool gate: a PostToolUse hook (a formatter, a codegen step) is
+        // repo-controlled code that can write behind a read-only tool.
+        self.turn_mutated_workspace = true;
+        let class = effect_class::EffectClass::Hook;
+        let mut tickets = Vec::with_capacity(completed.len());
+        for (index, _) in completed.iter().enumerate() {
+            let ordinal = self.next_effect_ordinal(turn, class);
+            let ticket = self.open_kernel_effect(
+                turn,
+                class,
+                ordinal,
+                Capability::CodeExecuting,
+                serde_json::json!({"event": HookEvent::PostToolUse.key(), "tool_index": index}),
+            )?;
+            tickets.push((ordinal, ticket));
+        }
+        let hooks = self.hooks.clone();
+        let interrupt = self.interrupt.clone();
+        let drain = self.drain.clone();
+        let reports = futures_util::future::join_all(completed.iter().map(|(call, result)| {
+            let context = serde_json::json!({
+                "event": "PostToolUse",
+                "tool": call.name,
+                "tool_use_id": result.tool_use_id,
+                "is_error": result.is_error,
+                "content": iteron_protocol::text::head(&result.content, 2000),
+            })
+            .to_string();
+            let hooks = hooks.clone();
+            let journal = journal.clone();
+            let interrupt = interrupt.clone();
+            let drain = drain.clone();
+            async move {
+                hooks
+                    .run_cancellable_journaled_report(
+                        HookEvent::PostToolUse,
+                        &context,
+                        interrupt.as_deref(),
+                        Some(drain.as_ref()),
+                        &journal,
+                    )
+                    .await
+            }
+        }))
+        .await;
+        for ((ordinal, ticket), report) in tickets.into_iter().zip(reports) {
+            self.settle_kernel_effect(
+                ticket,
+                effects::Settlement::Definite(effect_done_terminal(turn, class, ordinal)),
+            )?;
+            self.lifecycle_event(
+                if report.timed_out > 0 {
+                    "hook.timed_out"
+                } else if report.failed > 0 {
+                    "hook.failed"
+                } else {
+                    "hook.completed"
+                },
+                Some(turn),
+                LifecyclePayload {
+                    count: Some(u64::from(report.completed)),
+                    magnitude: Some(u64::from(report.timed_out)),
+                    ..LifecyclePayload::default()
+                },
+            );
+        }
+        Ok(())
     }
 
     /// Execute one auto-approved, non-overlapping group of deferred calls concurrently.
@@ -5017,6 +5985,13 @@ impl Agent {
             return Ok(());
         }
 
+        let batch = self
+            .gate_concurrent_deferred_batch(turn_id, batch, results, any_error)
+            .await?;
+        if batch.is_empty() {
+            return Ok(());
+        }
+
         // Phase one: the durable intents, in tool order, before a single executor runs.
         let mut pending: Vec<(usize, ToolUse, String, effects::EffectTicket)> =
             Vec::with_capacity(batch.len());
@@ -5047,6 +6022,7 @@ impl Agent {
                     ..LifecyclePayload::default()
                 },
             );
+            self.note_tool_effect_capability(capability);
             let effect = effects::BrokeredEffect {
                 turn: turn_id,
                 effect_id: effect_id.clone(),
@@ -5099,9 +6075,11 @@ impl Agent {
         let registry = &self.registry;
         let spill_owner = self.tool_output_spill.clone();
         let interrupt = self.interrupt.clone();
+        let force_cancel = self.force_cancel.clone();
         let drain = self.drain.clone();
         let executions = futures_util::future::join_all(intents.into_iter().map(|intent| {
             let interrupt = interrupt.clone();
+            let force_cancel = force_cancel.clone();
             let drain = drain.clone();
             let spill_store = if registry.is_mcp_effect(&intent.call.name) {
                 None
@@ -5115,15 +6093,19 @@ impl Agent {
                 let mut execution = match await_tool_or_interrupt(
                     registry.run_admitted_intent(intent),
                     interrupt.as_deref(),
+                    Some(force_cancel.as_ref()),
                     Some(drain.as_ref()),
                 )
                 .await
                 {
                     Ok(execution) => execution,
-                    Err(()) => iteron_tools::ToolExecution::Unknown(interrupted_tool_result(
-                        provider_tool_use_id.clone(),
-                        started.elapsed().as_millis() as u64,
-                    )),
+                    Err(interruption) => {
+                        iteron_tools::ToolExecution::Unknown(interrupted_tool_result(
+                            provider_tool_use_id.clone(),
+                            started.elapsed().as_millis() as u64,
+                            interruption,
+                        ))
+                    }
                 };
                 match &mut execution {
                     iteron_tools::ToolExecution::Definite(result)
@@ -5140,6 +6122,7 @@ impl Agent {
 
         // Phase three: exactly one terminal per opened intent, in tool order.
         let mut unknown: usize = 0;
+        let mut completed = Vec::new();
         for ((index, call, action_signature, ticket), (execution, spill_store)) in
             pending.into_iter().zip(executions)
         {
@@ -5166,7 +6149,12 @@ impl Agent {
                     false,
                 ),
             };
-            if let Err(error) = self.settle_kernel_effect(ticket, settlement) {
+            let cause = if !definite && is_interrupted_tool_result(&managed.result) {
+                durability::UnknownCause::OperatorCancelled
+            } else {
+                durability::UnknownCause::Unobserved
+            };
+            if let Err(error) = self.settle_kernel_effect_with_cause(ticket, settlement, cause) {
                 let _ =
                     tool_output_spill::cleanup_managed_result(spill_store.as_deref(), &mut managed);
                 return Err(error);
@@ -5199,8 +6187,9 @@ impl Agent {
                 );
                 unknown = unknown.saturating_add(1);
                 self.ledger.tool(result.latency_ms, 0, true);
-                self.ui(tool_end_ui(&call, result));
+                let terminal_ui = tool_end_ui(&call, result);
                 tool_output_spill::cleanup_managed_result(spill_store.as_deref(), &mut managed)?;
+                self.ui(terminal_ui);
                 continue;
             }
             self.tool_lifecycle_event(
@@ -5225,10 +6214,30 @@ impl Agent {
                 self.failed_actions
                     .insert(action_signature, result.content.clone());
             }
-            self.ui(tool_end_ui(&call, result));
+            completed.push((index, call, managed, spill_store));
+        }
+
+        // Post observers are independent per call and bounded by the same global hook semaphore.
+        // Keep the managed results alive until they settle so ToolEnd cannot overtake PostToolUse.
+        let post_inputs = completed
+            .iter()
+            .map(|(_, call, managed, _)| (call.clone(), managed.result.clone()))
+            .collect::<Vec<_>>();
+        let post_activity = self.activity.span(
+            turn_activity::ActivityStage::ToolPostProcessing,
+            Some(turn_id),
+        );
+        let post_result = self
+            .observe_concurrent_post_tool_hooks(turn_id, &post_inputs)
+            .await;
+        for (index, call, mut managed, spill_store) in completed {
+            let terminal_ui = tool_end_ui(&call, &managed.result);
             tool_output_spill::cleanup_managed_result(spill_store.as_deref(), &mut managed)?;
+            self.ui(terminal_ui);
             results[index] = Some(managed.result);
         }
+        post_activity.complete();
+        post_result?;
         if unknown > 0 {
             return Err(KernelError::UnknownEffects { count: unknown });
         }
@@ -5331,6 +6340,17 @@ impl Agent {
     /// The specialised inner effects stay exactly where they are: `spawn_subagent` still opens its
     /// `Subagent` effect around the child, and the workflow branch still opens its `Workflow`
     /// effect around the launch. This admits the *tool call*, which is a different fact.
+    /// Latch "this turn touched the workspace" from the capability a tool effect was admitted
+    /// under. This is the ONE place the classification is made, and it is deliberately
+    /// conservative: only [`Capability::ReadOnly`] is *proven* not to write. `CodeExecuting` covers
+    /// an opaque shell command, and `IrreversibleExternal` can still leave a local artifact behind
+    /// the egress, so both count. Latched at admission rather than at completion so a tool that
+    /// crossed the boundary and then died mid-write — the case that most wants a recovery point —
+    /// still earns the end-of-turn checkpoint.
+    fn note_tool_effect_capability(&mut self, capability: Capability) {
+        self.turn_mutated_workspace |= capability != Capability::ReadOnly;
+    }
+
     fn open_tool_call_effect(
         &mut self,
         turn: TurnId,
@@ -5338,6 +6358,7 @@ impl Agent {
         call: &ToolUse,
         capability: Capability,
     ) -> Result<effects::EffectTicket, KernelError> {
+        self.note_tool_effect_capability(capability);
         let effect_id =
             effect_class::effect_id(turn, effect_class::EffectClass::RegistryTool, ordinal);
         self.tool_lifecycle_event(
@@ -5442,11 +6463,93 @@ impl Agent {
         Ok(())
     }
 
-    fn finish_requested_control(&mut self, turn: TurnId) -> Result<Option<Outcome>, KernelError> {
+    async fn finish_requested_control(
+        &mut self,
+        turn: TurnId,
+    ) -> Result<Option<Outcome>, KernelError> {
         match self.requested_control() {
-            InboundControl::Drain => self.finish_drained(turn).map(Some),
+            InboundControl::ForceCancel => {
+                let cancellation_activity = self
+                    .activity
+                    .span(turn_activity::ActivityStage::Cancellation, Some(turn));
+                let proof = if let Some(seam) = self.force_cancel_seam.as_mut() {
+                    // A ForceCancel may arrive through the shared atomic rather than the SQ. In
+                    // that case no request has crossed the process-owner seam yet; enqueue it now
+                    // while keeping the already-published control acknowledgement non-blocking.
+                    if matches!(
+                        seam.latest_proof(turn),
+                        force_cancel::ProcessReapProof::Unavailable
+                    ) {
+                        let _ = seam.request(turn);
+                    }
+                    seam.await_proof(
+                        turn,
+                        iteron_tunables::param_duration(
+                            "cli.runtime.force_cancel_reap_terminal_budget",
+                            std::time::Duration::from_secs(1),
+                        ),
+                    )
+                    .await
+                } else {
+                    force_cancel::ProcessReapProof::Unavailable
+                };
+                let terminal = if matches!(
+                    proof,
+                    force_cancel::ProcessReapProof::NoTrackedProcesses
+                        | force_cancel::ProcessReapProof::Reaped { .. }
+                ) {
+                    "cancel.completed"
+                } else {
+                    "cancel.failed"
+                };
+                self.lifecycle_event(
+                    terminal,
+                    Some(turn),
+                    LifecyclePayload {
+                        reason_code: Some(proof.reason_code().into()),
+                        ..LifecyclePayload::default()
+                    },
+                );
+                let notice = match proof {
+                    force_cancel::ProcessReapProof::NoTrackedProcesses => {
+                        "Force cancel completed; no tracked process groups remained.".to_owned()
+                    }
+                    force_cancel::ProcessReapProof::Reaped { process_groups } => format!(
+                        "Force cancel completed; {process_groups} tracked process group(s) were killed and reaped."
+                    ),
+                    force_cancel::ProcessReapProof::Partial { reaped, unresolved } => format!(
+                        "Force cancel failed closed: {reaped} process group(s) reaped, {unresolved} unresolved."
+                    ),
+                    force_cancel::ProcessReapProof::Unavailable =>
+                        "Force cancel failed closed: process cleanup could not be proven within 1 second."
+                            .to_owned(),
+                };
+                let _ = self.ui(UiEvent::Notice(notice));
+                if terminal == "cancel.completed" {
+                    cancellation_activity.complete();
+                } else {
+                    cancellation_activity.fail_unclassified();
+                }
+                // Publish the cancellation terminal before the generic run finalizer. Otherwise
+                // the frontend can observe RunEnded first and discard the only proof distinguishing
+                // a reaped force-cancel from an unproven one.
+                let outcome = self.finish(turn, Outcome::Interrupted).await?;
+                self.force_cancel_requested = false;
+                self.force_cancel
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
+                self.interrupt_requested = false;
+                if let Some(interrupt) = &self.interrupt {
+                    interrupt.store(false, std::sync::atomic::Ordering::SeqCst);
+                }
+                Ok(Some(outcome))
+            }
+            InboundControl::Drain => self.finish_drained(turn).await.map(Some),
             InboundControl::Interrupt => {
-                let outcome = self.finish(turn, Outcome::Interrupted)?;
+                let cancellation_activity = self
+                    .activity
+                    .span(turn_activity::ActivityStage::Cancellation, Some(turn));
+                cancellation_activity.complete();
+                let outcome = self.finish(turn, Outcome::Interrupted).await?;
                 // The shared signal remains asserted until the Interrupted terminal is durable.
                 // Clearing it earlier can both lose a failed cancellation and immediately cancel
                 // the ordered follow-up that the frontend dispatches after RunEnded.
@@ -5461,7 +6564,11 @@ impl Agent {
     }
 
     fn requested_control(&self) -> InboundControl {
-        if self.drain_requested || self.drain.load(std::sync::atomic::Ordering::Relaxed) {
+        if self.force_cancel_requested
+            || self.force_cancel.load(std::sync::atomic::Ordering::Acquire)
+        {
+            InboundControl::ForceCancel
+        } else if self.drain_requested || self.drain.load(std::sync::atomic::Ordering::Relaxed) {
             InboundControl::Drain
         } else if self.interrupt_requested
             || self
@@ -5475,12 +6582,12 @@ impl Agent {
         }
     }
 
-    fn collect_and_finish_requested_control(
+    async fn collect_and_finish_requested_control(
         &mut self,
         turn: TurnId,
     ) -> Result<Option<Outcome>, KernelError> {
         let _ = self.collect_inbound_ops(turn);
-        self.finish_requested_control(turn)
+        self.finish_requested_control(turn).await
     }
 
     /// Drain the submission queue and republish an operator stop onto `stop` — the cancellation
@@ -5565,6 +6672,9 @@ impl Agent {
             Some(turn),
             LifecyclePayload::default(),
         );
+        let checkpoint_activity = self
+            .activity
+            .span(turn_activity::ActivityStage::Checkpoint, Some(turn));
         let ticket = self.open_kernel_effect(
             turn,
             class,
@@ -5592,6 +6702,7 @@ impl Agent {
                 ));
                 self.settle_kernel_effect(ticket, settlement)?;
                 self.lifecycle_event("checkpoint.failed", Some(turn), LifecyclePayload::default());
+                checkpoint_activity.fail(iteron_protocol::ActivityDetailCode::Checkpoint);
                 return Err(error.into());
             }
         };
@@ -5613,10 +6724,11 @@ impl Agent {
             Some(turn),
             LifecyclePayload::default(),
         );
+        checkpoint_activity.complete();
         Ok(())
     }
 
-    fn finish_drained(&mut self, turn: TurnId) -> Result<Outcome, KernelError> {
+    async fn finish_drained(&mut self, turn: TurnId) -> Result<Outcome, KernelError> {
         if !self.verification_policy.checkpoint.before_drain {
             return Err(KernelError::ContextResolution(
                 "resolved verification checkpoint policy attempted to disable the mandatory drain recovery point"
@@ -5624,7 +6736,7 @@ impl Agent {
             ));
         }
         self.checkpoint_at_turn_end(turn, true)?;
-        let outcome = self.finish(turn, Outcome::Drained)?;
+        let outcome = self.finish(turn, Outcome::Drained).await?;
         // Drain is absorbing only until the durable checkpoint + terminal pair completes. The
         // interactive frontend intentionally reuses this Agent for follow-ups; leaving the latch
         // set would make every later operator submission checkpoint and exit before admission.
@@ -5636,9 +6748,33 @@ impl Agent {
         Ok(outcome)
     }
 
-    fn finish(&mut self, turn: TurnId, outcome: Outcome) -> Result<Outcome, KernelError> {
+    async fn finish(&mut self, turn: TurnId, outcome: Outcome) -> Result<Outcome, KernelError> {
+        let mut outcome = outcome;
+        // The final provider answer is authoritative before any checkpoint, policy-terminal fsync,
+        // or record finalization below. Expose that boundary so frontend latency never attributes
+        // the durability tail to the model or leaves its final token looking stalled.
+        if outcome == Outcome::Done {
+            self.activity
+                .span(turn_activity::ActivityStage::AnswerComplete, Some(turn))
+                .complete();
+        }
+        let evidence_activity = self
+            .activity
+            .span(turn_activity::ActivityStage::FinalizingEvidence, Some(turn));
+        // `finish` previously performed every checkpoint/fsync synchronously in the same poll that
+        // accepted EndTurn. Yield after publishing the semantic boundary so the resident server
+        // can forward and paint “answer complete · finalizing” before durability work begins.
+        tokio::task::yield_now().await;
         if outcome != Outcome::Drained
             && self.verification_policy.checkpoint.turn_boundary
+            // A checkpoint of an unchanged tree costs a full workspace copy and produces a
+            // snapshot identical to the previous one. A question-and-answer turn admitted no
+            // effect that could write, so there is nothing to recover to that is not already
+            // recovered; it does no Git work at all. Required checkpoints do not consult this.
+            // An interrupt is exempt: it can land mid-effect, so "this process observed no
+            // completed write" does not prove the tree is unchanged, and an interrupted turn's
+            // recoverability is a stated boundary guarantee, not a best-effort convenience.
+            && (self.turn_mutated_workspace || outcome == Outcome::Interrupted)
             && self.verification_checkpoint_interval_elapsed(turn)
         {
             // Ordinary turns already have an authoritative append-only conversation record. A
@@ -5647,10 +6783,49 @@ impl Agent {
             // harness failure. Explicit Drain remains fail-closed in `finish_drained` because its
             // promise is specifically a resumable workspace checkpoint.
             if self.checkpoint_at_turn_end(turn, false).is_err() {
-                self.ui(UiEvent::Notice(
-                    "automatic workspace checkpoint was unavailable; the conversation record is intact"
+                // Not the operator's problem and not their decision: nothing they can do differs
+                // whether this snapshot exists, and every comparator harness is silent here. It is
+                // still not swallowed — the refused snapshot already settled a durable FAILED
+                // effect terminal in the run record, and this names the boundary that gave up on
+                // the same lifecycle plane every other non-user-facing failure reports on.
+                self.lifecycle_event(
+                    "checkpoint.failed",
+                    Some(turn),
+                    LifecyclePayload {
+                        reason_code: Some("best_effort_turn_boundary".into()),
+                        ..LifecyclePayload::default()
+                    },
+                );
+            }
+        }
+        if self.frontend_saturation.take_structural_refusal() {
+            // Provider callbacks cannot return a renderer error and may run on the same task as
+            // the AppServer consumer, so the bounded producer seam latches structural refusal.
+            // Resolve it before the policy/run terminal: the record says exactly why the otherwise
+            // successful work cannot be presented faithfully, and RunEnded carries HarnessError.
+            self.emit_durable(
+                turn,
+                EventKind::Notice {
+                    text: "frontend structural event delivery exceeded its bounded queue; the run failed closed"
                         .into(),
-                ));
+                },
+            )?;
+            self.lifecycle_event(
+                "queue.overflow",
+                Some(turn),
+                LifecyclePayload {
+                    count: Some(1),
+                    reason_code: Some("runtime_ui_structural_refused".into()),
+                    outcome_code: Some("failed_closed".into()),
+                    ..LifecyclePayload::default()
+                },
+            );
+            // Do not rewrite an operator cancellation, drain, or an independently typed failure.
+            // Their authority already says the run did not succeed, while the durable Notice above
+            // is the bounded reference for the presentation loss. A would-be successful run has no
+            // such terminal and therefore fails closed explicitly.
+            if outcome == Outcome::Done {
+                outcome = Outcome::HarnessError;
             }
         }
         let (policy_terminal, harness_error_code) = match &outcome {
@@ -5684,15 +6859,27 @@ impl Agent {
         )?;
         // A frontend may only observe a terminal state that is already durable.  Returning Done
         // after either append failed made recovery disagree with the operator-visible outcome.
-        self.emit_durable(turn, EventKind::Phase { phase: Phase::Idle })?;
-        self.emit_durable(
-            turn,
-            EventKind::Done {
-                outcome: format!("{outcome:?}"),
-            },
-        )?;
+        self.emit_durable_run_terminal(turn, format!("{outcome:?}"))?;
+        if outcome == Outcome::Done {
+            self.persist_last_success_route(turn);
+        }
+        if !self.persist_token_calibration() {
+            self.lifecycle_event(
+                "context.tokenizer.error_calculated",
+                Some(turn),
+                LifecyclePayload {
+                    outcome_code: Some("calibration_persist_failed".into()),
+                    ..LifecyclePayload::default()
+                },
+            );
+        }
+        evidence_activity.complete();
+        let finalization_activity = self
+            .activity
+            .span(turn_activity::ActivityStage::Finalization, Some(turn));
         self.ui(UiEvent::Phase(Phase::Idle));
         self.ui(UiEvent::Done(format!("{outcome:?}")));
+        finalization_activity.complete();
         Ok(outcome)
     }
 
@@ -5755,7 +6942,10 @@ impl Agent {
             )?;
             return Ok(false);
         }
-        self.ui(UiEvent::ApprovalRequest {
+        let approval_activity = self
+            .activity
+            .span(turn_activity::ActivityStage::AwaitingApproval, Some(turn));
+        let approval_visible = self.ui(UiEvent::ApprovalRequest {
             id,
             tool: tool.to_string(),
             capability: cap,
@@ -5764,6 +6954,31 @@ impl Agent {
             arguments: arguments.clone(),
             workspace: workspace.clone(),
         });
+        if !approval_visible {
+            approval_activity.fail_unclassified();
+            self.emit_durable(
+                turn,
+                EventKind::Approval {
+                    id,
+                    tool_use_id: strict_utf8_head(&tool_use.id, 2_048),
+                    tool: tool.to_string(),
+                    capability: cap,
+                    arguments,
+                    workspace,
+                    verdict: Verdict::Deny,
+                },
+            )?;
+            self.lifecycle_event(
+                "tool.policy_evaluated",
+                Some(turn),
+                LifecyclePayload {
+                    outcome_code: Some("denied".into()),
+                    reason_code: Some("frontend_queue_saturated_or_closed".into()),
+                    ..LifecyclePayload::default()
+                },
+            );
+            return Ok(false);
+        }
         // Take the receiver out so the recv loop holds no `&mut self` borrow across `self.emit`.
         let mut rx = self.approvals_rx.take().unwrap();
         let interrupt = self.interrupt.clone();
@@ -5824,12 +7039,39 @@ impl Agent {
                             break;
                         }
                         Op::ApprovalResponse { .. } => {}
-                        Op::Interrupt | Op::ForceCancel => {
+                        Op::Interrupt => {
                             // Deny this call and park the run at the next safe point.
                             self.interrupt_requested = true;
                             if let Some(f) = &interrupt {
                                 f.store(true, std::sync::atomic::Ordering::Relaxed);
                             }
+                            break;
+                        }
+                        Op::ForceCancel => {
+                            // Escalation is distinct from cooperative Ctrl-C even while the
+                            // approval modal owns input. The effect has not crossed admission yet.
+                            self.force_cancel_requested = true;
+                            self.force_cancel
+                                .store(true, std::sync::atomic::Ordering::Release);
+                            let requested = self
+                                .force_cancel_seam
+                                .as_mut()
+                                .is_some_and(|seam| seam.request(turn));
+                            self.lifecycle_event(
+                                "cancel.forced",
+                                Some(turn),
+                                LifecyclePayload {
+                                    reason_code: Some(
+                                        if requested {
+                                            "process_reap_requested"
+                                        } else {
+                                            "process_reap_unwired"
+                                        }
+                                        .into(),
+                                    ),
+                                    ..LifecyclePayload::default()
+                                },
+                            );
                             break;
                         }
                         Op::Drain => {
@@ -5889,6 +7131,7 @@ impl Agent {
                 RuntimePolicySource::ApprovalRemember,
             )?;
         }
+        approval_activity.complete();
         Ok(approved)
     }
 }

@@ -15,12 +15,52 @@ const DEFAULT_BACKGROUND_JOB_CAP: usize = 8;
 /// Silence after which a job is reported as idle or stalled rather than waited on further.
 const DEFAULT_IDLE_STALL_MILLISECONDS: u64 = 5 * 60 * 1_000;
 /// How often an interactive job is polled while it is waiting on stdin.
-const DEFAULT_STDIN_POLL_MILLISECONDS: u64 = 1_000;
+const DEFAULT_STDIN_POLL_MILLISECONDS: u64 = 250;
 /// Silence on an interactive job before its stdin wait gives up.
 const DEFAULT_INTERACTIVE_IDLE_TIMEOUT_MILLISECONDS: u64 = 5 * 60 * 1_000;
 /// Whether a job blocked on stdin surfaces a prompt to the operator; on, because the alternative
 /// is a job that appears hung with no way to see what it wants.
 const DEFAULT_OPERATOR_PROMPT: bool = true;
+
+fn hard_max_background_jobs() -> usize {
+    iteron_tunables::param_usize(
+        "tools.process.policy.max_background_jobs",
+        MAX_BACKGROUND_JOBS,
+    )
+    .clamp(1, MAX_BACKGROUND_JOBS)
+}
+
+fn max_idle_stall_milliseconds() -> u64 {
+    iteron_tunables::param_u64(
+        "tools.process.policy.max_idle_stall_milliseconds",
+        MAX_IDLE_STALL_MILLISECONDS,
+    )
+    .clamp(1, MAX_IDLE_STALL_MILLISECONDS)
+}
+
+fn max_stdin_poll_milliseconds() -> u64 {
+    iteron_tunables::param_u64(
+        "tools.process.policy.max_stdin_poll_milliseconds",
+        MAX_STDIN_POLL_MILLISECONDS,
+    )
+    .clamp(1, MAX_STDIN_POLL_MILLISECONDS)
+}
+
+fn max_child_env_entries() -> usize {
+    iteron_tunables::param_usize(
+        "tools.process.policy.max_child_env_entries",
+        MAX_CHILD_ENV_ENTRIES,
+    )
+    .clamp(1, MAX_CHILD_ENV_ENTRIES)
+}
+
+fn max_child_env_bytes() -> usize {
+    iteron_tunables::param_usize(
+        "tools.process.policy.max_child_env_bytes",
+        MAX_CHILD_ENV_BYTES,
+    )
+    .clamp(1, MAX_CHILD_ENV_BYTES)
+}
 /// Process implementation selected when no installed profile overrides it.
 const DEFAULT_PERSISTENT_BACKEND: &str = "persistent";
 
@@ -60,20 +100,10 @@ pub struct InteractiveStdinWaitPolicy {
 
 impl InteractiveStdinWaitPolicy {
     fn validate(self) -> Result<Self, ProcessPolicyError> {
-        if !(1..=iteron_tunables::param_integer(
-            "tools.process.policy.max_stdin_poll_milliseconds",
-            MAX_STDIN_POLL_MILLISECONDS,
-        ))
-            .contains(&self.poll_milliseconds)
-        {
+        if !(1..=max_stdin_poll_milliseconds()).contains(&self.poll_milliseconds) {
             return Err(ProcessPolicyError::PollMilliseconds);
         }
-        if !(1..=iteron_tunables::param_integer(
-            "tools.process.policy.max_idle_stall_milliseconds",
-            MAX_IDLE_STALL_MILLISECONDS,
-        ))
-            .contains(&self.idle_timeout_milliseconds)
-        {
+        if !(1..=max_idle_stall_milliseconds()).contains(&self.idle_timeout_milliseconds) {
             return Err(ProcessPolicyError::InteractiveIdleTimeout);
         }
         if self.poll_milliseconds > self.idle_timeout_milliseconds {
@@ -146,14 +176,8 @@ impl ProcessLaunchPolicy {
             },
             ChildProcessEnvironmentPolicy {
                 reuse: true,
-                max_entries: iteron_tunables::param_integer(
-                    "tools.process.policy.max_child_env_entries",
-                    MAX_CHILD_ENV_ENTRIES,
-                ),
-                max_bytes: iteron_tunables::param_integer(
-                    "tools.process.policy.max_child_env_bytes",
-                    MAX_CHILD_ENV_BYTES,
-                ),
+                max_entries: max_child_env_entries(),
+                max_bytes: max_child_env_bytes(),
                 blocked_names: Vec::new(),
             },
         )
@@ -166,26 +190,14 @@ impl ProcessLaunchPolicy {
         if !cwd.initial_cwd.is_absolute() || !cwd.preserve_changes {
             return Err(ProcessPolicyError::CwdPolicy);
         }
-        if environment.max_entries
-            > iteron_tunables::param_integer(
-                "tools.process.policy.max_child_env_entries",
-                MAX_CHILD_ENV_ENTRIES,
-            )
-            || environment.max_bytes
-                > iteron_tunables::param_integer(
-                    "tools.process.policy.max_child_env_bytes",
-                    MAX_CHILD_ENV_BYTES,
-                )
+        if environment.max_entries > max_child_env_entries()
+            || environment.max_bytes > max_child_env_bytes()
         {
             return Err(ProcessPolicyError::EnvironmentPolicy);
         }
         environment.blocked_names.sort();
         environment.blocked_names.dedup();
-        if environment.blocked_names.len()
-            > iteron_tunables::param_integer(
-                "tools.process.policy.max_child_env_entries",
-                MAX_CHILD_ENV_ENTRIES,
-            )
+        if environment.blocked_names.len() > max_child_env_entries()
             || environment.blocked_names.iter().any(|name| {
                 name.is_empty()
                     || name.len() > 256
@@ -228,20 +240,10 @@ impl ProcessRuntimePolicy {
             idle_stall_milliseconds,
             stdin_wait: stdin_wait.validate()?,
         };
-        if policy.max_background_jobs
-            > iteron_tunables::param_integer(
-                "tools.process.policy.max_background_jobs",
-                MAX_BACKGROUND_JOBS,
-            )
-        {
+        if policy.max_background_jobs > hard_max_background_jobs() {
             return Err(ProcessPolicyError::BackgroundJobCap);
         }
-        if !(1..=iteron_tunables::param_integer(
-            "tools.process.policy.max_idle_stall_milliseconds",
-            MAX_IDLE_STALL_MILLISECONDS,
-        ))
-            .contains(&policy.idle_stall_milliseconds)
-        {
+        if !(1..=max_idle_stall_milliseconds()).contains(&policy.idle_stall_milliseconds) {
             return Err(ProcessPolicyError::IdleStallTimeout);
         }
         match policy.backend {
@@ -276,18 +278,13 @@ impl Default for ProcessRuntimePolicy {
                 DEFAULT_BACKGROUND_JOB_CAP,
             ),
         )
-        .clamp(
-            1,
-            iteron_tunables::param_integer(
-                "tools.process.policy.max_background_jobs",
-                MAX_BACKGROUND_JOBS,
-            ),
-        );
+        .clamp(1, hard_max_background_jobs());
         let background_job_cap = if backend == PersistentBackendSelection::Disabled {
             0
         } else {
             configured_background_job_cap
         };
+        let idle_ceiling = max_idle_stall_milliseconds();
         let idle_stall_milliseconds = iteron_tunables::param_u64(
             "tools.process.policy.default_idle_stall_milliseconds",
             iteron_tunables::param_integer(
@@ -295,13 +292,8 @@ impl Default for ProcessRuntimePolicy {
                 DEFAULT_IDLE_STALL_MILLISECONDS,
             ),
         )
-        .clamp(
-            1,
-            iteron_tunables::param_integer(
-                "tools.process.policy.max_idle_stall_milliseconds",
-                MAX_IDLE_STALL_MILLISECONDS,
-            ),
-        );
+        .clamp(1, idle_ceiling);
+        let stdin_poll_ceiling = max_stdin_poll_milliseconds().min(idle_ceiling);
         let stdin_poll_milliseconds = iteron_tunables::param_u64(
             "tools.process.policy.default_stdin_poll_milliseconds",
             iteron_tunables::param_integer(
@@ -309,13 +301,7 @@ impl Default for ProcessRuntimePolicy {
                 DEFAULT_STDIN_POLL_MILLISECONDS,
             ),
         )
-        .clamp(
-            1,
-            iteron_tunables::param_integer(
-                "tools.process.policy.max_stdin_poll_milliseconds",
-                MAX_STDIN_POLL_MILLISECONDS,
-            ),
-        );
+        .clamp(1, stdin_poll_ceiling);
         let interactive_idle_timeout_milliseconds = iteron_tunables::param_u64(
             "tools.process.policy.default_interactive_idle_timeout_milliseconds",
             iteron_tunables::param_integer(
@@ -323,13 +309,7 @@ impl Default for ProcessRuntimePolicy {
                 DEFAULT_INTERACTIVE_IDLE_TIMEOUT_MILLISECONDS,
             ),
         )
-        .clamp(
-            stdin_poll_milliseconds,
-            iteron_tunables::param_integer(
-                "tools.process.policy.max_idle_stall_milliseconds",
-                MAX_IDLE_STALL_MILLISECONDS,
-            ),
-        );
+        .clamp(stdin_poll_milliseconds, idle_ceiling);
         Self::new(
             backend,
             background_job_cap,

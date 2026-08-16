@@ -1,5 +1,12 @@
 use super::*;
 
+/// Hard ceiling on how long a forced exit may wait for the resident server. Structural, not an
+/// optimizer choice: a repeated Ctrl-C is an emergency boundary, so the tunable below may lower
+/// this but never raise it.
+fn force_quit_shutdown_wait() -> Duration {
+    Duration::from_millis(25)
+}
+
 /// Tell the operator which workflow runs the session stopped on its way out, and how to continue
 /// them. Silent when there were none, which is the overwhelmingly common case.
 pub(super) fn report_stopped_workflows(stopped: &crate::workflow::ShutdownReport) {
@@ -11,35 +18,58 @@ pub(super) fn report_stopped_workflows(stopped: &crate::workflow::ShutdownReport
     }
 }
 
-/// Execute one already-submitted slash command. Both ordinary Enter and Enter on a slash
-/// completion use this path, so completion activation cannot drift into a second dispatch path.
-/// Join deferred provider discovery for the one command that reads catalogs the launch did not
-/// resolve eagerly. `/model` opens the hierarchical picker over every instance and is therefore the
-/// waiter for the background handle; nothing else pays for providers this session never routes to.
-pub(super) async fn settle_providers_for(providers: &mut ProviderDirectory, cmd: &str) {
-    let named = commands::dispatch(cmd).is_ok_and(|routed| {
-        matches!(
-            routed.route,
-            commands::DispatchRoute::InProcess(SlashCommand::Model)
+pub(super) async fn wait_for_server_shutdown(
+    server_task: &mut tokio::task::JoinHandle<crate::workflow::ShutdownReport>,
+) -> crate::workflow::ShutdownReport {
+    wait_for_server_shutdown_for(
+        server_task,
+        iteron_tunables::param_duration(
+            "cli.workflow.shutdown_grace",
+            crate::workflow::SHUTDOWN_GRACE,
+        ) + iteron_tunables::param_duration("cli.tui.shutdown_wait_slack", SHUTDOWN_WAIT_SLACK),
+    )
+    .await
+}
+
+pub(super) async fn wait_for_forced_server_shutdown(
+    server_task: &mut tokio::task::JoinHandle<crate::workflow::ShutdownReport>,
+) -> crate::workflow::ShutdownReport {
+    wait_for_server_shutdown_for(
+        server_task,
+        iteron_tunables::param_duration(
+            "cli.tui.force_quit_shutdown_wait",
+            force_quit_shutdown_wait(),
         )
-    });
-    if named {
-        providers.settle().await;
+        .min(force_quit_shutdown_wait()),
+    )
+    .await
+}
+
+async fn wait_for_server_shutdown_for(
+    server_task: &mut tokio::task::JoinHandle<crate::workflow::ShutdownReport>,
+    wait: Duration,
+) -> crate::workflow::ShutdownReport {
+    match tokio::time::timeout(wait, &mut *server_task).await {
+        Ok(Ok(report)) => report,
+        Ok(Err(_)) => crate::workflow::ShutdownReport::default(),
+        Err(_) => {
+            server_task.abort();
+            let _ = server_task.await;
+            crate::workflow::ShutdownReport::default()
+        }
     }
 }
 
-pub(super) async fn dispatch_slash_command<B: ratatui::backend::Backend>(
-    term: &mut Terminal<B>,
+/// Execute one already-submitted slash command. Both ordinary Enter and Enter on a slash
+/// completion use this path, so completion activation cannot drift into a second dispatch path.
+pub(super) fn dispatch_slash_command(
     app: &mut App,
     session: &mut Session,
     providers: &ProviderDirectory,
     transcript_effects: &mut transcript_effect::Supervisor,
     interrupt: &Arc<AtomicBool>,
     cmd: &str,
-) -> anyhow::Result<()>
-where
-    B::Error: Send + Sync + 'static,
-{
+) -> anyhow::Result<()> {
     app.push(bold(app.theme.accent), format!("/{cmd}"));
     let routed = match commands::dispatch(cmd) {
         Ok(routed) => routed,
@@ -62,15 +92,14 @@ where
                 session,
                 providers,
                 transcript_effects,
+                interrupt,
                 command,
                 &routed.invocation.args,
-            )
-            .await;
+            );
         }
         commands::DispatchRoute::NotHere(commands::TerminalIntercept::Compact) => {
             let focus = routed.invocation.args;
             app.push(dim(), "compacting…");
-            term.draw(|frame| draw(frame, app))?;
             // A control request, not a `&mut Agent` held across an `.await` in the event loop.
             // The old shape blocked input, redraw and the whole event stream for the duration of
             // the compaction; this one yields, and if a turn is running the request is applied at
@@ -97,7 +126,6 @@ where
                 // Same reason compaction redraws here: this is about to await a provider call, and
                 // an operator who sees nothing cannot tell a slow answer from a dead terminal.
                 app.push(dim(), "asking on the side…");
-                term.draw(|frame| draw(frame, app))?;
             }
             let request = transcript_effect::Request::Control {
                 sender: session.control_sender(),
@@ -265,6 +293,7 @@ pub(super) fn request_interrupt(app: &mut App, session: &Session, interrupt: &Ar
         );
     }
     app.interrupting = true;
+    app.cancel_requested_at = Some(Instant::now());
     app.status = "interrupting turn…".into();
 }
 
@@ -277,18 +306,52 @@ pub(super) fn force_cancel_turn(app: &mut App, session: &Session) {
     if !app.running || !app.interrupting || app.force_cancelling {
         return;
     }
+    // A second gesture targets the same still-running turn regardless of elapsed wall time. The
+    // five-second interval is useful for hint/reset presentation, never for withholding the
+    // operator's stronger-cancellation request from a stuck run.
     if session.submit(Op::ForceCancel).is_err() {
         app.note(
             block::NoticeLevel::Err,
-            "could not force-cancel because the active run is no longer reachable",
+            "could not request stronger cancellation because the active run is no longer reachable",
         );
         return;
     }
     app.force_cancelling = true;
-    app.status = "force-cancelling turn…".into();
+    app.status = "stronger cancellation requested · awaiting runtime acknowledgement…".into();
     app.note(
         block::NoticeLevel::Warn,
-        "cooperative interrupt escalated to force-cancel; background jobs remain session-owned",
+        "stronger cancellation requested; awaiting runtime authority acknowledgement",
+    );
+}
+
+/// Present cancellation as one stack even when a local transcript effect and the agent are live at
+/// once. Stopping the local child never implies the resident run ended; the same gesture also
+/// targets the turn, and a repeated gesture escalates exactly as it does without a local effect.
+pub(super) fn cancel_local_effect_then_turn(
+    app: &mut App,
+    session: &Session,
+    interrupt: &Arc<AtomicBool>,
+) {
+    if !app.running {
+        app.note(
+            block::NoticeLevel::Warn,
+            "local transcript effect cancelled",
+        );
+        return;
+    }
+    let escalated = app.interrupting;
+    if escalated {
+        force_cancel_turn(app, session);
+    } else {
+        request_interrupt(app, session, interrupt);
+    }
+    app.note(
+        block::NoticeLevel::Warn,
+        if escalated {
+            "local transcript effect cancelled; the agent is still running, so stronger agent cancellation was requested too"
+        } else {
+            "local transcript effect cancelled; the agent is still running, so cooperative agent cancellation was requested too"
+        },
     );
 }
 
@@ -374,7 +437,11 @@ pub(super) fn submit_operation(
     };
     match session.submit_identified(op) {
         Ok(submission_id) => {
-            if app.session_name == "New session"
+            // The input-ready shell uses the rollout id until the O(1) title lookup completes in
+            // the background. The first accepted prompt may therefore arrive while that opaque
+            // fallback is still visible. Claim it once here; hydration below restores an existing
+            // durable title for resumed runs and leaves this prompt-derived title on new runs.
+            if app.retryable_task.is_none()
                 && let Some(title) = first_prompt_title.filter(|title| !title.is_empty())
             {
                 app.session_name = title;
@@ -383,12 +450,15 @@ pub(super) fn submit_operation(
             app.running = true;
             app.interrupting = false;
             app.force_cancelling = false;
+            app.cancel_requested_at = None;
+            app.ctrl_c_quit_deadline = None;
             app.draining = false;
             app.status = "running…".into();
             app.run_started = Some(Instant::now());
-            // A new run must not inherit the previous one's first-token clock; the next
-            // `Phase(Model)` starts it honestly (I-64).
+            // A new run must not inherit provider authority. The request-sent activity starts the
+            // clock; only the later accepted activity changes its semantic label.
             app.awaiting_first_token_since = None;
+            app.provider_accepted = false;
             app.completion = None;
             Some(submission_id)
         }

@@ -533,9 +533,8 @@ pub(crate) fn render_assistant_doc(
     width: u16,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
-    const GUTTER: u16 = 2;
     if width
-        < iteron_tunables::param_integer("cli.block.render_assistant_doc.gutter", GUTTER)
+        < iteron_tunables::param_integer("cli.block.render_assistant_doc.gutter", 2_u16)
             .saturating_add(1)
     {
         return render_doc(doc, width, theme);
@@ -544,7 +543,7 @@ pub(crate) fn render_assistant_doc(
         doc,
         width.saturating_sub(iteron_tunables::param_integer(
             "cli.block.render_assistant_doc.gutter",
-            GUTTER,
+            2_u16,
         )),
         theme,
     )
@@ -571,29 +570,13 @@ pub(crate) fn render_assistant_doc_with_hyperlinks(
     theme: &Theme,
     hyperlinks: &HyperlinkPolicy,
 ) -> RenderedLines {
-    const GUTTER: u16 = 2;
-    if width
-        < iteron_tunables::param_integer(
-            "cli.block.render_assistant_doc_with_hyperlinks.gutter",
-            GUTTER,
-        )
-        .saturating_add(1)
-    {
+    let gutter = assistant_gutter(width);
+    if gutter == 0 {
         return render_doc_with_hyperlinks(doc, width, theme, hyperlinks);
     }
-    let mut rendered = render_doc_with_hyperlinks(
-        doc,
-        width.saturating_sub(iteron_tunables::param_integer(
-            "cli.block.render_assistant_doc_with_hyperlinks.gutter",
-            GUTTER,
-        )),
-        theme,
-        hyperlinks,
-    );
-    rendered.shift_columns(iteron_tunables::param_integer(
-        "cli.block.render_assistant_doc_with_hyperlinks.gutter",
-        GUTTER,
-    ));
+    let mut rendered =
+        render_doc_with_hyperlinks(doc, width.saturating_sub(gutter), theme, hyperlinks);
+    rendered.shift_columns(gutter);
     for (index, row) in rendered.lines.iter_mut().enumerate() {
         let mut spans = vec![Span::styled(
             if index == 0 { "● " } else { "  " },
@@ -607,6 +590,20 @@ pub(crate) fn render_assistant_doc_with_hyperlinks(
         *row = Line::from(spans);
     }
     rendered
+}
+
+/// Width reserved by the assistant marker. Streaming and settled renderers share this exact
+/// decision so switching a live answer to its terminal block never changes wrapping geometry.
+pub(crate) fn assistant_gutter(width: u16) -> u16 {
+    let gutter = iteron_tunables::param_integer(
+        "cli.block.render_assistant_doc_with_hyperlinks.gutter",
+        2_u16,
+    );
+    if width >= gutter.saturating_add(1) {
+        gutter
+    } else {
+        0
+    }
 }
 
 /// How many blank rows to place before `next`, given the `prev` block. Adjacent tool cards / notices
@@ -725,13 +722,30 @@ fn render_notice(level: NoticeLevel, text: &str, width: u16, theme: &Theme) -> V
         NoticeLevel::Err => crate::semantic_text::Tone::Error,
         _ => crate::semantic_text::Tone::Body,
     };
-    let content = crate::semantic_text::spans(text, tone, theme);
-    marker_wrap(
-        &format!("{} ", primary_marker()),
-        Style::default().fg(color),
-        &content,
-        width,
-    )
+    // Wrap each LOGICAL line separately. `wrap_spans` breaks rows on display width only, and
+    // `char_width('\n')` is 0, so a newline inside a notice occupied no cell and produced no row
+    // break: a multi-line notice (streamed process output, most of all) rendered as one run-on
+    // line with its own line endings silently eaten.
+    let marker = format!("{} ", primary_marker());
+    let marker_width = marker.chars().map(crate::tui::char_width).sum::<u16>();
+    let indent = " ".repeat(marker_width as usize);
+    let body_width = width.saturating_sub(marker_width);
+    let mut out: Vec<Line<'static>> = Vec::new();
+    for logical in text.split('\n') {
+        let content = crate::semantic_text::spans(logical, tone, theme);
+        // An empty logical line still yields one row, which is what preserves blank lines.
+        for row in wrap_spans(&content, body_width) {
+            let lead = if out.is_empty() {
+                Span::styled(marker.clone(), Style::default().fg(color))
+            } else {
+                Span::raw(indent.clone())
+            };
+            let mut spans = vec![lead];
+            spans.extend(row.spans);
+            out.push(Line::from(spans));
+        }
+    }
+    out
 }
 
 pub(crate) fn workflow_status_label(status: WorkflowStatus) -> &'static str {
@@ -1270,7 +1284,15 @@ fn render_panel(title: &str, rows: &[PanelRow], width: u16, theme: &Theme) -> Ve
 /// cleanly as the built-ins (`mcp__notion__…` → `Notion`, `create_pull_request` → `Create`), never
 /// the generic `Tool` fallback that collapsed the whole MCP surface into one word.
 pub fn verb_for(name: &str) -> String {
-    match name {
+    known_verb(name).unwrap_or_else(|| humanize_verb(name))
+}
+
+/// The known-tool label mapping itself. `None` means the harness has no label for this id — an
+/// UNKNOWN (MCP / custom / third-party) tool, which is humanized for display but is NOT one of the
+/// shapes whose output we understand. That distinction is a budget input: opencode
+/// (`index.tsx:1811-1813`) renders an unknown tool's output with a smaller budget than a known one.
+fn known_verb(name: &str) -> Option<String> {
+    Some(match name {
         "read_file" | "read" | "cat" => "Read".into(),
         "grep" | "search" | "rg" => "Search".into(),
         "list_dir" | "ls" | "list" | "glob" | "repo_map" => "List".into(),
@@ -1282,8 +1304,13 @@ pub fn verb_for(name: &str) -> String {
         n if n.contains("memory") || n.contains("mem") => "Memory".into(),
         n if n.contains("skill") => "Skill".into(),
         n if n.contains("agent") || n.contains("dispatch") => "Subagent".into(),
-        _ => humanize_verb(name),
-    }
+        _ => return None,
+    })
+}
+
+/// A tool id the known-tool label mapping ([`known_verb`]) does not answer for.
+fn is_unknown_tool(name: &str) -> bool {
+    known_verb(name).is_none()
 }
 
 /// Compact, already-humanized label for the active shelf. The live shelf and the transcript card
@@ -1470,6 +1497,104 @@ fn result_summary(card: &ToolCard, verb: &str) -> Option<String> {
     })
 }
 
+/// Visible rows of a tool's output tail when the card is collapsed. FIVE, from codex
+/// (`exec_cell/render.rs:695-700`, which shows 5 lines of command output). This is deliberately NOT a
+/// function of terminal width: the question the tail answers is "is this enough to see whether it
+/// worked", and that answer does not change when the window is resized. The previous
+/// `width < 60 → 1 / width < 100 → 2 / else 3` ladder made the same run render differently in two
+/// panes and let a wide terminal justify more noise.
+fn tool_tail_budget_rows() -> usize {
+    iteron_tunables::param_usize("cli.block.tool_tail_budget_rows", 5)
+}
+
+/// Of that budget, how many rows come from the HEAD; the remainder are the last rows, with the
+/// elision line between them. Seeing the start AND the end is what tells an operator "it started and
+/// then failed at the end" — five leading rows do not. codex's 5-line cell is the size; head+tail is
+/// the shape.
+fn tool_tail_head_rows() -> usize {
+    iteron_tunables::param_usize("cli.block.tool_tail_head_rows", 2)
+}
+
+/// An UNKNOWN tool (one the known-tool mapping [`known_verb`] has no label for) gets a SMALLER
+/// budget than a known one — opencode `index.tsx:1811-1813`. We do not know the shape of its output,
+/// so it earns less of the transcript.
+fn tool_tail_budget_rows_unknown() -> usize {
+    iteron_tunables::param_usize("cli.block.tool_tail_budget_rows_unknown", 3)
+}
+
+/// Floor of the per-row character allowance, from opencode `util/collapse-tool-output.ts:1-19`:
+/// the character budget is `maxLines × max(20, contentWidth − 6)`.
+fn tool_tail_min_chars_per_row() -> usize {
+    iteron_tunables::param_usize("cli.block.tool_tail_min_chars_per_row", 20)
+}
+
+/// Columns subtracted from the pane width before the per-row character allowance, same source
+/// (`contentWidth − 6`) — it pays for the `  ⎿  `-grid indent the tail hangs on.
+fn tool_tail_width_reserve() -> u16 {
+    u16::try_from(iteron_tunables::param_usize(
+        "cli.block.tool_tail_width_reserve",
+        6,
+    ))
+    .unwrap_or(6)
+}
+
+/// Rows of a tool output tail to show when collapsed, as `(head, tail)`; `head + tail ==
+/// rows.len()` means everything fits and NO elision line is drawn.
+///
+/// Two budgets, both from the comparators: a ROW budget (codex, 5 lines) and, on top of it, a
+/// CHARACTER budget (opencode `collapse-tool-output.ts`, `maxLines × max(20, contentWidth − 6)`,
+/// counted with `Array.from(...)` — i.e. by CHARACTERS, not bytes, so a CJK or emoji-heavy log is
+/// measured the same way a viewer reads it). The character budget is what stops one 4000-character
+/// line from defeating a 5-row budget; it can only ever cut EARLIER than the row budget.
+fn tool_tail_window(
+    rows: &[Line<'static>],
+    budget_rows: usize,
+    char_budget: usize,
+) -> (usize, usize) {
+    let row_chars = |line: &Line<'static>| -> usize {
+        line.spans
+            .iter()
+            .map(|s| s.content.chars().count())
+            .sum::<usize>()
+    };
+    let total_chars: usize = rows.iter().map(row_chars).sum();
+    // Whole tail inside both budgets: render it all, no elision line (nothing is being hidden, so
+    // claiming "0 more rows" would be a lie and an extra row of chrome).
+    if rows.len() <= budget_rows && total_chars <= char_budget {
+        return (rows.len(), 0);
+    }
+    // Eliding costs a row: the `… N more rows` line is INSIDE the budget, so a 5-row budget renders
+    // 2 + elision + 2, exactly as codex's cell is 5 rows tall — the collapse never buys space by
+    // spending more of it. At least one row must actually end up hidden, or the elision line would
+    // cost a row and buy nothing.
+    let content_budget = budget_rows.saturating_sub(1);
+    let window_cap = rows.len().saturating_sub(1).min(content_budget);
+    // Head-heavy but never head-ONLY: at the smaller unknown-tool budget this keeps the shape
+    // 1 + elision + 1 rather than collapsing to a pure head, which is the whole point of head+tail.
+    let mut head = tool_tail_head_rows()
+        .min(content_budget.div_ceil(2))
+        .min(window_cap);
+    let mut tail = window_cap - head;
+    // Character budget on top of the row budget: shrink the window (from the tail end first, so the
+    // opening rows — where a command announces what it is doing — survive longest).
+    while head + tail > 0 {
+        let shown: usize = rows[..head].iter().map(row_chars).sum::<usize>()
+            + rows[rows.len() - tail..]
+                .iter()
+                .map(row_chars)
+                .sum::<usize>();
+        if shown <= char_budget {
+            break;
+        }
+        if tail > 0 {
+            tail -= 1;
+        } else {
+            head -= 1;
+        }
+    }
+    (head, tail)
+}
+
 fn render_tool(card: &ToolCard, width: u16, theme: &Theme, spin: usize) -> Vec<Line<'static>> {
     let verb = verb_for(&card.name);
     let bad_exit = card.exit_code.is_some_and(|c| c != 0);
@@ -1573,29 +1698,33 @@ fn render_tool(card: &ToolCard, width: u16, theme: &Theme, spin: usize) -> Vec<L
                     )
                 })
                 .collect();
-            let budget = if width < 60 {
-                1
-            } else if width < 100 {
-                2
+            if card.open {
+                out.extend(rendered.iter().cloned());
             } else {
-                3
-            };
-            let show = if card.open {
-                rendered.len()
-            } else {
-                rendered.len().min(budget)
-            };
-            out.extend(rendered.iter().take(show).cloned());
-            if !card.open && rendered.len() > show {
-                let more = rendered.len() - show;
-                out.extend(indent_wrap(
-                    "     ",
-                    &[Span::styled(
-                        format!("… {more} more rows (ctrl+o to expand)"),
-                        Style::default().fg(theme.faint).add_modifier(Modifier::DIM),
-                    )],
-                    width,
-                ));
+                // Budget by CONTENT, not by pane width — see `tool_tail_budget_rows()`. An unknown
+                // tool gets the smaller budget (opencode `index.tsx:1811-1813`).
+                let budget = if is_unknown_tool(&card.name) {
+                    tool_tail_budget_rows_unknown()
+                } else {
+                    tool_tail_budget_rows()
+                };
+                let char_budget = budget
+                    * (width.saturating_sub(tool_tail_width_reserve()) as usize)
+                        .max(tool_tail_min_chars_per_row());
+                let (head, tail_rows) = tool_tail_window(&rendered, budget, char_budget);
+                out.extend(rendered.iter().take(head).cloned());
+                let more = rendered.len() - head - tail_rows;
+                if more > 0 {
+                    out.extend(indent_wrap(
+                        "     ",
+                        &[Span::styled(
+                            format!("… {more} more rows (ctrl+o to expand)"),
+                            Style::default().fg(theme.faint).add_modifier(Modifier::DIM),
+                        )],
+                        width,
+                    ));
+                }
+                out.extend(rendered[rendered.len() - tail_rows..].iter().cloned());
             }
         }
     }
@@ -1663,12 +1792,28 @@ fn hunk_start(header: &str) -> (u32, u32) {
     (old, new)
 }
 
-/// The lexer language hint for a file path — its extension, passed straight to the highlighter (its
-/// `spec_for` matches `rs`/`py`/`ts`/… directly). `None` → the generic lexer.
+/// The lexer language hint for a file path — normally its extension, passed straight to the
+/// highlighter (its `spec_for` matches `rs`/`py`/`ts`/… directly). `None` → no highlighting at all,
+/// which is the deliberate answer whenever we cannot NAME the language.
+///
+/// Extensionless build/config files are named, not suffixed, so a basename table is consulted
+/// FIRST: `Makefile`, `Dockerfile` and friends otherwise reach the extension split, find nothing,
+/// and render plain. Only names the highlighter actually has a `LangSpec` for are mapped; the rest
+/// (`Justfile`, `CMakeLists.txt`, the ignore files) map to `None` on purpose — a plain render beats
+/// a plausible-looking wrong lexer.
 fn lang_for_path(path: &str) -> Option<&str> {
-    path.rsplit('.')
+    let base = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    match base {
+        "Makefile" | "makefile" | "GNUmakefile" => return Some("make"),
+        "Dockerfile" | "Containerfile" => return Some("dockerfile"),
+        "Cargo.lock" => return Some("toml"),
+        // `just`, `cmake` and the gitignore grammar have no LangSpec — do not guess a near neighbor.
+        "Justfile" | "justfile" | "CMakeLists.txt" | ".gitignore" | ".dockerignore" => return None,
+        _ => {}
+    }
+    base.rsplit('.')
         .next()
-        .filter(|e| !e.is_empty() && *e != path)
+        .filter(|e| !e.is_empty() && *e != base)
 }
 
 /// The diff hunks: a dim `@@` header, then each row = a right-aligned `old│new` line-number gutter
@@ -1841,6 +1986,47 @@ fn render_diff_body(
     out
 }
 
+/// Body rows of a COLLAPSED reasoning block. ONE — opencode `index.tsx:1589-1590` keeps reasoning to
+/// a single line, for the stated reason that a single line makes the layout never jump. Reasoning
+/// streams token by token, so any budget above 1 re-lays the transcript on every chunk.
+fn thinking_closed_rows() -> usize {
+    iteron_tunables::param_usize("cli.block.thinking_closed_rows", 1)
+}
+
+/// Characters of that one line — a teaser: enough to recognize the thought, short enough to stay a
+/// single row on any ordinary pane. It is a CHARACTER cap, not a cell cap, so on a pane narrower than
+/// ~66 columns the teaser can wrap to two rows; that height is still CONSTANT as reasoning streams,
+/// which is the property being bought.
+fn thinking_closed_chars() -> usize {
+    iteron_tunables::param_usize("cli.block.thinking_closed_chars", 60)
+}
+
+/// The first sentence of `line` if it ends within `max` characters, else the first `max` characters.
+/// Sentence-first (rather than a hard cut) so the collapsed reasoning row reads as a thought, not as
+/// a severed clause. `more_after` lets the caller declare that further lines exist even when this one
+/// fits, so the `…` is honest about the whole block. Counted in CHARACTERS, never bytes.
+fn first_sentence_or(line: &str, max: usize, more_after: bool) -> String {
+    let line = line.trim();
+    let total = line.chars().count();
+    let sentence_end = line
+        .chars()
+        .take(max)
+        .position(|c| matches!(c, '.' | '!' | '?' | '。' | '！' | '？'));
+    let (take, elided) = match sentence_end {
+        // A complete sentence that IS the whole reasoning keeps its terminator; one with more behind
+        // it drops the terminator so the elision reads `…`, not `.…`.
+        Some(i) if total == i + 1 && !more_after => (i + 1, false),
+        Some(i) => (i, true),
+        None => (max.min(total), more_after || total > max),
+    };
+    let head: String = line.chars().take(take).collect();
+    if elided {
+        format!("{}…", head.trim_end())
+    } else {
+        head
+    }
+}
+
 fn render_thinking(text: &str, open: bool, width: u16, theme: &Theme) -> Vec<Line<'static>> {
     let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
     // Thinking is an ordinary machine block: the ⏺/● primary marker (faint), a lowercase `thinking…`
@@ -1855,28 +2041,31 @@ fn render_thinking(text: &str, open: bool, width: u16, theme: &Theme) -> Vec<Lin
         &[Span::styled("thinking…", hdr)],
         width,
     );
-    let show = if open {
-        lines.len()
+    let muted_italic = Style::default()
+        .fg(theme.muted)
+        .add_modifier(Modifier::ITALIC);
+    // CLOSED: exactly ONE body row — a teaser of the first sentence (`thinking_closed_rows()`). The
+    // old `min(3)` grew from 1 to 2 to 3 rows as the reasoning streamed, so the whole transcript
+    // below it moved twice per thought. A `… N more` row is deliberately NOT added here: it would
+    // make the collapsed form two rows and reintroduce the same jump when the count appears. The
+    // trailing `…` is the affordance; `ctrl+o` still expands.
+    let body: Vec<Vec<Span<'static>>> = if open {
+        lines
+            .iter()
+            .map(|l| vec![Span::styled((*l).to_string(), muted_italic)])
+            .collect()
     } else {
-        lines.len().min(3)
+        let teaser = first_sentence_or(
+            lines.first().copied().unwrap_or_default(),
+            thinking_closed_chars(),
+            lines.len() > thinking_closed_rows(),
+        );
+        if teaser.is_empty() {
+            Vec::new()
+        } else {
+            vec![vec![Span::styled(teaser, muted_italic)]]
+        }
     };
-    let mut body: Vec<Vec<Span<'static>>> = lines[..show]
-        .iter()
-        .map(|l| {
-            vec![Span::styled(
-                (*l).to_string(),
-                Style::default()
-                    .fg(theme.muted)
-                    .add_modifier(Modifier::ITALIC),
-            )]
-        })
-        .collect();
-    if !open && lines.len() > show {
-        body.push(vec![Span::styled(
-            format!("… {} more (ctrl+o to expand)", lines.len() - show),
-            Style::default().fg(theme.faint).add_modifier(Modifier::DIM),
-        )]);
-    }
     out.extend(connector_lines(&body, width, theme));
     out
 }
@@ -1948,6 +2137,25 @@ fn fmt_dur(d: Duration) -> String {
 mod tests {
     use super::*;
     use crate::render::line_width;
+
+    #[test]
+    fn lang_for_path_reads_named_files_not_just_extensions() {
+        // Extensionless build files are NAMED, so the basename table runs before the extension split.
+        assert_eq!(lang_for_path("Makefile"), Some("make"));
+        assert_eq!(lang_for_path("sub/dir/GNUmakefile"), Some("make"));
+        assert_eq!(lang_for_path("docker/Dockerfile"), Some("dockerfile"));
+        assert_eq!(lang_for_path("Containerfile"), Some("dockerfile"));
+        assert_eq!(lang_for_path("Cargo.lock"), Some("toml"));
+        // Named, but with no LangSpec behind the name: plain, never a near-neighbor guess.
+        assert_eq!(lang_for_path("justfile"), None);
+        assert_eq!(lang_for_path("CMakeLists.txt"), None);
+        assert_eq!(lang_for_path(".gitignore"), None);
+        // Extensions still win everywhere else.
+        assert_eq!(lang_for_path("crates/cli/src/block.rs"), Some("rs"));
+        assert_eq!(lang_for_path("a/b.py"), Some("py"));
+        assert_eq!(lang_for_path("README"), None);
+        assert_eq!(lang_for_path("dir.d/README"), None);
+    }
 
     fn card(name: &str, args: serde_json::Value, status: ToolStatus, output: &str) -> Block {
         Block::new(
@@ -2427,6 +2635,75 @@ mod tests {
     }
 
     #[test]
+    fn collapsed_reasoning_is_one_line_so_the_layout_never_jumps() {
+        // opencode `index.tsx:1589-1590` keeps reasoning to ONE line, for the stated reason that a
+        // single line makes the layout never jump. Reasoning STREAMS, so the replaced `min(3)` grew
+        // the block 1→2→3 rows mid-thought and shoved the whole transcript below it twice.
+        let theme = Theme::dark();
+        let stream = [
+            "I should read the parser first.",
+            "Then I will check the lexer.",
+            "Finally run the tests.",
+        ];
+        let heights: Vec<usize> = (1..=stream.len())
+            .map(|n| {
+                Block::new(
+                    1,
+                    BlockKind::Thinking {
+                        text: stream[..n].join("\n"),
+                        open: false,
+                    },
+                )
+                .render(80, &theme, 0)
+                .len()
+            })
+            .collect();
+        assert_eq!(
+            heights,
+            vec![2, 2, 2],
+            "header + exactly ONE body row at every streamed length: {heights:?}"
+        );
+
+        let grown = Block::new(
+            1,
+            BlockKind::Thinking {
+                text: stream.join("\n"),
+                open: false,
+            },
+        );
+        let text: String = grown
+            .render(80, &theme, 0)
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.to_string())
+            .collect();
+        assert!(
+            text.contains("I should read the parser first…"),
+            "the one line is the first sentence, elided: {text:?}"
+        );
+        assert!(
+            !text.contains("lexer"),
+            "later reasoning is not rendered while collapsed: {text:?}"
+        );
+
+        // Expanded is unchanged: every line.
+        let open = Block::new(
+            2,
+            BlockKind::Thinking {
+                text: stream.join("\n"),
+                open: true,
+            },
+        );
+        let open_text: String = open
+            .render(80, &theme, 0)
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.to_string())
+            .collect();
+        assert!(open_text.contains("lexer") && open_text.contains("Finally run the tests"));
+    }
+
+    #[test]
     fn diff_gutter_has_bar_and_default_theme_colors_the_sign() {
         // §5: the twin line-number columns read as old│new (a faint bar), not an ambiguous `12 12`.
         let dark = Theme::dark();
@@ -2462,11 +2739,32 @@ mod tests {
         );
     }
 
+    /// Rendered rows of one block as plain strings, indent preserved.
+    fn row_texts(b: &Block, width: u16, theme: &Theme) -> Vec<String> {
+        b.render(width, theme, 0)
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.to_string()).collect())
+            .collect()
+    }
+
+    /// The tail rows of a tool card: the ones hanging at the col-5 indent (NOT the `  ⎿  `
+    /// connector, which carries the hoisted summary).
+    fn tail_rows(b: &Block, width: u16, theme: &Theme) -> Vec<String> {
+        row_texts(b, width, theme)
+            .into_iter()
+            .filter(|t| t.starts_with("     ") && !t.trim().is_empty())
+            .collect()
+    }
+
     #[test]
-    fn collapsed_tool_shows_preview_and_more() {
+    fn collapsed_tool_shows_a_fixed_head_and_tail_not_a_width_ladder() {
+        // The budget is CONTENT-shaped, not window-shaped: 5 rows (codex `exec_cell/render.rs:695-700`
+        // shows 5 lines of command output), rendered as first 2 · elision · last 2 so the operator can
+        // see that a command started AND how it ended. The replaced `width<60 →1 / <100 →2 / else 3`
+        // ladder rendered the same run three different ways depending on the pane.
         let theme = Theme::dark();
         let out: String = (0..20)
-            .map(|i| format!("row {i}"))
+            .map(|i| format!("row {i:02}"))
             .collect::<Vec<_>>()
             .join("\n");
         let b = card(
@@ -2475,16 +2773,101 @@ mod tests {
             ToolStatus::Ok,
             &out,
         );
-        let text: String = b
-            .render(80, &theme, 0)
-            .iter()
-            .flat_map(|l| l.spans.iter())
-            .map(|s| s.content.to_string())
-            .collect();
-        assert!(
-            text.contains("more rows"),
-            "collapsed shows a +more affordance"
+        let rows = tail_rows(&b, 80, &theme);
+        let joined = rows.join("\n");
+        // `row 00` is hoisted onto the connector, so the tail is rows 01..=19 (19 rows).
+        assert_eq!(
+            rows.len(),
+            5,
+            "2 head + elision + 2 tail = 5 rows: {joined:?}"
         );
+        assert!(
+            rows[0].contains("row 01") && rows[1].contains("row 02"),
+            "head is the FIRST rows of the tail: {joined:?}"
+        );
+        assert!(
+            rows[2].contains("… 15 more rows (ctrl+o to expand)"),
+            "the elision line sits BETWEEN head and tail and counts what is hidden: {joined:?}"
+        );
+        assert!(
+            rows[3].contains("row 18") && rows[4].contains("row 19"),
+            "tail is the LAST rows — 'it failed at the end' has to be visible: {joined:?}"
+        );
+        assert!(
+            !joined.contains("row 10"),
+            "the middle is elided, not rendered: {joined:?}"
+        );
+
+        // Width-independent: same shape in a narrow pane and a wide one.
+        for width in [60u16, 80, 120, 160] {
+            assert_eq!(
+                tail_rows(&b, width, &theme).len(),
+                5,
+                "tail budget must not move with the terminal width ({width})"
+            );
+        }
+    }
+
+    #[test]
+    fn a_tail_within_the_budget_renders_whole_with_no_elision_line() {
+        let theme = Theme::dark();
+        // 4 output lines → 1 hoisted onto the connector + a 3-row tail, inside the 5-row budget.
+        let b = card(
+            "bash",
+            serde_json::json!({"command": "ls"}),
+            ToolStatus::Ok,
+            "first\nsecond\nthird\nfourth",
+        );
+        let rows = tail_rows(&b, 80, &theme);
+        assert_eq!(rows.len(), 3, "{rows:?}");
+        assert!(
+            !rows.iter().any(|r| r.contains("more rows")),
+            "nothing is hidden, so no elision line is drawn: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn unknown_tool_output_gets_a_smaller_budget_than_a_known_one() {
+        // opencode `index.tsx:1811-1813` renders an UNKNOWN tool's output with a smaller budget than a
+        // known one. `mcp__…` is not in the known-tool label mapping, so it earns 3 rows, not 5.
+        let theme = Theme::dark();
+        let out: String = (0..12)
+            .map(|i| format!("row {i:02}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let known = card(
+            "bash",
+            serde_json::json!({"command": "ls"}),
+            ToolStatus::Ok,
+            &out,
+        );
+        let unknown = card(
+            "mcp__notion__API-post-search",
+            serde_json::json!({"query": "x"}),
+            ToolStatus::Ok,
+            &out,
+        );
+        assert!(super::is_unknown_tool("mcp__notion__API-post-search"));
+        assert!(!super::is_unknown_tool("bash"));
+        // both counts include the one elision row: 2+…+2 vs 1+…+1
+        assert_eq!(tail_rows(&known, 80, &theme).len(), 5);
+        assert_eq!(tail_rows(&unknown, 80, &theme).len(), 3);
+    }
+
+    #[test]
+    fn tail_char_budget_is_counted_in_characters_not_bytes() {
+        // opencode `util/collapse-tool-output.ts:1-19` caps the tail at `maxLines × max(20,
+        // contentWidth − 6)` computed with `Array.from(...)` — CHARACTERS. Ten CJK characters are 30
+        // bytes; counting bytes would have thrown away rows a reader can plainly see.
+        let ten_chars = "四字节汉字十个字符啊";
+        assert_eq!(ten_chars.chars().count(), 10);
+        assert_eq!(ten_chars.len(), 30);
+        let rows: Vec<Line<'static>> = (0..4).map(|_| Line::from(Span::raw(ten_chars))).collect();
+        // 4 rows are inside the 5-row budget but over a 30-char budget, so the window shrinks to the
+        // 3 rows that fit (2 head + 1 tail). Under byte counting even ONE row would have been over.
+        assert_eq!(super::tool_tail_window(&rows, 5, 30), (2, 1));
+        // Inside both budgets → everything, and `head + tail == rows.len()` means no elision line.
+        assert_eq!(super::tool_tail_window(&rows[..2], 5, 100), (2, 0));
     }
 
     fn card_diff(name: &str, diff: FileDiff) -> Block {
@@ -3334,6 +3717,8 @@ mod tests {
             label: "scan modules".into(),
             phase: Some("Explore".into()),
             model: Some("haiku".into()),
+            queued_ms: 0,
+            available_permits: 0,
         });
         c.ingest(ProgressEvent::AgentActivity {
             index: 0,
@@ -3357,6 +3742,8 @@ mod tests {
             label: "probe API".into(),
             phase: Some("Explore".into()),
             model: Some("haiku".into()),
+            queued_ms: 0,
+            available_permits: 0,
         });
         c.ingest(ProgressEvent::Log {
             message: "synthesizing findings".into(),
@@ -3370,6 +3757,8 @@ mod tests {
             label: "merge report".into(),
             phase: Some("Synthesize".into()),
             model: Some("sonnet".into()),
+            queued_ms: 0,
+            available_permits: 0,
         });
         c.ingest(ProgressEvent::AgentFinished {
             index: 2,
@@ -3623,6 +4012,8 @@ mod tests {
             label: "scan modules".into(),
             phase: Some("Explore".into()),
             model: None,
+            queued_ms: 0,
+            available_permits: 0,
         });
         c.ingest(ProgressEvent::AgentFinished {
             index: 0,
@@ -4017,6 +4408,8 @@ mod tests {
                 label: format!("investigator {index}"),
                 phase: Some("Explore".into()),
                 model: Some("haiku".into()),
+                queued_ms: 0,
+                available_permits: 0,
             });
         }
         assert_eq!(

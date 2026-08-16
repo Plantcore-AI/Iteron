@@ -83,9 +83,9 @@ impl TunablesPin {
             kind,
         };
 
-        // Validate the complete pair before the first write. A failure between the two fsyncs may
-        // still leave an unpinned prefix, which every checked resume rejects; an invalid pair can
-        // never create that prefix in the first place.
+        // Validate the complete pair before the first write. The record façade then sends both
+        // events through its sole per-run writer as one semantic batch and acknowledges neither
+        // until their shared barrier succeeds.
         let mut validation_start = run_start.clone();
         validation_start.seq = Seq::ZERO;
         let mut validation_snapshot = snapshot_event.clone();
@@ -101,9 +101,14 @@ impl TunablesPin {
             ));
         }
 
-        let start_seq = rollout.append(run_start)?;
-        let checkpoint_seq = rollout.append(&snapshot_event)?;
-        Ok((start_seq, checkpoint_seq))
+        let genesis = [run_start.clone(), snapshot_event];
+        let sequences = rollout.append_batch(&genesis)?;
+        let [start_seq, checkpoint_seq] = sequences.as_slice() else {
+            return Err(iteron_record::RecordError::InvalidAppendBatch {
+                reason: "pinned genesis batch did not return two sequences",
+            });
+        };
+        Ok((*start_seq, *checkpoint_seq))
     }
 }
 

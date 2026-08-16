@@ -86,7 +86,7 @@ pub(super) fn project_messages_from_events(events: Vec<Event>) -> Vec<Message> {
                         .remove(&call.id)
                         .unwrap_or_else(|| ToolResult {
                             tool_use_id: call.id.clone(),
-                            content: "the prior process ended before this tool produced a durable terminal; Core did not replay it".into(),
+                            content: "the prior process ended before this tool produced a durable terminal; Iteron did not replay it".into(),
                             is_error: true,
                             trust: Trust::Workspace,
                             latency_ms: 0,

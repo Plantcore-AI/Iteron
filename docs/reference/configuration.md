@@ -236,8 +236,9 @@ the same bound as a `models` id. Two fields are declarable:
 Iteron cannot discover this. A `GET models` response is not capability evidence, and the
 [static provider metadata](provider-metadata.md) document is a bounded set of official vendor
 snapshots, so it can only speak for the vendors it ships. Declaring the window is what turns on
-two behaviours that are otherwise silently unavailable: window-relative compaction, which triggers
-at a share of the window instead of the absolute `compaction_trigger_tokens`, and the pre-flight
+two behaviours that are otherwise silently unavailable: window-relative compaction, whose hard
+trigger is the model-usable window with proactive hysteresis and a 25% recent-token tail clamped to
+2k..15k, instead of the absolute `compaction_trigger_tokens`; and the pre-flight
 context-admission check, which rejects an over-large request before it is paid for.
 Declaring `image_input: true` enables the adapter's multimodal wire encoding; absent capability
 evidence remains unknown and an attachment submission fails before either text or images are sent.

@@ -242,7 +242,53 @@ pub fn run_offline_transcript_with_config(
     root: &Path,
     config: &OfflineTranscriptConfig,
 ) -> Result<OfflineTranscriptResult, TranscriptRunError> {
-    crate::transcript_demo::run(root, config)
+    run_offline_transcript_with_activity(root, config, None)
+}
+
+/// Offline transcript execution with the shared bounded ActivityEvent projection. It is an
+/// explicit research entry point and therefore cannot enter ordinary agent startup.
+pub fn run_offline_transcript_with_activity(
+    root: &Path,
+    config: &OfflineTranscriptConfig,
+    activity: Option<&crate::ActivityPublisher>,
+) -> Result<OfflineTranscriptResult, TranscriptRunError> {
+    if let Some(activity) = activity {
+        if activity.cancellation().is_cancelled() {
+            return Err(TranscriptRunError::Cancelled);
+        }
+        let _ = activity.stage(
+            "evolve.transcript",
+            crate::ActivityState::Running,
+            None,
+            crate::ActivityDetailCode::Verification,
+        );
+    }
+    let result = match crate::transcript_demo::run_with_cancel(root, config, &|| {
+        activity.is_some_and(|publisher| publisher.cancellation().is_cancelled())
+    }) {
+        Err(TranscriptRunError::Cancelled) => {
+            if let Some(activity) = activity {
+                let _ = activity.stage(
+                    "evolve.transcript",
+                    crate::ActivityState::Cancelled,
+                    None,
+                    crate::ActivityDetailCode::Verification,
+                );
+            }
+            return Err(TranscriptRunError::Cancelled);
+        }
+        result => result?,
+    };
+    if let Some(activity) = activity {
+        let _ = activity.evidence("evolve.transcript", &result.final_active_bundle_digest);
+        let _ = activity.stage(
+            "evolve.transcript",
+            crate::ActivityState::Succeeded,
+            None,
+            crate::ActivityDetailCode::Verification,
+        );
+    }
+    Ok(result)
 }
 
 pub fn verify_offline_transcript(path: &Path) -> Result<usize, TranscriptRunError> {
@@ -506,6 +552,10 @@ pub enum TranscriptRunError {
     Invariant(&'static str),
     #[error("offline transcript configuration is invalid: {0}")]
     InvalidConfiguration(&'static str),
+    #[error(transparent)]
+    Activity(#[from] crate::ActivityError),
+    #[error("offline transcript cancelled by operator")]
+    Cancelled,
 }
 
 #[cfg(test)]

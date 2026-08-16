@@ -185,7 +185,8 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
                 ],
                 "context_window_override_reserve" => "model_window_tokens"
             ),
-            external_rule!("model_window_tokens", ProviderCapability)
+            external_rule!("model_window_tokens", ProviderCapability),
+            external_rule!("model_window_tokens", ContextWindow)
         ]
     ),
     scalar_schema!(

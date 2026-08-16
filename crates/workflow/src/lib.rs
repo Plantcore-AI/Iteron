@@ -28,6 +28,7 @@
 mod bindings;
 mod collaboration;
 mod execution_policy;
+mod executor;
 mod host;
 mod quorum;
 mod runtime_identity;
@@ -57,8 +58,9 @@ pub use execution_policy::{
     SpeculativeWinnerEvidence, TaskFailureAction, TaskPrioritySchedulingPolicy, TaskRetryPolicy,
     WriterMergePolicy,
 };
+pub use host::validate_script;
 pub use journal::{JOURNAL_FORMAT_VERSION, Journal, Outcome, Record};
-pub use meta::{Meta, extract_meta, strip_meta};
+pub use meta::{CompiledWorkflow, Meta, compile, extract_meta, strip_meta};
 pub use quorum::{EarlyStopQuorumPolicy, MAX_EARLY_STOP_QUORUM};
 pub use runtime_identity::{WorkflowGraphRuntimeIdentity, workflow_graph_runtime_identity};
 pub use schema::{RETRY_MAX, SchemaValidator};
@@ -67,6 +69,21 @@ pub use spawner::{
     AGENT_SPAWNER_PORT_VERSION, AgentActivityReporter, AgentCall, AgentExecutionClass,
     AgentOutcome, AgentSpawner,
 };
+
+/// Default visible cleanup deadline advertised by owners of a background workflow run. The
+/// engine's cancellation token is immediate; composition roots use this value only for their
+/// bounded join/kill-and-reap countdown.
+pub const DEFAULT_STOP_DEADLINE_MS: u64 = 2_000;
+
+/// Resolve the operator-profiled visible cleanup deadline. Composition roots must call this
+/// accessor rather than copying the compiled default so a pinned run profile is honored.
+pub fn default_stop_deadline_ms() -> u64 {
+    iteron_tunables::param_u64(
+        "workflow.lib.default_stop_deadline_ms",
+        DEFAULT_STOP_DEADLINE_MS,
+    )
+    .clamp(1, DEFAULT_STOP_DEADLINE_MS)
+}
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -77,24 +94,42 @@ use std::sync::Arc;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
-/// Assumed core count when the OS refuses to report parallelism; four keeps the derived default
-/// concurrency inside the same clamp a small machine would land on.
-const ASSUMED_CORES_WHEN_UNKNOWN: usize = 4;
+/// Provider-facing child concurrency follows the product policy, not the host's reported core
+/// count. The composition root may still install a narrower immutable [`RunLimits`].
+const DEFAULT_RUN_CONCURRENCY: usize = 6;
 
 /// Clock reading used for a run id when the system clock is before the Unix epoch. Run ids are
 /// metadata only, so a zero prefix is a labelling fallback, never a determinism input.
 const RUN_ID_FALLBACK_NANOS: u128 = 0;
 
-/// Cores withheld from the derived default concurrency, leaving the QuickJS runtime thread and the
-/// host's own async work a core each rather than competing with the child agents they supervise.
-const CORES_RESERVED_FOR_HOST: usize = 2;
+const MAX_DEFAULT_RUN_CONCURRENCY: usize = 16;
+const DEFAULT_MAX_LOG_EVENTS: usize = 512;
+const DEFAULT_MAX_ACTIVITY_EVENTS: usize = 4_096;
+const HARD_MAX_LOG_EVENTS: usize = 4_096;
+const HARD_MAX_ACTIVITY_EVENTS: usize = 16_384;
 
-/// Floor on the derived default concurrency: a one-core machine still has to make progress.
-const MIN_DERIVED_CONCURRENCY: usize = 1;
-
-/// Ceiling on the derived default concurrency. Past this the run is bounded by the model provider
-/// rather than by local cores, so a bigger machine buys queueing, not throughput.
-const MAX_DERIVED_CONCURRENCY: usize = 16;
+fn resolved_progress_limits() -> (usize, usize) {
+    let hard_max_log_events =
+        iteron_tunables::param_usize("workflow.lib.hard_max_log_events", HARD_MAX_LOG_EVENTS)
+            .clamp(1, HARD_MAX_LOG_EVENTS);
+    let hard_max_activity_events = iteron_tunables::param_usize(
+        "workflow.lib.hard_max_activity_events",
+        HARD_MAX_ACTIVITY_EVENTS,
+    )
+    .clamp(1, HARD_MAX_ACTIVITY_EVENTS);
+    (
+        iteron_tunables::param_usize(
+            "workflow.lib.default_max_log_events",
+            DEFAULT_MAX_LOG_EVENTS,
+        )
+        .clamp(1, hard_max_log_events),
+        iteron_tunables::param_usize(
+            "workflow.lib.default_max_activity_events",
+            DEFAULT_MAX_ACTIVITY_EVENTS,
+        )
+        .clamp(1, hard_max_activity_events),
+    )
+}
 
 /// Aggregate engine ceilings supplied by the authority-owning composition root.
 ///
@@ -104,6 +139,8 @@ const MAX_DERIVED_CONCURRENCY: usize = 16;
 pub struct RunLimits {
     max_concurrency: usize,
     max_agent_calls: usize,
+    max_log_events: usize,
+    max_activity_events: usize,
 }
 
 impl RunLimits {
@@ -119,9 +156,12 @@ impl RunLimits {
         {
             return Err("workflow agent-call ceiling exceeds the hard 1000-call limit");
         }
+        let (max_log_events, max_activity_events) = resolved_progress_limits();
         Ok(Self {
             max_concurrency,
             max_agent_calls,
+            max_log_events,
+            max_activity_events,
         })
     }
 
@@ -132,51 +172,36 @@ impl RunLimits {
     pub fn max_agent_calls(self) -> usize {
         self.max_agent_calls
     }
+
+    pub fn max_log_events(self) -> usize {
+        self.max_log_events
+    }
+
+    pub fn max_activity_events(self) -> usize {
+        self.max_activity_events
+    }
 }
 
 impl Default for RunLimits {
     fn default() -> Self {
-        let cores = std::thread::available_parallelism()
-            .map(|count| count.get())
-            .unwrap_or(iteron_tunables::param_usize(
-                "workflow.lib.assumed_cores_when_unknown",
-                iteron_tunables::param_integer(
-                    "workflow.lib.assumed_cores_when_unknown",
-                    ASSUMED_CORES_WHEN_UNKNOWN,
-                ),
-            ));
-        let ceiling = iteron_tunables::param_usize(
-            "workflow.lib.max_derived_concurrency",
-            iteron_tunables::param_integer(
-                "workflow.lib.max_derived_concurrency",
-                MAX_DERIVED_CONCURRENCY,
-            ),
-        );
-        // `clamp` panics when the floor exceeds the ceiling, so a profile that lowers the ceiling
-        // below the floor must not become a crash. With no profile both reads are the compiled
-        // constants and `min` is a no-op.
-        let floor = iteron_tunables::param_usize(
-            "workflow.lib.min_derived_concurrency",
-            iteron_tunables::param_integer(
-                "workflow.lib.min_derived_concurrency",
-                MIN_DERIVED_CONCURRENCY,
-            ),
+        let (max_log_events, max_activity_events) = resolved_progress_limits();
+        let max_default_run_concurrency = iteron_tunables::param_usize(
+            "workflow.lib.max_default_run_concurrency",
+            MAX_DEFAULT_RUN_CONCURRENCY,
         )
-        .min(ceiling);
+        .clamp(1, MAX_DEFAULT_RUN_CONCURRENCY);
         Self {
-            max_concurrency: cores
-                .saturating_sub(iteron_tunables::param_usize(
-                    "workflow.lib.cores_reserved_for_host",
-                    iteron_tunables::param_integer(
-                        "workflow.lib.cores_reserved_for_host",
-                        CORES_RESERVED_FOR_HOST,
-                    ),
-                ))
-                .clamp(floor, ceiling),
+            max_concurrency: iteron_tunables::param_usize(
+                "workflow.lib.default_run_concurrency",
+                DEFAULT_RUN_CONCURRENCY,
+            )
+            .clamp(1, max_default_run_concurrency),
             max_agent_calls: iteron_tunables::param_usize(
                 "workflow.bindings.lifetime_cap",
                 LIFETIME_CAP,
             ),
+            max_log_events,
+            max_activity_events,
         }
     }
 }
@@ -216,6 +241,10 @@ impl std::fmt::Display for RunId {
 
 /// A fully-specified run request. Build with [`RunSpec::new`] + the builder setters, then hand it to
 /// [`WorkflowEngine::execute`] (blocking) or [`WorkflowEngine::launch`] (background).
+///
+/// Script and argument bytes are governed by [`WORKFLOW_SUBMISSION_LIMITS_VERSION`]. The limits are
+/// host ceilings rather than tunables: a profile may not enlarge the memory admitted to the shared
+/// executor queue.
 #[derive(Debug, Clone)]
 pub struct RunSpec {
     /// The workflow script source (ESM with a leading `export const meta`).
@@ -243,6 +272,67 @@ pub struct RunSpec {
     /// It is read for prompt-artifact replacement only (`prompt/recovery@v1`); `None` is the
     /// unprofiled run and every compiled default stands.
     pub tunables_profile: Option<Arc<iteron_tunables::ProfileDocument>>,
+}
+
+/// Stable version of the workflow submission byte-admission contract.
+pub const WORKFLOW_SUBMISSION_LIMITS_VERSION: u32 = 1;
+
+/// Immutable host-admission limits. These are one structural protocol object, not trainer
+/// controls: a profile must never widen bytes admitted to the process-wide executor queue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorkflowSubmissionLimits {
+    pub script_bytes: usize,
+    pub args_bytes: usize,
+    pub total_bytes: usize,
+}
+
+pub const WORKFLOW_SUBMISSION_LIMITS: WorkflowSubmissionLimits = WorkflowSubmissionLimits {
+    script_bytes: 1024 * 1024,
+    args_bytes: 1024 * 1024,
+    total_bytes: 1536 * 1024,
+};
+
+/// The byte component that crossed the stable workflow submission ceiling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkflowSubmissionComponent {
+    Script,
+    Args,
+    Total,
+}
+
+impl std::fmt::Display for WorkflowSubmissionComponent {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Script => "script",
+            Self::Args => "args",
+            Self::Total => "total",
+        })
+    }
+}
+
+/// Typed refusal returned before an oversized workflow can enter the shared executor queue.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "workflow {component} is {actual_bytes} bytes, exceeding the {limit_bytes}-byte host ceiling"
+)]
+pub struct WorkflowSubmissionTooLarge {
+    pub component: WorkflowSubmissionComponent,
+    pub actual_bytes: usize,
+    pub limit_bytes: usize,
+}
+
+#[derive(Default)]
+struct JsonByteCounter(usize);
+
+impl std::io::Write for JsonByteCounter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0 = self.0.saturating_add(bytes.len());
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 impl RunSpec {
@@ -305,6 +395,39 @@ impl RunSpec {
     ) -> RunSpec {
         self.tunables_profile = profile;
         self
+    }
+
+    fn validate_submission_size(&self) -> Result<(), WorkflowSubmissionTooLarge> {
+        let script_bytes = self.script.len();
+        if script_bytes > WORKFLOW_SUBMISSION_LIMITS.script_bytes {
+            return Err(WorkflowSubmissionTooLarge {
+                component: WorkflowSubmissionComponent::Script,
+                actual_bytes: script_bytes,
+                limit_bytes: WORKFLOW_SUBMISSION_LIMITS.script_bytes,
+            });
+        }
+        // Count the wire representation without allocating a second copy of caller-controlled
+        // arguments. `serde_json::Value` is structurally serializable; an unexpected encoder
+        // refusal is treated as maximally large so admission still fails closed.
+        let mut args_counter = JsonByteCounter::default();
+        let args_bytes = serde_json::to_writer(&mut args_counter, &self.args)
+            .map_or(usize::MAX, |()| args_counter.0);
+        if args_bytes > WORKFLOW_SUBMISSION_LIMITS.args_bytes {
+            return Err(WorkflowSubmissionTooLarge {
+                component: WorkflowSubmissionComponent::Args,
+                actual_bytes: args_bytes,
+                limit_bytes: WORKFLOW_SUBMISSION_LIMITS.args_bytes,
+            });
+        }
+        let total_bytes = script_bytes.saturating_add(args_bytes);
+        if total_bytes > WORKFLOW_SUBMISSION_LIMITS.total_bytes {
+            return Err(WorkflowSubmissionTooLarge {
+                component: WorkflowSubmissionComponent::Total,
+                actual_bytes: total_bytes,
+                limit_bytes: WORKFLOW_SUBMISSION_LIMITS.total_bytes,
+            });
+        }
+        Ok(())
     }
 }
 
@@ -375,7 +498,7 @@ impl RunHandle {
             .take()
             .ok_or_else(|| anyhow::anyhow!("workflow run already joined"))?;
         rx.await
-            .map_err(|_| anyhow::anyhow!("workflow thread dropped before completion"))?
+            .map_err(|_| anyhow::anyhow!("workflow executor dropped before completion"))?
     }
 }
 
@@ -393,8 +516,8 @@ fn build_journal(spec: &RunSpec) -> anyhow::Result<Arc<Journal>> {
     Ok(Arc::new(Journal::open(Some(path), resume)?))
 }
 
-/// The workflow runtime. Stateless handle; each run builds its own fresh QuickJS runtime, Governor,
-/// and per-run state.
+/// The workflow runtime. Runs share one bounded process executor while retaining fresh per-run
+/// QuickJS, Governor, journal, and task-ledger state.
 pub struct WorkflowEngine;
 
 impl WorkflowEngine {
@@ -427,6 +550,7 @@ impl WorkflowEngine {
         if spec.workflows_dir.is_none() {
             return Err(WorkflowDurabilityRequired.into());
         }
+        spec.validate_submission_size()?;
         let journal = build_journal(&spec)?;
         let task_dag = Arc::new(task_dag::runtime::ExecutionLedger::open(
             &spec.run_id,
@@ -468,9 +592,9 @@ impl WorkflowEngine {
     }
 
     /// Launch a run in the background and return a [`RunHandle`] immediately (mirrors Claude Code's
-    /// background Workflow launch). The run drives its own multi-thread runtime on a dedicated OS
-    /// thread (the JS engine is `!Send`, so it cannot be `tokio::spawn`ed directly); the handle's
-    /// [`CancellationToken`] is shared, so [`RunHandle::cancel`] reaches the in-flight children.
+    /// background Workflow launch). A bounded process-wide executor drives the `!Send` QuickJS
+    /// local set; no workflow allocates its own OS thread or Tokio runtime. The handle's shared
+    /// [`CancellationToken`] reaches every in-flight child.
     pub fn launch(
         spec: RunSpec,
         spawner: Arc<dyn AgentSpawner>,
@@ -479,7 +603,6 @@ impl WorkflowEngine {
         let cancel = CancellationToken::new();
         let run_id = spec.run_id.clone();
         let (tx, rx) = oneshot::channel();
-        let cancel_thread = cancel.clone();
 
         if spec.workflows_dir.is_none() {
             let _ = tx.send(Err(WorkflowDurabilityRequired.into()));
@@ -490,53 +613,13 @@ impl WorkflowEngine {
             };
         }
 
-        std::thread::Builder::new()
-            .name(format!("workflow-{}", run_id.as_str()))
-            .spawn(move || {
-                let result = (|| -> anyhow::Result<RunReport> {
-                    let journal = build_journal(&spec)?;
-                    let task_dag = Arc::new(task_dag::runtime::ExecutionLedger::open(
-                        &spec.run_id,
-                        spec.workflows_dir
-                            .as_deref()
-                            .expect("durability preflight established a workflow root"),
-                        spec.limits,
-                    )?);
-                    let rt = tokio::runtime::Builder::new_multi_thread()
-                        .enable_all()
-                        .build()?;
-                    let RunSpec {
-                        script,
-                        args,
-                        run_id,
-                        limits,
-                        early_stop_quorum,
-                        speculative_siblings,
-                        task_retry,
-                        schema_retry,
-                        tunables_profile,
-                        ..
-                    } = spec;
-                    rt.block_on(host::run_core(host::RunCoreRequest {
-                        script: &script,
-                        args,
-                        run_id,
-                        limits,
-                        early_stop_quorum,
-                        speculative_siblings,
-                        task_retry,
-                        schema_retry,
-                        cancel: cancel_thread,
-                        journal,
-                        task_dag,
-                        spawner,
-                        sink,
-                        tunables_profile,
-                    }))
-                })();
-                let _ = tx.send(result);
-            })
-            .expect("spawn workflow thread");
+        executor::submit(executor::ExecutorJob {
+            spec,
+            spawner,
+            sink,
+            cancel: cancel.clone(),
+            result: tx,
+        });
 
         RunHandle {
             run_id,
@@ -544,4 +627,49 @@ impl WorkflowEngine {
             result: Mutex::new(Some(rx)),
         }
     }
+}
+
+fn run_executor_job(
+    spec: RunSpec,
+    spawner: Arc<dyn AgentSpawner>,
+    sink: Arc<dyn ProgressSink>,
+    cancel: CancellationToken,
+    runtime: &tokio::runtime::Runtime,
+) -> anyhow::Result<RunReport> {
+    let journal = build_journal(&spec)?;
+    let task_dag = Arc::new(task_dag::runtime::ExecutionLedger::open(
+        &spec.run_id,
+        spec.workflows_dir
+            .as_deref()
+            .ok_or(WorkflowDurabilityRequired)?,
+        spec.limits,
+    )?);
+    let RunSpec {
+        script,
+        args,
+        run_id,
+        limits,
+        early_stop_quorum,
+        speculative_siblings,
+        task_retry,
+        schema_retry,
+        tunables_profile,
+        ..
+    } = spec;
+    runtime.block_on(host::run_core(host::RunCoreRequest {
+        script: &script,
+        args,
+        run_id,
+        limits,
+        early_stop_quorum,
+        speculative_siblings,
+        task_retry,
+        schema_retry,
+        cancel,
+        journal,
+        task_dag,
+        spawner,
+        sink,
+        tunables_profile,
+    }))
 }

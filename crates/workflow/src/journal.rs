@@ -27,6 +27,7 @@ use serde_json::Value;
 
 /// Append format version. Old lines without this field deserialize as v1.
 pub const JOURNAL_FORMAT_VERSION: u32 = 1;
+const DEFAULT_DURABILITY_BATCH_RECORDS: usize = 32;
 
 const fn journal_format_version() -> u32 {
     JOURNAL_FORMAT_VERSION
@@ -130,6 +131,8 @@ pub struct Journal {
     file: Mutex<Option<File>>,
     /// First durability failure. Once set, no later write may claim success.
     failure: Mutex<Option<String>>,
+    /// Outcomes appended since the last device barrier. The final run flush is always a barrier.
+    pending_records: AtomicUsize,
     hits: AtomicUsize,
     misses: AtomicUsize,
 }
@@ -142,6 +145,7 @@ impl Journal {
             cache: Mutex::new(HashMap::new()),
             file: Mutex::new(None),
             failure: Mutex::new(None),
+            pending_records: AtomicUsize::new(0),
             hits: AtomicUsize::new(0),
             misses: AtomicUsize::new(0),
         }
@@ -188,6 +192,7 @@ impl Journal {
             cache: Mutex::new(cache),
             file: Mutex::new(file),
             failure: Mutex::new(None),
+            pending_records: AtomicUsize::new(0),
             hits: AtomicUsize::new(0),
             misses: AtomicUsize::new(0),
         })
@@ -224,10 +229,22 @@ impl Journal {
                 agent_id: agent_id.to_string(),
                 record: record.clone(),
             };
-            let write = write_line(file, &started)
-                .and_then(|()| write_line(file, &result))
-                .and_then(|()| file.flush())
-                .and_then(|()| file.sync_data());
+            let mut batch = encode_line(&started)?;
+            batch.extend_from_slice(&encode_line(&result)?);
+            let pending = self.pending_records.fetch_add(1, Ordering::AcqRel) + 1;
+            let durability_batch = iteron_tunables::param_usize(
+                "workflow.journal.default_durability_batch_records",
+                DEFAULT_DURABILITY_BATCH_RECORDS,
+            )
+            .clamp(1, 256);
+            let write = file.write_all(&batch).and_then(|()| {
+                if pending >= durability_batch {
+                    file.flush()?;
+                    file.sync_data()?;
+                    self.pending_records.store(0, Ordering::Release);
+                }
+                Ok(())
+            });
             if let Err(error) = write {
                 *self.failure.lock().unwrap() = Some(error.to_string());
                 return Err(error);
@@ -246,6 +263,7 @@ impl Journal {
         if let Some(file) = self.file.lock().unwrap().as_mut() {
             file.flush()?;
             file.sync_all()?;
+            self.pending_records.store(0, Ordering::Release);
         }
         Ok(())
     }
@@ -258,10 +276,10 @@ impl Journal {
     }
 }
 
-fn write_line(file: &mut File, line: &Line) -> io::Result<()> {
+fn encode_line(line: &Line) -> io::Result<Vec<u8>> {
     let mut s = serde_json::to_string(line).map_err(io::Error::other)?;
     s.push('\n');
-    file.write_all(s.as_bytes())
+    Ok(s.into_bytes())
 }
 
 /// Load the last `result` record per key from a prior `journal.jsonl`. Malformed lines are skipped.
@@ -357,6 +375,7 @@ mod tests {
             cache: Mutex::new(HashMap::new()),
             file: Mutex::new(Some(read_only)),
             failure: Mutex::new(None),
+            pending_records: AtomicUsize::new(0),
             hits: AtomicUsize::new(0),
             misses: AtomicUsize::new(0),
         };

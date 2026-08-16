@@ -264,7 +264,15 @@ pub enum ContextObservation {
     Segment(ContextSegmentEvidence),
     Transform(ContextTransformEvidence),
     Compaction(CompactionEvidence),
-    ProviderUsage { actual_input_tokens: u64 },
+    /// Provider-accounted request usage. Cache read/write are distinct because a zero cache read
+    /// can mean either a miss or an unsupported provider; callers compute `uncached_tokens` from
+    /// the provider's own accounting rather than asking this evidence layer to infer it.
+    ProviderUsage {
+        actual_input_tokens: u64,
+        cache_read_tokens: u64,
+        cache_write_tokens: u64,
+        uncached_tokens: u64,
+    },
 }
 
 pub trait ContextObserver: Send + Sync {

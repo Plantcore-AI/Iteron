@@ -23,6 +23,7 @@ const PROBE_ADMISSION_CEILING: usize = 1;
 /// Floor under a quota-derived ceiling. A route pinned at zero could never issue the request that
 /// would refresh its own remaining count.
 const MIN_ADMISSION_CEILING: usize = 1;
+const CEILING_RECHECK_DELAY: Duration = Duration::from_millis(10);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdmissionReason {
@@ -250,7 +251,13 @@ impl ProviderGovernor {
             return admission;
         }
         if route.in_flight >= ceiling {
-            return Admission::Rejected(AdmissionReason::Ceiling);
+            return Admission::Deferred {
+                wait: iteron_tunables::param_duration(
+                    "provider.governor.ceiling_recheck_delay",
+                    CEILING_RECHECK_DELAY,
+                ),
+                reason: AdmissionReason::Ceiling,
+            };
         }
         route.in_flight = route.in_flight.saturating_add(1);
         if let CircuitState::HalfOpen { probes, .. } = &mut route.circuit {
@@ -515,6 +522,9 @@ fn quota_decision(
 }
 
 fn classify_failure(error: &ProviderError) -> Option<FailoverClass> {
+    if matches!(error, ProviderError::ConnectFailed) {
+        return Some(FailoverClass::ConnectFailed);
+    }
     if matches!(error, ProviderError::KnownModelUnavailable { .. }) {
         return Some(FailoverClass::ModelUnavailable);
     }
@@ -524,7 +534,13 @@ fn classify_failure(error: &ProviderError) -> Option<FailoverClass> {
     if matches!(error, ProviderError::Api { status: 429, .. }) {
         return Some(FailoverClass::RateLimited);
     }
-    if matches!(error, ProviderError::Api { status: 529, .. }) {
+    if matches!(
+        error,
+        ProviderError::Api {
+            status: 500..=599,
+            ..
+        }
+    ) {
         return Some(FailoverClass::Overloaded);
     }
     let normalized = error.normalized()?;
@@ -540,9 +556,10 @@ fn classify_failure(error: &ProviderError) -> Option<FailoverClass> {
         Some(429) if normalized.retry == RetryDisposition::Transient => {
             Some(FailoverClass::RateLimited)
         }
-        Some(529) if normalized.retry == RetryDisposition::Transient => {
-            Some(FailoverClass::Overloaded)
-        }
+        // A bare 5xx is never made retryable: retry disposition remains `Never`. It is still an
+        // authoritative terminal response, so the governor may move to a separately attested
+        // fallback route without replaying the same provider effect.
+        Some(500..=599) => Some(FailoverClass::Overloaded),
         _ => None,
     }
 }

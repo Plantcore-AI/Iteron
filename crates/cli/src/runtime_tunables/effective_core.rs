@@ -103,8 +103,8 @@ pub(crate) struct EffectiveCoreSettings {
     pub memory_enabled: bool,
     pub session_spawn_cap: usize,
     pub deferred_tool_eager_limit: Option<usize>,
-    /// Exact model context authority captured in family 96. `None` means the owner was unknown at
-    /// genesis; resume must not replace it with a newly discovered machine value.
+    /// Exact effective context authority captured in family 96. Unknown provider metadata uses the
+    /// pinned conservative local ceiling; resume must not widen it from a newly discovered value.
     pub model_context_window: Option<u64>,
     /// Exact provider response cap captured in family 19 after all parent ceilings were applied.
     pub request_output_cap: Option<u32>,
@@ -290,8 +290,9 @@ impl EffectiveCoreSettings {
     /// Prove that today's adapter can execute the immutable route ceilings without allowing its
     /// newly discovered metadata to replace them. Capability growth is harmless but still runs at
     /// the checkpoint value; a known capability below a recorded ceiling is a pre-effect refusal.
-    /// An unknown response cap preserves family 19's pinned conservative fallback rather than
-    /// fabricating provider evidence, while an unknown context window cannot attest family 96.
+    /// Unknown response and context caps preserve their pinned effective ceilings rather than
+    /// fabricating provider evidence or widening a resumed run. A newly known smaller capability
+    /// refuses before effects; missing metadata alone is not evidence that the capability shrank.
     pub(crate) fn verify_model_capability_ceiling(
         &self,
         live_context_window: Option<u64>,
@@ -321,12 +322,13 @@ fn verify_model_capability_ceiling(
     live_context_window: Option<u64>,
     live_output_cap: Option<u32>,
 ) -> Result<(), EffectiveCoreError> {
-    if required_context_window
-        .is_some_and(|required| live_context_window.is_none_or(|live| live < required))
-    {
+    if matches!(
+        (required_context_window, live_context_window),
+        (Some(required), Some(live)) if live < required
+    ) {
         return Err(EffectiveCoreError::UnknownValue {
             family: "context_window_override_reserve",
-            value: "live provider no longer attests the checkpoint context window".into(),
+            value: "live provider context window is below the pinned effective ceiling".into(),
         });
     }
     if matches!(
@@ -1108,12 +1110,12 @@ fn decode_compaction(
         integer_field(trigger, family, "output_reserve_tokens")?,
         family,
     )?;
-    if adaptive_ratio != 800_000
+    if adaptive_ratio != 1_000_000
         || adaptive_keep_recent != keep_recent
         || adaptive_output_reserve != trigger_output_reserve
     {
         return Err(EffectiveCoreError::InvalidBudget(
-            "compaction adaptive owner disagrees with its physical 4/5 trigger, recent tail, or output reserve"
+            "compaction adaptive owner disagrees with its physical usable-window trigger, recent tail, or output reserve"
                 .into(),
         ));
     }
@@ -1579,6 +1581,10 @@ mod memory_schema_agreement_tests {
                 ..
             })
         ));
+        assert!(
+            verify_model_capability_ceiling(Some(120_000), Some(8_192), None, Some(8_192)).is_ok(),
+            "missing context metadata is not evidence that the pinned effective ceiling shrank"
+        );
         assert!(
             verify_model_capability_ceiling(Some(120_000), Some(8_192), Some(120_000), None,)
                 .is_ok(),

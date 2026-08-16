@@ -2,8 +2,7 @@ use super::policy::{PersistentBackendSelection, ProcessRuntimePolicy};
 use super::types::JobId;
 use super::types::{ActionError, JobShared, JobState, lock};
 use super::{
-    CONTROL_QUEUE_CAPACITY, OUTPUT_DRAIN_SECS, ProcessLifecycleKind, ProcessLifecycleNotice,
-    ProcessLifecycleObserver, STDIN_WRITE_SECS, STOP_QUEUE_CAPACITY,
+    ProcessLifecycleKind, ProcessLifecycleNotice, ProcessLifecycleObserver, ProcessOutputObserver,
 };
 use iteron_sandbox::{
     ConfinedProcessControl, ConfinedPtyInput, ConfinedPtyOutput, ConfinedPtyProcess,
@@ -31,29 +30,41 @@ pub(super) struct ActorChannels {
     pub(super) task: tokio::task::JoinHandle<()>,
 }
 
-pub(super) fn spawn_actor(
-    job_id: JobId,
-    process: ConfinedPtyProcess,
-    stdin: ConfinedPtyInput,
-    stdout: ConfinedPtyOutput,
-    shared: Arc<JobShared>,
-    runtime_policy: ProcessRuntimePolicy,
-    lifecycle_observer: Arc<Mutex<Option<ProcessLifecycleObserver>>>,
-) -> ActorChannels {
-    let (writes, write_receiver) = mpsc::channel(iteron_tunables::param_integer(
-        "tools.process.mod.control_queue_capacity",
-        CONTROL_QUEUE_CAPACITY,
-    ));
-    let (stop, stop_receiver) = mpsc::channel(iteron_tunables::param_integer(
-        "tools.process.mod.stop_queue_capacity",
-        STOP_QUEUE_CAPACITY,
-    ));
+pub(super) struct ActorLaunch {
+    pub(super) job_id: JobId,
+    pub(super) process: ConfinedPtyProcess,
+    pub(super) stdin: ConfinedPtyInput,
+    pub(super) stdout: ConfinedPtyOutput,
+    pub(super) shared: Arc<JobShared>,
+    pub(super) runtime_policy: ProcessRuntimePolicy,
+    pub(super) timeout_seconds: u64,
+    pub(super) lifecycle_observer: Arc<Mutex<Option<ProcessLifecycleObserver>>>,
+    pub(super) output_observer: Arc<Mutex<Option<ProcessOutputObserver>>>,
+}
+
+pub(super) fn spawn_actor(launch: ActorLaunch) -> ActorChannels {
+    let ActorLaunch {
+        job_id,
+        process,
+        stdin,
+        stdout,
+        shared,
+        runtime_policy,
+        timeout_seconds,
+        lifecycle_observer,
+        output_observer,
+    } = launch;
+    let (writes, write_receiver) = mpsc::channel(super::control_queue_capacity());
+    let (stop, stop_receiver) = mpsc::channel(super::stop_queue_capacity());
     let (event_sender, events) = mpsc::channel(4);
     let stdout_task = tokio::spawn(drain_output(
         stdout,
         Arc::clone(&shared.stdout),
         event_sender.clone(),
         shared.revision.clone(),
+        job_id,
+        false,
+        Arc::clone(&output_observer),
     ));
     // A terminal is one ordered byte stream: stderr is intentionally merged into stdout by the
     // kernel pty. Keep the legacy stderr cursor as a closed empty stream for schema compatibility.
@@ -62,6 +73,9 @@ pub(super) fn spawn_actor(
         Arc::clone(&shared.stderr),
         event_sender,
         shared.revision.clone(),
+        job_id,
+        true,
+        output_observer,
     ));
     let task = tokio::spawn(run_job(
         job_id,
@@ -72,6 +86,7 @@ pub(super) fn spawn_actor(
         events,
         shared,
         runtime_policy,
+        timeout_seconds,
         lifecycle_observer,
         stdout_task,
         stderr_task,
@@ -144,6 +159,7 @@ async fn run_job(
     mut events: mpsc::Receiver<DrainEvent>,
     shared: Arc<JobShared>,
     runtime_policy: ProcessRuntimePolicy,
+    timeout_seconds: u64,
     lifecycle_observer: Arc<Mutex<Option<ProcessLifecycleObserver>>>,
     stdout_task: tokio::task::JoinHandle<()>,
     stderr_task: tokio::task::JoinHandle<()>,
@@ -163,7 +179,7 @@ async fn run_job(
             None
         }
     };
-    let deadline = tokio::time::sleep(Duration::from_secs(crate::process::max_job_runtime_secs()));
+    let deadline = tokio::time::sleep(Duration::from_secs(timeout_seconds));
     tokio::pin!(deadline);
     let interactive = runtime_policy.backend == PersistentBackendSelection::Persistent;
     let idle_milliseconds = if interactive {
@@ -280,12 +296,7 @@ async fn run_job(
     writes.close();
     stops.close();
     reject_pending_writes(&mut writes);
-    let mut stop_replies = Vec::with_capacity(
-        iteron_tunables::param_integer(
-            "tools.process.mod.stop_queue_capacity",
-            STOP_QUEUE_CAPACITY,
-        ) + 1,
-    );
+    let mut stop_replies = Vec::with_capacity(super::stop_queue_capacity() + 1);
     if let Some(reply) = stop_reply {
         stop_replies.push(reply);
     }
@@ -366,10 +377,7 @@ async fn write_stdin(
         Ok::<(), std::io::Error>(())
     };
     match tokio::time::timeout(
-        Duration::from_secs(iteron_tunables::param_integer(
-            "tools.process.mod.stdin_write_secs",
-            STDIN_WRITE_SECS,
-        )),
+        Duration::from_millis(super::stdin_write_milliseconds()),
         operation,
     )
     .await
@@ -394,12 +402,22 @@ async fn drain_output<R: AsyncRead + Unpin>(
     ring: Arc<Mutex<super::output::OutputRing>>,
     events: mpsc::Sender<DrainEvent>,
     revision: watch::Sender<u64>,
+    job_id: JobId,
+    stderr: bool,
+    output_observer: Arc<Mutex<Option<ProcessOutputObserver>>>,
 ) {
     let mut chunk = [0_u8; 8 * 1024];
     loop {
         match reader.read(&mut chunk).await {
             Ok(0) => break,
             Ok(read) => {
+                if let Some(observer) = lock(&output_observer).clone() {
+                    observer(
+                        job_id.to_string(),
+                        stderr,
+                        chunk[..read.min(super::max_process_output_notice_bytes())].to_vec(),
+                    );
+                }
                 if lock(&ring).push(&chunk[..read]) {
                     let _ = events.send(DrainEvent::Limit).await;
                 } else {
@@ -430,14 +448,17 @@ async fn finish_drains(
 
 async fn finish_drain(mut task: tokio::task::JoinHandle<()>) {
     if tokio::time::timeout(
-        Duration::from_secs(iteron_tunables::param_integer(
-            "tools.process.mod.output_drain_secs",
-            OUTPUT_DRAIN_SECS,
-        )),
+        Duration::from_millis(super::exit_tail_grace_milliseconds()),
         &mut task,
     )
     .await
-    .is_err()
+    .is_ok()
+    {
+        return;
+    }
+    if tokio::time::timeout(Duration::from_secs(super::output_drain_secs()), &mut task)
+        .await
+        .is_err()
     {
         task.abort();
     }

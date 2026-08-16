@@ -7,10 +7,10 @@
 //! and is unit-tested against a recorded fixture (no network needed) — which doubles as the
 //! reproducibility story: recorded model outputs replay exactly (ADR-006 promise (b)).
 //!
-//! Vertical slice: the Anthropic Messages API, streaming, with usage by cache class. The
-//! cache-region linter (ADR-002 amendment) and the rate-limit governor (tail-latency
-//! dossier) are present as an interface + a conservative default, with the richer policy
-//! marked TODO against their ADRs.
+//! The provider seam now includes Anthropic Messages, OpenAI Chat Completions and Responses,
+//! cache-region validation, typed transport timeouts, rate-limit governance, retry/failover
+//! evidence, and immutable prebuilt tool-schema projections. Remaining provider expansion is
+//! tracked in the issue system rather than advertised here as an unimplemented public contract.
 
 use iteron_protocol::{Block, Message, StopReason, ToolSpec, ToolUse};
 use std::time::{Duration, SystemTime};
@@ -75,10 +75,22 @@ const MAX_REQUEST_ID_CHARS: usize = 256;
 
 /// TCP+TLS handshake budget. A peer that cannot complete a handshake this fast is unreachable
 /// for practical purposes, and failing early leaves the request deadline for the real work.
-const TRANSPORT_CONNECT_TLS_SECS: u64 = 30;
+const TRANSPORT_CONNECT_TLS_SECS: u64 = 10;
 /// Physical deadline for one provider request, long-running generations included. This is the
 /// outer bound the agent can never exceed, not an expected duration.
 const TRANSPORT_REQUEST_TOTAL_SECS: u64 = 15 * 60;
+/// Interactive retries longer than this are refused visibly instead of making the UI appear hung.
+pub const MAX_INTERACTIVE_RETRY_AFTER: Duration = Duration::from_secs(60);
+
+/// Effective interactive retry wait ceiling. Profiles may make the UI fail faster, but cannot
+/// relax the audited one-minute upper bound and make an interactive run appear hung.
+pub fn max_interactive_retry_after() -> Duration {
+    iteron_tunables::param_duration(
+        "provider.lib.max_interactive_retry_after",
+        MAX_INTERACTIVE_RETRY_AFTER,
+    )
+    .clamp(Duration::from_secs(1), MAX_INTERACTIVE_RETRY_AFTER)
+}
 /// Stream-idle watchdog: a stream that emits nothing for this long is treated as dead rather
 /// than held open until the total deadline.
 const TRANSPORT_STREAM_IDLE_SECS: u64 = 120;
@@ -181,6 +193,30 @@ pub enum RetryDisposition {
 pub enum ProviderAttemptSemantics {
     Single,
     OpaqueInternalRetries,
+}
+
+/// Secret-safe stage attached to every provider timeout. Transport libraries often erase the DNS
+/// vs TCP boundary, so `DnsConnect` is intentionally honest where the adapter cannot distinguish
+/// those two without platform-specific tracing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderTimeoutStage {
+    DnsConnect,
+    ResponseHeaders,
+    StreamIdle,
+    RequestTotal,
+    ErrorBody,
+}
+
+impl std::fmt::Display for ProviderTimeoutStage {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::DnsConnect => "dns_or_connect",
+            Self::ResponseHeaders => "response_headers",
+            Self::StreamIdle => "stream_idle",
+            Self::RequestTotal => "request_total",
+            Self::ErrorBody => "error_body",
+        })
+    }
 }
 
 /// The narrowest resource a normalized provider failure is known to affect.
@@ -313,6 +349,14 @@ impl std::fmt::Display for StreamError {
 pub enum ProviderError {
     #[error("http: {0}")]
     Http(String),
+    /// Proven pre-acceptance connection failure. Unlike a generic transport failure, bounded
+    /// retry and route failover cannot duplicate accepted model work.
+    #[error("provider connection failed before request acceptance")]
+    ConnectFailed,
+    #[error("provider retry delay exceeded the interactive wait ceiling")]
+    RetryAfterTooLong { retry_after_ms: u64, limit_ms: u64 },
+    #[error("provider timeout during {stage}")]
+    Timeout { stage: ProviderTimeoutStage },
     /// Compatibility form used by deterministic test/replay providers. The body is deliberately
     /// omitted from Display just like the live structured form.
     #[error("provider API failure (HTTP {status})")]
@@ -397,7 +441,9 @@ impl ProviderError {
             ProviderError::ApiResponse(error) => error.normalized.retry,
             ProviderError::Stream(error) => error.normalized.retry,
             ProviderError::Api { status, .. } => retry_for_status(*status),
-            ProviderError::Http(_) => RetryDisposition::Never,
+            ProviderError::ConnectFailed => RetryDisposition::Transient,
+            ProviderError::RetryAfterTooLong { .. } => RetryDisposition::Never,
+            ProviderError::Http(_) | ProviderError::Timeout { .. } => RetryDisposition::Never,
             ProviderError::Decode(_)
             | ProviderError::Refusal
             | ProviderError::UnknownStopReason { .. }
@@ -433,6 +479,13 @@ impl ProviderError {
                 format!("provider API request failed (HTTP {status})")
             }
             ProviderError::Http(_) => "provider transport failed".into(),
+            ProviderError::ConnectFailed => {
+                "provider connection failed before request acceptance".into()
+            }
+            ProviderError::RetryAfterTooLong { .. } => {
+                "provider requested a retry delay beyond the interactive wait ceiling".into()
+            }
+            ProviderError::Timeout { stage } => format!("provider timed out during {stage}"),
             ProviderError::Decode(_) | ProviderError::Json(_) => {
                 "provider response was invalid".into()
             }
@@ -1197,6 +1250,136 @@ fn infer_status(code: &str) -> Option<u16> {
 /// A request for one model turn. The transcript is append-only (ADR-002 R2): `messages` is
 /// never edited in place, only appended to between turns.
 #[derive(Debug, Clone)]
+pub struct PreparedToolSchemas {
+    specs: std::sync::Arc<[ToolSpec]>,
+    canonical_json: std::sync::Arc<str>,
+    estimated_tokens: usize,
+    cache_identity: u64,
+    anthropic: std::sync::Arc<serde_json::Value>,
+    openai_chat: std::sync::Arc<serde_json::Value>,
+    openai_responses: std::sync::Arc<serde_json::Value>,
+}
+
+impl PreparedToolSchemas {
+    /// Prepare every supported provider projection once for an immutable registry revision.
+    /// Subsequent turns retain these `Arc`s instead of walking and rebuilding every JSON schema.
+    pub fn new(
+        specs: std::sync::Arc<[ToolSpec]>,
+        canonical_json: std::sync::Arc<str>,
+        estimated_tokens: usize,
+        revision: u64,
+    ) -> Self {
+        use sha2::Digest as _;
+        let mut identity = sha2::Sha256::new();
+        identity.update(b"iteron-prepared-tool-schemas-v1\0");
+        identity.update(revision.to_be_bytes());
+        identity.update(canonical_json.as_bytes());
+        let digest = identity.finalize();
+        let cache_identity = u64::from_be_bytes(
+            digest[..8]
+                .try_into()
+                .expect("a SHA-256 digest always contains eight identity bytes"),
+        );
+        let anthropic = specs
+            .iter()
+            .map(|tool| {
+                serde_json::json!({
+                    "name": tool.name,
+                    "description": tool.description,
+                    "input_schema": tool.input_schema,
+                })
+            })
+            .collect::<Vec<_>>();
+        let openai_chat = specs
+            .iter()
+            .map(|tool| {
+                serde_json::json!({
+                    "type": "function",
+                    "function": {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": tool.input_schema,
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        let openai_responses = specs
+            .iter()
+            .map(|tool| {
+                serde_json::json!({
+                    "type": "function",
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.input_schema,
+                    "strict": false,
+                })
+            })
+            .collect::<Vec<_>>();
+        Self {
+            specs,
+            canonical_json,
+            estimated_tokens,
+            cache_identity,
+            anthropic: std::sync::Arc::new(serde_json::Value::Array(anthropic)),
+            openai_chat: std::sync::Arc::new(serde_json::Value::Array(openai_chat)),
+            openai_responses: std::sync::Arc::new(serde_json::Value::Array(openai_responses)),
+        }
+    }
+
+    pub fn canonical_json(&self) -> &std::sync::Arc<str> {
+        &self.canonical_json
+    }
+
+    pub fn estimated_tokens(&self) -> usize {
+        self.estimated_tokens
+    }
+
+    pub fn cache_identity(&self) -> u64 {
+        self.cache_identity
+    }
+
+    pub fn anthropic(&self) -> &std::sync::Arc<serde_json::Value> {
+        &self.anthropic
+    }
+
+    pub fn openai_chat(&self) -> &std::sync::Arc<serde_json::Value> {
+        &self.openai_chat
+    }
+
+    pub fn openai_responses(&self) -> &std::sync::Arc<serde_json::Value> {
+        &self.openai_responses
+    }
+}
+
+impl std::ops::Deref for PreparedToolSchemas {
+    type Target = [ToolSpec];
+
+    fn deref(&self) -> &Self::Target {
+        &self.specs
+    }
+}
+
+impl AsRef<[ToolSpec]> for PreparedToolSchemas {
+    fn as_ref(&self) -> &[ToolSpec] {
+        &self.specs
+    }
+}
+
+impl From<std::sync::Arc<[ToolSpec]>> for PreparedToolSchemas {
+    fn from(specs: std::sync::Arc<[ToolSpec]>) -> Self {
+        let canonical = serde_json::to_string(specs.as_ref()).unwrap_or_else(|_| "[]".to_owned());
+        let estimated_tokens = canonical.len().div_ceil(4);
+        Self::new(specs, canonical.into(), estimated_tokens, 0)
+    }
+}
+
+impl From<Vec<ToolSpec>> for PreparedToolSchemas {
+    fn from(specs: Vec<ToolSpec>) -> Self {
+        Self::from(std::sync::Arc::<[ToolSpec]>::from(specs))
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct TurnRequest {
     pub model: String,
     pub system: String,
@@ -1207,7 +1390,10 @@ pub struct TurnRequest {
     /// advertise image support may serialize them without re-reading files or interpreting MIME
     /// types. Text-only requests always carry an empty vector.
     pub input_images: Vec<iteron_protocol::ImageContent>,
-    pub tools: Vec<ToolSpec>,
+    /// Immutable advertised tool schema set. Cloning a request retains one allocation instead of
+    /// recursively cloning every JSON schema; a session may therefore reuse an unchanged catalog
+    /// across turns without turning the provider boundary into an O(schema-bytes) prepare step.
+    pub tools: PreparedToolSchemas,
     pub max_tokens: u32,
     /// Cache breakpoint after the system prompt + tools (the stable prefix). ADR-002:
     /// tools -> system -> messages ordering; the volatile task text goes after the boundary.
@@ -1362,12 +1548,11 @@ pub trait Provider: Send + Sync {
     }
 
     /// Surface cache-hygiene concerns uniformly for every adapter without turning a heuristic
-    /// into an availability gate. Unlike [`Self::run_notice`], this is evaluated and may be
-    /// emitted before every request. The stable-prefix scan is relevant only when caching is on.
+    /// into an availability gate. Unlike [`Self::run_notice`], this is evaluated before every
+    /// request. It deliberately does not depend on the Anthropic `cache_control` breakpoint:
+    /// OpenAI-compatible providers may cache stable prefixes implicitly, and newly added adapters
+    /// should inherit the same lint without first learning Anthropic's wire vocabulary.
     fn preflight_notice(&self, req: &TurnRequest) -> Option<ProviderNotice> {
-        if !req.cache_system {
-            return None;
-        }
         cache_bomb_in_prefix(&req.system).map(|reason| ProviderNotice {
             code: "cache_hygiene",
             message: reason.into(),
@@ -1666,13 +1851,20 @@ mod guard_tests {
             system: "stable system".into(),
             messages: Vec::new(),
             input_images: Vec::new(),
-            tools: Vec::new(),
+            tools: Vec::new().into(),
             max_tokens: 32,
             cache_system: false,
             thinking_budget: 0,
             reasoning_effort: iteron_protocol::ReasoningEffort::Low,
             controls: Default::default(),
         }
+    }
+
+    #[test]
+    fn second_round_defaults_stream_idle_allows_long_reasoning_gaps() {
+        let policy = provider_transport_timeout_policy();
+        assert_eq!(policy.stream_idle, Duration::from_secs(120));
+        assert!(policy.validate().is_ok());
     }
 
     fn spawn_one_shot_sse(body: String) -> (String, std::thread::JoinHandle<String>) {
@@ -1864,12 +2056,12 @@ mod guard_tests {
         }
 
         request.cache_system = false;
-        assert!(
+        assert_eq!(
             crate::anthropic::Anthropic::new("test-key".into(), None)
                 .unwrap()
-                .preflight_notice(&request)
-                .is_none(),
-            "a prefix that will not be cached needs no cache warning"
+                .preflight_notice(&request),
+            expected,
+            "cache hygiene is transport-independent because compatible routes may cache prefixes implicitly"
         );
     }
 

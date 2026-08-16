@@ -61,6 +61,7 @@ pub const MAX_HEDGE_DUPLICATES: u8 = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum FailoverClass {
+    ConnectFailed,
     RateLimited,
     Overloaded,
     ModelUnavailable,
@@ -70,6 +71,7 @@ pub enum FailoverClass {
 impl FailoverClass {
     pub const fn label(self) -> &'static str {
         match self {
+            Self::ConnectFailed => "provider.connect_failed",
             Self::RateLimited => "provider.rate_limited",
             Self::Overloaded => "provider.overloaded",
             Self::ModelUnavailable => "model.unavailable",
@@ -234,15 +236,46 @@ impl Default for GovernorPolicy {
         Self {
             max_in_flight_per_route: iteron_tunables::param_integer(
                 "provider.governor_policy.default_max_in_flight_per_route",
-                1,
+                4,
             ),
             objectives: ObjectiveWeights::default(),
-            failover: BTreeSet::new(),
+            failover: default_failover_rules(),
             circuit: CircuitPolicy::default(),
             rate_admission: RateAdmissionPolicy::default(),
             hedge: HedgePolicy::default(),
         }
     }
+}
+
+/// Crate-owned shipped failover contract. CLI configuration may narrow or replace it, but a
+/// direct library consumer no longer gets a contradictory empty policy.
+pub fn default_failover_rules() -> BTreeSet<FailoverRule> {
+    BTreeSet::from([
+        FailoverRule {
+            class: FailoverClass::ConnectFailed,
+            point: FailurePoint::PreDispatch,
+        },
+        FailoverRule {
+            class: FailoverClass::RateLimited,
+            point: FailurePoint::ProvenTerminal,
+        },
+        FailoverRule {
+            class: FailoverClass::Overloaded,
+            point: FailurePoint::ProvenTerminal,
+        },
+        // A composition root may classify an upstream-rejected 5xx as pre-dispatch only when it
+        // independently proves that the inference request was never accepted. Merely receiving a
+        // 5xx response is a proven terminal and uses the sibling rule above; this row never
+        // licenses an automatic retry or weakens at-most-once request effects.
+        FailoverRule {
+            class: FailoverClass::Overloaded,
+            point: FailurePoint::PreDispatch,
+        },
+        FailoverRule {
+            class: FailoverClass::ModelUnavailable,
+            point: FailurePoint::PreDispatch,
+        },
+    ])
 }
 
 impl GovernorPolicy {
@@ -295,4 +328,14 @@ pub enum GovernorPolicyError {
     RouteCount,
     #[error("provider route identity is empty, too long, or duplicated")]
     RouteIdentity,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn second_round_defaults_provider_route_concurrency_is_independent() {
+        assert_eq!(GovernorPolicy::default().max_in_flight_per_route, 4);
+    }
 }

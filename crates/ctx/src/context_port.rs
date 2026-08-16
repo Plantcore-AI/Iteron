@@ -11,6 +11,7 @@ use iteron_protocol::context::{
 use iteron_protocol::{Trust, home, slot::StrategySlot};
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::ContextPlan;
@@ -254,17 +255,42 @@ impl ContextPort for DefaultContextPort {
         }
 
         if plan.include_skills && builder.remaining_bytes() > 0 {
-            let catalog = skills::SkillCatalog::discover_for_operator_with_dependencies(
-                input.home_dir.as_deref(),
-                &workspace,
-                &input.dependency_skill_dirs,
-            );
+            static SKILL_CACHE: OnceLock<skills::SkillCatalogCache> = OnceLock::new();
+            let cache = SKILL_CACHE.get_or_init(skills::SkillCatalogCache::default);
+            // One immutable metadata snapshot is pinned for the process. Normal turns perform no
+            // directory enumeration or body reads; explicit `use_skill` still loads the selected
+            // body directly. A new process (or a future operator-owned refresh command) establishes
+            // a new snapshot rather than changing prompt identity mid-run.
+            let catalog = cache
+                .snapshot_for(
+                    input.home_dir.as_deref(),
+                    &workspace,
+                    &input.dependency_skill_dirs,
+                )
+                .unwrap_or_else(|| {
+                    cache
+                        .refresh_for_operator(
+                            input.home_dir.as_deref(),
+                            &workspace,
+                            &input.dependency_skill_dirs,
+                        )
+                        .unwrap_or_else(|_| {
+                            std::sync::Arc::new(
+                            skills::SkillCatalog::discover_metadata_for_operator_with_dependencies(
+                                input.home_dir.as_deref(),
+                                &workspace,
+                                &input.dependency_skill_dirs,
+                            ),
+                        )
+                        })
+                });
             let active = skills::active_paths_from_text(&plan.task);
-            let listing = catalog.listing_for_paths(
+            let listing = catalog.listing_for_task(
                 input
                     .materialization
                     .skill_listing_bytes
                     .min(builder.remaining_bytes()),
+                &plan.task,
                 &active,
             );
             if let Some(trust) = catalog.governing_trust() {

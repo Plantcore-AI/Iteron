@@ -94,9 +94,11 @@ impl HttpTransport for DefaultHttpTransport {
 /// A provider built before resume/fresh composition can still install the exact checkpointed
 /// transport policy before its first physical request. Custom injected transports remain fixed:
 /// Core never replaces an injected authority with its default network client.
+#[derive(Clone)]
 pub(crate) struct RuntimeHttpClient {
-    state: Mutex<(crate::ProviderTransportTimeoutPolicy, HttpClient)>,
+    state: Arc<Mutex<(crate::ProviderTransportTimeoutPolicy, HttpClient)>>,
     default_reconfigurable: bool,
+    http2_downgrade_reported: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl RuntimeHttpClient {
@@ -104,8 +106,9 @@ impl RuntimeHttpClient {
         let policy = crate::provider_transport_timeout_policy();
         let client = DefaultHttpTransport.client(policy)?;
         Ok(Self {
-            state: Mutex::new((policy, client)),
+            state: Arc::new(Mutex::new((policy, client))),
             default_reconfigurable: true,
+            http2_downgrade_reported: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
     }
 
@@ -113,18 +116,20 @@ impl RuntimeHttpClient {
         let policy = crate::provider_transport_timeout_policy();
         let client = transport.client(policy)?;
         Ok(Self {
-            state: Mutex::new((policy, client)),
+            state: Arc::new(Mutex::new((policy, client))),
             default_reconfigurable: false,
+            http2_downgrade_reported: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
     }
 
     pub(crate) fn inert() -> Self {
         Self {
-            state: Mutex::new((
+            state: Arc::new(Mutex::new((
                 crate::provider_transport_timeout_policy(),
                 reqwest::Client::new(),
-            )),
+            ))),
             default_reconfigurable: false,
+            http2_downgrade_reported: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -149,6 +154,17 @@ impl RuntimeHttpClient {
         }
         Ok(state.1.clone())
     }
+
+    /// Return true exactly once when a physical response proves that a route negotiated below
+    /// HTTP/2. reqwest exposes the response protocol version even though it does not expose raw
+    /// TLS ALPN; adapters turn this into the existing content-free compatibility lifecycle rather
+    /// than silently pretending the governance requirement was met.
+    pub(crate) fn observe_response_version(&self, version: reqwest::Version) -> bool {
+        version != reqwest::Version::HTTP_2
+            && !self
+                .http2_downgrade_reported
+                .swap(true, std::sync::atomic::Ordering::Relaxed)
+    }
 }
 
 const CATALOG_PAGE_SIZE: usize = 100;
@@ -158,6 +174,7 @@ const MAX_PAGE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_TOTAL_BYTES: usize = 8 * 1024 * 1024;
 const PER_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const TOTAL_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(15);
+const FILE_CREDENTIAL_CACHE_TTL: Duration = Duration::from_secs(60);
 /// Wall-clock reading used when the host clock is before the Unix epoch. Zero makes every
 /// expiry comparison treat the clock as maximally stale, so credentials refresh instead of
 /// being trusted on a nonsensical clock.
@@ -493,7 +510,7 @@ impl fmt::Debug for CredentialSource {
 /// mid-session rotation work without a restart.
 pub struct FileCredential {
     path: std::path::PathBuf,
-    state: Mutex<Option<LoadedCredential>>,
+    state: Mutex<Option<(Instant, LoadedCredential)>>,
 }
 
 #[derive(Clone)]
@@ -538,34 +555,42 @@ impl FileCredential {
         }
     }
 
-    /// Return the cached credential when it is comfortably inside its validity window, otherwise
-    /// re-read the file. A credential with no declared expiry is always re-read: that is exactly
-    /// the "read at call time" behaviour the provider documentation already claimed.
+    /// Return a credential cached for at most 60 seconds and still comfortably inside its declared
+    /// validity window. Rotation stays bounded without re-opening a file for catalog, probe,
+    /// status, cache identity, and turn construction in the same hot launch.
     fn load(&self) -> LoadedCredential {
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let now = unix_now();
-        let usable = state.as_ref().is_some_and(|loaded| {
-            loaded.expires_at_unix.is_some_and(|expiry| {
-                now.saturating_add(iteron_tunables::param_u64(
-                    "provider.catalog.credential_refresh_skew_secs",
-                    iteron_tunables::param_integer(
+        let usable = state.as_ref().is_some_and(|(loaded_at, loaded)| {
+            loaded_at.elapsed()
+                < iteron_tunables::param_duration(
+                    "provider.catalog.file_credential_cache_ttl",
+                    FILE_CREDENTIAL_CACHE_TTL,
+                )
+                && loaded.expires_at_unix.is_none_or(|expiry| {
+                    now.saturating_add(iteron_tunables::param_u64(
                         "provider.catalog.credential_refresh_skew_secs",
-                        CREDENTIAL_REFRESH_SKEW_SECS,
-                    ),
-                )) < expiry
-            })
+                        iteron_tunables::param_integer(
+                            "provider.catalog.credential_refresh_skew_secs",
+                            CREDENTIAL_REFRESH_SKEW_SECS,
+                        ),
+                    )) < expiry
+                })
         });
         if !usable {
-            *state = Some(read_credential_file(&self.path));
+            *state = Some((Instant::now(), read_credential_file(&self.path)));
         }
-        state.clone().unwrap_or(LoadedCredential {
-            token: None,
-            expires_at_unix: None,
-            error: Some("credential file could not be read".into()),
-        })
+        state
+            .as_ref()
+            .map(|(_, loaded)| loaded.clone())
+            .unwrap_or(LoadedCredential {
+                token: None,
+                expires_at_unix: None,
+                error: Some("credential file could not be read".into()),
+            })
     }
 }
 
@@ -671,6 +696,7 @@ pub struct ProviderInstance {
     credential: CredentialSource,
     static_metadata: Arc<crate::StaticProviderMetadata>,
     prompt_cache: bool,
+    http_client: RuntimeHttpClient,
 }
 
 impl fmt::Debug for ProviderInstance {
@@ -766,6 +792,7 @@ impl ProviderInstance {
         let catalog_strategy = default_catalog_strategy(adapter, &api_root)?;
         let error_profile = default_error_profile(adapter, &api_root);
         let credential = CredentialSource::env_value(credential);
+        let http_client = RuntimeHttpClient::default_reconfigurable()?;
         Ok(Self {
             id,
             display_name,
@@ -781,6 +808,7 @@ impl ProviderInstance {
             // physical provider must reject before startup. Explicit route overrides remain
             // available, while the default now matches the adapter that will serialize it.
             prompt_cache: matches!(adapter, AdapterKind::AnthropicMessages),
+            http_client,
         })
     }
 
@@ -924,28 +952,45 @@ impl ProviderInstance {
                 })?;
         match self.adapter {
             AdapterKind::AnthropicMessages => Ok(Box::new(
-                crate::Anthropic::with_root(credential, self.api_root.clone())?
-                    .with_error_profile(self.error_profile)
-                    .with_static_metadata(self.static_metadata.clone())
-                    .with_prompt_cache(self.prompt_cache)
-                    .with_route_scope(self.id.clone())?,
+                crate::Anthropic::with_client(
+                    credential,
+                    self.api_root.clone(),
+                    self.http_client.clone(),
+                )?
+                .with_error_profile(self.error_profile)
+                .with_static_metadata(self.static_metadata.clone())
+                .with_prompt_cache(self.prompt_cache)
+                .with_route_scope(self.id.clone())?,
             )),
             AdapterKind::OpenAiCompatibleChat => Ok(Box::new(
-                crate::OpenAiCompat::with_root(credential, self.api_root.clone())?
-                    .with_error_profile(self.error_profile)
-                    .with_static_metadata(self.static_metadata.clone())
-                    .with_route_scope(self.id.clone())?,
+                crate::OpenAiCompat::with_client(
+                    credential,
+                    self.api_root.clone(),
+                    self.http_client.clone(),
+                )?
+                .with_error_profile(self.error_profile)
+                .with_static_metadata(self.static_metadata.clone())
+                .with_route_scope(self.id.clone())?,
             )),
             AdapterKind::OpenAiResponses => Ok(Box::new(
-                crate::OpenAiResponses::with_root(credential, self.api_root.clone())?
-                    .with_error_profile(self.error_profile)
-                    .with_route_scope(self.id.clone())?,
+                crate::OpenAiResponses::with_client(
+                    credential,
+                    self.api_root.clone(),
+                    self.http_client.clone(),
+                )?
+                .with_error_profile(self.error_profile)
+                .with_route_scope(self.id.clone())?,
             )),
         }
     }
 
     pub(crate) fn credential(&self) -> Option<String> {
         self.credential.resolve()
+    }
+
+    fn shared_http_client(&self) -> Result<HttpClient, ProviderError> {
+        self.http_client
+            .client(crate::provider_transport_timeout_policy())
     }
 }
 
@@ -1203,14 +1248,7 @@ pub async fn discover_catalog(
         .ok_or_else(|| ProviderError::MissingCredential {
             provider: instance.id.clone(),
         })?;
-    let client = reqwest::Client::builder()
-        .connect_timeout(iteron_tunables::param_duration(
-            "provider.catalog.per_request_timeout",
-            PER_REQUEST_TIMEOUT,
-        ))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|_| ProviderError::Configuration("HTTP client could not be built".into()))?;
+    let client = instance.shared_http_client()?;
     let deadline = Instant::now()
         + iteron_tunables::param_duration(
             "provider.catalog.total_discovery_timeout",
@@ -1246,14 +1284,7 @@ pub async fn probe_account(
         .ok_or_else(|| ProviderError::MissingCredential {
             provider: instance.id.clone(),
         })?;
-    let client = reqwest::Client::builder()
-        .connect_timeout(iteron_tunables::param_duration(
-            "provider.catalog.per_request_timeout",
-            PER_REQUEST_TIMEOUT,
-        ))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|_| ProviderError::Configuration("HTTP client could not be built".into()))?;
+    let client = instance.shared_http_client()?;
     match probe {
         AccountProbe::DeepSeekBalance => {
             let endpoint = instance.api_root.origin_endpoint("user/balance")?;

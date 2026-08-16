@@ -631,65 +631,65 @@ fn add_context_defaults(
     let policy =
         iteron_ctx::ContextBudgetPolicy::for_usable_window(execution_window, output_reserve, 0);
 
-    if let Some(window) = actual_window {
-        builder.observe_default(
-            "context_window_override_reserve",
-            object([
-                (
-                    "model_window_tokens",
-                    int(super::value::i64u(window as u64, "context_window")?),
-                ),
-                ("output_reserve_tokens", int(i64::from(output_reserve))),
-                ("verification_reserve_tokens", int(0)),
-                (
+    // A catalog window is stronger evidence, but absence must not make an otherwise usable
+    // compatible endpoint impossible to start.  The runtime already owns a conservative
+    // execution ceiling: compaction trigger + the bounded output reserve.  Pin that lower local
+    // ceiling into family 96 until provider metadata proves a different capability.  This never
+    // widens authority (a later smaller live capability is still rejected by resume validation),
+    // and it keeps the effective profile deterministic instead of inventing an unbounded window.
+    let effective_window = actual_window.unwrap_or(execution_window);
+    builder.observe_default(
+        "context_window_override_reserve",
+        object([
+            (
+                "model_window_tokens",
+                int(super::value::i64u(
+                    effective_window as u64,
+                    "context_window",
+                )?),
+            ),
+            ("output_reserve_tokens", int(i64::from(output_reserve))),
+            ("verification_reserve_tokens", int(0)),
+            (
+                "instruction_budget_tokens",
+                int(super::value::i64u(
+                    policy.instruction_tokens as u64,
                     "instruction_budget_tokens",
-                    int(super::value::i64u(
-                        policy.instruction_tokens as u64,
-                        "instruction_budget_tokens",
-                    )?),
-                ),
-                (
+                )?),
+            ),
+            (
+                "task_context_budget_tokens",
+                int(super::value::i64u(
+                    policy.task_context_tokens as u64,
                     "task_context_budget_tokens",
-                    int(super::value::i64u(
-                        policy.task_context_tokens as u64,
-                        "task_context_budget_tokens",
-                    )?),
-                ),
-                (
+                )?),
+            ),
+            (
+                "memory_budget_tokens",
+                int(super::value::i64u(
+                    policy.memory_tokens as u64,
                     "memory_budget_tokens",
-                    int(super::value::i64u(
-                        policy.memory_tokens as u64,
-                        "memory_budget_tokens",
-                    )?),
-                ),
-                (
+                )?),
+            ),
+            (
+                "attachment_budget_tokens",
+                int(super::value::i64u(
+                    policy.attachment_tokens as u64,
                     "attachment_budget_tokens",
-                    int(super::value::i64u(
-                        policy.attachment_tokens as u64,
-                        "attachment_budget_tokens",
-                    )?),
-                ),
-                (
+                )?),
+            ),
+            (
+                "tool_schema_budget_tokens",
+                int(super::value::i64u(
+                    policy.tool_schema_tokens as u64,
                     "tool_schema_budget_tokens",
-                    int(super::value::i64u(
-                        policy.tool_schema_tokens as u64,
-                        "tool_schema_budget_tokens",
-                    )?),
-                ),
-            ]),
-        )?;
-        report
-            .observed_defaults
-            .push("context_window_override_reserve");
-    } else {
-        // Family 96 truthfully remains absent: the synthetic execution window is a deterministic
-        // fallback, not provider metadata. The component families below are nevertheless exact
-        // physical owner values and must not become unresolved merely because metadata is absent.
-        builder.observe_default_absent(
-            "context_window_override_reserve",
-            "model_context_window_unknown",
-        )?;
-    }
+                )?),
+            ),
+        ]),
+    )?;
+    report
+        .observed_defaults
+        .push("context_window_override_reserve");
     for (family, value) in [
         ("system_prefix_budget", policy.stable_prefix_tokens),
         ("conversation_history_budget", policy.transcript_tokens),

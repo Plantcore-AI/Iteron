@@ -248,6 +248,11 @@ fn immutable_tunables_genesis_checks_fresh_resume_replay_and_fork() {
             .append_genesis_snapshot(&genesis(), snapshot.clone(), None)
             .unwrap();
         assert_eq!(seqs, (Seq::ZERO, Seq(1)));
+        assert_eq!(
+            rollout.barriers_taken(),
+            (1, 0),
+            "RunStart and its immutable snapshot are one production semantic batch"
+        );
     }
 
     let (events, compatibility) = replay_with_tunables_snapshot(
@@ -542,58 +547,31 @@ fn legacy_waiver_requires_a_structurally_valid_historical_run() {
 #[test]
 fn fresh_genesis_faults_preserve_only_a_checked_durable_prefix() {
     let expected = fixture_snapshot();
-    for barrier in [1, 2] {
-        let dir = test_dir(&format!("tunables-genesis-sync-{barrier}"));
-        let run = RunId(format!("sync-{barrier}"));
-        let mut rollout = Rollout::open(&dir, &run, TenantId::default()).unwrap();
-        crate::set_append_sync_fault_at(Some(barrier));
-        assert!(matches!(
-            rollout.append_genesis_snapshot(&genesis(), expected.clone(), None),
-            Err(RecordError::Io(_))
-        ));
-        crate::set_append_sync_fault_at(None);
-        drop(rollout);
+    let dir = test_dir("tunables-genesis-sync");
+    let run = RunId("sync".into());
+    let mut rollout = Rollout::open(&dir, &run, TenantId::default()).unwrap();
+    crate::set_append_sync_fault_at(Some(1));
+    assert!(matches!(
+        rollout.append_genesis_snapshot(&genesis(), expected.clone(), None),
+        Err(RecordError::Io(_))
+    ));
+    crate::set_append_sync_fault_at(None);
+    drop(rollout);
 
-        let path = dir.join(format!("{run}.jsonl"));
-        let events = replay(&path).unwrap();
-        assert_eq!(events.len(), barrier - 1);
-        if barrier == 1 {
-            // A first-barrier crash leaves no historical run to waive.
-            for policy in [
-                LegacyTunablesPolicy::RejectUnpinned,
-                LegacyTunablesPolicy::AllowUnpinned,
-            ] {
-                assert!(matches!(
-                    replay_with_tunables_snapshot(&path, &expected, policy),
-                    Err(RecordError::TunablesSnapshot(
-                        TunablesSnapshotError::GenesisOrder { .. }
-                    ))
-                ));
-            }
-        } else {
-            // A second-barrier crash preserves the confirmed RunStart only: explicit legacy
-            // admission may continue, but exact compatibility remains impossible.
-            assert!(matches!(
-                replay_with_tunables_snapshot(
-                    &path,
-                    &expected,
-                    LegacyTunablesPolicy::RejectUnpinned,
-                ),
-                Err(RecordError::TunablesSnapshot(
-                    TunablesSnapshotError::LegacyUnpinned
-                ))
-            ));
-            assert_eq!(
-                replay_with_tunables_snapshot(
-                    &path,
-                    &expected,
-                    LegacyTunablesPolicy::AllowUnpinned,
-                )
-                .unwrap()
-                .1,
-                TunablesCompatibility::LegacyUnpinned
-            );
-        }
+    let path = dir.join(format!("{run}.jsonl"));
+    assert!(replay(&path).unwrap().is_empty());
+    // The actor acknowledges RunStart + snapshot only after their shared semantic barrier. A
+    // barrier failure therefore leaves no historical run that either legacy policy can waive.
+    for policy in [
+        LegacyTunablesPolicy::RejectUnpinned,
+        LegacyTunablesPolicy::AllowUnpinned,
+    ] {
+        assert!(matches!(
+            replay_with_tunables_snapshot(&path, &expected, policy),
+            Err(RecordError::TunablesSnapshot(
+                TunablesSnapshotError::GenesisOrder { .. }
+            ))
+        ));
     }
 }
 

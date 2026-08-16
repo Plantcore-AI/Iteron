@@ -1,11 +1,69 @@
 use super::*;
 
-/// Nanosecond stamp used to build a fork's run id when the clock reads before the UNIX epoch. The
-/// pid already in the id keeps it unique, so a degenerate clock costs ordering, never collision.
-const RUN_ID_FALLBACK_NANOS: u128 = 0;
 /// Characters kept from a session title in the picker row. A title longer than this wraps on a
 /// conventional terminal and pushes the sessions below it off the list.
 const PICKER_TITLE_MAX_CHARS: usize = 80;
+const SESSION_PICKER_PAGE_SIZE: usize = 25;
+const SESSION_PICKER_PREFETCH_DISTANCE: usize = 5;
+static SESSION_INDEX_REBUILDS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashSet<PathBuf>>,
+> = std::sync::OnceLock::new();
+
+fn max_background_session_index_rebuilds() -> usize {
+    iteron_tunables::param_usize(
+        "cli.tui.session_picker.max_background_session_index_rebuilds",
+        8,
+    )
+    .clamp(1, 8)
+}
+
+fn session_picker_page_size() -> usize {
+    iteron_tunables::param_integer(
+        "cli.tui.session_picker.session_picker_page_size",
+        SESSION_PICKER_PAGE_SIZE,
+    )
+    .max(1)
+}
+
+fn session_picker_prefetch_distance() -> usize {
+    iteron_tunables::param_integer(
+        "cli.tui.session_picker.session_picker_prefetch_distance",
+        SESSION_PICKER_PREFETCH_DISTANCE,
+    )
+}
+
+pub(super) struct SessionPickerBacking {
+    pub(super) runs: PathBuf,
+    pub(super) current_run: String,
+    pub(super) next_cursor: Option<iteron_record::SessionPageCursor>,
+    pub(super) has_more: bool,
+    pub(super) generation: u64,
+}
+
+pub(super) struct SessionPageResult {
+    pub(super) generation: u64,
+    pub(super) runs: PathBuf,
+    pub(super) current_run: String,
+    pub(super) next_cursor: Option<iteron_record::SessionPageCursor>,
+    pub(super) has_more: bool,
+    pub(super) replace: bool,
+    pub(super) warning: Option<String>,
+    pub(super) items: Vec<PickItem>,
+}
+
+pub(super) struct SessionPreview {
+    pub(super) run: String,
+    pub(super) title: String,
+    pub(super) turns: u32,
+    pub(super) state: &'static str,
+    pub(super) total_blocks: usize,
+    pub(super) blocks: Vec<String>,
+}
+
+pub(super) struct SessionPreviewResult {
+    pub(super) generation: u64,
+    pub(super) result: Result<SessionPreview, String>,
+}
 
 pub(super) fn session_picker_items(
     mut sessions: Vec<iteron_record::SessionMeta>,
@@ -87,9 +145,8 @@ pub(super) fn session_display_name(rollout_path: &Path) -> String {
         .and_then(|presentation| presentation.title)
         .filter(|title| !title.trim().is_empty());
     let recorded = || {
-        iteron_record::list(runs, &iteron_protocol::TenantId::default())
-            .into_iter()
-            .find(|metadata| metadata.run_id.0 == run)
+        iteron_record::session::meta(runs, &iteron_protocol::RunId(run.to_owned()))
+            .ok()
             .map(|metadata| metadata.title)
             .filter(|title| !title.trim().is_empty())
     };
@@ -126,26 +183,209 @@ pub(super) fn open_session_picker(app: &mut App, session: &Session) {
         .file_stem()
         .and_then(|stem| stem.to_str())
         .unwrap_or_default();
-    let items = session_picker_items(
-        iteron_record::list(&runs, &iteron_protocol::TenantId::default()),
-        current_run,
-        &runs,
-    );
-    if items.is_empty() {
-        app.note(block::NoticeLevel::Info, "no sessions recorded yet");
-        return;
+    if let Some(previous) = app.session_picker_job.take() {
+        previous.abort();
     }
-    let sel = initial_picker_selection(&items);
+    if let Some(previous) = app.session_preview_job.take() {
+        previous.abort();
+    }
+    app.session_picker_backing = None;
+    app.session_picker_generation = app.session_picker_generation.wrapping_add(1);
+    let generation = app.session_picker_generation;
+    let mut loading = PickItem::flat(
+        "Loading sessions…",
+        format!(
+            "first page {} · prefetch distance {}",
+            session_picker_page_size(),
+            session_picker_prefetch_distance(),
+        ),
+        false,
+        PickAction::Info,
+    );
+    loading.enabled = false;
+    loading.disabled_reason = Some("session index is loading in the background".into());
     app.picker = Some(Picker {
         title: "Sessions · resume here".into(),
-        items,
-        sel,
+        items: vec![loading],
+        sel: 0,
         query: String::new(),
         saved_theme: None,
     });
+    let current_run = current_run.to_owned();
+    app.session_picker_job = Some(tokio::task::spawn_blocking(move || {
+        let page_size = session_picker_page_size();
+        load_session_page(runs, current_run, generation, None, page_size, true)
+    }));
 }
 
-pub(super) async fn handle_sessions_command(
+pub(super) fn load_session_page(
+    runs: PathBuf,
+    current_run: String,
+    generation: u64,
+    cursor: Option<iteron_record::SessionPageCursor>,
+    page_size: usize,
+    first: bool,
+) -> SessionPageResult {
+    let tenant = iteron_protocol::TenantId::default();
+    let mut page = iteron_record::page(&runs, &tenant, None, cursor, Some(page_size));
+    let mut warning = None;
+    let mut replace = first;
+    if !page.index_ready {
+        let started = schedule_session_index_rebuild(&runs);
+        let mut rebuilding = PickItem::flat(
+            "Rebuilding session index…",
+            if started {
+                "the picker stays responsive; reopen when the background rebuild finishes"
+            } else {
+                "one background rebuild is already running"
+            },
+            false,
+            PickAction::Info,
+        );
+        rebuilding.enabled = false;
+        rebuilding.disabled_reason = Some("session index is rebuilding".into());
+        return SessionPageResult {
+            generation,
+            runs,
+            current_run,
+            next_cursor: None,
+            has_more: false,
+            replace: true,
+            warning: None,
+            items: vec![rebuilding],
+        };
+    } else if page.cursor_stale {
+        page = iteron_record::page(&runs, &tenant, None, None, Some(page_size));
+        replace = true;
+        warning = Some("session index changed; restarted from newest".into());
+    }
+    let items = session_picker_items(page.sessions, &current_run, &runs);
+    SessionPageResult {
+        generation,
+        runs,
+        current_run,
+        next_cursor: page.next_cursor,
+        has_more: page.has_more,
+        replace,
+        warning,
+        items,
+    }
+}
+
+/// Start at most one physical rebuild per runs directory and return immediately. A picker close can
+/// safely abandon its tiny page-read task, while the atomic index publisher is deliberately allowed
+/// to finish: `reindex` has no cooperative cancellation seam and interrupting it between private
+/// derivative publication and the final index swap would only create more repair work.
+fn schedule_session_index_rebuild(runs: &Path) -> bool {
+    let key = runs.canonicalize().unwrap_or_else(|_| runs.to_path_buf());
+    let active = SESSION_INDEX_REBUILDS
+        .get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+    {
+        let Ok(mut active) = active.lock() else {
+            return false;
+        };
+        if active.contains(&key) || active.len() >= max_background_session_index_rebuilds() {
+            return false;
+        }
+        active.insert(key.clone());
+    }
+    let thread_key = key.clone();
+    let spawned = std::thread::Builder::new()
+        .name("iteron-session-picker-reindex".into())
+        .spawn(move || {
+            let _ = iteron_record::reindex(&thread_key);
+            if let Some(active) = SESSION_INDEX_REBUILDS.get()
+                && let Ok(mut active) = active.lock()
+            {
+                active.remove(&thread_key);
+            }
+        });
+    if spawned.is_err() {
+        if let Ok(mut active) = active.lock() {
+            active.remove(&key);
+        }
+        return false;
+    }
+    true
+}
+
+/// Start the next storage page once the selection reaches the configured prefetch distance. Only
+/// an opaque generation-bound byte cursor is retained; no full session list exists in the TUI.
+pub(super) fn maybe_prefetch_session_page(app: &mut App) {
+    if app.session_picker_job.is_some() {
+        return;
+    }
+    let Some(picker) = app
+        .picker
+        .as_ref()
+        .filter(|picker| picker.title == "Sessions · resume here")
+    else {
+        return;
+    };
+    let Some(backing) = app.session_picker_backing.as_ref() else {
+        return;
+    };
+    if !backing.has_more
+        || backing.next_cursor.is_none()
+        || picker
+            .sel
+            .saturating_add(session_picker_prefetch_distance())
+            < picker.items.len()
+    {
+        return;
+    }
+    let page_size = session_picker_page_size();
+    let runs = backing.runs.clone();
+    let current_run = backing.current_run.clone();
+    let generation = backing.generation;
+    let cursor = backing.next_cursor;
+    app.session_picker_job = Some(tokio::task::spawn_blocking(move || {
+        load_session_page(runs, current_run, generation, cursor, page_size, false)
+    }));
+}
+
+pub(super) fn start_session_preview(app: &mut App, runs: PathBuf, run: String) {
+    if let Some(previous) = app.session_preview_job.take() {
+        previous.abort();
+    }
+    app.session_preview_generation = app.session_preview_generation.wrapping_add(1);
+    let generation = app.session_preview_generation;
+    app.session_preview_job = Some(tokio::task::spawn_blocking(move || {
+        let identity = iteron_protocol::RunId(run.clone());
+        let result = (|| {
+            let metadata = iteron_record::session::meta(&runs, &identity)
+                .map_err(|error| format!("cannot read session metadata: {error}"))?;
+            let events = iteron_record::load_forked(&runs, &identity)
+                .map_err(|error| format!("cannot preview session: {error}"))?;
+            let presentation = session_management::load(&runs, &run).unwrap_or_default();
+            let state = if presentation.archived {
+                "archived"
+            } else if presentation.pinned {
+                "pinned"
+            } else {
+                "active"
+            };
+            let (blocks, total_blocks) = adopted_transcript_blocks(&events);
+            Ok(SessionPreview {
+                run,
+                title: presentation.title.unwrap_or(metadata.title),
+                turns: metadata.turns,
+                state,
+                total_blocks,
+                blocks: blocks
+                    .iter()
+                    .rev()
+                    .take(6)
+                    .rev()
+                    .map(|block| block::Block::new(0, block.clone()).to_text())
+                    .collect(),
+            })
+        })();
+        SessionPreviewResult { generation, result }
+    }));
+}
+
+pub(super) fn handle_sessions_command(
     app: &mut App,
     session: &mut Session,
     directory: &ProviderDirectory,
@@ -179,56 +419,11 @@ pub(super) async fn handle_sessions_command(
     let run = words.next().unwrap_or_default();
     let tail = words.next().unwrap_or_default().trim();
     match action {
-        "new" => create_fresh_session(app, session, directory).await,
+        "new" => start_fresh_session(app, session, directory),
         "switch" | "resume" if !run.is_empty() => {
-            adopt_session(app, session, directory, run).await
+            start_adopt_session(app, session, directory, run.to_owned())
         }
-        "preview" if !run.is_empty() => {
-            let identity = iteron_protocol::RunId(run.to_owned());
-            let metadata = iteron_record::list(&runs, &iteron_protocol::TenantId::default())
-                .into_iter()
-                .find(|metadata| metadata.run_id == identity);
-            match (metadata, iteron_record::load_forked(&runs, &identity)) {
-                (Some(metadata), Ok(events)) => {
-                    let presentation = session_management::load(&runs, run).unwrap_or_default();
-                    let mut rows = vec![
-                        kv("run", run),
-                        kv(
-                            "title",
-                            presentation.title.as_deref().unwrap_or(&metadata.title),
-                        ),
-                        kv("turns", &metadata.turns.to_string()),
-                        kv(
-                            "state",
-                            if presentation.archived {
-                                "archived"
-                            } else if presentation.pinned {
-                                "pinned"
-                            } else {
-                                "active"
-                            },
-                        ),
-                    ];
-                    let (blocks, total) = adopted_transcript_blocks(&events);
-                    rows.push(kv("transcript", &block::plural(total, "visible block")));
-                    for block in blocks.iter().rev().take(6).rev() {
-                        let text = block::Block::new(0, block.clone()).to_text();
-                        rows.push(block::PanelRow::Note(one_line_preview(
-                            &text, 160,
-                        )));
-                    }
-                    app.panel("◫", "session preview", rows);
-                }
-                (None, _) => app.note(
-                    block::NoticeLevel::Err,
-                    format!("no recorded session `{}`", ui_safe_text(run)),
-                ),
-                (_, Err(error)) => app.note(
-                    block::NoticeLevel::Err,
-                    format!("cannot preview session: {error}"),
-                ),
-            }
-        }
+        "preview" if !run.is_empty() => start_session_preview(app, runs, run.to_owned()),
         "rename" if !run.is_empty() && !tail.is_empty() => match session_management::update(
             &runs,
             run,
@@ -337,116 +532,6 @@ pub(super) async fn handle_sessions_command(
         _ => app.note(
             block::NoticeLevel::Err,
             "usage: /sessions [new|switch RUN|preview RUN|rename RUN TITLE|pin RUN|unpin RUN|archive RUN|unarchive RUN|delete RUN]",
-        ),
-    }
-}
-
-pub(super) async fn create_fresh_session(
-    app: &mut App,
-    session: &mut Session,
-    directory: &ProviderDirectory,
-) {
-    if !app.queued.is_empty() || !app.steer_previews.is_empty() {
-        app.note(
-            block::NoticeLevel::Warn,
-            "send or clear pending submissions before creating another session",
-        );
-        return;
-    }
-    let selection = ModelSelection {
-        provider_id: app.route.provider_id.clone(),
-        model_id: session.model().to_owned(),
-    };
-    let provider = match directory.build(&selection) {
-        Ok(provider) => provider,
-        Err(error) => {
-            app.note(
-                block::NoticeLevel::Err,
-                format!("cannot create a session on the current route: {error}"),
-            );
-            return;
-        }
-    };
-    let runs = session
-        .rollout_path()
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_default();
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or(RUN_ID_FALLBACK_NANOS);
-    let run = iteron_protocol::RunId(format!("run-{}-{nanos}", std::process::id()));
-    let rollout =
-        match iteron_record::Rollout::open(&runs, &run, iteron_protocol::TenantId::default()) {
-            Ok(rollout) => rollout,
-            Err(error) => {
-                app.note(
-                    block::NoticeLevel::Err,
-                    format!("cannot create session: {error}"),
-                );
-                return;
-            }
-        };
-    let (catalog_digest, capability_digest) = directory.selection_digests(&selection);
-    let capabilities = directory.selection_capabilities(&selection);
-    let reply = session
-        .control(app_server::Control::AdoptRun(Box::new(
-            app_server::AdoptRun {
-                rollout,
-                fresh: true,
-                route: Box::new(app_server::ModelSelection {
-                    provider,
-                    provider_id: selection.provider_id.clone(),
-                    model_id: selection.model_id.clone(),
-                    catalog_digest,
-                    capability_digest,
-                    context_window_tokens: capabilities.context_window_tokens,
-                    max_output_tokens: capabilities.max_output_tokens,
-                }),
-            },
-        )))
-        .await;
-    match reply {
-        Some(app_server::ControlReply::Adopted {
-            adopted,
-            snapshot,
-            tunables_checkpoint,
-            compaction_trigger_tokens,
-            blocked,
-        }) => {
-            clear_transcript_for_adoption(app);
-            session.adopt_run(
-                adopted.rollout_path.clone(),
-                *tunables_checkpoint,
-                compaction_trigger_tokens,
-                (*snapshot).clone(),
-            );
-            app.session_name = "New session".into();
-            app.mode = snapshot.mode;
-            app.effort = snapshot.effort;
-            app.model = snapshot.model.clone();
-            app.cost = snapshot.cost.clone();
-            app.turns = 0;
-            app.model_context_window = capabilities.context_window_tokens;
-            app.status = "ready".into();
-            app.note(
-                block::NoticeLevel::Ok,
-                format!(
-                    "new session {} · left {}",
-                    adopted.run_id, adopted.previous_run_id
-                ),
-            );
-            if let Some(reason) = blocked {
-                app.note(block::NoticeLevel::Err, reason);
-            }
-        }
-        Some(app_server::ControlReply::Refused(reason)) => {
-            app.note(block::NoticeLevel::Err, reason)
-        }
-        _ => app.note(
-            block::NoticeLevel::Err,
-            "the runtime is no longer reachable",
         ),
     }
 }

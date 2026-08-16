@@ -93,7 +93,7 @@ impl KernelSpawner {
         // `run_leaf` owns `&mut child` until completion, so its already-existing UI seam is the
         // live per-turn observation point. Drain it alongside the child future: TurnEnd carries
         // authoritative provider usage and ToolStart carries the tool count + bounded human label.
-        let (ui_tx, mut ui_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (ui_tx, mut ui_rx) = tokio::sync::mpsc::channel(8);
         child.set_ui(ui_tx);
         let mut live = LiveAgentActivity::default();
 
@@ -207,22 +207,28 @@ impl KernelSpawner {
         result: &mut AgentOutcome,
     ) {
         if !child_done || !matches!(result, AgentOutcome::Text { .. }) {
-            if let Err(error) = worktree.discard().await {
+            if let Err(error) = self.discard_writer_worktree(worktree).await {
                 *result = AgentOutcome::null(error.public_summary());
             }
             return;
         }
 
+        let preparing = self.cx.activity.span(
+            crate::runtime::turn_activity::ActivityStage::PreparingPatch,
+            None,
+        );
         let receipt = match worktree.prepare_patch().await {
             Ok(receipt) => receipt,
             Err(error) => {
-                let _ = worktree.discard().await;
+                preparing.fail(iteron_protocol::ActivityDetailCode::Checkpoint);
+                let _ = self.discard_writer_worktree(worktree).await;
                 *result = AgentOutcome::null(error.public_summary());
                 return;
             }
         };
+        preparing.complete();
         if receipt.patch_bytes == 0 {
-            match worktree.discard().await {
+            match self.discard_writer_worktree(worktree).await {
                 Ok(()) => {
                     if let AgentOutcome::Text {
                         last_tool_summary, ..
@@ -236,6 +242,10 @@ impl KernelSpawner {
             return;
         }
 
+        let verification = self.cx.activity.span(
+            crate::runtime::turn_activity::ActivityStage::HostVerification,
+            None,
+        );
         if let Err(error) = worktree
             .verify(
                 &receipt,
@@ -245,12 +255,19 @@ impl KernelSpawner {
             )
             .await
         {
-            let _ = worktree.discard().await;
+            verification.fail(iteron_protocol::ActivityDetailCode::Verification);
+            let _ = self.discard_writer_worktree(worktree).await;
             *result = AgentOutcome::null(error.public_summary());
             return;
         }
+        verification.complete();
+        let merging = self
+            .cx
+            .activity
+            .span(crate::runtime::turn_activity::ActivityStage::Merging, None);
         match worktree.merge(&receipt).await {
             Ok(()) => {
+                merging.complete();
                 if let AgentOutcome::Text {
                     last_tool_summary, ..
                 } = result
@@ -266,10 +283,28 @@ impl KernelSpawner {
                 }
             }
             Err(error) => {
-                let _ = worktree.discard().await;
+                merging.fail(iteron_protocol::ActivityDetailCode::RecordCommit);
+                let _ = self.discard_writer_worktree(worktree).await;
                 *result = AgentOutcome::null(error.public_summary());
             }
         }
+    }
+
+    async fn discard_writer_worktree(
+        &self,
+        worktree: &mut WriterWorktree,
+    ) -> Result<(), super::worktree::MergeFailure> {
+        let discarding = self.cx.activity.span(
+            crate::runtime::turn_activity::ActivityStage::Discarding,
+            None,
+        );
+        let result = worktree.discard().await;
+        if result.is_ok() {
+            discarding.complete();
+        } else {
+            discarding.fail(iteron_protocol::ActivityDetailCode::WorkflowResultPersist);
+        }
+        result
     }
 }
 

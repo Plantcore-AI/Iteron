@@ -17,9 +17,9 @@ use crate::{Registry, ToolError, ToolExecution, effectfut};
 use iteron_protocol::{Capability, Purity, ToolResult, ToolSpec, Trust};
 use serde::Serialize;
 use std::sync::Arc;
-use supervisor::Supervisor;
-use types::ActionError;
+pub(crate) use supervisor::Supervisor;
 pub use types::ProcessHealth;
+pub(crate) use types::{ActionError, StreamingExecReceipt};
 
 pub(crate) use policy::InstalledProcessLaunchPolicy;
 pub use policy::{
@@ -34,7 +34,7 @@ pub(super) const MAX_COMMAND_BYTES: usize = 32 * 1024;
 pub(super) const MAX_STDIN_BYTES: usize = 64 * 1024;
 pub(super) const RETAINED_OUTPUT_BYTES_PER_STREAM: usize = 256 * 1024;
 pub(super) const MAX_OBSERVED_OUTPUT_BYTES_PER_STREAM: u64 = 64 * 1024 * 1024;
-pub(super) const POLL_OUTPUT_BYTES_PER_STREAM: usize = 32 * 1024;
+pub(super) const POLL_OUTPUT_BYTES_PER_STREAM: usize = 8 * 1024;
 pub(super) const MAX_JOB_RUNTIME_SECS: u64 = 10 * 60;
 
 /// The advertised description, the spawn-time confinement deadline, and the actor's own timer all
@@ -48,21 +48,25 @@ pub(super) fn max_job_runtime_secs() -> u64 {
             MAX_JOB_RUNTIME_SECS,
         ),
     )
+    .clamp(1, MAX_JOB_RUNTIME_SECS)
 }
 
 /// The advertised job-table size and the supervisor's own admission check have to agree, so both
 /// read the parameter here rather than the constant.
 pub(super) fn max_job_records() -> usize {
     iteron_tunables::param_usize("tools.process.mod.max_job_records", MAX_JOB_RECORDS)
+        .clamp(1, MAX_JOB_RECORDS)
 }
 
 /// Advertised in the `process_write` description and enforced on both write paths.
 pub(super) fn max_stdin_bytes() -> usize {
     iteron_tunables::param_usize("tools.process.mod.max_stdin_bytes", MAX_STDIN_BYTES)
+        .clamp(1, MAX_STDIN_BYTES)
 }
 
 pub(super) fn max_command_bytes() -> usize {
     iteron_tunables::param_usize("tools.process.mod.max_command_bytes", MAX_COMMAND_BYTES)
+        .clamp(1, MAX_COMMAND_BYTES)
 }
 
 /// Advertised in the `process_poll` description and applied to every page it returns.
@@ -74,6 +78,7 @@ pub(super) fn poll_output_bytes_per_stream() -> usize {
             POLL_OUTPUT_BYTES_PER_STREAM,
         ),
     )
+    .clamp(1, POLL_OUTPUT_BYTES_PER_STREAM)
 }
 
 pub(super) fn max_observed_output_bytes_per_stream() -> u64 {
@@ -84,14 +89,157 @@ pub(super) fn max_observed_output_bytes_per_stream() -> u64 {
             MAX_OBSERVED_OUTPUT_BYTES_PER_STREAM,
         ),
     )
+    .clamp(1, MAX_OBSERVED_OUTPUT_BYTES_PER_STREAM)
 }
 // One queued write plus the actor's one in-flight write keeps the worst-case response below the
-// fixed controller deadline (2 * STDIN_WRITE_SECS < CONTROL_RESPONSE_SECS).
+// fixed controller deadline (2 * STDIN_WRITE_MILLISECONDS < CONTROL_RESPONSE_SECS).
 pub(super) const CONTROL_QUEUE_CAPACITY: usize = 1;
 pub(super) const STOP_QUEUE_CAPACITY: usize = 1;
 pub(super) const CONTROL_RESPONSE_SECS: u64 = 3;
-pub(super) const STDIN_WRITE_SECS: u64 = 1;
-pub(super) const OUTPUT_DRAIN_SECS: u64 = 1;
+pub(super) const STDIN_WRITE_MILLISECONDS: u64 = 250;
+pub(super) const OUTPUT_DRAIN_SECS: u64 = 2;
+pub(super) const EXIT_TAIL_GRACE_MILLISECONDS: u64 = 100;
+pub(super) const DEFAULT_EXEC_YIELD_MILLISECONDS: u64 = 10_000;
+pub(super) const MAX_EXEC_DELTAS: usize = 10_000;
+pub(super) const MAX_EXEC_YIELD_MILLISECONDS: u64 = 30_000;
+pub(super) const MAX_PROCESS_OUTPUT_NOTICE_BYTES: usize = 8 * 1024;
+/// Model-context admission is intentionally independent of the 256 KiB-per-stream evidence ring.
+/// Profiles may buy more model-visible output, but never less than the useful default and never
+/// above the fixed context-protection ceiling.
+pub(super) fn default_model_visible_result_bytes() -> usize {
+    30_000
+}
+
+pub(super) fn max_model_visible_result_bytes() -> usize {
+    150_000
+}
+
+pub(crate) fn model_visible_result_bytes() -> usize {
+    iteron_tunables::param_usize(
+        "tools.process.mod.model_visible_result_bytes",
+        default_model_visible_result_bytes(),
+    )
+    .clamp(
+        default_model_visible_result_bytes(),
+        max_model_visible_result_bytes(),
+    )
+}
+
+/// Deterministically fit a model-facing result into its independent context budget. The evidence
+/// ring is not mutated: a caller can resume from the returned process cursors or rerun with output
+/// redirected to a workspace file. A fixed-width omitted count keeps marker size stable while the
+/// UTF-8 boundaries are selected.
+pub(crate) fn bound_model_visible_result(content: String, resume_hint: &str) -> String {
+    let limit = model_visible_result_bytes();
+    if content.len() <= limit {
+        return content;
+    }
+    let marker_template = format!(
+        "\n[... model-visible output omitted {:020} bytes; resumeHint: {resume_hint} ...]\n",
+        0
+    );
+    let available = limit.saturating_sub(marker_template.len());
+    let head_budget = available / 2;
+    let tail_budget = available.saturating_sub(head_budget);
+    let mut head_end = head_budget.min(content.len());
+    while head_end > 0 && !content.is_char_boundary(head_end) {
+        head_end -= 1;
+    }
+    let mut tail_start = content.len().saturating_sub(tail_budget);
+    while tail_start < content.len() && !content.is_char_boundary(tail_start) {
+        tail_start += 1;
+    }
+    tail_start = tail_start.max(head_end);
+    let omitted = tail_start.saturating_sub(head_end);
+    let marker = format!(
+        "\n[... model-visible output omitted {omitted:020} bytes; resumeHint: {resume_hint} ...]\n"
+    );
+    let mut bounded = String::with_capacity(limit);
+    bounded.push_str(&content[..head_end]);
+    bounded.push_str(&marker);
+    bounded.push_str(&content[tail_start..]);
+    debug_assert!(bounded.len() <= limit);
+    bounded
+}
+
+pub(super) fn control_queue_capacity() -> usize {
+    iteron_tunables::param_usize(
+        "tools.process.mod.control_queue_capacity",
+        CONTROL_QUEUE_CAPACITY,
+    )
+    .clamp(1, CONTROL_QUEUE_CAPACITY)
+}
+
+pub(super) fn stop_queue_capacity() -> usize {
+    iteron_tunables::param_usize("tools.process.mod.stop_queue_capacity", STOP_QUEUE_CAPACITY)
+        .clamp(1, STOP_QUEUE_CAPACITY)
+}
+
+pub(super) fn control_response_secs() -> u64 {
+    iteron_tunables::param_u64(
+        "tools.process.mod.control_response_secs",
+        CONTROL_RESPONSE_SECS,
+    )
+    .clamp(1, CONTROL_RESPONSE_SECS)
+}
+
+pub(super) fn stdin_write_milliseconds() -> u64 {
+    iteron_tunables::param_u64(
+        "tools.process.mod.stdin_write_milliseconds",
+        STDIN_WRITE_MILLISECONDS,
+    )
+    .clamp(1, STDIN_WRITE_MILLISECONDS)
+}
+
+pub(super) fn output_drain_secs() -> u64 {
+    iteron_tunables::param_u64("tools.process.mod.output_drain_secs", OUTPUT_DRAIN_SECS)
+        .clamp(1, OUTPUT_DRAIN_SECS)
+}
+
+pub(super) fn exit_tail_grace_milliseconds() -> u64 {
+    iteron_tunables::param_u64(
+        "tools.process.mod.exit_tail_grace_milliseconds",
+        EXIT_TAIL_GRACE_MILLISECONDS,
+    )
+    .clamp(1, EXIT_TAIL_GRACE_MILLISECONDS)
+}
+
+pub(super) fn retained_output_bytes_per_stream() -> usize {
+    iteron_tunables::param_usize(
+        "tools.process.mod.retained_output_bytes_per_stream",
+        RETAINED_OUTPUT_BYTES_PER_STREAM,
+    )
+    .clamp(1, RETAINED_OUTPUT_BYTES_PER_STREAM)
+}
+
+pub(super) fn default_exec_yield_milliseconds() -> u64 {
+    iteron_tunables::param_u64(
+        "tools.process.mod.default_exec_yield_milliseconds",
+        DEFAULT_EXEC_YIELD_MILLISECONDS,
+    )
+    .clamp(250, max_exec_yield_milliseconds())
+}
+
+pub(super) fn max_exec_yield_milliseconds() -> u64 {
+    iteron_tunables::param_u64(
+        "tools.process.mod.max_exec_yield_milliseconds",
+        MAX_EXEC_YIELD_MILLISECONDS,
+    )
+    .clamp(250, MAX_EXEC_YIELD_MILLISECONDS)
+}
+
+pub(super) fn max_process_output_notice_bytes() -> usize {
+    iteron_tunables::param_usize(
+        "tools.process.mod.max_process_output_notice_bytes",
+        MAX_PROCESS_OUTPUT_NOTICE_BYTES,
+    )
+    .clamp(1, MAX_PROCESS_OUTPUT_NOTICE_BYTES)
+}
+
+pub(super) fn max_exec_deltas() -> usize {
+    iteron_tunables::param_usize("tools.process.mod.max_exec_deltas", MAX_EXEC_DELTAS)
+        .clamp(1, MAX_EXEC_DELTAS)
+}
 /// Whether a write to a job's stdin also closes it when the call omits `eof`. Kept open, because
 /// closing stdin is irreversible for the job and must be asked for explicitly.
 pub(super) const DEFAULT_STDIN_EOF: bool = false;
@@ -99,7 +247,7 @@ pub(super) const DEFAULT_PTY_ROWS: u16 = 24;
 pub(super) const DEFAULT_PTY_COLS: u16 = 80;
 
 const _: () = assert!(
-    CONTROL_QUEUE_CAPACITY == 1 && 2 * STDIN_WRITE_SECS < CONTROL_RESPONSE_SECS,
+    CONTROL_QUEUE_CAPACITY == 1 && 2 * STDIN_WRITE_MILLISECONDS < CONTROL_RESPONSE_SECS * 1_000,
     "queued and in-flight stdin writes must settle before the caller response deadline"
 );
 
@@ -134,6 +282,10 @@ pub struct ProcessLifecycleNotice {
 
 pub type ProcessLifecycleObserver = Arc<dyn Fn(ProcessLifecycleNotice) + Send + Sync>;
 
+/// One bounded, presentation-only process output delta. PTY backends currently merge stderr into
+/// stdout; the stream tag remains explicit so split-stream backends can use the same observer.
+pub(super) type ProcessOutputObserver = Arc<dyn Fn(String, bool, Vec<u8>) + Send + Sync>;
+
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("{message}")]
 pub struct ProcessControlError {
@@ -147,6 +299,15 @@ impl ProcessControl {
     /// Rebinding replaces only the observer; it never changes or recreates the job table.
     pub fn bind_lifecycle_observer(&self, observer: ProcessLifecycleObserver) {
         self.supervisor.bind_lifecycle_observer(observer);
+    }
+
+    /// Bind a nonblocking presentation observer. Output retention and the terminal ToolResult stay
+    /// authoritative even when this best-effort observer is absent or saturated downstream.
+    pub fn bind_output_observer<F>(&self, observer: F)
+    where
+        F: Fn(String, bool, Vec<u8>) + Send + Sync + 'static,
+    {
+        self.supervisor.bind_output_observer(Arc::new(observer));
     }
 
     /// Install the immutable resolved process policy before this session admits any job.
@@ -243,8 +404,16 @@ impl ProcessControl {
     }
 }
 
-pub(crate) fn register(registry: &mut Registry) -> Result<ProcessControl, ToolError> {
-    let supervisor = Arc::new(Supervisor::new().map_err(ToolError::Registration)?);
+pub(crate) fn new_supervisor() -> Result<Arc<Supervisor>, ToolError> {
+    Ok(Arc::new(
+        Supervisor::new().map_err(ToolError::Registration)?,
+    ))
+}
+
+pub(crate) fn register_with_supervisor(
+    registry: &mut Registry,
+    supervisor: Arc<Supervisor>,
+) -> Result<ProcessControl, ToolError> {
     register_start(registry, Arc::clone(&supervisor))?;
     register_list(registry, Arc::clone(&supervisor))?;
     register_poll(registry, Arc::clone(&supervisor))?;
@@ -639,7 +808,10 @@ fn definite_error(tool_use_id: String, error: impl Into<String>) -> ToolExecutio
 fn tool_result(tool_use_id: String, content: String, is_error: bool) -> ToolResult {
     ToolResult {
         tool_use_id,
-        content,
+        content: bound_model_visible_result(
+            content,
+            "call process_poll with the returned job_id and stdout_cursor/stderr_cursor",
+        ),
         is_error,
         trust: Trust::Workspace,
         latency_ms: 0,

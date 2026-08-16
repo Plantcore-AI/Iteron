@@ -21,11 +21,15 @@ pub(crate) const NULL_DEVICE: &str = "NUL";
 #[cfg(not(windows))]
 pub(crate) const NULL_DEVICE: &str = "/dev/null";
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct ResolvedGit {
     pub(crate) executable: PathBuf,
     pub(crate) safe_path: Option<OsString>,
 }
+
+type GitExecutableCache = std::sync::Mutex<Option<(Option<OsString>, ResolvedGit)>>;
+
+static GIT_EXECUTABLE_CACHE: std::sync::OnceLock<GitExecutableCache> = std::sync::OnceLock::new();
 
 #[derive(Debug)]
 pub(crate) struct RepositoryLayout {
@@ -103,6 +107,17 @@ pub(crate) fn resolve_git_executable(
     workspace: &Path,
 ) -> io::Result<ResolvedGit> {
     let workspace = workspace.canonicalize()?;
+    let path_identity = path.map(OsStr::to_os_string);
+    let cache = GIT_EXECUTABLE_CACHE.get_or_init(|| std::sync::Mutex::new(None));
+    if let Some((cached_path, cached)) = cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        && cached_path == &path_identity
+        && trusted_cached_executable(cached, &workspace)
+    {
+        return Ok(cached.clone());
+    }
     let mut safe_directories = Vec::new();
 
     for directory in path.into_iter().flat_map(std::env::split_paths) {
@@ -135,10 +150,15 @@ pub(crate) fn resolve_git_executable(
             if executable.starts_with(&workspace) {
                 continue;
             }
-            return Ok(ResolvedGit {
+            let resolved = ResolvedGit {
                 executable,
                 safe_path: std::env::join_paths(&safe_directories).ok(),
-            });
+            };
+            *cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                Some((path_identity, resolved.clone()));
+            return Ok(resolved);
         }
     }
 
@@ -146,6 +166,21 @@ pub(crate) fn resolve_git_executable(
         io::ErrorKind::NotFound,
         "no trusted Git executable was found in an absolute PATH entry outside the workspace",
     ))
+}
+
+fn trusted_cached_executable(git: &ResolvedGit, workspace: &Path) -> bool {
+    if git.executable.starts_with(workspace) {
+        return false;
+    }
+    let Ok(metadata) = std::fs::metadata(&git.executable) else {
+        return false;
+    };
+    metadata.is_file()
+        && is_executable(&metadata)
+        && git
+            .executable
+            .canonicalize()
+            .is_ok_and(|canonical| canonical == git.executable && !canonical.starts_with(workspace))
 }
 
 #[cfg(unix)]

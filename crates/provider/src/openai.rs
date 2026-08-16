@@ -20,6 +20,7 @@ use futures_util::StreamExt;
 use iteron_protocol::{
     Block, ProviderState, ReasoningEffort, Role, StopReason, StopReasonCode, ToolUse, Usage,
 };
+use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -96,7 +97,7 @@ impl OpenAiCompat {
         )
     }
 
-    fn with_client(
+    pub(crate) fn with_client(
         key: String,
         api_root: ApiRoot,
         client: crate::catalog::RuntimeHttpClient,
@@ -151,16 +152,6 @@ impl OpenAiCompat {
                 input_images,
             )?);
         }
-        let tools: Vec<serde_json::Value> = req
-            .tools
-            .iter()
-            .map(|t| {
-                serde_json::json!({
-                    "type":"function",
-                    "function":{"name":t.name,"description":t.description,"parameters":t.input_schema}
-                })
-            })
-            .collect();
         let mut b = serde_json::json!({
             "model": req.model,
             "messages": messages,
@@ -168,8 +159,8 @@ impl OpenAiCompat {
             "stream": true,
             "stream_options": {"include_usage": true},
         });
-        if !tools.is_empty() {
-            b["tools"] = serde_json::json!(tools);
+        if !req.tools.is_empty() {
+            b["tools"] = req.tools.openai_chat().as_ref().clone();
         }
         match req.controls.service_tier {
             ServiceTier::ProviderDefault => {}
@@ -592,6 +583,26 @@ struct ToolAcc {
     args: String,
 }
 
+fn complete_tool(tool: &ToolAcc) -> Result<ToolUse, ProviderError> {
+    if tool.id.is_empty() || tool.name.is_empty() {
+        return Err(ProviderError::Decode(
+            "tool call completed without an id or function name".into(),
+        ));
+    }
+    let input = if tool.args.trim().is_empty() {
+        serde_json::json!({})
+    } else {
+        serde_json::from_str(&tool.args).map_err(|error| {
+            ProviderError::Decode(format!("tool arguments were not valid JSON: {error}"))
+        })?
+    };
+    Ok(ToolUse {
+        id: tool.id.clone(),
+        name: tool.name.clone(),
+        input,
+    })
+}
+
 fn assemble_tool_uses(
     tools: Vec<ToolAcc>,
     stop_reason: StopReason,
@@ -610,36 +621,16 @@ fn assemble_tool_uses(
             Ok(Vec::new())
         };
     }
-    if stop_reason != StopReason::ToolUse {
+    // Several OpenAI-compatible servers return the legacy `stop` spelling after emitting complete
+    // tool calls. The streaming caller publishes a compatibility notice and normalizes the
+    // terminal to ToolUse; accept EndTurn here as that same narrow case. Every other terminal
+    // continues to fail closed.
+    if !matches!(stop_reason, StopReason::ToolUse | StopReason::EndTurn) {
         return Err(ProviderError::Decode(
             "stream contained tool calls without a tool_calls finish reason".into(),
         ));
     }
-    tools
-        .into_iter()
-        .map(|tool| {
-            if tool.id.is_empty() || tool.name.is_empty() {
-                return Err(ProviderError::Decode(
-                    "tool call completed without an id or function name".into(),
-                ));
-            }
-            let input = if tool.args.trim().is_empty() {
-                serde_json::json!({})
-            } else {
-                serde_json::from_str(&tool.args).map_err(|error| {
-                    // Function names are provider-controlled output. Keep them out of surfaced
-                    // diagnostics so a malicious model cannot smuggle arbitrary text through an
-                    // otherwise typed decode error.
-                    ProviderError::Decode(format!("tool arguments were not valid JSON: {error}"))
-                })?
-            };
-            Ok(ToolUse {
-                id: tool.id,
-                name: tool.name,
-                input,
-            })
-        })
-        .collect()
+    tools.iter().map(complete_tool).collect()
 }
 
 fn decode_finish_reason(value: &str) -> Result<StopReason, ProviderError> {
@@ -722,17 +713,13 @@ fn parse_sse_line(
     Ok(OpenAiSseLine::Chunk(value))
 }
 
-fn validate_stream_end(
-    byte_buf: &[u8],
-    text_buf: &str,
-    saw_terminal: bool,
-) -> Result<(), ProviderError> {
-    if !byte_buf.is_empty() {
-        return Err(ProviderError::Decode(
-            "OpenAI stream ended with an incomplete UTF-8 code point".to_string(),
-        ));
-    }
-    if !text_buf.trim().is_empty() {
+fn validate_stream_end(pending: &[u8], saw_terminal: bool) -> Result<(), ProviderError> {
+    let pending = std::str::from_utf8(pending).map_err(|_| {
+        ProviderError::Decode(
+            "OpenAI stream ended with an incomplete or invalid UTF-8 code point".to_string(),
+        )
+    })?;
+    if !pending.trim().is_empty() {
         return Err(ProviderError::Decode(
             "OpenAI stream ended with an incomplete SSE event".to_string(),
         ));
@@ -923,29 +910,51 @@ impl Provider for OpenAiCompat {
             .post(api_root.endpoint("chat/completions")?)
             .bearer_auth(&self.key)
             .json(&body);
-        let header_timeout = deadline.saturating_duration_since(Instant::now()).min(
-            iteron_tunables::param_duration(
-                "provider.openai.response_header_timeout",
-                RESPONSE_HEADER_TIMEOUT,
-            ),
-        );
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(ProviderError::Timeout {
+                stage: crate::ProviderTimeoutStage::RequestTotal,
+            });
+        }
+        let header_timeout = remaining.min(iteron_tunables::param_duration(
+            "provider.openai.response_header_timeout",
+            RESPONSE_HEADER_TIMEOUT,
+        ));
         let resp = tokio::time::timeout(header_timeout, request.send())
             .await
-            .map_err(|_| {
-                ProviderError::Http("OpenAI-compatible response headers timed out".into())
+            .map_err(|_| ProviderError::Timeout {
+                stage: crate::ProviderTimeoutStage::ResponseHeaders,
             })?
-            .map_err(|e| ProviderError::Http(e.to_string()))?;
+            .map_err(|e| {
+                if e.is_connect() {
+                    ProviderError::ConnectFailed
+                } else if e.is_timeout() {
+                    ProviderError::Timeout {
+                        stage: crate::ProviderTimeoutStage::DnsConnect,
+                    }
+                } else {
+                    ProviderError::Http(e.to_string())
+                }
+            })?;
+        // The downgrade is recorded on the client (a once-only flag) but is NOT put on the
+        // stream: this stream is a frozen machine contract, and a transport diagnostic is not part
+        // of the model's answer. A lifecycle exporter can read the flag; the wire stays stable.
+        let _ = self.client.observe_response_version(resp.version());
         let status = resp.status();
         let response_retry_after = crate::retry_after_from_headers(resp.headers());
         let response_request_id = crate::request_id_from_headers(resp.headers());
         if !status.is_success() {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(ProviderError::Timeout {
+                    stage: crate::ProviderTimeoutStage::RequestTotal,
+                });
+            }
             let error = tokio::time::timeout(
-                deadline.saturating_duration_since(Instant::now()).min(
-                    iteron_tunables::param_duration(
-                        "provider.openai.response_header_timeout",
-                        RESPONSE_HEADER_TIMEOUT,
-                    ),
-                ),
+                remaining.min(iteron_tunables::param_duration(
+                    "provider.openai.response_header_timeout",
+                    RESPONSE_HEADER_TIMEOUT,
+                )),
                 crate::api_error_from_response(
                     resp,
                     AdapterKind::OpenAiCompatibleChat,
@@ -953,9 +962,12 @@ impl Provider for OpenAiCompat {
                 ),
             )
             .await
-            .map_err(|_| ProviderError::Http("OpenAI-compatible error body timed out".into()))?;
+            .map_err(|_| ProviderError::Timeout {
+                stage: crate::ProviderTimeoutStage::ErrorBody,
+            })?;
             return Err(error);
         }
+        on_item(StreamItem::Accepted);
 
         // Quota state is on the success headers, so it is knowable here — before a single token
         // has arrived and long before the 429 that used to be its first symptom (I-53).
@@ -964,13 +976,14 @@ impl Provider for OpenAiCompat {
         }
 
         let mut stream = resp.bytes_stream();
-        // Buffer RAW bytes and decode only the complete-UTF-8 prefix: a char split across chunks
-        // would be corrupted by per-chunk lossy decode (code review OAI-1, the anthropic F2 bug).
-        let mut byte_buf: Vec<u8> = Vec::new();
-        let mut buf = String::new();
+        // A byte cursor keeps split UTF-8 intact and advances without shifting the whole tail for
+        // every SSE line. Compaction is amortized after a large consumed prefix.
+        let mut wire = Vec::<u8>::new();
+        let mut wire_start = 0usize;
         let mut text = String::new();
         let mut thinking = String::new();
         let mut tools: Vec<ToolAcc> = Vec::new();
+        let mut emitted_tools = BTreeSet::new();
         let mut usage = Usage::default();
         let mut saw_usage = false;
         let mut saw_cache_creation = false;
@@ -993,21 +1006,19 @@ impl Provider for OpenAiCompat {
         'stream: loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                return Err(ProviderError::Http(
-                    "OpenAI-compatible stream exceeded total deadline".into(),
-                ));
+                return Err(ProviderError::Timeout {
+                    stage: crate::ProviderTimeoutStage::RequestTotal,
+                });
             }
             let wait = remaining.min(transport.stream_idle);
             let next = tokio::time::timeout(wait, stream.next())
                 .await
-                .map_err(|_| {
-                    if wait == remaining {
-                        ProviderError::Http(
-                            "OpenAI-compatible stream exceeded total deadline".into(),
-                        )
+                .map_err(|_| ProviderError::Timeout {
+                    stage: if wait == remaining {
+                        crate::ProviderTimeoutStage::RequestTotal
                     } else {
-                        ProviderError::Http("stream stalled: no bytes for 120s".into())
-                    }
+                        crate::ProviderTimeoutStage::StreamIdle
+                    },
                 })?;
             let Some(chunk) = next else { break };
             let bytes = chunk.map_err(|e| ProviderError::Http(e.to_string()))?;
@@ -1019,26 +1030,10 @@ impl Provider for OpenAiCompat {
                     "OpenAI-compatible stream exceeded {max_stream_bytes} bytes"
                 )));
             }
-            byte_buf.extend_from_slice(&bytes);
-            let valid = match std::str::from_utf8(&byte_buf) {
-                Ok(s) => {
-                    buf.push_str(s);
-                    byte_buf.len()
-                }
-                Err(e) => {
-                    if e.error_len().is_some() {
-                        return Err(ProviderError::Decode(
-                            "OpenAI-compatible stream contained invalid UTF-8".into(),
-                        ));
-                    }
-                    let up = e.valid_up_to();
-                    buf.push_str(std::str::from_utf8(&byte_buf[..up]).unwrap());
-                    up
-                }
-            };
-            byte_buf.drain(..valid);
-            while let Some(nl) = buf.find('\n') {
-                if nl
+            wire.extend_from_slice(&bytes);
+            while let Some(relative_nl) = wire[wire_start..].iter().position(|byte| *byte == b'\n')
+            {
+                if relative_nl
                     > iteron_tunables::param_integer(
                         "provider.openai.max_sse_line_bytes",
                         MAX_SSE_LINE_BYTES,
@@ -1048,10 +1043,13 @@ impl Provider for OpenAiCompat {
                         "OpenAI-compatible SSE line exceeded {MAX_SSE_LINE_BYTES} bytes"
                     )));
                 }
-                let line = buf[..nl].to_string();
-                buf.drain(..=nl);
+                let line_end = wire_start.saturating_add(relative_nl);
+                let line = std::str::from_utf8(&wire[wire_start..line_end]).map_err(|_| {
+                    ProviderError::Decode("OpenAI-compatible stream contained invalid UTF-8".into())
+                })?;
+                wire_start = line_end.saturating_add(1);
                 let parsed = parse_sse_line(
-                    &line,
+                    line,
                     self.error_profile,
                     response_retry_after,
                     response_request_id.clone(),
@@ -1166,6 +1164,22 @@ impl Provider for OpenAiCompat {
                                 "OpenAI-compatible output exceeded {max_tool_calls} tool calls"
                             )));
                         }
+                        if emitted_tools.contains(&idx) {
+                            return Err(ProviderError::Decode(
+                                "provider emitted additional deltas for a tool call after its next-index completion boundary"
+                                    .into(),
+                            ));
+                        }
+                        // OpenAI-compatible streams provide no per-call done event. The first
+                        // delta for a higher index is nevertheless an ordering boundary: every
+                        // lower-index argument stream is complete and can overlap safely now.
+                        if idx >= tools.len() {
+                            for (completed_index, completed) in tools.iter().enumerate() {
+                                if emitted_tools.insert(completed_index) {
+                                    on_item(StreamItem::ToolUseComplete(complete_tool(completed)?));
+                                }
+                            }
+                        }
                         while tools.len() <= idx {
                             tools.push(ToolAcc::default());
                         }
@@ -1212,7 +1226,7 @@ impl Provider for OpenAiCompat {
                     stop = Some(frame_stop);
                 }
             }
-            if buf.len()
+            if wire.len().saturating_sub(wire_start)
                 > iteron_tunables::param_integer(
                     "provider.openai.max_sse_line_bytes",
                     MAX_SSE_LINE_BYTES,
@@ -1222,16 +1236,20 @@ impl Provider for OpenAiCompat {
                     "OpenAI-compatible SSE line exceeded {MAX_SSE_LINE_BYTES} bytes"
                 )));
             }
+            if wire_start >= 64 * 1024 && wire_start >= wire.len() / 2 {
+                wire.drain(..wire_start);
+                wire_start = 0;
+            }
             if saw_done {
                 // [DONE] is authoritative. Return without waiting for a peer that keeps the HTTP
                 // connection alive, but reject any partial/trailing event already received in the
                 // same network chunk.
-                validate_stream_end(&byte_buf, &buf, stop.is_some())?;
+                validate_stream_end(&wire[wire_start..], stop.is_some())?;
                 break 'stream;
             }
         }
 
-        validate_stream_end(&byte_buf, &buf, stop.is_some())?;
+        validate_stream_end(&wire[wire_start..], stop.is_some())?;
         let stop = stop.ok_or_else(|| {
             ProviderError::Decode("OpenAI-compatible stream ended before finish_reason".into())
         })?;
@@ -1244,10 +1262,25 @@ impl Provider for OpenAiCompat {
             (false, _) => UsageReport::provider_omitted(),
         };
 
-        // Assemble. Tool calls are known complete only now (no per-call stop event), so we emit
-        // ToolUseComplete here — before the turn's TurnResult is used, still enabling next-turn
-        // dispatch, just not mid-stream overlap.
-        let tool_uses = assemble_tool_uses(tools, stop)?;
+        let compat_stop = stop == StopReason::EndTurn && !tools.is_empty();
+        let effective_stop = if compat_stop {
+            on_item(StreamItem::CompatibilityNotice(
+                "provider returned finish_reason=stop with complete tool calls; treating it as tool_use",
+            ));
+            StopReason::ToolUse
+        } else {
+            stop
+        };
+        let tool_uses = if effective_stop == StopReason::MaxTokens {
+            tools
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| emitted_tools.contains(index))
+                .map(|(_, tool)| complete_tool(tool))
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
+            assemble_tool_uses(tools, effective_stop)?
+        };
         let mut blocks: Vec<Block> = Vec::new();
         if !thinking.is_empty() {
             if preserves_reasoning_content(self.error_profile) && !tool_uses.is_empty() {
@@ -1261,13 +1294,15 @@ impl Provider for OpenAiCompat {
         if !text.is_empty() {
             blocks.push(Block::Text { text });
         }
-        for tu in tool_uses {
+        for (index, tu) in tool_uses.into_iter().enumerate() {
             blocks.push(Block::ToolUse(tu.clone()));
-            on_item(StreamItem::ToolUseComplete(tu));
+            if emitted_tools.insert(index) {
+                on_item(StreamItem::ToolUseComplete(tu));
+            }
         }
         let result = TurnResult {
             blocks,
-            stop_reason: stop,
+            stop_reason: effective_stop,
             usage,
         };
         on_item(StreamItem::TurnComplete {
@@ -1335,7 +1370,7 @@ mod tests {
                 ImageContent::new(ImageMediaType::Png, "iVBORw0KGgo=").unwrap(),
                 ImageContent::new(ImageMediaType::Jpeg, "/9j/").unwrap(),
             ],
-            tools: Vec::new(),
+            tools: Vec::new().into(),
             max_tokens: 1_024,
             cache_system: false,
             thinking_budget: 0,
@@ -1362,7 +1397,7 @@ mod tests {
             system: "system".into(),
             messages: Vec::new(),
             input_images: Vec::new(),
-            tools: Vec::new(),
+            tools: Vec::new().into(),
             max_tokens: 1_024,
             cache_system: false,
             thinking_budget: 0,
@@ -1728,10 +1763,10 @@ mod tests {
 
     #[test]
     fn truncated_or_unterminated_stream_is_rejected() {
-        assert!(validate_stream_end(&[0xf0], "", true).is_err());
-        assert!(validate_stream_end(&[], "data: {}", true).is_err());
-        assert!(validate_stream_end(&[], "", false).is_err());
-        assert!(validate_stream_end(&[], "", true).is_ok());
+        assert!(validate_stream_end(&[0xf0], true).is_err());
+        assert!(validate_stream_end(b"data: {}", true).is_err());
+        assert!(validate_stream_end(&[], false).is_err());
+        assert!(validate_stream_end(&[], true).is_ok());
     }
 
     #[test]
@@ -1762,17 +1797,18 @@ mod tests {
     #[test]
     fn finish_reason_and_tool_call_state_must_agree() {
         assert!(assemble_tool_uses(Vec::new(), StopReason::ToolUse).is_err());
-        assert!(
-            assemble_tool_uses(
-                vec![ToolAcc {
-                    id: "call_1".into(),
-                    name: "read_file".into(),
-                    args: "{}".into(),
-                }],
-                StopReason::EndTurn,
-            )
-            .is_err()
+        let compatible = ToolAcc {
+            id: "call_1".into(),
+            name: "read_file".into(),
+            args: "{}".into(),
+        };
+        assert_eq!(
+            assemble_tool_uses(vec![compatible.clone()], StopReason::EndTurn)
+                .unwrap()
+                .len(),
+            1
         );
+        assert!(assemble_tool_uses(vec![compatible], StopReason::StopSequence).is_err());
         assert_eq!(decode_finish_reason("stop").unwrap(), StopReason::EndTurn);
         assert_eq!(
             decode_finish_reason("stop_sequence").unwrap(),
@@ -1922,7 +1958,7 @@ mod tests {
                 system: "stable system".into(),
                 messages: Vec::new(),
                 input_images: Vec::new(),
-                tools: Vec::new(),
+                tools: Vec::new().into(),
                 max_tokens: 8_192,
                 cache_system: false,
                 thinking_budget: 16_384,
@@ -1960,7 +1996,7 @@ mod tests {
             system: "stable system".into(),
             messages: Vec::new(),
             input_images: Vec::new(),
-            tools: Vec::new(),
+            tools: Vec::new().into(),
             max_tokens: 8_192,
             cache_system: false,
             thinking_budget: 4_096,
@@ -2010,7 +2046,7 @@ mod tests {
             system: "system".into(),
             messages: Vec::new(),
             input_images: Vec::new(),
-            tools: Vec::new(),
+            tools: Vec::new().into(),
             max_tokens: 1_024,
             cache_system: false,
             thinking_budget: 4_096,

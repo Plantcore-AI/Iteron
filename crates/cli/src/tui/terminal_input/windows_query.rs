@@ -1,7 +1,8 @@
 //! Bounded native Windows transport for the startup keyboard-capability query.
 
 use super::{
-    KEYBOARD_ENHANCEMENT_QUERY, KeyboardQueryGate, KeyboardQueryRequest, exact_keyboard_query_write,
+    KEYBOARD_ENHANCEMENT_PROTOCOL_QUERY, KeyboardQueryGate, KeyboardQueryRequest,
+    exact_keyboard_query_write,
 };
 use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::io::AsRawHandle;
@@ -226,8 +227,8 @@ fn write_keyboard_query_once(request: &KeyboardQueryRequest) -> std::io::Result<
     let succeeded = unsafe {
         WriteFile(
             output.as_raw_handle() as HANDLE,
-            KEYBOARD_ENHANCEMENT_QUERY.as_ptr(),
-            KEYBOARD_ENHANCEMENT_QUERY.len() as u32,
+            KEYBOARD_ENHANCEMENT_PROTOCOL_QUERY.as_ptr(),
+            KEYBOARD_ENHANCEMENT_PROTOCOL_QUERY.len() as u32,
             &mut written,
             std::ptr::null_mut(),
         )

@@ -2,9 +2,17 @@
 //!
 //! Markdown owns prose and fenced-code parsing; `highlight` owns lexical source-code classes; the
 //! diff renderer owns add/delete rows. This module covers the remaining compact surfaces — notices,
-//! tool summaries, panel values, paths, commands, counters and state words — so those surfaces do
-//! not each invent a local color grammar. Classification is deliberately conservative: unknown
-//! words retain the caller's base tone, and color never replaces the visible token itself.
+//! tool summaries, panel values, paths, commands and counters — so those surfaces do not each
+//! invent a local color grammar. Classification is deliberately conservative: unknown words retain
+//! the caller's base tone, and color never replaces the visible token itself.
+//!
+//! What it deliberately does NOT do is classify ENGLISH WORDS. Status is a property of a block, a
+//! tool result or a notice level — the surrounding renderers already encode it once. Matching every
+//! word of every line against status word-lists re-encoded it a second time, in the wrong place and
+//! usually wrongly: the descriptive notice "…network denied, writes confined to workspace" turned
+//! `denied` bold red, and "before accepting 'done'" turned `done` bold green. Color here marks
+//! LEXICAL shape only (paths, slash/bang commands, signed counts, numbers, glyphs, inline code),
+//! which is a property of the token itself and cannot be contradicted by the sentence around it.
 
 use crate::theme::{SynClass, Theme};
 use ratatui::style::{Modifier, Style};
@@ -153,7 +161,6 @@ fn token_style(token: &str, tone: Tone, theme: &Theme) -> Style {
             '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';' | ':' | '"' | '\''
         )
     });
-    let lower = iteron.to_ascii_lowercase();
 
     if matches!(iteron, "·" | "│" | "|" | "→" | "←" | "↳" | "⎿") {
         return Style::default().fg(theme.faint).add_modifier(Modifier::DIM);
@@ -188,43 +195,8 @@ fn token_style(token: &str, tone: Tone, theme: &Theme) -> Style {
     if is_number(iteron) {
         return theme.syn_style(SynClass::Number);
     }
-    if matches!(
-        lower.as_str(),
-        "done"
-            | "passed"
-            | "success"
-            | "succeeded"
-            | "added"
-            | "created"
-            | "updated"
-            | "ready"
-            | "resumed"
-    ) {
-        return Style::default()
-            .fg(theme.success)
-            .add_modifier(Modifier::BOLD);
-    }
-    if matches!(
-        lower.as_str(),
-        "failed" | "failure" | "error" | "errored" | "denied" | "deleted" | "removed" | "killed"
-    ) {
-        return Style::default()
-            .fg(theme.error)
-            .add_modifier(Modifier::BOLD);
-    }
-    if matches!(
-        lower.as_str(),
-        "warning"
-            | "warn"
-            | "partial"
-            | "stopped"
-            | "interrupted"
-            | "skipped"
-            | "queued"
-            | "pending"
-    ) {
-        return Style::default().fg(theme.warn);
-    }
+    // NO word-list arms below this point. A word is not a status; the block/notice/tool renderer
+    // that owns the row already carries the status once. See the module header.
     tone.style(theme)
 }
 
@@ -342,20 +314,50 @@ mod tests {
                 .iter()
                 .any(|span| span.content == "42ms" && span.style.fg == Some(theme.syn_number))
         );
+        // `done` is an English word, not a lexical shape: it keeps the caller's tone.
         assert!(
             rendered
                 .iter()
-                .any(|span| span.content == "done" && span.style.fg == Some(theme.success))
+                .any(|span| span.content == "done" && span.style.fg == Some(theme.muted))
         );
     }
 
     #[test]
-    fn signed_counts_and_failure_words_keep_diff_and_state_colors() {
+    fn signed_counts_keep_diff_colors_and_status_words_do_not_recolor() {
         let theme = Theme::dark();
         let rendered = spans("+12 -3 failed", Tone::Body, &theme);
         assert_eq!(rendered[0].style.fg, Some(theme.added));
         assert_eq!(rendered[2].style.fg, Some(theme.removed));
-        assert_eq!(rendered[4].style.fg, Some(theme.error));
+        assert_eq!(rendered[4].style.fg, Some(theme.fg), "no word-level status");
+    }
+
+    #[test]
+    fn descriptive_prose_is_never_recolored_by_a_status_word() {
+        // The two regressions that motivated deleting the word-lists: a purely descriptive startup
+        // notice painted `denied,` bold red, and a quoted `'done'` (quotes stripped by the token
+        // trim) painted bold green.
+        let theme = Theme::dark();
+        for text in [
+            "code execution: ON (--confine: egress-off sandbox, network denied, writes confined to workspace)",
+            "review the transcript before accepting 'done'",
+        ] {
+            let rendered = spans(text, Tone::Muted, &theme);
+            assert_eq!(
+                rendered
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>(),
+                text
+            );
+            assert!(
+                rendered
+                    .iter()
+                    .all(|span| span.style.fg != Some(theme.error)
+                        && span.style.fg != Some(theme.success)
+                        && span.style.fg != Some(theme.warn)),
+                "prose must not be recolored by status words: {text:?}"
+            );
+        }
     }
 
     #[test]

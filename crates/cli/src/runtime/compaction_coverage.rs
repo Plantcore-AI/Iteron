@@ -46,7 +46,7 @@ impl Agent {
                 Message::user_text(format!("CANDIDATE SUMMARY:\n{summary}")),
             ],
             input_images: Vec::new(),
-            tools: Vec::new(),
+            tools: Vec::new().into(),
             max_tokens: self.compaction.summary_profile.max_output_tokens,
             cache_system: self.provider_cache_system_enabled(),
             thinking_budget: self
@@ -101,16 +101,21 @@ impl Agent {
     }
 
     pub(super) fn compaction_exits_hysteresis(
-        &self,
+        &mut self,
         plan: &iteron_ctx::CompactionPlan,
         summary: &str,
     ) -> bool {
         let rebuilt = iteron_ctx::CompactionPolicy::rebuild(plan, summary.to_owned());
-        let estimate = self.context_estimator.estimate_uncached(
-            &self.effective_system(),
+        let system = self.effective_system();
+        let tools = self.advertised_tool_specs_for_task("");
+        let estimate = self.context_estimator.estimate_with_tool_tokens(
+            &system,
             &rebuilt,
-            &self.registry.specs(),
+            tools.len(),
+            tools.estimated_tokens(),
+            tools.cache_identity(),
         );
+        let estimate = self.calibrated_context_estimate(estimate);
         let trigger = self.compaction.effective_trigger_tokens(
             self.model_context_window,
             self.model_max_output_tokens

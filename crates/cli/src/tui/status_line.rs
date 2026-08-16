@@ -72,6 +72,7 @@ impl Group {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn pair(
         first: impl Into<String>,
         first_accent: Accent,

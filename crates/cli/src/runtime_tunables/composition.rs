@@ -597,7 +597,10 @@ mod tests {
             model_capabilities: BTreeMap::from([(
                 "fixture-model".into(),
                 ProviderModelCapabilities {
-                    context_window_tokens: Some(128_000),
+                    // Compatible gateways often omit this optional catalog field. Fresh
+                    // composition must pin the conservative local execution ceiling instead of
+                    // making the entire CLI unusable before its first request.
+                    context_window_tokens: None,
                     image_input: Some(true),
                     routing_objectives: None,
                 },
@@ -645,6 +648,10 @@ mod tests {
             model_capabilities.image_input,
             Some(true),
             "the production composition oracle exercises the image-capable custom route"
+        );
+        assert_eq!(
+            model_capabilities.context_window_tokens, None,
+            "the production composition oracle exercises the unknown-window fallback"
         );
         let (catalog_digest, capability_digest) = directory.selection_digests(&selection);
         let entry = directory.entry(&selection.provider_id).unwrap();
@@ -756,6 +763,10 @@ mod tests {
             "every effective Full family was observed by its exact production owner"
         );
         assert_eq!(fresh.fact_summary.active_full_gaps, 0);
+        assert!(
+            fresh.settings.model_context_window.is_some(),
+            "unknown provider metadata must resolve to a pinned conservative effective window"
+        );
         for family_id in [
             "effort",
             "model_fallback_chain",

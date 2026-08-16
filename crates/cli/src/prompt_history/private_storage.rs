@@ -49,8 +49,8 @@ impl Store {
             .map_err(|_| anyhow::anyhow!("prompt history lineage state is poisoned"))?
             .clone();
         let mut reusable = BTreeMap::<String, VecDeque<SourceBinding>>::new();
-        for (text, source) in state.history.into_iter().chain(state.draft) {
-            reusable.entry(text).or_default().push_back(source);
+        for (text, entry) in state.history.into_iter().chain(state.draft) {
+            reusable.entry(text).or_default().push_back(entry.source);
         }
         Ok(reusable)
     }
@@ -110,6 +110,9 @@ impl Store {
         text: &str,
         source: SourceBinding,
     ) -> anyhow::Result<PersistedEntry> {
+        #[cfg(test)]
+        self.stage_writes
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let seq = Seq(u64::try_from(index)?);
         let handle =
             self.private
@@ -124,6 +127,11 @@ impl Store {
     ) -> anyhow::Result<(Vec<PersistedEntry>, Option<PersistedEntry>)> {
         let record_sources = self.available_record_sources(active_run)?;
         let mut reusable = self.reusable_sources()?;
+        let previous = self
+            .lineage
+            .lock()
+            .map_err(|_| anyhow::anyhow!("prompt history lineage state is poisoned"))?
+            .clone();
         let mut history = Vec::with_capacity(prepared.state.history.len());
         for (index, (text, source_text)) in prepared
             .state
@@ -140,7 +148,15 @@ impl Store {
                 &record_sources,
                 &mut reusable,
             )?;
-            history.push(self.stage_entry(index, text, source)?);
+            let unchanged = previous
+                .history
+                .get(index)
+                .filter(|(old_text, old)| old_text == text && old.source == source)
+                .map(|(_, old)| old.clone());
+            history.push(match unchanged {
+                Some(old) => old,
+                None => self.stage_entry(index, text, source)?,
+            });
         }
         let draft = prepared
             .state
@@ -156,7 +172,15 @@ impl Store {
                     &record_sources,
                     &mut reusable,
                 )?;
-                self.stage_entry(MAX_ENTRIES, text, source)
+                if let Some((_, old)) = previous
+                    .draft
+                    .as_ref()
+                    .filter(|(old_text, old)| old_text == text && old.source == source)
+                {
+                    Ok(old.clone())
+                } else {
+                    self.stage_entry(MAX_ENTRIES, text, source)
+                }
             })
             .transpose()?;
         Ok((history, draft))
@@ -218,7 +242,7 @@ impl Store {
         for (index, entry) in state.history.iter().enumerate() {
             match self.load_text(index, entry) {
                 Ok(text) => {
-                    retained_bindings.push((text.clone(), entry.source.clone()));
+                    retained_bindings.push((text.clone(), entry.clone()));
                     history.push(text);
                 }
                 Err(error) if content_is_unavailable(&error) => pruned = true,
@@ -227,7 +251,7 @@ impl Store {
         }
         let (draft, retained_draft) = match state.draft.as_ref() {
             Some(entry) => match self.load_text(MAX_ENTRIES, entry) {
-                Ok(text) => (Some(text.clone()), Some((text, entry.source.clone()))),
+                Ok(text) => (Some(text.clone()), Some((text, entry.clone()))),
                 Err(error) if content_is_unavailable(&error) => {
                     pruned = true;
                     (None, None)
@@ -305,9 +329,12 @@ impl Store {
             .into_iter()
             .chain(previous.draft)
             .filter_map(|(_, binding)| {
-                binding
-                    .synthetic_seq
-                    .map(|_| (binding.source.owner.0.clone(), binding.source.owner))
+                binding.source.synthetic_seq.map(|_| {
+                    (
+                        binding.source.source.owner.0.clone(),
+                        binding.source.source.owner,
+                    )
+                })
             })
             .collect::<BTreeMap<_, _>>();
         owners.extend(
@@ -345,12 +372,9 @@ impl Store {
             .history
             .iter()
             .cloned()
-            .zip(persisted.history.iter().map(|entry| entry.source.clone()))
+            .zip(persisted.history.iter().cloned())
             .collect();
-        let draft = state
-            .draft
-            .clone()
-            .zip(persisted.draft.as_ref().map(|entry| entry.source.clone()));
+        let draft = state.draft.clone().zip(persisted.draft.clone());
         *self
             .lineage
             .lock()

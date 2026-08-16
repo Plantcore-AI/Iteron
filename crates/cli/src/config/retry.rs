@@ -325,7 +325,7 @@ mod tests {
                 system: "system".into(),
                 messages: Vec::new(),
                 input_images: Vec::new(),
-                tools: Vec::new(),
+                tools: Vec::new().into(),
                 max_tokens: 16,
                 cache_system: false,
                 thinking_budget: 0,

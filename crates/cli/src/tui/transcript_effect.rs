@@ -142,17 +142,62 @@ pub(crate) enum Disposition {
     OutcomeUnknown,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) enum ControlKind {
     Compact,
     Side,
+    Workflow,
+    Effort(iteron_protocol::Effort),
+    PermissionMode(iteron_protocol::PermissionMode),
+    Capability {
+        capability: iteron_protocol::Capability,
+        verdict: iteron_protocol::Verdict,
+    },
+    Model {
+        selection: crate::providers::ModelSelection,
+        provider_name: String,
+        context_window_tokens: Option<u64>,
+        changed: bool,
+    },
+    Adopt {
+        fresh: bool,
+        run_id: String,
+        events: Vec<iteron_protocol::Event>,
+        selection: crate::providers::ModelSelection,
+        substituted: Option<String>,
+        context_window_tokens: Option<u64>,
+    },
+    OperatorStatus {
+        tunables_argument: Option<String>,
+    },
+    TurnBudget {
+        set: Option<u32>,
+    },
+    Memory,
+    WorkflowsInventory,
+    Mcp,
+    Jobs {
+        command: String,
+    },
 }
 
 impl ControlKind {
-    fn label(self) -> &'static str {
+    pub(crate) fn label(&self) -> &'static str {
         match self {
             Self::Compact => "compaction",
             Self::Side => "side conversation",
+            Self::Workflow => "workflow control",
+            Self::Effort(_) => "effort change",
+            Self::PermissionMode(_) => "permission mode change",
+            Self::Capability { .. } => "permission rule change",
+            Self::Model { .. } => "model change",
+            Self::Adopt { .. } => "session adoption",
+            Self::OperatorStatus { .. } => "runtime status",
+            Self::TurnBudget { .. } => "turn budget",
+            Self::Memory => "memory control",
+            Self::WorkflowsInventory => "workflow inventory",
+            Self::Mcp => "MCP control",
+            Self::Jobs { .. } => "job control",
         }
     }
 }
@@ -537,10 +582,10 @@ async fn run(
         } => {
             let (reply, reply_rx) = tokio::sync::oneshot::channel();
             let request = crate::app_server::ControlRequest { control, reply };
-            let dispatch = tokio::select! {
-                biased;
-                _ = cancelled.changed() => None,
-                sent = control_sender.send(request) => Some(sent.is_ok()),
+            let dispatch = match control_sender.try_send(request) {
+                Ok(()) => Some(true),
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => Some(false),
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => Some(false),
             };
             if dispatch != Some(true) {
                 // No runtime request owns the flag, so this branch must clear the eager signal set
@@ -570,18 +615,11 @@ async fn run(
                 return;
             }
 
-            let mut reply_rx = reply_rx;
-            let mut cancellation_requested = false;
-            let reply = loop {
-                tokio::select! {
-                    biased;
-                    changed = cancelled.changed(), if !cancellation_requested => {
-                        cancellation_requested = true;
-                        let _ = changed;
-                    }
-                    reply = &mut reply_rx => break reply.ok(),
-                }
-            };
+            let reply = tokio::time::timeout(std::time::Duration::from_secs(2), reply_rx)
+                .await
+                .ok()
+                .and_then(Result::ok);
+            let cancellation_requested = *cancelled.borrow();
             let outcome = if matches!(&reply, Some(crate::app_server::ControlReply::Refused(_)))
                 || reply.is_none()
             {
@@ -926,6 +964,35 @@ mod tests {
         assert!(completion.cancellation_requested);
         assert!(!interrupt.load(Ordering::SeqCst));
         assert!(!supervisor.is_active());
+    }
+
+    #[tokio::test]
+    async fn slow_control_reply_never_blocks_the_input_service_point() {
+        let mut supervisor = Supervisor::default();
+        let (control, mut requests) = tokio::sync::mpsc::channel(1);
+        supervisor
+            .start(Request::Control {
+                sender: control,
+                control: crate::app_server::Control::SetEffort(iteron_protocol::Effort::High),
+                interrupt: Arc::new(AtomicBool::new(false)),
+                kind: ControlKind::Effort(iteron_protocol::Effort::High),
+            })
+            .unwrap();
+        let request = requests.recv().await.expect("control reached the owner");
+
+        let (input_tx, mut input_rx) = tokio::sync::mpsc::channel(1);
+        input_tx.try_send("key").unwrap();
+        tokio::select! {
+            biased;
+            key = input_rx.recv() => assert_eq!(key, Some("key")),
+            _ = supervisor.recv() => panic!("a slow control reply blocked input"),
+        }
+
+        request
+            .reply
+            .send(crate::app_server::ControlReply::Refused("test done".into()))
+            .unwrap();
+        assert!(supervisor.recv().await.is_some());
     }
 
     #[cfg(unix)]

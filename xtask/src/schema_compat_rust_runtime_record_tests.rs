@@ -7,6 +7,13 @@ fn record_file() -> (String, syn::File) {
     (source, file)
 }
 
+fn append_file() -> (String, syn::File) {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let source = std::fs::read_to_string(root.join("crates/record/src/append_actor.rs")).unwrap();
+    let file = syn::parse_file(&source).unwrap();
+    (source, file)
+}
+
 /// Replace the first occurrence of `anchor`, and fail loudly when it is no longer there.
 ///
 /// Every negative control in this file works by textually breaking a line in
@@ -26,11 +33,11 @@ fn bypass(source: &str, anchor: &str, replacement: &str) -> syn::File {
 
 #[test]
 fn append_payload_must_come_directly_from_the_event() {
-    let (source, file) = record_file();
+    let (source, file) = append_file();
     validate_append(&file).unwrap();
     let patched = bypass(
         &source,
-        "let mut payload = serde_json::to_value(event)?;",
+        "let mut payload = serde_json::to_value(&event)?;",
         "let mut payload = serde_json::Value::Null;",
     );
     assert!(validate_append(&patched).is_err());

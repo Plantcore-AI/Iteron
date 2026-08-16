@@ -20,8 +20,83 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
+
+const MAX_RUNTIME_OUTPUT_EVENTS: usize = 65_536;
+const MAX_RUNTIME_QUEUED_BYTES: usize = 2 * MAX_IMPLEMENTATION_EVIDENCE_BYTES;
+
+struct OutputQueueBudget {
+    events: AtomicUsize,
+    bytes: AtomicUsize,
+    failed: AtomicBool,
+    max_events: usize,
+    max_bytes: usize,
+}
+
+impl OutputQueueBudget {
+    fn new() -> Self {
+        Self {
+            events: AtomicUsize::new(0),
+            bytes: AtomicUsize::new(0),
+            failed: AtomicBool::new(false),
+            max_events: iteron_tunables::param_usize(
+                "marketplace.implementation_runtime.process.max_runtime_output_events",
+                MAX_RUNTIME_OUTPUT_EVENTS,
+            )
+            .clamp(1, MAX_RUNTIME_OUTPUT_EVENTS),
+            max_bytes: iteron_tunables::param_usize(
+                "marketplace.implementation_runtime.process.max_runtime_queued_bytes",
+                MAX_RUNTIME_QUEUED_BYTES,
+            )
+            .clamp(1, MAX_RUNTIME_QUEUED_BYTES),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_limits(max_events: usize, max_bytes: usize) -> Self {
+        Self {
+            events: AtomicUsize::new(0),
+            bytes: AtomicUsize::new(0),
+            failed: AtomicBool::new(false),
+            max_events,
+            max_bytes,
+        }
+    }
+
+    fn send(&self, output: &Sender<Output>, event: Output, bytes: usize) -> bool {
+        let event_ok = self
+            .events
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |events| {
+                (events < self.max_events).then_some(events + 1)
+            })
+            .is_ok();
+        let bytes_ok = self
+            .bytes
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |queued| {
+                queued
+                    .checked_add(bytes)
+                    .filter(|next| *next <= self.max_bytes)
+            })
+            .is_ok();
+        if event_ok && bytes_ok {
+            output.send(event).is_ok()
+        } else {
+            self.fail_closed(output);
+            false
+        }
+    }
+
+    fn fail_closed(&self, output: &Sender<Output>) {
+        if !self.failed.swap(true, Ordering::AcqRel) {
+            let _ = output.send(Output::TooLarge("output queue", self.max_bytes));
+        }
+    }
+}
 
 impl ImplementationRuntime {
     /// Spawn a direct child from a registry-minted plan after revalidating its content binding.
@@ -58,14 +133,26 @@ impl ImplementationRuntime {
         };
         let (input_tx, input_rx) = mpsc::channel();
         let (output_tx, output_rx) = mpsc::channel();
+        let output_budget = Arc::new(OutputQueueBudget::new());
         let threads = vec![
-            spawn_writer(stdin, input_rx, output_tx.clone()),
+            spawn_writer(
+                stdin,
+                input_rx,
+                output_tx.clone(),
+                Arc::clone(&output_budget),
+            ),
             spawn_stdout(
                 stdout,
                 plan.evidence_limits().stdout_bytes,
                 output_tx.clone(),
+                Arc::clone(&output_budget),
             ),
-            spawn_stderr(stderr, plan.evidence_limits().stderr_bytes, output_tx),
+            spawn_stderr(
+                stderr,
+                plan.evidence_limits().stderr_bytes,
+                output_tx,
+                output_budget,
+            ),
         ];
         Ok(Self {
             plan,
@@ -310,15 +397,22 @@ fn spawn_writer(
     mut stdin: std::process::ChildStdin,
     receiver: Receiver<Input>,
     output: Sender<Output>,
+    budget: Arc<OutputQueueBudget>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
         while let Ok(Input::Frame(frame)) = receiver.recv() {
             if let Err(error) = stdin.write_all(&frame).and_then(|_| stdin.write_all(b"\n")) {
-                let _ = output.send(Output::Io("stdin", error.to_string()));
+                let message = error.to_string();
+                let _ = budget.send(&output, Output::Io("stdin", message.clone()), message.len());
                 return;
             }
             if let Err(error) = stdin.flush() {
-                let _ = output.send(Output::Io("stdin flush", error.to_string()));
+                let message = error.to_string();
+                let _ = budget.send(
+                    &output,
+                    Output::Io("stdin flush", message.clone()),
+                    message.len(),
+                );
                 return;
             }
         }
@@ -329,6 +423,7 @@ fn spawn_stdout(
     mut stdout: std::process::ChildStdout,
     limit: usize,
     output: Sender<Output>,
+    budget: Arc<OutputQueueBudget>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
         let mut total = 0_usize;
@@ -339,34 +434,47 @@ fn spawn_stdout(
                 Ok(0) => break,
                 Ok(read) => read,
                 Err(error) => {
-                    let _ = output.send(Output::Io("stdout", error.to_string()));
+                    let message = error.to_string();
+                    let _ = budget.send(
+                        &output,
+                        Output::Io("stdout", message.clone()),
+                        message.len(),
+                    );
                     return;
                 }
             };
             total = total.saturating_add(read);
             if total > limit {
-                let _ = output.send(Output::TooLarge("stdout", limit));
+                let _ = budget.send(&output, Output::TooLarge("stdout", limit), 0);
                 return;
             }
             for byte in &buffer[..read] {
                 if *byte == b'\n' {
-                    let _ = output.send(Output::Stdout(std::mem::take(&mut frame)));
+                    let completed = std::mem::take(&mut frame);
+                    let bytes = completed.len();
+                    if !budget.send(&output, Output::Stdout(completed), bytes) {
+                        return;
+                    }
                 } else {
                     frame.push(*byte);
                     if frame.len() > MAX_IMPLEMENTATION_MESSAGE_BYTES {
-                        let _ = output.send(Output::TooLarge(
-                            "stdout message",
-                            MAX_IMPLEMENTATION_MESSAGE_BYTES,
-                        ));
+                        let _ = budget.send(
+                            &output,
+                            Output::TooLarge("stdout message", MAX_IMPLEMENTATION_MESSAGE_BYTES),
+                            0,
+                        );
                         return;
                     }
                 }
             }
         }
         if !frame.is_empty() {
-            let _ = output.send(Output::Stdout(frame));
+            let bytes = frame.len();
+            if !budget.send(&output, Output::Stdout(frame), bytes) {
+                return;
+            }
         }
-        let _ = output.send(Output::StdoutEof);
+        let _ = budget.send(&output, Output::StdoutEof, 0);
     })
 }
 
@@ -374,6 +482,7 @@ fn spawn_stderr(
     mut stderr: std::process::ChildStderr,
     limit: usize,
     output: Sender<Output>,
+    budget: Arc<OutputQueueBudget>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
         let mut total = 0_usize;
@@ -383,18 +492,25 @@ fn spawn_stderr(
                 Ok(0) => break,
                 Ok(read) => read,
                 Err(error) => {
-                    let _ = output.send(Output::Io("stderr", error.to_string()));
+                    let message = error.to_string();
+                    let _ = budget.send(
+                        &output,
+                        Output::Io("stderr", message.clone()),
+                        message.len(),
+                    );
                     return;
                 }
             };
             total = total.saturating_add(read);
             if total > limit {
-                let _ = output.send(Output::TooLarge("stderr", limit));
+                let _ = budget.send(&output, Output::TooLarge("stderr", limit), 0);
                 return;
             }
-            let _ = output.send(Output::Stderr(buffer[..read].to_vec()));
+            if !budget.send(&output, Output::Stderr(buffer[..read].to_vec()), read) {
+                return;
+            }
         }
-        let _ = output.send(Output::StderrEof);
+        let _ = budget.send(&output, Output::StderrEof, 0);
     })
 }
 
@@ -436,5 +552,31 @@ fn io(operation: &'static str, error: impl std::fmt::Display) -> ImplementationR
     ImplementationRuntimeError::Io {
         operation,
         message: error.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod bounded_queue_tests {
+    use super::*;
+
+    #[test]
+    fn output_queue_fails_closed_once_at_item_or_byte_bound() {
+        let (sender, receiver) = mpsc::channel();
+        let budget = OutputQueueBudget::with_limits(2, 3);
+        assert!(budget.send(&sender, Output::Stdout(vec![1]), 1));
+        assert!(budget.send(&sender, Output::Stderr(vec![2, 3]), 2));
+        assert!(!budget.send(&sender, Output::Stdout(Vec::new()), 0));
+        assert!(!budget.send(&sender, Output::Stdout(Vec::new()), 0));
+
+        assert!(matches!(receiver.recv().unwrap(), Output::Stdout(_)));
+        assert!(matches!(receiver.recv().unwrap(), Output::Stderr(_)));
+        assert!(matches!(
+            receiver.recv().unwrap(),
+            Output::TooLarge("output queue", 3)
+        ));
+        assert!(
+            receiver.try_recv().is_err(),
+            "terminal failure is emitted once"
+        );
     }
 }

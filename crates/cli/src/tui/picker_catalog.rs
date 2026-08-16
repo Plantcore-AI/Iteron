@@ -1,4 +1,35 @@
 use super::*;
+use crate::providers::ProviderEntry;
+
+/// The providers `/model` offers, grouped by the service they actually reach.
+///
+/// Two filters, both about what is OFFERED and neither about what is REACHABLE:
+/// a built-in with no credential on this machine is dropped (it is a known endpoint, not an offer),
+/// and the provider the session is currently routing to is always kept even if it would have been
+/// dropped, because the picker must be able to show the operator where he already is.
+fn offered_service_groups<'a>(
+    directory: &'a ProviderDirectory,
+    current_provider: &str,
+) -> Vec<Vec<&'a ProviderEntry>> {
+    let mut groups: Vec<Vec<&ProviderEntry>> = Vec::new();
+    for entry in directory
+        .entries()
+        .iter()
+        .filter(|entry| entry.is_offerable() || entry.id() == current_provider)
+    {
+        // Grouped by api_root host, a fact already in the entry, so a service that gained a second
+        // access method needs no table anywhere to be recognised as one service. Groups keep
+        // first-appearance order, and members keep directory order within a group.
+        match groups
+            .iter_mut()
+            .find(|group| group[0].service_key() == entry.service_key())
+        {
+            Some(group) => group.push(entry),
+            None => groups.push(vec![entry]),
+        }
+    }
+    groups
+}
 
 pub(super) fn model_picker_items(
     directory: &ProviderDirectory,
@@ -8,142 +39,177 @@ pub(super) fn model_picker_items(
     let mut items = Vec::new();
     let mut current_provider_seen = false;
 
-    for entry in directory.entries() {
-        let is_current_provider = entry.id() == current_provider;
-        current_provider_seen |= is_current_provider;
-        let provider_reason = directory.blocked_reason(entry);
-        let provider_index = items.len();
-        items.push(PickItem {
-            label: entry.display_name().to_owned(),
-            hint: directory.status_label(entry),
-            is_current: is_current_provider,
-            action: PickAction::Info,
-            parent: None,
-            depth: 0,
-            expandable: true,
-            expanded: is_current_provider,
-            enabled: provider_reason.is_none(),
-            disabled_reason: provider_reason.clone(),
-        });
+    for group in offered_service_groups(directory, current_provider) {
+        // One access method needs no service header: the provider row already IS the service. A
+        // header appears only where the alternative is several rows spelling one service's name
+        // differently and reading as a bug.
+        let (service_parent, base_depth) = if group.len() < 2 {
+            (None, 0)
+        } else {
+            let service_index = items.len();
+            let holds_current = group.iter().any(|entry| entry.id() == current_provider);
+            items.push(PickItem {
+                label: group[0].service_key().to_owned(),
+                hint: format!("{} access methods", group.len()),
+                // `current` marks the route, and the route is an access method, not a service. The
+                // header opens so that route is visible without a keystroke.
+                is_current: false,
+                action: PickAction::Info,
+                parent: None,
+                depth: 0,
+                expandable: true,
+                expanded: holds_current,
+                enabled: group
+                    .iter()
+                    .any(|entry| directory.blocked_reason(entry).is_none()),
+                disabled_reason: None,
+            });
+            (Some(service_index), 1)
+        };
 
-        let mut current_model_seen = false;
-        if let Some(catalog) = &entry.catalog {
-            for family in &catalog.families {
-                let family_has_current = is_current_provider
-                    && family
-                        .models
-                        .iter()
-                        .any(|model| model.raw.id == current_model);
-                current_model_seen |= family_has_current;
+        for entry in group {
+            let is_current_provider = entry.id() == current_provider;
+            current_provider_seen |= is_current_provider;
+            let provider_reason = directory.blocked_reason(entry);
+            let provider_index = items.len();
+            items.push(PickItem {
+                label: entry.display_name().to_owned(),
+                // Origin rides in the same ` · `-joined register as the rest of the suffix, so the
+                // operator can tell a shipped endpoint from one he wrote without a second column.
+                hint: format!(
+                    "{} · {}",
+                    directory.status_label(entry),
+                    entry.origin().label()
+                ),
+                is_current: is_current_provider,
+                action: PickAction::Info,
+                parent: service_parent,
+                depth: base_depth,
+                expandable: true,
+                expanded: is_current_provider,
+                enabled: provider_reason.is_none(),
+                disabled_reason: provider_reason.clone(),
+            });
+
+            let mut current_model_seen = false;
+            if let Some(catalog) = &entry.catalog {
+                for family in &catalog.families {
+                    let family_has_current = is_current_provider
+                        && family
+                            .models
+                            .iter()
+                            .any(|model| model.raw.id == current_model);
+                    current_model_seen |= family_has_current;
+                    let family_index = items.len();
+                    items.push(PickItem {
+                        label: family.display_name.clone(),
+                        hint: format!("{} models", family.models.len()),
+                        is_current: false,
+                        action: PickAction::Info,
+                        parent: Some(provider_index),
+                        depth: base_depth + 1,
+                        expandable: true,
+                        expanded: family_has_current,
+                        enabled: provider_reason.is_none(),
+                        disabled_reason: provider_reason.clone(),
+                    });
+                    for model in &family.models {
+                        let model_reason = provider_reason
+                            .clone()
+                            .or_else(|| directory.model_blocked_reason(entry.id(), &model.raw.id))
+                            .or_else(|| match model.selectability {
+                                iteron_provider::Selectability::Selectable => None,
+                                iteron_provider::Selectability::Disabled { reason } => {
+                                    Some(reason.into())
+                                }
+                            });
+                        let label = model
+                            .raw
+                            .display_name
+                            .as_deref()
+                            .filter(|name| *name != model.raw.id)
+                            .map(|name| format!("{} · {name}", model.raw.id))
+                            .unwrap_or_else(|| model.raw.id.clone());
+                        let hint = model
+                            .raw
+                            .owned_by
+                            .as_deref()
+                            .map(|owner| format!("owned by {owner}"))
+                            .unwrap_or_default();
+                        items.push(PickItem {
+                            label,
+                            hint,
+                            is_current: is_current_provider && model.raw.id == current_model,
+                            action: PickAction::SetModel(ModelSelection {
+                                provider_id: entry.id().to_owned(),
+                                model_id: model.raw.id.clone(),
+                            }),
+                            parent: Some(family_index),
+                            depth: base_depth + 2,
+                            expandable: false,
+                            expanded: false,
+                            enabled: model_reason.is_none(),
+                            disabled_reason: model_reason,
+                        });
+                    }
+                }
+            }
+
+            // Keep the active pair visible even if a refresh no longer returns it. It is disabled when
+            // the provider promised a catalog, and selectable only for an operator-declared
+            // catalog-disabled gateway.
+            if is_current_provider && !current_model.is_empty() && !current_model_seen {
                 let family_index = items.len();
                 items.push(PickItem {
-                    label: family.display_name.clone(),
-                    hint: format!("{} models", family.models.len()),
+                    label: "Current / unverified".into(),
+                    hint: "pinned from this session".into(),
                     is_current: false,
                     action: PickAction::Info,
                     parent: Some(provider_index),
-                    depth: 1,
+                    depth: base_depth + 1,
                     expandable: true,
-                    expanded: family_has_current,
-                    enabled: provider_reason.is_none(),
+                    expanded: true,
+                    enabled: provider_reason.is_none() && !entry.catalog_enabled,
                     disabled_reason: provider_reason.clone(),
                 });
-                for model in &family.models {
-                    let model_reason = provider_reason
-                        .clone()
-                        .or_else(|| directory.model_blocked_reason(entry.id(), &model.raw.id))
-                        .or_else(|| match model.selectability {
-                            iteron_provider::Selectability::Selectable => None,
-                            iteron_provider::Selectability::Disabled { reason } => {
-                                Some(reason.into())
-                            }
-                        });
-                    let label = model
-                        .raw
-                        .display_name
-                        .as_deref()
-                        .filter(|name| *name != model.raw.id)
-                        .map(|name| format!("{} · {name}", model.raw.id))
-                        .unwrap_or_else(|| model.raw.id.clone());
-                    let hint = model
-                        .raw
-                        .owned_by
-                        .as_deref()
-                        .map(|owner| format!("owned by {owner}"))
-                        .unwrap_or_default();
-                    items.push(PickItem {
-                        label,
-                        hint,
-                        is_current: is_current_provider && model.raw.id == current_model,
-                        action: PickAction::SetModel(ModelSelection {
-                            provider_id: entry.id().to_owned(),
-                            model_id: model.raw.id.clone(),
-                        }),
-                        parent: Some(family_index),
-                        depth: 2,
-                        expandable: false,
-                        expanded: false,
-                        enabled: model_reason.is_none(),
-                        disabled_reason: model_reason,
-                    });
-                }
+                let reason = provider_reason.clone().or_else(|| {
+                    entry
+                        .catalog_enabled
+                        .then(|| "not present in the current provider catalog".into())
+                });
+                items.push(PickItem {
+                    label: current_model.to_owned(),
+                    hint: "current selection".into(),
+                    is_current: true,
+                    action: PickAction::SetModel(ModelSelection {
+                        provider_id: entry.id().to_owned(),
+                        model_id: current_model.to_owned(),
+                    }),
+                    parent: Some(family_index),
+                    depth: base_depth + 2,
+                    expandable: false,
+                    expanded: false,
+                    enabled: reason.is_none(),
+                    disabled_reason: reason,
+                });
+            } else if entry.catalog.is_none() {
+                let reason = provider_reason
+                    .clone()
+                    .or_else(|| entry.catalog_error.clone())
+                    .unwrap_or_else(|| "no dynamic catalog loaded".into());
+                items.push(PickItem {
+                    label: "Models unavailable".into(),
+                    hint: String::new(),
+                    is_current: false,
+                    action: PickAction::Info,
+                    parent: Some(provider_index),
+                    depth: base_depth + 1,
+                    expandable: false,
+                    expanded: false,
+                    enabled: false,
+                    disabled_reason: Some(reason),
+                });
             }
-        }
-
-        // Keep the active pair visible even if a refresh no longer returns it. It is disabled when
-        // the provider promised a catalog, and selectable only for an operator-declared
-        // catalog-disabled gateway.
-        if is_current_provider && !current_model.is_empty() && !current_model_seen {
-            let family_index = items.len();
-            items.push(PickItem {
-                label: "Current / unverified".into(),
-                hint: "pinned from this session".into(),
-                is_current: false,
-                action: PickAction::Info,
-                parent: Some(provider_index),
-                depth: 1,
-                expandable: true,
-                expanded: true,
-                enabled: provider_reason.is_none() && !entry.catalog_enabled,
-                disabled_reason: provider_reason.clone(),
-            });
-            let reason = provider_reason.clone().or_else(|| {
-                entry
-                    .catalog_enabled
-                    .then(|| "not present in the current provider catalog".into())
-            });
-            items.push(PickItem {
-                label: current_model.to_owned(),
-                hint: "current selection".into(),
-                is_current: true,
-                action: PickAction::SetModel(ModelSelection {
-                    provider_id: entry.id().to_owned(),
-                    model_id: current_model.to_owned(),
-                }),
-                parent: Some(family_index),
-                depth: 2,
-                expandable: false,
-                expanded: false,
-                enabled: reason.is_none(),
-                disabled_reason: reason,
-            });
-        } else if entry.catalog.is_none() {
-            let reason = provider_reason
-                .clone()
-                .or_else(|| entry.catalog_error.clone())
-                .unwrap_or_else(|| "no dynamic catalog loaded".into());
-            items.push(PickItem {
-                label: "Models unavailable".into(),
-                hint: String::new(),
-                is_current: false,
-                action: PickAction::Info,
-                parent: Some(provider_index),
-                depth: 1,
-                expandable: false,
-                expanded: false,
-                enabled: false,
-                disabled_reason: Some(reason),
-            });
         }
     }
 

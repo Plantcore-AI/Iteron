@@ -466,7 +466,7 @@ fn d11_46_the_session_list_is_paged_and_prune_enforces_an_explicit_policy() {
         "the listing is a page, not a dump: {stdout}"
     );
     assert!(
-        stderr.contains("showing the 2 most recent of 3 sessions"),
+        stderr.contains("page showing the 2 most recent sessions"),
         "a page must say it is a page: {stderr}"
     );
 
