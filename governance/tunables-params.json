@@ -45014,7 +45014,7 @@
         },
         {
           "path": "crates/provider/src/anthropic.rs",
-          "line": 925,
+          "line": 924,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -45079,7 +45079,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/anthropic.rs",
-          "line": 886,
+          "line": 885,
           "evidence": "param_usize runtime resolution"
         }
       ],
@@ -45177,7 +45177,7 @@
         },
         {
           "path": "crates/provider/src/anthropic.rs",
-          "line": 853,
+          "line": 852,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -47593,7 +47593,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/openai.rs",
-          "line": 1155,
+          "line": 1154,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -47623,12 +47623,12 @@
       "use_sites": [
         {
           "path": "crates/provider/src/openai.rs",
-          "line": 997,
+          "line": 996,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/provider/src/openai.rs",
-          "line": 999,
+          "line": 998,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -47723,12 +47723,12 @@
       "use_sites": [
         {
           "path": "crates/provider/src/openai.rs",
-          "line": 1038,
+          "line": 1037,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/provider/src/openai.rs",
-          "line": 1231,
+          "line": 1230,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -47758,7 +47758,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/openai.rs",
-          "line": 996,
+          "line": 995,
           "evidence": "param_usize runtime resolution"
         }
       ],
@@ -47788,7 +47788,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/openai.rs",
-          "line": 1005,
+          "line": 1004,
           "evidence": "param_usize runtime resolution"
         }
       ],
@@ -47877,7 +47877,7 @@
         },
         {
           "path": "crates/provider/src/openai.rs",
-          "line": 955,
+          "line": 954,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -47971,7 +47971,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/responses.rs",
-          "line": 1622,
+          "line": 1621,
           "evidence": "param_duration runtime resolution"
         }
       ],
