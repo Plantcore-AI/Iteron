@@ -15,7 +15,13 @@ use std::time::{Duration, Instant};
 // A PTY step may include a separately scheduled process startup while the all-target suite is
 // running many test binaries. Causal latency properties below use byte ordering; this remains only
 // the bounded harness watchdog for observing their terminal effects.
-const STEP_TIMEOUT: Duration = Duration::from_secs(15);
+//
+// It is a liveness bound, not an assertion: no predicate weakens when it grows. Fifteen seconds
+// held on a dedicated machine and did not hold on the shared arm64 runner, where a pull-request
+// build compiles a second worktree on the same cores and the child's redraw is simply descheduled
+// past the deadline. The failure that produces is indistinguishable from a real hang in the log
+// and costs a full re-run to diagnose, so the watchdog is set where only a genuine hang trips it.
+const STEP_TIMEOUT: Duration = Duration::from_secs(45);
 const PROVIDER_TIMEOUT: Duration = Duration::from_secs(15);
 // Provider fixtures are created before `PtyHarness` acquires its process-wide permit. A full
 // all-target run can therefore leave a fixture waiting behind several batches of live PTYs even

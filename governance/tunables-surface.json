@@ -4,7 +4,7 @@
   "registry_revision": 19,
   "registry_digest": "888709a96acca2151b94e0276e80597d70aa6e2317947d53aa544b26a550b467",
   "param_registry_id": "iteron-params",
-  "param_registry_digest": "967bc20e1e8c6c0fe9100e86f6b5ce1de355b998ed1ddf06c014da9e37e8ca54",
+  "param_registry_digest": "0bbf9ceca550cf7303bb2df34846e24f6104a403ce4f22055cd0b535ea0e1e75",
   "tool_text_registry_id": "iteron-builtin-tool-descriptions",
   "tool_text_registry_digest": "0ed860c172595c8e2425a76b68a7d840886a9129c40ef103252b1e625fe65a59",
   "counts": {
@@ -57846,6 +57846,11 @@
           "path": "crates/record/src/lib.rs",
           "line": 797,
           "evidence": "param_integer runtime resolution"
+        },
+        {
+          "path": "crates/record/src/lib.rs",
+          "line": 1516,
+          "evidence": "param_integer runtime resolution"
         }
       ],
       "behavior_oracle": "installed profile id record.lib.max_rollout_bytes is resolved at every listed production helper call"
@@ -57896,6 +57901,11 @@
           "path": "crates/record/src/lib.rs",
           "line": 1381,
           "evidence": "param_integer runtime resolution"
+        },
+        {
+          "path": "crates/record/src/lib.rs",
+          "line": 1444,
+          "evidence": "param_integer runtime resolution"
         }
       ],
       "behavior_oracle": "installed profile id record.lib.max_rollout_events is resolved at every listed production helper call"
@@ -57945,6 +57955,11 @@
         {
           "path": "crates/record/src/lib.rs",
           "line": 1360,
+          "evidence": "param_integer runtime resolution"
+        },
+        {
+          "path": "crates/record/src/lib.rs",
+          "line": 1448,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -58011,12 +58026,12 @@
         },
         {
           "path": "crates/record/src/lib.rs",
-          "line": 1537,
+          "line": 1625,
           "evidence": "param_str runtime resolution"
         },
         {
           "path": "crates/record/src/lib.rs",
-          "line": 1595,
+          "line": 1683,
           "evidence": "param_str runtime resolution"
         }
       ],
