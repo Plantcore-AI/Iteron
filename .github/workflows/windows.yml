@@ -11,9 +11,13 @@ name: windows
 # ruleset's required contexts. It deliberately does NOT use `continue-on-error` — #196 recorded
 # what that costs, an unstarted runner reporting green. A failure here reports as a failure.
 #
-# A green run means the workspace compiles for `x86_64-pc-windows-msvc` and the native ConPTY
-# oracle passes. It is not a support claim. `docs/reference/platforms.md` remains the authority on
-# what Windows is and is not, and there is still no Windows sandbox backend.
+# A green run means the workspace compiles for `x86_64-pc-windows-msvc`. It does **not** yet mean
+# the native ConPTY oracle passes: that step runs and reports, but does not gate, for the reasons
+# recorded above it. Saying so here matters more than the wording is worth — a green check that
+# quietly covers less than its comment claims is how a lane stops being evidence.
+#
+# It is not a support claim either. `docs/reference/platforms.md` remains the authority on what
+# Windows is and is not, and there is still no Windows sandbox backend.
 
 on:
   push:
@@ -220,5 +224,19 @@ jobs:
       # The compile above can finish suspiciously fast against a warm persistent `target/`. This
       # links and runs a real binary through the native pseudoconsole, so the lane cannot pass
       # without having genuinely built something.
+      #
+      # This step earned its place the first time it ran. Every case failed with an empty captured
+      # terminal, and the process tree showed the `conhost --headless` hosts alive with no client
+      # process under any of them: `iteron.exe` was dying before it could emit a byte. Run by hand,
+      # `iteron.exe -V` printed `thread 'main' has overflowed its stack` and exited 0xC00000FD. The
+      # compile gate above cannot see that — a binary that links is not a binary that starts.
+      #
+      # Bounded deliberately. Four cores is this entire machine, and it also hosts the
+      # plantcore-desktop runner, whose checkout went from 1m43s to over 30 minutes while four
+      # abandoned pseudoconsoles held a core each. `--test-threads=1` keeps one failure from
+      # taking the host down with it, and the step timeout keeps a hang from eating the job budget.
       - name: native ConPTY oracle
-        run: cargo test --locked -p iteron-cli --test windows_conpty --target x86_64-pc-windows-msvc
+        timeout-minutes: 15
+        run: >-
+          cargo test --locked -p iteron-cli --test windows_conpty
+          --target x86_64-pc-windows-msvc -- --test-threads=1
