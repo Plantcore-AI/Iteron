@@ -53,6 +53,10 @@ const CONSOLE_MODE_DURING: &[u8] = b"ITERON_CONSOLE_INPUT_MODE_DURING=";
 const CONSOLE_MODE_AFTER: &[u8] = b"ITERON_CONSOLE_INPUT_MODE_AFTER=";
 const COOKED_INPUT_MODE_MASK: u32 = 0x0001 | 0x0002 | 0x0004;
 const RAW_MODE_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a drop may wait for the reader thread. It is short on purpose: by the time this
+/// matters the test has already failed, and the only question left is whether the failure gets
+/// reported or replaced by a step timeout.
+const READER_JOIN_TIMEOUT: Duration = Duration::from_secs(5);
 static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 
 const WRAPPER_CONTROL_ENV: &[&str] = &[
@@ -786,10 +790,29 @@ impl Drop for ConPty {
         drop(self.slave.take());
         drop(self.master.take());
         if let Some(reader) = self.reader_thread.take() {
-            let _ = reader.join();
+            // Bounded. `read` returns 0 only once every writer is gone, and the pseudoconsole host
+            // is a child of *this* process rather than of the wrapper, so the tree kill above does
+            // not necessarily reach it -- a `conhost --headless` was measured on the self-hosted
+            // runner sitting at 100% of a core with no client under it, still holding the write
+            // end. A reader thread left behind in a process that is about to exit costs nothing; a
+            // join with no deadline costs the whole job and replaces a reported assertion failure
+            // with a step timeout.
+            let (finished, joined) = mpsc::channel();
+            thread::spawn(move || {
+                let _ = reader.join();
+                let _ = finished.send(());
+            });
+            let _ = joined.recv_timeout(READER_JOIN_TIMEOUT);
         }
     }
 }
+
+/// Terminate the `conhost --headless` processes this test process owns.
+///
+/// Deliberately narrow: it matches only console hosts whose parent is this process, so a host
+/// belonging to another job on the same machine is left alone. Shelling out keeps this to the
+/// same mechanism the wrapper kill above already uses, rather than introducing process
+/// enumeration through a new dependency for a path that only runs while a test is failing.
 
 fn copy_host_variable(command: &mut CommandBuilder, name: &str) {
     if let Some(value) = std::env::var_os(name) {
