@@ -13,6 +13,33 @@
       "required": ["name", "sha256", "size"],
       "type": "object"
     },
+    "installers": {
+      "additionalProperties": false,
+      "properties": {
+        "posix": {
+          "allOf": [
+            { "$ref": "#/definitions/asset" },
+            {
+              "properties": { "name": { "const": "install.sh" } },
+              "required": ["name"],
+              "type": "object"
+            }
+          ]
+        },
+        "windows": {
+          "allOf": [
+            { "$ref": "#/definitions/asset" },
+            {
+              "properties": { "name": { "const": "install.ps1" } },
+              "required": ["name"],
+              "type": "object"
+            }
+          ]
+        }
+      },
+      "required": ["posix", "windows"],
+      "type": "object"
+    },
     "target": {
       "additionalProperties": false,
       "properties": {
@@ -57,7 +84,13 @@
       "minimum": 1,
       "type": "integer"
     },
-    "installer": { "$ref": "#/definitions/asset" },
+    "installer": {
+      "description": "The complete installer set. Historical schema-v3 manifests may contain the legacy single install.sh asset.",
+      "oneOf": [
+        { "$ref": "#/definitions/asset" },
+        { "$ref": "#/definitions/installers" }
+      ]
+    },
     "legal": {
       "additionalProperties": false,
       "properties": {

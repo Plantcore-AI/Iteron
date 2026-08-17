@@ -1,0 +1,242 @@
+name: windows
+# Windows CI, restored onto hardware this project owns.
+#
+# History, so the next reader does not mistake this for a revert: an advisory `windows-2025` lane
+# used to live here and in `ci.yml`. #275 dropped the Windows legs while aligning the release
+# contracts, and #277 deleted this file while routing CI to the DGX. That removal was a hosted-cost
+# decision (#223, "CI is too heavy"), not a judgement that Windows should never be checked again.
+# #227 is the follow-up: put Windows on a machine we own. This file is that lane.
+#
+# It is NON-BLOCKING, and it is non-blocking for exactly one reason: it is not in the branch
+# ruleset's required contexts. It deliberately does NOT use `continue-on-error` — #196 recorded
+# what that costs, an unstarted runner reporting green. A failure here reports as a failure.
+#
+# A green run means the workspace compiles for `x86_64-pc-windows-msvc`. It does **not** yet mean
+# the native ConPTY oracle passes: that step runs and reports, but does not gate, for the reasons
+# recorded above it. Saying so here matters more than the wording is worth — a green check that
+# quietly covers less than its comment claims is how a lane stops being evidence.
+#
+# It is not a support claim either. `docs/reference/platforms.md` remains the authority on what
+# Windows is and is not, and there is still no Windows sandbox backend.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  RUSTUP_TOOLCHAIN: 1.90.0
+
+concurrency:
+  group: windows-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: windows / check
+    # Skipped, not queued, until the machine exists. Pointing a job at a self-hosted label that no
+    # runner answers leaves it queued forever — this org has already lost CI to exactly that on
+    # Iteron-internal. So the lane stays dormant until an operator publishes the labels:
+    #   gh variable set WINDOWS_RUNNER_LABELS --repo Plantcore-AI/Iteron \
+    #     --body '["self-hosted","Windows","X64","iteron-win"]'
+    # A skipped job is honestly skipped; it never reports a pass it did not earn.
+    if: vars.WINDOWS_RUNNER_LABELS != ''
+    runs-on: ${{ fromJSON(vars.WINDOWS_RUNNER_LABELS || '["windows-latest"]') }}
+    # A cold MSVC build of this workspace is slow, and the self-hosted box is 4 vCPU.
+    timeout-minutes: 60
+    defaults:
+      run:
+        # Windows PowerShell 5.1 ships with Windows Server; `pwsh` is not guaranteed on a machine
+        # we provisioned ourselves, and `bash` only exists there via Git for Windows.
+        shell: powershell
+    steps:
+      # Git transport to github.com is repeatedly reset from this Windows host, while the GitHub
+      # API and its codeload redirect remain reachable. Materialize the exact immutable commit
+      # without a `.git` directory; this job only checks/builds/tests and never needs repository
+      # history. For a fork PR, both repository and SHA come from the PR head, so this cannot
+      # silently compile the base repository at an unrelated commit.
+      - name: materialize the exact source through the GitHub API
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:SOURCE_REPOSITORY -notmatch '^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$') {
+            throw 'unexpected source repository'
+          }
+          $repositoryParts = $env:SOURCE_REPOSITORY.Split('/')
+          if ($repositoryParts.Count -ne 2 -or $repositoryParts -contains '.' -or $repositoryParts -contains '..') {
+            throw 'unsafe source repository'
+          }
+          if ($env:SOURCE_SHA -notmatch '^[0-9a-f]{40}$') {
+            throw 'unexpected source commit'
+          }
+
+          $maximumArchiveBytes = 268435456
+          $maximumMembers = 20000
+          $maximumUnpackedBytes = 1073741824
+          $materialization = Join-Path $env:RUNNER_TEMP ("iteron-source-$env:SOURCE_SHA")
+          if (Test-Path -LiteralPath $materialization) {
+            Remove-Item -LiteralPath $materialization -Recurse -Force
+          }
+          $null = New-Item -ItemType Directory -Path $materialization
+          $archivePath = Join-Path $materialization 'source.zip'
+          $extractPath = Join-Path $materialization 'extract'
+          $null = New-Item -ItemType Directory -Path $extractPath
+          $apiUrl = "https://api.github.com/repos/$env:SOURCE_REPOSITORY/zipball/$env:SOURCE_SHA"
+
+          # curl does not forward Authorization to the cross-host codeload redirect unless
+          # --location-trusted is used. Deliberately do not use that option: the token is sent
+          # only to api.github.com and never becomes a codeload credential.
+          & curl.exe --proto '=https' --tlsv1.2 --fail --location `
+            --retry 6 --retry-all-errors --retry-delay 2 `
+            --connect-timeout 20 --max-time 300 --max-filesize $maximumArchiveBytes `
+            --header "Accept: application/vnd.github+json" `
+            --header "Authorization: Bearer $env:GH_TOKEN" `
+            --header "X-GitHub-Api-Version: 2026-03-10" `
+            --output $archivePath $apiUrl
+          if ($LASTEXITCODE -ne 0) {
+            throw "source download failed with curl exit code $LASTEXITCODE"
+          }
+          $archiveBytes = (Get-Item -LiteralPath $archivePath).Length
+          if ($archiveBytes -le 0 -or $archiveBytes -gt $maximumArchiveBytes) {
+            throw 'source archive is empty or oversized'
+          }
+
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $destinationRoot = [System.IO.Path]::GetFullPath($extractPath)
+          if (-not $destinationRoot.EndsWith([string][System.IO.Path]::DirectorySeparatorChar)) {
+            $destinationRoot += [System.IO.Path]::DirectorySeparatorChar
+          }
+          $zip = [System.IO.Compression.ZipFile]::OpenRead($archivePath)
+          try {
+            if ($zip.Entries.Count -le 0 -or $zip.Entries.Count -gt $maximumMembers) {
+              throw 'source archive has an invalid member count'
+            }
+            $archiveRoot = $null
+            $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+            [long]$unpackedBytes = 0
+            foreach ($entry in $zip.Entries) {
+              $name = $entry.FullName
+              if ([string]::IsNullOrWhiteSpace($name) -or $name.Contains('\') -or
+                  $name.Contains(':') -or $name.StartsWith('/') -or
+                  [System.IO.Path]::IsPathRooted($name)) {
+                throw "unsafe source archive path: $name"
+              }
+              $segments = $name.TrimEnd('/').Split('/')
+              if ($segments.Count -eq 0 -or $segments -contains '' -or
+                  $segments -contains '.' -or $segments -contains '..') {
+                throw "source archive path escapes its root: $name"
+              }
+              if ($null -eq $archiveRoot) {
+                $archiveRoot = $segments[0]
+              } elseif ($segments[0] -cne $archiveRoot) {
+                throw 'source archive contains more than one root'
+              }
+              if (-not $seen.Add($name)) {
+                throw "source archive repeats a member: $name"
+              }
+
+              $isDirectory = [string]::IsNullOrEmpty($entry.Name)
+              if ($isDirectory -ne $name.EndsWith('/')) {
+                throw "source archive member type disagrees with its path: $name"
+              }
+              $fileType = (([int]$entry.ExternalAttributes -shr 16) -band 0xF000)
+              if ($fileType -ne 0) {
+                $requiredType = if ($isDirectory) { 0x4000 } else { 0x8000 }
+                if ($fileType -ne $requiredType) {
+                  throw "source archive contains a link or special file: $name"
+                }
+              }
+              if (-not $isDirectory) {
+                $unpackedBytes += [long]$entry.Length
+                if ($entry.Length -lt 0 -or $unpackedBytes -gt $maximumUnpackedBytes) {
+                  throw 'source archive exceeds the unpacked byte limit'
+                }
+              }
+
+              $relative = $name.Replace('/', [System.IO.Path]::DirectorySeparatorChar)
+              $destination = [System.IO.Path]::GetFullPath(
+                [System.IO.Path]::Combine($destinationRoot, $relative)
+              )
+              if (-not $destination.StartsWith($destinationRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+                throw "source archive member escapes the destination: $name"
+              }
+              if ($isDirectory) {
+                $null = New-Item -ItemType Directory -Path $destination -Force
+              } else {
+                $parent = [System.IO.Path]::GetDirectoryName($destination)
+                if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
+                  $null = New-Item -ItemType Directory -Path $parent -Force
+                }
+                [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $destination, $false)
+              }
+            }
+          } finally {
+            $zip.Dispose()
+          }
+
+          $sourceRoot = Join-Path $extractPath $archiveRoot
+          if (-not (Test-Path -LiteralPath (Join-Path $sourceRoot 'Cargo.toml') -PathType Leaf) -or
+              -not (Test-Path -LiteralPath (Join-Path $sourceRoot '.github/workflows/windows.yml') -PathType Leaf)) {
+            throw 'source archive does not contain the expected Iteron workspace'
+          }
+          $workspace = [System.IO.Path]::GetFullPath($env:GITHUB_WORKSPACE)
+          $runnerWorkspace = [System.IO.Path]::GetFullPath($env:RUNNER_WORKSPACE)
+          if (-not $runnerWorkspace.EndsWith([string][System.IO.Path]::DirectorySeparatorChar)) {
+            $runnerWorkspace += [System.IO.Path]::DirectorySeparatorChar
+          }
+          if (-not $workspace.StartsWith($runnerWorkspace, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw 'GITHUB_WORKSPACE is outside RUNNER_WORKSPACE'
+          }
+          if (-not (Test-Path -LiteralPath $workspace -PathType Container)) {
+            $null = New-Item -ItemType Directory -Path $workspace
+          }
+          Get-ChildItem -LiteralPath $workspace -Force |
+            Remove-Item -Recurse -Force
+          Get-ChildItem -LiteralPath $sourceRoot -Force |
+            Move-Item -Destination $workspace -Force
+          if (-not (Test-Path -LiteralPath (Join-Path $workspace 'Cargo.toml') -PathType Leaf)) {
+            throw 'source materialization did not populate GITHUB_WORKSPACE'
+          }
+      # Self-hosted workspaces persist between runs, unlike hosted images. Two runners on one host
+      # would otherwise share a `target/` and deadlock on cargo's file lock, so key it by runner
+      # name the same way the DGX lanes in `ci.yml` do.
+      - name: isolate the persistent Cargo cache by runner
+        run: |
+          if ($env:RUNNER_NAME -notmatch '^[A-Za-z0-9._-]{1,64}$') {
+            throw "unexpected RUNNER_NAME"
+          }
+          "CARGO_TARGET_DIR=C:\iteron-ci-target\$env:RUNNER_NAME" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
+      - name: install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: ${{ env.RUSTUP_TOOLCHAIN }}
+          targets: x86_64-pc-windows-msvc
+      - name: check the workspace for Windows
+        run: cargo check --workspace --locked --target x86_64-pc-windows-msvc
+      # The compile above can finish suspiciously fast against a warm persistent `target/`. This
+      # links and runs a real binary through the native pseudoconsole, so the lane cannot pass
+      # without having genuinely built something.
+      #
+      # This step earned its place the first time it ran. Every case failed with an empty captured
+      # terminal, and the process tree showed the `conhost --headless` hosts alive with no client
+      # process under any of them: `iteron.exe` was dying before it could emit a byte. Run by hand,
+      # `iteron.exe -V` printed `thread 'main' has overflowed its stack` and exited 0xC00000FD. The
+      # compile gate above cannot see that — a binary that links is not a binary that starts.
+      #
+      # Bounded deliberately. Four cores is this entire machine, and it also hosts the
+      # plantcore-desktop runner, whose checkout went from 1m43s to over 30 minutes while four
+      # abandoned pseudoconsoles held a core each. `--test-threads=1` keeps one failure from
+      # taking the host down with it, and the step timeout keeps a hang from eating the job budget.
+      - name: native ConPTY oracle
+        timeout-minutes: 15
+        run: >-
+          cargo test --locked -p iteron-cli --test windows_conpty
+          --target x86_64-pc-windows-msvc -- --test-threads=1

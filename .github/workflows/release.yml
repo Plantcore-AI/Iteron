@@ -566,10 +566,14 @@ jobs:
             --output-file "$RUNNER_TEMP/cargo-about.json"
           cargo +"$RUST_VERSION" metadata --locked --format-version 1 \
             > "$RUNNER_TEMP/cargo-metadata.json"
+          # Every target the release matrix ships must appear here. A published archive whose
+          # NOTICES omit that platform's own crates is a licensing defect, not a cosmetic one, and
+          # the Windows leg pulls in windows-sys/winapi-family crates no POSIX target resolves.
           for target in \
             aarch64-apple-darwin \
             aarch64-unknown-linux-musl \
-            x86_64-unknown-linux-musl
+            x86_64-unknown-linux-musl \
+            x86_64-pc-windows-msvc
           do
             cargo +"$RUST_VERSION" tree --locked -p iteron-cli \
               --target "$target" -e normal --prefix none --format '{p}' \
@@ -580,6 +584,7 @@ jobs:
             --dependency-tree "$RUNNER_TEMP/cargo-tree-aarch64-apple-darwin.txt" \
             --dependency-tree "$RUNNER_TEMP/cargo-tree-aarch64-unknown-linux-musl.txt" \
             --dependency-tree "$RUNNER_TEMP/cargo-tree-x86_64-unknown-linux-musl.txt" \
+            --dependency-tree "$RUNNER_TEMP/cargo-tree-x86_64-pc-windows-msvc.txt" \
             --licenses "$RUNNER_TEMP/legal/THIRD_PARTY_LICENSES.html" \
             --inventory "$RUNNER_TEMP/cargo-about.json" \
             --output "$RUNNER_TEMP/legal/THIRD_PARTY_NOTICES.txt"
@@ -625,6 +630,21 @@ jobs:
             tool-suffix: ""
             archive-suffix: tar.gz
             binary: iteron
+          # A self-hosted label that no machine answers does not fail: it queues forever, so
+          # `build` never completes and `publish` never runs. The company Windows machine is not
+          # registered yet, so this leg resolves its labels from a repository variable and falls
+          # back to the hosted image. Set WINDOWS_RUNNER_LABELS to a JSON array such as
+          # '["self-hosted","Windows","X64","iteron-win"]' once that runner is online; the same
+          # variable name gates .github/workflows/windows.yml. Both branches are JSON arrays, so
+          # `runs-on` below is unchanged. Windows binaries are `iteron.exe` inside a deterministic
+          # `.zip`, which release-tools has always known how to build and verify.
+          - runner: ${{ vars.WINDOWS_RUNNER_LABELS || '["windows-2025"]' }}
+            host: windows-x86_64
+            target: x86_64-pc-windows-msvc
+            python: python3
+            tool-suffix: .exe
+            archive-suffix: zip
+            binary: iteron.exe
     runs-on: ${{ fromJSON(matrix.runner) }}
     timeout-minutes: 60
     defaults:
@@ -641,9 +661,172 @@ jobs:
       SOURCE_DATE_EPOCH: ${{ needs.validate.outputs.source-date-epoch }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        if: matrix.target != 'x86_64-pc-windows-msvc'
         with:
           ref: ${{ needs.validate.outputs.commit }}
           persist-credentials: false
+      - name: Materialize the exact Windows source through the GitHub API
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_REPOSITORY: ${{ github.repository }}
+          SOURCE_SHA: ${{ needs.validate.outputs.commit }}
+        run: &windows_source_materialization |
+          $ErrorActionPreference = 'Stop'
+          if ($env:SOURCE_REPOSITORY -notmatch '^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$') {
+            throw 'unexpected source repository'
+          }
+          $repositoryParts = $env:SOURCE_REPOSITORY.Split('/')
+          if ($repositoryParts.Count -ne 2 -or $repositoryParts -contains '.' -or $repositoryParts -contains '..') {
+            throw 'unsafe source repository'
+          }
+          if ($env:SOURCE_SHA -notmatch '^[0-9a-f]{40}$') {
+            throw 'unexpected source commit'
+          }
+
+          $maximumArchiveBytes = 268435456
+          $maximumMembers = 20000
+          $maximumUnpackedBytes = 1073741824
+          $materialization = Join-Path $env:RUNNER_TEMP ("iteron-source-$env:SOURCE_SHA")
+          if (Test-Path -LiteralPath $materialization) {
+            Remove-Item -LiteralPath $materialization -Recurse -Force
+          }
+          $null = New-Item -ItemType Directory -Path $materialization
+          $archivePath = Join-Path $materialization 'source.zip'
+          $extractPath = Join-Path $materialization 'extract'
+          $null = New-Item -ItemType Directory -Path $extractPath
+          $apiUrl = "https://api.github.com/repos/$env:SOURCE_REPOSITORY/zipball/$env:SOURCE_SHA"
+
+          # curl strips Authorization when the API redirects to codeload.github.com unless the
+          # unsafe --location-trusted option is present. Never add it: the token belongs only on
+          # the initial api.github.com request.
+          & curl.exe --proto '=https' --tlsv1.2 --fail --location `
+            --retry 6 --retry-all-errors --retry-delay 2 `
+            --connect-timeout 20 --max-time 300 --max-filesize $maximumArchiveBytes `
+            --header "Accept: application/vnd.github+json" `
+            --header "Authorization: Bearer $env:GH_TOKEN" `
+            --header "X-GitHub-Api-Version: 2026-03-10" `
+            --output $archivePath $apiUrl
+          if ($LASTEXITCODE -ne 0) {
+            throw "source download failed with curl exit code $LASTEXITCODE"
+          }
+          $archiveBytes = (Get-Item -LiteralPath $archivePath).Length
+          if ($archiveBytes -le 0 -or $archiveBytes -gt $maximumArchiveBytes) {
+            throw 'source archive is empty or oversized'
+          }
+
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $destinationRoot = [System.IO.Path]::GetFullPath($extractPath)
+          if (-not $destinationRoot.EndsWith([string][System.IO.Path]::DirectorySeparatorChar)) {
+            $destinationRoot += [System.IO.Path]::DirectorySeparatorChar
+          }
+          $zip = [System.IO.Compression.ZipFile]::OpenRead($archivePath)
+          try {
+            if ($zip.Entries.Count -le 0 -or $zip.Entries.Count -gt $maximumMembers) {
+              throw 'source archive has an invalid member count'
+            }
+            $archiveRoot = $null
+            $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+            [long]$unpackedBytes = 0
+            foreach ($entry in $zip.Entries) {
+              $name = $entry.FullName
+              if ([string]::IsNullOrWhiteSpace($name) -or $name.Contains('\') -or
+                  $name.Contains(':') -or $name.StartsWith('/') -or
+                  [System.IO.Path]::IsPathRooted($name)) {
+                throw "unsafe source archive path: $name"
+              }
+              $segments = $name.TrimEnd('/').Split('/')
+              if ($segments.Count -eq 0 -or $segments -contains '' -or
+                  $segments -contains '.' -or $segments -contains '..') {
+                throw "source archive path escapes its root: $name"
+              }
+              if ($null -eq $archiveRoot) {
+                $archiveRoot = $segments[0]
+              } elseif ($segments[0] -cne $archiveRoot) {
+                throw 'source archive contains more than one root'
+              }
+              if (-not $seen.Add($name)) {
+                throw "source archive repeats a member: $name"
+              }
+
+              $isDirectory = [string]::IsNullOrEmpty($entry.Name)
+              if ($isDirectory -ne $name.EndsWith('/')) {
+                throw "source archive member type disagrees with its path: $name"
+              }
+              $fileType = (([int]$entry.ExternalAttributes -shr 16) -band 0xF000)
+              if ($fileType -ne 0) {
+                $requiredType = if ($isDirectory) { 0x4000 } else { 0x8000 }
+                if ($fileType -ne $requiredType) {
+                  throw "source archive contains a link or special file: $name"
+                }
+              }
+              if (-not $isDirectory) {
+                $unpackedBytes += [long]$entry.Length
+                if ($entry.Length -lt 0 -or $unpackedBytes -gt $maximumUnpackedBytes) {
+                  throw 'source archive exceeds the unpacked byte limit'
+                }
+              }
+
+              $relative = $name.Replace('/', [System.IO.Path]::DirectorySeparatorChar)
+              $destination = [System.IO.Path]::GetFullPath(
+                [System.IO.Path]::Combine($destinationRoot, $relative)
+              )
+              if (-not $destination.StartsWith($destinationRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+                throw "source archive member escapes the destination: $name"
+              }
+              if ($isDirectory) {
+                $null = New-Item -ItemType Directory -Path $destination -Force
+              } else {
+                $parent = [System.IO.Path]::GetDirectoryName($destination)
+                if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
+                  $null = New-Item -ItemType Directory -Path $parent -Force
+                }
+                [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $destination, $false)
+              }
+            }
+          } finally {
+            $zip.Dispose()
+          }
+
+          $sourceRoot = Join-Path $extractPath $archiveRoot
+          if (-not (Test-Path -LiteralPath (Join-Path $sourceRoot 'Cargo.toml') -PathType Leaf) -or
+              -not (Test-Path -LiteralPath (Join-Path $sourceRoot '.github/workflows/release.yml') -PathType Leaf)) {
+            throw 'source archive does not contain the expected Iteron workspace'
+          }
+          $workspace = [System.IO.Path]::GetFullPath($env:GITHUB_WORKSPACE)
+          $runnerWorkspace = [System.IO.Path]::GetFullPath($env:RUNNER_WORKSPACE)
+          if (-not $runnerWorkspace.EndsWith([string][System.IO.Path]::DirectorySeparatorChar)) {
+            $runnerWorkspace += [System.IO.Path]::DirectorySeparatorChar
+          }
+          if (-not $workspace.StartsWith($runnerWorkspace, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw 'GITHUB_WORKSPACE is outside RUNNER_WORKSPACE'
+          }
+          if (-not (Test-Path -LiteralPath $workspace -PathType Container)) {
+            $null = New-Item -ItemType Directory -Path $workspace
+          }
+          Get-ChildItem -LiteralPath $workspace -Force |
+            Remove-Item -Recurse -Force
+          Get-ChildItem -LiteralPath $sourceRoot -Force |
+            Move-Item -Destination $workspace -Force
+          if (-not (Test-Path -LiteralPath (Join-Path $workspace 'Cargo.toml') -PathType Leaf)) {
+            throw 'source materialization did not populate GITHUB_WORKSPACE'
+          }
+      # `github.workspace` is a backslash path on Windows, so the job-level CARGO_TARGET_DIR and
+      # the `--remap-path-prefix` in RUSTFLAGS arrive with separators that link.exe and rustc
+      # disagree about. Rewrite both to a mixed `C:/...` form before anything reads them; the
+      # remap prefix must still match the real workspace or the reproducibility guarantee silently
+      # stops applying. This step is a no-op on every other leg.
+      - name: Normalize Windows build paths for native tools
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          workspace=$(cygpath -m "$GITHUB_WORKSPACE")
+          {
+            echo "CARGO_TARGET_DIR=$workspace/target/release-build"
+            echo "RUSTFLAGS=--remap-path-prefix=$workspace=/workspace -C strip=symbols"
+          } >> "$GITHUB_ENV"
       - name: Verify pre-provisioned Linux build and sandbox dependencies
         if: runner.os == 'Linux'
         run: |
@@ -737,6 +920,17 @@ jobs:
           "${{ matrix.python }}" release-tools/fetch_tool.py syft "${{ matrix.host }}" \
             --output "$RUNNER_TEMP/release-bin/syft${{ matrix.tool-suffix }}"
           echo "$RUNNER_TEMP/release-bin" >> "$GITHUB_PATH"
+      # Windows is the only leg whose terminal byte projection is produced by a different console
+      # stack, so prove the frozen v4 bytes survive it before anything is packaged. Bounded to one
+      # test because this leg has no full-suite step to fall back on.
+      - name: Run the bounded Windows one-shot compatibility test
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        shell: bash
+        run: >-
+          cargo +"$RUST_VERSION" test
+          --locked -p iteron-cli --bin iteron
+          --target "${{ matrix.target }}"
+          output::tests::explicit_v4_projection_preserves_the_frozen_terminal_bytes
       # Stamp the build identity INTO the binary. Two artifacts cut from different commits both
       # reported `iteron 0.0.1`, so a user could not tell which one they had and an aged binary had
       # no way to say so. `--version` carries these; `-V` stays the bare semver matched below.
@@ -747,13 +941,16 @@ jobs:
         run: |
           set -euo pipefail
           # Derived from SOURCE_DATE_EPOCH, not the wall clock, so the stamp stays reproducible.
-          # `date -d @` is GNU-only and this matrix includes macOS; python3 is on both runners.
+          # `date -d @` is GNU-only and this matrix includes macOS; python3 is on every runner.
           ITERON_BUILD_DATE=$(python3 -c 'import os, time; print(time.strftime("%Y-%m-%d", time.gmtime(int(os.environ["SOURCE_DATE_EPOCH"]))))')
           export ITERON_BUILD_DATE
           cargo +"$RUST_VERSION" auditable build \
             --release --locked -p iteron-cli \
             --target "${{ matrix.target }}"
+      # `file`, `jq`, and ELF/Mach-O linkage vocabulary do not exist on Windows; the leg below
+      # asserts the same properties against a PE image instead.
       - name: Verify architecture, linkage, and executable smoke tests
+        if: matrix.target != 'x86_64-pc-windows-msvc'
         shell: bash
         run: |
           set -euo pipefail
@@ -783,6 +980,67 @@ jobs:
           if [[ "$target" == *-unknown-linux-musl ]]; then
             grep -Eq 'statically linked|static-pie linked' <<<"$description"
           fi
+      # The Windows counterpart of the step above. It must also leave MACHINE-CONTRACT.json in
+      # RUNNER_TEMP, because the packaging step copies that file into `dist` as this target's
+      # capability report and the release manifest digests it. The child process writes the file
+      # directly so its stdout bytes are not reinterpreted by the PowerShell pipeline.
+      - name: Verify native Windows PE and schema-v4 capability
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $binary = Join-Path $env:CARGO_TARGET_DIR '${{ matrix.target }}/release/${{ matrix.binary }}'
+          if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) {
+            throw "release binary missing at $binary"
+          }
+          $stream = [System.IO.File]::OpenRead($binary)
+          try {
+            $reader = New-Object System.IO.BinaryReader($stream)
+            if ($reader.ReadUInt16() -ne 0x5a4d) { throw 'release binary is not a PE image' }
+            $stream.Position = 0x3c
+            $stream.Position = $reader.ReadUInt32()
+            if ($reader.ReadUInt32() -ne 0x00004550) { throw 'release binary has no PE signature' }
+            $machine = $reader.ReadUInt16()
+            if ($machine -ne 0x8664) {
+              throw ('release binary is not an x86-64 PE image (machine 0x{0:x4})' -f $machine)
+            }
+          } finally {
+            $stream.Dispose()
+          }
+          $shortVersion = (& $binary -V | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0) { throw "-V exited with $LASTEXITCODE" }
+          if ($shortVersion -ne 'iteron ${{ needs.validate.outputs.version }}') {
+            throw "release binary reported the wrong version: $shortVersion"
+          }
+          $longVersion = (& $binary --version | Out-String)
+          if ($LASTEXITCODE -ne 0) { throw "--version exited with $LASTEXITCODE" }
+          if ($longVersion -notmatch '${{ needs.validate.outputs.commit }}') {
+            throw 'release binary does not carry the release commit'
+          }
+          if ($longVersion -notmatch '\d{4}-\d{2}-\d{2}') {
+            throw 'release binary does not carry a build date'
+          }
+          & $binary --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "--help exited with $LASTEXITCODE" }
+          $contractPath = Join-Path $env:RUNNER_TEMP 'MACHINE-CONTRACT.json'
+          $contractRun = Start-Process -FilePath $binary -ArgumentList '--machine-contract' `
+            -RedirectStandardOutput $contractPath -NoNewWindow -Wait -PassThru
+          if ($contractRun.ExitCode -ne 0) {
+            throw "--machine-contract exited with $($contractRun.ExitCode)"
+          }
+          $contract = Get-Content -LiteralPath $contractPath -Raw | ConvertFrom-Json
+          if ($contract.schema_version -ne 1 -or $contract.type -ne 'machine_contract') {
+            throw 'release binary returned the wrong capability schema'
+          }
+          if (-not ($contract.cli_stream_versions -contains 4)) {
+            throw 'release binary does not retain CLI stream schema 4'
+          }
+          foreach ($field in 'default_cli_stream_version', 'resident_protocol_version') {
+            $value = $contract.$field
+            if ($null -eq $value -or $value -isnot [System.ValueType] -or $value -is [bool]) {
+              throw "release binary reported a non-numeric $field"
+            }
+          }
       - name: Complete one task with the native release client
         id: native-client
         run: >-
@@ -792,14 +1050,15 @@ jobs:
         id: native-version-independence
         if: >-
           success() &&
-          matrix.target == 'x86_64-unknown-linux-musl'
+          (matrix.target == 'x86_64-unknown-linux-musl' ||
+          matrix.target == 'x86_64-pc-windows-msvc')
         shell: bash
         env:
           CARGO_TERM_COLOR: never
-          # This target's test binary — and the server child it spawns — run under
+          # The musl target's test binary — and the server child it spawns — run under
           # qemu-x86_64-static on an aarch64 host. The test's waits are ceilings, not sleeps, so
           # widening them costs a passing run nothing and keeps emulation latency from being
-          # reported as a protocol failure.
+          # reported as a protocol failure. The same ceiling covers Windows process spawn latency.
           ITERON_TEST_TIMEOUT_SCALE: 10
         run: |
           set -euo pipefail
@@ -848,6 +1107,15 @@ jobs:
               --test headless_serve --target "$target" \
               no_tty_skew_reconnect_and_result_v5_share_one_headless_server \
               -- --exact
+          # ConPTY is the one terminal takeover path with no POSIX equivalent, so the skew refusal
+          # has to be proven on its own console stack rather than inferred from the musl leg.
+          if [[ "$target" == x86_64-pc-windows-msvc ]]; then
+            run_exact conpty \
+              cargo +"$RUST_VERSION" test --locked -p iteron-cli \
+                --test windows_conpty --target "$target" \
+                native_conpty_rejects_version_skew_before_terminal_takeover \
+                -- --exact
+          fi
       - name: Generate and normalize the binary SBOM
         shell: bash
         run: |
@@ -913,6 +1181,29 @@ jobs:
             "dist/${{ steps.package.outputs.archive-name }}.sbom-attestation.json"
           test -s "dist/${{ steps.package.outputs.archive-name }}.provenance.json"
           test -s "dist/${{ steps.package.outputs.archive-name }}.sbom-attestation.json"
+      # `render_installer.py` syntax-checks a `.ps1` with the PowerShell parser, and this is the
+      # only job in the workflow that has PowerShell — `publish` runs on Linux. Render here so the
+      # dependency stays where the interpreter is; `publish` only collects the resulting artifact
+      # and signs it alongside `install.sh`.
+      - name: Render and syntax-check the Windows installer
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        shell: bash
+        run: |
+          set -euo pipefail
+          "${{ matrix.python }}" release-tools/render_installer.py \
+            --template install.ps1 \
+            --version "${{ needs.validate.outputs.version }}" \
+            --output "$RUNNER_TEMP/windows-installer/install.ps1"
+          test -s "$RUNNER_TEMP/windows-installer/install.ps1"
+      - name: Upload the rendered Windows installer
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: core-release-windows-installer
+          path: ${{ runner.temp }}/windows-installer/install.ps1
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: core-release-${{ matrix.target }}
@@ -976,6 +1267,11 @@ jobs:
       - name: Render release metadata
         run: |
           set -euo pipefail
+          # `install.ps1` is rendered and syntax-checked on the Windows build leg, because this
+          # runner has no PowerShell parser. It arrives here through the
+          # core-release-windows-installer artifact; fail before any release mutation if it did
+          # not, rather than publishing a release whose Windows installer is missing.
+          test -s dist/install.ps1
           python3 release-tools/render_installer.py \
             --template install.sh \
             --version "${{ needs.validate.outputs.version }}" \
@@ -987,18 +1283,28 @@ jobs:
             --target aarch64-apple-darwin \
             --target aarch64-unknown-linux-musl \
             --target x86_64-unknown-linux-musl \
+            --target x86_64-pc-windows-msvc \
             --protocol-source crates/protocol/src/wire.rs \
             --output dist/release-manifest.json \
             --receipt dist/release-manifest.receipt.json
           python3 release-tools/checksums.py \
             --dist dist \
             --output dist/SHA256SUMS
+          # The manifest's installer field is now a strict POSIX+Windows pair. Verify both exact
+          # bytes before signing or mutating the release so one platform cannot silently ship an
+          # installer that the public manifest does not bind.
+          python3 release-tools/verify_release.py installers \
+            --manifest dist/release-manifest.json \
+            --receipt dist/release-manifest.receipt.json \
+            --posix dist/install.sh \
+            --windows dist/install.ps1
       - name: Sign release metadata
         id: metadata-attestation
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: |
             ${{ github.workspace }}/dist/install.sh
+            ${{ github.workspace }}/dist/install.ps1
             ${{ github.workspace }}/dist/release-manifest.json
             ${{ github.workspace }}/dist/release-manifest.receipt.json
             ${{ github.workspace }}/dist/SHA256SUMS
@@ -1150,8 +1456,15 @@ jobs:
           done
           [[ "$release_verified" == true ]]
 
+          # Every published archive must be covered here. The Windows leg ships `.zip`, so a
+          # tar.gz-only glob would have attested nothing for it and still reported success.
+          # Counting the loop against the manifest's target list means a future archive suffix
+          # cannot reintroduce that silent gap: it fails the release instead of skipping it.
           shopt -s nullglob
-          for archive in dist/iteron-v*.tar.gz; do
+          expected_archives=$(jq '.targets | length' dist/release-manifest.json)
+          [[ "$expected_archives" =~ ^[1-9][0-9]*$ ]]
+          verified_archives=0
+          for archive in dist/iteron-v*.tar.gz dist/iteron-v*.zip; do
             gh attestation verify "$archive" \
               --repo "$GITHUB_REPOSITORY" \
               --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
@@ -1163,7 +1476,9 @@ jobs:
               --source-ref "$GITHUB_REF" \
               --source-digest "$GITHUB_SHA" \
               --predicate-type https://spdx.dev/Document/v2.3
+            verified_archives=$((verified_archives + 1))
           done
+          test "$verified_archives" -eq "$expected_archives"
 
   content-canary:
     name: release / content canary / ${{ matrix.target }}
@@ -1186,15 +1501,31 @@ jobs:
             target: x86_64-unknown-linux-musl
             archive-suffix: tar.gz
             python: python3
+          # Same anti-queue reasoning as the build matrix: resolve the labels from
+          # WINDOWS_RUNNER_LABELS and fall back to the hosted image, so an unregistered
+          # self-hosted label can never leave a published release un-canaried.
+          - runner: ${{ vars.WINDOWS_RUNNER_LABELS || '["windows-2025"]' }}
+            target: x86_64-pc-windows-msvc
+            archive-suffix: zip
+            python: python3
     runs-on: ${{ fromJSON(matrix.runner) }}
     timeout-minutes: 10
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        if: matrix.target != 'x86_64-pc-windows-msvc'
         with:
           ref: ${{ needs.validate.outputs.commit }}
           persist-credentials: false
+      - name: Materialize the exact Windows source through the GitHub API
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_REPOSITORY: ${{ github.repository }}
+          SOURCE_SHA: ${{ needs.validate.outputs.commit }}
+        run: *windows_source_materialization
       - name: Download, content-verify, extract, and smoke the exact artifact
         shell: bash
         env:
@@ -1207,11 +1538,20 @@ jobs:
           report="$archive.machine-contract.json"
           gh release download "$GITHUB_REF_NAME" \
             --repo "$GITHUB_REPOSITORY" \
+            --pattern install.sh \
+            --pattern install.ps1 \
             --pattern release-manifest.json \
             --pattern release-manifest.receipt.json \
             --pattern "$archive" \
             --pattern "$report" \
             --dir "$canary/download"
+          if [[ "${{ matrix.target }}" == x86_64-pc-windows-msvc ]]; then
+            "${{ matrix.python }}" release-tools/verify_release.py installers \
+              --manifest "$canary/download/release-manifest.json" \
+              --receipt "$canary/download/release-manifest.receipt.json" \
+              --posix "$canary/download/install.sh" \
+              --windows "$canary/download/install.ps1"
+          fi
           binary=$("${{ matrix.python }}" release-tools/verify_release.py artifact \
             --manifest "$canary/download/release-manifest.json" \
             --receipt "$canary/download/release-manifest.receipt.json" \
@@ -1226,6 +1566,82 @@ jobs:
           "${{ matrix.python }}" release-tools/verify_release.py contract \
             --manifest "$canary/download/release-manifest.json" \
             --report "$canary/live-machine-contract.json"
+      # `install.sh` is a POSIX installer, so the curl canary below cannot cover Windows. This is
+      # the only proof that `releases/latest/download/<archive>` resolves to the same bytes the
+      # tag published, which is the URL a Windows user actually fetches.
+      - name: Verify the latest Windows archive redirect
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $archiveName = 'iteron-v${{ needs.validate.outputs.version }}-${{ matrix.target }}.${{ matrix.archive-suffix }}'
+          $exactArchive = Join-Path $env:RUNNER_TEMP "core-content-canary/download/$archiveName"
+          if (-not (Test-Path -LiteralPath $exactArchive -PathType Leaf)) {
+            throw "content-verified Windows archive missing at $exactArchive"
+          }
+          $latestArchive = Join-Path $env:RUNNER_TEMP 'iteron-latest.zip'
+          curl.exe --proto '=https' --tlsv1.2 -LsSf --retry 6 --retry-all-errors `
+            --retry-delay 2 `
+            "https://github.com/$env:GITHUB_REPOSITORY/releases/latest/download/$archiveName" `
+            -o $latestArchive
+          if ($LASTEXITCODE -ne 0) {
+            throw "latest Windows archive download exited with $LASTEXITCODE"
+          }
+          $latestHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $latestArchive).Hash
+          $exactHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $exactArchive).Hash
+          if ($latestHash -ne $exactHash) {
+            throw 'latest Windows archive does not match the content-verified tag archive'
+          }
+      # Exercise the public copy-paste path, not only the checked-in template. Snapshot and restore
+      # the runner account's PATH registry value because this job may run on persistent company
+      # hardware; a canary must leave no stale temp directory in a long-lived user PATH.
+      - name: Install through the one-click Windows command
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $processPath = $env:PATH
+          $environmentKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+          $hadUserPath = $false
+          $rawUserPath = $null
+          $userPathKind = $null
+          if ($null -ne $environmentKey -and ($environmentKey.GetValueNames() -contains 'Path')) {
+            $hadUserPath = $true
+            $rawUserPath = [string]$environmentKey.GetValue(
+              'Path',
+              '',
+              [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
+            )
+            $userPathKind = $environmentKey.GetValueKind('Path')
+          }
+
+          $installRoot = Join-Path $env:RUNNER_TEMP 'iteron-one-click'
+          try {
+            $env:ITERON_INSTALL_DIR = $installRoot
+            [Net.ServicePointManager]::SecurityProtocol =
+              [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+            Invoke-RestMethod -Uri (
+              "https://github.com/$env:GITHUB_REPOSITORY/releases/latest/download/install.ps1"
+            ) | Invoke-Expression
+            $binary = Join-Path $installRoot 'iteron.exe'
+            $reported = & $binary -V
+            if ($LASTEXITCODE -ne 0 -or $reported -ne 'iteron ${{ needs.validate.outputs.version }}') {
+              throw 'the one-click Windows install did not produce the expected Iteron version'
+            }
+          } finally {
+            Remove-Item Env:ITERON_INSTALL_DIR -ErrorAction SilentlyContinue
+            $env:PATH = $processPath
+            if ($null -ne $environmentKey) {
+              if ($hadUserPath) {
+                $environmentKey.SetValue('Path', $rawUserPath, $userPathKind)
+              } else {
+                $environmentKey.DeleteValue('Path', $false)
+              }
+              $environmentKey.Dispose()
+            }
+            Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
+          }
+
   curl-canary:
     name: release / curl canary / ${{ matrix.target }}
     if: startsWith(github.ref, 'refs/tags/v')

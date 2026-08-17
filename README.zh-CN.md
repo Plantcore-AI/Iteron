@@ -31,7 +31,8 @@
 > [!WARNING]
 > **项目仍处于预发布阶段；代码执行默认不受沙箱约束。** Iteron 适合开发与评估，
 > 不应在敏感仓库中无人值守运行。使用 `--ask-permissions` 恢复能力审批，使用
-> `--confine` 将执行的代码放入 macOS Seatbelt 或 Linux bubblewrap 沙箱。
+> `--confine` 将执行的代码放入 macOS Seatbelt 或 Linux bubblewrap 沙箱。Windows
+> 没有代码执行沙箱；在 Windows 上使用 `--confine` 会拒绝执行命令。
 
 Iteron 将专注的全屏编码体验构建在模块化 Rust 运行时之上，支持交互式工作、
 有界单次自动化、显式权限、模型提供商路由、持久会话、验证以及机器可读输出。
@@ -43,9 +44,18 @@ Iteron 将专注的全屏编码体验构建在模块化 Rust 运行时之上，�
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/Plantcore-AI/Iteron/releases/latest/download/install.sh | sh
 ```
 
-安装器会校验所选版本的归档文件，无需 `sudo`，也不会修改 shell 启动文件。
-发布目标包括 macOS arm64、Linux arm64 与 Linux x86-64。版本固定、校验和、
+Windows PowerShell 可直接粘贴这一行一键试用：
+
+```powershell
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; Invoke-RestMethod -Uri 'https://github.com/Plantcore-AI/Iteron/releases/latest/download/install.ps1' | Invoke-Expression
+```
+
+安装器会校验所选版本的归档文件，并以当前用户身份安装，无需提权。
+发布目标包括 macOS arm64、Linux arm64、Linux x86-64 与 Windows x86-64。版本固定、校验和、
 证明材料与源码构建方式见[安装与验证指南](docs/getting-started/installation.md)。
+
+Windows 会获得原生二进制与安装器，但没有代码执行沙箱；其默认 operator-authority
+模式执行命令时不受约束。用于敏感仓库前请阅读[平台支持说明](docs/reference/platforms.md)。
 
 无需提供商凭据即可检查命令是否进入当前 shell 的搜索路径：
 

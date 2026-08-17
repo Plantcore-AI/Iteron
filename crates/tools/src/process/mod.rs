@@ -4,9 +4,14 @@
 //! Job identity, terminal input, resize, lifecycle, and cleanup all use the same supervisor handle,
 //! so model-facing calls and operator controls cannot drift into separate process tables.
 
+#[cfg(unix)]
 mod actor;
 mod output;
 mod policy;
+#[cfg(unix)]
+mod supervisor;
+#[cfg(not(unix))]
+#[path = "supervisor_unsupported.rs"]
 mod supervisor;
 mod types;
 
@@ -754,11 +759,9 @@ fn required_u16(input: &serde_json::Value, name: &str) -> Result<u16, String> {
         .and_then(serde_json::Value::as_u64)
         .and_then(|value| u16::try_from(value).ok())
         .ok_or_else(|| format!("{name} must be an integer within 1..=4096"))?;
-    iteron_sandbox::pty::WindowSize::new(
-        if name == "rows" { value } else { 1 },
-        if name == "cols" { value } else { 1 },
-    )
-    .map_err(|_| format!("{name} must be an integer within 1..=4096"))?;
+    if !(1..=4096).contains(&value) {
+        return Err(format!("{name} must be an integer within 1..=4096"));
+    }
     Ok(value)
 }
 

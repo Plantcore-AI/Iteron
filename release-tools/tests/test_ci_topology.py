@@ -70,8 +70,38 @@ class CiTopologyTest(unittest.TestCase):
         self.assertIn("Executed CI minutes", required)
         self.assertIn("listJobsForWorkflowRun", required)
 
-    def test_windows_pr_workflow_is_absent(self) -> None:
-        self.assertFalse((ROOT / ".github/workflows/windows.yml").exists())
+    def test_windows_pr_workflow_cannot_report_a_pass_it_did_not_earn(self) -> None:
+        # This lane was deleted in #277 when CI moved to the DGX, and was restored by #227 on a
+        # self-hosted Windows machine. It is allowed to exist again, but only on the two terms
+        # that made its removal correct in the first place.
+        workflow = (ROOT / ".github/workflows/windows.yml").read_text(encoding="utf-8")
+        # 1. #196: `continue-on-error` let an unstarted runner publish a green result. Match the
+        #    YAML key, not the bare word, so the header comment may still explain the history.
+        self.assertNotIn("continue-on-error:", workflow)
+        # 2. A job pointed at a self-hosted label no machine answers queues forever, so the lane
+        #    stays skipped until an operator publishes the labels.
+        self.assertIn("if: vars.WINDOWS_RUNNER_LABELS != ''", workflow)
+        self.assertIn("fromJSON(vars.WINDOWS_RUNNER_LABELS", workflow)
+        # The self-hosted Windows machine cannot reliably reach Git transport on github.com.
+        # Materialize an exact API zipball, and preserve fork correctness by pairing the PR head
+        # repository with the PR head SHA rather than compiling that SHA from the base repository.
+        self.assertNotIn("actions/checkout@", workflow)
+        self.assertIn(
+            "SOURCE_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || github.repository }}",
+            workflow,
+        )
+        self.assertIn(
+            "SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}",
+            workflow,
+        )
+        self.assertIn(
+            '"https://api.github.com/repos/$env:SOURCE_REPOSITORY/zipball/$env:SOURCE_SHA"',
+            workflow,
+        )
+        self.assertIn("--max-filesize $maximumArchiveBytes", workflow)
+        self.assertIn("source archive member escapes the destination", workflow)
+        # It must actually compile something, not just resolve a toolchain.
+        self.assertIn("--target x86_64-pc-windows-msvc", workflow)
 
     def test_dependabot_has_one_grouped_pr_per_ecosystem(self) -> None:
         config = (ROOT / ".github/dependabot.yml").read_text(encoding="utf-8")

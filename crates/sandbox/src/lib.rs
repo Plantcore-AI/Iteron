@@ -496,11 +496,9 @@ pub struct RunOutput {
 }
 
 const POST_KILL_DRAIN_SECS: u64 = 1;
-#[cfg(unix)]
 const TERMINATION_GRACE_MS: u64 = 50;
 /// Poll interval of the blocking reap fallback. It runs on a thread with no runtime to yield to,
 /// so the interval trades reap latency directly against spinning on `try_wait`.
-#[cfg(unix)]
 const BLOCKING_REAP_POLL_MS: u64 = 10;
 /// Exit code reported when the child left no wait-status code of its own — the signalled case,
 /// including the sandbox's own KILL after a timeout.

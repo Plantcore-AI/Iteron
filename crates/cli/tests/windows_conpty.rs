@@ -765,6 +765,20 @@ impl ConPty {
 impl Drop for ConPty {
     fn drop(&mut self) {
         if let Some(child) = self.child.as_mut() {
+            // `kill` signals the wrapper and nothing below it. The wrapper launches the real
+            // binary as a grandchild inside this same pseudoconsole, so signalling only the
+            // wrapper leaves that grandchild holding the ConPTY write handle open. The reader
+            // below then blocks forever — `read` returns 0 only once every writer is gone — and
+            // the abandoned process keeps its console host spinning on a core. A failing
+            // assertion would stop reporting the failure and hang the whole test binary
+            // instead. Take the console's process tree down before waiting on anything.
+            if let Some(pid) = child.process_id() {
+                let _ = Command::new("taskkill")
+                    .args(["/T", "/F", "/PID", &pid.to_string()])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+            }
             let _ = child.kill();
             let _ = child.wait();
         }

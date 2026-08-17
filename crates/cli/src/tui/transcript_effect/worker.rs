@@ -129,7 +129,12 @@ impl InjectedFault {
     }
 }
 
-#[cfg(any(target_os = "linux", all(test, unix)))]
+// Reachable wherever its callers are. `Request::ProcessDelay` is `all(test, unix)` and spawns a
+// real child, but `Request::Delay` is plain `#[cfg(test)]` and waits on this from every target, so
+// gating the helper on unix left the Windows test build with a call to a function that had been
+// configured out. `cargo check --workspace` never saw it — it does not build test targets — so the
+// break only surfaced in the release leg, which does.
+#[cfg(any(target_os = "linux", test))]
 pub(super) async fn cancelled(receiver: &mut tokio::sync::watch::Receiver<bool>) {
     if *receiver.borrow() {
         return;

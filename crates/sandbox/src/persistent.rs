@@ -64,10 +64,10 @@ struct ProcessGroupToken {
 pub struct ConfinedProcessControl(Arc<ProcessGroupToken>);
 
 impl ConfinedProcessControl {
-    pub(crate) fn for_child(pid: Option<u32>) -> Self {
+    pub(crate) fn for_child(_pid: Option<u32>) -> Self {
         Self(Arc::new(ProcessGroupToken {
             #[cfg(unix)]
-            pid,
+            pid: _pid,
             armed: Mutex::new(true),
         }))
     }

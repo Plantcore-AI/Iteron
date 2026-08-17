@@ -262,10 +262,19 @@ class ReleaseClientSmokeTest(unittest.TestCase):
         self.assertIn(
             '${{ matrix.target }}/release/${{ matrix.binary }}', smoke_step
         )
-        self.assertEqual(build.count("          - runner:"), 3)
-        self.assertEqual(build.count("            python: python3"), 3)
+        # Four platform variants since #227/#228 restored the Windows leg.
+        self.assertEqual(build.count("          - runner:"), 4)
+        self.assertEqual(build.count("            python: python3"), 4)
+        # Windows exposes `python`, not `python3`, unless the runner bootstrap installs the alias.
+        # `ops/windows-runner/bootstrap.ps1` does exactly that, so every leg stays on `python3`.
         self.assertEqual(build.count("            python: python\n"), 0)
-        self.assertNotIn("$latestHash -ne $exactHash", workflow)
+        # The Windows `latest` redirect must be proved against the content-verified tag archive,
+        # byte for byte, and must fail loudly when they diverge.
+        self.assertIn("$latestHash -ne $exactHash", workflow)
+        self.assertIn(
+            "latest Windows archive does not match the content-verified tag archive",
+            workflow,
+        )
 
     def test_result_validation_requires_every_current_terminal_field(self) -> None:
         authority = smoke.load_result_authority()

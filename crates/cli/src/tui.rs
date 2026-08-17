@@ -106,6 +106,8 @@ use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::io::Write;
+#[cfg(windows)]
+use std::path::Component;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -3379,14 +3381,14 @@ pub async fn run(
 #[derive(Clone)]
 struct ClipboardCommand {
     program: OsString,
-    args: &'static [&'static str],
+    args: Vec<String>,
 }
 
 #[cfg(target_os = "macos")]
 fn clipboard_commands(_environment: &[(OsString, OsString)]) -> Vec<ClipboardCommand> {
     vec![ClipboardCommand {
         program: "pngpaste".into(),
-        args: &["-"],
+        args: vec!["-".into()],
     }]
 }
 
@@ -3395,11 +3397,17 @@ fn clipboard_commands(_environment: &[(OsString, OsString)]) -> Vec<ClipboardCom
     vec![
         ClipboardCommand {
             program: "wl-paste".into(),
-            args: &["--no-newline", "--type", "image/png"],
+            args: vec!["--no-newline".into(), "--type".into(), "image/png".into()],
         },
         ClipboardCommand {
             program: "xclip".into(),
-            args: &["-selection", "clipboard", "-t", "image/png", "-o"],
+            args: vec![
+                "-selection".into(),
+                "clipboard".into(),
+                "-t".into(),
+                "image/png".into(),
+                "-o".into(),
+            ],
         },
     ]
 }
@@ -3415,12 +3423,12 @@ fn clipboard_commands(environment: &[(OsString, OsString)]) -> Vec<ClipboardComm
         .map(|program| {
             vec![ClipboardCommand {
                 program,
-                args: &[
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-Sta",
-                    "-Command",
-                    iteron_tunables::param_str("cli.tui.script", SCRIPT),
+                args: vec![
+                    "-NoProfile".into(),
+                    "-NonInteractive".into(),
+                    "-Sta".into(),
+                    "-Command".into(),
+                    iteron_tunables::param_str("cli.tui.script", SCRIPT).into(),
                 ],
             }]
         })

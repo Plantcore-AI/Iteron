@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import stat
 import tarfile
 import tempfile
@@ -28,7 +29,9 @@ from common import (
 
 MAX_JSON_BYTES = 1024 * 1024
 MAX_ARCHIVE_BYTES = 256 * 1024 * 1024
+MAX_INSTALLER_BYTES = 1024 * 1024
 MAX_UNPACKED_BYTES = 128 * 1024 * 1024
+INSTALLER_NAMES = {"posix": "install.sh", "windows": "install.ps1"}
 ARCHIVE_FILES = (
     "LICENSE",
     "README.md",
@@ -49,6 +52,11 @@ def parser() -> argparse.ArgumentParser:
     artifact.add_argument("--capability-report", required=True, type=Path)
     artifact.add_argument("--target", required=True)
     artifact.add_argument("--extract-dir", required=True, type=Path)
+    installers = commands.add_parser("installers")
+    installers.add_argument("--manifest", required=True, type=Path)
+    installers.add_argument("--receipt", required=True, type=Path)
+    installers.add_argument("--posix", required=True, type=Path)
+    installers.add_argument("--windows", required=True, type=Path)
     contract = commands.add_parser("contract")
     contract.add_argument("--manifest", required=True, type=Path)
     contract.add_argument("--report", required=True, type=Path)
@@ -75,17 +83,47 @@ def load_json(path: Path, label: str) -> dict[str, object]:
     return value
 
 
-def exact_digest(path: Path, evidence: object, label: str, max_bytes: int) -> None:
+def validate_digest_evidence(
+    evidence: object, label: str, expected_name: str | None = None
+) -> dict[str, object]:
     if not isinstance(evidence, dict) or set(evidence) != {"name", "sha256", "size"}:
         raise ReleaseToolError(f"{label} digest evidence has the wrong fields")
+    if (
+        not isinstance(evidence["name"], str)
+        or (expected_name is not None and evidence["name"] != expected_name)
+        or not isinstance(evidence["sha256"], str)
+        or re.fullmatch(r"[0-9a-f]{64}", evidence["sha256"]) is None
+        or type(evidence["size"]) is not int
+        or not 0 < evidence["size"] <= 512 * 1024 * 1024
+    ):
+        raise ReleaseToolError(f"{label} digest evidence is invalid")
+    return evidence
+
+
+def exact_digest(path: Path, evidence: object, label: str, max_bytes: int) -> None:
+    validated = validate_digest_evidence(evidence, label)
     require_regular_file(path, max_bytes=max_bytes)
     if (
-        evidence["name"] != path.name
-        or type(evidence["size"]) is not int
-        or evidence["size"] != path.stat().st_size
-        or evidence["sha256"] != sha256_file(path)
+        validated["name"] != path.name
+        or validated["size"] != path.stat().st_size
+        or validated["sha256"] != sha256_file(path)
     ):
         raise ReleaseToolError(f"{label} bytes do not match their content identity")
+
+
+def validate_installer_metadata(document: dict[str, object]) -> bool:
+    """Validate v3 installer metadata; return whether it is the complete new shape."""
+    value = document["installer"]
+    if isinstance(value, dict) and set(value) == {"name", "sha256", "size"}:
+        validate_digest_evidence(value, "legacy installer", "install.sh")
+        return False
+    if not isinstance(value, dict) or set(value) != set(INSTALLER_NAMES):
+        raise ReleaseToolError("release manifest installer metadata has the wrong shape")
+    for platform, expected_name in INSTALLER_NAMES.items():
+        validate_digest_evidence(
+            value[platform], f"{platform} installer", expected_name
+        )
+    return True
 
 
 def load_manifest(path: Path) -> dict[str, object]:
@@ -119,9 +157,39 @@ def load_manifest(path: Path) -> dict[str, object]:
         raise ReleaseToolError("release manifest tag and version disagree")
     if not isinstance(document["targets"], dict) or not document["targets"]:
         raise ReleaseToolError("release manifest targets must be an object")
+    validate_installer_metadata(document)
     for target in document["targets"]:
         validate_target(target if isinstance(target, str) else "")
     return document
+
+
+def verify_manifest_receipt(
+    manifest_path: Path, receipt_path: Path, document: dict[str, object]
+) -> None:
+    receipt = load_json(receipt_path, "release manifest receipt")
+    if set(receipt) != {"commit", "manifest", "schema_version", "tag", "type"} or (
+        receipt["schema_version"] != 1
+        or receipt["type"] != "release_manifest_receipt"
+        or receipt["commit"] != document["commit"]
+        or receipt["tag"] != document["tag"]
+    ):
+        raise ReleaseToolError("release manifest receipt metadata is invalid")
+    exact_digest(manifest_path, receipt["manifest"], "manifest", MAX_JSON_BYTES)
+
+
+def verify_installers(arguments: argparse.Namespace) -> None:
+    document = load_manifest(arguments.manifest)
+    verify_manifest_receipt(arguments.manifest, arguments.receipt, document)
+    if not validate_installer_metadata(document):
+        raise ReleaseToolError("release manifest has only the historical single installer")
+    installers = document["installer"]
+    for platform in INSTALLER_NAMES:
+        exact_digest(
+            getattr(arguments, platform),
+            installers[platform],
+            f"{platform} installer",
+            MAX_INSTALLER_BYTES,
+        )
 
 
 def verify_contract(document: dict[str, object], report_path: Path) -> None:
@@ -230,15 +298,7 @@ def extract_zip(archive_path: Path, root: str, target: str, destination: Path) -
 def verify_artifact(arguments: argparse.Namespace) -> Path:
     target = validate_target(arguments.target)
     document = load_manifest(arguments.manifest)
-    receipt = load_json(arguments.receipt, "release manifest receipt")
-    if set(receipt) != {"commit", "manifest", "schema_version", "tag", "type"} or (
-        receipt["schema_version"] != 1
-        or receipt["type"] != "release_manifest_receipt"
-        or receipt["commit"] != document["commit"]
-        or receipt["tag"] != document["tag"]
-    ):
-        raise ReleaseToolError("release manifest receipt metadata is invalid")
-    exact_digest(arguments.manifest, receipt["manifest"], "manifest", MAX_JSON_BYTES)
+    verify_manifest_receipt(arguments.manifest, arguments.receipt, document)
     targets = document["targets"]
     if target not in targets or not isinstance(targets[target], dict):
         raise ReleaseToolError("release manifest does not contain the requested target")
@@ -278,6 +338,10 @@ def main() -> None:
     arguments = parser().parse_args()
     if arguments.command == "artifact":
         print(verify_artifact(arguments).as_posix())
+    elif arguments.command == "installers":
+        verify_installers(arguments)
+        print(arguments.posix.as_posix())
+        print(arguments.windows.as_posix())
     else:
         verify_contract(load_manifest(arguments.manifest), arguments.report)
 

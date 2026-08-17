@@ -4,9 +4,16 @@
   "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "default_cli_stream_version": 5,
   "installer": {
-    "name": "install.sh",
-    "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
-    "size": 1024
+    "posix": {
+      "name": "install.sh",
+      "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "size": 1024
+    },
+    "windows": {
+      "name": "install.ps1",
+      "sha256": "9999999999999999999999999999999999999999999999999999999999999999",
+      "size": 16384
+    }
   },
   "legal": {
     "licenses": {
