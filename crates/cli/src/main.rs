@@ -1216,7 +1216,10 @@ fn main() -> std::process::ExitCode {
 }
 
 fn entry() -> std::process::ExitCode {
-    let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
         Ok(runtime) => runtime,
         Err(error) => {
             eprintln!("error: could not start the async runtime: {error}");
