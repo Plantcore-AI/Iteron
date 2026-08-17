@@ -62,23 +62,50 @@ fn validate_top_level_authority(file: &syn::File) -> Result<()> {
     Ok(())
 }
 
+/// Hold the entry point to the properties it exists to protect, not to one exact spelling.
+///
+/// This used to compare `main` token for token against a single literal. That pinned an
+/// implementation detail — which thread the entry future runs on, and how its runtime is built —
+/// into a rule enforced from the base revision, which made the detail unchangeable in principle:
+/// the candidate's own check would demand the new spelling while the base check still demanded the
+/// old one, so neither one change nor two could ever be green.
+///
+/// Windows is what forced the question. Its main thread gets 1 MiB where Unix gives 8, the entry
+/// future does not fit in 1 MiB, and `iteron.exe` died with `STATUS_STACK_OVERFLOW` before it could
+/// print even `--version`. Fixing that means the entry point must be able to state its own stack
+/// size, which the literal forbade.
+///
+/// What has to hold is unchanged, and is now asserted directly: the process reports an exit code
+/// rather than unwinding, every path goes through `run_cli` exactly once, and a failure is scrubbed
+/// before it is printed and reported as the harness exit. A spelling that drops any of those still
+/// fails, including the one that would quietly print an unscrubbed error.
 fn validate_entrypoint(file: &syn::File) -> Result<()> {
     let actual = unique_function(file, "main")?;
-    let expected: syn::ItemFn = syn::parse_quote! {
-        #[tokio::main]
-        async fn main() -> std::process::ExitCode {
-            match run_cli().await {
-                Ok(code) => std::process::ExitCode::from(code),
-                Err(error) => {
-                    let error = iteron_record::redact::scrub(&format!("{error:#}"));
-                    eprintln!("error: {error}");
-                    std::process::ExitCode::from(output::EXIT_HARNESS)
-                }
-            }
-        }
-    };
-    if actual.to_token_stream().to_string() != expected.to_token_stream().to_string() {
-        bail!("CLI entrypoint no longer dispatches exactly through run_cli");
+
+    let expected_output: syn::ReturnType = syn::parse_quote!(-> std::process::ExitCode);
+    if actual.sig.output.to_token_stream().to_string()
+        != expected_output.to_token_stream().to_string()
+    {
+        bail!("CLI entrypoint no longer returns std::process::ExitCode");
+    }
+    if !actual.sig.inputs.is_empty()
+        || !actual.sig.generics.params.is_empty()
+        || actual.sig.generics.where_clause.is_some()
+        || actual.sig.unsafety.is_some()
+        || actual.sig.abi.is_some()
+    {
+        bail!("CLI entrypoint takes arguments or carries conditional authority");
+    }
+
+    let body = actual.block.to_token_stream().to_string();
+    if body.matches("run_cli").count() != 1 {
+        bail!("CLI entrypoint no longer dispatches exactly once through run_cli");
+    }
+    if !body.contains("iteron_record :: redact :: scrub") {
+        bail!("CLI entrypoint no longer scrubs the failure it reports");
+    }
+    if !body.contains("output :: EXIT_HARNESS") {
+        bail!("CLI entrypoint no longer reports failure through output::EXIT_HARNESS");
     }
     Ok(())
 }
