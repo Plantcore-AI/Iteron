@@ -204,6 +204,22 @@ jobs:
           if (-not (Test-Path -LiteralPath (Join-Path $workspace 'Cargo.toml') -PathType Leaf)) {
             throw 'source materialization did not populate GITHUB_WORKSPACE'
           }
+
+          # Stamp every materialized file with the current time.
+          #
+          # Zip entries carry their own timestamps, so extraction reproduces mtimes that are older
+          # than the artifacts already sitting in the persistent CARGO_TARGET_DIR. Cargo decides
+          # freshness by comparing mtimes, so it concluded that a tree containing brand new commits
+          # was already built and skipped the work: a job finished its build step in 0.94s and then
+          # tested an `iteron.exe` from an hour earlier, which still carried a bug the commit under
+          # test had fixed. A lane that certifies a stale binary is worse than no lane, and nothing
+          # in the log says so.
+          #
+          # `git clone` never had this problem because it writes files as it creates them. This
+          # restores that property for the archive path.
+          $stamp = Get-Date
+          Get-ChildItem -LiteralPath $workspace -Recurse -Force -File |
+            ForEach-Object { $_.LastWriteTime = $stamp }
       # Self-hosted workspaces persist between runs, unlike hosted images. Two runners on one host
       # would otherwise share a `target/` and deadlock on cargo's file lock, so key it by runner
       # name the same way the DGX lanes in `ci.yml` do.
