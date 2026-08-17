@@ -1185,49 +1185,13 @@ fn run_prune_command(
     Ok(output::EXIT_SUCCESS)
 }
 
-/// Runs the entry path on a stack this crate states, not the one the platform hands `main`.
-///
-/// Windows gives the main thread 1 MiB where Unix gives 8, and the entry future does not fit in
-/// 1 MiB: on `x86_64-pc-windows-msvc`, `iteron.exe -V` printed `thread 'main' has overflowed its
-/// stack` and exited `0xC00000FD` without emitting anything else. Every Windows session died the
-/// same way, which is also why the native ConPTY oracle only ever captured an empty terminal.
-///
-/// Linking with `/STACK` would have fixed one target, and `.cargo/config.toml` is the wrong place
-/// to carry it: a `RUSTFLAGS` in the environment replaces `target.*.rustflags` wholesale rather
-/// than merging, and release builds set one. Stating the size here covers every target the same
-/// way and cannot be switched off from outside the build.
-///
-/// The size is written inline rather than bound to a `const`. The tunables census reads constants
-/// as advertised runtime-settable parameters, and this one cannot be: a thread's stack is fixed
-/// when the thread is created, which is the first thing this process does.
-fn main() -> std::process::ExitCode {
-    let entry = std::thread::Builder::new()
-        .name("iteron-main".to_owned())
-        .stack_size(8 * 1024 * 1024)
-        .spawn(|| {
-            tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()
-                .expect("start the entry runtime")
-                .block_on(async {
-                    match run_cli().await {
-                        Ok(code) => std::process::ExitCode::from(code),
-                        Err(error) => {
-                            let error = iteron_record::redact::scrub(&format!("{error:#}"));
-                            eprintln!("error: {error}");
-                            std::process::ExitCode::from(output::EXIT_HARNESS)
-                        }
-                    }
-                })
-        });
-    match entry {
-        // A panic inside the entry thread has already reported itself through the panic hook.
-        // Adding a second, vaguer message here would only bury the real one.
-        Ok(entry) => entry
-            .join()
-            .unwrap_or(std::process::ExitCode::from(output::EXIT_HARNESS)),
+#[tokio::main]
+async fn main() -> std::process::ExitCode {
+    match run_cli().await {
+        Ok(code) => std::process::ExitCode::from(code),
         Err(error) => {
-            eprintln!("error: could not start the entry thread: {error}");
+            let error = iteron_record::redact::scrub(&format!("{error:#}"));
+            eprintln!("error: {error}");
             std::process::ExitCode::from(output::EXIT_HARNESS)
         }
     }

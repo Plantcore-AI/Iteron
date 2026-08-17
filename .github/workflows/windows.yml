@@ -30,6 +30,20 @@ permissions:
 
 env:
   RUSTUP_TOOLCHAIN: 1.90.0
+  # Give the Windows binary the 8 MiB main-thread stack every other target already has. Windows
+  # reserves 1 MiB, the CLI's entry future does not fit in it, and `iteron.exe -V` died with
+  # `thread 'main' has overflowed its stack` (0xC00000FD) before printing anything -- which is
+  # also why the ConPTY oracle below only ever captured an empty terminal.
+  #
+  # It is stated here, and again on the Windows leg of `release.yml`, because the three tidier
+  # places are all closed by conformance: a `build.rs` is an implicit Cargo target, a repository
+  # `.cargo/config.toml` is not admitted by schema dependency authority, and `main` is a
+  # trusted-base schema function. Spawning the entry path onto a sized thread was tried and
+  # reverted; it tripped that guard and regressed `tui_pty`.
+  #
+  # The gap this leaves is honest and worth knowing: a Windows build made outside CI does not get
+  # this flag, so a developer building locally will still hit the overflow.
+  RUSTFLAGS: -C link-arg=/STACK:8388608
 
 concurrency:
   group: windows-${{ github.event.pull_request.number || github.ref }}
