@@ -256,3 +256,24 @@ jobs:
         run: >-
           cargo test --locked -p iteron-cli --test windows_conpty
           --target x86_64-pc-windows-msvc -- --test-threads=1
+
+      # A step timeout kills the cargo process, not the pseudoconsoles it left behind. Those
+      # survive as orphans holding a core each, and the runner then reports itself busy while the
+      # next job sits queued behind processes belonging to a job that already ended -- observed
+      # twice on this host, each time needing a manual kill to recover.
+      #
+      # This is deliberately narrow. It matches only the binaries this job starts, so a console
+      # belonging to the desktop runner on the same machine is left alone.
+      - name: release the pseudoconsoles this job leaked
+        if: always()
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $orphans = Get-CimInstance Win32_Process |
+            Where-Object {
+              $_.Name -eq 'iteron.exe' -or $_.Name -like 'windows_conpty-*.exe'
+            }
+          foreach ($orphan in $orphans) {
+            Write-Output "terminating leaked $($orphan.Name) ($($orphan.ProcessId))"
+            & taskkill /T /F /PID $orphan.ProcessId 2>&1 | Out-Null
+          }
+          if (-not $orphans) { Write-Output 'no leaked pseudoconsole clients' }
