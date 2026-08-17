@@ -52,14 +52,25 @@ def syntax_check(output: Path) -> None:
     elif suffix == POWERSHELL_SUFFIX:
         # The language parser reports syntax errors without executing a single statement, so an
         # installer template can never run during its own validation.
+        # The path is embedded in the script rather than passed after it. `-Command` does not
+        # populate `$args`; that is `-File` semantics. Anything written after the command string is
+        # appended to the command *text*, so the previous spelling turned the path into a stray
+        # token and PowerShell answered with `UnexpectedToken` -- reported here as
+        # "the file could not be read", because `$args[0]` was empty and `ParseFile` got $null.
+        # The Windows installer could therefore never be rendered at all; it went unnoticed because
+        # the release leg that renders it only runs on a tag, and no tag has been cut since.
+        #
+        # Single quotes make the literal inert, and doubling any single quote inside it keeps a
+        # path containing one from closing the string early.
+        literal = str(output).replace("'", "''")
         script = (
             "$errors = $null; "
             "$null = [System.Management.Automation.Language.Parser]::ParseFile("
-            "$args[0], [ref]$null, [ref]$errors); "
+            f"'{literal}', [ref]$null, [ref]$errors); "
             "if ($errors.Count -gt 0) { $errors | ForEach-Object { "
             "[Console]::Error.WriteLine($_.ToString()) }; exit 1 }"
         )
-        command = [powershell_interpreter(), "-NoProfile", "-NonInteractive", "-Command", script, str(output)]
+        command = [powershell_interpreter(), "-NoProfile", "-NonInteractive", "-Command", script]
     else:
         raise ReleaseToolError(f"unsupported installer template type: {suffix!r}")
     check = subprocess.run(command, check=False, capture_output=True, text=True)
