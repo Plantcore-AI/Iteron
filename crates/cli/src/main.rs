@@ -1185,23 +1185,25 @@ fn run_prune_command(
     Ok(output::EXIT_SUCCESS)
 }
 
-/// The entry path runs on a stack this size rather than on whatever the platform hands `main`.
+/// Runs the entry path on a stack this crate states, not the one the platform hands `main`.
 ///
-/// Windows gives the main thread 1 MiB where Unix gives 8, and the CLI's entry future does not fit
-/// in 1 MiB: on `x86_64-pc-windows-msvc`, `iteron.exe -V` printed `thread 'main' has overflowed its
+/// Windows gives the main thread 1 MiB where Unix gives 8, and the entry future does not fit in
+/// 1 MiB: on `x86_64-pc-windows-msvc`, `iteron.exe -V` printed `thread 'main' has overflowed its
 /// stack` and exited `0xC00000FD` without emitting anything else. Every Windows session died the
 /// same way, which is also why the native ConPTY oracle only ever captured an empty terminal.
 ///
 /// Linking with `/STACK` would have fixed one target, and `.cargo/config.toml` is the wrong place
 /// to carry it: a `RUSTFLAGS` in the environment replaces `target.*.rustflags` wholesale rather
-/// than merging, and release builds set one. Stating the size here fixes every target the same
+/// than merging, and release builds set one. Stating the size here covers every target the same
 /// way and cannot be switched off from outside the build.
-const MAIN_STACK_BYTES: usize = 8 * 1024 * 1024;
-
+///
+/// The size is written inline rather than bound to a `const`. The tunables census reads constants
+/// as advertised runtime-settable parameters, and this one cannot be: a thread's stack is fixed
+/// when the thread is created, which is the first thing this process does.
 fn main() -> std::process::ExitCode {
     let entry = std::thread::Builder::new()
         .name("iteron-main".to_owned())
-        .stack_size(MAIN_STACK_BYTES)
+        .stack_size(8 * 1024 * 1024)
         .spawn(|| {
             tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
