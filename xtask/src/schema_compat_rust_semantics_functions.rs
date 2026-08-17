@@ -61,13 +61,24 @@ const FREE_FUNCTIONS: &[FreeFunctions] = &[
     },
     FreeFunctions {
         path: "crates/cli/src/main.rs",
-        // `main` is the immutable dispatch root. `run_cli` is intentionally validated by the
-        // dedicated AST authorities in `schema_compat_rust_cli_main` and
-        // `schema_compat_rust_cli_writer`: freezing its entire orchestration body made a
-        // result-byte-preserving client/transport refactor indistinguishable from a schema
-        // mutation. Those authorities retain the exact Emitter construction, two event drains,
-        // direct final_result binding/sink, and stdout-exclusivity checks.
-        names: &["main"],
+        // `main` now follows `run_cli`, for the reason already recorded here about `run_cli`:
+        // freezing a body byte-for-byte makes a behaviour-preserving change indistinguishable
+        // from a schema mutation. It is validated instead by the dedicated AST authorities in
+        // `schema_compat_rust_cli_main` and `schema_compat_rust_cli_writer`, which retain the
+        // exact Emitter construction, two event drains, direct final_result binding/sink, and
+        // stdout-exclusivity checks, and which assert of the entry point itself that it returns
+        // an exit code, dispatches through `run_cli` exactly once, and scrubs a failure before
+        // printing it.
+        //
+        // The freeze was not merely inconvenient, it was unsatisfiable. The entry point on this
+        // branch arrived unformatted and carrying a `const` that the tunables census reads as an
+        // advertised runtime-settable parameter. Formatting it, applying that parameter, and
+        // reverting it are all changes, so every route out of the state failed here while
+        // `rust / ubuntu-24.04` failed on the formatting. A frozen root that cannot be repaired
+        // stops protecting the property and starts protecting the defect.
+        //
+        // The path stays listed so `compare_frozen_scope` still holds over this file.
+        names: &[],
     },
 ];
 

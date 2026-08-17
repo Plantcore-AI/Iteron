@@ -1185,54 +1185,16 @@ fn run_prune_command(
     Ok(output::EXIT_SUCCESS)
 }
 
-/// The entry path runs on a stack this size rather than on whatever the platform hands `main`.
-///
-/// Windows gives the main thread 1 MiB where Unix gives 8, and the CLI's entry future does not fit
-/// in 1 MiB: on `x86_64-pc-windows-msvc`, `iteron.exe -V` printed `thread 'main' has overflowed its
-/// stack` and exited `0xC00000FD` without emitting anything else. Every Windows session died the
-/// same way, which is also why the native ConPTY oracle only ever captured an empty terminal.
-///
-/// Linking with `/STACK` would have fixed one target, and `.cargo/config.toml` is the wrong place
-/// to carry it: a `RUSTFLAGS` in the environment replaces `target.*.rustflags` wholesale rather
-/// than merging, and release builds set one. Stating the size here fixes every target the same
-/// way and cannot be switched off from outside the build.
-const MAIN_STACK_BYTES: usize = 8 * 1024 * 1024;
-
-fn main() -> std::process::ExitCode {
-    match std::thread::Builder::new()
-        .name("iteron-main".to_owned())
-        .stack_size(MAIN_STACK_BYTES)
-        .spawn(entry)
-    {
-        // A panic already reported itself through the hook; do not print a second, worse message.
-        Ok(entry) => entry
-            .join()
-            .unwrap_or(std::process::ExitCode::from(output::EXIT_HARNESS)),
+#[tokio::main]
+async fn main() -> std::process::ExitCode {
+    match run_cli().await {
+        Ok(code) => std::process::ExitCode::from(code),
         Err(error) => {
-            eprintln!("error: could not start the entry thread: {error}");
+            let error = iteron_record::redact::scrub(&format!("{error:#}"));
+            eprintln!("error: {error}");
             std::process::ExitCode::from(output::EXIT_HARNESS)
         }
     }
-}
-
-fn entry() -> std::process::ExitCode {
-    let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
-        Ok(runtime) => runtime,
-        Err(error) => {
-            eprintln!("error: could not start the async runtime: {error}");
-            return std::process::ExitCode::from(output::EXIT_HARNESS);
-        }
-    };
-    runtime.block_on(async {
-        match run_cli().await {
-            Ok(code) => std::process::ExitCode::from(code),
-            Err(error) => {
-                let error = iteron_record::redact::scrub(&format!("{error:#}"));
-                eprintln!("error: {error}");
-                std::process::ExitCode::from(output::EXIT_HARNESS)
-            }
-        }
-    })
 }
 
 async fn run_cli() -> anyhow::Result<u8> {

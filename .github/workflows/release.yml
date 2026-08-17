@@ -825,7 +825,12 @@ jobs:
           workspace=$(cygpath -m "$GITHUB_WORKSPACE")
           {
             echo "CARGO_TARGET_DIR=$workspace/target/release-build"
-            echo "RUSTFLAGS=--remap-path-prefix=$workspace=/workspace -C strip=symbols"
+            # `/STACK` is repeated here on purpose. It lives in `.cargo/config.toml`, but a
+            # `RUSTFLAGS` in the environment replaces `target.*.rustflags` wholesale instead of
+            # merging with it, and the line below sets one. Dropping it would publish an
+            # `iteron.exe` that overflows its 1 MiB main-thread stack before printing `--version`
+            # -- and it would do so only in the release build, which is the worst place to find out.
+            echo "RUSTFLAGS=--remap-path-prefix=$workspace=/workspace -C strip=symbols -C link-arg=/STACK:8388608"
           } >> "$GITHUB_ENV"
       - name: Verify pre-provisioned Linux build and sandbox dependencies
         if: runner.os == 'Linux'

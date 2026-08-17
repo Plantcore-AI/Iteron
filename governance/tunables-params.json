@@ -19444,7 +19444,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui/transcript_effect/worker.rs",
-          "line": 273,
+          "line": 278,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -19597,7 +19597,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui/transcript_effect/worker.rs",
-          "line": 228,
+          "line": 233,
           "evidence": "Rust path reference"
         },
         {

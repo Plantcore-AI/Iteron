@@ -30,6 +30,20 @@ permissions:
 
 env:
   RUSTUP_TOOLCHAIN: 1.90.0
+  # Give the Windows binary the 8 MiB main-thread stack every other target already has. Windows
+  # reserves 1 MiB, the CLI's entry future does not fit in it, and `iteron.exe -V` died with
+  # `thread 'main' has overflowed its stack` (0xC00000FD) before printing anything -- which is
+  # also why the ConPTY oracle below only ever captured an empty terminal.
+  #
+  # It is stated here, and again on the Windows leg of `release.yml`, because the three tidier
+  # places are all closed by conformance: a `build.rs` is an implicit Cargo target, a repository
+  # `.cargo/config.toml` is not admitted by schema dependency authority, and `main` is a
+  # trusted-base schema function. Spawning the entry path onto a sized thread was tried and
+  # reverted; it tripped that guard and regressed `tui_pty`.
+  #
+  # The gap this leaves is honest and worth knowing: a Windows build made outside CI does not get
+  # this flag, so a developer building locally will still hit the overflow.
+  RUSTFLAGS: -C link-arg=/STACK:8388608
 
 concurrency:
   group: windows-${{ github.event.pull_request.number || github.ref }}
@@ -204,6 +218,22 @@ jobs:
           if (-not (Test-Path -LiteralPath (Join-Path $workspace 'Cargo.toml') -PathType Leaf)) {
             throw 'source materialization did not populate GITHUB_WORKSPACE'
           }
+
+          # Stamp every materialized file with the current time.
+          #
+          # Zip entries carry their own timestamps, so extraction reproduces mtimes that are older
+          # than the artifacts already sitting in the persistent CARGO_TARGET_DIR. Cargo decides
+          # freshness by comparing mtimes, so it concluded that a tree containing brand new commits
+          # was already built and skipped the work: a job finished its build step in 0.94s and then
+          # tested an `iteron.exe` from an hour earlier, which still carried a bug the commit under
+          # test had fixed. A lane that certifies a stale binary is worse than no lane, and nothing
+          # in the log says so.
+          #
+          # `git clone` never had this problem because it writes files as it creates them. This
+          # restores that property for the archive path.
+          $stamp = Get-Date
+          Get-ChildItem -LiteralPath $workspace -Recurse -Force -File |
+            ForEach-Object { $_.LastWriteTime = $stamp }
       # Self-hosted workspaces persist between runs, unlike hosted images. Two runners on one host
       # would otherwise share a `target/` and deadlock on cargo's file lock, so key it by runner
       # name the same way the DGX lanes in `ci.yml` do.
@@ -240,3 +270,24 @@ jobs:
         run: >-
           cargo test --locked -p iteron-cli --test windows_conpty
           --target x86_64-pc-windows-msvc -- --test-threads=1
+
+      # A step timeout kills the cargo process, not the pseudoconsoles it left behind. Those
+      # survive as orphans holding a core each, and the runner then reports itself busy while the
+      # next job sits queued behind processes belonging to a job that already ended -- observed
+      # twice on this host, each time needing a manual kill to recover.
+      #
+      # This is deliberately narrow. It matches only the binaries this job starts, so a console
+      # belonging to the desktop runner on the same machine is left alone.
+      - name: release the pseudoconsoles this job leaked
+        if: always()
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $orphans = Get-CimInstance Win32_Process |
+            Where-Object {
+              $_.Name -eq 'iteron.exe' -or $_.Name -like 'windows_conpty-*.exe'
+            }
+          foreach ($orphan in $orphans) {
+            Write-Output "terminating leaked $($orphan.Name) ($($orphan.ProcessId))"
+            & taskkill /T /F /PID $orphan.ProcessId 2>&1 | Out-Null
+          }
+          if (-not $orphans) { Write-Output 'no leaked pseudoconsole clients' }
