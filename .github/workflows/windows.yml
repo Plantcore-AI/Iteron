@@ -50,10 +50,156 @@ jobs:
         # we provisioned ourselves, and `bash` only exists there via Git for Windows.
         shell: powershell
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          persist-credentials: false
+      # Git transport to github.com is repeatedly reset from this Windows host, while the GitHub
+      # API and its codeload redirect remain reachable. Materialize the exact immutable commit
+      # without a `.git` directory; this job only checks/builds/tests and never needs repository
+      # history. For a fork PR, both repository and SHA come from the PR head, so this cannot
+      # silently compile the base repository at an unrelated commit.
+      - name: materialize the exact source through the GitHub API
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:SOURCE_REPOSITORY -notmatch '^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$') {
+            throw 'unexpected source repository'
+          }
+          $repositoryParts = $env:SOURCE_REPOSITORY.Split('/')
+          if ($repositoryParts.Count -ne 2 -or $repositoryParts -contains '.' -or $repositoryParts -contains '..') {
+            throw 'unsafe source repository'
+          }
+          if ($env:SOURCE_SHA -notmatch '^[0-9a-f]{40}$') {
+            throw 'unexpected source commit'
+          }
+
+          $maximumArchiveBytes = 268435456
+          $maximumMembers = 20000
+          $maximumUnpackedBytes = 1073741824
+          $materialization = Join-Path $env:RUNNER_TEMP ("iteron-source-$env:SOURCE_SHA")
+          if (Test-Path -LiteralPath $materialization) {
+            Remove-Item -LiteralPath $materialization -Recurse -Force
+          }
+          $null = New-Item -ItemType Directory -Path $materialization
+          $archivePath = Join-Path $materialization 'source.zip'
+          $extractPath = Join-Path $materialization 'extract'
+          $null = New-Item -ItemType Directory -Path $extractPath
+          $apiUrl = "https://api.github.com/repos/$env:SOURCE_REPOSITORY/zipball/$env:SOURCE_SHA"
+
+          # curl does not forward Authorization to the cross-host codeload redirect unless
+          # --location-trusted is used. Deliberately do not use that option: the token is sent
+          # only to api.github.com and never becomes a codeload credential.
+          & curl.exe --proto '=https' --tlsv1.2 --fail --location `
+            --retry 6 --retry-all-errors --retry-delay 2 `
+            --connect-timeout 20 --max-time 300 --max-filesize $maximumArchiveBytes `
+            --header "Accept: application/vnd.github+json" `
+            --header "Authorization: Bearer $env:GH_TOKEN" `
+            --header "X-GitHub-Api-Version: 2026-03-10" `
+            --output $archivePath $apiUrl
+          if ($LASTEXITCODE -ne 0) {
+            throw "source download failed with curl exit code $LASTEXITCODE"
+          }
+          $archiveBytes = (Get-Item -LiteralPath $archivePath).Length
+          if ($archiveBytes -le 0 -or $archiveBytes -gt $maximumArchiveBytes) {
+            throw 'source archive is empty or oversized'
+          }
+
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $destinationRoot = [System.IO.Path]::GetFullPath($extractPath)
+          if (-not $destinationRoot.EndsWith([string][System.IO.Path]::DirectorySeparatorChar)) {
+            $destinationRoot += [System.IO.Path]::DirectorySeparatorChar
+          }
+          $zip = [System.IO.Compression.ZipFile]::OpenRead($archivePath)
+          try {
+            if ($zip.Entries.Count -le 0 -or $zip.Entries.Count -gt $maximumMembers) {
+              throw 'source archive has an invalid member count'
+            }
+            $archiveRoot = $null
+            $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+            [long]$unpackedBytes = 0
+            foreach ($entry in $zip.Entries) {
+              $name = $entry.FullName
+              if ([string]::IsNullOrWhiteSpace($name) -or $name.Contains('\') -or
+                  $name.Contains(':') -or $name.StartsWith('/') -or
+                  [System.IO.Path]::IsPathRooted($name)) {
+                throw "unsafe source archive path: $name"
+              }
+              $segments = $name.TrimEnd('/').Split('/')
+              if ($segments.Count -eq 0 -or $segments -contains '' -or
+                  $segments -contains '.' -or $segments -contains '..') {
+                throw "source archive path escapes its root: $name"
+              }
+              if ($null -eq $archiveRoot) {
+                $archiveRoot = $segments[0]
+              } elseif ($segments[0] -cne $archiveRoot) {
+                throw 'source archive contains more than one root'
+              }
+              if (-not $seen.Add($name)) {
+                throw "source archive repeats a member: $name"
+              }
+
+              $isDirectory = [string]::IsNullOrEmpty($entry.Name)
+              if ($isDirectory -ne $name.EndsWith('/')) {
+                throw "source archive member type disagrees with its path: $name"
+              }
+              $fileType = (([int]$entry.ExternalAttributes -shr 16) -band 0xF000)
+              if ($fileType -ne 0) {
+                $requiredType = if ($isDirectory) { 0x4000 } else { 0x8000 }
+                if ($fileType -ne $requiredType) {
+                  throw "source archive contains a link or special file: $name"
+                }
+              }
+              if (-not $isDirectory) {
+                $unpackedBytes += [long]$entry.Length
+                if ($entry.Length -lt 0 -or $unpackedBytes -gt $maximumUnpackedBytes) {
+                  throw 'source archive exceeds the unpacked byte limit'
+                }
+              }
+
+              $relative = $name.Replace('/', [System.IO.Path]::DirectorySeparatorChar)
+              $destination = [System.IO.Path]::GetFullPath(
+                [System.IO.Path]::Combine($destinationRoot, $relative)
+              )
+              if (-not $destination.StartsWith($destinationRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+                throw "source archive member escapes the destination: $name"
+              }
+              if ($isDirectory) {
+                $null = New-Item -ItemType Directory -Path $destination -Force
+              } else {
+                $parent = [System.IO.Path]::GetDirectoryName($destination)
+                if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
+                  $null = New-Item -ItemType Directory -Path $parent -Force
+                }
+                [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $destination, $false)
+              }
+            }
+          } finally {
+            $zip.Dispose()
+          }
+
+          $sourceRoot = Join-Path $extractPath $archiveRoot
+          if (-not (Test-Path -LiteralPath (Join-Path $sourceRoot 'Cargo.toml') -PathType Leaf) -or
+              -not (Test-Path -LiteralPath (Join-Path $sourceRoot '.github/workflows/windows.yml') -PathType Leaf)) {
+            throw 'source archive does not contain the expected Iteron workspace'
+          }
+          $workspace = [System.IO.Path]::GetFullPath($env:GITHUB_WORKSPACE)
+          $runnerWorkspace = [System.IO.Path]::GetFullPath($env:RUNNER_WORKSPACE)
+          if (-not $runnerWorkspace.EndsWith([string][System.IO.Path]::DirectorySeparatorChar)) {
+            $runnerWorkspace += [System.IO.Path]::DirectorySeparatorChar
+          }
+          if (-not $workspace.StartsWith($runnerWorkspace, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw 'GITHUB_WORKSPACE is outside RUNNER_WORKSPACE'
+          }
+          if (-not (Test-Path -LiteralPath $workspace -PathType Container)) {
+            $null = New-Item -ItemType Directory -Path $workspace
+          }
+          Get-ChildItem -LiteralPath $workspace -Force |
+            Remove-Item -Recurse -Force
+          Get-ChildItem -LiteralPath $sourceRoot -Force |
+            Move-Item -Destination $workspace -Force
+          if (-not (Test-Path -LiteralPath (Join-Path $workspace 'Cargo.toml') -PathType Leaf)) {
+            throw 'source materialization did not populate GITHUB_WORKSPACE'
+          }
       # Self-hosted workspaces persist between runs, unlike hosted images. Two runners on one host
       # would otherwise share a `target/` and deadlock on cargo's file lock, so key it by runner
       # name the same way the DGX lanes in `ci.yml` do.

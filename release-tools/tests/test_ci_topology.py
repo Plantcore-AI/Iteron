@@ -82,6 +82,24 @@ class CiTopologyTest(unittest.TestCase):
         #    stays skipped until an operator publishes the labels.
         self.assertIn("if: vars.WINDOWS_RUNNER_LABELS != ''", workflow)
         self.assertIn("fromJSON(vars.WINDOWS_RUNNER_LABELS", workflow)
+        # The self-hosted Windows machine cannot reliably reach Git transport on github.com.
+        # Materialize an exact API zipball, and preserve fork correctness by pairing the PR head
+        # repository with the PR head SHA rather than compiling that SHA from the base repository.
+        self.assertNotIn("actions/checkout@", workflow)
+        self.assertIn(
+            "SOURCE_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || github.repository }}",
+            workflow,
+        )
+        self.assertIn(
+            "SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}",
+            workflow,
+        )
+        self.assertIn(
+            '"https://api.github.com/repos/$env:SOURCE_REPOSITORY/zipball/$env:SOURCE_SHA"',
+            workflow,
+        )
+        self.assertIn("--max-filesize $maximumArchiveBytes", workflow)
+        self.assertIn("source archive member escapes the destination", workflow)
         # It must actually compile something, not just resolve a toolchain.
         self.assertIn("--target x86_64-pc-windows-msvc", workflow)
 
