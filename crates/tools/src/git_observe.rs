@@ -10,7 +10,6 @@ use iteron_protocol::{Capability, Purity, ToolSpec};
 use serde_json::Value;
 use std::ffi::OsString;
 use std::path::Path;
-#[cfg(unix)]
 use std::time::Duration;
 
 const DEFAULT_LOG_COUNT: usize = 20;
