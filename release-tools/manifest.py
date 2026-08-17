@@ -164,7 +164,14 @@ def create_release(arguments: argparse.Namespace) -> None:
     if arguments.receipt.resolve() == arguments.output.resolve():
         raise ReleaseToolError("manifest and receipt outputs must be distinct")
 
-    installer = digest_entry(arguments.dist / "install.sh")
+    # Keep the v3 top-level `installer` key because the strict release verifier
+    # treats that field set as the wire contract. Its value is now the complete,
+    # platform-keyed installer set; the schema still accepts historical v3
+    # manifests whose value was the single install.sh asset.
+    installer = {
+        "posix": digest_entry(arguments.dist / "install.sh"),
+        "windows": digest_entry(arguments.dist / "install.ps1"),
+    }
     legal = {
         "licenses": digest_entry(arguments.dist / "THIRD_PARTY_LICENSES.html"),
         "notices": digest_entry(arguments.dist / "THIRD_PARTY_NOTICES.txt"),

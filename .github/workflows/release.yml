@@ -1142,6 +1142,14 @@ jobs:
           python3 release-tools/checksums.py \
             --dist dist \
             --output dist/SHA256SUMS
+          # The manifest's installer field is now a strict POSIX+Windows pair. Verify both exact
+          # bytes before signing or mutating the release so one platform cannot silently ship an
+          # installer that the public manifest does not bind.
+          python3 release-tools/verify_release.py installers \
+            --manifest dist/release-manifest.json \
+            --receipt dist/release-manifest.receipt.json \
+            --posix dist/install.sh \
+            --windows dist/install.ps1
       - name: Sign release metadata
         id: metadata-attestation
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
@@ -1373,11 +1381,20 @@ jobs:
           report="$archive.machine-contract.json"
           gh release download "$GITHUB_REF_NAME" \
             --repo "$GITHUB_REPOSITORY" \
+            --pattern install.sh \
+            --pattern install.ps1 \
             --pattern release-manifest.json \
             --pattern release-manifest.receipt.json \
             --pattern "$archive" \
             --pattern "$report" \
             --dir "$canary/download"
+          if [[ "${{ matrix.target }}" == x86_64-pc-windows-msvc ]]; then
+            "${{ matrix.python }}" release-tools/verify_release.py installers \
+              --manifest "$canary/download/release-manifest.json" \
+              --receipt "$canary/download/release-manifest.receipt.json" \
+              --posix "$canary/download/install.sh" \
+              --windows "$canary/download/install.ps1"
+          fi
           binary=$("${{ matrix.python }}" release-tools/verify_release.py artifact \
             --manifest "$canary/download/release-manifest.json" \
             --receipt "$canary/download/release-manifest.receipt.json" \
@@ -1417,6 +1434,55 @@ jobs:
           $exactHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $exactArchive).Hash
           if ($latestHash -ne $exactHash) {
             throw 'latest Windows archive does not match the content-verified tag archive'
+          }
+      # Exercise the public copy-paste path, not only the checked-in template. Snapshot and restore
+      # the runner account's PATH registry value because this job may run on persistent company
+      # hardware; a canary must leave no stale temp directory in a long-lived user PATH.
+      - name: Install through the one-click Windows command
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $processPath = $env:PATH
+          $environmentKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+          $hadUserPath = $false
+          $rawUserPath = $null
+          $userPathKind = $null
+          if ($null -ne $environmentKey -and ($environmentKey.GetValueNames() -contains 'Path')) {
+            $hadUserPath = $true
+            $rawUserPath = [string]$environmentKey.GetValue(
+              'Path',
+              '',
+              [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
+            )
+            $userPathKind = $environmentKey.GetValueKind('Path')
+          }
+
+          $installRoot = Join-Path $env:RUNNER_TEMP 'iteron-one-click'
+          try {
+            $env:ITERON_INSTALL_DIR = $installRoot
+            [Net.ServicePointManager]::SecurityProtocol =
+              [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+            Invoke-RestMethod -Uri (
+              "https://github.com/$env:GITHUB_REPOSITORY/releases/latest/download/install.ps1"
+            ) | Invoke-Expression
+            $binary = Join-Path $installRoot 'iteron.exe'
+            $reported = & $binary -V
+            if ($LASTEXITCODE -ne 0 -or $reported -ne 'iteron ${{ needs.validate.outputs.version }}') {
+              throw 'the one-click Windows install did not produce the expected Iteron version'
+            }
+          } finally {
+            Remove-Item Env:ITERON_INSTALL_DIR -ErrorAction SilentlyContinue
+            $env:PATH = $processPath
+            if ($null -ne $environmentKey) {
+              if ($hadUserPath) {
+                $environmentKey.SetValue('Path', $rawUserPath, $userPathKind)
+              } else {
+                $environmentKey.DeleteValue('Path', $false)
+              }
+              $environmentKey.Dispose()
+            }
+            Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
           }
 
   curl-canary:

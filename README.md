@@ -32,7 +32,8 @@
 > **Pre-alpha; code execution is unconfined by default.** Iteron is intended for
 > development and evaluation, not unattended use on sensitive repositories.
 > Use `--ask-permissions` to restore the capability gate and `--confine` to put
-> executed code inside the macOS Seatbelt or Linux bubblewrap sandbox.
+> executed code inside the macOS Seatbelt or Linux bubblewrap sandbox. Windows
+> has no code-execution sandbox; `--confine` refuses to run commands there.
 
 Iteron combines a focused full-screen coding experience with a modular Rust
 runtime. It supports interactive work, bounded one-shot automation, explicit
@@ -48,12 +49,12 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/Plantcore-AI/Iteron/rel
 On Windows, use the PowerShell installer from the same release:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\install.ps1
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; Invoke-RestMethod -Uri 'https://github.com/Plantcore-AI/Iteron/releases/latest/download/install.ps1' | Invoke-Expression
 ```
 
-The installer verifies the selected release archive, installs without `sudo`,
-and does not edit shell profiles. Release targets are macOS arm64, Linux arm64,
-Linux x86-64, and Windows x86-64. See the [installation and verification
+The installers verify the selected release archive and install per-user without
+elevation. Release targets are macOS arm64, Linux arm64, Linux x86-64, and
+Windows x86-64. See the [installation and verification
 guide](docs/getting-started/installation.md) for version pinning, checksums,
 attestations, and source builds.
 

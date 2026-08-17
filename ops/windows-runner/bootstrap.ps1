@@ -66,6 +66,17 @@ param(
     [Parameter()]
     [string]$RustRoot = 'C:\rust',
 
+    # Optional regional mirrors. Persist these machine-wide so both runner services inherit them.
+    # Leave empty to use the upstream defaults.
+    [Parameter()]
+    [string]$RustupDistServer,
+
+    [Parameter()]
+    [string]$RustupUpdateRoot,
+
+    [Parameter()]
+    [string]$CargoRegistryIndex,
+
     [Parameter()]
     [string]$VsInstallPath = 'C:\BuildTools',
 
@@ -344,10 +355,17 @@ function Test-CommandVersion {
     $resolved = Get-Command $Command -CommandType Application -ErrorAction SilentlyContinue |
         Select-Object -First 1
     if ($null -eq $resolved) { return $null }
+    $previousErrorAction = $ErrorActionPreference
     try {
+        # Several healthy version commands (notably rustup 1.29) write informational lines to
+        # stderr. Under this script's fail-closed Stop preference, PS 5.1 promotes those native
+        # lines to a terminating NativeCommandError even when the process exits zero.
+        $ErrorActionPreference = 'Continue'
         $out = & $resolved.Source @Arguments 2>&1
     } catch {
         return $null
+    } finally {
+        $ErrorActionPreference = $previousErrorAction
     }
     if ($null -eq $out) { return $null }
     $line = @($out | ForEach-Object { "$_" } | Where-Object { $_.Trim() -ne '' }) | Select-Object -First 1
@@ -425,12 +443,49 @@ function Install-VisualStudioBuildTools {
 function Install-Rust {
     Write-Step "Rust $RustToolchain (machine-wide, target $RustTarget)"
 
+    if (-not [string]::IsNullOrWhiteSpace($RustupDistServer)) {
+        if ($RustupDistServer -notmatch '^https://') {
+            throw 'RustupDistServer must be an HTTPS URL.'
+        }
+        Set-MachineEnvVar -Name 'RUSTUP_DIST_SERVER' -Value $RustupDistServer.TrimEnd('/')
+    }
+    if (-not [string]::IsNullOrWhiteSpace($RustupUpdateRoot)) {
+        if ($RustupUpdateRoot -notmatch '^https://') {
+            throw 'RustupUpdateRoot must be an HTTPS URL.'
+        }
+        Set-MachineEnvVar -Name 'RUSTUP_UPDATE_ROOT' -Value $RustupUpdateRoot.TrimEnd('/')
+    }
+    if (-not [string]::IsNullOrWhiteSpace($CargoRegistryIndex)) {
+        if ($CargoRegistryIndex -notmatch '^(sparse\+)?https://') {
+            throw 'CargoRegistryIndex must be an HTTPS or sparse+HTTPS URL.'
+        }
+        Set-MachineEnvVar -Name 'CARGO_REGISTRIES_CRATES_IO_INDEX' -Value $CargoRegistryIndex
+    }
+
     # Machine-wide CARGO_HOME/RUSTUP_HOME: the runner service account is NOT the interactive
     # Administrator, so a per-user ~/.cargo would be invisible to CI.
     $cargoHome = Join-Path $RustRoot 'cargo'
     $rustupHome = Join-Path $RustRoot 'rustup'
     foreach ($dir in @($RustRoot, $cargoHome, $rustupHome)) {
         if (-not (Test-Path -LiteralPath $dir)) { [void](New-Item -ItemType Directory -Path $dir -Force) }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($CargoRegistryIndex)) {
+        # CARGO_REGISTRIES_CRATES_IO_INDEX alone does not replace Cargo's built-in crates.io
+        # source. Write the documented source replacement into the machine-wide CARGO_HOME so
+        # NETWORK SERVICE fetches both the sparse index and crate payloads through the mirror.
+        $cargoConfig = @"
+[source.crates-io]
+replace-with = "iteron-mirror"
+
+[source.iteron-mirror]
+registry = "$CargoRegistryIndex"
+
+[net]
+git-fetch-with-cli = true
+"@
+        $cargoConfigPath = Join-Path $cargoHome 'config.toml'
+        Set-Content -LiteralPath $cargoConfigPath -Value $cargoConfig -Encoding ascii
+        Write-Ok "Cargo crates.io source replacement = $CargoRegistryIndex"
     }
     Set-MachineEnvVar -Name 'CARGO_HOME' -Value $cargoHome
     Set-MachineEnvVar -Name 'RUSTUP_HOME' -Value $rustupHome
@@ -498,7 +553,12 @@ function Install-GitForWindows {
     $gitBin = Join-Path $env:ProgramFiles 'Git\bin'
     $gitCmd = Join-Path $env:ProgramFiles 'Git\cmd'
 
-    $have = Test-CommandVersion -Command 'git'
+    $gitExe = Join-Path $gitCmd 'git.exe'
+    $have = if (Test-Path -LiteralPath $gitExe) {
+        Test-CommandVersion -Command $gitExe
+    } else {
+        Test-CommandVersion -Command 'git'
+    }
     if ($null -ne $have) {
         Write-Ok "already installed: $have"
         Add-Summary -Component 'Git' -State 'present'
@@ -533,9 +593,16 @@ function Install-GitForWindows {
 
 function Install-NodeJs {
     Write-Step "Node.js $NodeVersion"
-    $have = Test-CommandVersion -Command 'node'
+    $nodeDir = Join-Path $env:ProgramFiles 'nodejs'
+    $nodeExe = Join-Path $nodeDir 'node.exe'
+    $have = if (Test-Path -LiteralPath $nodeExe) {
+        Test-CommandVersion -Command $nodeExe
+    } else {
+        Test-CommandVersion -Command 'node'
+    }
     if ($null -ne $have -and $have -like 'v22.*') {
         Write-Ok "already installed: $have"
+        Add-MachinePathEntry -Entry $nodeDir
         Add-Summary -Component 'Node.js' -State 'present'
         return
     }
@@ -546,19 +613,22 @@ function Install-NodeJs {
     Invoke-Native -FilePath 'msiexec.exe' -Arguments @(
         '/i', "`"$msi`"", '/qn', '/norestart', 'ADDLOCAL=ALL'
     ) -SuccessExitCodes @(0, 3010) -What "Node.js $NodeVersion install"
-    Add-MachinePathEntry -Entry (Join-Path $env:ProgramFiles 'nodejs')
+    Add-MachinePathEntry -Entry $nodeDir
     Add-Summary -Component 'Node.js' -State 'installed'
 }
 
 function Install-Python {
     Write-Step "CPython $PythonVersion (release-tools/*.py)"
 
-    $installDir = "C:\Python" + (($PythonVersion -split '\.')[0] + ($PythonVersion -split '\.')[1])
-    $existing = Test-CommandVersion -Command 'python'
+    $pythonDirName = 'Python' + (($PythonVersion -split '\.')[0] + ($PythonVersion -split '\.')[1])
+    $installDir = Join-Path $env:ProgramFiles $pythonDirName
+    $candidate = Join-Path $installDir 'python.exe'
+    $pythonCommand = if (Test-Path -LiteralPath $candidate) { $candidate } else { 'python' }
+    $existing = Test-CommandVersion -Command $pythonCommand
     $needInstall = $true
     if ($null -ne $existing -and $existing -match '^Python 3\.(\d+)\.') {
         $minor = [int]$Matches[1]
-        $found = Get-Command 'python' -CommandType Application -ErrorAction SilentlyContinue |
+        $found = Get-Command $pythonCommand -CommandType Application -ErrorAction SilentlyContinue |
             Select-Object -First 1
         if ($null -ne $found -and $found.Source -like '*\WindowsApps\*') {
             # Microsoft Store alias stub, not a real interpreter. Never treat it as installed.
@@ -569,7 +639,7 @@ function Install-Python {
             Write-Ok "already installed: $existing"
             Add-Summary -Component 'Python' -State 'present'
             $needInstall = $false
-            $resolved = Get-Command 'python' -CommandType Application | Select-Object -First 1
+            $resolved = Get-Command $pythonCommand -CommandType Application | Select-Object -First 1
             $installDir = Split-Path -Parent $resolved.Source
         } else {
             Write-Note "found $existing, which is older than 3.11 (release-tools need tomllib); installing $PythonVersion alongside"
@@ -589,15 +659,12 @@ function Install-Python {
             'InstallLauncherAllUsers=1',
             'Include_test=0',
             'Include_doc=0',
-            "TargetDir=$installDir"
+            "`"TargetDir=$installDir`""
         )
         Invoke-Native -FilePath $setup -Arguments $installArgs -SuccessExitCodes @(0, 3010) `
             -What "CPython $PythonVersion install"
         Add-Summary -Component 'Python' -State 'installed'
     }
-
-    Add-MachinePathEntry -Entry $installDir
-    Add-MachinePathEntry -Entry (Join-Path $installDir 'Scripts')
 
     # `python3` on Windows. The python.org installer ships `python.exe` and the `py` launcher but
     # NO `python3.exe`, while `release.yml` invokes the interpreter through a matrix value that is
@@ -611,6 +678,8 @@ function Install-Python {
     if (-not (Test-Path -LiteralPath $py)) {
         throw "python.exe not found in $installDir after install."
     }
+    Add-MachinePathEntry -Entry $installDir
+    Add-MachinePathEntry -Entry (Join-Path $installDir 'Scripts')
     $needCopy = $true
     if (Test-Path -LiteralPath $py3) {
         $a = (Get-FileHash -LiteralPath $py -Algorithm SHA256).Hash

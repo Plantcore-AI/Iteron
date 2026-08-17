@@ -37,7 +37,7 @@
       gh release view v<version> --repo actions/runner --json body --jq .body
 
 .EXAMPLE
-    powershell -NoProfile -ExecutionPolicy Bypass -File .\install-runner.ps1 `
+    & .\install-runner.ps1 `
         -Repo Plantcore-AI/Iteron -RunnerVersion 2.328.0 -RunnerSha256 <hex> -Token (Read-Host -AsSecureString)
 
 .NOTES
@@ -72,18 +72,22 @@ param(
     # Subdirectory under $RunnerRoot. Defaults from the repo name (Iteron -> iteron,
     # plantcore-desktop -> desktop).
     [Parameter()]
+    [ValidatePattern('^(?!\.{1,2}$)[A-Za-z0-9._-]+$')]
     [string]$Instance,
 
     # Runner name as it appears in the repository's runner list. Must be unique per repo.
     [Parameter()]
     [string]$RunnerName,
 
-    # Comma-separated custom labels. Defaults per repo; `iteron-win` is the label the Iteron
-    # workflows select through the repository variable WINDOWS_RUNNER.
+    # Comma-separated custom labels. Defaults per repo. Iteron selects a JSON label array through
+    # WINDOWS_RUNNER_LABELS; Desktop selects its single custom label through WINDOWS_RUNNER.
     [Parameter()]
     [string]$Labels,
 
+    # Keep each runner's workspace below its own instance directory. Restricting this to one
+    # relative directory name prevents the two services from accidentally sharing a work tree.
     [Parameter()]
+    [ValidatePattern('^(?!\.{1,2}$)[A-Za-z0-9._-]+$')]
     [string]$WorkFolder = '_work',
 
     # Built-in service account, no password, no long-lived credential on the box. Change only if
@@ -143,10 +147,19 @@ if ([string]::IsNullOrWhiteSpace($RunnerName)) {
     $RunnerName = "$($env:COMPUTERNAME.ToLowerInvariant())-$Instance"
 }
 
-# The Iteron workflows resolve `runs-on` from vars.WINDOWS_RUNNER; if that variable is set to
-# `iteron-win` and this runner does not carry the label, every Windows job queues forever.
-if ($repoName -match '^(?i)iteron$' -and (($Labels -split ',') -notcontains 'iteron-win')) {
-    Write-Note "labels '$Labels' do not include 'iteron-win' -- the Iteron workflows select that exact label"
+# The two known repositories intentionally have fixed instance directories and workflow labels.
+# Fail before download if an override would make the runbook and repository variables lie.
+$normalisedLabels = @($Labels -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+if ($repoName -match '^(?i)iteron$') {
+    if ($Instance -ne 'iteron') { throw "Plantcore-AI/Iteron must use -Instance iteron." }
+    if ($normalisedLabels -notcontains 'iteron-win') {
+        throw "Plantcore-AI/Iteron must carry the iteron-win label selected by WINDOWS_RUNNER_LABELS."
+    }
+} elseif ($repoName -match '^(?i)plantcore-desktop$') {
+    if ($Instance -ne 'desktop') { throw "Plantcore-AI/plantcore-desktop must use -Instance desktop." }
+    if ($normalisedLabels -notcontains 'desktop-win') {
+        throw "Plantcore-AI/plantcore-desktop must carry the desktop-win label selected by WINDOWS_RUNNER."
+    }
 }
 
 $instanceDir = Join-Path $RunnerRoot $Instance
@@ -157,6 +170,7 @@ $markerPath = Join-Path $instanceDir '.provisioned-runner-version'
 Write-Host "GitHub Actions runner install -- $(Get-Date -Format u)" -ForegroundColor White
 Write-Host "  repo      : $Repo"
 Write-Host "  directory : $instanceDir"
+Write-Host "  workspace : $(Join-Path $instanceDir $WorkFolder)"
 Write-Host "  name      : $RunnerName"
 Write-Host "  labels    : $Labels"
 Write-Host "  version   : $RunnerVersion"
@@ -311,7 +325,7 @@ function Register-Runner {
         )
 
         # Deliberately NOT echoing $configArgs: it carries the token.
-        Write-Host "    running: config.cmd --unattended --replace --url https://github.com/$Repo --token <redacted> --name $RunnerName --labels $Labels --runasservice"
+        Write-Host "    running: config.cmd --unattended --replace --url https://github.com/$Repo --token <redacted> --name $RunnerName --labels $Labels --work $WorkFolder --runasservice --windowslogonaccount `"$ServiceAccount`""
         Push-Location $instanceDir
         try {
             & $configCmd @configArgs | Out-Host
@@ -382,9 +396,17 @@ Get-Service -Name $serviceName |
 Write-Host 'Confirm it shows Online at:' -ForegroundColor White
 Write-Host "  https://github.com/$Repo/settings/actions/runners"
 if ($Instance -eq 'iteron') {
+    $runnerLabels = @('self-hosted', 'Windows', 'X64') + $normalisedLabels
+    $runnerLabelsJson = ConvertTo-Json -InputObject $runnerLabels -Compress
     Write-Host ''
     Write-Host 'Then, and only then, point the workflows at it:' -ForegroundColor White
-    Write-Host "  gh variable set WINDOWS_RUNNER --repo $Repo --body $($Labels.Split(',')[0])"
-    Write-Host 'While WINDOWS_RUNNER is unset the Windows jobs stay on hosted runners, which is the'
-    Write-Host 'deliberate safe default: a job pointed at a label no machine answers queues forever.'
+    Write-Host "  gh variable set WINDOWS_RUNNER_LABELS --repo $Repo --body '$runnerLabelsJson'"
+    Write-Host 'While WINDOWS_RUNNER_LABELS is unset, Windows CI stays dormant and Windows release'
+    Write-Host 'falls back to a hosted image. A self-hosted label with no online runner queues forever.'
+} elseif ($Instance -eq 'desktop') {
+    $primaryLabel = $normalisedLabels[0]
+    Write-Host ''
+    Write-Host 'Then, and only then, point the Desktop workflow at it:' -ForegroundColor White
+    Write-Host "  gh variable set WINDOWS_RUNNER --repo $Repo --body $primaryLabel"
+    Write-Host 'While WINDOWS_RUNNER is unset, Desktop safely uses the hosted windows-latest image.'
 }

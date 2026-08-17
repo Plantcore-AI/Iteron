@@ -7,70 +7,142 @@ Approved budget ceiling: **160 machine-hours per month**.
 
 ---
 
-## 0. Read this first: the machine cannot be automated from outside yet
+## 0. Access: SSH with an already-provisioned key
 
-**Nothing in this kit can be run remotely today.** The first step is a human at a graphical
-console. This is the current, measured state of the box:
+The box is reachable and scriptable. An operator public key is already installed in
+`C:\ProgramData\ssh\administrators_authorized_keys`, so everything in this kit runs remotely:
+
+```console
+$ ssh windows whoami
+izrt4daujljimgz\administrator
+```
+
+Measured state of the host, so nobody plans around a path that does not exist:
 
 | Path | Port | State |
 | --- | --- | --- |
-| OpenSSH | 22 | Reachable, but **no usable auth**. `sshd` advertises `publickey,keyboard-interactive` and then issues **zero password prompts**, returning an immediate `USERAUTH_FAILURE`. That is the signature of password authentication being disabled server-side. Only a pre-installed public key would work, and none is installed. |
-| RDP | 3389 | Reachable, and it is a real Windows host (a raw X.224 connection request is answered with a connection confirm advertising NLA / CredSSP). Authentication with the credentials we were given fails at the NLA layer with **`STATUS_LOGON_FAILURE 0xc000006d`**, which means exactly one thing: **the username or password is wrong.** Not a policy block, not a password-change prompt. |
+| OpenSSH | 22 | **The way in.** Public-key auth only. `sshd` advertises `publickey,keyboard-interactive`, but the keyboard-interactive branch returns an immediate `USERAUTH_FAILURE` with **zero prompts** — password authentication is disabled server-side. A key is not optional. |
+| RDP | 3389 | Open, for GUI debugging. Needs a valid `Administrator` password, which is a separate credential from the SSH key. |
 | WinRM | 5985 / 5986 | **Blocked** by the cloud security group. Not available, do not plan around it. |
 | SMB | 445 | **Blocked** by the cloud security group. |
 
-So the first human step is simply: **obtain a correct `Administrator` password**, from whoever
-provisioned the instance or by resetting it in the cloud console (an instance password reset
-requires a restart to take effect). Then RDP in normally.
+Host facts: Windows Server 2022 Datacenter (build 20348), 4 vCPU / 7.7 GiB, ~182 GiB free on `C:`,
+`sshd` Running and Automatic, default SSH shell is `cmd.exe`, and **only Windows PowerShell 5.1 is
+present — there is no `pwsh`.** That last one is load-bearing: workflow steps must say
+`shell: powershell`, never `shell: pwsh`, or they fail with a command-not-found on this machine.
 
-Two diagnostic traps cost real time here; do not repeat them:
+Three traps that cost real time here. Do not repeat them:
 
-- **`xfreerdp /auth-only` is not a credential test.** It prints
-  `[ERROR] ... Authentication only, exit status 0` even when authentication *failed*. Grepping for
-  `exit status 0` reports success on bad credentials. The only trustworthy signal is the NTSTATUS
-  on the `nla_decode_ts_request` line (`STATUS_LOGON_FAILURE` = bad credentials,
-  `STATUS_PASSWORD_MUST_CHANGE` = policy).
+- **Check configured identities before concluding a host is unreachable.** This host was written
+  off as inaccessible for an entire work session because a freshly generated key was the only one
+  tested — and that key was, of course, not installed. The key already named by the machine's SSH
+  configuration was authorized. Do not enumerate or offer unrelated private keys to a host.
 - **A local TUN/HTTP proxy makes every port look open.** `nc -z` against this host reported
   22, 135, 445, 3389, 5985, 5986 and even 80 as open, because the proxy accepts the CONNECT and
   answers optimistically. Only a real protocol handshake tells the truth: an SSH banner, an X.224
-  connection confirm, a genuine HTTP status. Measured reality here is that **only 22 and 3389 are
-  actually open**; WinRM and SMB are blocked at the cloud security group.
+  connection confirm, a genuine HTTP status.
+- **`xfreerdp /auth-only` is not a credential test.** It prints
+  `[ERROR] ... Authentication only, exit status 0` even when authentication *failed*. The only
+  trustworthy signal is the NTSTATUS on the `nla_decode_ts_request` line
+  (`STATUS_LOGON_FAILURE 0xc000006d` = bad credentials).
 
-Once you have a session, pick **one** of the two ways forward. Document both, do both if you can.
+### If key auth ever stops working
 
-### (a) Install an SSH public key, so the rest is scriptable
-
-This is the preferred outcome: it makes every later step remotable and repeatable.
+`sshd` **silently** refuses `administrators_authorized_keys` unless its ACL is exactly
+Administrators + SYSTEM; inherited user ACEs are the usual cause of "the key does nothing":
 
 ```powershell
-# In the GUI session, as Administrator.
-# Paste the operator's PUBLIC key (never a private key, never a password) into the
-# admin-wide authorized_keys file that Windows OpenSSH uses for members of Administrators:
-$key = 'ssh-ed25519 AAAA... operator@laptop'
-$f   = 'C:\ProgramData\ssh\administrators_authorized_keys'
-Set-Content -LiteralPath $f -Value $key -Encoding ascii
-
-# sshd SILENTLY refuses this file unless its ACL is exactly Administrators + SYSTEM.
-# Inherited user ACEs are the single most common reason "the key does nothing".
+$f = 'C:\ProgramData\ssh\administrators_authorized_keys'
 icacls $f /inheritance:r /grant Administrators:F /grant SYSTEM:F
-
-# Make sure sshd is actually running and will come back after reboot:
 Get-Service sshd | Set-Service -StartupType Automatic
 Restart-Service sshd
 ```
 
-Verify from your laptop: `ssh -i <key> Administrator@114.55.106.139 "whoami"`.
+Then check `C:\ProgramData\ssh\sshd_config` for `PubkeyAuthentication yes` and the
+`Match Group administrators` block at the bottom, and read
+`Get-WinEvent -LogName OpenSSH/Operational`.
 
-If key auth still fails, check `C:\ProgramData\ssh\sshd_config` for
-`PubkeyAuthentication yes` and for the `Match Group administrators` block at the bottom pointing at
-`administrators_authorized_keys`, and read `Get-WinEvent -LogName OpenSSH/Operational`.
+### Sending this kit to the machine
 
-### (b) Run the scripts directly in the GUI session
+```console
+$ ssh windows 'if not exist C:\ops mkdir C:\ops'
+$ scp -r ops/windows-runner windows:C:/ops/
+```
 
-If key installation is not possible in the time you have, copy this directory onto the machine
-through the RDP clipboard or an RDP drive redirection mount, open an **elevated** PowerShell, and
-run the sequence in section 2. Everything in this kit is designed to work with no inbound network
-access to the machine at all: it only makes outbound HTTPS calls.
+Everything here only makes outbound HTTPS calls, so it also works from a GUI session with no
+inbound access at all.
+
+---
+
+## 0b. Network reality: this box is in China, and it decides every download URL
+
+Measured from the machine itself. This is not a footnote — it is the difference between a
+provisioning run that finishes in minutes and one that never finishes at all.
+
+| Source | Measured | Verdict |
+| --- | ---: | --- |
+| `static.rust-lang.org` | 46 KB/s | unusable |
+| `github.com` release assets | 36 KB/s, often times out | unusable |
+| `nodejs.org` | connection times out | **unreachable** |
+| `www.python.org` | 1 KB/s | **unreachable in practice** |
+| `aka.ms` (VS bootstrapper) | 9.2 MB/s | fine as-is |
+| `registry.npmmirror.com` | 12–14 MB/s | **use this** |
+| `mirrors.tuna.tsinghua.edu.cn` | 6.3 MB/s | **use this** |
+
+Working mirror URLs, each one verified by downloading from this host:
+
+```
+Git      https://registry.npmmirror.com/-/binary/git-for-windows/v2.51.0.windows.1/Git-2.51.0-64-bit.exe
+Node     https://registry.npmmirror.com/-/binary/node/v22.18.0/node-v22.18.0-x64.msi
+Python   https://registry.npmmirror.com/-/binary/python/3.12.7/python-3.12.7-amd64.exe
+rustup   https://mirrors.tuna.tsinghua.edu.cn/rustup/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe
+VS       https://aka.ms/vs/17/release/vs_BuildTools.exe          (already fast, keep)
+```
+
+Note the rustup path has `rustup` twice; `mirrors.tuna.tsinghua.edu.cn/rustup/dist/...` is a 404,
+and `rsproxy.cn/dist/...` is also a 404. Both were tried.
+
+For comparison: Git for Windows is 61.7 MB. From the mirror it took **4.6 seconds**. From
+github.com at 36 KB/s it would take roughly **45 minutes**, assuming it did not time out first.
+
+### The Actions runner package must be side-loaded
+
+`github.com/actions/runner/releases/download/...` **times out** from this host, so the runner
+cannot download itself. Fetch it on a machine with working international egress and copy it over:
+
+```console
+$ curl -sSLO https://github.com/actions/runner/releases/download/v2.336.0/actions-runner-win-x64-2.336.0.zip
+$ shasum -a 256 actions-runner-win-x64-2.336.0.zip
+  d59123a43003e357b0805b5d0f611d0bd2f65ab67d51bd070dd4e7a0f685c162
+$ scp actions-runner-win-x64-2.336.0.zip windows:C:/bootstrap-cache/
+```
+
+The upload took 15 s for 103 MB, so the constraint is purely the international egress, not the
+link to the box. Pass the file to `install-runner.ps1` rather than letting it fetch.
+
+### But the runner itself will work: the control plane is reachable
+
+This was the open question, and it is answered. Every endpoint an Actions runner needs responds
+fast from this host:
+
+| Endpoint | Result |
+| --- | --- |
+| `api.github.com` | **HTTP 200 in 0.4 s** — registration and job acquisition |
+| `pipelines.actions.githubusercontent.com` | reachable |
+| `vstoken.actions.githubusercontent.com` | reachable |
+| `results-receiver.actions.githubusercontent.com` | reachable |
+| `codeload.github.com` | **HTTP 200 in 0.8 s** — this is what `actions/checkout` uses |
+
+`raw.githubusercontent.com` and plain `github.com` time out, so avoid workflow steps that curl
+either one. Anything that fetches a release asset by URL — the kind of step that installs a pinned
+tool — will be slow or hang on this runner and needs a mirror or a side-loaded copy.
+
+### Still unverified
+
+`crates.io` throughput from this host has **not** been measured. If it is as slow as the other
+international sources, a cold `cargo check --workspace` will be dominated by crate downloads rather
+than compilation, and the machine will need a sparse-registry mirror in a machine-wide
+`config.toml` under `CARGO_HOME`. Measure before concluding the runner is slow at building.
 
 ---
 
@@ -134,6 +206,20 @@ cd C:\ops\windows-runner
 powershell -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1 -ChecksumFile .\checksums.json
 ```
 
+On this China-hosted runner, keep the verified offline cache and route the remaining Rust
+toolchain/crate traffic through the measured regional endpoints. The bootstrap persists Rustup at
+machine scope and writes Cargo's documented source replacement to
+`C:\rust\cargo\config.toml`, so both `NETWORK SERVICE` runner services inherit them:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1 `
+    -ChecksumFile .\checksums.json `
+    -DownloadCache C:\bootstrap-cache `
+    -RustupDistServer https://rsproxy.cn `
+    -RustupUpdateRoot https://rsproxy.cn/rustup `
+    -CargoRegistryIndex sparse+https://rsproxy.cn/index/
+```
+
 Installs, checking first and skipping what is already present:
 
 - **Visual Studio Build Tools** into `C:\BuildTools`, unattended
@@ -193,10 +279,16 @@ Useful flags: `-SkipVisualStudio`, `-SkipRust`, `-SkipGit`, `-SkipNode`, `-SkipP
 
 One machine serves two repositories, so runners live in separate directories with distinct labels:
 
-| Repository | Directory | Label |
-| --- | --- | --- |
-| `Plantcore-AI/Iteron` | `C:\actions-runner\iteron` | `iteron-win` |
-| `Plantcore-AI/plantcore-desktop` | `C:\actions-runner\desktop` | `desktop-win` |
+| Repository | Instance / workspace | Label | Repository variable |
+| --- | --- | --- | --- |
+| `Plantcore-AI/Iteron` | `C:\actions-runner\iteron` / `C:\actions-runner\iteron\_work` | `iteron-win` | `WINDOWS_RUNNER_LABELS` (JSON array) |
+| `Plantcore-AI/plantcore-desktop` | `C:\actions-runner\desktop` / `C:\actions-runner\desktop\_work` | `desktop-win` | `WINDOWS_RUNNER` (single label) |
+
+These are two repository-scoped registrations and therefore two Windows services. Their runner
+workspaces cannot overlap: `install-runner.ps1` accepts only a relative one-segment `-WorkFolder`
+and resolves it below the selected instance directory. The workflows also keep Rust target output
+in repository-specific directories, so simultaneous Iteron and Desktop jobs cannot contend for the
+same Cargo target lock.
 
 Resolve the runner version and its hash first (both are required parameters; neither is defaulted,
 because guessing one desynchronises it from the other):
@@ -207,30 +299,62 @@ gh api repos/actions/runner/releases/latest --jq .tag_name
 gh release view <tag> --repo actions/runner --json body --jq .body   # contains the win-x64 SHA-256
 ```
 
-Then, on the Windows box:
+Then, in an **elevated Windows PowerShell session** on the Windows box, invoke the script directly
+twice. Each repository needs its own short-lived registration token. Both values remain only in
+the current PowerShell process, are passed as `SecureString`, and are disposed after registration:
 
 ```powershell
-# Short-lived registration token (about one hour). NEVER commit or persist this.
-$tok = ConvertTo-SecureString `
+# Fill these from the release query above. Do not guess either value.
+$runnerVersion = '<version-without-v>'
+$runnerSha256 = '<64-hex-from-the-release-body>'
+
+# Iteron service: C:\actions-runner\iteron, label iteron-win.
+$iteronToken = ConvertTo-SecureString `
     (gh api --method POST repos/Plantcore-AI/Iteron/actions/runners/registration-token --jq .token) `
     -AsPlainText -Force
+try {
+    & .\install-runner.ps1 `
+        -Repo Plantcore-AI/Iteron `
+        -Instance iteron `
+        -Labels iteron-win `
+        -RunnerVersion $runnerVersion `
+        -RunnerSha256 $runnerSha256 `
+        -Token $iteronToken
+} finally {
+    $iteronToken.Dispose()
+    Remove-Variable iteronToken -ErrorAction SilentlyContinue
+}
 
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install-runner.ps1 `
-    -Repo Plantcore-AI/Iteron `
-    -RunnerVersion 2.328.0 `
-    -RunnerSha256 <64-hex-from-the-release-body> `
-    -Token $tok
+# Desktop service: C:\actions-runner\desktop, label desktop-win.
+$desktopToken = ConvertTo-SecureString `
+    (gh api --method POST repos/Plantcore-AI/plantcore-desktop/actions/runners/registration-token --jq .token) `
+    -AsPlainText -Force
+try {
+    & .\install-runner.ps1 `
+        -Repo Plantcore-AI/plantcore-desktop `
+        -Instance desktop `
+        -Labels desktop-win `
+        -RunnerVersion $runnerVersion `
+        -RunnerSha256 $runnerSha256 `
+        -Token $desktopToken
+} finally {
+    $desktopToken.Dispose()
+    Remove-Variable desktopToken -ErrorAction SilentlyContinue
+}
+
+Get-Service actions.runner.* | Select-Object Name, Status, StartType
 ```
 
 If `gh` is not installed on the Windows box, generate the token on your laptop and paste it in
 without echoing it:
 
 ```powershell
-$tok = Read-Host -AsSecureString "registration token"
+$iteronToken = Read-Host -AsSecureString "Iteron registration token"
 ```
 
-For the desktop repo, same command with `-Repo Plantcore-AI/plantcore-desktop`; the instance
-directory and the `desktop-win` label are derived automatically.
+Repeat the prompt immediately before the Desktop invocation. Do not save either token in a file,
+shell profile, command history, CI variable, or report. If `-Instance` and `-Labels` are omitted,
+the same `iteron`/`iteron-win` and `desktop`/`desktop-win` values are derived from the repo name.
 
 What it does:
 
@@ -302,8 +426,19 @@ Unsetting the variable is therefore the entire rollback:
 gh variable delete WINDOWS_RUNNER_LABELS --repo Plantcore-AI/Iteron
 ```
 
-The desktop repository is a **separate** setting with its own variable and its own runner label
-(`desktop-win`); setting one does not affect the other.
+The desktop repository is a **separate** setting with its own variable and its own runner label;
+setting one does not affect the other. After its runner is Online:
+
+```bash
+gh variable set WINDOWS_RUNNER --repo Plantcore-AI/plantcore-desktop --body desktop-win
+```
+
+While `WINDOWS_RUNNER` is unset, Desktop keeps using `windows-latest`. Its rollback is likewise
+only the variable deletion:
+
+```bash
+gh variable delete WINDOWS_RUNNER --repo Plantcore-AI/plantcore-desktop
+```
 
 Set it only after the runner is Online, and check that the label in the variable matches the label
 the runner actually carries.
@@ -375,7 +510,8 @@ quietly exceed the approved budget.
   (`.credentials`, `.credentials_rsaparams`) is GitHub's own runner identity: it is scoped to
   "this runner may take jobs from this repository", and it must never be copied off the machine.
 - **Self-hosted runners must not run untrusted fork pull requests.** A self-hosted runner is not a
-  fresh VM: the workspace, the Cargo registry cache and `target/` persist between jobs, so a
+  fresh VM: the repository-specific workspace, Cargo registry cache and isolated CI target
+  directory persist between jobs, so a
   malicious PR could plant something that a later, trusted job executes. What the repositories
   should configure:
   - `Settings -> Actions -> General -> Fork pull request workflows from outside collaborators`:
@@ -401,6 +537,7 @@ quietly exceed the approved budget.
 | --- | --- |
 | `bootstrap.ps1` | Idempotent toolchain provisioning: MSVC, Rust 1.90.0, Git (and its bash), Node 22, CPython 3.12 (`python` and `python3`), WebView2, NSIS, WiX. Verifies every tool afterwards. |
 | `install-runner.ps1` | Downloads, registers and services a runner instance per repository, with delayed auto-start and restart-on-failure. |
+| `register-runner.ps1` | SSH-safe non-interactive bridge: clears the short-lived registration token from process environment, then calls `install-runner.ps1`. |
 | `verify.ps1` | Post-provision self-check: tool inventory plus a real timed `cargo check` for `x86_64-pc-windows-msvc`. |
 | `refresh-checksums.ps1` | Computes and, where the vendor publishes one, cross-checks the SHA-256 pins. |
 | `checksums.example.json` | Template pin file. Copy to `checksums.json` and fill it in. |

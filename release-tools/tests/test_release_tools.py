@@ -1030,6 +1030,16 @@ exit 1
         with self.assertRaises(ReleaseToolError):
             render_installer.render("no marker", "0.0.1")
 
+    def test_windows_installer_supports_pipe_without_exiting_host(self) -> None:
+        template = (TOOLS.parent / "install.ps1").read_text(encoding="utf-8")
+        rendered = render_installer.render(template, "0.0.7")
+        self.assertIn("latest/download/install.ps1", rendered)
+        self.assertIn("| Invoke-Expression", rendered)
+        self.assertIn("& {\nSet-StrictMode -Version Latest", rendered)
+        self.assertIn("} finally {", rendered)
+        self.assertNotIn("$PSScriptRoot", rendered)
+        self.assertNotRegex(rendered, r"(?m)^\s*exit(?:\s|$)")
+
     def test_legal_inventory_and_notice_render(self) -> None:
         crate = self.root / "registry/example-1.2.3"
         manifest_path = self.write("registry/example-1.2.3/Cargo.toml", "[package]\n")
@@ -1202,6 +1212,7 @@ exit 1
         dist = self.root / "dist"
         dist.mkdir()
         self.write("dist/install.sh", "#!/bin/sh\n")
+        self.write("dist/install.ps1", "Write-Output 'install'\n")
         self.write("dist/THIRD_PARTY_LICENSES.html", "licenses\n")
         self.write("dist/THIRD_PARTY_NOTICES.txt", "notices\n")
         target = "aarch64-apple-darwin"
@@ -1250,6 +1261,35 @@ exit 1
         self.assertEqual(result["targets"][target]["target"], target)
         self.assertEqual(result["cli_stream_versions"], [4, 5])
         self.assertEqual(result["default_cli_stream_version"], 5)
+        self.assertEqual(set(result["installer"]), {"posix", "windows"})
+        self.assertEqual(result["installer"]["posix"]["name"], "install.sh")
+        self.assertEqual(result["installer"]["windows"]["name"], "install.ps1")
+        verify_release.exact_digest(
+            dist / "install.sh",
+            result["installer"]["posix"],
+            "POSIX installer",
+            1024 * 1024,
+        )
+        installer_arguments = argparse.Namespace(
+            manifest=output,
+            receipt=receipt,
+            posix=dist / "install.sh",
+            windows=dist / "install.ps1",
+        )
+        verify_release.verify_installers(installer_arguments)
+        for platform in ("posix", "windows"):
+            path = getattr(installer_arguments, platform)
+            original = path.read_bytes()
+            path.write_bytes(original + b"!")
+            with self.assertRaisesRegex(ReleaseToolError, "content identity"):
+                verify_release.verify_installers(installer_arguments)
+            path.write_bytes(original)
+        verify_release.exact_digest(
+            dist / "install.ps1",
+            result["installer"]["windows"],
+            "Windows installer",
+            1024 * 1024,
+        )
         # A client pins on the protocol the binary speaks, so the manifest must carry the number
         # the crate declares rather than one restated here.
         self.assertEqual(result["protocol_version"], 7)
@@ -1283,7 +1323,12 @@ exit 1
     def test_release_manifest_rejects_target_capability_disagreement(self) -> None:
         dist = self.root / "disagree-dist"
         dist.mkdir()
-        for name in ("install.sh", "THIRD_PARTY_LICENSES.html", "THIRD_PARTY_NOTICES.txt"):
+        for name in (
+            "install.sh",
+            "install.ps1",
+            "THIRD_PARTY_LICENSES.html",
+            "THIRD_PARTY_NOTICES.txt",
+        ):
             self.write(f"disagree-dist/{name}", name)
         targets = ("aarch64-apple-darwin", "x86_64-pc-windows-msvc")
         for index, target in enumerate(targets):
@@ -1331,9 +1376,26 @@ exit 1
         self.assertIn("cli_stream_versions", required)
         self.assertIn("default_cli_stream_version", required)
         self.assertIn("protocol_version", required)
+        self.assertIn("installer", required)
+        installers = schema["definitions"]["installers"]
+        self.assertFalse(installers["additionalProperties"])
+        self.assertEqual(set(installers["required"]), {"posix", "windows"})
+        self.assertEqual(
+            schema["properties"]["installer"]["oneOf"][0]["$ref"],
+            "#/definitions/asset",
+        )
         self.assertEqual(fixture["schema_version"], 3)
         self.assertEqual(fixture["cli_stream_versions"], [4, 5])
         self.assertEqual(fixture["protocol_version"], 1)
+        self.assertEqual(fixture["installer"]["posix"]["name"], "install.sh")
+        self.assertEqual(fixture["installer"]["windows"]["name"], "install.ps1")
+        self.assertEqual(len(fixture["installer"]["windows"]["sha256"]), 64)
+        self.assertGreater(fixture["installer"]["windows"]["size"], 0)
+        legacy_fixture = dict(fixture)
+        legacy_fixture["installer"] = dict(fixture["installer"]["posix"])
+        legacy_path = self.write("legacy-release-manifest-v3.json", json.dumps(legacy_fixture))
+        loaded_legacy = verify_release.load_manifest(legacy_path)
+        self.assertFalse(verify_release.validate_installer_metadata(loaded_legacy))
 
     def test_content_identity_rejects_one_flipped_manifest_or_archive_byte(self) -> None:
         for name in ("release-manifest.json", "iteron-v0.0.1-fixture.tar.gz"):
@@ -1356,6 +1418,7 @@ exit 1
         archive = package.build_archive(arguments)
         for name, content in (
             ("install.sh", "#!/bin/sh\n"),
+            ("install.ps1", "Write-Output 'install'\n"),
             ("THIRD_PARTY_LICENSES.html", "licenses\n"),
             ("THIRD_PARTY_NOTICES.txt", "notices\n"),
             (f"{archive.name}.provenance.json", "{}\n"),
@@ -1387,6 +1450,14 @@ exit 1
                 output=manifest_path,
                 receipt=receipt_path,
                 protocol_source=protocol,
+            )
+        )
+        verify_release.verify_installers(
+            argparse.Namespace(
+                manifest=manifest_path,
+                receipt=receipt_path,
+                posix=dist / "install.sh",
+                windows=dist / "install.ps1",
             )
         )
         verifier_arguments = argparse.Namespace(

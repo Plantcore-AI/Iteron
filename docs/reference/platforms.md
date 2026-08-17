@@ -1,9 +1,9 @@
 # Supported platforms
 
-Iteron is developed and tested on macOS and Linux. Those remain the only
-platforms where the whole product is supported. Windows is a build and
-distribution target only, and the table's sandbox column says why. The source
-workspace is `v0.0.5`; verify the selected release's asset list for actual host
+Iteron is developed and tested primarily on macOS and Linux. Those remain the
+only platforms where the whole product is supported. Windows is an installable
+build and distribution target, and the table's sandbox column says why. The source
+workspace is `v0.0.7`; verify the selected release's asset list for actual host
 availability. Historical `v0.0.4` assets cover macOS arm64 only;
 the remaining release rows are the release workflow's required matrix, not a
 claim that every historical tag contains every archive.
@@ -20,6 +20,12 @@ claim that every historical tag contains every archive.
 
 Windows has a build, an archive, and an installer. It does not have a sandbox,
 and that is the whole distinction this section exists to make.
+
+One-click trial on Windows x86-64:
+
+```powershell
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; Invoke-RestMethod -Uri 'https://github.com/Plantcore-AI/Iteron/releases/latest/download/install.ps1' | Invoke-Expression
+```
 
 What exists:
 

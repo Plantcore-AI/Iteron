@@ -29,7 +29,7 @@
     Install the executable without adding its directory to the user PATH.
 
 .EXAMPLE
-    powershell -ExecutionPolicy Bypass -File .\install.ps1
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; Invoke-RestMethod -Uri 'https://github.com/Plantcore-AI/Iteron/releases/latest/download/install.ps1' | Invoke-Expression
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File .\install.ps1 -Version v0.0.5 -BinDir C:\tools\bin -SkipPathUpdate
@@ -49,6 +49,10 @@ param(
     [switch]$SkipPathUpdate
 )
 
+# Invoke-Expression evaluates text in its caller's scope. Keep strict mode,
+# preferences, helper functions, and temporary state inside a child scope so
+# the one-click form leaves the interactive PowerShell session intact.
+& {
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
@@ -73,8 +77,6 @@ $IteronArchiveMemberNames = @(
     'SBOM.spdx.json',
     'BUILD-INFO.json'
 )
-
-$script:IteronWorkDirectory = $null
 
 # Fail the whole installation with one consistent, prefixed message.
 function Write-IteronFailure {
@@ -682,8 +684,8 @@ function Invoke-IteronInstall {
         Write-IteronFailure 'version must be "latest" or an exact stable tag such as v0.0.1'
     }
 
-    $script:IteronWorkDirectory = Get-IteronWorkDirectory
-    $work = $script:IteronWorkDirectory
+    $work = Get-IteronWorkDirectory
+    try {
 
     if ($requested -eq 'latest') {
         $manifestUri = "$IteronReleaseRoot/latest/download/SHA256SUMS"
@@ -747,18 +749,12 @@ function Invoke-IteronInstall {
     # The same honesty install.sh prints for a missing Linux sandbox: state the
     # confinement reality of this platform, and never fail the install over it.
     Write-Warning 'Windows has no code-execution sandbox backend. Confinement is unavailable, so --confine refuses to run commands and the default operator-authority mode runs them unconfined.'
-}
-
-$IteronExitCode = 0
-try {
-    Invoke-IteronInstall
-} catch {
-    Write-Error -Message $_.Exception.Message -ErrorAction Continue
-    $IteronExitCode = 1
-} finally {
-    if ($null -ne $script:IteronWorkDirectory -and (Test-Path -LiteralPath $script:IteronWorkDirectory)) {
-        Remove-Item -LiteralPath $script:IteronWorkDirectory -Recurse -Force -ErrorAction SilentlyContinue
+    } finally {
+        if (Test-Path -LiteralPath $work) {
+            Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
 }
 
-exit $IteronExitCode
+Invoke-IteronInstall
+}

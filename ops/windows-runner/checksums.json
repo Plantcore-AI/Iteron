@@ -1,0 +1,12 @@
+{
+  "_comment": "Pinned 2026-08-17 for the production Windows runner. Rust, Git, Node, Python and NSIS were cross-checked against vendor signatures or published digests; WiX and the two rotating Microsoft bootstrappers are exact HTTPS byte pins/change detectors.",
+  "_python_signer": "7ED10B6531D7C8E1BC296021FC624643487034E5 (Steve Dower, Python Release Signing; key ID documented by python.org)",
+  "vs_BuildTools.exe": "15df9d3b4c2b2eaf44704d5e938c895341b9cd8ba40a9a18610f8d18cbe01b53",
+  "rustup-init.exe": "86478e53f769379d7f0ebfa7c9aa97cb76ca92233f79aa2cc0dbee2efaac73c7",
+  "Git-2.51.0-64-bit.exe": "843037416371600a7f289be8fe2b2224afe1c1bb0736bbab7b3ff393e6a7aaf2",
+  "node-v22.18.0-x64.msi": "dffd8e34d8eb1a1a2e6f5e6f129c4b1b8a34aa54e02799007adc99d73efac75c",
+  "python-3.12.7-amd64.exe": "1206721601a62c925d4e4a0dcfc371e88f2ddbe8c0c07962ebb2be9b5bde4570",
+  "nsis-3.10-setup.exe": "4313d352e0dafd1f22b6517126a655cae3b444fa758d2845eddfbe72f24f7bdd",
+  "wix314.exe": "6bf6d03d6923d9ef827ae1d943b90b42b8ebb1b0f68ef6d55f868fa34c738a29",
+  "MicrosoftEdgeWebview2Setup.exe": "be695eb3732a94e181f008ab5cf6ee650f8644676e87f9e02b6ab0d02f2ea08e"
+}
