@@ -16,7 +16,7 @@ pub(super) const BWRAP_PROBE_POSITIVE_TTL: Duration = Duration::from_secs(5 * 60
 pub(super) const BWRAP_PROBE_NEGATIVE_TTL: Duration = Duration::from_secs(60);
 /// Lowest descriptor number a workspace handed to a child may occupy. Kept clear of the standard
 /// streams and of the few descriptors the spawn path itself moves around.
-pub(crate) const CHILD_INHERITED_FD_FLOOR: libc::c_int = 10;
+pub(crate) const CHILD_INHERITED_FD_FLOOR: i32 = 10;
 static PROBE_CACHE: Mutex<Option<ProbeOutcome>> = Mutex::new(None);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -235,7 +235,7 @@ fn probe_binary(binary: &Path) -> bool {
 #[cfg(target_os = "linux")]
 pub(crate) fn duplicate_for_child(
     file: &std::fs::File,
-    minimum: libc::c_int,
+    minimum: i32,
 ) -> std::io::Result<std::os::fd::OwnedFd> {
     use std::os::fd::{AsRawFd as _, FromRawFd as _};
 
@@ -249,7 +249,7 @@ pub(crate) fn duplicate_for_child(
 }
 
 #[cfg(target_os = "linux")]
-fn inherit_fd_in_std_command(command: &mut std::process::Command, descriptor: libc::c_int) {
+fn inherit_fd_in_std_command(command: &mut std::process::Command, descriptor: i32) {
     use std::os::unix::process::CommandExt as _;
     // SAFETY: the child-only closure calls async-signal-safe fcntl before exec.
     unsafe {
@@ -258,10 +258,7 @@ fn inherit_fd_in_std_command(command: &mut std::process::Command, descriptor: li
 }
 
 #[cfg(target_os = "linux")]
-pub(crate) fn inherit_fd_in_tokio_command(
-    command: &mut tokio::process::Command,
-    descriptor: libc::c_int,
-) {
+pub(crate) fn inherit_fd_in_tokio_command(command: &mut tokio::process::Command, descriptor: i32) {
     // SAFETY: identical child-only boundary to the std Command helper.
     unsafe {
         command.pre_exec(move || clear_cloexec(descriptor));
@@ -269,7 +266,7 @@ pub(crate) fn inherit_fd_in_tokio_command(
 }
 
 #[cfg(target_os = "linux")]
-fn clear_cloexec(descriptor: libc::c_int) -> std::io::Result<()> {
+fn clear_cloexec(descriptor: i32) -> std::io::Result<()> {
     // SAFETY: fcntl addresses the inherited exact descriptor.
     let flags = unsafe { libc::fcntl(descriptor, libc::F_GETFD) };
     if flags < 0 {
@@ -283,7 +280,7 @@ fn clear_cloexec(descriptor: libc::c_int) -> std::io::Result<()> {
 }
 
 #[cfg(any(target_os = "linux", test))]
-pub(super) fn bwrap_probe_args(workspace_fd: libc::c_int) -> Vec<String> {
+pub(super) fn bwrap_probe_args(workspace_fd: i32) -> Vec<String> {
     let mut arguments = BWRAP_PROBE_ARGS[..BWRAP_PROBE_ARGS.len() - 1]
         .iter()
         .map(|argument| (*argument).to_owned())

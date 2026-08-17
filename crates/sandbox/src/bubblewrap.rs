@@ -224,7 +224,7 @@ fn bwrap_args_with_home(conf: &Confinement, command: &str, home: Option<&Path>) 
 pub(crate) fn bwrap_args_with_workspace_fd(
     conf: &Confinement,
     command: &str,
-    workspace_fd: libc::c_int,
+    workspace_fd: i32,
 ) -> Vec<String> {
     let home = std::env::var_os("HOME").map(PathBuf::from);
     bwrap_args_with_home_and_source(
@@ -239,7 +239,7 @@ pub(crate) fn bwrap_args_with_workspace_fd(
 #[derive(Clone, Copy)]
 enum WorkspaceSource<'a> {
     Path(&'a Path),
-    Descriptor(libc::c_int),
+    Descriptor(i32),
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]

@@ -548,6 +548,26 @@ exit 1
         self.assertIn("content-canary:", workflow)
         self.assertIn("release-manifest.receipt.json", workflow)
         self.assertIn("verify_release.py artifact", workflow)
+        self.assertEqual(
+            workflow.count("Materialize the exact Windows source through the GitHub API"),
+            2,
+        )
+        self.assertEqual(
+            workflow.count(
+                "- uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0\n"
+                "        if: matrix.target != 'x86_64-pc-windows-msvc'\n"
+                "        with:\n"
+                "          ref: ${{ needs.validate.outputs.commit }}"
+            ),
+            2,
+        )
+        self.assertIn("run: &windows_source_materialization |", workflow)
+        self.assertIn("run: *windows_source_materialization", workflow)
+        self.assertIn(
+            '"https://api.github.com/repos/$env:SOURCE_REPOSITORY/zipball/$env:SOURCE_SHA"',
+            workflow,
+        )
+        self.assertIn("source archive member escapes the destination", workflow)
         self.assertIn("MACHINE-CONTRACT.json", workflow)
         self.assertIn(
             'CARGO_TARGET_DIR="$RUNNER_TEMP/core-schema-bootstrap-target"', workflow

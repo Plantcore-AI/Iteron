@@ -206,11 +206,11 @@ pub(crate) fn atomic_replace(path: &Path, bytes: &[u8]) -> io::Result<()> {
 /// before publication, eliminating both the public-mode rename window and the second open/fsync
 /// cycle that callers previously paid after [`atomic_replace`].
 pub(crate) fn atomic_replace_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    atomic_replace_with(path, bytes, true, |temporary| {
+    atomic_replace_with(path, bytes, true, |_temporary| {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(temporary, std::fs::Permissions::from_mode(0o600))?;
+            std::fs::set_permissions(_temporary, std::fs::Permissions::from_mode(0o600))?;
         }
         Ok(())
     })
