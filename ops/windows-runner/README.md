@@ -238,6 +238,13 @@ Installs, checking first and skipping what is already present:
 
 Then it re-invokes every tool, prints its version, and **fails if any is missing**.
 
+Rust re-runs are offline-idempotent once that exact toolchain, both components and the target are
+installed. The script inventories only local rustup metadata before any install/update command; a
+healthy installation skips the Rust dist server completely, so retirement of an old manifest by a
+regional mirror cannot break an otherwise healthy runner. If the toolchain, a component or the
+target is actually missing, the script fetches only the missing surface and still exits non-zero if
+the mirror cannot supply it or the post-install inventory remains incomplete.
+
 Two deliberate decisions worth knowing:
 
 - **Rust is installed machine-wide** under `C:\rust` with `CARGO_HOME` / `RUSTUP_HOME` /

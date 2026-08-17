@@ -373,6 +373,77 @@ function Test-CommandVersion {
     return $line.Trim()
 }
 
+function Invoke-NativeQuery {
+    <# Runs a read-only native inventory command without PS 5.1 turning stderr into a terminating
+       NativeCommandError. The caller decides whether a non-zero exit means "missing" or fatal. #>
+    param(
+        [Parameter(Mandatory)][string]$FilePath,
+        [string[]]$Arguments = @()
+    )
+
+    $output = @()
+    $exitCode = -1
+    $previousErrorAction = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $output = @(& $FilePath @Arguments 2>&1)
+        $exitCode = $LASTEXITCODE
+    } catch {
+        $output = @($_.Exception.Message)
+    } finally {
+        $ErrorActionPreference = $previousErrorAction
+    }
+    return [pscustomobject]@{
+        ExitCode = $exitCode
+        Output = @($output | ForEach-Object { "$_" })
+    }
+}
+
+function Get-RustProvisioningState {
+    <# Inventory only: these rustup list commands read the installed metadata and never update a
+       channel manifest. That distinction matters for exact archived toolchains on stale mirrors. #>
+    $toolchains = Invoke-NativeQuery -FilePath 'rustup' -Arguments @('toolchain', 'list')
+    if ($toolchains.ExitCode -ne 0) {
+        throw "rustup toolchain inventory failed (exit $($toolchains.ExitCode)): $($toolchains.Output -join ' ')"
+    }
+
+    $exactToolchain = [Regex]::Escape($RustToolchain)
+    $toolchainPattern = "^$exactToolchain(?:-x86_64-pc-windows-msvc)?(?:\s|$)"
+    $toolchainInstalled = @($toolchains.Output | Where-Object { $_ -match $toolchainPattern }).Count -gt 0
+    $missingComponents = New-Object System.Collections.ArrayList
+    $targetInstalled = $false
+
+    if ($toolchainInstalled) {
+        $components = Invoke-NativeQuery -FilePath 'rustup' -Arguments @(
+            'component', 'list', '--installed', '--toolchain', $RustToolchain
+        )
+        if ($components.ExitCode -ne 0) {
+            throw "rustup component inventory for $RustToolchain failed (exit $($components.ExitCode)): $($components.Output -join ' ')"
+        }
+        foreach ($required in @('clippy', 'rustfmt')) {
+            $componentPattern = '^' + [Regex]::Escape($required) + '(?:-|\s|$)'
+            if (@($components.Output | Where-Object { $_ -match $componentPattern }).Count -eq 0) {
+                [void]$missingComponents.Add($required)
+            }
+        }
+
+        $targets = Invoke-NativeQuery -FilePath 'rustup' -Arguments @(
+            'target', 'list', '--installed', '--toolchain', $RustToolchain
+        )
+        if ($targets.ExitCode -ne 0) {
+            throw "rustup target inventory for $RustToolchain failed (exit $($targets.ExitCode)): $($targets.Output -join ' ')"
+        }
+        $targetInstalled = @($targets.Output | Where-Object { $_.Trim() -eq $RustTarget }).Count -gt 0
+    }
+
+    return [pscustomobject]@{
+        ToolchainInstalled = $toolchainInstalled
+        MissingComponents = @($missingComponents)
+        TargetInstalled = $targetInstalled
+        Healthy = $toolchainInstalled -and $missingComponents.Count -eq 0 -and $targetInstalled
+    }
+}
+
 function Get-VsWherePath {
     $candidate = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
     if (Test-Path -LiteralPath $candidate) { return $candidate }
@@ -494,6 +565,7 @@ git-fetch-with-cli = true
     Add-MachinePathEntry -Entry (Join-Path $cargoHome 'bin')
 
     $rustup = Get-Command 'rustup' -CommandType Application -ErrorAction SilentlyContinue
+    $rustupWasInstalled = $null -ne $rustup
     if ($null -eq $rustup) {
         $init = Invoke-PinnedDownload `
             -Url 'https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe' `
@@ -509,22 +581,57 @@ git-fetch-with-cli = true
             '--target', $RustTarget
         )
         Invoke-Native -FilePath $init -Arguments $installArgs -What "rustup-init (pin $RustToolchain)"
-        Add-Summary -Component 'Rust' -State 'installed'
     } else {
         Write-Ok "rustup already present at $($rustup.Source)"
-        Add-Summary -Component 'Rust' -State 'present'
     }
 
-    # Idempotent either way: installing an already-installed toolchain/target/component is a no-op.
-    Invoke-Native -FilePath 'rustup' -Arguments @(
-        'toolchain', 'install', $RustToolchain, '--profile', 'minimal',
-        '--component', 'clippy', '--component', 'rustfmt', '--target', $RustTarget
-    ) -What "rustup toolchain install $RustToolchain"
-    Invoke-Native -FilePath 'rustup' -Arguments @('default', $RustToolchain) `
-        -What "rustup default $RustToolchain"
-    Invoke-Native -FilePath 'rustup' -Arguments @(
-        'target', 'add', $RustTarget, '--toolchain', $RustToolchain
-    ) -What "rustup target add $RustTarget"
+    # Do not call `rustup toolchain install` just because rustup itself exists. Exact archived
+    # toolchains are immutable, but a regional mirror can later retire their channel manifest.
+    # In that state, a healthy installation must remain a true offline no-op. Inventory the local
+    # rustup metadata first and contact the dist server only for a genuinely missing item.
+    $state = Get-RustProvisioningState
+    $repaired = $false
+    if ($state.Healthy) {
+        Write-Ok "exact toolchain, clippy, rustfmt and $RustTarget already installed; skipping rustup network install"
+    } else {
+        $repaired = $true
+        if (-not $state.ToolchainInstalled) {
+            Invoke-Native -FilePath 'rustup' -Arguments @(
+                'toolchain', 'install', $RustToolchain, '--profile', 'minimal',
+                '--component', 'clippy', '--component', 'rustfmt', '--target', $RustTarget
+            ) -What "rustup toolchain install $RustToolchain"
+        } else {
+            foreach ($component in $state.MissingComponents) {
+                Invoke-Native -FilePath 'rustup' -Arguments @(
+                    'component', 'add', $component, '--toolchain', $RustToolchain
+                ) -What "rustup component add $component ($RustToolchain)"
+            }
+            if (-not $state.TargetInstalled) {
+                Invoke-Native -FilePath 'rustup' -Arguments @(
+                    'target', 'add', $RustTarget, '--toolchain', $RustToolchain
+                ) -What "rustup target add $RustTarget"
+            }
+        }
+        Invoke-Native -FilePath 'rustup' -Arguments @('default', $RustToolchain) `
+            -What "rustup default $RustToolchain"
+
+        $state = Get-RustProvisioningState
+        if (-not $state.Healthy) {
+            $missing = New-Object System.Collections.ArrayList
+            if (-not $state.ToolchainInstalled) { [void]$missing.Add("toolchain $RustToolchain") }
+            foreach ($component in $state.MissingComponents) { [void]$missing.Add("component $component") }
+            if (-not $state.TargetInstalled) { [void]$missing.Add("target $RustTarget") }
+            throw "Rust provisioning completed without error but remains incomplete: $($missing -join ', ')"
+        }
+    }
+
+    if (-not $rustupWasInstalled) {
+        Add-Summary -Component 'Rust' -State 'installed'
+    } elseif ($repaired) {
+        Add-Summary -Component 'Rust' -State 'repaired'
+    } else {
+        Add-Summary -Component 'Rust' -State 'present (offline verified)'
+    }
 
     # The runner service account must be able to write the registry cache and build dirs.
     Grant-ServiceAccountWrite -Path $RustRoot
