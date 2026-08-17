@@ -45,11 +45,21 @@ machine-readable output. The current workspace version is **v0.0.7**.
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/Plantcore-AI/Iteron/releases/latest/download/install.sh | sh
 ```
 
+On Windows, use the PowerShell installer from the same release:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+
 The installer verifies the selected release archive, installs without `sudo`,
 and does not edit shell profiles. Release targets are macOS arm64, Linux arm64,
-and Linux x86-64. See the [installation and verification
+Linux x86-64, and Windows x86-64. See the [installation and verification
 guide](docs/getting-started/installation.md) for version pinning, checksums,
 attestations, and source builds.
+
+Windows gets a binary and an installer, and nothing more: there is no Windows
+code-execution sandbox, so confinement is unavailable there. See
+[supported platforms](docs/reference/platforms.md) before relying on it.
 
 Verify that the installed directory is on the shell's executable search path:
 

@@ -1,0 +1,20 @@
+{
+  "_comment": "Copy to checksums.json, fill every value with a real lowercase SHA-256 (64 hex chars), then pass it as -ChecksumFile to bootstrap.ps1. Empty values FAIL CLOSED on purpose: no hash in this repo was invented. Keys are the exact downloaded file names, so bumping a version parameter invalidates its pin automatically.",
+  "_source_vs_BuildTools": "https://aka.ms/vs/17/release/vs_BuildTools.exe -- Microsoft publishes no per-build hash; pin the bytes you fetched (change detector, not supply-chain proof).",
+  "_source_rustup": "https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe.sha256",
+  "_source_git": "release body of https://github.com/git-for-windows/git/releases/tag/v<GitVersion>.windows.<rev>",
+  "_source_node": "https://nodejs.org/dist/v<NodeVersion>/SHASUMS256.txt (signed alongside as SHASUMS256.txt.sig)",
+  "_source_python": "https://www.python.org/ftp/python/<PythonVersion>/python-<PythonVersion>-amd64.exe -- python.org publishes an MD5, a GPG signature (<file>.asc) and a sigstore bundle, not a SHA-256. Verify the signature first, then pin the SHA-256 of the file you verified.",
+  "_source_nsis": "SourceForge file listing for NSIS 3/<NsisVersion> shows the SHA-256",
+  "_source_wix": "release body of https://github.com/wixtoolset/wix3/releases/tag/<WixReleaseTag>",
+  "_source_webview2": "https://go.microsoft.com/fwlink/p/?LinkId=2124703 -- Evergreen bootstrapper, no published per-build hash; same caveat as vs_BuildTools.exe.",
+
+  "vs_BuildTools.exe": "",
+  "rustup-init.exe": "",
+  "Git-2.51.0-64-bit.exe": "",
+  "node-v22.18.0-x64.msi": "",
+  "python-3.12.7-amd64.exe": "",
+  "nsis-3.10-setup.exe": "",
+  "wix314.exe": "",
+  "MicrosoftEdgeWebview2Setup.exe": ""
+}

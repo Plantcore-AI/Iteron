@@ -524,11 +524,13 @@ exit 1
             workflow.count("git rev-parse 'HEAD^{commit}'"), 2
         )
         self.assertIn("core-release-workspace-status", workflow)
-        self.assertNotIn("x86_64-pc-windows-msvc", workflow)
         for target in (
             "aarch64-apple-darwin",
             "aarch64-unknown-linux-musl",
             "x86_64-unknown-linux-musl",
+            # Restored by #227/#228. The Windows archive is a `.zip`, so the publish job's
+            # attestation glob must not be tar.gz-only or it would ship unverified.
+            "x86_64-pc-windows-msvc",
         ):
             self.assertIn(f"--target {target}", workflow)
         self.assertIn(
