@@ -1199,12 +1199,28 @@ fn run_prune_command(
 const MAIN_STACK_BYTES: usize = 8 * 1024 * 1024;
 
 fn main() -> std::process::ExitCode {
-    match std::thread::Builder::new()
+    let entry = std::thread::Builder::new()
         .name("iteron-main".to_owned())
         .stack_size(MAIN_STACK_BYTES)
-        .spawn(entry)
-    {
-        // A panic already reported itself through the hook; do not print a second, worse message.
+        .spawn(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("start the entry runtime")
+                .block_on(async {
+                    match run_cli().await {
+                        Ok(code) => std::process::ExitCode::from(code),
+                        Err(error) => {
+                            let error = iteron_record::redact::scrub(&format!("{error:#}"));
+                            eprintln!("error: {error}");
+                            std::process::ExitCode::from(output::EXIT_HARNESS)
+                        }
+                    }
+                })
+        });
+    match entry {
+        // A panic inside the entry thread has already reported itself through the panic hook.
+        // Adding a second, vaguer message here would only bury the real one.
         Ok(entry) => entry
             .join()
             .unwrap_or(std::process::ExitCode::from(output::EXIT_HARNESS)),
@@ -1213,26 +1229,6 @@ fn main() -> std::process::ExitCode {
             std::process::ExitCode::from(output::EXIT_HARNESS)
         }
     }
-}
-
-fn entry() -> std::process::ExitCode {
-    let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
-        Ok(runtime) => runtime,
-        Err(error) => {
-            eprintln!("error: could not start the async runtime: {error}");
-            return std::process::ExitCode::from(output::EXIT_HARNESS);
-        }
-    };
-    runtime.block_on(async {
-        match run_cli().await {
-            Ok(code) => std::process::ExitCode::from(code),
-            Err(error) => {
-                let error = iteron_record::redact::scrub(&format!("{error:#}"));
-                eprintln!("error: {error}");
-                std::process::ExitCode::from(output::EXIT_HARNESS)
-            }
-        }
-    })
 }
 
 async fn run_cli() -> anyhow::Result<u8> {
