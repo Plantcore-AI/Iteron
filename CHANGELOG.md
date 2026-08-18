@@ -7,6 +7,28 @@ interfaces may change between releases.
 
 ## [Unreleased]
 
+## [0.0.13] - 2026-08-18
+
+There is no published 0.0.10, 0.0.11 or 0.0.12. Each tag was cut and its release validation or
+build failed, and tag deletion is restricted on this repository, so the version numbers are spent.
+0.0.12 got furthest: it cleared validation and every gate, built on three targets, and stopped on
+the Windows leg at the version-independence proof, because a test in this repository has never
+compiled on Windows. The content below is what 0.0.12 would have carried, plus the fixes that
+failure produced.
+
+### Fixed
+
+- Windows: `crates/cli/tests/one_shot_output.rs` could not compile. `only_rollout_path` is
+  `#[cfg(unix)]` and two of its three callers are gated the same way; the third was not. The
+  `windows` lane never builds this target, so nothing caught it until the release did — where a
+  test that cannot compile fails the release rather than the suite. (#339)
+- A dropped connection no longer reports as a supply-chain failure. `fetch_tool.py` never compared
+  what it received against the `Content-Length` it was given, so a transfer that ended early
+  produced a short file and the digest check called it a checksum mismatch — the one message here
+  that should stop a release cold. Short transfers are now named, and only transport faults are
+  retried; a complete artifact whose digest is not the pinned one is deliberately never retried.
+  (#338)
+
 ## [0.0.12] - 2026-08-18
 
 There is no 0.0.10. That tag was cut and its release validation failed: the tier-2 parameter
