@@ -1738,6 +1738,10 @@ fn d6_02_environment_snapshot_is_bounded_durable_and_resume_does_not_recapture_i
     assert_eq!(injections, 1, "resume reuses one recorded snapshot");
 }
 
+// Uses only_rollout_path, which is #[cfg(unix)], as do the two other tests that call it. Without
+// this the whole test binary fails to compile on Windows -- which is where it was found: the
+// release job builds this target for the version-independence proof and stopped there.
+#[cfg(unix)]
 #[test]
 fn d13_16_resume_diagnostic_preserves_json_and_stream_json_stdout_contracts() {
     for format in ["json", "stream-json"] {
