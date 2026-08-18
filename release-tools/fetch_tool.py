@@ -8,8 +8,11 @@ import json
 import os
 import ssl
 import stat
+import sys
 import tarfile
 import tempfile
+import time
+import urllib.error
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -18,6 +21,17 @@ from urllib.parse import urlparse
 from common import ReleaseToolError, SHA256_RE, run_main, sha256_file
 
 MAX_DOWNLOAD_BYTES = 128 * 1024 * 1024
+DOWNLOAD_ATTEMPTS = 3
+RETRY_PAUSE_SECONDS = 5
+
+
+class TruncatedDownload(ReleaseToolError):
+    """The transfer ended before the server's declared length.
+
+    Kept distinct from every other failure here so that a flaky link is retried and an artifact
+    that does not match its pin never is.
+    """
+
 MAX_ARCHIVE_MEMBERS = 4096
 MAX_DECLARED_ARCHIVE_BYTES = 256 * 1024 * 1024
 ALLOWED_FINAL_HOSTS = (
@@ -96,6 +110,7 @@ def download(url: str, destination: Path) -> None:
     opener = urllib.request.build_opener(
         StrictRedirectHandler(), urllib.request.HTTPSHandler(context=context)
     )
+    declared_length: str | None = None
     with opener.open(request, timeout=60) as response:  # noqa: S310
         validate_download_url(response.geturl())
         declared_length = response.headers.get("Content-Length")
@@ -115,6 +130,13 @@ def download(url: str, destination: Path) -> None:
             os.fsync(handle.fileno())
     if total == 0:
         raise ReleaseToolError("tool download was empty")
+    # Without this, a transfer that ends early is discovered only by the digest check, which then
+    # reports a checksum mismatch. That message means "this artifact is not the one we pinned" --
+    # a supply-chain claim -- and a link that dropped a connection must not be able to make it.
+    if declared_length is not None and total != int(declared_length):
+        raise TruncatedDownload(
+            f"tool download ended after {total} of {int(declared_length)} bytes"
+        )
 
 
 def extract_binary(archive_path: Path, binary_name: str, output: Path) -> None:
@@ -205,8 +227,27 @@ def main() -> None:
     entry = load_entry(arguments.lock, arguments.tool, arguments.host)
     with tempfile.TemporaryDirectory(prefix="iteron-tool-") as temporary_dir:
         archive = Path(temporary_dir) / f"download.{entry['archive']}"
-        download(entry["url"], archive)
+        for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+            try:
+                download(entry["url"], archive)
+                break
+            except (
+                TruncatedDownload,
+                urllib.error.URLError,
+                TimeoutError,
+                ssl.SSLError,
+            ) as failure:
+                if attempt == DOWNLOAD_ATTEMPTS:
+                    raise
+                print(
+                    f"release-tool: transfer failed ({failure}); "
+                    f"retrying, attempt {attempt + 1} of {DOWNLOAD_ATTEMPTS}",
+                    file=sys.stderr,
+                )
+                time.sleep(RETRY_PAUSE_SECONDS)
         actual = sha256_file(archive)
+        # Deliberately outside the retry: a complete artifact whose digest is not the pinned one
+        # is never a transport problem, and fetching it again would only hide that.
         if actual != entry["sha256"]:
             raise ReleaseToolError(
                 f"tool archive checksum mismatch: expected {entry['sha256']}, got {actual}"
