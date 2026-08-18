@@ -1334,7 +1334,7 @@ checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
 
 [[package]]
 name = "iteron-agents"
-version = "0.0.12"
+version = "0.0.13"
 dependencies = [
  "iteron-ctx",
  "iteron-protocol",
@@ -1346,7 +1346,7 @@ dependencies = [
 
 [[package]]
 name = "iteron-changeset"
-version = "0.0.12"
+version = "0.0.13"
 dependencies = [
  "iteron-tunables",
  "thiserror 2.0.20",
@@ -1354,7 +1354,7 @@ dependencies = [
 
 [[package]]
 name = "iteron-cli"
-version = "0.0.12"
+version = "0.0.13"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1407,7 +1407,7 @@ dependencies = [
 
 [[package]]
 name = "iteron-ctx"
-version = "0.0.12"
+version = "0.0.13"
 dependencies = [
  "iteron-protocol",
  "iteron-tunables",
@@ -1422,7 +1422,7 @@ dependencies = [
 
 [[package]]
 name = "iteron-eval"
-version = "0.0.12"
+version = "0.0.13"
 dependencies = [
  "clap",
  "ed25519-dalek",
@@ -1445,7 +1445,7 @@ dependencies = [
 
 [[package]]
 name = "iteron-evolve"
-version = "0.0.12"
+version = "0.0.13"
 dependencies = [
  "iteron-protocol",
  "iteron-record",
@@ -1459,7 +1459,7 @@ dependencies = [
 
 [[package]]
 name = "iteron-kernel"
-version = "0.0.12"
+version = "0.0.13"
 dependencies = [
  "async-trait",
  "iteron-protocol",
@@ -1473,7 +1473,7 @@ dependencies = [
 
 [[package]]
 name = "iteron-lsp"
-version = "0.0.12"
+version = "0.0.13"
 dependencies = [
  "iteron-tunables",
  "serde",
@@ -1485,7 +1485,7 @@ dependencies = [
 
 [[package]]
 name = "iteron-marketplace"
-version = "0.0.12"
+version = "0.0.13"
 dependencies = [
  "base64",
  "ed25519-dalek",
@@ -1500,7 +1500,7 @@ dependencies = [
 
 [[package]]
 name = "iteron-mcp"
-version = "0.0.12"
+version = "0.0.13"
 dependencies = [
  "futures-util",
  "iteron-protocol",
@@ -1517,7 +1517,7 @@ dependencies = [
 
 [[package]]
 name = "iteron-obs"
-version = "0.0.12"
+version = "0.0.13"
 dependencies = [
  "hmac",
  "iteron-protocol",
@@ -1530,7 +1530,7 @@ dependencies = [
 
 [[package]]
 name = "iteron-protocol"
-version = "0.0.12"
+version = "0.0.13"
 dependencies = [
  "iteron-tunables",
  "serde",
@@ -1540,7 +1540,7 @@ dependencies = [
 
 [[package]]
 name = "iteron-provider"
-version = "0.0.12"
+version = "0.0.13"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -1560,7 +1560,7 @@ dependencies = [
 
 [[package]]
 name = "iteron-record"
-version = "0.0.12"
+version = "0.0.13"
 dependencies = [
  "getrandom 0.4.3",
  "hex",
@@ -1578,7 +1578,7 @@ dependencies = [
 
 [[package]]
 name = "iteron-sandbox"
-version = "0.0.12"
+version = "0.0.13"
 dependencies = [
  "async-trait",
  "iteron-tunables",
@@ -1589,7 +1589,7 @@ dependencies = [
 
 [[package]]
 name = "iteron-sched"
-version = "0.0.12"
+version = "0.0.13"
 dependencies = [
  "async-trait",
  "iteron-protocol",
@@ -1602,7 +1602,7 @@ dependencies = [
 
 [[package]]
 name = "iteron-statusline"
-version = "0.0.12"
+version = "0.0.13"
 dependencies = [
  "iteron-tunables",
  "thiserror 2.0.20",
@@ -1610,7 +1610,7 @@ dependencies = [
 
 [[package]]
 name = "iteron-support"
-version = "0.0.12"
+version = "0.0.13"
 dependencies = [
  "iteron-record",
  "iteron-tunables",
@@ -1619,7 +1619,7 @@ dependencies = [
 
 [[package]]
 name = "iteron-tools"
-version = "0.0.12"
+version = "0.0.13"
 dependencies = [
  "futures-util",
  "getrandom 0.4.3",
@@ -1643,7 +1643,7 @@ dependencies = [
 
 [[package]]
 name = "iteron-tunables"
-version = "0.0.12"
+version = "0.0.13"
 dependencies = [
  "hex",
  "serde",
@@ -1654,7 +1654,7 @@ dependencies = [
 
 [[package]]
 name = "iteron-verify"
-version = "0.0.12"
+version = "0.0.13"
 dependencies = [
  "async-trait",
  "hex",
@@ -1669,7 +1669,7 @@ dependencies = [
 
 [[package]]
 name = "iteron-workflow"
-version = "0.0.12"
+version = "0.0.13"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1690,7 +1690,7 @@ dependencies = [
 
 [[package]]
 name = "iteron-xtask"
-version = "0.0.12"
+version = "0.0.13"
 dependencies = [
  "anyhow",
  "iteron-agents",
