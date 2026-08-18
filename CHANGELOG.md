@@ -7,6 +7,38 @@ interfaces may change between releases.
 
 ## [Unreleased]
 
+## [0.0.14] - 2026-08-18
+
+0.0.13 carries the same contents as this release and was never published. Its tag
+was pushed as a lightweight tag, and `release / validate` opens with
+`test "$(git cat-file -t "refs/tags/$tag")" = tag`, which requires an annotated
+one. The check is a bare `test` under `set -e`, so it failed in fourteen
+milliseconds with no message. Tag deletion is restricted here, so the version
+number is spent.
+
+That makes four spent numbers -- 0.0.10 through 0.0.13 -- for four different
+reasons: a red CI on the tagged commit, a stale schema ordinal, a test that had
+never compiled on Windows, and a lightweight tag.
+
+### Fixed
+
+- Windows: `crates/cli/tests/one_shot_output.rs` could not compile. `only_rollout_path` is
+  `#[cfg(unix)]` and two of its three callers are gated the same way; the third was not. The
+  `windows` lane never builds this target, so nothing caught it until the release did -- where a
+  test that cannot compile fails the release rather than the suite. (#339)
+- A dropped connection no longer reports as a supply-chain failure. `fetch_tool.py` never compared
+  what it received against the `Content-Length` it was given, so a transfer that ended early
+  produced a short file and the digest check called it a checksum mismatch -- the one message here
+  that should stop a release cold. Short transfers are now named, and only transport faults are
+  retried; a complete artifact whose digest is not the pinned one is deliberately never retried.
+  (#338)
+
+### Note for anyone installing this
+
+This is the first published release to carry a Windows asset at all. Windows entered the release
+matrix in #325, which is contained only in the four spent tags, so every published version before
+this one is macOS and Linux only.
+
 ## [0.0.13] - 2026-08-18
 
 There is no published 0.0.10, 0.0.11 or 0.0.12. Each tag was cut and its release validation or
