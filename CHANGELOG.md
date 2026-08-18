@@ -7,7 +7,7 @@ interfaces may change between releases.
 
 ## [Unreleased]
 
-## [0.0.11] - 2026-08-18
+## [0.0.12] - 2026-08-18
 
 There is no 0.0.10. That tag was cut and its release validation failed: the tier-2 parameter
 catalog still pinned the pre-fix line numbers in `crates/record/src/lib.rs`, and the tag could not
