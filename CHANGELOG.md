@@ -7,6 +7,27 @@ interfaces may change between releases.
 
 ## [Unreleased]
 
+## [0.0.10] - 2026-08-18
+
+### Fixed
+
+- Windows: a task could never finish. The rollout writer locked the whole record file with
+  `File::try_lock`, which is advisory on Unix and **mandatory** on Windows, so the second handle
+  this crate opens during a live run — `session.rs` measuring the record's length and mtime — was
+  refused with `ERROR_LOCK_VIOLATION`. Every `iteron -p` died after ~91 KB of record. The
+  exclusion moves to a sidecar on Windows; writers still exclude each other and readers are left
+  alone. Unix is unchanged. (#332)
+- Windows: `install.ps1` could never be rendered, so it could never become a release asset.
+  `render_installer.py` passed the rendered file's path after the command string, and `-Command`
+  does not populate `$args` — that is `-File` semantics — so PowerShell saw a stray token and
+  `ParseFile` was handed `$null`. It went unnoticed because the leg that renders it runs only on a
+  tag. (#330)
+- Windows: the ConPTY oracle replaced a reported assertion failure with a 15-minute step timeout.
+  The reader join in `Drop` was unbounded, and the pseudoconsole host is a child of the test
+  process rather than of the wrapper, so the tree kill above it does not necessarily reach it.
+  The join is now bounded. (#331)
+
+
 ## [0.0.9] - 2026-08-17
 
 There is no 0.0.8. That tag was cut and its release validation failed, and release
