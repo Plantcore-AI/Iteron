@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
 use std::sync::{Condvar, LazyLock, Mutex};
 use std::thread::{self, JoinHandle};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 // A PTY step may include a separately scheduled process startup while the all-target suite is
@@ -21,8 +22,35 @@ use std::time::{Duration, Instant};
 // build compiles a second worktree on the same cores and the child's redraw is simply descheduled
 // past the deadline. The failure that produces is indistinguishable from a real hang in the log
 // and costs a full re-run to diagnose, so the watchdog is set where only a genuine hang trips it.
-const STEP_TIMEOUT: Duration = Duration::from_secs(45);
-const PROVIDER_TIMEOUT: Duration = Duration::from_secs(15);
+// Raising this constant is what was tried last time, from fifteen seconds to forty-five, and
+// forty-five has now missed twice on the shared runner as well. A constant cannot be picked that
+// is right for both a dedicated machine and one compiling another worktree on the same cores, so
+// the machine says how slow it is instead -- the same `ITERON_TEST_TIMEOUT_SCALE` that
+// headless_serve.rs already reads, and that the release workflow already sets to 10. Still a
+// liveness bound, not an assertion: no predicate weakens when it grows.
+const BASE_STEP_TIMEOUT: Duration = Duration::from_secs(45);
+const BASE_PROVIDER_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Parsed strictly and clamped, so a malformed or absurd value falls back to native timing rather
+/// than disabling a timeout.
+fn timeout_scale() -> u32 {
+    static SCALE: OnceLock<u32> = OnceLock::new();
+    *SCALE.get_or_init(|| {
+        std::env::var("ITERON_TEST_TIMEOUT_SCALE")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<u32>().ok())
+            .filter(|scale| (1..=60).contains(scale))
+            .unwrap_or(1)
+    })
+}
+
+fn step_timeout() -> Duration {
+    BASE_STEP_TIMEOUT * timeout_scale()
+}
+
+fn provider_timeout() -> Duration {
+    BASE_PROVIDER_TIMEOUT * timeout_scale()
+}
 // Provider fixtures are created before `PtyHarness` acquires its process-wide permit. A full
 // all-target run can therefore leave a fixture waiting behind several batches of live PTYs even
 // though its own request completes immediately once admitted. Keep that scheduler-only wait
@@ -338,7 +366,7 @@ impl BlockingLinkProvider {
             let _ = read_provider_request(&mut stream);
             started_tx.send(()).expect("signal admitted provider turn");
             release_rx
-                .recv_timeout(PROVIDER_TIMEOUT)
+                .recv_timeout(provider_timeout())
                 .expect("drain test releases provider");
             let body = concat!(
                 "data: {\"id\":\"chatcmpl-drain\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Provider turn quiesced.\"},\"finish_reason\":null}],\"usage\":null}\n\n",
@@ -398,7 +426,7 @@ impl InterruptHandoffProvider {
                 .send(())
                 .expect("signal first provider turn");
             release_first_rx
-                .recv_timeout(PROVIDER_TIMEOUT)
+                .recv_timeout(provider_timeout())
                 .expect("interrupt test releases first provider turn");
             let first_body = concat!(
                 "data: {\"id\":\"chatcmpl-interrupt-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"First turn reached its boundary.\"},\"finish_reason\":null}],\"usage\":null}\n\n",
@@ -977,7 +1005,7 @@ impl PtyHarness {
     }
 
     fn wait_until(&mut self, label: &str, predicate: impl Fn(&Self) -> bool) {
-        let deadline = Instant::now() + STEP_TIMEOUT;
+        let deadline = Instant::now() + step_timeout();
         while Instant::now() < deadline {
             let _ = self.pump_once(Duration::from_millis(25));
             self.drain_ready();
@@ -1041,7 +1069,7 @@ impl PtyHarness {
     }
 
     fn wait_for_exit(&mut self) -> portable_pty::ExitStatus {
-        let deadline = Instant::now() + STEP_TIMEOUT;
+        let deadline = Instant::now() + step_timeout();
         while Instant::now() < deadline {
             let status = self
                 .child
@@ -1935,7 +1963,7 @@ fn active_ctrl_d_drains_to_a_checkpoint_and_idle_ctrl_d_still_exits() {
 
     provider
         .started
-        .recv_timeout(PROVIDER_TIMEOUT)
+        .recv_timeout(provider_timeout())
         .expect("provider turn is admitted before Ctrl-D");
     pty.send(b"\x06");
     pty.wait_until("viewer remains reachable during a running turn", |pty| {
@@ -2004,7 +2032,7 @@ fn esc_interrupt_keeps_real_pty_input_live_dispatches_the_next_prompt_and_then_e
 
     provider
         .first_started
-        .recv_timeout(PROVIDER_TIMEOUT)
+        .recv_timeout(provider_timeout())
         .expect("the first turn is awaiting the provider");
 
     // One physical input burst exercises the actual terminal ordering: Esc asks the current run
@@ -2025,7 +2053,7 @@ fn esc_interrupt_keeps_real_pty_input_live_dispatches_the_next_prompt_and_then_e
         .expect("release the interrupted provider request");
     let second_request = provider
         .second_request
-        .recv_timeout(PROVIDER_TIMEOUT)
+        .recv_timeout(provider_timeout())
         .unwrap_or_else(|error| {
             panic!(
                 "the next prompt starts a fresh provider request: {error}; screen:\n{}",
