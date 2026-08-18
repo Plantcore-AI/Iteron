@@ -6,11 +6,11 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
 use std::sync::{Condvar, LazyLock, Mutex};
 use std::thread::{self, JoinHandle};
-use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 // A PTY step may include a separately scheduled process startup while the all-target suite is
