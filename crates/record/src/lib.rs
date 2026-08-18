@@ -1036,6 +1036,11 @@ pub struct Rollout {
     /// property, and timing a disk is not a test, so the counter is how a regression test pins it.
     #[cfg(test)]
     barriers_taken: (u64, u64),
+    /// The sidecar whose OS lock excludes other writers on Windows. Held for the descriptor's
+    /// lifetime and never read: the file exists only to carry the lock, because locking the
+    /// rollout itself would make the record unreadable to every other handle in this process.
+    #[cfg(windows)]
+    _writer_lock: std::fs::File,
 }
 
 impl Rollout {
@@ -1278,6 +1283,41 @@ impl Rollout {
             .read(true)
             .append(true)
             .open(&path)?;
+        // Windows takes this lock *mandatorily*, and over the whole file. While the writer holds
+        // it, any other handle in this process that so much as reads the rollout fails with
+        // ERROR_LOCK_VIOLATION (os error 33) -- and this crate does exactly that during a live
+        // run, measuring the record's length and mtime through a second handle in `session.rs`.
+        // On Unix `flock` is advisory and never blocks a reader, which is why the same code has
+        // always worked there and why nothing caught this until a task was run on Windows: every
+        // `iteron -p` died partway through, after ~91 KB of record, with that error.
+        //
+        // So on Windows the exclusion is moved to a sidecar. Writers still exclude each other --
+        // the property this lock exists for -- and readers of the record are left alone.
+        #[cfg(windows)]
+        let writer_lock = {
+            let lock_path = path.with_extension("jsonl.lock");
+            let lock_file = OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .read(true)
+                .write(true)
+                .open(&lock_path)
+                .map_err(|source| RecordError::WriterLock {
+                    path: path.clone(),
+                    source,
+                })?;
+            match lock_file.try_lock() {
+                Ok(()) => {}
+                Err(TryLockError::WouldBlock) => {
+                    return Err(RecordError::WriterBusy { path });
+                }
+                Err(TryLockError::Error(source)) => {
+                    return Err(RecordError::WriterLock { path, source });
+                }
+            }
+            lock_file
+        };
+        #[cfg(not(windows))]
         match file.try_lock() {
             Ok(()) => {}
             Err(TryLockError::WouldBlock) => {
@@ -1291,8 +1331,13 @@ impl Rollout {
             match Self::scan_tail(&mut file, &tenant) {
                 Ok(tail) => tail,
                 Err(error) => {
-                    // Make the early-return release explicit. Dropping `file` also releases an OS file
-                    // lock, but this keeps the RAII ownership transition obvious at the error edge.
+                    // Make the early-return release explicit. Dropping the descriptor also releases
+                    // an OS file lock, but this keeps the RAII ownership transition obvious at the
+                    // error edge. On Windows the lock lives on the sidecar, so that is what is
+                    // released here.
+                    #[cfg(windows)]
+                    let _ = writer_lock.unlock();
+                    #[cfg(not(windows))]
                     let _ = file.unlock();
                     return Err(error);
                 }
@@ -1307,6 +1352,8 @@ impl Rollout {
         let opened_at = std::time::Instant::now();
         let append_actor = RolloutAppendActor::spawn(file, run).map_err(RecordError::from)?;
         Ok(Rollout {
+            #[cfg(windows)]
+            _writer_lock: writer_lock,
             path,
             append_actor,
             run: run.clone(),
