@@ -39,7 +39,7 @@ jobs:
       tree: ${{ steps.metadata.outputs.tree }}
       version: ${{ steps.metadata.outputs.version }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -534,7 +534,7 @@ jobs:
     runs-on: [self-hosted, Linux, ARM64, dgx]
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.validate.outputs.commit }}
           persist-credentials: false
@@ -660,7 +660,7 @@ jobs:
       RUSTFLAGS: --remap-path-prefix=${{ github.workspace }}=/workspace -C strip=symbols
       SOURCE_DATE_EPOCH: ${{ needs.validate.outputs.source-date-epoch }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: matrix.target != 'x86_64-pc-windows-msvc'
         with:
           ref: ${{ needs.validate.outputs.commit }}
@@ -1260,7 +1260,7 @@ jobs:
           test -x "$gh_root/bin/gh"
           "$gh_root/bin/gh" release verify --help >/dev/null
           echo "$gh_root/bin" >> "$GITHUB_PATH"
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.validate.outputs.commit }}
           persist-credentials: false
@@ -1518,7 +1518,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: matrix.target != 'x86_64-pc-windows-msvc'
         with:
           ref: ${{ needs.validate.outputs.commit }}
