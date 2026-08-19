@@ -13,6 +13,41 @@ use crate::RunGenesisTunableState;
 pub const MAX_RUN_GENESIS_TUNABLE_ENTRIES: usize = 160;
 /// Maximum UTF-8 bytes in stable registry/family/semantic/provenance identifiers.
 pub const MAX_RUN_GENESIS_TUNABLE_ID_BYTES: usize = 256;
+/// Version prefix of the binding identifier the runtime mints for one declared extension server.
+pub const EXTENSION_SERVER_BINDING_PREFIX: &str = "mcp-server-v1:";
+/// Maximum UTF-8 bytes in a declared extension server's name, before hex encoding.
+pub const MAX_EXTENSION_SERVER_NAME_BYTES: usize = 64;
+
+/// Whether `value` is a binding identifier this runtime could have minted for an extension
+/// server: `<prefix><hex of the name>:<64 hex digest>`.
+///
+/// This exists because the two hex components are exactly what the credential scanner masks. Its
+/// generic rule masks any pure-hex run of 32 characters or more, so the digest is masked always,
+/// and the name is masked as soon as it reaches 16 bytes. `safe_id` requires an identifier to
+/// survive scrubbing unchanged, so every trusted configuration declaring such a server failed
+/// genesis validation (#343) -- not because anything was unsafe, but because a structural
+/// identifier was measured with a content rule.
+///
+/// The shape is checked here as strictly as the minter builds it, rather than by loosening the
+/// scanner for hex in general: an identifier that does not parse exactly is not exempted, and the
+/// exemption is from the entropy heuristic only. Credential values never enter the configuration
+/// this identifier commits to, so they cannot enter the identifier.
+pub fn is_extension_server_binding_id(value: &str) -> bool {
+    let Some(body) = value.strip_prefix(EXTENSION_SERVER_BINDING_PREFIX) else {
+        return false;
+    };
+    let Some((name_hex, digest_hex)) = body.split_once(':') else {
+        return false;
+    };
+    value.len() <= MAX_RUN_GENESIS_TUNABLE_ID_BYTES
+        && !name_hex.is_empty()
+        && name_hex.len() <= MAX_EXTENSION_SERVER_NAME_BYTES * 2
+        && name_hex.len() % 2 == 0
+        && name_hex.bytes().all(|byte| byte.is_ascii_hexdigit())
+        && digest_hex.len() == 64
+        && digest_hex.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
 /// Maximum canonical JSON bytes committed by one V2 checkpoint.
 pub const MAX_RUN_GENESIS_TUNABLES_V2_BYTES: usize = 2 * 1024 * 1024;
 /// Maximum canonical JSON nodes across all V2 value and explanation projections.

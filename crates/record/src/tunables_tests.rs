@@ -826,3 +826,60 @@ fn hash_valid_but_self_inconsistent_snapshot_is_refused_by_every_read_boundary()
         "failed fork must not create a child journal"
     );
 }
+
+/// #343: a trusted config declaring an extension server could not start a session, because the
+/// binding id the runtime mints for it fails `safe_id`.
+///
+/// The id is `<prefix>:<hex of the server name>:<64 hex digest>`. The credential scanner masks
+/// any pure-hex run of 32 characters or more, so the digest component is masked always, and the
+/// name component is masked as soon as the name reaches 16 bytes. `safe_id` requires the value to
+/// survive scrubbing unchanged, so it returns false and genesis validation rejects the snapshot.
+#[test]
+fn a_minted_extension_server_binding_id_is_a_safe_identifier() {
+    let name = "publications";
+    let digest = "b".repeat(64);
+    let short = format!("mcp-server-v1:{}:{digest}", hex::encode(name.as_bytes()));
+    assert!(
+        super::safe_id(&short),
+        "a binding id for a short server name must be a safe identifier: {short}"
+    );
+
+    // The half #343 does not mention: 16 bytes of name is 32 hex characters, which is exactly
+    // where the pure-hex token rule starts masking.
+    let long_name = "publications-and-connectors";
+    let long = format!(
+        "mcp-server-v1:{}:{digest}",
+        hex::encode(long_name.as_bytes())
+    );
+    assert!(
+        super::safe_id(&long),
+        "a binding id for a longer server name must be a safe identifier: {long}"
+    );
+}
+
+/// The exemption above must not become "any colon-delimited value containing hex is fine". Each
+/// value below carries a component the credential scanner masks and is NOT the minted shape, so
+/// each must stay refused. (A value like `...:bbbb` is deliberately absent: nothing in it is 32
+/// characters of hex, so the generic rule already accepts it and the fix must not change that.)
+#[test]
+fn a_lookalike_binding_id_is_still_refused() {
+    for value in [
+        // A credential where the digest belongs.
+        "mcp-server-v1:7075626c69636174696f6e73:sk-0123456789012345678901234567890123456789",
+        // The name component is not hex, so this was never minted here.
+        "mcp-server-v1:not-a-hex-name:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        // Odd-length name component: hex decoding could not have produced it.
+        "mcp-server-v1:707:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        // An unknown version prefix must not inherit the exemption.
+        "mcp-server-v2:7075626c69636174696f6e73:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        // No prefix at all.
+        "7075626c69636174696f6e73:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        // A digest that is not 64 hex characters, with a maskable run either side.
+        "mcp-server-v1:7075626c69636174696f6e73:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    ] {
+        assert!(
+            !super::safe_id(value),
+            "this is not a minted binding id and must not be exempted: {value}"
+        );
+    }
+}

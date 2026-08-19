@@ -126,7 +126,8 @@ pub(super) fn safe_id(value: &str) -> bool {
         && value.bytes().all(|byte| {
             byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':' | b'/')
         })
-        && crate::redact::scrub_route_identifier(value) == value
+        && (iteron_protocol::is_extension_server_binding_id(value)
+            || crate::redact::scrub_route_identifier(value) == value)
 }
 
 /// Recompute and validate every bounded identity field. The stored self-digest is never trusted.

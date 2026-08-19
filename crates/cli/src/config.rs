@@ -319,8 +319,11 @@ impl PluginMcpBindingId {
 pub(crate) struct McpServerBindingId(String);
 
 impl McpServerBindingId {
-    const PREFIX: &'static str = "mcp-server-v1:";
-    const MAX_SERVER_BYTES: usize = 64;
+    // One definition, shared with the genesis identifier check in iteron-record. When these were
+    // two literals the shape was minted here and measured there, and the two disagreed: every
+    // minted id failed validation (#343).
+    const PREFIX: &'static str = iteron_protocol::EXTENSION_SERVER_BINDING_PREFIX;
+    const MAX_SERVER_BYTES: usize = iteron_protocol::MAX_EXTENSION_SERVER_NAME_BYTES;
 
     fn new(config: &McpServerConfig) -> Result<Self, &'static str> {
         if config.name.is_empty()
