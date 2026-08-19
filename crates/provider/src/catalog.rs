@@ -2860,6 +2860,8 @@ impl ProviderHealthStore {
     pub fn new(max_entries: usize) -> Self {
         Self {
             inner: Arc::new(Mutex::new(HealthState::default())),
+            // `.max(1)`: the ceiling is operator-settable down to 0, and `clamp(1, 0)` is a
+            // panic in the standard library, not a refusal.
             max_entries: max_entries.clamp(
                 1,
                 iteron_tunables::param_usize(
@@ -2868,7 +2870,8 @@ impl ProviderHealthStore {
                         "provider.catalog.max_health_entries",
                         MAX_HEALTH_ENTRIES,
                     ),
-                ),
+                )
+                .max(1),
             ),
             max_model_entries: max_entries
                 .saturating_mul(iteron_tunables::param_usize(
@@ -2886,7 +2889,8 @@ impl ProviderHealthStore {
                             "provider.catalog.max_model_health_entries",
                             MAX_MODEL_HEALTH_ENTRIES,
                         ),
-                    ),
+                    )
+                    .max(1),
                 ),
         }
     }

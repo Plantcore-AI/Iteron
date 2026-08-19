@@ -143,19 +143,46 @@ pub const GLM_STANDARD_CHAT_MANIFEST: StaticCatalogManifest = StaticCatalogManif
 
 impl StaticProviderMetadata {
     /// Process-wide immutable default parsed from the source-controlled data document.
+    ///
+    /// This has fifteen callers, no error channel, and runs on the startup path of every run, so
+    /// it must not be able to fail. It could: `parse_document` consults twelve operator-settable
+    /// bounds, every one of them a `bounded` parameter the catalog documents as freely tightenable,
+    /// and the document this crate ships does not fit all of them once tightened. Seven parameters
+    /// aborted the process here with exit 101 -- `max_revision_bytes`, `max_document_bytes`,
+    /// `max_models`, `max_model_id_bytes`, `max_header_bytes`, `max_source_bytes` and
+    /// `max_capability_routes`, each at its own declared minimum.
+    ///
+    /// A tightened bound is a statement about what this process will accept from outside, so it
+    /// still applies to a configured replacement document, and a refusal is reported rather than
+    /// swallowed. It is not a statement about whether this crate's own shipped data may load, so
+    /// the fallback below parses that data for shape alone.
     pub fn embedded() -> Arc<Self> {
         static VALUE: OnceLock<Arc<StaticProviderMetadata>> = OnceLock::new();
         VALUE
             .get_or_init(|| {
-                Arc::new(
-                    Self::parse_document(
-                        iteron_tunables::param_str("provider.static_metadata.embedded", EMBEDDED)
-                            .as_bytes(),
-                    )
-                    .expect("embedded provider metadata must be valid"),
-                )
+                let configured =
+                    iteron_tunables::param_str("provider.static_metadata.embedded", EMBEDDED);
+                Arc::new(match Self::parse_document(configured.as_bytes()) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        eprintln!(
+                            "provider metadata: the configured document was refused ({error}); \
+                             continuing with the document this build ships"
+                        );
+                        Self::shipped()
+                    }
+                })
             })
             .clone()
+    }
+
+    /// The document this build ships, parsed for shape only.
+    ///
+    /// Infallible by construction: `EMBEDDED` is `include_str!`-ed from this crate and its parse is
+    /// already asserted by this module's own tests. No operator input reaches this path.
+    fn shipped() -> Self {
+        serde_json::from_str(EMBEDDED)
+            .expect("the provider metadata this build ships is valid schema-v1 JSON")
     }
 
     /// Parse a replacement document through the same strict schema and semantic validation as the
