@@ -688,6 +688,11 @@ jobs:
     if: needs.route.outputs.rust == 'true'
     runs-on: [self-hosted, Linux, ARM64, dgx]
     timeout-minutes: 50
+    env:
+      # This runner compiles other jobs' worktrees on the same cores, and the PTY tests wait on a
+      # child's redraw. The release workflow already declares 10 for the same reason; without it
+      # here, tui_pty's liveness bounds are tuned for a machine this is not.
+      ITERON_TEST_TIMEOUT_SCALE: 10
     defaults:
       run:
         shell: bash
