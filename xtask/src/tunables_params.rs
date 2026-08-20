@@ -1611,7 +1611,11 @@ fn row_for(
         (
             "protocol",
             "crates/protocol/src/tunables_snapshot.rs",
-            "MAX_RUN_GENESIS_TUNABLE_ENTRIES"
+            // The name a binding identifier may carry is a shape the identifier's own parser
+            // enforces, and nothing in this module resolves a parameter -- the whole file is
+            // compile-time constants by construction. Advertising it settable would promise a
+            // knob no use site consults, which the exposure gate correctly refuses.
+            "MAX_RUN_GENESIS_TUNABLE_ENTRIES" | "MAX_EXTENSION_SERVER_NAME_BYTES"
         )
     );
     let wire_compatibility_invariant = matches!(
