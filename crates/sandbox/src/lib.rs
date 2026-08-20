@@ -1154,3 +1154,7 @@ impl Sandbox for Unsupported {
 #[cfg(test)]
 #[path = "env_tests.rs"]
 mod env_tests;
+
+#[cfg(test)]
+#[path = "unconfined_pty_tests.rs"]
+mod unconfined_pty_tests;

@@ -170,6 +170,26 @@ pub async fn spawn_confined_pty_process(
     conf: &Confinement,
     size: WindowSize,
 ) -> Result<ConfinedPtyProcess, SandboxError> {
+    // Before any platform probe, because there is nothing here for a sandbox to enforce.
+    //
+    // Every non-PTY backend already did this -- `bubblewrap.rs`, `seatbelt.rs` and the one-shot
+    // path in `lib.rs` each delegate to `run_direct` on this bit, and the comment on that function
+    // claims "every backend delegates here when `conf.unconfined` is set". These two branches did
+    // not, which made that claim false and had two consequences an operator could see: on macOS a
+    // default `bash` was handed to `/usr/bin/sandbox-exec` and could not reach a path outside the
+    // workspace despite the unconfined contract, and on Linux it refused to start at all when
+    // bubblewrap was absent -- an unconfined process failing on a tool it has no reason to use.
+    //
+    // `configure_pty_environment` is given no scratch here for the same reason `run_direct` skips
+    // it: a private temp directory exists to keep a CONFINED child out of the ambient one, so an
+    // unconfined child keeps the operator's own `TMPDIR`.
+    if conf.unconfined {
+        let mut process = tokio::process::Command::new(crate::confined_shell());
+        process.arg("-c").arg(command).current_dir(&conf.workspace);
+        configure_pty_environment(&mut process, conf, None);
+        return spawn_checked(process, PersistentBackend::DirectPty, size, None, None).await;
+    }
+
     #[cfg(target_os = "linux")]
     {
         let Some(binary) = crate::bubblewrap::Bubblewrap::usable_bwrap_off_worker().await else {

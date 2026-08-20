@@ -4,7 +4,7 @@
   "registry_revision": 20,
   "registry_digest": "487c554cdcc97e7e86d9af2ae4c6f588e4e250fdefb868a9755c7201ad9e5fd6",
   "param_registry_id": "iteron-params",
-  "param_registry_digest": "94d7b18599c436b37fc5a4492738f3288889fe5fa84e810b076c74fa85164f9d",
+  "param_registry_digest": "8ad22f655b42fe019a1e3326ff36d60182e3a9b2ec012dccecc4ec99cc16955c",
   "tool_text_registry_id": "iteron-builtin-tool-descriptions",
   "tool_text_registry_digest": "0ed860c172595c8e2425a76b68a7d840886a9129c40ef103252b1e625fe65a59",
   "counts": {
@@ -59789,7 +59789,7 @@
       "use_sites": [
         {
           "path": "crates/sandbox/src/persistent.rs",
-          "line": 210,
+          "line": 216,
           "evidence": "param_integer runtime resolution"
         },
         {
