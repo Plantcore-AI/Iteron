@@ -191,7 +191,15 @@ pub struct TrialResult {
     pub round: u8,
     pub resolved_rate: f64,
     pub average_cost_usd: Option<f64>,
+    /// Legacy end-to-end cell latency, including evaluator/oracle work.
     pub average_latency_ms: f64,
+    /// Agent-process latency when the manifest supplies complete v4 measurements.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub average_agent_latency_ms: Option<f64>,
+    /// Mean provider-accounted tokens per attempted cell. Missing usage remains `None` and ranks
+    /// behind complete measurements; it is never treated as zero.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub average_tokens: Option<f64>,
     pub manifest_digest: String,
 }
 
@@ -409,7 +417,33 @@ impl OfflineTuner {
         }
         let evidence = emit_candidate_evidence_rows(manifest, &request.candidate.id, arm)
             .map_err(|error| TunerError::EvidenceRows(error.to_string()))?;
-        self.record_evidence_document(trial_id, &evidence)
+        let selected = manifest
+            .cells
+            .iter()
+            .filter(|cell| cell.config == arm)
+            .collect::<Vec<_>>();
+        let average_tokens = selected
+            .iter()
+            .map(|cell| {
+                cell.agent_metrics?
+                    .total_tokens()
+                    .map(|tokens| tokens as f64)
+            })
+            .collect::<Option<Vec<_>>>()
+            .filter(|tokens| !tokens.is_empty())
+            .map(|tokens| tokens.iter().sum::<f64>() / tokens.len() as f64);
+        let average_agent_latency_ms = selected
+            .iter()
+            .map(|cell| cell.agent_metrics.map(|metrics| metrics.elapsed_ms as f64))
+            .collect::<Option<Vec<_>>>()
+            .filter(|latencies| !latencies.is_empty())
+            .map(|latencies| latencies.iter().sum::<f64>() / latencies.len() as f64);
+        self.record_evidence_document(
+            trial_id,
+            &evidence,
+            average_tokens,
+            average_agent_latency_ms,
+        )
     }
 
     /// Record observations only from a verifier-minted bundle. The private seal on
@@ -422,13 +456,15 @@ impl OfflineTuner {
         bundle
             .validate_in_memory_seal()
             .map_err(|error| TunerError::EvidenceRows(error.to_string()))?;
-        self.record_evidence_document(trial_id, &bundle.evidence_rows)
+        self.record_evidence_document(trial_id, &bundle.evidence_rows, None, None)
     }
 
     fn record_evidence_document(
         &mut self,
         trial_id: &str,
         evidence: &EvidenceRowsDocument,
+        average_tokens: Option<f64>,
+        average_agent_latency_ms: Option<f64>,
     ) -> Result<TrialResult, TunerError> {
         let inspection = Self::inspect_evidence_rows(evidence)?;
         if !inspection.feedback_eligible {
@@ -491,6 +527,8 @@ impl OfflineTuner {
             }),
             average_latency_ms: rows.iter().map(|row| row.elapsed_ms as f64).sum::<f64>()
                 / rows.len() as f64,
+            average_agent_latency_ms,
+            average_tokens,
             manifest_digest: evidence.document_sha256.clone(),
         };
         self.commit(TunerEvent::ObservationRecorded {

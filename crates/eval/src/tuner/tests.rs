@@ -143,6 +143,66 @@ fn manifest(
     }
 }
 
+fn with_usage(mut manifest: EvaluationManifest, input_tokens: u64) -> EvaluationManifest {
+    manifest.cells[0].agent_metrics = Some(crate::types::AgentMetrics {
+        elapsed_ms: 10,
+        usage: Some(iteron_protocol::Usage {
+            input: input_tokens,
+            output: 0,
+            cache_creation: 0,
+            cache_read: 0,
+            thinking: 0,
+        }),
+    });
+    manifest
+}
+
+#[test]
+fn complete_token_measurements_break_equal_quality_ties_without_treating_missing_as_zero() {
+    let root = TempRoot::new("token-ranking");
+    let mut tuner = OfflineTuner::create(
+        spec(
+            vec![
+                candidate("a", "x"),
+                candidate("b", "y"),
+                candidate("c", "z"),
+            ],
+            3,
+            vec![1],
+        ),
+        &root.join("tuner.jsonl"),
+    )
+    .unwrap();
+    let trials = tuner.issue_trials().unwrap();
+    let expensive = tuner
+        .record_manifest(
+            &trials[0].trial_id,
+            &with_usage(manifest(&trials[0], true, EvaluationPurpose::Tune), 100),
+            "arm",
+        )
+        .unwrap();
+    let efficient = tuner
+        .record_manifest(
+            &trials[1].trial_id,
+            &with_usage(manifest(&trials[1], true, EvaluationPurpose::Tune), 50),
+            "arm",
+        )
+        .unwrap();
+    let missing = tuner
+        .record_manifest(
+            &trials[2].trial_id,
+            &manifest(&trials[2], true, EvaluationPurpose::Tune),
+            "arm",
+        )
+        .unwrap();
+    assert_eq!(expensive.average_tokens, Some(100.0));
+    assert_eq!(efficient.average_tokens, Some(50.0));
+    assert_eq!(efficient.average_agent_latency_ms, Some(10.0));
+    assert_eq!(missing.average_tokens, None);
+    assert_eq!(missing.average_agent_latency_ms, None);
+    assert_eq!(tuner.advance_round().unwrap().as_deref(), Some("b"));
+}
+
 #[test]
 fn successive_halving_replays_exactly_and_selects_the_best_candidate() {
     let root = TempRoot::new("halving");
@@ -700,4 +760,13 @@ fn optimization_census_runtime_addresses_are_unique_and_roundtrip() {
         document["runtime_settable"].as_u64().unwrap() as usize
     );
     assert_eq!(addresses.len(), runtime_rows);
+    for surface in ["strategy", "tool", "compaction", "memory"] {
+        assert!(
+            rows.iter().any(|row| {
+                row["disposition"] == "runtime_settable"
+                    && row["id"].as_str().is_some_and(|id| id.contains(surface))
+            }),
+            "the universal candidate space must include a runtime-settable {surface} surface"
+        );
+    }
 }

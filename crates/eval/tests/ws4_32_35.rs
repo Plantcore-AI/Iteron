@@ -230,7 +230,7 @@ async fn pinned_open_harness_self_report_is_ignored_by_core_oracle() {
     git(&source, &["init", "--quiet"]);
     executable(
         &source.join("adapter.sh"),
-        "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"candidate_diff\":\"diff --git a/status.txt b/status.txt\\n--- a/status.txt\\n+++ b/status.txt\\n@@ -1 +1 @@\\n-bad\\n+good\\n\",\"self_reported_resolved\":false}'\n",
+        "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":2,\"candidate_diff\":\"diff --git a/status.txt b/status.txt\\n--- a/status.txt\\n+++ b/status.txt\\n@@ -1 +1 @@\\n-bad\\n+good\\n\",\"self_reported_resolved\":false,\"agent_metrics\":{\"elapsed_ms\":999999,\"usage\":{\"input\":80,\"output\":10,\"cache_creation\":0,\"cache_read\":10,\"thinking\":2}}}'\n",
     );
     git(&source, &["add", "adapter.sh"]);
     git(
@@ -280,6 +280,14 @@ async fn pinned_open_harness_self_report_is_ignored_by_core_oracle() {
         .await
         .expect("capture candidate");
     assert_eq!(candidate.self_reported_resolved, Some(false));
+    let metrics = candidate
+        .agent_metrics
+        .expect("adapter records agent metrics");
+    assert!(
+        metrics.elapsed_ms < 5_000,
+        "local clock overrides self-report"
+    );
+    assert_eq!(metrics.total_tokens(), Some(100));
     let score = adapter
         .score_candidate(
             &task,
@@ -292,6 +300,7 @@ async fn pinned_open_harness_self_report_is_ignored_by_core_oracle() {
         .expect("score with Core oracle");
     assert!(score.resolved());
     assert_eq!(score.self_reported_resolved, Some(false));
+    assert_eq!(score.agent_metrics, Some(metrics));
 }
 
 #[test]
@@ -411,7 +420,7 @@ fn fake_core(root: &TempRoot) -> PathBuf {
     let path = root.join("fake-core");
     executable(
         &path,
-        "#!/bin/sh\nset -eu\nworkspace=\nmax_turns=\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    -C) shift; workspace=$1 ;;\n    --max-turns) shift; max_turns=$1 ;;\n  esac\n  shift\ndone\ntest \"$max_turns\" = 250\nprintf 'good\\n' > \"$workspace/status.txt\"\nprintf '%s\\n' '{\"schema_version\":4,\"type\":\"result\",\"outcome\":\"done\",\"reason\":null,\"success\":true,\"assistant_text\":\"done\",\"run_id\":\"parallel-fixture\",\"cost_usd\":0.25,\"cost_status\":\"known\",\"cost_reason\":null,\"turns\":2,\"exit_code\":0,\"error\":null}'\n",
+        "#!/bin/sh\nset -eu\nworkspace=\nmax_turns=\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    -C) shift; workspace=$1 ;;\n    --max-turns) shift; max_turns=$1 ;;\n  esac\n  shift\ndone\ntest \"$max_turns\" = 250\nprintf 'good\\n' > \"$workspace/status.txt\"\nprintf '%s\\n' '{\"schema_version\":4,\"type\":\"turn_end\",\"turn\":1,\"cost_usd\":0.25,\"cumulative_cost_usd\":0.25,\"cost_status\":\"known\",\"cost_reason\":null,\"usage\":{\"input\":8,\"output\":2,\"cache_creation\":0,\"cache_read\":0,\"thinking\":0},\"cache_hit\":0.0,\"context\":{\"kind\":\"estimate\",\"input_tokens\":8,\"system_tokens\":0,\"tool_tokens\":0,\"transcript_tokens\":8,\"framing_tokens\":0,\"estimator\":\"fixture\",\"model_context_window\":null,\"reserved_output_tokens\":2,\"compaction_trigger_tokens\":0},\"effort\":{\"enforcement\":\"unsupported\",\"requested\":\"low\",\"capability_proven_by_catalog\":false}}'\nprintf '%s\\n' '{\"schema_version\":4,\"type\":\"result\",\"outcome\":\"done\",\"reason\":null,\"success\":true,\"assistant_text\":\"done\",\"run_id\":\"parallel-fixture\",\"cost_usd\":0.25,\"cost_status\":\"known\",\"cost_reason\":null,\"turns\":2,\"exit_code\":0,\"error\":null}'\n",
     );
     path
 }
@@ -420,7 +429,7 @@ fn uncapped_core(root: &TempRoot) -> PathBuf {
     let path = root.join("uncapped-core");
     executable(
         &path,
-        "#!/bin/sh\nset -eu\nworkspace=\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    -C) shift; workspace=$1 ;;\n    --max-turns) exit 93 ;;\n  esac\n  shift\ndone\nprintf 'good\\n' > \"$workspace/status.txt\"\nprintf '%s\\n' '{\"schema_version\":4,\"type\":\"result\",\"outcome\":\"done\",\"reason\":null,\"success\":true,\"assistant_text\":\"done\",\"run_id\":\"uncapped-fixture\",\"cost_usd\":0.25,\"cost_status\":\"known\",\"cost_reason\":null,\"turns\":2,\"exit_code\":0,\"error\":null}'\n",
+        "#!/bin/sh\nset -eu\nworkspace=\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    -C) shift; workspace=$1 ;;\n    --max-turns) exit 93 ;;\n  esac\n  shift\ndone\nprintf 'good\\n' > \"$workspace/status.txt\"\nprintf '%s\\n' '{\"schema_version\":4,\"type\":\"turn_end\",\"turn\":1,\"cost_usd\":0.25,\"cumulative_cost_usd\":0.25,\"cost_status\":\"known\",\"cost_reason\":null,\"usage\":{\"input\":8,\"output\":2,\"cache_creation\":0,\"cache_read\":0,\"thinking\":0},\"cache_hit\":0.0,\"context\":{\"kind\":\"estimate\",\"input_tokens\":8,\"system_tokens\":0,\"tool_tokens\":0,\"transcript_tokens\":8,\"framing_tokens\":0,\"estimator\":\"fixture\",\"model_context_window\":null,\"reserved_output_tokens\":2,\"compaction_trigger_tokens\":0},\"effort\":{\"enforcement\":\"unsupported\",\"requested\":\"low\",\"capability_proven_by_catalog\":false}}'\nprintf '%s\\n' '{\"schema_version\":4,\"type\":\"result\",\"outcome\":\"done\",\"reason\":null,\"success\":true,\"assistant_text\":\"done\",\"run_id\":\"uncapped-fixture\",\"cost_usd\":0.25,\"cost_status\":\"known\",\"cost_reason\":null,\"turns\":2,\"exit_code\":0,\"error\":null}'\n",
     );
     path
 }
@@ -431,7 +440,7 @@ fn flaky_core(root: &TempRoot) -> PathBuf {
     executable(
         &path,
         &format!(
-            "#!/bin/sh\nset -eu\nworkspace=\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    -C) shift; workspace=$1 ;;\n  esac\n  shift\ndone\ncount=0\ntest ! -f '{counter}' || count=$(cat '{counter}')\ncount=$((count + 1))\nprintf '%s\\n' \"$count\" > '{counter}'\nif [ \"$count\" = 1 ]; then\n  printf '%s\\n' '{{not-json}}'\n  exit 1\nfi\nprintf 'good\\n' > \"$workspace/status.txt\"\nprintf '%s\\n' '{{\"schema_version\":4,\"type\":\"result\",\"outcome\":\"done\",\"reason\":null,\"success\":true,\"assistant_text\":\"done\",\"run_id\":\"retry-fixture\",\"cost_usd\":0.25,\"cost_status\":\"known\",\"cost_reason\":null,\"turns\":2,\"exit_code\":0,\"error\":null}}'\n",
+            "#!/bin/sh\nset -eu\nworkspace=\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    -C) shift; workspace=$1 ;;\n  esac\n  shift\ndone\ncount=0\ntest ! -f '{counter}' || count=$(cat '{counter}')\ncount=$((count + 1))\nprintf '%s\\n' \"$count\" > '{counter}'\nif [ \"$count\" = 1 ]; then\n  printf '%s\\n' '{{not-json}}'\n  exit 1\nfi\nprintf 'good\\n' > \"$workspace/status.txt\"\nprintf '%s\\n' '{{\"schema_version\":4,\"type\":\"turn_end\",\"turn\":1,\"cost_usd\":0.25,\"cumulative_cost_usd\":0.25,\"cost_status\":\"known\",\"cost_reason\":null,\"usage\":{{\"input\":8,\"output\":2,\"cache_creation\":0,\"cache_read\":0,\"thinking\":0}},\"cache_hit\":0.0,\"context\":{{\"kind\":\"estimate\",\"input_tokens\":8,\"system_tokens\":0,\"tool_tokens\":0,\"transcript_tokens\":8,\"framing_tokens\":0,\"estimator\":\"fixture\",\"model_context_window\":null,\"reserved_output_tokens\":2,\"compaction_trigger_tokens\":0}},\"effort\":{{\"enforcement\":\"unsupported\",\"requested\":\"low\",\"capability_proven_by_catalog\":false}}}}'\nprintf '%s\\n' '{{\"schema_version\":4,\"type\":\"result\",\"outcome\":\"done\",\"reason\":null,\"success\":true,\"assistant_text\":\"done\",\"run_id\":\"retry-fixture\",\"cost_usd\":0.25,\"cost_status\":\"known\",\"cost_reason\":null,\"turns\":2,\"exit_code\":0,\"error\":null}}'\n",
             counter = counter.display()
         ),
     );
@@ -679,6 +688,7 @@ fn synthetic_cell(
             enforcement: "fixed_fixture".into(),
             reason: None,
         },
+        agent_metrics: None,
         elapsed_ms,
         error: None,
         candidate_diff: Some(format!("diff-{task}-{config}-{seed}")),
@@ -1273,6 +1283,7 @@ fn candidate_contract_type_keeps_self_report_audit_only() {
         schema_version: 1,
         candidate_diff: GOLD_DIFF.into(),
         self_reported_resolved: Some(true),
+        agent_metrics: None,
     };
     assert_eq!(candidate.self_reported_resolved, Some(true));
     assert!(candidate.candidate_diff.contains("status.txt"));

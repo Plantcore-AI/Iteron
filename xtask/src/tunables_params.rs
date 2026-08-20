@@ -1671,6 +1671,7 @@ fn row_for(
             (krate, relative),
             ("cli", "crates/cli/src/plugin_runtime/candidate.rs")
                 | ("eval", "crates/eval/src/adapter_registry.rs")
+                | ("eval", "crates/eval/src/iteron_harness_main.rs")
                 | ("eval", "crates/eval/src/lib.rs")
                 | (
                     "eval",

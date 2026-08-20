@@ -814,14 +814,10 @@ fn decode_context_policies(
                     )?,
                     "context_window_override_reserve",
                 )?;
-                let window = usize::try_from(
-                    super::provider_process_facts::effective_execution_context_window(
-                        model_context_window,
-                        output,
-                    ),
-                )
-                .map_err(|_| EffectiveCoreError::Range {
-                    family: "context_window_override_reserve",
+                let window = usize::try_from(model_context_window).map_err(|_| {
+                    EffectiveCoreError::Range {
+                        family: "context_window_override_reserve",
+                    }
                 })?;
                 (
                     window,

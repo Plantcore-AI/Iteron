@@ -1,7 +1,33 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-pub const EVAL_SCHEMA_VERSION: u32 = 3;
+pub const EVAL_SCHEMA_VERSION: u32 = 4;
+
+/// Provider-independent work performed by the agent process itself.
+///
+/// `elapsed_ms` stops before repository diff collection and external oracle execution. Token
+/// classes are disjoint except that `thinking` is an attribution subset of `output`, so it is
+/// never added a second time by [`AgentMetrics::total_tokens`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentMetrics {
+    pub elapsed_ms: u64,
+    pub usage: Option<iteron_protocol::Usage>,
+}
+
+impl AgentMetrics {
+    pub fn total_tokens(self) -> Option<u64> {
+        let usage = self.usage?;
+        if usage.thinking > usage.output {
+            return None;
+        }
+        usage
+            .input
+            .checked_add(usage.cache_creation)?
+            .checked_add(usage.cache_read)?
+            .checked_add(usage.output)
+    }
+}
 
 /// Stable process exit codes for the `iteron-eval` binary.
 ///
@@ -196,6 +222,10 @@ pub struct CellResult {
     pub oracle_status: OracleStatus,
     pub oracle_detail: Option<String>,
     pub sampling: SamplingControl,
+    /// Exact agent-process measurements. Legacy v3 manifests deserialize this as unavailable;
+    /// missing measurements can be inspected but cannot support a speed/token superiority claim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_metrics: Option<AgentMetrics>,
     pub elapsed_ms: u64,
     pub error: Option<String>,
     pub candidate_diff: Option<String>,
@@ -228,6 +258,7 @@ impl CellResult {
                 enforcement: "uncontrolled".into(),
                 reason: Some("route exposes no sampling-seed contract".into()),
             },
+            agent_metrics: None,
             elapsed_ms: 0,
             error: Some(error.into()),
             candidate_diff: None,

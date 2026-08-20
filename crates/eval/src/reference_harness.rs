@@ -9,14 +9,14 @@
 use crate::corpus::CorpusTask;
 use crate::process::{ProcessSpec, run_process};
 use crate::runner::{materialize_repository, score_candidate_diff};
-use crate::types::TwoSidedOracleReceipt;
+use crate::types::{AgentMetrics, TwoSidedOracleReceipt};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::ffi::OsString;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const HARNESS_OUTPUT_LIMIT: usize = 8 * 1024 * 1024;
 const HARNESS_SPEC_LIMIT: u64 = 256 * 1024;
@@ -158,6 +158,10 @@ pub struct CapturedHarnessCandidate {
     pub candidate_diff: String,
     /// Retained for audit only. `score_candidate` never consults this field.
     pub self_reported_resolved: Option<bool>,
+    /// Standard, harness-neutral measurement envelope. The adapter measures and overwrites
+    /// `elapsed_ms`; a pinned wrapper may report only the token usage it observed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_metrics: Option<AgentMetrics>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -166,6 +170,7 @@ pub struct ReferenceHarnessScore {
     pub harness: String,
     pub harness_revision: String,
     pub self_reported_resolved: Option<bool>,
+    pub agent_metrics: Option<AgentMetrics>,
     pub core_oracle: TwoSidedOracleReceipt,
 }
 
@@ -355,6 +360,7 @@ impl ReferenceHarnessAdapter {
         args.extend(self.spec.arguments.iter().map(|argument| {
             expand_argument(argument, task, &workspace, &artifact_dir, model, provider).into()
         }));
+        let agent_started = Instant::now();
         let output = run_process(&ProcessSpec {
             program: PathBuf::from(&self.spec.launcher),
             args,
@@ -370,6 +376,10 @@ impl ReferenceHarnessAdapter {
         })
         .await
         .map_err(|error| ReferenceHarnessError::Execution(error.to_string()))?;
+        let agent_elapsed_ms = agent_started
+            .elapsed()
+            .as_millis()
+            .min(u128::from(u64::MAX)) as u64;
         if output.timed_out {
             return Err(ReferenceHarnessError::Execution(
                 "wall-clock timeout expired".into(),
@@ -381,7 +391,7 @@ impl ReferenceHarnessAdapter {
                 output.exit_code, output.stdout_truncated, output.stderr_truncated
             )));
         }
-        let candidate = match &self.spec.candidate_output {
+        let mut candidate = match &self.spec.candidate_output {
             CandidateOutput::StdoutJson => {
                 if output.stdout_truncated {
                     return Err(ReferenceHarnessError::Output(
@@ -431,12 +441,26 @@ impl ReferenceHarnessAdapter {
                 ));
             }
         };
-        if candidate.schema_version != 1 {
+        if !matches!(candidate.schema_version, 1 | 2)
+            || (candidate.schema_version == 1 && candidate.agent_metrics.is_some())
+        {
             return Err(ReferenceHarnessError::Output(format!(
                 "unsupported schema_version {}",
                 candidate.schema_version
             )));
         }
+        let reported_usage = candidate.agent_metrics.and_then(|metrics| metrics.usage);
+        let measured = AgentMetrics {
+            elapsed_ms: agent_elapsed_ms,
+            usage: reported_usage,
+        };
+        if reported_usage.is_some() && measured.total_tokens().is_none() {
+            return Err(ReferenceHarnessError::Output(
+                "reported token usage is inconsistent or exceeds its accounting bound".into(),
+            ));
+        }
+        candidate.schema_version = 2;
+        candidate.agent_metrics = Some(measured);
         Ok(candidate)
     }
 
@@ -461,6 +485,7 @@ impl ReferenceHarnessAdapter {
             harness: self.spec.name.clone(),
             harness_revision: self.spec.revision.clone(),
             self_reported_resolved: candidate.self_reported_resolved,
+            agent_metrics: candidate.agent_metrics,
             core_oracle: receipt,
         })
     }
@@ -627,6 +652,7 @@ fn read_swe_agent_prediction(
         schema_version: 1,
         candidate_diff: prediction.model_patch.unwrap_or_default(),
         self_reported_resolved: None,
+        agent_metrics: None,
     })
 }
 

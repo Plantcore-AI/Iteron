@@ -70,7 +70,9 @@ pub use evidence_bundle::{
 };
 pub use measurement::{
     KernelTaxLine, MEASUREMENT_SCHEMA_VERSION, MeasurementError, PairedArmSummary,
-    PairedComparison, PairedEvaluationReport, compare_manifest_arms, compare_manifests,
+    PairedComparison, PairedEvaluationReport, PairedMetricComparison, PerformanceArmSummary,
+    PerformanceDecision, PerformanceEvaluationReport, PerformanceThresholds, compare_manifest_arms,
+    compare_manifests, compare_performance_manifests,
 };
 pub use pareto::{ParetoError, ParetoPoint, ParetoReport, pareto_frontier};
 pub use provisioner::{
@@ -146,7 +148,7 @@ pub use tuner::{
     UNIVERSAL_CANDIDATE_SCHEMA_VERSION,
 };
 pub use types::{
-    BenchmarkReference, CellKey, CellResult, CostObservation, CostStatus, EvaluationManifest,
-    EvaluationPurpose, KernelTaxObservation, OracleStatus, Partition, RunStatus, SamplingControl,
-    TwoSidedOracleReceipt,
+    AgentMetrics, BenchmarkReference, CellKey, CellResult, CostObservation, CostStatus,
+    EvaluationManifest, EvaluationPurpose, KernelTaxObservation, OracleStatus, Partition,
+    RunStatus, SamplingControl, TwoSidedOracleReceipt,
 };

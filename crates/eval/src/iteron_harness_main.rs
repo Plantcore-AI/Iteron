@@ -2,10 +2,13 @@
 
 use iteron_eval::{
     AdapterOperation, MAX_PROTOCOL_REQUEST_BYTES, MAX_PROTOCOL_RESPONSE_BYTES,
-    ResearchExecutionMode, ResearchSession, parse_research_request,
+    PerformanceThresholds, ResearchExecutionMode, ResearchSession, compare_performance_manifests,
+    parse_research_request,
 };
 use std::io::{self, BufRead, Read, Write};
 use std::path::Path;
+
+const MAX_EVALUATION_MANIFEST_BYTES: u64 = 256 * 1024 * 1024;
 
 fn main() -> std::process::ExitCode {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
@@ -41,6 +44,26 @@ fn main() -> std::process::ExitCode {
         [operation, bundle, trusted_public_key] if operation == "scoreboard" => {
             scoreboard(Path::new(bundle), trusted_public_key)
         }
+        [
+            operation,
+            baseline_path,
+            baseline_arm,
+            treatment_path,
+            treatment_arm,
+            minimum_pairs,
+            resolution_margin,
+            latency_reduction,
+            token_reduction,
+        ] if operation == "compare-performance" => compare_performance_args(
+            Path::new(baseline_path),
+            baseline_arm,
+            Path::new(treatment_path),
+            treatment_arm,
+            minimum_pairs,
+            resolution_margin,
+            latency_reduction,
+            token_reduction,
+        ),
         [operation, flag, binary_flag, binary]
             if operation == "serve"
                 && flag == "--execute"
@@ -57,7 +80,7 @@ fn main() -> std::process::ExitCode {
         }
         [operation] if operation == "serve" => serve(ResearchExecutionMode::DryRun, None),
         _ => Err(
-            "usage: iteron-harness <surface|candidate-validate|scoreboard BUNDLE_DIR TRUSTED_PUBLIC_KEY|hermetic-fixture --output CREATE_NEW_FILE|synthetic-cycle --authorization FILE --output CREATE_NEW_DIRECTORY|serve|serve --execute --iteron-cli PATH|serve --execute --native-adapter PATH|campaign [--qualification-id ID]>; serve defaults to dry-run"
+            "usage: iteron-harness <surface|candidate-validate|scoreboard BUNDLE_DIR TRUSTED_PUBLIC_KEY|compare-performance BASELINE_JSON BASELINE_ARM TREATMENT_JSON TREATMENT_ARM MIN_PAIRS RESOLUTION_MARGIN LATENCY_REDUCTION TOKEN_REDUCTION|hermetic-fixture --output CREATE_NEW_FILE|synthetic-cycle --authorization FILE --output CREATE_NEW_DIRECTORY|serve|serve --execute --iteron-cli PATH|serve --execute --native-adapter PATH|campaign [--qualification-id ID]>; serve defaults to dry-run"
                 .into(),
         ),
     };
@@ -68,6 +91,72 @@ fn main() -> std::process::ExitCode {
             std::process::ExitCode::from(2)
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compare_performance_args(
+    baseline_path: &Path,
+    baseline_arm: &str,
+    treatment_path: &Path,
+    treatment_arm: &str,
+    minimum_pairs: &str,
+    resolution_margin: &str,
+    latency_reduction: &str,
+    token_reduction: &str,
+) -> Result<(), String> {
+    let thresholds = PerformanceThresholds {
+        minimum_pairs: minimum_pairs
+            .parse()
+            .map_err(|_| "minimum pairs must be an unsigned integer".to_owned())?,
+        resolution_noninferiority_margin: resolution_margin
+            .parse()
+            .map_err(|_| "resolution margin must be numeric".to_owned())?,
+        minimum_latency_reduction_ratio: latency_reduction
+            .parse()
+            .map_err(|_| "latency reduction must be numeric".to_owned())?,
+        minimum_token_reduction_ratio: token_reduction
+            .parse()
+            .map_err(|_| "token reduction must be numeric".to_owned())?,
+    };
+    let baseline = read_manifest(baseline_path)?;
+    let treatment = read_manifest(treatment_path)?;
+    let report = compare_performance_manifests(
+        &baseline,
+        baseline_arm,
+        &treatment,
+        treatment_arm,
+        thresholds,
+    )
+    .map_err(|error| error.to_string())?;
+    let mut bytes = serde_json::to_vec_pretty(&report).map_err(|error| error.to_string())?;
+    bytes.push(b'\n');
+    if bytes.len() > MAX_PROTOCOL_RESPONSE_BYTES {
+        return Err("performance report exceeds the protocol response byte bound".into());
+    }
+    io::stdout()
+        .lock()
+        .write_all(&bytes)
+        .map_err(|error| error.to_string())
+}
+
+fn read_manifest(path: &Path) -> Result<iteron_eval::EvaluationManifest, String> {
+    let metadata = std::fs::symlink_metadata(path).map_err(|error| error.to_string())?;
+    if !metadata.is_file()
+        || metadata.file_type().is_symlink()
+        || metadata.len() == 0
+        || metadata.len() > MAX_EVALUATION_MANIFEST_BYTES
+    {
+        return Err("evaluation manifest must be a bounded regular non-symlink file".into());
+    }
+    let file = std::fs::File::open(path).map_err(|error| error.to_string())?;
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    file.take(MAX_EVALUATION_MANIFEST_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if bytes.len() as u64 > MAX_EVALUATION_MANIFEST_BYTES {
+        return Err("evaluation manifest grew beyond its byte bound".into());
+    }
+    serde_json::from_slice(&bytes).map_err(|error| error.to_string())
 }
 
 fn scoreboard(bundle: &Path, trusted_public_key: &str) -> Result<(), String> {

@@ -21,6 +21,12 @@ fn eval_admission_and_typed_decode_cannot_be_bypassed() {
         1,
     );
     assert!(validate_contract(&syn::parse_file(&untyped).unwrap()).is_err());
+    let usage_bypass = contract.replacen(
+        "let sample = parse_turn_usage(line)?;",
+        "let sample = evil(line)?;",
+        1,
+    );
+    assert!(validate_contract(&syn::parse_file(&usage_bypass).unwrap()).is_err());
 
     let type_shadow = format!("{contract}\nstruct serde_json;");
     assert!(validate_contract(&syn::parse_file(&type_shadow).unwrap()).is_err());
@@ -40,7 +46,7 @@ fn eval_duplicate_parser_and_runner_reachability_are_bound() {
     let runner = source("crates/eval/src/runner.rs");
     validate_runner_file(&syn::parse_file(&runner).unwrap()).unwrap();
     let bypass = runner.replacen(
-        "match parse_final_result(&output.stdout, output.exit_code)",
+        "match parse_run_output(&output.stdout, output.exit_code)",
         "match evil(&output.stdout, output.exit_code)",
         1,
     );

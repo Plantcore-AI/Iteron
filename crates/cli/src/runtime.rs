@@ -2596,19 +2596,11 @@ pub struct Agent {
 }
 
 impl Agent {
-    /// Local total context ceiling used for prompt admission and compaction. The provider-attested
-    /// physical window remains in `model_context_window` for route validation and telemetry.
+    /// Selected total context ceiling used for prompt admission and compaction. Fresh composition
+    /// defaults it from provider capability; a validated generic profile may narrow it without a
+    /// provider-specific branch.
     pub(crate) fn execution_context_window(&self) -> Option<u64> {
-        self.model_context_window
-            .filter(|window| *window > 0)
-            .map(|window| {
-                crate::runtime_tunables::provider_process_facts::effective_execution_context_window(
-                    window,
-                    self.model_max_output_tokens.unwrap_or(
-                        crate::runtime_tunables::core_facts::DEFAULT_REQUEST_OUTPUT_TOKENS,
-                    ),
-                )
-            })
+        self.model_context_window.filter(|window| *window > 0)
     }
 
     /// Continue an already-run agent with one validated text-plus-image operator submission.

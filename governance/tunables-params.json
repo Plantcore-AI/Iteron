@@ -4314,7 +4314,7 @@
         },
         {
           "path": "crates/cli/src/runtime_tunables/provider_process_facts.rs",
-          "line": 362,
+          "line": 321,
           "evidence": "Rust path reference"
         }
       ]
@@ -9229,7 +9229,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 3205,
+          "line": 3197,
           "evidence": "param_bool runtime resolution"
         }
       ],
@@ -10730,7 +10730,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 7525,
+          "line": 7517,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -10756,7 +10756,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 4589,
+          "line": 4581,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -11448,17 +11448,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 3901,
+          "line": 3893,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 3921,
+          "line": 3913,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 3933,
+          "line": 3925,
           "evidence": "Rust path reference"
         },
         {
@@ -11489,17 +11489,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 4784,
+          "line": 4776,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 4797,
+          "line": 4789,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 4811,
+          "line": 4803,
           "evidence": "Rust path reference"
         }
       ]
@@ -12705,7 +12705,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 5498,
+          "line": 5490,
           "evidence": "param_bool runtime resolution"
         }
       ],
@@ -12762,7 +12762,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 7616,
+          "line": 7608,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -12816,7 +12816,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 7541,
+          "line": 7533,
           "evidence": "Rust path reference"
         },
         {
@@ -13952,7 +13952,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime_tunables/effective_core.rs",
-          "line": 877,
+          "line": 873,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -13978,7 +13978,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime_tunables/effective_core.rs",
-          "line": 870,
+          "line": 866,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -14004,7 +14004,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime_tunables/effective_core.rs",
-          "line": 1153,
+          "line": 1149,
           "evidence": "param_bool runtime resolution"
         }
       ],
@@ -14056,7 +14056,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime_tunables/effective_core.rs",
-          "line": 1197,
+          "line": 1193,
           "evidence": "param_bool runtime resolution"
         }
       ],
@@ -14287,7 +14287,7 @@
         },
         {
           "path": "crates/cli/src/runtime_tunables/provider_process_facts.rs",
-          "line": 362,
+          "line": 321,
           "evidence": "Rust path reference"
         }
       ]
@@ -14376,36 +14376,6 @@
       ]
     },
     {
-      "id": "cli.runtime_tunables.provider_process_facts.max_effective_execution_context_tokens",
-      "module": "context_assembly",
-      "class": "bounded",
-      "type": "integer",
-      "rust_type": "u64",
-      "default": "272_000",
-      "domain": {
-        "min": 0,
-        "max": 272000
-      },
-      "krate": "cli",
-      "decl": "crates/cli/src/runtime_tunables/provider_process_facts.rs",
-      "applied": true,
-      "candidate_kind": "const",
-      "disposition": "runtime_settable",
-      "owner": {
-        "krate": "cli",
-        "path": "crates/cli/src/runtime_tunables/provider_process_facts.rs",
-        "symbol": "MAX_EFFECTIVE_EXECUTION_CONTEXT_TOKENS"
-      },
-      "use_sites": [
-        {
-          "path": "crates/cli/src/runtime_tunables/provider_process_facts.rs",
-          "line": 48,
-          "evidence": "param_integer runtime resolution"
-        }
-      ],
-      "behavior_oracle": "installed profile id cli.runtime_tunables.provider_process_facts.max_effective_execution_context_tokens is resolved at every listed production helper call"
-    },
-    {
       "id": "cli.runtime_tunables.provider_process_facts.owner.names",
       "module": "context_assembly",
       "class": "structural",
@@ -14482,7 +14452,7 @@
         },
         {
           "path": "crates/cli/src/runtime_tunables/provider_process_facts.rs",
-          "line": 362,
+          "line": 321,
           "evidence": "Rust path reference"
         }
       ]
@@ -25184,7 +25154,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/contract.rs",
-          "line": 536,
+          "line": 571,
           "evidence": "Rust path reference"
         }
       ]
@@ -25213,7 +25183,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/contract.rs",
-          "line": 418,
+          "line": 426,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -25243,7 +25213,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/contract.rs",
-          "line": 393,
+          "line": 401,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -25270,7 +25240,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/contract.rs",
-          "line": 533,
+          "line": 568,
           "evidence": "Rust path reference"
         }
       ]
@@ -25296,7 +25266,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/contract.rs",
-          "line": 539,
+          "line": 574,
           "evidence": "Rust path reference"
         }
       ]
@@ -25965,6 +25935,42 @@
       ]
     },
     {
+      "id": "eval.iteron_harness_main.max_evaluation_manifest_bytes",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "u64",
+      "default": "256 * 1024 * 1024",
+      "krate": "eval",
+      "decl": "crates/eval/src/iteron_harness_main.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "hard_budget_effect_ledger",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/iteron_harness_main.rs",
+        "symbol": "MAX_EVALUATION_MANIFEST_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/iteron_harness_main.rs",
+          "line": 147,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/iteron_harness_main.rs",
+          "line": 153,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/iteron_harness_main.rs",
+          "line": 156,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
       "id": "eval.measurement.measurement_schema_version",
       "module": "verification_quorum",
       "class": "structural",
@@ -25985,7 +25991,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/measurement.rs",
-          "line": 254,
+          "line": 473,
           "evidence": "Rust path reference"
         }
       ]
@@ -26140,27 +26146,27 @@
       "use_sites": [
         {
           "path": "crates/eval/src/reference_harness.rs",
-          "line": 237,
+          "line": 242,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/eval/src/reference_harness.rs",
-          "line": 263,
+          "line": 268,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/eval/src/reference_harness.rs",
-          "line": 366,
+          "line": 372,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/eval/src/reference_harness.rs",
-          "line": 594,
+          "line": 619,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/eval/src/reference_harness.rs",
-          "line": 603,
+          "line": 628,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -26767,6 +26773,11 @@
           "evidence": "Rust path reference"
         },
         {
+          "path": "crates/eval/src/runner.rs",
+          "line": 28,
+          "evidence": "Rust path reference"
+        },
+        {
           "path": "crates/eval/src/terminal_bench.rs",
           "line": 298,
           "evidence": "Rust path reference"
@@ -26856,22 +26867,22 @@
       "use_sites": [
         {
           "path": "crates/eval/src/iteron_harness_main.rs",
-          "line": 96,
+          "line": 185,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/eval/src/iteron_harness_main.rs",
-          "line": 99,
+          "line": 188,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/eval/src/iteron_harness_main.rs",
-          "line": 175,
+          "line": 264,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/eval/src/iteron_harness_main.rs",
-          "line": 177,
+          "line": 266,
           "evidence": "Rust path reference"
         },
         {
@@ -26907,12 +26918,17 @@
       "use_sites": [
         {
           "path": "crates/eval/src/iteron_harness_main.rs",
-          "line": 78,
+          "line": 133,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/eval/src/iteron_harness_main.rs",
-          "line": 145,
+          "line": 167,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/iteron_harness_main.rs",
+          "line": 234,
           "evidence": "Rust path reference"
         },
         {
@@ -27108,7 +27124,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 49,
+          "line": 52,
           "evidence": "Rust path reference"
         }
       ]
@@ -27134,12 +27150,12 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 353,
+          "line": 356,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 375,
+          "line": 378,
           "evidence": "Rust path reference"
         }
       ]
@@ -27164,12 +27180,12 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 145,
+          "line": 148,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 147,
+          "line": 150,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -27324,7 +27340,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 747,
+          "line": 750,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -27354,7 +27370,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 756,
+          "line": 759,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -27380,7 +27396,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 752,
+          "line": 755,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -27410,17 +27426,17 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 794,
+          "line": 797,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 804,
+          "line": 807,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 813,
+          "line": 816,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -27450,12 +27466,12 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 1229,
+          "line": 1251,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 1666,
+          "line": 1685,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -27485,7 +27501,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 664,
+          "line": 667,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -27515,7 +27531,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 356,
+          "line": 359,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -27545,12 +27561,12 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 656,
+          "line": 659,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 739,
+          "line": 742,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -27580,7 +27596,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 672,
+          "line": 675,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -27610,7 +27626,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 1595,
+          "line": 1614,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -27619,19 +27635,16 @@
     {
       "id": "eval.runner.process_output_limit",
       "module": "verification_quorum",
-      "class": "bounded",
+      "class": "structural",
       "type": "integer",
       "rust_type": "usize",
-      "default": "1024 * 1024",
-      "domain": {
-        "min": 0,
-        "max": 1048576
-      },
+      "default": "crate::research_protocol::MAX_OUTPUT_BYTES as usize",
       "krate": "eval",
       "decl": "crates/eval/src/runner.rs",
-      "applied": true,
+      "applied": false,
       "candidate_kind": "const",
-      "disposition": "runtime_settable",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "runtime_state_not_a_value",
       "owner": {
         "krate": "eval",
         "path": "crates/eval/src/runner.rs",
@@ -27640,11 +27653,10 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 1461,
-          "evidence": "param_integer runtime resolution"
+          "line": 1483,
+          "evidence": "Rust path reference"
         }
-      ],
-      "behavior_oracle": "installed profile id eval.runner.process_output_limit is resolved at every listed production helper call"
+      ]
     },
     {
       "id": "eval.scoreboard.scoreboard_schema_id",
@@ -27724,6 +27736,11 @@
         {
           "path": "crates/eval/src/statistics.rs",
           "line": 110,
+          "evidence": "param_integer runtime resolution"
+        },
+        {
+          "path": "crates/eval/src/statistics.rs",
+          "line": 160,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -27931,6 +27948,11 @@
         {
           "path": "crates/eval/src/research_execution/protocol_validation.rs",
           "line": 450,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/runner.rs",
+          "line": 28,
           "evidence": "Rust path reference"
         },
         {
@@ -28564,7 +28586,7 @@
         },
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 181,
+          "line": 187,
           "evidence": "Rust path reference"
         }
       ]
@@ -28666,17 +28688,17 @@
         },
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 183,
+          "line": 189,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 238,
+          "line": 244,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 345,
+          "line": 366,
           "evidence": "Rust path reference"
         }
       ]
@@ -28877,7 +28899,7 @@
         },
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 482,
+          "line": 503,
           "evidence": "macro token reference"
         }
       ]
@@ -29004,7 +29026,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 482,
+          "line": 503,
           "evidence": "macro token reference"
         }
       ]
@@ -29030,12 +29052,12 @@
       "use_sites": [
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 236,
+          "line": 242,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 362,
+          "line": 383,
           "evidence": "Rust path reference"
         }
       ]
@@ -29064,7 +29086,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 144,
+          "line": 150,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -29091,7 +29113,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 213,
+          "line": 219,
           "evidence": "Rust path reference"
         }
       ]
@@ -29120,7 +29142,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 123,
+          "line": 129,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -29150,7 +29172,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 131,
+          "line": 137,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -29180,7 +29202,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 129,
+          "line": 135,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -29212,7 +29234,7 @@
         },
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 394,
+          "line": 415,
           "evidence": "Rust path reference"
         }
       ]
@@ -29264,7 +29286,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/types.rs",
-          "line": 17,
+          "line": 43,
           "evidence": "production declaration"
         }
       ]
@@ -29290,7 +29312,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/types.rs",
-          "line": 289,
+          "line": 320,
           "evidence": "Rust path reference"
         }
       ]
@@ -29316,7 +29338,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/types.rs",
-          "line": 291,
+          "line": 322,
           "evidence": "Rust path reference"
         }
       ]
@@ -29327,7 +29349,7 @@
       "class": "structural",
       "type": "integer",
       "rust_type": "u32",
-      "default": "3",
+      "default": "4",
       "krate": "eval",
       "decl": "crates/eval/src/types.rs",
       "applied": false,
@@ -29342,7 +29364,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 532,
+          "line": 535,
           "evidence": "Rust path reference"
         }
       ]

@@ -60,6 +60,7 @@ fn completed(task: &str, config: &str, seed: u64, resolved: bool) -> CellResult 
             enforcement: "fixed".into(),
             reason: None,
         },
+        agent_metrics: None,
         elapsed_ms: 1,
         error: None,
         candidate_diff: None,

@@ -598,8 +598,8 @@ mod tests {
                 "fixture-model".into(),
                 ProviderModelCapabilities {
                     // Compatible gateways often omit this optional catalog field. Fresh
-                    // composition must pin the conservative local execution ceiling instead of
-                    // making the entire CLI unusable before its first request.
+                    // composition uses the bounded compaction fallback instead of making the CLI
+                    // unusable before its first request.
                     context_window_tokens: None,
                     image_input: Some(true),
                     routing_objectives: None,

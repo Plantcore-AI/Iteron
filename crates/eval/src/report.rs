@@ -373,6 +373,7 @@ mod tests {
                 enforcement: "fixed".into(),
                 reason: None,
             },
+            agent_metrics: None,
             elapsed_ms: 1,
             error: None,
             candidate_diff: Some(format!("patch-{task}-{config}-{seed}")),

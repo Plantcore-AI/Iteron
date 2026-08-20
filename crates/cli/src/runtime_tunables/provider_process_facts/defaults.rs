@@ -631,10 +631,9 @@ fn add_context_defaults(
     let policy =
         iteron_ctx::ContextBudgetPolicy::for_usable_window(execution_window, output_reserve, 0);
 
-    // Family 96 preserves the provider-attested physical window for durable route identity and
-    // truthful telemetry. The component budgets below are still sized from `execution_window`;
-    // EffectiveCore re-derives that same local cap before validating or materializing a prompt.
-    // Unknown metadata keeps the already-bounded fallback rather than inventing a capability.
+    // Family 96 defaults from the provider-attested physical window. It remains a generic
+    // candidate dimension, so a validated profile can narrow it under the capability constraint.
+    // Unknown metadata keeps the bounded compaction fallback rather than inventing a capability.
     let effective_window = actual_window.unwrap_or(execution_window);
     builder.observe_default(
         "context_window_override_reserve",
@@ -696,9 +695,8 @@ fn add_context_defaults(
         builder.observe_default(family, int(super::value::i64u(value as u64, family)?))?;
         report.observed_defaults.push(family);
     }
-    // Family 100 follows the selected execution window. A larger provider-attested physical
-    // window must not re-widen this default after the composition root chooses a narrower local
-    // execution ceiling. Unsupported and unverified routes continue to own an exact zero.
+    // Family 100 follows the selected generic window. Unsupported and unverified routes continue
+    // to own an exact zero; capable routes get the same proportional budget regardless of vendor.
     let multimodal_tokens = default_multimodal_tokens(
         input.model_capabilities.image_input,
         execution_window,

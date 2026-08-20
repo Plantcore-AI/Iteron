@@ -53,6 +53,7 @@ fn cell(outcome: &FixedOutcome) -> CellResult {
             enforcement: "fixed_fixture".into(),
             reason: None,
         },
+        agent_metrics: None,
         elapsed_ms: 1,
         error: None,
         candidate_diff: None,

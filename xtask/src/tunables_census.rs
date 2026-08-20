@@ -67,6 +67,8 @@ const QUALITY_INVARIANT_OVERRIDES: &[&str] = &[
     "ctx.memory.header",
     "ctx.skills_metadata.skill_refused_tools",
     "ctx.token_estimator.route_aware_estimator_policy_id",
+    "eval.iteron_harness_main.max_evaluation_manifest_bytes",
+    "eval.runner.process_output_limit",
     "evolve.conformance.runtime_activation_markers",
     "evolve.policy_evidence_projection.policy_evidence_run_schema_version",
     "kernel.ports.tool_port_version",

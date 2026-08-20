@@ -152,6 +152,14 @@ pub enum CliMachineRecord {
     Result(CliFinalResult),
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct CliRunOutput {
+    pub(crate) result: CliFinalResult,
+    /// Sum of every admitted `turn_end` usage sample. `None` means the selected output surface did
+    /// not carry usage; it is never rewritten to a misleading measured zero.
+    pub(crate) usage: Option<iteron_protocol::Usage>,
+}
+
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -429,8 +437,7 @@ impl<'de> Deserialize<'de> for CliImageEncodedBytes {
     }
 }
 
-#[allow(dead_code)]
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CliUsage {
     input: u64,
@@ -438,6 +445,28 @@ struct CliUsage {
     cache_creation: u64,
     cache_read: u64,
     thinking: u64,
+}
+
+impl CliUsage {
+    fn checked_add(self, other: Self) -> Option<Self> {
+        Some(Self {
+            input: self.input.checked_add(other.input)?,
+            output: self.output.checked_add(other.output)?,
+            cache_creation: self.cache_creation.checked_add(other.cache_creation)?,
+            cache_read: self.cache_read.checked_add(other.cache_read)?,
+            thinking: self.thinking.checked_add(other.thinking)?,
+        })
+    }
+
+    const fn into_usage(self) -> iteron_protocol::Usage {
+        iteron_protocol::Usage {
+            input: self.input,
+            output: self.output,
+            cache_creation: self.cache_creation,
+            cache_read: self.cache_read,
+            thinking: self.thinking,
+        }
+    }
 }
 
 #[allow(dead_code)]
@@ -527,6 +556,12 @@ pub enum ContractError {
     InvalidKnownCost,
     #[error("unknown cost_status `{0}`")]
     UnknownCostStatus(String),
+    #[error("iteron stream does not contain exactly one terminal result")]
+    TerminalResultCardinality,
+    #[error("iteron stream contains a machine event after its terminal result")]
+    EventAfterResult,
+    #[error("iteron stream token usage overflowed its u64 accounting bound")]
+    UsageOverflow,
 }
 
 fn admit_type_version(kind: &str, actual: u32) -> Result<(), ContractError> {
@@ -584,6 +619,83 @@ pub fn parse_final_result(
             return Err(ContractError::WrongType(kind.as_str().into()));
         }
     };
+    if result.schema_version >= 5 && result.kernel_tax.is_none() {
+        return Err(ContractError::MalformedJson(
+            "schema v5 result lacks `kernel_tax`".into(),
+        ));
+    }
+    if result.exit_code != process_exit {
+        return Err(ContractError::ExitMismatch {
+            process: process_exit,
+            result: result.exit_code,
+        });
+    }
+    if result.success != matches!(result.outcome.as_str(), "done" | "drained") {
+        return Err(ContractError::OutcomeMismatch);
+    }
+    // Validate cost truth eagerly; a malformed cost must classify the cell as a harness error.
+    let _ = result.cost()?;
+    Ok(result)
+}
+
+/// Parse the bounded stdout of either the one-object `json` surface or the multi-record
+/// `stream-json` surface. The latter is required for exact per-turn token accounting.
+pub(crate) fn parse_run_output(
+    stdout: &[u8],
+    process_exit: i32,
+) -> Result<CliRunOutput, ContractError> {
+    let mut result = None;
+    let mut usage = None::<CliUsage>;
+    for line in stdout
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.iter().all(u8::is_ascii_whitespace))
+    {
+        match parse_machine_record(line)? {
+            CliMachineRecord::Event { kind, .. } => {
+                if result.is_some() {
+                    return Err(ContractError::EventAfterResult);
+                }
+                if kind == CliMachineEventKind::TurnEnd {
+                    let sample = parse_turn_usage(line)?;
+                    usage = Some(match usage {
+                        Some(total) => total
+                            .checked_add(sample)
+                            .ok_or(ContractError::UsageOverflow)?,
+                        None => sample,
+                    });
+                }
+            }
+            CliMachineRecord::Result(observed) => {
+                if result.replace(observed).is_some() {
+                    return Err(ContractError::TerminalResultCardinality);
+                }
+            }
+        }
+    }
+    let result = result.ok_or(ContractError::TerminalResultCardinality)?;
+    Ok(CliRunOutput {
+        result: validate_final_result(result, process_exit)?,
+        usage: usage.map(CliUsage::into_usage),
+    })
+}
+
+fn parse_turn_usage(bytes: &[u8]) -> Result<CliUsage, ContractError> {
+    let value = parse_json_no_duplicates(bytes)
+        .map_err(|error| ContractError::MalformedJson(error.to_string()))?;
+    let event: CliStreamEvent = serde_json::from_value(value)
+        .map_err(|error| ContractError::MalformedJson(error.to_string()))?;
+    let (schema_version, kind) = event.schema_and_kind();
+    admit_type_version(kind.as_str(), schema_version)?;
+    match event {
+        CliStreamEvent::TurnEnd { usage, .. } => Ok(usage),
+        _ => Err(ContractError::WrongType(kind.as_str().into())),
+    }
+}
+
+fn validate_final_result(
+    result: CliFinalResult,
+    process_exit: i32,
+) -> Result<CliFinalResult, ContractError> {
     if result.schema_version >= 5 && result.kernel_tax.is_none() {
         return Err(ContractError::MalformedJson(
             "schema v5 result lacks `kernel_tax`".into(),
@@ -703,6 +815,7 @@ mod tests {
             Ok(CliMachineRecord::Event {
                 schema_version: 3,
                 kind: CliMachineEventKind::AssistantText,
+                ..
             })
         ));
         assert!(matches!(
@@ -712,6 +825,7 @@ mod tests {
             Ok(CliMachineRecord::Event {
                 schema_version: 5,
                 kind: CliMachineEventKind::InputAttachment,
+                ..
             })
         ));
         for malformed in [
@@ -866,6 +980,7 @@ mod tests {
                         CliMachineRecord::Event {
                             schema_version,
                             kind,
+                            ..
                         } => {
                             assert_ne!(selector_value, "result", "{surface_id}");
                             assert_eq!(schema_version, expected_version, "{relative}");
@@ -949,5 +1064,35 @@ mod tests {
             19,
             "every stream/result type is decoded"
         );
+    }
+
+    #[test]
+    fn stream_output_sums_disjoint_turn_usage_and_requires_one_terminal_result() {
+        let parsed = parse_run_output(
+            include_bytes!("../../cli/tests/golden/one_shot_stream_json_success_v5.jsonl"),
+            0,
+        )
+        .expect("frozen stream output parses");
+        assert_eq!(parsed.result.outcome, "done");
+        assert_eq!(
+            parsed.usage,
+            Some(iteron_protocol::Usage {
+                input: 11,
+                output: 2,
+                cache_creation: 0,
+                cache_read: 0,
+                thinking: 0,
+            })
+        );
+
+        let duplicate = [result_json(""), result_json("")].concat();
+        assert!(matches!(
+            parse_run_output(&duplicate, 0),
+            Err(ContractError::MalformedJson(_) | ContractError::TerminalResultCardinality)
+        ));
+        assert!(matches!(
+            parse_run_output(b"{\"schema_version\":5,\"type\":\"run_done\"}\n", 0),
+            Err(ContractError::TerminalResultCardinality)
+        ));
     }
 }

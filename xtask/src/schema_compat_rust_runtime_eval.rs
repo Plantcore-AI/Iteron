@@ -90,6 +90,90 @@ fn validate_contract(contract: &syn::File) -> Result<()> {
             let _ = result.cost()?;
             Ok(result)
         }"#,
+    )?;
+    require_function(
+        contract,
+        "parse_run_output",
+        r#"pub(crate) fn parse_run_output(
+            stdout: &[u8],
+            process_exit: i32,
+        ) -> Result<CliRunOutput, ContractError> {
+            let mut result = None;
+            let mut usage = None::<CliUsage>;
+            for line in stdout
+                .split(|byte| *byte == b'\n')
+                .filter(|line| !line.iter().all(u8::is_ascii_whitespace))
+            {
+                match parse_machine_record(line)? {
+                    CliMachineRecord::Event { kind, .. } => {
+                        if result.is_some() {
+                            return Err(ContractError::EventAfterResult);
+                        }
+                        if kind == CliMachineEventKind::TurnEnd {
+                            let sample = parse_turn_usage(line)?;
+                            usage = Some(match usage {
+                                Some(total) => total
+                                    .checked_add(sample)
+                                    .ok_or(ContractError::UsageOverflow)?,
+                                None => sample,
+                            });
+                        }
+                    }
+                    CliMachineRecord::Result(observed) => {
+                        if result.replace(observed).is_some() {
+                            return Err(ContractError::TerminalResultCardinality);
+                        }
+                    }
+                }
+            }
+            let result = result.ok_or(ContractError::TerminalResultCardinality)?;
+            Ok(CliRunOutput {
+                result: validate_final_result(result, process_exit)?,
+                usage: usage.map(CliUsage::into_usage),
+            })
+        }"#,
+    )?;
+    require_function(
+        contract,
+        "parse_turn_usage",
+        r#"fn parse_turn_usage(bytes: &[u8]) -> Result<CliUsage, ContractError> {
+            let value = parse_json_no_duplicates(bytes)
+                .map_err(|error| ContractError::MalformedJson(error.to_string()))?;
+            let event: CliStreamEvent = serde_json::from_value(value)
+                .map_err(|error| ContractError::MalformedJson(error.to_string()))?;
+            let (schema_version, kind) = event.schema_and_kind();
+            admit_type_version(kind.as_str(), schema_version)?;
+            match event {
+                CliStreamEvent::TurnEnd { usage, .. } => Ok(usage),
+                _ => Err(ContractError::WrongType(kind.as_str().into())),
+            }
+        }"#,
+    )?;
+    require_function(
+        contract,
+        "validate_final_result",
+        r#"fn validate_final_result(
+            result: CliFinalResult,
+            process_exit: i32,
+        ) -> Result<CliFinalResult, ContractError> {
+            if result.schema_version >= 5 && result.kernel_tax.is_none() {
+                return Err(ContractError::MalformedJson(
+                    "schema v5 result lacks `kernel_tax`".into(),
+                ));
+            }
+            if result.exit_code != process_exit {
+                return Err(ContractError::ExitMismatch {
+                    process: process_exit,
+                    result: result.exit_code,
+                });
+            }
+            if result.success != matches!(result.outcome.as_str(), "done" | "drained") {
+                return Err(ContractError::OutcomeMismatch);
+            }
+            // Validate cost truth eagerly; a malformed cost must classify the cell as a harness error.
+            let _ = result.cost()?;
+            Ok(result)
+        }"#,
     )
 }
 
@@ -244,17 +328,17 @@ fn validate_runner(root: &Path) -> Result<()> {
 fn validate_runner_file(file: &syn::File) -> Result<()> {
     require_exact_import(
         file,
-        "parse_final_result",
-        &["crate", "contract", "parse_final_result"],
+        "parse_run_output",
+        &["crate", "contract", "parse_run_output"],
     )?;
     let function = unique_function(file, "run_cell")?;
     if !function.attrs.is_empty() || function.sig.asyncness.is_none() {
         bail!("eval run_cell is conditional or no longer asynchronous");
     }
-    let mut probe = FinalResultProbe::default();
+    let mut probe = RunOutputProbe::default();
     probe.visit_block(&function.block);
     if probe.exact_bindings != 1 || probe.other_bindings != 0 {
-        bail!("eval run_cell no longer binds stdout through parse_final_result exactly once");
+        bail!("eval run_cell no longer binds stdout through parse_run_output exactly once");
     }
     Ok(())
 }
@@ -278,18 +362,18 @@ fn unique_function<'a>(file: &'a syn::File, name: &str) -> Result<&'a syn::ItemF
 }
 
 #[derive(Default)]
-struct FinalResultProbe {
+struct RunOutputProbe {
     exact_bindings: usize,
     other_bindings: usize,
 }
 
-impl<'ast> Visit<'ast> for FinalResultProbe {
+impl<'ast> Visit<'ast> for RunOutputProbe {
     fn visit_local(&mut self, local: &'ast syn::Local) {
-        if matches!(&local.pat, syn::Pat::Ident(binding) if binding.ident == "final_result") {
+        if matches!(&local.pat, syn::Pat::Ident(binding) if binding.ident == "parsed_output") {
             let exact = local.init.as_ref().is_some_and(|initializer| {
                 initializer.diverge.is_none()
                     && matches!(initializer.expr.as_ref(), syn::Expr::Match(expression)
-                        if is_parse_final_result_call(&expression.expr))
+                        if is_parse_run_output_call(&expression.expr))
             });
             if exact {
                 self.exact_bindings = self.exact_bindings.saturating_add(1);
@@ -301,12 +385,12 @@ impl<'ast> Visit<'ast> for FinalResultProbe {
     }
 }
 
-fn is_parse_final_result_call(expression: &syn::Expr) -> bool {
+fn is_parse_run_output_call(expression: &syn::Expr) -> bool {
     let syn::Expr::Call(call) = expression else {
         return false;
     };
     call.args.len() == 2
-        && expr_path(&call.func, &["parse_final_result"])
+        && expr_path(&call.func, &["parse_run_output"])
         && matches!(&call.args[0], syn::Expr::Reference(reference)
             if reference.mutability.is_none()
                 && matches!(reference.expr.as_ref(), syn::Expr::Field(field)

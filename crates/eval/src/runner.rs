@@ -3,12 +3,12 @@
 use crate::attempts::{
     AttemptEvent, AttemptKey, AttemptLedger, AttemptLedgerError, MAX_PHYSICAL_ATTEMPTS,
 };
-use crate::contract::parse_final_result;
+use crate::contract::parse_run_output;
 use crate::corpus::{CorpusManifest, CorpusTask};
 use crate::process::{ProcessOutput, ProcessSpec, find_core, run_process};
 use crate::report::{aggregate, compare, selection_summaries};
 use crate::types::{
-    CellKey, CellResult, EVAL_SCHEMA_VERSION, EvaluationManifest, EvaluationPurpose,
+    AgentMetrics, CellKey, CellResult, EVAL_SCHEMA_VERSION, EvaluationManifest, EvaluationPurpose,
     KernelTaxObservation, OracleStatus, RunStatus, SamplingControl,
 };
 use iteron_sandbox::Confinement;
@@ -22,7 +22,10 @@ pub mod hermetic;
 #[cfg(test)]
 mod hermetic_tests;
 
-const PROCESS_OUTPUT_LIMIT: usize = 1024 * 1024;
+// `stream-json` includes bounded tool events as well as the terminal result. Keep the evaluator's
+// capture ceiling aligned with the public harness output bound so exact usage collection does not
+// turn an otherwise valid tool-heavy run into a 1 MiB harness failure.
+const PROCESS_OUTPUT_LIMIT: usize = crate::research_protocol::MAX_OUTPUT_BYTES as usize;
 const ORACLE_OUTPUT_LIMIT: usize = 128 * 1024;
 const MAX_CANDIDATE_DIFF_BYTES: usize = 8 * 1024 * 1024;
 const MAX_EVAL_CELLS: usize = 1_000_000;
@@ -862,12 +865,18 @@ async fn run_cell(
         Ok(output) => output,
         Err(error) => {
             let mut cell = errored_cell(task, config, seed, "iteron_spawn", error);
-            cell.elapsed_ms = millis(started.elapsed());
+            let agent_elapsed_ms = millis(started.elapsed());
+            cell.agent_metrics = Some(AgentMetrics {
+                elapsed_ms: agent_elapsed_ms,
+                usage: None,
+            });
+            cell.elapsed_ms = agent_elapsed_ms;
             return cell;
         }
     };
+    let agent_elapsed_ms = millis(started.elapsed());
     if output.timed_out {
-        return timeout_cell(task, config, seed, started.elapsed());
+        return timeout_cell(task, config, seed, agent_elapsed_ms);
     }
     if output.stdout_truncated {
         let mut cell = errored_cell(
@@ -878,19 +887,28 @@ async fn run_cell(
             "iteron stdout exceeded the bounded JSON contract limit",
         );
         cell.exit_code = Some(output.exit_code);
-        cell.elapsed_ms = millis(started.elapsed());
+        cell.agent_metrics = Some(AgentMetrics {
+            elapsed_ms: agent_elapsed_ms,
+            usage: None,
+        });
+        cell.elapsed_ms = agent_elapsed_ms;
         return cell;
     }
 
-    let final_result = match parse_final_result(&output.stdout, output.exit_code) {
+    let parsed_output = match parse_run_output(&output.stdout, output.exit_code) {
         Ok(result) => result,
         Err(error) => {
             let mut cell = errored_cell(task, config, seed, "iteron_contract", error.to_string());
             cell.exit_code = Some(output.exit_code);
-            cell.elapsed_ms = millis(started.elapsed());
+            cell.agent_metrics = Some(AgentMetrics {
+                elapsed_ms: agent_elapsed_ms,
+                usage: None,
+            });
+            cell.elapsed_ms = agent_elapsed_ms;
             return cell;
         }
     };
+    let final_result = parsed_output.result;
     let cost = final_result
         .cost()
         .expect("parse_final_result validates cost");
@@ -927,7 +945,11 @@ async fn run_cell(
                 "the selected Core/provider route exposes no sampling-seed contract".into(),
             ),
         },
-        elapsed_ms: millis(started.elapsed()),
+        agent_metrics: Some(AgentMetrics {
+            elapsed_ms: agent_elapsed_ms,
+            usage: parsed_output.usage,
+        }),
+        elapsed_ms: agent_elapsed_ms,
         error: final_result.error.clone(),
         candidate_diff: None,
     };
@@ -1382,7 +1404,7 @@ fn core_process_spec(
         "-C".into(),
         ".".into(),
         "--output-format".into(),
-        "json".into(),
+        "stream-json".into(),
         "--output-schema-version".into(),
         "5".into(),
         "--model".into(),
@@ -1458,10 +1480,7 @@ fn core_process_spec(
         inherit_env,
         env,
         timeout: timing.process_ceiling,
-        max_output_bytes: iteron_tunables::param_integer(
-            "eval.runner.process_output_limit",
-            PROCESS_OUTPUT_LIMIT,
-        ),
+        max_output_bytes: PROCESS_OUTPUT_LIMIT,
     })
 }
 
@@ -1686,7 +1705,7 @@ fn timeout_cell(
     task: &CorpusTask,
     config: HarnessConfig,
     seed: u64,
-    elapsed: Duration,
+    elapsed_ms: u64,
 ) -> CellResult {
     let mut cell = errored_cell(
         task,
@@ -1696,7 +1715,11 @@ fn timeout_cell(
         "iteron process exceeded the configured wall-clock timeout",
     );
     cell.run_status = RunStatus::TimedOut;
-    cell.elapsed_ms = millis(elapsed);
+    cell.agent_metrics = Some(AgentMetrics {
+        elapsed_ms,
+        usage: None,
+    });
+    cell.elapsed_ms = elapsed_ms;
     cell
 }
 
@@ -2083,6 +2106,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("missing {flag}"))
         };
         assert_eq!(arg_after("-C"), ".");
+        assert_eq!(arg_after("--output-format"), "stream-json");
         assert_eq!(arg_after("--max-wall-secs"), "1");
         assert_eq!(
             arg_after("--benchmark-attempt-scope"),
@@ -2104,7 +2128,7 @@ mod tests {
 
         let output = run_process(&spec).await.unwrap();
         assert!(!output.timed_out);
-        let result = parse_final_result(&output.stdout, output.exit_code).unwrap();
+        let result = crate::contract::parse_final_result(&output.stdout, output.exit_code).unwrap();
         assert_eq!(result.outcome, "budget_exhausted");
         let _ = std::fs::remove_dir_all(parent);
     }

@@ -74,8 +74,14 @@ pub(super) fn apply_event(
                 || !result.average_latency_ms.is_finite()
                 || result.average_latency_ms < 0.0
                 || result
+                    .average_agent_latency_ms
+                    .is_some_and(|latency| !latency.is_finite() || latency < 0.0)
+                || result
                     .average_cost_usd
                     .is_some_and(|cost| !cost.is_finite() || cost < 0.0)
+                || result
+                    .average_tokens
+                    .is_some_and(|tokens| !tokens.is_finite() || tokens < 0.0)
                 || !valid_digest(&result.manifest_digest)
             {
                 return Err(invalid("observation does not match its issued trial"));
@@ -286,16 +292,31 @@ pub(super) fn result_order(left: &&TrialResult, right: &&TrialResult) -> Orderin
         .resolved_rate
         .partial_cmp(&left.resolved_rate)
         .unwrap_or(Ordering::Equal)
-        .then_with(|| match (left.average_cost_usd, right.average_cost_usd) {
+        .then_with(|| match (left.average_tokens, right.average_tokens) {
             (Some(left), Some(right)) => left.partial_cmp(&right).unwrap_or(Ordering::Equal),
             (Some(_), None) => Ordering::Less,
             (None, Some(_)) => Ordering::Greater,
             (None, None) => Ordering::Equal,
         })
         .then_with(|| {
-            left.average_latency_ms
-                .partial_cmp(&right.average_latency_ms)
-                .unwrap_or(Ordering::Equal)
+            match (
+                left.average_agent_latency_ms,
+                right.average_agent_latency_ms,
+            ) {
+                (Some(left), Some(right)) => left.partial_cmp(&right).unwrap_or(Ordering::Equal),
+                (Some(_), None) => Ordering::Less,
+                (None, Some(_)) => Ordering::Greater,
+                (None, None) => left
+                    .average_latency_ms
+                    .partial_cmp(&right.average_latency_ms)
+                    .unwrap_or(Ordering::Equal),
+            }
+        })
+        .then_with(|| match (left.average_cost_usd, right.average_cost_usd) {
+            (Some(left), Some(right)) => left.partial_cmp(&right).unwrap_or(Ordering::Equal),
+            (Some(_), None) => Ordering::Less,
+            (None, Some(_)) => Ordering::Greater,
+            (None, None) => Ordering::Equal,
         })
         .then_with(|| left.candidate_id.cmp(&right.candidate_id))
 }

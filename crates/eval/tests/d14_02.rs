@@ -58,6 +58,7 @@ fn cell(config: &str, status: RunStatus, terminal: Option<&str>, exit: Option<i3
             enforcement: "uncontrolled".into(),
             reason: None,
         },
+        agent_metrics: None,
         elapsed_ms: 1,
         error: None,
         candidate_diff: None,
