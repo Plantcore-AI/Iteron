@@ -152,8 +152,28 @@ impl KernelError {
             } => format!(
                 "request is too large for the selected model: {estimated_input_tokens} estimated input + {reserved_output_tokens} reserved output > {context_window_tokens} context window"
             ),
-            Self::ContextBudget(_) => {
-                "one request context component exceeded its immutable run ceiling".into()
+            // The violation already knows which component overflowed, by how much, and against
+            // what ceiling, and it implements Display to say so. Discarding it left an operator
+            // with a sentence that names no component, no number and no next step -- attaching a
+            // 327 KB screenshot produced exactly this, with nothing to indicate the attachment
+            // was the cause or what size would have fit.
+            Self::ContextBudget(violation) => {
+                let mut text = format!(
+                    "one request context component exceeded its immutable run ceiling: {violation}"
+                );
+                // `ContextBudgetViolation` already rendered which class overflowed; the
+                // multimodal one is the only ceiling an operator can raise from a profile
+                // (family 100 is profile-addressable and defaults to 10% of the usable window),
+                // so it is the only one worth naming a next step for. Matching the rendered text
+                // rather than the class is the narrower change: the typed value is discarded at
+                // the two call sites that build this error, and widening that is a separate job.
+                if violation.starts_with("Multimodal ") {
+                    text.push_str(
+                        "; raise it with `--set multimodal_token_budget=<tokens>`, or attach a \
+                         smaller image",
+                    );
+                }
+                text
             }
             Self::InstructionContextTooLarge { bytes, max } => {
                 format!("instruction context is {bytes} bytes, exceeding the {max}-byte limit")
@@ -219,5 +239,63 @@ mod tests {
         assert_eq!(public, "provider: provider transport failed");
         assert!(!public.contains("secret.example"));
         assert!(!public.contains("sk-test-secret"));
+    }
+}
+
+#[cfg(test)]
+mod context_budget_message_tests {
+    use super::*;
+    use iteron_ctx::ContextBudgetClass;
+    use iteron_ctx::ContextBudgetViolation;
+
+    /// The rendered violation is what the operator reads, so the message must carry it.
+    ///
+    /// Before this, every context-budget refusal rendered one sentence naming no component, no
+    /// number and no ceiling. Attaching a single large screenshot produced exactly that, with
+    /// nothing to indicate the attachment was the cause.
+    #[test]
+    fn the_message_names_the_component_that_overflowed() {
+        let violation = ContextBudgetViolation {
+            class: ContextBudgetClass::Transcript,
+            used: 41_000,
+            ceiling: 40_000,
+        };
+        let rendered = KernelError::ContextBudget(violation.to_string()).public_summary();
+        assert!(
+            rendered.contains("Transcript")
+                && rendered.contains("41000")
+                && rendered.contains("40000"),
+            "the component, its usage and its ceiling must all survive: {rendered}"
+        );
+    }
+
+    /// The multimodal ceiling is the one an operator can raise, so that refusal names how.
+    #[test]
+    fn a_multimodal_refusal_names_the_setting_that_raises_it() {
+        let violation = ContextBudgetViolation {
+            class: ContextBudgetClass::Multimodal,
+            used: 20_000,
+            ceiling: 12_000,
+        };
+        let rendered = KernelError::ContextBudget(violation.to_string()).public_summary();
+        assert!(
+            rendered.contains("multimodal_token_budget"),
+            "a raisable ceiling must name its own escape hatch: {rendered}"
+        );
+    }
+
+    /// And no other class claims a hatch it does not have.
+    #[test]
+    fn a_fixed_ceiling_does_not_advertise_a_setting() {
+        let violation = ContextBudgetViolation {
+            class: ContextBudgetClass::ToolSchemas,
+            used: 9_000,
+            ceiling: 8_000,
+        };
+        let rendered = KernelError::ContextBudget(violation.to_string()).public_summary();
+        assert!(
+            !rendered.contains("multimodal_token_budget"),
+            "only the multimodal ceiling is profile-addressable: {rendered}"
+        );
     }
 }
