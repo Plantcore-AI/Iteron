@@ -49,10 +49,13 @@ pub struct LspRecoveryPolicy {
 
 impl LspRecoveryPolicy {
     pub fn validate(self) -> Result<Self, LspPolicyError> {
-        if !(1..=iteron_tunables::param_integer(
+        // `.max(1)` on every ceiling below: each is settable to 0, and a 0 ceiling turns a
+        // refusal into an abort at the `.expect()` that builds the built-in policy.
+        if !(1..=iteron_tunables::param_integer::<u64>(
             "tools.lsp.policy.max_lsp_request_timeout_milliseconds",
             MAX_LSP_REQUEST_TIMEOUT_MILLISECONDS,
-        ))
+        )
+        .max(1))
             .contains(&self.request_timeout_milliseconds)
         {
             return Err(LspPolicyError::RequestTimeout);
@@ -90,7 +93,25 @@ impl LspRecoveryPolicy {
 }
 
 impl Default for LspRecoveryPolicy {
+    /// Clamped into the ceilings `validate` checks against.
+    ///
+    /// Every ceiling here is an operator-settable `bounded` parameter, documented as freely
+    /// tightenable. Tightening one below the built-in default used to make `validate` reject the
+    /// built-in policy, and the `.expect()` in `LspPolicy::default` turned that into a process
+    /// abort (exit 101) for six different parameters.
     fn default() -> Self {
+        let backoff_ceiling = iteron_tunables::param_integer::<u64>(
+            "tools.lsp.policy.max_lsp_backoff_milliseconds",
+            MAX_LSP_BACKOFF_MILLISECONDS,
+        );
+        let cap = iteron_tunables::param_u64(
+            "tools.lsp.policy.default_lsp_backoff_cap_milliseconds",
+            iteron_tunables::param_integer(
+                "tools.lsp.policy.default_lsp_backoff_cap_milliseconds",
+                DEFAULT_LSP_BACKOFF_CAP_MILLISECONDS,
+            ),
+        )
+        .min(backoff_ceiling);
         Self {
             request_timeout_milliseconds: iteron_tunables::param_u64(
                 "tools.lsp.policy.default_lsp_request_timeout_milliseconds",
@@ -98,6 +119,14 @@ impl Default for LspRecoveryPolicy {
                     "tools.lsp.policy.default_lsp_request_timeout_milliseconds",
                     DEFAULT_LSP_REQUEST_TIMEOUT_MILLISECONDS,
                 ),
+            )
+            .clamp(
+                1,
+                iteron_tunables::param_integer::<u64>(
+                    "tools.lsp.policy.max_lsp_request_timeout_milliseconds",
+                    MAX_LSP_REQUEST_TIMEOUT_MILLISECONDS,
+                )
+                .max(1),
             ),
             max_restarts: u32::try_from(iteron_tunables::param_i128(
                 "tools.lsp.policy.default_lsp_max_restarts",
@@ -109,21 +138,22 @@ impl Default for LspRecoveryPolicy {
             .unwrap_or(iteron_tunables::param_integer(
                 "tools.lsp.policy.default_lsp_max_restarts",
                 DEFAULT_LSP_MAX_RESTARTS,
+            ))
+            .min(iteron_tunables::param_integer(
+                "tools.lsp.policy.max_lsp_restarts",
+                MAX_LSP_RESTARTS,
             )),
+            // base <= cap is checked by `validate`, and the cap is independently settable.
             backoff_base_milliseconds: iteron_tunables::param_u64(
                 "tools.lsp.policy.default_lsp_backoff_base_milliseconds",
                 iteron_tunables::param_integer(
                     "tools.lsp.policy.default_lsp_backoff_base_milliseconds",
                     DEFAULT_LSP_BACKOFF_BASE_MILLISECONDS,
                 ),
-            ),
-            backoff_cap_milliseconds: iteron_tunables::param_u64(
-                "tools.lsp.policy.default_lsp_backoff_cap_milliseconds",
-                iteron_tunables::param_integer(
-                    "tools.lsp.policy.default_lsp_backoff_cap_milliseconds",
-                    DEFAULT_LSP_BACKOFF_CAP_MILLISECONDS,
-                ),
-            ),
+            )
+            .min(backoff_ceiling)
+            .min(cap),
+            backoff_cap_milliseconds: cap,
         }
     }
 }
@@ -141,7 +171,11 @@ impl LspRuntimePolicy {
     ) -> Result<Self, LspPolicyError> {
         if routes.is_empty()
             || routes.len()
-                > iteron_tunables::param_integer("tools.lsp.policy.max_lsp_routes", MAX_LSP_ROUTES)
+                > iteron_tunables::param_integer::<usize>(
+                    "tools.lsp.policy.max_lsp_routes",
+                    MAX_LSP_ROUTES,
+                )
+                .max(1)
         {
             return Err(LspPolicyError::RouteCount);
         }
@@ -213,43 +247,51 @@ impl Default for LspRuntimePolicy {
                 workspace_markers: Vec::new(),
             }
         };
-        Self::new(
-            vec![
-                route("rust", "iteron:rust-analyzer", "rust-analyzer", &[]),
-                route(
-                    "typescript",
-                    "iteron:typescript-language-server",
-                    "typescript-language-server",
-                    &["--stdio"],
-                ),
-                route(
-                    "typescriptreact",
-                    "iteron:typescript-language-server",
-                    "typescript-language-server",
-                    &["--stdio"],
-                ),
-                route(
-                    "javascript",
-                    "iteron:typescript-language-server",
-                    "typescript-language-server",
-                    &["--stdio"],
-                ),
-                route(
-                    "javascriptreact",
-                    "iteron:typescript-language-server",
-                    "typescript-language-server",
-                    &["--stdio"],
-                ),
-                route(
-                    "python",
-                    "iteron:pyright",
-                    "pyright-langserver",
-                    &["--stdio"],
-                ),
-            ],
-            LspRecoveryPolicy::default(),
+        // `max_lsp_routes` is operator-settable and `new` refuses a route list longer than it.
+        // The built-in list is longer than the tightest legal setting, so it is truncated to the
+        // operator's ceiling rather than passed through: without this the `.expect()` below
+        // aborted the process for `--set tools.lsp.policy.max_lsp_routes=0`.
+        let ceiling = iteron_tunables::param_integer::<usize>(
+            "tools.lsp.policy.max_lsp_routes",
+            MAX_LSP_ROUTES,
         )
-        .expect("the built-in LSP policy must satisfy its hard ceilings")
+        .max(1);
+        let mut routes = vec![
+            route("rust", "iteron:rust-analyzer", "rust-analyzer", &[]),
+            route(
+                "typescript",
+                "iteron:typescript-language-server",
+                "typescript-language-server",
+                &["--stdio"],
+            ),
+            route(
+                "typescriptreact",
+                "iteron:typescript-language-server",
+                "typescript-language-server",
+                &["--stdio"],
+            ),
+            route(
+                "javascript",
+                "iteron:typescript-language-server",
+                "typescript-language-server",
+                &["--stdio"],
+            ),
+            route(
+                "javascriptreact",
+                "iteron:typescript-language-server",
+                "typescript-language-server",
+                &["--stdio"],
+            ),
+            route(
+                "python",
+                "iteron:pyright",
+                "pyright-langserver",
+                &["--stdio"],
+            ),
+        ];
+        routes.truncate(ceiling);
+        Self::new(routes, LspRecoveryPolicy::default())
+            .expect("the built-in LSP policy is clamped into its own configured ceilings")
     }
 }
 
@@ -272,10 +314,11 @@ fn validate_route(route: &LspLanguageRoute) -> Result<(), LspPolicyError> {
     }
     if !valid_part(&route.executable)
         || route.arguments.len()
-            > iteron_tunables::param_integer(
+            > iteron_tunables::param_integer::<usize>(
                 "tools.lsp.policy.max_lsp_arguments",
                 MAX_LSP_ARGUMENTS,
             )
+            .max(1)
         || route.arguments.iter().any(|part| !valid_part(part))
     {
         return Err(LspPolicyError::Arguments);
