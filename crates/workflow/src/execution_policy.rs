@@ -257,17 +257,9 @@ impl SpeculativeSiblingPolicy {
         {
             return Err("speculative sibling ceiling exceeds 1024");
         }
-        if !(iteron_tunables::param_duration(
-            "workflow.execution_policy.min_speculative_cleanup_timeout",
-            MIN_SPECULATIVE_CLEANUP_TIMEOUT,
-        )
-            ..=iteron_tunables::param_duration(
-                "workflow.execution_policy.max_speculative_cleanup_timeout",
-                MAX_SPECULATIVE_CLEANUP_TIMEOUT,
-            ))
-            .contains(&cleanup_timeout)
-        {
-            return Err("speculative cleanup timeout must be in 1..=3600 seconds");
+        let (floor, ceiling) = Self::cleanup_window();
+        if !(floor..=ceiling).contains(&cleanup_timeout) {
+            return Err("speculative cleanup timeout is outside its configured window");
         }
         Ok(Self {
             max_siblings,
@@ -299,22 +291,62 @@ impl SpeculativeSiblingPolicy {
     }
 }
 
-impl Default for SpeculativeSiblingPolicy {
-    fn default() -> Self {
-        Self::new(
-            iteron_tunables::param_usize(
-                "workflow.execution_policy.default_speculative_siblings",
-                iteron_tunables::param_integer(
-                    "workflow.execution_policy.default_speculative_siblings",
-                    DEFAULT_SPECULATIVE_SIBLINGS,
-                ),
-            ),
-            iteron_tunables::param_duration(
-                "workflow.execution_policy.default_speculative_cleanup_timeout",
-                DEFAULT_SPECULATIVE_CLEANUP_TIMEOUT,
+impl SpeculativeSiblingPolicy {
+    /// The operator-configured window, normalised so it is never empty.
+    ///
+    /// Both ends are settable parameters, so an operator can legally invert them. An inverted
+    /// pair makes `floor..=ceiling` empty, `contains` false for every value, and the built-in
+    /// construction below unconditionally fail.
+    fn cleanup_window() -> (Duration, Duration) {
+        let floor = iteron_tunables::param_duration(
+            "workflow.execution_policy.min_speculative_cleanup_timeout",
+            MIN_SPECULATIVE_CLEANUP_TIMEOUT,
+        );
+        let ceiling = iteron_tunables::param_duration(
+            "workflow.execution_policy.max_speculative_cleanup_timeout",
+            MAX_SPECULATIVE_CLEANUP_TIMEOUT,
+        );
+        (floor.min(ceiling), floor.max(ceiling))
+    }
+
+    fn sibling_ceiling() -> usize {
+        iteron_tunables::param_usize(
+            "workflow.execution_policy.max_speculative_siblings",
+            iteron_tunables::param_integer(
+                "workflow.execution_policy.max_speculative_siblings",
+                MAX_SPECULATIVE_SIBLINGS,
             ),
         )
-        .expect("built-in speculation policy is valid")
+    }
+}
+
+impl Default for SpeculativeSiblingPolicy {
+    fn default() -> Self {
+        // Every input here is operator-settable, and so is every bound `new` checks it against.
+        // Tightening a bound is what a `bounded` parameter is *for*, so the built-in default has
+        // to be brought inside the operator's window rather than asserted to already fit.
+        //
+        // It did not, and the assertion was reachable from a legal profile:
+        // `--set workflow.execution_policy.max_speculative_cleanup_timeout=1` left the 5s default
+        // outside 1s..=1s, `new` correctly returned Err, and the `.expect()` here turned that into
+        // a process abort (exit 101) instead of a run that honours the operator's ceiling.
+        let cleanup_default = iteron_tunables::param_duration(
+            "workflow.execution_policy.default_speculative_cleanup_timeout",
+            DEFAULT_SPECULATIVE_CLEANUP_TIMEOUT,
+        );
+        let (floor, ceiling) = Self::cleanup_window();
+        let siblings_default = iteron_tunables::param_usize(
+            "workflow.execution_policy.default_speculative_siblings",
+            iteron_tunables::param_integer(
+                "workflow.execution_policy.default_speculative_siblings",
+                DEFAULT_SPECULATIVE_SIBLINGS,
+            ),
+        );
+        Self::new(
+            siblings_default.min(Self::sibling_ceiling()),
+            cleanup_default.clamp(floor, ceiling),
+        )
+        .expect("the built-in policy is clamped into its own configured window")
     }
 }
 
@@ -392,6 +424,15 @@ impl TaskRetryPolicy {
 
 impl Default for TaskRetryPolicy {
     fn default() -> Self {
+        // The ceiling `new` checks against is operator-settable, so the built-in default is
+        // brought under it rather than asserted to fit.
+        let ceiling = iteron_tunables::param_usize(
+            "workflow.execution_policy.max_task_attempts",
+            iteron_tunables::param_integer(
+                "workflow.execution_policy.max_task_attempts",
+                MAX_TASK_ATTEMPTS,
+            ),
+        );
         Self::new(
             iteron_tunables::param_usize(
                 "workflow.execution_policy.default_task_attempts",
@@ -399,13 +440,14 @@ impl Default for TaskRetryPolicy {
                     "workflow.execution_policy.default_task_attempts",
                     DEFAULT_TASK_ATTEMPTS,
                 ),
-            ),
+            )
+            .min(ceiling),
             TaskFailureAction::from_profile(iteron_tunables::param_str(
                 "workflow.execution_policy.default_task_failure_action",
                 DEFAULT_TASK_FAILURE_ACTION,
             )),
             true,
         )
-        .expect("built-in task retry policy is valid")
+        .expect("the built-in task retry policy is clamped into its own configured ceiling")
     }
 }

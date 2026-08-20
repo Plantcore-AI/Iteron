@@ -98,20 +98,40 @@ impl Default for ToolOutputSpillPolicy {
             "tool_end" => ToolOutputSpillCleanup::ToolEnd,
             "turn_end" => ToolOutputSpillCleanup::TurnEnd,
             "run_end" => ToolOutputSpillCleanup::RunEnd,
-            value => panic!("unadmitted tool-output spill cleanup `{value}`"),
+            value => {
+                // An operator-supplied enum must not abort the process either.
+                eprintln!(
+                    "tool-output spill: unadmitted cleanup `{value}`; using the built-in run_end"
+                );
+                ToolOutputSpillCleanup::RunEnd
+            }
         };
+        // `schema_max_spill_bytes` is an operator-settable ceiling that `new` checks against, and
+        // the built-in sizes sit above its tightest legal setting. They are brought under it here
+        // rather than asserted to fit: the `.expect()` this replaces aborted the process (exit
+        // 101) for `--set cli.runtime.tool_output_spill.schema_max_spill_bytes=0` and for
+        // `--set ...default_tool_output_spill_max_bytes=0`.
+        // The ceiling is declared in u64 because `new` compares against it in u64.
+        let ceiling = usize::try_from(iteron_tunables::param_integer::<u64>(
+            "cli.runtime.tool_output_spill.schema_max_spill_bytes",
+            SCHEMA_MAX_SPILL_BYTES,
+        ))
+        .unwrap_or(usize::MAX);
+        let spill_max = iteron_tunables::param_integer::<usize>(
+            "cli.runtime.tool_output_spill.default_tool_output_spill_max_bytes",
+            DEFAULT_TOOL_OUTPUT_SPILL_MAX_BYTES,
+        )
+        .min(ceiling);
         Self::new(
-            iteron_tunables::param_integer(
+            iteron_tunables::param_integer::<usize>(
                 "cli.runtime.tool_output_spill.default_tool_output_memory_threshold_bytes",
                 DEFAULT_TOOL_OUTPUT_MEMORY_THRESHOLD_BYTES,
-            ),
-            iteron_tunables::param_integer(
-                "cli.runtime.tool_output_spill.default_tool_output_spill_max_bytes",
-                DEFAULT_TOOL_OUTPUT_SPILL_MAX_BYTES,
-            ),
+            )
+            .min(spill_max),
+            spill_max,
             cleanup,
         )
-        .expect("the built-in ordinary tool-output spill policy is valid")
+        .expect("the built-in spill policy is clamped into its own configured ceiling")
     }
 }
 

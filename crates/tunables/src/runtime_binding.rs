@@ -582,9 +582,13 @@ impl RuntimeResolutionBuilder {
     ) -> Result<&mut Self, RuntimeResolutionError> {
         let family = family(family_id)?;
         if !matches!(family.default.resolver, DefaultResolver::Literal) {
-            return Err(RuntimeResolutionError::LiteralEvidence(
-                family.id.to_owned(),
-            ));
+            // Registry revision 20 moved several families off a literal default so the Tier-2
+            // parameters that own their production values could be set at all. The intent of this
+            // call is unchanged for them -- record the baseline this adapter actually sampled --
+            // but a derived family takes it through the default-evidence seam. Delegating here
+            // keeps every existing caller correct instead of scattering the same branch across
+            // each of them, and a caller that names a family with no default at all still fails.
+            return self.observe_default(family_id, observed);
         }
         let Some(expected) = family.default.value.map(crate::resolution_value::owned) else {
             return Err(RuntimeResolutionError::LiteralOwnerMismatch(

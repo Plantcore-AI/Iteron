@@ -20,12 +20,35 @@ pub struct ReconnectPolicy {
 
 impl Default for ReconnectPolicy {
     fn default() -> Self {
+        // Every default below is operator-settable, and so is every ceiling `new` checks it
+        // against. Tightening a ceiling is what a `bounded` parameter is for, so the built-in
+        // default is brought inside the operator's ceiling rather than asserted to already fit:
+        // the `.expect()` this replaces aborted the process (exit 101) for a legal profile.
+        let attempts_ceiling: u32 = iteron_tunables::param_integer(
+            "mcp.reconnect.max_reconnect_attempts",
+            MAX_RECONNECT_ATTEMPTS,
+        );
+        let base_ceiling: u64 = iteron_tunables::param_integer(
+            "mcp.reconnect.max_reconnect_base_ms",
+            MAX_RECONNECT_BASE_MS,
+        );
+        let cap_ceiling: u64 = iteron_tunables::param_integer(
+            "mcp.reconnect.max_reconnect_cap_ms",
+            MAX_RECONNECT_CAP_MS,
+        );
+        // base <= cap is checked by `new`, and the cap ceiling is independently settable, so the
+        // base is brought under the resolved cap and not merely under its own ceiling.
+        let cap = iteron_tunables::param_integer::<u64>("mcp.reconnect.default_cap_ms", 10_000)
+            .min(cap_ceiling);
         Self::new(
-            iteron_tunables::param_integer("mcp.reconnect.default_max_attempts", 3),
-            iteron_tunables::param_integer("mcp.reconnect.default_base_ms", 250),
-            iteron_tunables::param_integer("mcp.reconnect.default_cap_ms", 10_000),
+            iteron_tunables::param_integer::<u32>("mcp.reconnect.default_max_attempts", 3)
+                .min(attempts_ceiling),
+            iteron_tunables::param_integer::<u64>("mcp.reconnect.default_base_ms", 250)
+                .min(base_ceiling)
+                .min(cap),
+            cap,
         )
-        .expect("admitted default MCP reconnect policy")
+        .expect("the built-in reconnect policy is clamped into its own configured ceilings")
     }
 }
 

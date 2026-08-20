@@ -90,7 +90,7 @@ pub(super) fn apply(
         )?),
     )?;
     report.mark(138, "per_session_spawn_cap", FactLayer::Default);
-    builder.attest_literal_owner(
+    builder.observe_default(
         "early_stop_quorum_policy",
         object([
             (
@@ -111,7 +111,7 @@ pub(super) fn apply(
         ]),
     )?;
     report.mark(142, "early_stop_quorum_policy", FactLayer::Default);
-    builder.attest_literal_owner(
+    builder.observe_default(
         "speculative_sibling_count",
         super::value::int(super::value::i64u(
             input.speculative_siblings.max_siblings(),
@@ -280,7 +280,7 @@ pub(super) fn apply(
         ]),
     )?;
     report.mark(151, "per_tool_mcp_deadline", FactLayer::Default);
-    builder.attest_literal_owner(
+    builder.observe_default(
         "mcp_result_cap_spill_policy",
         object([
             (
@@ -302,7 +302,7 @@ pub(super) fn apply(
         ]),
     )?;
     report.mark(152, "mcp_result_cap_spill_policy", FactLayer::Default);
-    builder.attest_literal_owner(
+    builder.observe_default(
         "deferred_discovery_threshold",
         super::value::int(super::value::i64u(
             iteron_tunables::param_usize(
@@ -359,7 +359,7 @@ pub(super) fn apply(
         ),
         ("connection_reuse", boolv(pool.connection_reuse)),
     ]);
-    builder.attest_literal_owner("http_pool_keepalive_idle_policy", pool_default.clone())?;
+    builder.observe_default("http_pool_keepalive_idle_policy", pool_default.clone())?;
     builder.attest_fixed_authority(
         "http_pool_keepalive_idle_policy",
         FixedAuthorityId::StrategyInvariant,
