@@ -86,7 +86,13 @@ impl Default for SchemaRetryPolicy {
                 DEFAULT_SCHEMA_RETRY_CAP_MS,
             ),
         )
-        .min(MAX_SCHEMA_RETRY_DELAY_MS);
+        .min(iteron_tunables::param_u64(
+            "workflow.schema_retry.max_schema_retry_delay_ms",
+            iteron_tunables::param_integer(
+                "workflow.schema_retry.max_schema_retry_delay_ms",
+                MAX_SCHEMA_RETRY_DELAY_MS,
+            ),
+        ));
         let base_ms = iteron_tunables::param_u64(
             "workflow.schema_retry.default_schema_retry_base_ms",
             iteron_tunables::param_integer(
@@ -95,8 +101,22 @@ impl Default for SchemaRetryPolicy {
             ),
         )
         .min(cap_ms);
+        // The clamp must use the same ceiling `new` checks against. It used the compiled
+        // constant while `new` reads the operator-resolved parameter, so tightening that
+        // parameter left the built-in default above the ceiling and the `.expect()` below aborted
+        // the process (exit 101) for a profile the catalog documents as legal.
+        let max_attempts = max_attempts.min(
+            u32::try_from(iteron_tunables::param_u64(
+                "workflow.schema_retry.max_schema_retry_attempts",
+                u64::from(iteron_tunables::param_integer::<u32>(
+                    "workflow.schema_retry.max_schema_retry_attempts",
+                    crate::schema_retry::MAX_SCHEMA_RETRY_ATTEMPTS,
+                )),
+            ))
+            .unwrap_or(u32::MAX),
+        );
         Self::new(max_attempts, base_ms, cap_ms)
-            .expect("the resolved schema retry policy satisfies its hard ceiling")
+            .expect("the resolved schema retry policy is clamped into its own configured ceilings")
     }
 }
 

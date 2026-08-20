@@ -29,13 +29,16 @@ impl EarlyStopQuorumPolicy {
         required_roles: usize,
         strong_veto: bool,
     ) -> Result<Self, &'static str> {
+        // `.max(1)`: the ceiling is settable to 0, which makes `1..=0` empty and refuses every
+        // value including the clamped built-in default.
         if !(1..=iteron_tunables::param_usize(
             "workflow.quorum.max_early_stop_quorum",
             iteron_tunables::param_integer(
                 "workflow.quorum.max_early_stop_quorum",
                 MAX_EARLY_STOP_QUORUM,
             ),
-        ))
+        )
+        .max(1))
             .contains(&minimum_evidence)
         {
             return Err("minimum evidence must be in 1..=4096");
@@ -75,7 +78,17 @@ impl Default for EarlyStopQuorumPolicy {
                 DEFAULT_EARLY_STOP_MINIMUM_EVIDENCE,
             ),
         )
-        .clamp(1, MAX_EARLY_STOP_QUORUM);
+        .clamp(
+            1,
+            iteron_tunables::param_usize(
+                "workflow.quorum.max_early_stop_quorum",
+                iteron_tunables::param_integer(
+                    "workflow.quorum.max_early_stop_quorum",
+                    MAX_EARLY_STOP_QUORUM,
+                ),
+            )
+            .max(1),
+        );
         let required_roles = iteron_tunables::param_usize(
             "workflow.quorum.default_early_stop_required_roles",
             iteron_tunables::param_integer(
@@ -93,7 +106,7 @@ impl Default for EarlyStopQuorumPolicy {
                 DEFAULT_EARLY_STOP_STRONG_VETO,
             ),
         )
-        .expect("the resolved quorum policy is valid")
+        .expect("the resolved quorum policy is clamped into its own configured ceiling")
     }
 }
 

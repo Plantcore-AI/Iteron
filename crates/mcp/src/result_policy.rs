@@ -98,15 +98,24 @@ impl McpResultPolicy {
 
 impl Default for McpResultPolicy {
     fn default() -> Self {
+        // The spill ceiling is operator-settable and `new` checks against it, so the built-in
+        // spill size is brought under it rather than passed through: tightening that parameter the `.expect()` below aborted
+        // the process (exit 101) for a profile the catalog documents as legal.
+        let spill_ceiling: usize = iteron_tunables::param_integer(
+            "mcp.result_policy.max_mcp_spill_result_bytes",
+            MAX_MCP_SPILL_RESULT_BYTES,
+        );
+        let spill = DEFAULT_MCP_SPILL_RESULT_BYTES.min(spill_ceiling);
         Self::new(
-            iteron_tunables::param_integer(
+            iteron_tunables::param_integer::<usize>(
                 "mcp.result_policy.default_mcp_visible_result_bytes",
                 DEFAULT_MCP_VISIBLE_RESULT_BYTES,
-            ),
-            DEFAULT_MCP_SPILL_RESULT_BYTES,
+            )
+            .min(spill),
+            spill,
             McpSpillCleanup::SessionEnd,
         )
-        .expect("the built-in MCP result policy is valid")
+        .expect("the built-in result policy is clamped into its own configured ceiling")
     }
 }
 
