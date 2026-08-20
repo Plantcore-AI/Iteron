@@ -76,7 +76,29 @@ const CURSOR_POSITION_QUERY: &[u8] = b"\x1b[6n";
 /// A glyph from the startup banner, i.e. proof that a real frame reached the terminal.
 const FIRST_FRAME_MARKER: &[u8] = "ask about this codebase or describe a task".as_bytes();
 static SCRATCH_ID: AtomicU64 = AtomicU64::new(0);
-const MAX_CONCURRENT_PTYS: usize = 4;
+const DEFAULT_MAX_CONCURRENT_PTYS: usize = 4;
+/// Measured ceiling, not a guess. On a 14-core M-series Mac this binary runs 28 tests in 48.4s at
+/// a cap of 4 and 39.0s at 6, both green; at 8 it drops a test on the first run -- the same
+/// scheduler storm the permit exists to prevent. Six is therefore the highest value observed to
+/// hold, and anything above it is refused rather than silently accepted.
+const MAX_SETTABLE_CONCURRENT_PTYS: usize = 6;
+
+/// Read once. The default is deliberately unchanged: the shared CI runner compiles other jobs'
+/// worktrees on the same cores, so `available_parallelism` there reports cores this binary does
+/// not actually get, and raising the cap from what the machine claims would reintroduce exactly
+/// the flakiness the permit removed. An operator on a dedicated machine can opt in, the same way
+/// `ITERON_TEST_TIMEOUT_SCALE` already lets the machine say how slow it is.
+fn max_concurrent_ptys() -> usize {
+    static CAP: OnceLock<usize> = OnceLock::new();
+    *CAP.get_or_init(|| {
+        std::env::var("ITERON_TEST_MAX_CONCURRENT_PTYS")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<usize>().ok())
+            .filter(|cap| (1..=MAX_SETTABLE_CONCURRENT_PTYS).contains(cap))
+            .unwrap_or(DEFAULT_MAX_CONCURRENT_PTYS)
+    })
+}
+
 static PTY_CAPACITY: LazyLock<(Mutex<usize>, Condvar)> =
     LazyLock::new(|| (Mutex::new(0), Condvar::new()));
 
@@ -92,7 +114,7 @@ impl PtyPermit {
         let mut active = active
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        while *active >= MAX_CONCURRENT_PTYS {
+        while *active >= max_concurrent_ptys() {
             active = ready
                 .wait(active)
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1093,7 +1115,11 @@ impl PtyHarness {
         drop(self.writer.take());
         drop(self.slave.take());
         drop(self.master.take());
-        let deadline = Instant::now() + Duration::from_secs(2);
+        // Scaled like every other bound in this file. Two seconds is generous on a dedicated
+        // machine and not generous on a runner compiling another worktree on the same cores; the
+        // assertion below turns that into a failure indistinguishable from a reader that never
+        // reached EOF.
+        let deadline = Instant::now() + Duration::from_secs(2) * timeout_scale();
         while !self.reader_closed && Instant::now() < deadline {
             let _ = self.pump_once(Duration::from_millis(25));
             self.drain_ready();
@@ -2210,9 +2236,22 @@ fn double_ctrl_c_forces_exit_while_a_bash_tool_is_still_running() {
     pty.send(b"\x03\x03");
     let status = pty.wait_for_exit();
     assert!(status.success(), "forced TUI exit failed: {status}");
+    // The claim is that a second Ctrl-C skips the shutdown grace -- not that this machine is fast.
+    //
+    // The normal path waits `workflow::SHUTDOWN_GRACE` (5s) plus `SHUTDOWN_WAIT_SLACK` (1s), so
+    // the property is "well under six seconds". The bound was a hardcoded 2s, which measured
+    // process teardown and PTY drain as well as the grace, and had no relation to the 5s it was
+    // supposed to be proving the absence of. Locally it failed roughly one run in three at
+    // 2.4-3.1s -- every one of those runs having correctly skipped the grace. Four seconds is
+    // comfortably below the six the slow path costs and comfortably above the teardown, so it
+    // fails only if the grace is actually taken, and it scales like every other bound here.
+    const GRACE_PLUS_SLACK: Duration = Duration::from_secs(6);
+    let forced_budget = Duration::from_secs(4) * timeout_scale();
+    let forced_elapsed = forced_at.elapsed();
     assert!(
-        forced_at.elapsed() < Duration::from_secs(2),
-        "double Ctrl-C waited through the normal workflow shutdown grace"
+        forced_elapsed < forced_budget,
+        "double Ctrl-C waited through the normal workflow shutdown grace \
+         ({GRACE_PLUS_SLACK:?}): took {forced_elapsed:?}, budget {forced_budget:?}"
     );
     assert_termios_restored(&pty);
     pty.close_and_drain();
