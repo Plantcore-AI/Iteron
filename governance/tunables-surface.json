@@ -4,7 +4,7 @@
   "registry_revision": 20,
   "registry_digest": "487c554cdcc97e7e86d9af2ae4c6f588e4e250fdefb868a9755c7201ad9e5fd6",
   "param_registry_id": "iteron-params",
-  "param_registry_digest": "723440e9684487aedaa85adf4085f8ab4b9e872acbb754297339f5b750450ac7",
+  "param_registry_digest": "a8cffd6f8fbce6cfc6d3677519e80186707b93570ece168e068e9a2d2faf7692",
   "tool_text_registry_id": "iteron-builtin-tool-descriptions",
   "tool_text_registry_digest": "0ed860c172595c8e2425a76b68a7d840886a9129c40ef103252b1e625fe65a59",
   "counts": {
@@ -14113,7 +14113,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 3054,
+          "line": 3055,
           "evidence": "param_bool runtime resolution"
         }
       ],
@@ -14746,7 +14746,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 1023,
+          "line": 1024,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -15616,7 +15616,7 @@
       "class": "searchable",
       "type": "text",
       "rust_type": "&str",
-      "default": "\"the selected model has no verified image-input capability; attachments were not submitted\"",
+      "default": "\"the selected model has no verified image-input capability, so attachments were not submitted; \\\nif this route does accept images, declare it with `image_input: true` under that model in \\\n`model_capabilities` in your config\"",
       "domain": {},
       "krate": "cli",
       "decl": "crates/cli/src/runtime.rs",
@@ -15631,7 +15631,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/context_runtime.rs",
-          "line": 462,
+          "line": 465,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -15659,7 +15659,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 7081,
+          "line": 7082,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -15686,7 +15686,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 4326,
+          "line": 4327,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -15714,7 +15714,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 968,
+          "line": 969,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -16219,7 +16219,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 1586,
+          "line": 1587,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -16311,17 +16311,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/context_runtime.rs",
-          "line": 763,
+          "line": 779,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime/context_runtime.rs",
-          "line": 782,
+          "line": 798,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime/context_runtime.rs",
-          "line": 796,
+          "line": 812,
           "evidence": "Rust path reference"
         }
       ]
@@ -16375,17 +16375,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/context_runtime.rs",
-          "line": 810,
+          "line": 826,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime/context_runtime.rs",
-          "line": 819,
+          "line": 835,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime/context_runtime.rs",
-          "line": 833,
+          "line": 849,
           "evidence": "Rust path reference"
         }
       ]
@@ -16531,17 +16531,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 3737,
+          "line": 3738,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 3757,
+          "line": 3758,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 3769,
+          "line": 3770,
           "evidence": "Rust path reference"
         },
         {
@@ -16573,17 +16573,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 4522,
+          "line": 4523,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 4535,
+          "line": 4536,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 4549,
+          "line": 4550,
           "evidence": "Rust path reference"
         }
       ]
@@ -17817,7 +17817,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 5177,
+          "line": 5178,
           "evidence": "param_bool runtime resolution"
         }
       ],
@@ -17876,7 +17876,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 7172,
+          "line": 7173,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -17932,7 +17932,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 7097,
+          "line": 7098,
           "evidence": "Rust path reference"
         },
         {

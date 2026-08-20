@@ -5221,6 +5221,54 @@ mod gate_integration_tests {
         let _ = std::fs::remove_dir_all(ws);
     }
 
+    /// The zero-ceiling case, which is the only one a real text-only route ever produces.
+    ///
+    /// The owner pins the multimodal ceiling to an exact zero precisely when the route does not
+    /// declare `image_input`, so on a real route "no image capability" and "budget exceeded" are
+    /// the same condition -- and the budget was checked first. An operator attaching a 217-byte
+    /// PNG got "Multimodal context used 640 tokens, exceeding its 0-token ceiling; raise it with
+    /// `--set multimodal_token_budget=<tokens>`", which names the wrong cause AND suggests an
+    /// override that itself fails closed against an owner-pinned zero.
+    ///
+    /// The sibling test above passed throughout, because its default policy carries a real
+    /// multimodal share and therefore never reaches the branch a real route lands on. This one
+    /// sets the ceiling to zero, so it fails if the two checks are ever reordered again.
+    #[tokio::test]
+    async fn a_zero_multimodal_ceiling_still_refuses_images_for_the_capability_not_the_budget() {
+        let ws = temp_ws("multimodal-zero-ceiling-text-only");
+        let runs = ws.join(".iteron/runs");
+        let run = iteron_protocol::RunId("multimodal-zero-ceiling-text-only".into());
+        let provider = std::sync::Arc::new(CaptureImageInput {
+            capable: false,
+            requests: std::sync::Mutex::new(Vec::new()),
+        });
+        let rollout = Rollout::open(&runs, &run, iteron_protocol::TenantId::default()).unwrap();
+        let mut agent = Agent::new(
+            provider.clone(),
+            Registry::coding_agent(&ws).unwrap(),
+            rollout,
+            "model-a".into(),
+            "sys".into(),
+            Budget::default(),
+        );
+        agent.workspace = ws.clone();
+        // Exactly what the owner pins for a route with no declared image input.
+        agent.context_budget_policy.multimodal_tokens = 0;
+        let (content, _) = test_multimodal_content("describe this screenshot");
+
+        let error = agent.run_content(&content).await.unwrap_err();
+        let described = format!("{error:?}");
+        assert!(
+            matches!(error, KernelError::InvalidSubmission(reason) if reason == IMAGE_INPUT_UNSUPPORTED_REASON),
+            "a zero ceiling must still be reported as the missing capability, not as a budget \
+             the operator could raise: {described}"
+        );
+        assert!(
+            provider.requests.lock().unwrap().is_empty(),
+            "nothing may reach the provider once the attachment is refused"
+        );
+    }
+
     #[tokio::test]
     async fn text_only_provider_refuses_images_before_recording_or_dispatching_text() {
         let ws = temp_ws("multimodal-text-only-provider");
