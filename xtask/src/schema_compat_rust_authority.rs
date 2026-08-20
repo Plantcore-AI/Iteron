@@ -31,7 +31,7 @@ const MEMBERS: &[(&str, &str)] = &[
 ];
 
 pub(super) fn validate(root: &Path) -> Result<()> {
-    reject_repository_cargo_config(root)?;
+    validate_repository_cargo_config(root)?;
     let workspace = read_toml(root, "Cargo.toml")?;
     validate_workspace(&workspace)?;
     validate_dependency_authority(root, &workspace)?;
@@ -40,18 +40,62 @@ pub(super) fn validate(root: &Path) -> Result<()> {
     validate_managed_modules(root)
 }
 
-fn reject_repository_cargo_config(root: &Path) -> Result<()> {
-    for relative in [".cargo/config", ".cargo/config.toml"] {
-        match std::fs::symlink_metadata(root.join(relative)) {
-            Ok(_) => bail!(
-                "schema dependency authority does not admit repository-local Cargo config '{relative}'"
-            ),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(error).with_context(|| {
-                    format!("cannot inspect repository Cargo config '{relative}'")
-                });
-            }
+fn validate_repository_cargo_config(root: &Path) -> Result<()> {
+    if std::fs::symlink_metadata(root.join(".cargo/config")).is_ok() {
+        bail!(
+            "schema dependency authority does not admit repository-local Cargo config '.cargo/config'"
+        );
+    }
+    let path = root.join(".cargo/config.toml");
+    match std::fs::symlink_metadata(&path) {
+        Ok(_) => {
+            let bytes = read_bounded(root, ".cargo/config.toml", MAX_SOURCE_BYTES)?;
+            let source = std::str::from_utf8(&bytes)
+                .context("repository Cargo config '.cargo/config.toml' is not UTF-8")?;
+            let value: toml::Value = toml::from_str(source)
+                .context("repository Cargo config '.cargo/config.toml' is invalid TOML")?;
+            validate_cargo_config_contents(&value)?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error)
+                .with_context(|| "cannot inspect repository Cargo config '.cargo/config.toml'");
+        }
+    }
+    Ok(())
+}
+
+fn validate_cargo_config_contents(value: &toml::Value) -> Result<()> {
+    let table = value
+        .as_table()
+        .context("repository Cargo config must be a TOML table")?;
+    if !table.contains_key("target") || table.len() != 1 {
+        bail!("repository Cargo config must contain exactly one top-level [target] table");
+    }
+    let target = value
+        .get("target")
+        .and_then(toml::Value::as_table)
+        .context("repository Cargo config [target] must be a table")?;
+    for (triple, settings) in target {
+        if triple != "x86_64-pc-windows-msvc" && triple != "aarch64-pc-windows-msvc" {
+            bail!("repository Cargo config admits only Windows MSVC targets, found '{triple}'");
+        }
+        let settings = settings.as_table().with_context(|| {
+            format!("repository Cargo config target '{triple}' must be a table")
+        })?;
+        if settings.len() != 1 || !settings.contains_key("rustflags") {
+            bail!("repository Cargo config target '{triple}' must contain only rustflags");
+        }
+        let rustflags = settings["rustflags"].as_array().with_context(|| {
+            format!("repository Cargo config target '{triple}' rustflags must be an array")
+        })?;
+        if rustflags.len() != 2
+            || rustflags[0].as_str() != Some("-C")
+            || rustflags[1].as_str() != Some("link-arg=/STACK:8388608")
+        {
+            bail!(
+                "repository Cargo config target '{triple}' rustflags are not the admitted Windows stack-size fix"
+            );
         }
     }
     Ok(())

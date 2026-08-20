@@ -1457,7 +1457,10 @@ async fn run_one_with_shell(
         Ok(child) => child,
         Err(error) => return HookRun::NotStarted(format!("{shell} -c: {error}")),
     };
-    let mut group_guard = HookProcessGroupDropGuard::new(child.id());
+    let mut group_guard = HookProcessGroupDropGuard::new(
+        #[cfg(unix)]
+        child.id(),
+    );
 
     let Some(mut stdin) = child.stdin.take() else {
         terminate_and_reap(&mut child).await;
@@ -1559,13 +1562,18 @@ async fn run_one_with_shell(
 /// Cancellation-by-future-drop must kill the whole dedicated hook process group. The ordinary
 /// completion/timeout paths disarm after reaping; task abortion remains a last-resort SIGKILL.
 struct HookProcessGroupDropGuard {
+    #[cfg(unix)]
     pid: Option<u32>,
     armed: bool,
 }
 
 impl HookProcessGroupDropGuard {
-    fn new(pid: Option<u32>) -> Self {
-        Self { pid, armed: true }
+    fn new(#[cfg(unix)] pid: Option<u32>) -> Self {
+        Self {
+            #[cfg(unix)]
+            pid,
+            armed: true,
+        }
     }
 
     fn disarm(&mut self) {

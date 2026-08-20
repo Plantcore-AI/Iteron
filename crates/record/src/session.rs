@@ -6188,6 +6188,7 @@ mod tests {
 
         complete_one_turn(&dir, &run, &tenant, "another turn");
         assert_eq!(reindex(&dir).unwrap(), 1);
+        #[cfg(unix)]
         let grown = std::fs::metadata(&sidecar).unwrap();
         #[cfg(unix)]
         {

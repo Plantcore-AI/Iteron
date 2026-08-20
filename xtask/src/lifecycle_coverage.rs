@@ -936,7 +936,8 @@ fn collect_rust_files(directory: &Path, files: &mut Vec<PathBuf>) -> Result<()> 
 
 fn excluded_source(root: &Path, path: &Path) -> bool {
     let relative = path.strip_prefix(root).unwrap_or(path);
-    let rendered = relative.to_string_lossy();
+    // Normalize Windows backslashes so the same literal patterns work on every host.
+    let rendered = relative.to_string_lossy().replace('\\', "/");
     rendered == "crates/protocol/src/lifecycle/registry.rs"
         || rendered.starts_with("crates/obs/src/otel/")
         || rendered.contains("/tests/")

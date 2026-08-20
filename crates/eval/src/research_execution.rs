@@ -8,19 +8,25 @@ pub(crate) mod response_validation;
 pub(crate) mod session;
 
 use crate::adapter_registry::ExecutableIdentity;
-use crate::research_protocol::{CliRunSpec, ResearchRunState, ResearchTerminalResult, RunSpec};
+#[cfg(unix)]
+use crate::research_protocol::CliRunSpec;
+use crate::research_protocol::{ResearchRunState, ResearchTerminalResult, RunSpec};
 use crate::terminal_bench::{
     AdapterCommand, ArtifactReference, ExternalHarnessResult, MAX_RESULT_BYTES,
     parse_external_harness_result,
 };
 use implementation::require_consumption;
+#[cfg(unix)]
 use native_materialization::require_native_consumption;
+#[cfg(unix)]
 use process::CaptureSummary;
 use sha2::{Digest, Sha256};
+#[cfg(unix)]
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::Path;
+#[cfg(unix)]
 use std::process::ExitStatus;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -184,6 +190,7 @@ pub(crate) fn refresh_terminal_bench_result(
     )))
 }
 
+#[cfg(unix)]
 fn finish_natural_run(
     status: ExitStatus,
     stdout: CaptureSummary,
@@ -258,6 +265,7 @@ fn finish_natural_run(
     }
 }
 
+#[cfg(unix)]
 fn finish_external_native(
     spec: &crate::research_protocol::ExternalNativeRunSpec,
     exit_code: i32,
@@ -336,6 +344,7 @@ fn finish_external_native(
     }
 }
 
+#[cfg(unix)]
 fn finish_cli(
     spec: &CliRunSpec,
     exit_code: i32,
@@ -450,6 +459,7 @@ fn terminal_bench_artifacts(
         .ok_or(())
 }
 
+#[cfg(unix)]
 fn collect_generic_artifacts(spec: &CliRunSpec) -> Result<Vec<ArtifactReference>, ()> {
     let mut files = BTreeMap::<String, ArtifactReference>::new();
     for path in [&spec.result_path, &spec.effective_profile_path] {
@@ -470,6 +480,7 @@ fn collect_generic_artifacts(spec: &CliRunSpec) -> Result<Vec<ArtifactReference>
         .ok_or(())
 }
 
+#[cfg(unix)]
 fn collect_directory_artifacts(
     path: &Path,
     limit: u64,
@@ -505,6 +516,7 @@ fn terminal_snapshot(state: ResearchRunState, detail: &str) -> ExecutionSnapshot
     snapshot
 }
 
+#[cfg(unix)]
 fn result_path(run: &RunSpec) -> &str {
     match run {
         RunSpec::IteronCli { spec } => &spec.result_path,
@@ -513,6 +525,7 @@ fn result_path(run: &RunSpec) -> &str {
     }
 }
 
+#[cfg(unix)]
 fn stdout_limit(run: &RunSpec) -> u64 {
     match run {
         RunSpec::IteronCli { spec } => spec.max_stdout_bytes,
@@ -521,6 +534,7 @@ fn stdout_limit(run: &RunSpec) -> u64 {
     }
 }
 
+#[cfg(unix)]
 fn stderr_limit(run: &RunSpec) -> u64 {
     match run {
         RunSpec::IteronCli { spec } => spec.max_stderr_bytes,

@@ -58,6 +58,7 @@
 /docs/spec/** @fr0m-scratch
 /docs/using/** @fr0m-scratch
 /ops/windows-runner/** @fr0m-scratch
+/.cargo/config.toml @fr0m-scratch
 /.github/CODEOWNERS @fr0m-scratch
 /.github/PULL_REQUEST_TEMPLATE.md @fr0m-scratch
 /.github/actionlint.yaml @fr0m-scratch

@@ -1,3 +1,5 @@
+#![cfg_attr(not(unix), allow(dead_code, unused_imports, unused_variables))]
+
 use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};

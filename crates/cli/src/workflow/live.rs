@@ -29,17 +29,27 @@ impl ProgressSink for CardProgressSink {
 
 /// Restores the terminal (leaves raw mode + the alternate screen, shows the cursor) on drop, so an
 /// early `?` or a Ctrl-C never leaves the terminal wedged — the #1 TUI failure mode.
-struct LiveTermGuard;
+struct LiveTermGuard {
+    /// `true` only if this guard actually switched the console into raw mode. When the guard is
+    /// nested inside an outer TUI that already owns raw mode, enabling again would overwrite
+    /// crossterm's cached original console mode and leave cooked-input flags cleared on teardown.
+    entered_raw_mode: bool,
+}
 
 impl LiveTermGuard {
     fn enter() -> anyhow::Result<Self> {
-        crossterm::terminal::enable_raw_mode()?;
+        let already_raw = crossterm::terminal::is_raw_mode_enabled().unwrap_or(false);
+        if !already_raw {
+            crossterm::terminal::enable_raw_mode()?;
+        }
         crossterm::execute!(
             std::io::stdout(),
             crossterm::terminal::EnterAlternateScreen,
             crossterm::cursor::Hide
         )?;
-        Ok(LiveTermGuard)
+        Ok(LiveTermGuard {
+            entered_raw_mode: !already_raw,
+        })
     }
 }
 
@@ -50,7 +60,9 @@ impl Drop for LiveTermGuard {
             crossterm::cursor::Show,
             crossterm::terminal::LeaveAlternateScreen
         );
-        let _ = crossterm::terminal::disable_raw_mode();
+        if self.entered_raw_mode {
+            let _ = crossterm::terminal::disable_raw_mode();
+        }
     }
 }
 

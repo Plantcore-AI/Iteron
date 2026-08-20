@@ -71,45 +71,103 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
+          fail() {
+            printf 'release validation failed: %s\n' "$*" >&2
+            exit 1
+          }
+
+          require_eq() {
+            local description=$1 expected=$2 actual=$3
+            if [[ "$expected" != "$actual" ]]; then
+              printf 'release validation failed: %s\n  expected: %q\n  actual:   %q\n' "$description" "$expected" "$actual" >&2
+              exit 1
+            fi
+          }
+
+          require_match() {
+            local description=$1 regex=$2 value=$3
+            if [[ ! "$value" =~ $regex ]]; then
+              printf 'release validation failed: %s\n  value: %q\n  regex:  %q\n' "$description" "$value" "$regex" >&2
+              exit 1
+            fi
+          }
+
+          require_not_exists() {
+            local description=$1 path=$2
+            if [[ -e "$path" ]]; then
+              printf 'release validation failed: %s\n  path should not exist: %q\n' "$description" "$path" >&2
+              exit 1
+            fi
+          }
+
+          require_empty() {
+            local description=$1 path=$2
+            if [[ -s "$path" ]]; then
+              printf 'release validation failed: %s\n  file should be empty: %q\n' "$description" "$path" >&2
+              exit 1
+            fi
+          }
+
+          require_true() {
+            local description=$1
+            shift
+            if ! "$@"; then
+              printf 'release validation failed: %s\n' "$description" >&2
+              exit 1
+            fi
+          }
+
           event_commit=$(git rev-parse "$GITHUB_SHA^{commit}")
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             tag=$GITHUB_REF_NAME
-            [[ "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
-            test "$(git cat-file -t "refs/tags/$tag")" = tag
+            require_match "tag name must be a strict semantic version" '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' "$tag"
+            tag_type=$(git cat-file -t "refs/tags/$tag")
+            if [[ "$tag_type" != tag ]]; then
+              printf 'release validation failed: refs/tags/%s is a %s tag, but releases require an annotated tag\n' "$tag" "$tag_type" >&2
+              printf 'To fix, delete the lightweight tag and recreate it as annotated:\n' >&2
+              printf '  git tag -d %s\n' "$tag" >&2
+              printf '  git tag -a %s -m "Iteron %s"\n' "$tag" "${tag#v}" >&2
+              printf '  git push origin %s --force-with-lease\n' "$tag" >&2
+              printf 'Then re-run the release workflow.\n' >&2
+              exit 1
+            fi
             tag_commit=$(git rev-parse "refs/tags/$tag^{commit}")
-            test "$tag_commit" = "$event_commit"
+            require_eq "annotated tag refs/tags/$tag must resolve to the workflow event commit" "$event_commit" "$tag_commit"
             git fetch --no-tags origin main
             main_commit=$(git rev-parse 'origin/main^{commit}')
-            test "$tag_commit" = "$main_commit"
+            require_eq "annotated tag refs/tags/$tag must point to the current origin/main" "$tag_commit" "$main_commit"
           else
-            test "$GITHUB_EVENT_NAME" = workflow_dispatch
+            require_eq "release must be triggered by a v* tag or workflow_dispatch" "workflow_dispatch" "$GITHUB_EVENT_NAME"
             tag_commit=$event_commit
           fi
 
-          [[ "$tag_commit" =~ ^[0-9a-f]{40}$ ]]
+          require_match "tag commit must be a 40-character hex SHA" '^[0-9a-f]{40}$' "$tag_commit"
           tested_tree=$(git rev-parse "$tag_commit^{tree}")
-          [[ "$tested_tree" =~ ^[0-9a-f]{40}$ ]]
+          require_match "source tree must be a 40-character hex SHA" '^[0-9a-f]{40}$' "$tested_tree"
           candidate_root=$RUNNER_TEMP/core-schema-candidate
           # RUNNER_TEMP is cleared between jobs, but Git retains auxiliary
           # worktree registrations in this persistent DGX checkout.
           git worktree prune --expire now
-          test ! -e "$candidate_root"
+          require_not_exists "candidate worktree directory must not already exist" "$candidate_root"
           git worktree add --detach "$candidate_root" "$tag_commit"
-          test "$(git -C "$candidate_root" rev-parse 'HEAD^{commit}')" = "$tag_commit"
+          require_eq "candidate worktree HEAD must match the selected commit" "$tag_commit" "$(git -C "$candidate_root" rev-parse 'HEAD^{commit}')"
           candidate_status=$RUNNER_TEMP/core-schema-candidate-status
           git -C "$candidate_root" status \
             --porcelain=v1 -z --untracked-files=all > "$candidate_status"
-          test ! -s "$candidate_status"
+          require_empty "candidate worktree must be clean" "$candidate_status"
 
           # Do not invoke Cargo or any repository script before the immutable
           # predecessor validates this detached tree. Even `cargo metadata` can
           # execute a candidate-controlled rustc-wrapper from .cargo/config.toml.
           root_manifest=$candidate_root/Cargo.toml
-          test -f "$root_manifest"
-          test ! -L "$root_manifest"
+          require_true "root Cargo.toml must exist" test -f "$root_manifest"
+          require_true "root Cargo.toml must not be a symbolic link" test '!' -L "$root_manifest"
           root_manifest_size=$(stat --format='%s' -- "$root_manifest")
-          [[ "$root_manifest_size" =~ ^[0-9]+$ ]]
-          test "$root_manifest_size" -le 65536
+          require_match "root Cargo.toml size must be numeric" '^[0-9]+$' "$root_manifest_size"
+          if [[ "$root_manifest_size" -gt 65536 ]]; then
+            fail "root Cargo.toml must be no larger than 65536 bytes (actual: $root_manifest_size)"
+          fi
           version=$(python3 -I - "$candidate_root" <<'PY'
           import pathlib
           import re
@@ -185,13 +243,15 @@ jobs:
           print(version)
           PY
           )
-          [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          require_match "workspace version must be a strict semantic version" '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' "$version"
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            test "$GITHUB_REF_NAME" = "v$version"
+            require_eq "tag name must match workspace version" "v$version" "$GITHUB_REF_NAME"
           fi
 
           epoch=$(git show -s --format=%ct "$tag_commit")
-          test "$epoch" -ge 0
+          if [[ "$epoch" -lt 0 ]]; then
+            fail "source commit timestamp must be non-negative (actual: $epoch)"
+          fi
           {
             echo "commit=$tag_commit"
             echo "source-date-epoch=$epoch"
@@ -211,7 +271,10 @@ jobs:
             "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?branch=main&event=push&status=success&head_sha=$candidate&per_page=10" \
             | jq -er --arg candidate "$candidate" \
               '[.workflow_runs[] | select(.head_sha == $candidate)] | first | .id')
-          [[ "$evidence_run" =~ ^[1-9][0-9]*$ ]]
+          if [[ ! "$evidence_run" =~ ^[1-9][0-9]*$ ]]; then
+            printf 'release validation failed: CI evidence run ID must be numeric\n  value: %q\n' "$evidence_run" >&2
+            exit 1
+          fi
 
           run_json=$RUNNER_TEMP/core-ci-evidence-run.json
           jobs_json=$RUNNER_TEMP/core-ci-evidence-jobs.json
@@ -219,20 +282,30 @@ jobs:
           gh api \
             "repos/$GITHUB_REPOSITORY/actions/runs/$evidence_run/jobs?filter=latest&per_page=100" \
             > "$jobs_json"
-          jq -e --arg commit "$evidence_commit" '
+          if ! jq -e --arg commit "$evidence_commit" '
             .head_sha == $commit
             and .head_branch == "main"
             and .event == "push"
             and .status == "completed"
             and .conclusion == "success"
-          ' "$run_json" >/dev/null
-          jq -e '
+          ' "$run_json" >/dev/null; then
+            printf 'release validation failed: CI evidence run %s must be a successful push run on main for commit %s\n' "$evidence_run" "$evidence_commit" >&2
+            printf 'run summary from %s:\n' "$run_json" >&2
+            jq '{head_sha, head_branch, event, status, conclusion}' "$run_json" >&2 || true
+            exit 1
+          fi
+          if ! jq -e '
             [.jobs[] | select(
               .name == "ci / required"
               and .status == "completed"
               and .conclusion == "success"
             )] | length == 1
-          ' "$jobs_json" >/dev/null
+          ' "$jobs_json" >/dev/null; then
+            printf 'release validation failed: CI evidence run %s must contain exactly one successful "ci / required" job\n' "$evidence_run" >&2
+            printf 'jobs summary from %s:\n' "$jobs_json" >&2
+            jq '[.jobs[] | {name, status, conclusion}]' "$jobs_json" >&2 || true
+            exit 1
+          fi
       - name: Validate against the previous immutable schema release
         if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
@@ -240,6 +313,45 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+
+          fail() {
+            printf 'release validation failed: %s\n' "$*" >&2
+            exit 1
+          }
+
+          require_eq() {
+            local description=$1 expected=$2 actual=$3
+            if [[ "$expected" != "$actual" ]]; then
+              printf 'release validation failed: %s\n  expected: %q\n  actual:   %q\n' "$description" "$expected" "$actual" >&2
+              exit 1
+            fi
+          }
+
+          require_match() {
+            local description=$1 regex=$2 value=$3
+            if [[ ! "$value" =~ $regex ]]; then
+              printf 'release validation failed: %s\n  value: %q\n  regex:  %q\n' "$description" "$value" "$regex" >&2
+              exit 1
+            fi
+          }
+
+          require_empty() {
+            local description=$1 path=$2
+            if [[ -s "$path" ]]; then
+              printf 'release validation failed: %s\n  file should be empty: %q\n' "$description" "$path" >&2
+              exit 1
+            fi
+          }
+
+          require_true() {
+            local description=$1
+            shift
+            if ! "$@"; then
+              printf 'release validation failed: %s\n' "$description" >&2
+              exit 1
+            fi
+          }
+
           api_version=2026-03-10
           pages=$RUNNER_TEMP/core-schema-release-pages.jsonl
           releases=$RUNNER_TEMP/core-schema-releases.json
@@ -254,11 +366,14 @@ jobs:
               "repos/$GITHUB_REPOSITORY/releases?per_page=100&page=$page" \
               --jq '[.[] | {tag_name, draft, prerelease, immutable}]' \
               > "$page_json"
-            jq -e 'type == "array" and length <= 100' "$page_json" >/dev/null
+            if ! jq -e 'type == "array" and length <= 100' "$page_json" >/dev/null; then
+              printf 'release validation failed: GitHub releases page %d response is not a bounded array\n' "$page" >&2
+              exit 1
+            fi
             count=$(jq -r 'length' "$page_json")
             if [[ "$page" -eq 11 ]]; then
               if [[ "$count" -ne 0 ]]; then
-                printf 'published release inventory exceeds the 1,000-release limit\n' >&2
+                printf 'release validation failed: published release inventory exceeds the 1,000-release policy limit\n' >&2
                 exit 1
               fi
               break
@@ -316,11 +431,12 @@ jobs:
           ' "$releases")
           candidate_root=$RUNNER_TEMP/core-schema-candidate
           candidate_status=$RUNNER_TEMP/core-schema-candidate-status
-          test "$(git -C "$candidate_root" rev-parse 'HEAD^{commit}')" = \
-            "${{ steps.metadata.outputs.commit }}"
+          require_eq "candidate worktree HEAD must match the selected commit" \
+            "${{ steps.metadata.outputs.commit }}" \
+            "$(git -C "$candidate_root" rev-parse 'HEAD^{commit}')"
           git -C "$candidate_root" status \
             --porcelain=v1 -z --untracked-files=all > "$candidate_status"
-          test ! -s "$candidate_status"
+          require_empty "candidate worktree must be clean before schema validation" "$candidate_status"
           validate_cargo_workspace_versions() {
             metadata=$RUNNER_TEMP/core-release-cargo-metadata.json
             (
@@ -329,8 +445,10 @@ jobs:
                 cargo +"$RUST_VERSION" metadata --locked --format-version 1
             ) | head -c 8388609 > "$metadata"
             metadata_size=$(stat --format='%s' -- "$metadata")
-            [[ "$metadata_size" =~ ^[0-9]+$ ]]
-            test "$metadata_size" -le 8388608
+            require_match "cargo metadata size must be numeric" '^[0-9]+$' "$metadata_size"
+            if [[ "$metadata_size" -gt 8388608 ]]; then
+              fail "cargo metadata must be no larger than 8388608 bytes (actual: $metadata_size)"
+            fi
             python3 -I - "$metadata" "$candidate_root" <<'PY'
           import json
           import pathlib
@@ -384,19 +502,24 @@ jobs:
                       raise SystemExit("local package target is not an object")
                   require_rooted_regular(target.get("src_path"), "local package target")
           PY
-            jq -e '
+            if ! jq -e '
               (.packages | type == "array" and length > 0 and length <= 512)
               and all(.packages[];
                 ((.source == null) or (.source | type == "string"))
                 and (.version | type == "string")
               )
-            ' "$metadata" >/dev/null
+            ' "$metadata" >/dev/null; then
+              printf 'release validation failed: cargo metadata has an invalid package inventory\n' >&2
+              exit 1
+            fi
             versions=$(jq -r \
               '.packages[] | select(.source == null) | .version' "$metadata" \
               | LC_ALL=C sort -u)
-            test "$(printf '%s\n' "$versions" \
-              | awk 'NF { count += 1 } END { print count + 0 }')" -eq 1
-            test "$versions" = "${{ steps.metadata.outputs.version }}"
+            version_count=$(printf '%s\n' "$versions" \
+              | awk 'NF { count += 1 } END { print count + 0 }')
+            require_eq "workspace local packages must declare exactly one version" "1" "$version_count"
+            require_eq "workspace local package version must match release version" \
+              "${{ steps.metadata.outputs.version }}" "$versions"
           }
           if [[ "$previous" == BOOTSTRAP ]]; then
             # With no predecessor, first-release policy necessarily trusts the
@@ -404,9 +527,9 @@ jobs:
             # an isolated target directory. This path exists only for the
             # project's fixed first public version and cannot be reused if
             # predecessor selection ever regresses.
-            test "$GITHUB_REF_NAME" = v0.0.1
-            test "${{ steps.metadata.outputs.version }}" = 0.0.1
-            jq -e '
+            require_eq "bootstrap release tag must be v0.0.1" "v0.0.1" "$GITHUB_REF_NAME"
+            require_eq "bootstrap release version must be 0.0.1" "0.0.1" "${{ steps.metadata.outputs.version }}"
+            if ! jq -e '
               [
                 .[][]
                 | select(.draft == false and .prerelease == false)
@@ -417,7 +540,10 @@ jobs:
                   )
               ]
               | length == 0
-            ' "$releases" >/dev/null
+            ' "$releases" >/dev/null; then
+              printf 'release validation failed: bootstrap path requires no prior stable releases\n' >&2
+              exit 1
+            fi
             (
               cd "$candidate_root"
               CARGO_TARGET_DIR="$RUNNER_TEMP/core-schema-bootstrap-target" \
@@ -427,24 +553,36 @@ jobs:
             validate_cargo_workspace_versions
             git -C "$candidate_root" status \
               --porcelain=v1 -z --untracked-files=all > "$candidate_status"
-            test ! -s "$candidate_status"
-            test "$(git -C "$candidate_root" rev-parse 'HEAD^{commit}')" = \
-              "${{ steps.metadata.outputs.commit }}"
-            test "$(git rev-parse 'HEAD^{commit}')" = \
-              "${{ steps.metadata.outputs.commit }}"
+            require_empty "candidate worktree must be clean after bootstrap validation" "$candidate_status"
+            require_eq "candidate worktree HEAD must still match the selected commit" \
+              "${{ steps.metadata.outputs.commit }}" \
+              "$(git -C "$candidate_root" rev-parse 'HEAD^{commit}')"
+            require_eq "release checkout HEAD must match the selected commit" \
+              "${{ steps.metadata.outputs.commit }}" \
+              "$(git rev-parse 'HEAD^{commit}')"
             workspace_status=$RUNNER_TEMP/core-release-workspace-status
             git status --porcelain=v1 -z --untracked-files=all > "$workspace_status"
-            test ! -s "$workspace_status"
+            require_empty "release checkout must be clean after bootstrap validation" "$workspace_status"
             exit 0
           fi
 
-          [[ "$previous" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
-          test "$(git cat-file -t "refs/tags/$previous")" = tag
+          require_match "previous release tag must be a strict semantic version" \
+            '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' "$previous"
+          previous_tag_type=$(git cat-file -t "refs/tags/$previous")
+          if [[ "$previous_tag_type" != tag ]]; then
+            printf 'release validation failed: previous release refs/tags/%s is a %s tag, but releases require an annotated tag\n' "$previous" "$previous_tag_type" >&2
+            exit 1
+          fi
           previous_commit=$(git rev-parse "refs/tags/$previous^{commit}")
-          [[ "$previous_commit" =~ ^[0-9a-f]{40}$ ]]
-          git merge-base --is-ancestor \
+          require_match "previous release commit must be a 40-character hex SHA" \
+            '^[0-9a-f]{40}$' "$previous_commit"
+          if ! git merge-base --is-ancestor \
             "$previous_commit" \
-            "${{ steps.metadata.outputs.commit }}"
+            "${{ steps.metadata.outputs.commit }}"; then
+            printf 'release validation failed: previous release commit %s must be an ancestor of candidate commit %s\n' \
+              "$previous_commit" "${{ steps.metadata.outputs.commit }}" >&2
+            exit 1
+          fi
           gh release verify "$previous" --repo "$GITHUB_REPOSITORY"
 
           policy_root=$RUNNER_TEMP/core-schema-policy-base
@@ -453,7 +591,8 @@ jobs:
             "$policy_root/release-tools/schema_release.py" \
             --input "$releases" \
             --candidate "$GITHUB_REF_NAME")
-          test "$trusted_previous" = "$previous"
+          require_eq "schema_release.py selected previous release must match policy-computed previous" \
+            "$previous" "$trusted_previous"
           validator_root=$policy_root
           if [[ "$previous" == v0.0.4 ]]; then
             # The v0.0.4 validator predates the source-complete ABI inventory and
@@ -469,21 +608,34 @@ jobs:
             # d3026afa (#310) widened the binary-target rule so `crates/eval` may
             # declare `iteron-harness` alongside `iteron-eval`, which retired the
             # earlier a9130edb pin.
-            test "$GITHUB_REF_NAME" = v0.0.5
+            require_eq "v0.0.4 bridge release tag must be v0.0.5" "v0.0.5" "$GITHUB_REF_NAME"
             compatibility_commit=d3026afa8258ac29031b8f3007406e2f94aca053
             compatibility_schema_blob=a61c3410a287a937e21714421ef109d91f1f271c
-            test "$(git cat-file -t "$compatibility_commit")" = commit
-            git merge-base --is-ancestor "$previous_commit" "$compatibility_commit"
-            git merge-base --is-ancestor \
+            require_eq "compatibility bridge commit must be a commit object" \
+              "commit" "$(git cat-file -t "$compatibility_commit")"
+            if ! git merge-base --is-ancestor "$previous_commit" "$compatibility_commit"; then
+              printf 'release validation failed: compatibility bridge commit %s must be a descendant of previous release %s\n' \
+                "$compatibility_commit" "$previous_commit" >&2
+              exit 1
+            fi
+            if ! git merge-base --is-ancestor \
               "$compatibility_commit" \
-              "${{ steps.metadata.outputs.commit }}"
-            test "$(git rev-parse \
-              "$compatibility_commit:governance/schema-compatibility.json")" = \
-              "$compatibility_schema_blob"
-            git diff --quiet \
+              "${{ steps.metadata.outputs.commit }}"; then
+              printf 'release validation failed: compatibility bridge commit %s must be an ancestor of candidate commit %s\n' \
+                "$compatibility_commit" "${{ steps.metadata.outputs.commit }}" >&2
+              exit 1
+            fi
+            require_eq "compatibility bridge governance/schema-compatibility.json blob must match the pinned value" \
+              "$compatibility_schema_blob" \
+              "$(git rev-parse "$compatibility_commit:governance/schema-compatibility.json")"
+            if ! git diff --quiet \
               "$compatibility_commit" \
               "${{ steps.metadata.outputs.commit }}" \
-              -- 'xtask/src/schema_compat*'
+              -- 'xtask/src/schema_compat*'; then
+              printf 'release validation failed: xtask/src/schema_compat* sources differ between compatibility bridge commit %s and candidate\n' \
+                "$compatibility_commit" >&2
+              exit 1
+            fi
             validator_root=$RUNNER_TEMP/core-schema-compatibility-policy
             git worktree add --detach "$validator_root" "$compatibility_commit"
           fi
@@ -499,14 +651,16 @@ jobs:
           validate_cargo_workspace_versions
           git -C "$candidate_root" status \
             --porcelain=v1 -z --untracked-files=all > "$candidate_status"
-          test ! -s "$candidate_status"
-          test "$(git -C "$candidate_root" rev-parse 'HEAD^{commit}')" = \
-            "${{ steps.metadata.outputs.commit }}"
-          test "$(git rev-parse 'HEAD^{commit}')" = \
-            "${{ steps.metadata.outputs.commit }}"
+          require_empty "candidate worktree must be clean after schema validation" "$candidate_status"
+          require_eq "candidate worktree HEAD must still match the selected commit" \
+            "${{ steps.metadata.outputs.commit }}" \
+            "$(git -C "$candidate_root" rev-parse 'HEAD^{commit}')"
+          require_eq "release checkout HEAD must match the selected commit" \
+            "${{ steps.metadata.outputs.commit }}" \
+            "$(git rev-parse 'HEAD^{commit}')"
           workspace_status=$RUNNER_TEMP/core-release-workspace-status
           git status --porcelain=v1 -z --untracked-files=all > "$workspace_status"
-          test ! -s "$workspace_status"
+          require_empty "release checkout must be clean after schema validation" "$workspace_status"
       # Ubuntu 24.04 restricts unprivileged user namespaces unless the invoking program has an
       # explicit AppArmor profile. Attach permission only to the fixed system bwrap path; never
       # disable the host-wide user namespace restriction.

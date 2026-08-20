@@ -804,6 +804,10 @@ fn set_private_directory(path: &Path) -> Result<(), MergeFailure> {
             |error| MergeFailure::new(MergeFailureKind::WorktreeProvision, error.to_string()),
         )?;
     }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
     Ok(())
 }
 

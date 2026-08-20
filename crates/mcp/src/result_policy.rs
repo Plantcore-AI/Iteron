@@ -173,6 +173,7 @@ impl McpSpillStore {
                 "iteron-mcp-spill-{}-{sequence}",
                 std::process::id()
             ));
+            #[cfg_attr(not(unix), allow(unused_mut))]
             let mut builder = DirBuilder::new();
             #[cfg(unix)]
             {

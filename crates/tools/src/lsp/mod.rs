@@ -1,3 +1,8 @@
+#![cfg_attr(
+    not(unix),
+    allow(dead_code, unused_imports, unused_variables, unused_mut)
+)]
+
 //! Live, lazy LSP query tools over the accepted `iteron-lsp` protocol/state substrate.
 //!
 //! Known language adapters are admitted as CodeExecuting, confined by Linux bubblewrap or macOS

@@ -1,3 +1,5 @@
+#![cfg_attr(not(unix), allow(dead_code, unused_imports, unused_variables))]
+
 use super::output::{OutputFrame, OutputRing};
 use super::policy::ProcessRuntimePolicy;
 use serde::Serialize;
