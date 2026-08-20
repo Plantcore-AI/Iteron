@@ -306,7 +306,7 @@ impl LifecycleHookRuntime {
 
     fn shutdown_windows(&self, admitted_events: usize) -> (Duration, Duration) {
         if admitted_events == 0 || self.max_commands_per_event == 0 {
-            return (WORKER_CLOSE_SLACK, CLEANUP_SETTLEMENT_SLACK);
+            return (worker_close_slack(), cleanup_settlement_slack());
         }
 
         // Queue entries are already admitted work. Budget all of them, not only the first worker
@@ -325,9 +325,9 @@ impl LifecycleHookRuntime {
             lifecycle_observer_timeout().saturating_add(process_cleanup),
             graceful_waves,
         )
-        .saturating_add(WORKER_CLOSE_SLACK);
+        .saturating_add(worker_close_slack());
         let minimum_cleanup =
-            duration_mul(process_cleanup, cleanup_waves).saturating_add(CLEANUP_SETTLEMENT_SLACK);
+            duration_mul(process_cleanup, cleanup_waves).saturating_add(cleanup_settlement_slack());
         (
             iteron_tunables::param_duration(
                 "cli.app_server.lifecycle_hook_drain_grace",
@@ -360,7 +360,7 @@ impl LifecycleHookRuntime {
                 // command wave to publish HookRun::Cancelled and append its journal terminal.
                 // Abortion is deliberately last-resort and is reported as unproven by the owner.
                 self.task.abort();
-                let _ = tokio::time::timeout(ABORT_JOIN_GRACE, &mut self.task).await;
+                let _ = tokio::time::timeout(abort_join_grace(), &mut self.task).await;
                 Err(LifecycleHookShutdownError::CleanupUnproven)
             }
         }
@@ -375,18 +375,62 @@ fn hook_dispatch_concurrency() -> usize {
     .clamp(1, HOOK_DISPATCH_CONCURRENCY)
 }
 
+/// The lifecycle executor's own concurrency, floored by the general hook runner's.
+///
+/// Both ids are read. `cli.runtime.hooks.max_parallel_hooks` supplies the default and remains the
+/// ceiling -- lifecycle work must not out-schedule the runner it shares a process with -- while
+/// the lifecycle-local id is what the catalog advertises, so setting it has to do something. Read
+/// only through the shared id, the advertised one was inert: an operator set it, `--tunables-explain`
+/// said applied, and the dispatcher kept the other value.
 fn hook_execution_concurrency() -> usize {
-    iteron_tunables::param_integer(
+    let shared = iteron_tunables::param_integer(
         "cli.runtime.hooks.max_parallel_hooks",
         HOOK_EXECUTION_CONCURRENCY,
     )
-    .clamp(1, HOOK_EXECUTION_CONCURRENCY)
+    .clamp(1, HOOK_EXECUTION_CONCURRENCY);
+    iteron_tunables::param_integer(
+        "cli.runtime.lifecycle_hooks.hook_execution_concurrency",
+        shared,
+    )
+    .clamp(1, shared)
 }
 
+/// How long one lifecycle observer may run. Same two-id shape as the concurrency above: the shared
+/// hook id supplies the default so an operator who tuned the runner still tunes this, and the
+/// lifecycle-local id the catalog advertises is what actually takes effect when set.
 fn lifecycle_observer_timeout() -> Duration {
-    iteron_tunables::param_duration(
+    let shared = iteron_tunables::param_duration(
         "cli.runtime.hooks.lifecycle_observer_timeout",
         LIFECYCLE_OBSERVER_TIMEOUT,
+    );
+    iteron_tunables::param_duration(
+        "cli.runtime.lifecycle_hooks.lifecycle_observer_timeout",
+        shared,
+    )
+}
+
+/// Slack added after the worker is asked to close. Advertised, therefore read.
+fn worker_close_slack() -> Duration {
+    iteron_tunables::param_duration(
+        "cli.runtime.lifecycle_hooks.worker_close_slack",
+        WORKER_CLOSE_SLACK,
+    )
+}
+
+/// Slack for phase two to settle already-owned command intents. Advertised, therefore read.
+fn cleanup_settlement_slack() -> Duration {
+    iteron_tunables::param_duration(
+        "cli.runtime.lifecycle_hooks.cleanup_settlement_slack",
+        CLEANUP_SETTLEMENT_SLACK,
+    )
+}
+
+/// How long an aborted dispatcher task is joined before it is abandoned. Advertised, therefore
+/// read -- and bounded, because this runs on the shutdown path.
+fn abort_join_grace() -> Duration {
+    iteron_tunables::param_duration(
+        "cli.runtime.lifecycle_hooks.abort_join_grace",
+        ABORT_JOIN_GRACE,
     )
 }
 
@@ -817,6 +861,33 @@ fn correlation_of(event: &LifecycleEventEnvelope) -> LifecycleCorrelation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Liveness bounds for the tests below, scaled by the machine rather than fixed.
+    ///
+    /// Every `timeout` in this module waits for a state that will arrive -- the hook commands
+    /// `sleep 30`, so the queue does not drain underneath the observation. The bound exists so a
+    /// genuine hang fails as a test instead of hanging the suite, and nothing weakens when it
+    /// grows.
+    ///
+    /// Two of them were nonetheless too small to survive a full-suite run: journalling 32 intents
+    /// and spawning that many shells takes longer than five seconds on a host already running
+    /// 1231 other tests, and `shutdown_cancels_started_and_queued_commands_and_settles_the_journal`
+    /// failed on every full run while passing alone in 0.3s. That is a measurement artefact, not a
+    /// dispatcher defect, and raising a liveness bound is the correct repair for it.
+    ///
+    /// `ITERON_TEST_TIMEOUT_SCALE` is the same variable `tui_pty.rs` and the release workflow
+    /// already use to let a loaded runner say how slow it is.
+    fn settle(base_secs: u64) -> Duration {
+        static SCALE: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+        let scale = *SCALE.get_or_init(|| {
+            std::env::var("ITERON_TEST_TIMEOUT_SCALE")
+                .ok()
+                .and_then(|raw| raw.trim().parse::<u64>().ok())
+                .filter(|scale| (1..=60).contains(scale))
+                .unwrap_or(1)
+        });
+        Duration::from_secs(base_secs.saturating_mul(scale))
+    }
     use iteron_obs::lifecycle::LifecycleBus;
     use iteron_protocol::lifecycle::LifecycleAvailability;
     use std::collections::{BTreeMap, BTreeSet};
@@ -866,7 +937,7 @@ mod tests {
     }
 
     async fn emit_canonical(emitter: &LifecycleEmitter, event_id: &str) -> LifecycleEventEnvelope {
-        tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::time::timeout(settle(12), async {
             loop {
                 if let Ok(event) = emitter.emit(
                     event_id,
@@ -1006,7 +1077,7 @@ mod tests {
             dispatcher.dispatch(emit_canonical(&emitter, "session.created").await);
         }
         let expected_intents = active_events.saturating_mul(commands_per_event);
-        tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::time::timeout(settle(20), async {
             loop {
                 if journal_intent_count(&journal_path) == expected_intents
                     && !read_lines(&evidence_path).is_empty()
@@ -1076,7 +1147,7 @@ mod tests {
         );
         dispatcher.dispatch(emit_canonical(&emitter, "session.created").await);
         drop(dispatcher);
-        let shutdown = tokio::time::timeout(Duration::from_secs(20), runtime.shutdown())
+        let shutdown = tokio::time::timeout(settle(20), runtime.shutdown())
             .await
             .expect("slow observer exceeded its configured graceful drain")
             .expect("slow observer cleanup was unproven");
@@ -1131,7 +1202,7 @@ mod tests {
             }));
         }
 
-        let shutdown = tokio::time::timeout(Duration::from_secs(30), runtime.shutdown())
+        let shutdown = tokio::time::timeout(settle(30), runtime.shutdown())
             .await
             .expect("admission race dispatcher did not drain")
             .expect("admission race cleanup was unproven");
@@ -1196,7 +1267,7 @@ mod tests {
         );
         assert!(operator_drain.load(Ordering::Acquire));
         assert!(dispatcher.dispatch(emit_canonical(&emitter, "drain.requested").await));
-        let shutdown = tokio::time::timeout(Duration::from_secs(15), runtime.shutdown())
+        let shutdown = tokio::time::timeout(settle(15), runtime.shutdown())
             .await
             .expect("business-drain observer did not finish")
             .expect("business-drain observer cleanup was unproven");
@@ -1290,7 +1361,7 @@ mod tests {
             }
         }
         drop(dispatcher);
-        let shutdown = tokio::time::timeout(Duration::from_secs(45), runtime.shutdown())
+        let shutdown = tokio::time::timeout(settle(45), runtime.shutdown())
             .await
             .expect("lifecycle dispatcher did not drain")
             .expect("lifecycle dispatcher worker panicked");
@@ -1313,7 +1384,7 @@ mod tests {
         );
         drop(registration_dispatcher);
         let registration_shutdown =
-            tokio::time::timeout(Duration::from_secs(45), registration_runtime.shutdown())
+            tokio::time::timeout(settle(45), registration_runtime.shutdown())
                 .await
                 .expect("registration dispatcher did not drain")
                 .expect("registration dispatcher worker panicked");
@@ -1392,7 +1463,7 @@ mod tests {
             dispatcher.dispatch(emit_canonical(&emitter, "session.created").await);
         }
 
-        tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::time::timeout(settle(10), async {
             loop {
                 if read_lines(&evidence_path)
                     .iter()
@@ -1406,7 +1477,7 @@ mod tests {
         .await
         .expect("configured circuit-open hook did not execute");
         drop(dispatcher);
-        let shutdown = tokio::time::timeout(Duration::from_secs(10), runtime.shutdown())
+        let shutdown = tokio::time::timeout(settle(10), runtime.shutdown())
             .await
             .expect("circuit test dispatcher did not drain")
             .expect("circuit test dispatcher panicked");

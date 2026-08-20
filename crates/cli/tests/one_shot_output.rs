@@ -24,7 +24,35 @@ use std::os::unix::process::CommandExt;
 // process-reaping envelope strictly larger so workspace-level scheduler and fsync contention cannot
 // mask the runtime's terminal result while the test still remains bounded.
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(60);
-const SERVER_TIMEOUT: Duration = Duration::from_secs(10);
+const SERVER_TIMEOUT_BASE_SECS: u64 = 10;
+
+/// How long a provider stub waits for `iteron` to connect, scaled by the machine.
+///
+/// This is a liveness bound: the child either connects or it never will, and nothing weakens when
+/// the bound grows. Ten fixed seconds was enough for one test at a time and not enough for a
+/// full-suite run, where the stub is waiting on a real binary starting on a host already running
+/// the rest of the suite -- `legacy_hook_report_one_shot_proves_all_five_commands_complete` failed
+/// with "iteron never connected" on every full run while passing alone in 7.2s.
+///
+/// `ITERON_TEST_TIMEOUT_SCALE` is the variable `tui_pty.rs` and the release workflow already use
+/// to let a loaded runner say how slow it is.
+fn server_timeout() -> Duration {
+    static SCALE: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    let scale = *SCALE.get_or_init(|| {
+        std::env::var("ITERON_TEST_TIMEOUT_SCALE")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<u64>().ok())
+            .filter(|scale| (1..=60).contains(scale))
+            .unwrap_or(1)
+    });
+    // Three times the old bound before scaling: measured to survive a local full-suite run, where
+    // the scale variable is not set.
+    Duration::from_secs(
+        SERVER_TIMEOUT_BASE_SECS
+            .saturating_mul(3)
+            .saturating_mul(scale),
+    )
+}
 const IO_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_CAPTURE_BYTES: usize = 256 * 1024;
 const MAX_REQUEST_BYTES: usize = 1024 * 1024;
@@ -279,7 +307,7 @@ impl FailingHttpsProxy {
         let thread_cancelled = cancelled.clone();
         let (result_tx, result) = sync_channel(1);
         let handle = thread::spawn(move || {
-            let deadline = Instant::now() + SERVER_TIMEOUT;
+            let deadline = Instant::now() + server_timeout();
             let mut requests = Vec::new();
             let outcome = loop {
                 let stopping = thread_cancelled.load(Ordering::Acquire);
@@ -331,7 +359,7 @@ impl FailingHttpsProxy {
         self.cancelled.store(true, Ordering::Release);
         let outcome = self
             .result
-            .recv_timeout(SERVER_TIMEOUT)
+            .recv_timeout(server_timeout())
             .expect("loopback HTTPS proxy reports within its bound");
         self.handle
             .take()
@@ -439,7 +467,7 @@ impl MockProvider {
     }
 
     fn spawn_capturing_script(replies: Vec<Reply>) -> (Self, Receiver<Value>) {
-        Self::spawn_capturing_script_with_timeout(replies, SERVER_TIMEOUT)
+        Self::spawn_capturing_script_with_timeout(replies, server_timeout())
     }
 
     fn spawn_capturing_script_with_timeout(
@@ -462,7 +490,7 @@ impl MockProvider {
         replies: Vec<Reply>,
         request_capture: Option<SyncSender<Value>>,
     ) -> Self {
-        Self::spawn_script_with_capture_and_timeout(replies, request_capture, SERVER_TIMEOUT)
+        Self::spawn_script_with_capture_and_timeout(replies, request_capture, server_timeout())
     }
 
     fn spawn_script_with_capture_and_timeout(
@@ -509,7 +537,7 @@ impl MockProvider {
                 .send(())
                 .expect("notify test that provider turn is in flight");
             release_rx
-                .recv_timeout(SERVER_TIMEOUT)
+                .recv_timeout(server_timeout())
                 .expect("test releases the bounded provider turn");
             write_reply(&mut stream, Reply::Success);
         });
@@ -533,7 +561,7 @@ impl MockProvider {
 }
 
 fn accept_connection(listener: &TcpListener) -> TcpStream {
-    accept_connection_with_timeout(listener, SERVER_TIMEOUT)
+    accept_connection_with_timeout(listener, server_timeout())
 }
 
 fn accept_connection_with_timeout(listener: &TcpListener, timeout: Duration) -> TcpStream {
@@ -1375,10 +1403,10 @@ printf '%s\n' "$timestamp" > "$marker_dir/$event"
             .expect("spawn the real one-shot Legacy-hook client"),
     );
     let first_request = requests
-        .recv_timeout(SERVER_TIMEOUT)
+        .recv_timeout(server_timeout())
         .expect("capture the report-style provider request");
     let second_request = requests
-        .recv_timeout(SERVER_TIMEOUT)
+        .recv_timeout(server_timeout())
         .expect("capture the provider request after README execution");
     server.finish();
 
@@ -1612,10 +1640,10 @@ printf '%s\n' "$timestamp" > "$marker_dir/$event_id"
             .expect("spawn the real one-shot canonical-shutdown client"),
     );
     let _first_request = requests
-        .recv_timeout(SERVER_TIMEOUT)
+        .recv_timeout(server_timeout())
         .expect("capture the canonical-shutdown provider request");
     let second_request = requests
-        .recv_timeout(SERVER_TIMEOUT)
+        .recv_timeout(server_timeout())
         .expect("capture the provider request after README execution");
     server.finish();
 
@@ -1834,7 +1862,7 @@ fn image_one_shot_emits_metadata_then_uploads_to_a_declared_capable_provider() {
 
     let output = run_core(&scratch, "stream-json", &["--image", image_arg]);
     let request = requests
-        .recv_timeout(SERVER_TIMEOUT)
+        .recv_timeout(server_timeout())
         .expect("capture the multimodal provider request");
     server.finish();
 
@@ -2020,7 +2048,7 @@ fn d6_11_resume_uses_durable_instruction_bytes_once_after_live_file_changes() {
     let first = collect_core(spawn_core(&scratch, "json", 2, &[]));
     assert_eq!(first.status.code(), Some(0));
     let first_request = requests
-        .recv_timeout(SERVER_TIMEOUT)
+        .recv_timeout(server_timeout())
         .expect("capture the fresh provider request");
     let first_system = request_system(&first_request);
     assert_eq!(first_system.matches(original).count(), 1);
@@ -2048,7 +2076,7 @@ fn d6_11_resume_uses_durable_instruction_bytes_once_after_live_file_changes() {
     let resumed = collect_core(spawn_core(&scratch, "json", 2, &["--resume", &run_id]));
     assert_eq!(resumed.status.code(), Some(0));
     let resumed_request = requests
-        .recv_timeout(SERVER_TIMEOUT)
+        .recv_timeout(server_timeout())
         .expect("capture the resumed provider request");
     server.finish();
 
@@ -2125,7 +2153,7 @@ fn d6_02_environment_snapshot_is_bounded_durable_and_resume_does_not_recapture_i
     let first = collect_core(spawn_core(&scratch, "json", 2, &[]));
     assert_eq!(first.status.code(), Some(0));
     let first_request = requests
-        .recv_timeout(SERVER_TIMEOUT)
+        .recv_timeout(server_timeout())
         .expect("capture fresh provider request");
     let first_system = request_system(&first_request).to_owned();
     let canonical_cwd = scratch.repo().canonicalize().unwrap();
@@ -2199,7 +2227,7 @@ fn d6_02_environment_snapshot_is_bounded_durable_and_resume_does_not_recapture_i
     );
     assert_eq!(resumed.status.code(), Some(0));
     let resumed_request = requests
-        .recv_timeout(SERVER_TIMEOUT)
+        .recv_timeout(server_timeout())
         .expect("capture resumed provider request");
     server.finish();
 
@@ -2371,7 +2399,7 @@ fn one_sigint_cancels_the_in_flight_provider_turn_then_exits_interrupted() {
     let child = ChildGuard::new(spawn_core(&scratch, "json", 2, &[]));
 
     request_seen
-        .recv_timeout(SERVER_TIMEOUT)
+        .recv_timeout(server_timeout())
         .expect("real one-shot child starts its provider turn");
     send_sigint(child.child());
     // Let Tokio's installed signal listener set the graceful-interrupt flag while the current
