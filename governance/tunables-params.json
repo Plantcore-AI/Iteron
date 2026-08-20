@@ -22670,16 +22670,15 @@
     {
       "id": "ctx.memory.footer",
       "module": "memory_recall",
-      "class": "structural",
+      "class": "searchable",
       "type": "text",
       "rust_type": "&str",
       "default": "\"--- end memory index ---\"",
       "krate": "ctx",
       "decl": "crates/ctx/src/memory.rs",
-      "applied": false,
+      "applied": true,
       "candidate_kind": "const",
-      "disposition": "invariant_read_only",
-      "invariant_reason": "runtime_state_not_a_value",
+      "disposition": "runtime_settable",
       "owner": {
         "krate": "ctx",
         "path": "crates/ctx/src/memory.rs",
@@ -22689,38 +22688,23 @@
         {
           "path": "crates/ctx/src/memory.rs",
           "line": 2343,
-          "evidence": "Rust path reference"
-        },
-        {
-          "path": "crates/ctx/src/memory.rs",
-          "line": 2351,
-          "evidence": "Rust path reference"
-        },
-        {
-          "path": "crates/ctx/src/memory.rs",
-          "line": 2374,
-          "evidence": "Rust path reference"
-        },
-        {
-          "path": "crates/ctx/src/memory.rs",
-          "line": 2380,
-          "evidence": "Rust path reference"
+          "evidence": "param_str runtime resolution"
         }
-      ]
+      ],
+      "behavior_oracle": "installed profile id ctx.memory.footer is resolved at every listed production helper call"
     },
     {
       "id": "ctx.memory.header",
       "module": "memory_recall",
-      "class": "structural",
+      "class": "searchable",
       "type": "text",
       "rust_type": "&str",
       "default": "\"\\n\\n--- Memory index (progressive disclosure; read a fact with read_memory) ---\\n\"",
       "krate": "ctx",
       "decl": "crates/ctx/src/memory.rs",
-      "applied": false,
+      "applied": true,
       "candidate_kind": "const",
-      "disposition": "invariant_read_only",
-      "invariant_reason": "runtime_state_not_a_value",
+      "disposition": "runtime_settable",
       "owner": {
         "krate": "ctx",
         "path": "crates/ctx/src/memory.rs",
@@ -22729,15 +22713,11 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 2343,
-          "evidence": "Rust path reference"
-        },
-        {
-          "path": "crates/ctx/src/memory.rs",
-          "line": 2344,
-          "evidence": "Rust path reference"
+          "line": 2342,
+          "evidence": "param_str runtime resolution"
         }
-      ]
+      ],
+      "behavior_oracle": "installed profile id ctx.memory.header is resolved at every listed production helper call"
     },
     {
       "id": "ctx.memory.max_fact_bytes",
@@ -22768,12 +22748,12 @@
         },
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 2580,
+          "line": 2582,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 2609,
+          "line": 2611,
           "evidence": "param_usize runtime resolution"
         }
       ],
@@ -22978,22 +22958,22 @@
         },
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 2564,
+          "line": 2566,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 2566,
+          "line": 2568,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 2646,
+          "line": 2648,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 2648,
+          "line": 2650,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -23079,12 +23059,12 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 2767,
+          "line": 2769,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 2769,
+          "line": 2771,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -23111,7 +23091,7 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 2793,
+          "line": 2795,
           "evidence": "Rust path reference"
         }
       ]
@@ -23137,7 +23117,7 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 2774,
+          "line": 2776,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -28899,7 +28879,7 @@
         },
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 503,
+          "line": 588,
           "evidence": "macro token reference"
         }
       ]
@@ -29026,7 +29006,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 503,
+          "line": 588,
           "evidence": "macro token reference"
         }
       ]
@@ -60352,17 +60332,16 @@
     },
     {
       "id": "tools.tool_search.core_eager_tools",
-      "module": "tool_arguments",
-      "class": "structural",
+      "module": "tool_exposure",
+      "class": "searchable",
       "type": "array",
       "rust_type": "&[&str]",
       "default": "&[\n    \"read_file\",\n    \"write_file\",\n    \"edit\",\n    \"apply_patch\",\n    \"bash\",\n    // `bash` may yield a live session. Its continuation/cancellation surface must already be\n    // callable on the very next turn; requiring a tool-search round here invites duplicate test\n    // launches and stranded child processes.\n    \"process_poll\",\n    \"process_stop\",\n    \"grep\",\n    \"glob\",\n    \"list_dir\",\n    // The base prompt requires a final diff review. Hiding that exact tool behind discovery made\n    // the prompt manufacture an avoidable provider round on ordinary coding tasks.\n    \"git_diff\",\n    \"git_status\",\n]",
       "krate": "tools",
       "decl": "crates/tools/src/tool_search.rs",
-      "applied": false,
+      "applied": true,
       "candidate_kind": "const",
-      "disposition": "invariant_read_only",
-      "invariant_reason": "runtime_state_not_a_value",
+      "disposition": "runtime_settable",
       "owner": {
         "krate": "tools",
         "path": "crates/tools/src/tool_search.rs",
@@ -60371,10 +60350,11 @@
       "use_sites": [
         {
           "path": "crates/tools/src/tool_search.rs",
-          "line": 102,
-          "evidence": "Rust path reference"
+          "line": 50,
+          "evidence": "param_str_list runtime resolution"
         }
-      ]
+      ],
+      "behavior_oracle": "installed profile id tools.tool_search.core_eager_tools is resolved at every listed production helper call"
     },
     {
       "id": "tools.tool_search.default_deferred_tool_eager_limit",
@@ -60426,12 +60406,12 @@
       "use_sites": [
         {
           "path": "crates/tools/src/tool_search.rs",
-          "line": 197,
+          "line": 205,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/tools/src/tool_search.rs",
-          "line": 199,
+          "line": 207,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -60461,7 +60441,7 @@
       "use_sites": [
         {
           "path": "crates/tools/src/tool_search.rs",
-          "line": 120,
+          "line": 128,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -60491,12 +60471,12 @@
       "use_sites": [
         {
           "path": "crates/tools/src/tool_search.rs",
-          "line": 126,
+          "line": 134,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/tools/src/tool_search.rs",
-          "line": 128,
+          "line": 136,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -60522,27 +60502,27 @@
       "use_sites": [
         {
           "path": "crates/tools/src/tool_search.rs",
-          "line": 94,
+          "line": 102,
           "evidence": "param_str runtime resolution"
         },
         {
           "path": "crates/tools/src/tool_search.rs",
-          "line": 99,
+          "line": 107,
           "evidence": "param_str runtime resolution"
         },
         {
           "path": "crates/tools/src/tool_search.rs",
-          "line": 141,
+          "line": 149,
           "evidence": "param_str runtime resolution"
         },
         {
           "path": "crates/tools/src/tool_search.rs",
-          "line": 167,
+          "line": 175,
           "evidence": "param_str runtime resolution"
         },
         {
           "path": "crates/tools/src/tool_search.rs",
-          "line": 215,
+          "line": 223,
           "evidence": "param_str runtime resolution"
         }
       ],

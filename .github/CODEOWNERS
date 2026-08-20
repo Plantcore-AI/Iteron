@@ -193,6 +193,7 @@
 /crates/ctx/src/source.rs @fr0m-scratch
 /crates/ctx/src/token_calibration.rs @fr0m-scratch
 /crates/ctx/src/token_estimator.rs @fr0m-scratch
+/crates/ctx/tests/memory_render_profile.rs @fr0m-scratch
 /crates/ctx/tests/skill_frontmatter.rs @fr0m-scratch
 /crates/kernel/src/admission.rs @fr0m-scratch
 /crates/kernel/src/diagnostics.rs @fr0m-scratch
@@ -279,6 +280,7 @@
 /crates/tools/src/write_file.rs @fr0m-scratch
 /crates/tools/src/write_file_tests.rs @fr0m-scratch
 /crates/tools/tests/bounded_minimum_does_not_abort.rs @fr0m-scratch
+/crates/tools/tests/tool_exposure_profile.rs @fr0m-scratch
 /crates/cli/src/runtime/hooks/** @fr0m-scratch
 /crates/cli/src/runtime/policy_evidence_recorder/** @fr0m-scratch
 /crates/cli/src/runtime/telemetry/** @fr0m-scratch

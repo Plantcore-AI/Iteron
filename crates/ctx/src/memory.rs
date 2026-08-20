@@ -2339,16 +2339,18 @@ impl FileMemory {
             const HEADER: &str =
                 "\n\n--- Memory index (progressive disclosure; read a fact with read_memory) ---\n";
             const FOOTER: &str = "--- end memory index ---";
+            let header = iteron_tunables::param_str("ctx.memory.header", HEADER);
+            let footer = iteron_tunables::param_str("ctx.memory.footer", FOOTER);
             let index_ceiling = budget.index_bytes.min(budget.total);
-            if HEADER.len().saturating_add(FOOTER.len()) <= index_ceiling {
-                index_block.push_str(HEADER);
+            if header.len().saturating_add(footer.len()) <= index_ceiling {
+                index_block.push_str(header);
                 for (index, candidate) in merged.iter().enumerate() {
                     let line = candidate.fact_ref.line();
                     let remaining = merged.len().saturating_sub(index + 1);
                     let disclosure = (remaining > 0).then(|| {
                         format!("[{remaining} more index entries omitted to fit the budget]\n")
                     });
-                    let reserve = FOOTER
+                    let reserve = footer
                         .len()
                         .saturating_add(disclosure.as_ref().map_or(0, String::len));
                     if index_block
@@ -2371,13 +2373,13 @@ impl FileMemory {
                     if index_block
                         .len()
                         .saturating_add(disclosure.len())
-                        .saturating_add(FOOTER.len())
+                        .saturating_add(footer.len())
                         <= index_ceiling
                     {
                         index_block.push_str(&disclosure);
                     }
                 }
-                index_block.push_str(FOOTER);
+                index_block.push_str(footer);
             }
         }
 

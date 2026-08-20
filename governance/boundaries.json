@@ -1034,6 +1034,10 @@
         },
         {
           "kind": "file",
+          "path": "crates/ctx/tests/memory_render_profile.rs"
+        },
+        {
+          "kind": "file",
           "path": "crates/ctx/tests/skill_frontmatter.rs"
         }
       ],
@@ -1304,6 +1308,10 @@
         {
           "kind": "file",
           "path": "crates/tools/tests/bounded_minimum_does_not_abort.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/tools/tests/tool_exposure_profile.rs"
         }
       ],
       "contracts": [

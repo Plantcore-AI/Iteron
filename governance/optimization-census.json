@@ -1,18 +1,18 @@
 {
   "schema_version": 4,
   "total": 2900,
-  "runtime_settable": 2024,
-  "invariant_read_only": 876,
+  "runtime_settable": 2027,
+  "invariant_read_only": 873,
   "binding_required": 0,
-  "advertised_runtime_settable": 2024,
-  "runtime_applied": 2024,
-  "externally_addressed_runtime_settable": 2024,
+  "advertised_runtime_settable": 2027,
+  "runtime_applied": 2027,
+  "externally_addressed_runtime_settable": 2027,
   "unaddressed_runtime_settable": 0,
-  "mechanical_invariant_dispositions": 876,
-  "owning_human_review_required": 876,
-  "explicit_invariant_overrides": 224,
+  "mechanical_invariant_dispositions": 873,
+  "owning_human_review_required": 873,
+  "explicit_invariant_overrides": 221,
   "address_kind_counts": {
-    "unified_profile": 1385,
+    "unified_profile": 1388,
     "direct_config": 313,
     "caller_input": 326
   },
@@ -25,7 +25,7 @@
     "replay": 9,
     "hard_budget": 123,
     "effect_ledger": 12,
-    "non_value_structural": 306
+    "non_value_structural": 303
   },
   "source_coverage": {
     "completeness_claim": "complete_for_declared_production_source_forms_not_mathematical_universe",
@@ -29035,30 +29035,20 @@
         {
           "path": "crates/ctx/src/memory.rs",
           "line": 2343,
-          "evidence": "Rust path reference"
-        },
-        {
-          "path": "crates/ctx/src/memory.rs",
-          "line": 2351,
-          "evidence": "Rust path reference"
-        },
-        {
-          "path": "crates/ctx/src/memory.rs",
-          "line": 2374,
-          "evidence": "Rust path reference"
-        },
-        {
-          "path": "crates/ctx/src/memory.rs",
-          "line": 2380,
-          "evidence": "Rust path reference"
+          "evidence": "param_str runtime resolution"
         }
       ],
-      "disposition": "invariant_read_only",
-      "invariant_kind": "non_value_structural",
-      "review_evidence": "explicit census disposition override: `FileMemory::recall_with_slot_policy_at_audited::FOOTER` at crates/ctx/src/memory.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/ctx/src/memory.rs:2343 (Rust path reference); mechanical source evidence only, not a claim of human review",
-      "owning_human_review": "required_not_source_proven",
-      "explicit_invariant_override": true,
-      "applied": false,
+      "disposition": "runtime_settable",
+      "external_address": {
+        "kind": "unified_profile",
+        "selector_kind": "key",
+        "selector": "ctx.memory.footer",
+        "owner_kind": "schema",
+        "owner": "iteron_tunables::Param/ResolutionValue"
+      },
+      "explicit_invariant_override": false,
+      "applied": true,
+      "behavior_oracle": "installed profile id ctx.memory.footer is resolved at every listed production helper call",
       "tier2_id": "ctx.memory.footer"
     },
     {
@@ -29074,21 +29064,21 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 2343,
-          "evidence": "Rust path reference"
-        },
-        {
-          "path": "crates/ctx/src/memory.rs",
-          "line": 2344,
-          "evidence": "Rust path reference"
+          "line": 2342,
+          "evidence": "param_str runtime resolution"
         }
       ],
-      "disposition": "invariant_read_only",
-      "invariant_kind": "non_value_structural",
-      "review_evidence": "explicit census disposition override: `FileMemory::recall_with_slot_policy_at_audited::HEADER` at crates/ctx/src/memory.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/ctx/src/memory.rs:2343 (Rust path reference); mechanical source evidence only, not a claim of human review",
-      "owning_human_review": "required_not_source_proven",
-      "explicit_invariant_override": true,
-      "applied": false,
+      "disposition": "runtime_settable",
+      "external_address": {
+        "kind": "unified_profile",
+        "selector_kind": "key",
+        "selector": "ctx.memory.header",
+        "owner_kind": "schema",
+        "owner": "iteron_tunables::Param/ResolutionValue"
+      },
+      "explicit_invariant_override": false,
+      "applied": true,
+      "behavior_oracle": "installed profile id ctx.memory.header is resolved at every listed production helper call",
       "tier2_id": "ctx.memory.header"
     },
     {
@@ -29109,12 +29099,12 @@
         },
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 2580,
+          "line": 2582,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 2609,
+          "line": 2611,
           "evidence": "param_usize runtime resolution"
         }
       ],
@@ -29319,22 +29309,22 @@
         },
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 2564,
+          "line": 2566,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 2566,
+          "line": 2568,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 2646,
+          "line": 2648,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 2648,
+          "line": 2650,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -29472,12 +29462,12 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 2767,
+          "line": 2769,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 2769,
+          "line": 2771,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -29507,13 +29497,13 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 2793,
+          "line": 2795,
           "evidence": "Rust path reference"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "non_value_structural",
-      "review_evidence": "closed Tier-2 disposition rule: `MEMORY_INDEX_LOCK_FILE` at crates/ctx/src/memory.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/ctx/src/memory.rs:2793 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "closed Tier-2 disposition rule: `MEMORY_INDEX_LOCK_FILE` at crates/ctx/src/memory.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/ctx/src/memory.rs:2795 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": false,
       "applied": false,
@@ -29532,7 +29522,7 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 2774,
+          "line": 2776,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -37204,7 +37194,7 @@
         },
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 503,
+          "line": 588,
           "evidence": "macro token reference"
         }
       ],
@@ -37329,13 +37319,13 @@
       "use_sites": [
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 503,
+          "line": 588,
           "evidence": "macro token reference"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "non_value_structural",
-      "review_evidence": "closed Tier-2 disposition rule: `LEGACY_IMPLEMENTATION_PROTOCOL` at crates/eval/src/tuner.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/eval/src/tuner/state_ops.rs:503 (macro token reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "closed Tier-2 disposition rule: `LEGACY_IMPLEMENTATION_PROTOCOL` at crates/eval/src/tuner.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/eval/src/tuner/state_ops.rs:588 (macro token reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": false,
       "applied": false,
@@ -81897,16 +81887,21 @@
       "use_sites": [
         {
           "path": "crates/tools/src/tool_search.rs",
-          "line": 102,
-          "evidence": "Rust path reference"
+          "line": 50,
+          "evidence": "param_str_list runtime resolution"
         }
       ],
-      "disposition": "invariant_read_only",
-      "invariant_kind": "non_value_structural",
-      "review_evidence": "explicit census disposition override: `CORE_EAGER_TOOLS` at crates/tools/src/tool_search.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/tools/src/tool_search.rs:102 (Rust path reference); mechanical source evidence only, not a claim of human review",
-      "owning_human_review": "required_not_source_proven",
-      "explicit_invariant_override": true,
-      "applied": false,
+      "disposition": "runtime_settable",
+      "external_address": {
+        "kind": "unified_profile",
+        "selector_kind": "key",
+        "selector": "tools.tool_search.core_eager_tools",
+        "owner_kind": "schema",
+        "owner": "iteron_tunables::Param/ResolutionValue"
+      },
+      "explicit_invariant_override": false,
+      "applied": true,
+      "behavior_oracle": "installed profile id tools.tool_search.core_eager_tools is resolved at every listed production helper call",
       "tier2_id": "tools.tool_search.core_eager_tools"
     },
     {
@@ -81952,12 +81947,12 @@
       "use_sites": [
         {
           "path": "crates/tools/src/tool_search.rs",
-          "line": 197,
+          "line": 205,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/tools/src/tool_search.rs",
-          "line": 199,
+          "line": 207,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -81987,7 +81982,7 @@
       "use_sites": [
         {
           "path": "crates/tools/src/tool_search.rs",
-          "line": 120,
+          "line": 128,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -82017,12 +82012,12 @@
       "use_sites": [
         {
           "path": "crates/tools/src/tool_search.rs",
-          "line": 126,
+          "line": 134,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/tools/src/tool_search.rs",
-          "line": 128,
+          "line": 136,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -82052,27 +82047,27 @@
       "use_sites": [
         {
           "path": "crates/tools/src/tool_search.rs",
-          "line": 94,
+          "line": 102,
           "evidence": "param_str runtime resolution"
         },
         {
           "path": "crates/tools/src/tool_search.rs",
-          "line": 99,
+          "line": 107,
           "evidence": "param_str runtime resolution"
         },
         {
           "path": "crates/tools/src/tool_search.rs",
-          "line": 141,
+          "line": 149,
           "evidence": "param_str runtime resolution"
         },
         {
           "path": "crates/tools/src/tool_search.rs",
-          "line": 167,
+          "line": 175,
           "evidence": "param_str runtime resolution"
         },
         {
           "path": "crates/tools/src/tool_search.rs",
-          "line": 215,
+          "line": 223,
           "evidence": "param_str runtime resolution"
         }
       ],

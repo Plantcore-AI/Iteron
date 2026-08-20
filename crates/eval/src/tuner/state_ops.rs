@@ -440,57 +440,142 @@ pub(super) fn validate_universal_candidate(candidate: &TunerCandidate) -> Result
     Ok(())
 }
 
-fn candidate_features(candidate: &TunerCandidate) -> BTreeMap<String, String> {
-    let mut features = candidate
-        .values
-        .iter()
-        .filter_map(|(id, value)| {
-            serde_json::to_string(value)
-                .ok()
-                .map(|value| (format!("family/{id}"), value))
-        })
-        .collect::<BTreeMap<_, _>>();
+pub(super) fn candidate_features(candidate: &TunerCandidate) -> BTreeMap<String, String> {
+    let mut features = BTreeMap::new();
+    let mut modules = BTreeMap::<iteron_tunables::ModuleId, BTreeMap<String, String>>::new();
+    for (id, value) in &candidate.values {
+        if let Ok(token) = serde_json::to_string(value) {
+            let key = format!("family/{id}");
+            observe_module_feature(&mut modules, family_module(id), key.clone(), token.clone());
+            features.insert(key, token);
+        }
+    }
     if let Some(profile) = &candidate.profile {
         for value in &profile.values {
             if let Ok(token) = serde_json::to_string(&value.value) {
-                features.insert(format!("family/{}", value.family), token);
+                let key = format!("family/{}", value.family);
+                observe_module_feature(
+                    &mut modules,
+                    family_module(&value.family),
+                    key.clone(),
+                    token.clone(),
+                );
+                features.insert(key, token);
             }
         }
         for assignment in &profile.params {
             if let Ok(token) = serde_json::to_string(&assignment.value) {
-                features.insert(format!("param/{}", assignment.param), token);
+                let key = format!("param/{}", assignment.param);
+                observe_module_feature(
+                    &mut modules,
+                    iteron_tunables::param(&assignment.param).map(|param| param.module),
+                    key.clone(),
+                    token.clone(),
+                );
+                features.insert(key, token);
             }
         }
         for artifact in &profile.artifacts {
             if let Ok(token) = serde_json::to_string(&artifact.text) {
-                features.insert(format!("artifact/{}", artifact.artifact), token);
+                let key = format!("artifact/{}", artifact.artifact);
+                observe_module_feature(
+                    &mut modules,
+                    artifact_module(&artifact.artifact),
+                    key.clone(),
+                    token.clone(),
+                );
+                features.insert(key, token);
             }
         }
     }
     for implementation in &candidate.implementations {
         if let Ok(token) = serde_json::to_string(implementation) {
-            features.insert(
-                format!("implementation/{}", implementation.module.as_str()),
-                token,
+            let key = format!("implementation/{}", implementation.module.as_str());
+            observe_module_feature(
+                &mut modules,
+                Some(implementation.module),
+                key.clone(),
+                token.clone(),
             );
+            features.insert(key, token);
         }
     }
     if let Some(graph) = &candidate.graph {
         for dimension in &graph.dimensions {
             if let Ok(token) = serde_json::to_string(dimension) {
-                features.insert(format!("graph/{}", dimension.address().selector), token);
+                let key = format!("graph/{}", dimension.address().selector);
+                observe_module_feature(
+                    &mut modules,
+                    dimension_module(dimension),
+                    key.clone(),
+                    token.clone(),
+                );
+                features.insert(key, token);
             }
         }
         for implementation in &graph.implementations {
             if let Ok(token) = serde_json::to_string(implementation) {
-                features.insert(
-                    format!("implementation/{}", implementation.module.as_str()),
-                    token,
+                let key = format!("implementation/{}", implementation.module.as_str());
+                observe_module_feature(
+                    &mut modules,
+                    Some(implementation.module),
+                    key.clone(),
+                    token.clone(),
                 );
+                features.insert(key, token);
             }
         }
     }
+    for (module, members) in modules {
+        if let Ok(bytes) = serde_json::to_vec(&members) {
+            features.insert(
+                format!("module/{}", module.as_str()),
+                format!("sha256:{}", hex::encode(Sha256::digest(bytes))),
+            );
+        }
+    }
     features
+}
+
+fn observe_module_feature(
+    modules: &mut BTreeMap<iteron_tunables::ModuleId, BTreeMap<String, String>>,
+    module: Option<iteron_tunables::ModuleId>,
+    address: String,
+    token: String,
+) {
+    if let Some(module) = module {
+        modules.entry(module).or_default().insert(address, token);
+    }
+}
+
+fn family_module(family: &str) -> Option<iteron_tunables::ModuleId> {
+    iteron_tunables::canonical_family(family)
+        .map(|family| iteron_tunables::family_module(family.ordinal))
+}
+
+fn artifact_module(artifact: &str) -> Option<iteron_tunables::ModuleId> {
+    iteron_tunables::PROMPT_ARTIFACTS
+        .iter()
+        .find(|candidate| candidate.id == artifact)
+        .map(|candidate| candidate.module)
+        .or_else(|| {
+            iteron_tunables::tool_text_artifact_by_id(artifact).map(|candidate| candidate.module)
+        })
+}
+
+fn dimension_module(dimension: &CandidateDimension) -> Option<iteron_tunables::ModuleId> {
+    match dimension {
+        CandidateDimension::Family { family, .. } => family_module(family),
+        CandidateDimension::Param { param, .. } => {
+            iteron_tunables::param(param).map(|param| param.module)
+        }
+        CandidateDimension::Artifact { artifact, .. } => artifact_module(artifact),
+        CandidateDimension::NativeValue { address, .. } => {
+            iteron_tunables::param(&address.selector)
+                .map(|param| param.module)
+                .or_else(|| family_module(&address.selector))
+        }
+    }
 }
 
 pub(super) fn validate_implementation_binding(

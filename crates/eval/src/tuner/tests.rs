@@ -563,6 +563,79 @@ fn universal_candidate_covers_params_text_and_implementations() {
 }
 
 #[test]
+fn tuner_features_reuse_generic_strategy_modules_across_atomic_parameters() {
+    let mut candidate = universal_candidate("module-features");
+    let profile = candidate.profile.as_mut().unwrap();
+    profile.params.extend([
+        iteron_tunables::ParamAssignment {
+            param: "ctx.compact.default_trigger_tokens".into(),
+            value: iteron_tunables::ResolutionValue::Integer { value: 80_000 },
+        },
+        iteron_tunables::ParamAssignment {
+            param: "ctx.memory.header".into(),
+            value: iteron_tunables::ResolutionValue::Text {
+                value: "compact memory header".into(),
+            },
+        },
+        iteron_tunables::ParamAssignment {
+            param: "tools.tool_search.core_eager_tools".into(),
+            value: iteron_tunables::ResolutionValue::List {
+                items: vec![iteron_tunables::ResolutionValue::Text {
+                    value: "tool_search".into(),
+                }],
+            },
+        },
+        iteron_tunables::ParamAssignment {
+            param: "tools.grep_tool.default_grep_parallelism".into(),
+            value: iteron_tunables::ResolutionValue::Integer { value: 4 },
+        },
+    ]);
+    profile
+        .params
+        .sort_by(|left, right| left.param.cmp(&right.param));
+    candidate.validate_universal().unwrap();
+
+    let features = super::state_ops::candidate_features(&candidate);
+    for module in [
+        iteron_tunables::ModuleId::MemoryRecall,
+        iteron_tunables::ModuleId::ContextCompaction,
+        iteron_tunables::ModuleId::ToolExposure,
+        iteron_tunables::ModuleId::ToolSearchStrategy,
+        iteron_tunables::ModuleId::PromptSystem,
+        iteron_tunables::ModuleId::VerificationQuorum,
+    ] {
+        assert!(
+            features.contains_key(&format!("module/{}", module.as_str())),
+            "missing generic strategy feature for {}",
+            module.as_str()
+        );
+    }
+    assert!(
+        features.keys().all(|key| !key.contains("provider_id")),
+        "module learning must not depend on a provider-specific branch"
+    );
+
+    let before = features["module/memory.recall"].clone();
+    let memory = candidate
+        .profile
+        .as_mut()
+        .unwrap()
+        .params
+        .iter_mut()
+        .find(|assignment| assignment.param == "ctx.memory.header")
+        .unwrap();
+    memory.value = iteron_tunables::ResolutionValue::Text {
+        value: "different memory header".into(),
+    };
+    let after = super::state_ops::candidate_features(&candidate);
+    assert_ne!(before, after["module/memory.recall"]);
+    assert_eq!(
+        features["module/tool.exposure"], after["module/tool.exposure"],
+        "changing memory must not perturb the tool-policy feature"
+    );
+}
+
+#[test]
 fn universal_candidate_rejects_a_second_address_space() {
     let root = TempRoot::new("universal-legacy-mix");
     let bridge = trainer_bridge("mixed-fixture", 1);

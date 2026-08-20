@@ -42,6 +42,14 @@ const CORE_EAGER_TOOLS: &[&str] = &[
     "git_status",
 ];
 
+/// Resolve the stable coding surface through the same immutable profile table as every other
+/// performance-sensitive tool policy. The compiled slice remains the safe/default candidate, but
+/// it is not a protocol or authority invariant: offline evaluation may search a smaller or
+/// task-specific surface without teaching the runtime about any provider.
+fn core_eager_tools() -> &'static [&'static str] {
+    iteron_tunables::param_str_list("tools.tool_search.core_eager_tools", CORE_EAGER_TOOLS)
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct DeferredToolCatalog {
     inner: Arc<Mutex<CatalogState>>,
@@ -99,7 +107,7 @@ impl DeferredToolCatalog {
                 iteron_tunables::param_str("tools.tool_search.tool_search", TOOL_SEARCH).to_owned(),
             );
         }
-        for name in CORE_EAGER_TOOLS {
+        for name in core_eager_tools() {
             if admitted.contains(*name) {
                 state.exposed.insert((*name).to_owned());
                 visible.insert((*name).to_owned());
@@ -268,7 +276,7 @@ mod tests {
             .iter()
             .find(|name| {
                 name.as_str() != TOOL_SEARCH
-                    && !CORE_EAGER_TOOLS.contains(&name.as_str())
+                    && !core_eager_tools().contains(&name.as_str())
                     && !initial.iter().any(|spec| spec.name == **name)
             })
             .cloned()
@@ -331,7 +339,7 @@ mod tests {
 
         for task in ["", "inspect the context compactor"] {
             let visible = registry.specs_for_task(&admitted, task, Some(1));
-            for core in CORE_EAGER_TOOLS {
+            for core in core_eager_tools() {
                 assert!(
                     visible.iter().any(|spec| spec.name == *core),
                     "{core} missing for task {task:?}"

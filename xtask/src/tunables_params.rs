@@ -1727,6 +1727,10 @@ fn row_for(
         | ("cli", "crates/cli/src/block/links.rs", "PATH_ARG_KEYS" | "URL_ARG_KEYS") => {
             Some(ParamClass::Searchable)
         }
+        ("ctx", "crates/ctx/src/memory.rs", "HEADER" | "FOOTER") => Some(ParamClass::Searchable),
+        ("tools", "crates/tools/src/tool_search.rs", "CORE_EAGER_TOOLS") => {
+            Some(ParamClass::Searchable)
+        }
         ("tools", "crates/tools/src/tool_search.rs", "DEFAULT_DEFERRED_TOOL_EAGER_LIMIT")
         | ("tools", "crates/tools/src/web.rs", "DEFAULT_SEARCH_RESULT_COUNT") => {
             Some(ParamClass::Bounded)
@@ -1821,7 +1825,7 @@ fn row_for(
     };
     ParamRow {
         id: format!("{krate}.{}.{}", module_path(relative), name.to_lowercase()),
-        module: module_for(krate, relative),
+        module: module_for(krate, relative, name),
         class,
         ty,
         rust_type: ty_text.to_owned(),
@@ -2327,7 +2331,7 @@ fn parse_integer_literal(value: &syn::LitInt) -> Option<i128> {
 }
 
 /// Map a declaration site to its optimization module.
-fn module_for(krate: &str, relative: &str) -> ModuleId {
+fn module_for(krate: &str, relative: &str, name: &str) -> ModuleId {
     let file = relative
         .rsplit_once("/src/")
         .map(|(_, t)| t)
@@ -2345,7 +2349,9 @@ fn module_for(krate: &str, relative: &str) -> ModuleId {
             }
         }
         "tools" => {
-            if file.contains("grep")
+            if file == "tool_search.rs" && name == "CORE_EAGER_TOOLS" {
+                ModuleId::ToolExposure
+            } else if file.contains("grep")
                 || file.contains("glob")
                 || file.contains("outline")
                 || file.contains("repo")
