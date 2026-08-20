@@ -43,7 +43,14 @@ def package_has_sha256(package: dict, digest: str) -> bool:
     )
 
 
-def normalize(document: dict, version: str, target: str, epoch: int, binary_digest: str) -> dict:
+def normalize(
+    document: dict,
+    version: str,
+    target: str,
+    epoch: int,
+    binary_digest: str,
+    binary_name: str = "iteron",
+) -> dict:
     if document.get("spdxVersion") != "SPDX-2.3":
         raise ReleaseToolError("SBOM must use SPDX-2.3")
     if document.get("dataLicense") != "CC0-1.0":
@@ -72,7 +79,7 @@ def normalize(document: dict, version: str, target: str, epoch: int, binary_dige
     roots = [
         package
         for package in packages
-        if package.get("name") == "iteron"
+        if package.get("name") == binary_name
         and package.get("versionInfo") == f"sha256:{binary_digest}"
         and package_has_sha256(package, binary_digest)
     ]
@@ -82,7 +89,26 @@ def normalize(document: dict, version: str, target: str, epoch: int, binary_dige
         if package.get("name") == "iteron-cli" and package.get("versionInfo") == version
     ]
     if len(roots) != 1 or len(cli_packages) != 1:
-        raise ReleaseToolError("SBOM root digest or iteron-cli version is not uniquely bound")
+        root_names = sorted(
+            {
+                f"{package.get('name')}={package.get('versionInfo')}"
+                for package in packages
+                if package_has_sha256(package, binary_digest)
+            }
+        )
+        cli_names = sorted(
+            {
+                f"{package.get('name')}={package.get('versionInfo')}"
+                for package in packages
+                if package.get("name") == "iteron-cli"
+            }
+        )
+        raise ReleaseToolError(
+            f"SBOM root digest or iteron-cli version is not uniquely bound "
+            f"(binary_name={binary_name!r}, roots={len(roots)}, "
+            f"cli_packages={len(cli_packages)}, "
+            f"root_candidates={root_names}, cli_candidates={cli_names})"
+        )
 
     relationships = document.get("relationships")
     if not isinstance(relationships, list) or not all(
@@ -165,6 +191,7 @@ def main() -> None:
             target,
             arguments.source_date_epoch,
             sha256_file(arguments.binary),
+            arguments.binary.name,
         )
     )
     if len(output.encode("utf-8")) > MAX_SBOM_BYTES:
