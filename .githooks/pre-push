@@ -10,7 +10,7 @@
 
 set -euo pipefail
 
-while IFS=' ' read -r local_ref local_sha remote_ref remote_sha; do
+while IFS=' ' read -r _ local_sha remote_ref _; do
   case "$remote_ref" in
     refs/tags/v*)
       object_type=$(git cat-file -t "$local_sha" 2>/dev/null || true)
