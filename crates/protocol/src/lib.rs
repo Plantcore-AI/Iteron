@@ -117,12 +117,13 @@ pub use pricing::{
 pub use tool::{Capability, Purity, ToolResult, ToolSpec, ToolUse};
 pub use trust::Trust;
 pub use tunables_snapshot::{
+    EXTENSION_SERVER_BINDING_PREFIX, MAX_EXTENSION_SERVER_NAME_BYTES,
     MAX_RUN_GENESIS_TUNABLE_CEILINGS, MAX_RUN_GENESIS_TUNABLE_ENTRIES,
     MAX_RUN_GENESIS_TUNABLE_ID_BYTES, MAX_RUN_GENESIS_TUNABLES_V2_BYTES,
     MAX_RUN_GENESIS_TUNABLES_V2_DEPTH, MAX_RUN_GENESIS_TUNABLES_V2_NODES,
     RUN_GENESIS_TUNABLES_CANONICALIZATION, RUN_GENESIS_TUNABLES_V2_CANONICALIZATION,
     RunGenesisFixedAuthorityBindingV2, RunGenesisFixedAuthorityIdV2, RunGenesisTunableEntryV2,
-    RunGenesisTunablesSnapshotV2, RunGenesisTunablesVersionV2,
+    RunGenesisTunablesSnapshotV2, RunGenesisTunablesVersionV2, is_extension_server_binding_id,
 };
 pub use wire::{EqEnvelope, PROTOCOL_VERSION, ProtocolVersionError, SqEnvelope};
 

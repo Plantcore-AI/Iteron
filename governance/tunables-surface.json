@@ -4,7 +4,7 @@
   "registry_revision": 20,
   "registry_digest": "487c554cdcc97e7e86d9af2ae4c6f588e4e250fdefb868a9755c7201ad9e5fd6",
   "param_registry_id": "iteron-params",
-  "param_registry_digest": "41e72d8bcd4d8eed60836cc663467c3eeccf6b2b4000f0c5bc68d96e998a3807",
+  "param_registry_digest": "94d7b18599c436b37fc5a4492738f3288889fe5fa84e810b076c74fa85164f9d",
   "tool_text_registry_id": "iteron-builtin-tool-descriptions",
   "tool_text_registry_digest": "0ed860c172595c8e2425a76b68a7d840886a9129c40ef103252b1e625fe65a59",
   "counts": {
@@ -12,10 +12,10 @@
     "families_full": 137,
     "families_fixed_hidden": 23,
     "families_profile_addressable": 119,
-    "params": 2145,
+    "params": 2147,
     "params_searchable": 540,
     "params_bounded": 841,
-    "params_structural": 764,
+    "params_structural": 766,
     "params_applied": 1381,
     "modules": 28,
     "prompt_artifacts": 10,
@@ -199,7 +199,7 @@
       "id": "budget.allocation",
       "kind": "structured",
       "families": 11,
-      "params": 251,
+      "params": 253,
       "artifacts": 0
     },
     {
@@ -7911,7 +7911,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/config.rs",
-          "line": 1636,
+          "line": 1639,
           "evidence": "param_bool runtime resolution"
         }
       ],
@@ -7938,7 +7938,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/config.rs",
-          "line": 1261,
+          "line": 1264,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -7966,7 +7966,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/config.rs",
-          "line": 1278,
+          "line": 1281,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -7993,7 +7993,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/config.rs",
-          "line": 1265,
+          "line": 1268,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -8020,7 +8020,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/config.rs",
-          "line": 1270,
+          "line": 1273,
           "evidence": "param_bool runtime resolution"
         }
       ],
@@ -8050,18 +8050,13 @@
       "use_sites": [
         {
           "path": "crates/cli/src/config.rs",
-          "line": 1435,
+          "line": 1438,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/config.rs",
-          "line": 1440,
+          "line": 1443,
           "evidence": "param_integer runtime resolution in macro"
-        },
-        {
-          "path": "crates/cli/src/config.rs",
-          "line": 1444,
-          "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/config.rs",
@@ -8070,12 +8065,17 @@
         },
         {
           "path": "crates/cli/src/config.rs",
-          "line": 1451,
+          "line": 1450,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/config.rs",
-          "line": 1456,
+          "line": 1454,
+          "evidence": "param_integer runtime resolution"
+        },
+        {
+          "path": "crates/cli/src/config.rs",
+          "line": 1459,
           "evidence": "param_integer runtime resolution in macro"
         }
       ],
@@ -8105,7 +8105,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/config.rs",
-          "line": 866,
+          "line": 869,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -8135,7 +8135,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/config.rs",
-          "line": 914,
+          "line": 917,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -8165,7 +8165,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/config.rs",
-          "line": 898,
+          "line": 901,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -8177,7 +8177,7 @@
       "class": "structural",
       "type": "integer",
       "rust_type": "usize",
-      "default": "64",
+      "default": "iteron_protocol::MAX_EXTENSION_SERVER_NAME_BYTES",
       "domain": {},
       "krate": "cli",
       "decl": "crates/cli/src/config.rs",
@@ -8203,12 +8203,12 @@
         },
         {
           "path": "crates/cli/src/config.rs",
-          "line": 327,
+          "line": 330,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/config.rs",
-          "line": 365,
+          "line": 368,
           "evidence": "Rust path reference"
         }
       ]
@@ -8219,7 +8219,7 @@
       "class": "structural",
       "type": "text",
       "rust_type": "&'static str",
-      "default": "\"mcp-server-v1:\"",
+      "default": "iteron_protocol::EXTENSION_SERVER_BINDING_PREFIX",
       "domain": {},
       "krate": "cli",
       "decl": "crates/cli/src/config.rs",
@@ -8250,17 +8250,17 @@
         },
         {
           "path": "crates/cli/src/config.rs",
-          "line": 347,
+          "line": 350,
           "evidence": "macro token reference"
         },
         {
           "path": "crates/cli/src/config.rs",
-          "line": 359,
+          "line": 362,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/config.rs",
-          "line": 392,
+          "line": 395,
           "evidence": "Rust path reference"
         },
         {
@@ -8312,12 +8312,12 @@
         },
         {
           "path": "crates/cli/src/config.rs",
-          "line": 327,
+          "line": 330,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/config.rs",
-          "line": 365,
+          "line": 368,
           "evidence": "Rust path reference"
         }
       ]
@@ -8359,17 +8359,17 @@
         },
         {
           "path": "crates/cli/src/config.rs",
-          "line": 347,
+          "line": 350,
           "evidence": "macro token reference"
         },
         {
           "path": "crates/cli/src/config.rs",
-          "line": 359,
+          "line": 362,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/config.rs",
-          "line": 392,
+          "line": 395,
           "evidence": "Rust path reference"
         },
         {
@@ -8410,7 +8410,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/config.rs",
-          "line": 671,
+          "line": 674,
           "evidence": "param_bool runtime resolution"
         }
       ],
@@ -8614,12 +8614,12 @@
         },
         {
           "path": "crates/cli/src/config.rs",
-          "line": 732,
+          "line": 735,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/config.rs",
-          "line": 1394,
+          "line": 1397,
           "evidence": "Rust path reference"
         },
         {
@@ -8686,12 +8686,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/config.rs",
-          "line": 1188,
+          "line": 1191,
           "evidence": "macro token reference"
         },
         {
           "path": "crates/cli/src/config.rs",
-          "line": 1231,
+          "line": 1234,
           "evidence": "Rust path reference"
         }
       ]
@@ -8717,7 +8717,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/config.rs",
-          "line": 1346,
+          "line": 1349,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -24094,17 +24094,17 @@
         },
         {
           "path": "crates/cli/src/config.rs",
-          "line": 347,
+          "line": 350,
           "evidence": "macro token reference"
         },
         {
           "path": "crates/cli/src/config.rs",
-          "line": 359,
+          "line": 362,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/config.rs",
-          "line": 392,
+          "line": 395,
           "evidence": "Rust path reference"
         },
         {
@@ -50072,6 +50072,60 @@
       "behavior_oracle": "installed profile id protocol.task.max_task_text_bytes is resolved at every listed production helper call"
     },
     {
+      "id": "protocol.tunables_snapshot.extension_server_binding_prefix",
+      "module": "budget_allocation",
+      "class": "structural",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"mcp-server-v1:\"",
+      "domain": {},
+      "krate": "protocol",
+      "decl": "crates/protocol/src/tunables_snapshot.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "wire_compatibility",
+      "owner": {
+        "krate": "protocol",
+        "path": "crates/protocol/src/tunables_snapshot.rs",
+        "symbol": "EXTENSION_SERVER_BINDING_PREFIX"
+      },
+      "use_sites": [
+        {
+          "path": "crates/protocol/src/tunables_snapshot.rs",
+          "line": 36,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "protocol.tunables_snapshot.max_extension_server_name_bytes",
+      "module": "budget_allocation",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "64",
+      "domain": {},
+      "krate": "protocol",
+      "decl": "crates/protocol/src/tunables_snapshot.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "wire_compatibility",
+      "owner": {
+        "krate": "protocol",
+        "path": "crates/protocol/src/tunables_snapshot.rs",
+        "symbol": "MAX_EXTENSION_SERVER_NAME_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/protocol/src/tunables_snapshot.rs",
+          "line": 44,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
       "id": "protocol.tunables_snapshot.max_run_genesis_tunable_ceilings",
       "module": "budget_allocation",
       "class": "bounded",
@@ -50270,7 +50324,7 @@
       "use_sites": [
         {
           "path": "crates/protocol/src/tunables_snapshot.rs",
-          "line": 26,
+          "line": 61,
           "evidence": "production declaration"
         }
       ]
@@ -50297,7 +50351,7 @@
       "use_sites": [
         {
           "path": "crates/protocol/src/tunables_snapshot.rs",
-          "line": 28,
+          "line": 63,
           "evidence": "production declaration"
         }
       ]
