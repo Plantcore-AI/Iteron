@@ -220,8 +220,9 @@ const INTERRUPTED_STREAM_MARKER: &str =
 /// Ceiling on the partial answer preserved from an interrupted stream. Generous enough for a real
 /// response, bounded because the bytes come from the provider.
 const INTERRUPTED_STREAM_MAX_BYTES: usize = 256 * 1024;
-const IMAGE_INPUT_UNSUPPORTED_REASON: &str =
-    "the selected model has no verified image-input capability; attachments were not submitted";
+const IMAGE_INPUT_UNSUPPORTED_REASON: &str = "the selected model has no verified image-input capability, so attachments were not submitted; \
+if this route does accept images, declare it with `image_input: true` under that model in \
+`model_capabilities` in your config";
 const IMAGE_INPUT_INSPECTION_FAILED_REASON: &str = "an image attachment failed the immutable binary inspection policy; attachments were not submitted";
 const PROVIDER_RUN_NOTICE_LABEL: &str = "provider run notice";
 const PROVIDER_RUN_NOTICE_PREFIX: &str = "provider run notice [key=sha256:";

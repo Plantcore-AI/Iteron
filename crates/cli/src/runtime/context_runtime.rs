@@ -438,31 +438,47 @@ impl Agent {
                 .filter(|total| *total <= self.multimodal_decode_envelope.aggregate_raw_bytes)
                 .ok_or_else(&reject)?;
         }
+        if input_images.is_empty() {
+            return Ok(input_images);
+        }
+        // Capability before budget, because on a route with no declared image input these are the
+        // same condition and only one of them explains it. The owner sets the multimodal ceiling to
+        // an exact zero precisely when the route does not declare `image_input`, so checking the
+        // budget first reported "Multimodal context used N tokens, exceeding its 0-token ceiling"
+        // and the purpose-built message below -- which names the actual cause, and carries the
+        // `image_input_unsupported` lifecycle event -- was unreachable.
+        //
+        // That mattered beyond wording: the budget refusal's suggested next step is to raise
+        // `multimodal_token_budget`, and against an owner-pinned exact zero that override itself
+        // fails closed with "active tunable resolution failed closed". The operator was told to do
+        // something that cannot work, for a reason that was not the reason.
+        if !self.provider.supports_image_input() {
+            self.lifecycle_event(
+                "context.source.rejected",
+                Some(TurnId(self.seq_turn)),
+                LifecyclePayload {
+                    count: Some(u64::try_from(input_images.len()).unwrap_or(u64::MAX)),
+                    reason_code: Some("image_input_unsupported".into()),
+                    ..LifecyclePayload::default()
+                },
+            );
+            return Err(KernelError::InvalidSubmission(iteron_tunables::param_str(
+                "cli.runtime.image_input_unsupported_reason",
+                IMAGE_INPUT_UNSUPPORTED_REASON,
+            )));
+        }
         let estimated_tokens = input_images.iter().fold(0usize, |total, image| {
             total.saturating_add(
                 self.context_estimator
                     .estimate_image(image.data.encoded_len()),
             )
         });
+        // Reached only on a route that does accept images, so the ceiling here is the owner's real
+        // share of the window and the refusal's "raise it" advice is advice that works.
         self.context_budget_policy
             .admit_multimodal(estimated_tokens)
             .map_err(|error| KernelError::ContextBudget(error.to_string()))?;
-        if input_images.is_empty() || self.provider.supports_image_input() {
-            return Ok(input_images);
-        }
-        self.lifecycle_event(
-            "context.source.rejected",
-            Some(TurnId(self.seq_turn)),
-            LifecyclePayload {
-                count: Some(u64::try_from(input_images.len()).unwrap_or(u64::MAX)),
-                reason_code: Some("image_input_unsupported".into()),
-                ..LifecyclePayload::default()
-            },
-        );
-        Err(KernelError::InvalidSubmission(iteron_tunables::param_str(
-            "cli.runtime.image_input_unsupported_reason",
-            IMAGE_INPUT_UNSUPPORTED_REASON,
-        )))
+        Ok(input_images)
     }
 
     /// The system prompt for a turn: the base plus ONCE-resolved context (REC-INJECT).
