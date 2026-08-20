@@ -275,6 +275,24 @@ impl Viewer {
                 KeyCode::Char('f') if modifiers.contains(KeyModifiers::CONTROL) => {
                     self.editing_query = true;
                 }
+                // These change how the already-loaded blocks are drawn and nothing else: no
+                // snapshot is read, no revision is quoted, no effect is emitted. Holding them
+                // until the index settles made the viewer silently ignore a keypress on exactly
+                // the machines where indexing is slow -- press `r` on a busy host and the view
+                // stayed pretty while a notice claimed effects were pending, which is not what
+                // `r` does. The keys that DO quote a revision (`y`, `e`, `E`) still fall through
+                // to the notice below, because for those the wait is the point.
+                KeyCode::Char('r') => {
+                    self.raw = !self.raw;
+                    self.invalidate_detail_intent();
+                    self.scroll = 0;
+                }
+                KeyCode::Down | KeyCode::Char('j') => self.move_selection(1),
+                KeyCode::Up | KeyCode::Char('k') => self.move_selection(-1),
+                KeyCode::PageUp => self.scroll_up(10),
+                KeyCode::PageDown => self.scroll_down(10),
+                KeyCode::Home | KeyCode::Char('g') => self.select_edge(false),
+                KeyCode::End | KeyCode::Char('G') => self.select_edge(true),
                 _ => self.set_notice("transcript index is updating; snapshot effects are pending"),
             }
             return None;

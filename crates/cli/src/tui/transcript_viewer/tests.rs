@@ -729,3 +729,74 @@ fn filtered_and_all_export_share_the_same_semantic_snapshot_builder() {
     assert!(all.starts_with("# Iteron transcript\n\n"));
     assert!(filtered.starts_with("# Iteron transcript\n\n"));
 }
+
+/// A view-only key must not be dropped while the index is still catching up.
+///
+/// `work_pending()` used to swallow every key except close and search, answering with a notice
+/// that "snapshot effects are pending". `r` emits no effect and quotes no revision -- it flips how
+/// the already-loaded blocks are drawn -- so on a slow host the viewer silently stayed in `pretty`
+/// while claiming the press was about pending effects.
+///
+/// That reached CI as a flake rather than a bug report: `tui_pty`'s transcript-viewer case sends
+/// `/你好\r` then `r`, and on the `rust / ubuntu-24.04` runner the search job was still live when
+/// the `r` arrived. It timed out after 450 seconds waiting for a state the viewer would never
+/// enter, on two unrelated pull requests, while passing locally in 8.9 seconds.
+#[test]
+fn view_only_keys_apply_while_the_index_is_still_working() {
+    let blocks = vec![user(1, "first needle"), user(2, "second needle")];
+    let mut viewer = Viewer::default();
+    viewer.open("needle", &blocks, 1);
+    assert!(
+        viewer.work_pending(),
+        "the fixture must reach the branch under test: opening starts an index job"
+    );
+
+    // Leave the query editor the way the operator does, with Enter. This is the exact sequence
+    // the PTY case sends (`/needle\r` then `r`) and the state it lands in: the search is
+    // committed, its job is still running, and the next key is a view key.
+    viewer.key(KeyCode::Enter, KeyModifiers::NONE, &blocks, 1);
+    assert!(!viewer.editing_query);
+    assert!(viewer.work_pending(), "the search job must still be live");
+
+    let before = viewer.raw;
+    viewer.key(KeyCode::Char('r'), KeyModifiers::NONE, &blocks, 1);
+    assert_ne!(
+        viewer.raw, before,
+        "`r` toggles a local view flag and must apply while indexing"
+    );
+
+    // Navigation is the same class of key. There is nothing to select yet -- the index has not
+    // produced entries -- so the assertion is that the key was handled rather than swallowed by
+    // the notice branch, which is what `r` above proves for the flag and this proves for the
+    // notice: a view key must not leave the "snapshot effects are pending" text behind.
+    viewer.notice.clear();
+    viewer.key(KeyCode::Char('j'), KeyModifiers::NONE, &blocks, 1);
+    assert!(
+        viewer.notice.is_empty(),
+        "`j` is a view key and must not answer with the pending-effects notice: {}",
+        viewer.notice
+    );
+}
+
+/// And a key that does quote a revision still waits, because for those the wait is the point.
+#[test]
+fn effect_keys_still_wait_for_the_index() {
+    let blocks = vec![user(1, "first needle"), user(2, "second needle")];
+    let mut viewer = Viewer::default();
+    viewer.open("needle", &blocks, 1);
+    viewer.key(KeyCode::Enter, KeyModifiers::NONE, &blocks, 1);
+    assert!(viewer.work_pending());
+
+    assert!(
+        viewer
+            .key(KeyCode::Char('y'), KeyModifiers::NONE, &blocks, 1)
+            .is_none(),
+        "a copy quotes a snapshot revision, so it must not be served from a stale index"
+    );
+    assert!(
+        viewer
+            .key(KeyCode::Char('e'), KeyModifiers::NONE, &blocks, 1)
+            .is_none(),
+        "an export quotes a snapshot revision, so it must not be served from a stale index"
+    );
+}
