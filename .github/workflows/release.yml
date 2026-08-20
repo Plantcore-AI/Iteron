@@ -770,6 +770,7 @@ jobs:
             tool-suffix: ""
             archive-suffix: tar.gz
             binary: iteron
+            timeout-minutes: 60
           - runner: '["self-hosted","Linux","ARM64","dgx-release-arm64"]'
             host: linux-arm64
             target: aarch64-unknown-linux-musl
@@ -777,6 +778,7 @@ jobs:
             tool-suffix: ""
             archive-suffix: tar.gz
             binary: iteron
+            timeout-minutes: 60
           - runner: '["self-hosted","Linux","ARM64","dgx-release-x86"]'
             host: linux-arm64
             target: x86_64-unknown-linux-musl
@@ -784,6 +786,7 @@ jobs:
             tool-suffix: ""
             archive-suffix: tar.gz
             binary: iteron
+            timeout-minutes: 60
           # A self-hosted label that no machine answers does not fail: it queues forever, so
           # `build` never completes and `publish` never runs. The company Windows machine is not
           # registered yet, so this leg resolves its labels from a repository variable and falls
@@ -799,8 +802,9 @@ jobs:
             tool-suffix: .exe
             archive-suffix: zip
             binary: iteron.exe
+            timeout-minutes: 120
     runs-on: ${{ fromJSON(matrix.runner) }}
-    timeout-minutes: 60
+    timeout-minutes: ${{ matrix.timeout-minutes }}
     defaults:
       run:
         shell: bash
