@@ -20,6 +20,11 @@ pub enum PersistentBackend {
     LinuxBubblewrapPty,
     MacOsSeatbeltPipes,
     MacOsSeatbeltPty,
+    /// No sandbox: the child runs with the invoking account's own authority, using the workspace
+    /// only as its working directory. This is what an `unconfined` confinement asks for, and the
+    /// receipt has to be able to say so -- a run that reports `macos-seatbelt-pty` when nothing
+    /// was confined is a receipt that describes a different process than the one that ran.
+    DirectPty,
 }
 
 impl PersistentBackend {
@@ -29,6 +34,7 @@ impl PersistentBackend {
             Self::LinuxBubblewrapPty => "linux-bubblewrap-pty",
             Self::MacOsSeatbeltPipes => "macos-seatbelt-pipes",
             Self::MacOsSeatbeltPty => "macos-seatbelt-pty",
+            Self::DirectPty => "direct-pty",
         }
     }
 }
