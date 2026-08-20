@@ -431,14 +431,18 @@ fn add_context_constraints(
         "$",
         ExternalCeiling::ContextWindow,
     );
-    super::value::domain(
+    upper(
         builder,
         "retrieval_recency_decay",
         "$",
-        ExternalCeiling::TenantScope,
-        [dec(1, 0)],
+        ExternalCeiling::ContextWindow,
+        dec(1, 0),
     )?;
-    report.constrained("retrieval_recency_decay", "$", ExternalCeiling::TenantScope);
+    report.constrained(
+        "retrieval_recency_decay",
+        "$",
+        ExternalCeiling::ContextWindow,
+    );
     upper(
         builder,
         "context_novelty_dedup_threshold",

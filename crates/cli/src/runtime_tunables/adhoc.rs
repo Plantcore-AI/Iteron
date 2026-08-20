@@ -393,6 +393,15 @@ pub(crate) fn render_effect(document: &ProfileDocument) -> String {
     out
 }
 
+/// Explain an invocation that intentionally carries no overrides. `--tunables-explain` is a
+/// standalone read, so the absence of a profile must not fall through into TUI startup and fail
+/// merely because stdout is not a terminal.
+pub(crate) fn render_noop_effect() -> String {
+    let mut document = empty_document();
+    document.profile_id = "adhoc/no-overrides".to_owned();
+    render_effect(&document)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -444,5 +453,13 @@ mod tests {
         let (pinned, pinned_origin) = loaded.unwrap().expect("pinned profile is present");
         assert_eq!(pinned_origin, ProfileOrigin::PinnedFile);
         assert_eq!(pinned, document);
+    }
+
+    #[test]
+    fn no_override_explain_is_a_complete_standalone_receipt() {
+        assert_eq!(
+            render_noop_effect(),
+            "profile `adhoc/no-overrides` — 0 family value(s), 0 parameter(s), 0 artifact(s)\n"
+        );
     }
 }

@@ -56,8 +56,8 @@ pub(super) const DEFAULTS: [DefaultSpec; 75] = [
         "hybrid_retrieval_fusion_weights",
         map_value!("lexical" => decimal_value!(1, 0))
     ), // 105
-    derived_default_with_value!("retrieval_recency_decay", decimal_value!(1, 0)), // 106
-    derived_default_with_value!("context_novelty_dedup_threshold", decimal_value!(1, 0)), // 107
+    derived_default_with_value!("retrieval_recency_decay", decimal_value!(98, 2)), // 106
+    derived_default_with_value!("context_novelty_dedup_threshold", decimal_value!(85, 2)), // 107
     dynamic_observation_default!("process.backend"), // 108 persistent_pty_backend
     dynamic_observation_default!("process.background_job_cap"), // 109 concurrent_background_job_cap
     dynamic_observation_default!("process.idle_stall_timeout"), // 110
@@ -151,7 +151,7 @@ pub(super) const DEFAULTS: [DefaultSpec; 75] = [
     derived_default_with_value!(
         "mcp_result_cap_spill_policy",
         object_value!(
-            "visible_max_bytes" => integer_value!(1_048_576),
+            "visible_max_bytes" => integer_value!(65_536),
             "spill_max_bytes" => integer_value!(4_194_304),
             "cleanup" => enum_value!("session_end"),
             "private_storage" => boolean_value!(true),

@@ -712,10 +712,7 @@ mod tests {
     fn d4_14_g2_one_typed_budget_controls_capture_and_rendering() {
         let owner = crate::ObservationToolPolicy::default().shell;
         let default = ShellOutputBudget::from_policy(owner, &serde_json::json!({})).unwrap();
-        assert_eq!(
-            default.stdout_bytes,
-            Confinement::UNCONFINED_MAX_OUTPUT_BYTES
-        );
+        assert_eq!(default.stdout_bytes, owner.stdout_max_bytes);
         assert_eq!(default.stderr_bytes, owner.stderr_max_bytes);
         assert_eq!(default.timeout_seconds, owner.timeout_seconds);
 

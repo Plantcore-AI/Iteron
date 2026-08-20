@@ -368,10 +368,15 @@ impl Agent {
         {
             return Err(KernelError::UnpricedUsdCeiling);
         }
-        // Preserve the fallback's exact attested capability. Admission and compaction derive the
-        // same bounded execution window as primary-route composition from these two route facts.
+        // Preserve the fallback's exact attested context capability, but install the governed
+        // interactive request default rather than mistaking its physical output maximum for a
+        // per-turn reservation. The route object retains that maximum as capability evidence.
         self.model_context_window = route.context_window_tokens;
-        self.model_max_output_tokens = route.max_output_tokens;
+        self.model_max_output_tokens = Some(
+            crate::runtime_tunables::core_facts::default_request_output_tokens(
+                route.max_output_tokens,
+            ),
+        );
         Ok(route)
     }
 

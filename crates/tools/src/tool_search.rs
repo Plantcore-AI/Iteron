@@ -16,7 +16,7 @@ pub(crate) const TOOL_SEARCH: &str = "tool_search";
 pub const DEFAULT_DEFERRED_TOOL_EAGER_LIMIT: usize = 4;
 /// Schemas returned by one `tool_search` call when the model names no `limit`, kept well under
 /// [`MAX_SEARCH_RESULTS`] so an unscoped search cannot flood the next request.
-const DEFAULT_SEARCH_RESULTS: usize = 8;
+const DEFAULT_SEARCH_RESULTS: usize = 4;
 const MAX_QUERY_BYTES: usize = 256;
 const MAX_SEARCH_RESULTS: usize = 32;
 /// The stable ordinary coding surface. Specialised schemas remain one `tool_search` away, while
@@ -26,10 +26,20 @@ const CORE_EAGER_TOOLS: &[&str] = &[
     "read_file",
     "write_file",
     "edit",
+    "apply_patch",
     "bash",
+    // `bash` may yield a live session. Its continuation/cancellation surface must already be
+    // callable on the very next turn; requiring a tool-search round here invites duplicate test
+    // launches and stranded child processes.
+    "process_poll",
+    "process_stop",
     "grep",
     "glob",
     "list_dir",
+    // The base prompt requires a final diff review. Hiding that exact tool behind discovery made
+    // the prompt manufacture an avoidable provider round on ordinary coding tasks.
+    "git_diff",
+    "git_status",
 ];
 
 #[derive(Clone, Default)]
@@ -129,26 +139,21 @@ impl DeferredToolCatalog {
             .into_iter()
             .filter(|name| {
                 name != iteron_tunables::param_str("tools.tool_search.tool_search", TOOL_SEARCH)
+                    && !state.exposed.contains(name)
             })
             .take(limit)
             .collect::<Vec<_>>();
         for name in &names {
             state.exposed.insert(name.clone());
         }
-        let tools = names
-            .iter()
-            .filter_map(|name| state.specs.get(name))
-            .map(|spec| {
-                serde_json::json!({
-                    "name": spec.name,
-                    "description": spec.description,
-                    "input_schema": spec.input_schema,
-                })
-            })
-            .collect::<Vec<_>>();
+        // The provider cannot call a newly exposed schema in the response that requested this
+        // search. On the next turn the exact ToolSpec is advertised in the normal `tools` field,
+        // so copying the full description and JSON schema into this ToolResult only duplicates it
+        // in that request. Names are enough to make the transition observable and keep discovery
+        // output proportional to the result count rather than schema size.
         serde_json::to_string(&serde_json::json!({
-            "tools": tools,
-            "note": "These admitted schemas are visible on the next model turn.",
+            "exposed_tools": names,
+            "note": "Exact schemas are visible on the next model turn; already-visible tools are omitted.",
         }))
         .map_err(|_| "tool catalog serialization failed")
     }
@@ -298,7 +303,8 @@ mod tests {
             })
             .await;
         assert!(!result.content.contains("\"bash\""));
-        assert!(result.content.contains("read_file"));
+        let payload: serde_json::Value = serde_json::from_str(&result.content).unwrap();
+        assert_eq!(payload["exposed_tools"], serde_json::json!([]));
     }
 
     #[test]
@@ -339,5 +345,82 @@ mod tests {
         let visible = registry.specs_for_task(&admitted, "", Some(1));
         assert!(visible.iter().any(|spec| spec.name == "read_file"));
         assert!(!visible.iter().any(|spec| spec.name == "bash"));
+    }
+
+    #[test]
+    fn eager_coding_surface_contains_continuations_and_stays_bounded() {
+        let registry = Registry::coding_agent(std::env::temp_dir()).unwrap();
+        let admitted = registry
+            .specs()
+            .into_iter()
+            .map(|spec| spec.name)
+            .collect::<BTreeSet<_>>();
+        let visible = registry.specs_for_task(&admitted, "repair a failing test", Some(1));
+        for required in [
+            "apply_patch",
+            "bash",
+            "process_poll",
+            "process_stop",
+            "git_diff",
+            "git_status",
+        ] {
+            assert!(
+                visible.iter().any(|spec| spec.name == required),
+                "{required}"
+            );
+        }
+        let schema_bytes = visible.iter().fold(0usize, |total, spec| {
+            total
+                .saturating_add(spec.name.len())
+                .saturating_add(spec.description.len())
+                .saturating_add(spec.input_schema.to_string().len())
+        });
+        assert!(schema_bytes <= 48 * 1024, "{schema_bytes}");
+    }
+
+    #[tokio::test]
+    async fn discovery_returns_only_new_names_without_duplicating_schemas() {
+        let registry = Registry::coding_agent(std::env::temp_dir()).unwrap();
+        let admitted = registry
+            .specs()
+            .into_iter()
+            .map(|spec| spec.name)
+            .collect::<BTreeSet<_>>();
+        let initial = registry.specs_for_task(&admitted, "inspect and repair", Some(1));
+        let initially_visible = initial
+            .iter()
+            .map(|spec| spec.name.as_str())
+            .collect::<BTreeSet<_>>();
+
+        let first = registry
+            .run(ToolUse {
+                id: "compact-search-1".into(),
+                name: TOOL_SEARCH.into(),
+                input: serde_json::json!({"query":"tool", "limit":32}),
+            })
+            .await;
+        let payload: serde_json::Value = serde_json::from_str(&first.content).unwrap();
+        let exposed = payload["exposed_tools"].as_array().unwrap();
+        assert!(!exposed.is_empty());
+        assert!(
+            exposed
+                .iter()
+                .all(|name| !initially_visible.contains(name.as_str().unwrap())),
+            "an already-visible schema must not be returned again"
+        );
+        assert!(payload.get("tools").is_none());
+        assert!(!first.content.contains("input_schema"));
+        assert!(first.content.len() < 1_024, "{}", first.content.len());
+
+        let second = registry
+            .run(ToolUse {
+                id: "compact-search-2".into(),
+                name: TOOL_SEARCH.into(),
+                input: serde_json::json!({"query":"tool", "limit":32}),
+            })
+            .await;
+        let second: serde_json::Value = serde_json::from_str(&second.content).unwrap();
+        let second = second["exposed_tools"].as_array().unwrap();
+        assert!(exposed.iter().all(|first| !second.contains(first)));
     }
 }

@@ -2605,7 +2605,7 @@ impl Agent {
                 crate::runtime_tunables::provider_process_facts::effective_execution_context_window(
                     window,
                     self.model_max_output_tokens.unwrap_or(
-                        crate::runtime_tunables::core_facts::UNKNOWN_MODEL_OUTPUT_TOKENS,
+                        crate::runtime_tunables::core_facts::DEFAULT_REQUEST_OUTPUT_TOKENS,
                     ),
                 )
             })
@@ -3067,12 +3067,12 @@ impl Agent {
             }
             let effective_system = self.effective_system();
             let tool_specs = self.advertised_tool_specs_for_task(relevance_task);
-            // A declared capability is the route's own documented ceiling, so it is used as
-            // declared. 8192 remains the conservative default for an UNKNOWN capability only —
-            // clamping the declared value froze every provider at that default (I-02).
+            // This is the checkpointed coding-request reservation. The provider's documented
+            // maximum is an external ceiling applied during composition, not the amount every
+            // ordinary tool turn should reserve by default.
             let request_max_tokens = self
                 .model_max_output_tokens
-                .unwrap_or(crate::runtime_tunables::core_facts::UNKNOWN_MODEL_OUTPUT_TOKENS);
+                .unwrap_or(crate::runtime_tunables::core_facts::DEFAULT_REQUEST_OUTPUT_TOKENS);
             // One context accounting pass per turn, shared by the kernel token ledger and the
             // context-window admission check below (I-60). Recomputed only when compaction
             // actually rewrote the transcript underneath it.
@@ -4611,6 +4611,8 @@ impl Agent {
                 },
             );
             let total_tools = pure.len() + deferred.len();
+            let result_projection_budget =
+                self.turn_result_projection_budget(context_budget_inspection, &returned_tools);
             if total_tools > 0 {
                 agent_loop.transition(AgentLoopState::AwaitingTool)?;
             }
@@ -5138,7 +5140,7 @@ impl Agent {
                 self.settle_early_pure_hook_effects(turn_id, hook_effect_tickets, hook_summary)?;
                 match joined {
                     Some(Ok(EarlyPureToolOutcome::Completed {
-                        managed,
+                        mut managed,
                         spill_store,
                         hook,
                     })) => {
@@ -5149,6 +5151,14 @@ impl Agent {
                         // which holds no mutable borrow of the rollout. Pure reads have no
                         // externally visible effect by construction, so their durable admission
                         // may be written here after overlap but before the outcome is committed.
+                        if managed
+                            .project_visible(result_projection_budget.visible_bytes_for(&tu.name))
+                        {
+                            self.observe_tool_result_projection(
+                                turn_id,
+                                managed.result.content.len(),
+                            );
+                        }
                         let ticket =
                             self.open_tool_call_effect(turn_id, idx, &tu, Capability::ReadOnly)?;
                         let r = &managed.result;
@@ -5258,6 +5268,7 @@ impl Agent {
                         turn_id,
                         batch,
                         &effecting_governor,
+                        result_projection_budget,
                         &mut results,
                         &mut any_error,
                     )
@@ -5607,6 +5618,10 @@ impl Agent {
                     };
                     let spill_store = self.ordinary_tool_spill_store(&tu.name);
                     let mut managed = tool_output_spill::manage_result(spill_store.as_deref(), r);
+                    if managed.project_visible(result_projection_budget.visible_bytes_for(&tu.name))
+                    {
+                        self.observe_tool_result_projection(turn_id, managed.result.content.len());
+                    }
                     self.commit_admitted_tool_result(ticket, &tu.name, &managed.result, 0)?;
                     any_error |= managed.result.is_error;
                     tool_output_spill::cleanup_managed_result(
@@ -5686,6 +5701,10 @@ impl Agent {
                     };
                     let spill_store = self.ordinary_tool_spill_store(&tu.name);
                     let mut managed = tool_output_spill::manage_result(spill_store.as_deref(), r);
+                    if managed.project_visible(result_projection_budget.visible_bytes_for(&tu.name))
+                    {
+                        self.observe_tool_result_projection(turn_id, managed.result.content.len());
+                    }
                     self.commit_admitted_tool_result(call_ticket, &tu.name, &managed.result, 0)?;
                     any_error |= managed.result.is_error;
                     tool_output_spill::cleanup_managed_result(
@@ -5784,8 +5803,23 @@ impl Agent {
                     turn_activity::ActivityStage::ToolPostProcessing,
                     Some(turn_id),
                 );
-                let managed =
+                let mut managed =
                     tool_output_spill::manage_execution(spill_store.as_deref(), execution);
+                let projected = match &mut managed {
+                    tool_output_spill::ManagedToolExecution::Definite(result)
+                    | tool_output_spill::ManagedToolExecution::Unknown(result) => {
+                        result.project_visible(result_projection_budget.visible_bytes_for(&tu.name))
+                    }
+                };
+                if projected {
+                    let visible = match &managed {
+                        tool_output_spill::ManagedToolExecution::Definite(result)
+                        | tool_output_spill::ManagedToolExecution::Unknown(result) => {
+                            result.result.content.len()
+                        }
+                    };
+                    self.observe_tool_result_projection(turn_id, visible);
+                }
                 let (mut execution, mut result_spill_lease) =
                     tool_output_spill::into_execution_parts(managed);
                 let result = match &mut execution {
@@ -6441,6 +6475,7 @@ impl Agent {
         turn_id: TurnId,
         batch: Vec<AutoApprovedCall>,
         governor: &iteron_sched::Governor,
+        result_projection_budget: context_runtime::TurnResultProjectionBudget,
         results: &mut [Option<ToolResult>],
         any_error: &mut bool,
     ) -> Result<(), KernelError> {
@@ -6558,6 +6593,7 @@ impl Agent {
             };
             async move {
                 let provider_tool_use_id = intent.call.id.clone();
+                let tool_name = intent.call.name.clone();
                 let _permit = governor.acquire().await;
                 let started = Instant::now();
                 let mut execution = match await_tool_or_interrupt(
@@ -6585,7 +6621,19 @@ impl Agent {
                 }
                 let managed =
                     tool_output_spill::manage_execution(spill_store.as_deref(), execution);
-                (managed, spill_store)
+                let mut managed = managed;
+                let projected = match &mut managed {
+                    tool_output_spill::ManagedToolExecution::Definite(result)
+                    | tool_output_spill::ManagedToolExecution::Unknown(result) => result
+                        .project_visible(result_projection_budget.visible_bytes_for(&tool_name)),
+                };
+                let visible = projected.then_some(match &managed {
+                    tool_output_spill::ManagedToolExecution::Definite(result)
+                    | tool_output_spill::ManagedToolExecution::Unknown(result) => {
+                        result.result.content.len()
+                    }
+                });
+                (managed, spill_store, visible)
             }
         }))
         .await;
@@ -6593,9 +6641,14 @@ impl Agent {
         // Phase three: exactly one terminal per opened intent, in tool order.
         let mut unknown: usize = 0;
         let mut completed = Vec::new();
-        for ((index, call, action_signature, ticket), (execution, spill_store)) in
-            pending.into_iter().zip(executions)
+        for (
+            (index, call, action_signature, ticket),
+            (execution, spill_store, projected_visible),
+        ) in pending.into_iter().zip(executions)
         {
+            if let Some(visible) = projected_visible {
+                self.observe_tool_result_projection(turn_id, visible);
+            }
             let effect_id = ticket.effect_id().clone();
             let (settlement, mut managed, definite) = match execution {
                 tool_output_spill::ManagedToolExecution::Definite(managed) => (

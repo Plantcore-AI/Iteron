@@ -251,7 +251,8 @@ fn all_family_input() -> ResolutionInput {
                 // than manufacturing a resolver-valid checkpoint that every resume rejects.
                 "bm25" => bm25_runtime_policy(),
                 "hybrid_retrieval_fusion_weights" => lexical_memory_weights(),
-                "retrieval_recency_decay" | "context_novelty_dedup_threshold" => decimal(1, 0),
+                "retrieval_recency_decay" => decimal(98, 2),
+                "context_novelty_dedup_threshold" => decimal(85, 2),
                 // The live LSP owner publishes its bounded route catalog inline: the runtime
                 // needs the executable/argument fields to configure the session-owned pool.
                 // `CatalogRef` is a valid schema representation for identity-only governed
@@ -1340,7 +1341,7 @@ fn bm25_runtime_policy() -> ResolutionValue {
         entries: [
             ("k1".to_owned(), decimal(12, 1)),
             ("b".to_owned(), decimal(75, 2)),
-            ("recall_limit".to_owned(), decimal(32, 0)),
+            ("recall_limit".to_owned(), decimal(12, 0)),
         ]
         .into_iter()
         .collect(),

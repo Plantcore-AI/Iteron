@@ -108,7 +108,8 @@ pub(crate) struct EffectiveCoreSettings {
     /// discovered value. Runtime admission derives its separately bounded execution window from
     /// this value plus `request_output_cap`.
     pub model_context_window: Option<u64>,
-    /// Exact provider response cap captured in family 19 after all parent ceilings were applied.
+    /// Exact governed per-request response cap captured in family 19 after provider and parent
+    /// ceilings were applied. This is deliberately distinct from the provider's physical maximum.
     pub request_output_cap: Option<u32>,
     pub context_budget: iteron_ctx::ContextBudgetPolicy,
     pub context_materialization: iteron_ctx::ContextMaterializationPolicy,
@@ -880,7 +881,7 @@ fn decode_context_policies(
 
     let memory = view.object("memory_budgets")?;
     let instruction_discovery = decode_instruction_discovery(view)?;
-    let materialization = iteron_ctx::ContextMaterializationPolicy {
+    let mut materialization = iteron_ctx::ContextMaterializationPolicy {
         max_bytes: iteron_protocol::context::MAX_CONTEXT_GRANT_BYTES,
         memory: iteron_ctx::MemBudget {
             recall_bytes: usizev(
@@ -906,9 +907,7 @@ fn decode_context_policies(
             "skill_listing_budget",
         )?,
         instruction_discovery,
-    }
-    .validate()
-    .map_err(|reason| EffectiveCoreError::InvalidBudget(reason.into()))?;
+    };
     let component_override = |field| {
         component_overrides
             .map(|fields| optional_integer_field(fields, "context_window_override_reserve", field))
@@ -934,6 +933,18 @@ fn decode_context_policies(
                     .saturating_add(materialization.memory.recall_bytes),
             )
         });
+    // The memory store is byte-bounded while provider admission is token-bounded. Fit the index
+    // and recalled bodies to their independently-owned token partition using the conservative
+    // cross-route invariant `estimated tokens <= visible UTF-8 bytes`. This is a general pressure
+    // bridge, not a provider/model exception: a small execution window now scales memory down
+    // instead of failing its first request, while a larger explicit budget preserves the authored
+    // byte limits unchanged.
+    materialization.memory = materialization
+        .memory
+        .fit_content_bytes(budget.memory_tokens);
+    materialization = materialization
+        .validate()
+        .map_err(|reason| EffectiveCoreError::InvalidBudget(reason.into()))?;
     budget.attachment_tokens = component_override("attachment_budget_tokens")?
         .map(|value| usizev(value, "context_window_override_reserve"))
         .transpose()?

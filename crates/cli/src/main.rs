@@ -1339,6 +1339,10 @@ async fn run_cli() -> anyhow::Result<u8> {
             tunables_profile_document = Some(document);
         }
     }
+    if cli.tunables_explain {
+        print!("{}", runtime_tunables::adhoc::render_noop_effect());
+        return Ok(output::EXIT_SUCCESS);
+    }
     if let Some(path) = cli.emit_tunables_profile.as_deref() {
         // Emit what reproduces this run. With no profile loaded the document is empty, which is
         // the correct round-trip: an empty profile resolves to exactly the defaults this run used.
@@ -3181,7 +3185,7 @@ async fn run_cli() -> anyhow::Result<u8> {
                     // a clamp, so the digest names the compaction trigger the run actually used.
                     agent
                         .model_max_output_tokens
-                        .unwrap_or(runtime_tunables::core_facts::UNKNOWN_MODEL_OUTPUT_TOKENS),
+                        .unwrap_or(runtime_tunables::core_facts::DEFAULT_REQUEST_OUTPUT_TOKENS),
                 )
                 .to_string(),
             agent.compaction.keep_recent.to_string(),
@@ -4630,6 +4634,46 @@ fn print_timeline(run: &iteron_protocol::RunId, report: &iteron_obs::timeline::T
                 report.turns.ttft.unmeasured
             );
         }
+    }
+
+    let economy = &report.token_economy;
+    if economy.turns_with_usage > 0 {
+        let equivalent_full_prompts = economy.max_turn_prompt_tokens.and_then(|maximum| {
+            (maximum > 0).then(|| economy.prompt_tokens as f64 / maximum as f64)
+        });
+        println!(
+            "  tokens: prompt={} (input={} cache_read={} cache_create={}) output={} thinking={}",
+            economy.prompt_tokens,
+            economy.input_tokens,
+            economy.cache_read_tokens,
+            economy.cache_creation_tokens,
+            economy.output_tokens,
+            economy.thinking_tokens,
+        );
+        println!(
+            "    prompt first={} last={} max={} growth={} cache_hit={:.1}% replay_amplification={}",
+            economy
+                .first_turn_prompt_tokens
+                .map_or_else(|| "unknown".into(), |value| value.to_string()),
+            economy
+                .last_turn_prompt_tokens
+                .map_or_else(|| "unknown".into(), |value| value.to_string()),
+            economy
+                .max_turn_prompt_tokens
+                .map_or_else(|| "unknown".into(), |value| value.to_string()),
+            economy
+                .prompt_growth_tokens
+                .map_or_else(|| "unknown".into(), |value| value.to_string()),
+            f64::from(economy.cache_hit_ratio_ppm) / 10_000.0,
+            equivalent_full_prompts
+                .map_or_else(|| "unknown".into(), |value| format!("{value:.2}x")),
+        );
+        println!(
+            "    model_visible_tool_results={}B max_result={}B compactions={}",
+            economy.model_visible_tool_result_bytes,
+            economy.max_tool_result_bytes,
+            economy.compactions,
+        );
     }
 
     for (title, table) in [

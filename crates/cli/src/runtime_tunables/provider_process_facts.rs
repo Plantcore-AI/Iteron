@@ -64,10 +64,9 @@ pub(super) fn context_owner_window(
         .context_window_tokens
         .filter(|window| *window > 0)
         .and_then(|window| usize::try_from(window.min(10_000_000)).ok());
-    let output_reserve = input
-        .model_capabilities
-        .max_output_tokens
-        .unwrap_or(super::core_facts::UNKNOWN_MODEL_OUTPUT_TOKENS);
+    let output_reserve = super::core_facts::default_request_output_tokens(
+        input.model_capabilities.max_output_tokens,
+    );
     let output_reserve_usize = usize::try_from(output_reserve)
         .map_err(|_| ProviderProcessFactError::IntegerOverflow("max_output_tokens"))?;
     let attested_or_fallback_window = actual_window.unwrap_or_else(|| {
@@ -89,14 +88,24 @@ pub(super) fn context_owner_window(
 #[cfg(test)]
 mod context_window_tests {
     use super::effective_execution_context_window;
+    use crate::runtime_tunables::core_facts::default_request_output_tokens;
 
     #[test]
     fn effective_context_cap_does_not_rewrite_attested_capability() {
-        let actual_window = Some(1_000_000_u64);
-        let execution_window = effective_execution_context_window(1_000_000, 128_000);
-        assert_eq!(actual_window, Some(1_000_000));
-        assert_eq!(execution_window, 400_000);
-        assert_eq!(execution_window - 128_000, 272_000);
+        let actual_window = Some(1_048_576_u64);
+        let output_reserve = default_request_output_tokens(Some(384_000));
+        let execution_window = effective_execution_context_window(1_048_576, output_reserve);
+        assert_eq!(actual_window, Some(1_048_576));
+        assert_eq!(output_reserve, 8_192);
+        assert_eq!(execution_window, 280_192);
+        assert_eq!(execution_window - u64::from(output_reserve), 272_000);
+    }
+
+    #[test]
+    fn provider_maximum_only_narrows_the_interactive_request_default() {
+        assert_eq!(default_request_output_tokens(Some(384_000)), 8_192);
+        assert_eq!(default_request_output_tokens(Some(4_096)), 4_096);
+        assert_eq!(default_request_output_tokens(None), 8_192);
     }
 
     #[test]

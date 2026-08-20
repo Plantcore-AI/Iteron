@@ -36,9 +36,9 @@ fn usable_window_ratio() -> DecimalValue {
 const SUMMARY_OUTPUT_TOKENS: i64 = 2_048;
 const MEMORY_FACT_BYTES: i64 = 8_000;
 const SKILL_LISTING_BYTES: i64 = 2_000;
-/// Canonical family-19 resolver fallback when selected-route metadata cannot attest an output
-/// ceiling. Every context/compaction fact collector must use this same execution value.
-pub(crate) const UNKNOWN_MODEL_OUTPUT_TOKENS: u32 = 8_192;
+/// Canonical family-19 interactive request default. Provider metadata supplies a physical upper
+/// bound, not a reason to reserve that entire bound on every turn.
+pub(crate) const DEFAULT_REQUEST_OUTPUT_TOKENS: u32 = 8_192;
 /// Stand-in aggregate parent-token budget when the run declares none. An absent budget is
 /// unbounded authority, so the clamp must not shrink the attested output cap below this.
 const ABSENT_PARENT_TOKEN_CEILING: u64 = 1_000_000;
@@ -493,10 +493,10 @@ fn add_internal_defaults(
     input: &CoreFactsInput<'_>,
     report: &mut CoreFactsReport,
 ) -> Result<(), CoreFactError> {
-    // The canonical model-default contract supplies the conservative execution cap when fresh
-    // metadata cannot attest a narrower provider maximum. This value is pinned into the
-    // checkpoint and remains the request value on resume; later provider metadata is only an
-    // upper-ceiling check and never silently replaces it.
+    // The canonical model-default contract supplies the interactive execution cap. Fresh model
+    // metadata can narrow this value but must never replace it with the provider's much larger
+    // physical maximum. The effective value is pinned into the checkpoint and remains the request
+    // value on resume; later provider metadata is only an upper-ceiling check.
     let output_reserve = model_output_reserve(input);
     builder.observe_default(
         "request_output_cap",
@@ -670,6 +670,7 @@ fn add_memory_defaults(
             ("total_bytes", int(i64u(mem.total, "memory_total")?)),
         ]),
     )?;
+    let retrieval = iteron_ctx::MemoryRetrievalPolicy::default();
     let bm25 = map([
         (
             "k1",
@@ -688,7 +689,7 @@ fn add_memory_defaults(
         (
             "recall_limit",
             dec(DecimalValue {
-                coefficient: 32,
+                coefficient: i64::from(retrieval.recall_limit),
                 scale: 0,
             }),
         ),
@@ -716,15 +717,28 @@ fn add_memory_defaults(
     Ok(())
 }
 
+pub(crate) fn default_request_output_tokens(provider_max: Option<u32>) -> u32 {
+    let interactive_default = iteron_tunables::param_integer(
+        "cli.runtime_tunables.core_facts.default_request_output_tokens",
+        DEFAULT_REQUEST_OUTPUT_TOKENS,
+    );
+    provider_max.map_or(interactive_default, |ceiling| {
+        ceiling.min(interactive_default)
+    })
+}
+
 pub(super) fn model_output_reserve(input: &CoreFactsInput<'_>) -> u64 {
+    u64::from(default_request_output_tokens(
+        input.model_capabilities.max_output_tokens,
+    ))
+}
+
+pub(super) fn provider_output_ceiling(input: &CoreFactsInput<'_>) -> u64 {
     u64::from(
         input
             .model_capabilities
             .max_output_tokens
-            .unwrap_or(iteron_tunables::param_integer(
-                "cli.runtime_tunables.core_facts.unknown_model_output_tokens",
-                UNKNOWN_MODEL_OUTPUT_TOKENS,
-            )),
+            .unwrap_or_else(|| default_request_output_tokens(None)),
     )
 }
 

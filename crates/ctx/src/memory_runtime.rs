@@ -8,8 +8,12 @@ pub const SCORE_SCALE: u32 = 1_000_000;
 const DEFAULT_BM25_K1_MILLI: u32 = 1_200;
 /// Okapi BM25 b in parts per million. 0.75 is the standard length-normalization setting.
 const DEFAULT_BM25_B_PPM: u32 = 750_000;
-/// Fact bodies one decision may select before the recall budget is the binding constraint.
-const DEFAULT_RECALL_LIMIT: u32 = 32;
+/// Fact bodies one decision may select before the component budget becomes binding.
+const DEFAULT_RECALL_LIMIT: u32 = 12;
+/// Mild monthly decay: durable facts remain useful, while equally relevant recent evidence wins.
+const DEFAULT_RECENCY_DECAY_PPM: u32 = 980_000;
+/// Near-duplicate facts at or above this token-set similarity add repetition, not evidence.
+const DEFAULT_NOVELTY_DEDUP_THRESHOLD_PPM: u32 = 850_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -50,12 +54,12 @@ impl Default for MemoryRetrievalPolicy {
             vector_weight_ppm: 0,
             reranker_weight_ppm: 0,
             recency_decay_ppm: iteron_tunables::param_integer(
-                "ctx.memory_runtime.score_scale",
-                SCORE_SCALE,
+                "ctx.memory_runtime.default_recency_decay_ppm",
+                DEFAULT_RECENCY_DECAY_PPM,
             ),
             novelty_dedup_threshold_ppm: iteron_tunables::param_integer(
-                "ctx.memory_runtime.score_scale",
-                SCORE_SCALE,
+                "ctx.memory_runtime.default_novelty_dedup_threshold_ppm",
+                DEFAULT_NOVELTY_DEDUP_THRESHOLD_PPM,
             ),
         }
     }
@@ -176,5 +180,14 @@ mod tests {
         assert_eq!(policy.recency_multiplier(0), SCORE_SCALE);
         assert_eq!(policy.recency_multiplier(30 * 24 * 60 * 60), 500_000);
         assert_eq!(policy.recency_multiplier(60 * 24 * 60 * 60), 250_000);
+    }
+
+    #[test]
+    fn coding_defaults_bound_recall_and_remove_redundant_stale_facts() {
+        let policy = MemoryRetrievalPolicy::default();
+        assert_eq!(policy.recall_limit, 12);
+        assert_eq!(policy.recency_decay_ppm, 980_000);
+        assert_eq!(policy.novelty_dedup_threshold_ppm, 850_000);
+        assert!(policy.validate().is_ok());
     }
 }

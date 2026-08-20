@@ -74,6 +74,23 @@ pub(super) struct ContextBudgetInspection {
     violation: Option<iteron_ctx::ContextBudgetViolation>,
 }
 
+/// Per-turn model-visible result caps derived from the remaining component partitions. Physical
+/// tools and private spill retention keep their own independent ceilings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct TurnResultProjectionBudget {
+    tool_result_bytes: usize,
+    lsp_result_bytes: usize,
+}
+
+impl TurnResultProjectionBudget {
+    pub(super) fn visible_bytes_for(self, tool_name: &str) -> usize {
+        match iteron_ctx::result_budget_class(tool_name) {
+            iteron_ctx::ContextBudgetClass::LspResults => self.lsp_result_bytes,
+            _ => self.tool_result_bytes,
+        }
+    }
+}
+
 impl ContextBudgetInspection {
     pub(super) fn violation(self) -> Option<iteron_ctx::ContextBudgetViolation> {
         self.violation
@@ -94,6 +111,10 @@ impl ContextBudgetInspection {
             // compaction. Keep this branch total without pretending image bytes were measured here.
             iteron_ctx::ContextBudgetClass::Multimodal => 0,
         }
+    }
+
+    pub(super) const fn usage(self) -> iteron_ctx::ContextComponentUsage {
+        self.usage
     }
 }
 
@@ -367,6 +388,58 @@ impl Agent {
         let usage = self.context_component_usage(messages, estimate);
         let violation = self.context_budget_policy.admit_components(&usage).err();
         ContextBudgetInspection { usage, violation }
+    }
+
+    /// Allocate the remaining transcript-owned result budgets fairly across the calls emitted in
+    /// this model turn. This runs after the provider terminal, when the complete call set is known,
+    /// but before any result terminal is recorded or appended to the next request.
+    pub(super) fn turn_result_projection_budget(
+        &self,
+        inspection: ContextBudgetInspection,
+        calls: &[iteron_protocol::ToolUse],
+    ) -> TurnResultProjectionBudget {
+        let configured_max = self.tool_output_spill.as_ref().map_or(
+            tool_output_spill::DEFAULT_TOOL_OUTPUT_MEMORY_THRESHOLD_BYTES,
+            |store| store.visible_threshold_bytes(),
+        );
+        let (ordinary, lsp) = calls
+            .iter()
+            .fold((0usize, 0usize), |(ordinary, lsp), call| {
+                if iteron_ctx::result_budget_class(&call.name)
+                    == iteron_ctx::ContextBudgetClass::LspResults
+                {
+                    (ordinary, lsp.saturating_add(1))
+                } else {
+                    (ordinary.saturating_add(1), lsp)
+                }
+            });
+        TurnResultProjectionBudget {
+            tool_result_bytes: self.context_budget_policy.fair_result_visible_bytes(
+                iteron_ctx::ContextBudgetClass::ToolResults,
+                inspection.component_tokens(iteron_ctx::ContextBudgetClass::ToolResults),
+                ordinary,
+                configured_max,
+            ),
+            lsp_result_bytes: self.context_budget_policy.fair_result_visible_bytes(
+                iteron_ctx::ContextBudgetClass::LspResults,
+                inspection.component_tokens(iteron_ctx::ContextBudgetClass::LspResults),
+                lsp,
+                configured_max,
+            ),
+        }
+    }
+
+    pub(super) fn observe_tool_result_projection(&self, turn: TurnId, visible_bytes: usize) {
+        self.lifecycle_event(
+            "context.source.truncated",
+            Some(turn),
+            LifecyclePayload {
+                count: Some(1),
+                magnitude: Some(u64::try_from(visible_bytes).unwrap_or(u64::MAX)),
+                reason_code: Some("tool_result_pressure_projection".into()),
+                ..LifecyclePayload::default()
+            },
+        );
     }
 
     /// Standard payload for component-triggered compaction. `magnitude` is the measured usage of

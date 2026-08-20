@@ -44,8 +44,12 @@ fn cap_and_spill(
     if marker.len() >= visible {
         return Ok(utf8_prefix(&marker, visible).to_owned());
     }
-    let prefix = utf8_prefix(&output, visible - marker.len());
-    Ok(format!("{prefix}{marker}"))
+    let retained = visible - marker.len();
+    let head_bytes = retained / 2;
+    let tail_bytes = retained - head_bytes;
+    let head = utf8_prefix(&output, head_bytes);
+    let tail = utf8_suffix(&output, tail_bytes);
+    Ok(format!("{head}{marker}{tail}"))
 }
 
 fn render_tool_content_with_limit(result: &Value, limit: usize) -> Result<String, McpError> {
@@ -98,6 +102,17 @@ fn utf8_prefix(value: &str, maximum_bytes: usize) -> &str {
     &value[..end]
 }
 
+fn utf8_suffix(value: &str, maximum_bytes: usize) -> &str {
+    if value.len() <= maximum_bytes {
+        return value;
+    }
+    let mut start = value.len() - maximum_bytes;
+    while start < value.len() && !value.is_char_boundary(start) {
+        start += 1;
+    }
+    &value[start..]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -135,14 +150,17 @@ mod tests {
     }
 
     #[test]
-    fn oversized_text_is_privately_spilled_and_only_a_bounded_prefix_is_visible() {
-        let result = json!({"content": [{"type":"text", "text":"界".repeat(80)}]});
+    fn oversized_text_is_privately_spilled_with_bounded_head_and_tail_visible() {
+        let result =
+            json!({"content": [{"type":"text", "text":format!("HEAD{}TAIL", "界".repeat(80))}]});
         let policy = McpResultPolicy::new(128, 1024, crate::McpSpillCleanup::SessionEnd).unwrap();
         let store = McpSpillStore::create().unwrap();
         let rendered = render_tool_content(&result, policy, &store).unwrap();
         assert!(rendered.len() <= 128);
         assert!(rendered.contains("[MCP spill sha256:"));
         assert!(rendered.contains(" session_end]"));
+        assert!(rendered.starts_with("HEAD"));
+        assert!(rendered.ends_with("TAIL\n"));
         assert!(!rendered.contains(std::env::temp_dir().to_string_lossy().as_ref()));
         assert_eq!(store.retained_count(), 1);
         assert!(std::str::from_utf8(rendered.as_bytes()).is_ok());

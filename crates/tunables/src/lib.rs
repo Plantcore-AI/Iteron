@@ -136,7 +136,10 @@ pub const REGISTRY_SCHEMA_VERSION: u16 = 4;
 pub const FAMILY_SCHEMA_VERSION: u16 = 3;
 /// Stable logical registry identity.
 pub const REGISTRY_ID: &str = "iteron-tunables";
-/// Revision of the family set under schema v4. Revision 21 retunes interactive execution,
+/// Revision of the family set under schema v4. Revision 23 makes retrieval recency decay a real
+/// bounded context strategy instead of a tenant-scoped singleton. Revision 22 bounds model-visible observation and
+/// MCP result amplification while preserving private/full evidence and paged reachability.
+/// Revision 21 retunes interactive execution,
 /// provider-tail, context-compaction, and verification defaults as one immutable policy change.
 /// Revision 20 converted fifteen literal-defaulted
 /// families to derived defaults so the Tier-2 parameters that own their production values can
@@ -144,7 +147,7 @@ pub const REGISTRY_ID: &str = "iteron-tunables";
 /// overriding that constant through its Tier-2 handle is precisely what makes the comparison fail.
 /// Revision 19 externalized every non-Pin governed family through the universal profile seam while
 /// retaining immutable Pin admission rules.
-pub const REGISTRY_REVISION: u16 = 21;
+pub const REGISTRY_REVISION: u16 = 23;
 /// Exact family cardinality required by the R0/R1 contract.
 pub const EXPECTED_FAMILY_COUNT: usize = 160;
 /// Canonical byte encoding used as the digest input.
@@ -153,6 +156,6 @@ pub const CANONICALIZATION: &str = "iteron-tunables-json-v4";
 pub const FAMILY_CANONICALIZATION: &str = "core-tunable-family-json-v3";
 /// Digest algorithm for canonical artifacts.
 pub const DIGEST_ALGORITHM: &str = "sha256";
-/// Golden digest for revision 21; metadata changes require an explicit revision and digest update.
+/// Golden digest for revision 23; metadata changes require an explicit revision and digest update.
 pub const REGISTRY_DIGEST_SHA256: &str =
-    "b1e222beae09e6f2d38e557bab940a6a83daf8c24fb3ebe193f54dab3735834c";
+    "d38ed6b9f5d07a87f69b878b03a3855e0ff525946c24e0a627d81d9a78e19cf8";

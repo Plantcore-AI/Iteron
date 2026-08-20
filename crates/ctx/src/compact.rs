@@ -19,6 +19,17 @@
 
 use iteron_protocol::{Block, Message, Role, ToolSpec};
 
+/// Attribute a tool's eventual result to the same independently-owned context partition used by
+/// request estimation. Keeping this classification here prevents the runtime projection policy
+/// and estimator from drifting into different answers.
+pub fn result_budget_class(tool_name: &str) -> crate::ContextBudgetClass {
+    if tool_name == "lsp_query" {
+        crate::ContextBudgetClass::LspResults
+    } else {
+        crate::ContextBudgetClass::ToolResults
+    }
+}
+
 /// Last-resort admission trigger, used ONLY when no model context window is proven and no
 /// window-relative threshold can be derived.
 ///
@@ -849,7 +860,7 @@ fn message_components(
                     .saturating_add(profile.estimate(&state.payload.to_string()) + 8);
             }
             Block::ToolUse(tool) => {
-                if tool.name == "lsp_query" {
+                if result_budget_class(&tool.name) == crate::ContextBudgetClass::LspResults {
                     lsp_tool_ids.insert(tool.id.clone());
                 }
                 estimate.conversation = estimate

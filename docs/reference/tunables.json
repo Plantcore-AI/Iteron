@@ -1,12 +1,12 @@
 {
   "digest": {
     "algorithm": "sha256",
-    "value": "b1e222beae09e6f2d38e557bab940a6a83daf8c24fb3ebe193f54dab3735834c"
+    "value": "d38ed6b9f5d07a87f69b878b03a3855e0ff525946c24e0a627d81d9a78e19cf8"
   },
   "payload": {
     "schema_version": 4,
     "registry_id": "iteron-tunables",
-    "registry_revision": 21,
+    "registry_revision": 23,
     "canonicalization": "iteron-tunables-json-v4",
     "family_count": 160,
     "scalar_catalogs": [
@@ -4775,7 +4775,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "4f546e4930b000a731545ad3a14cfdb3db79625646124f1a0fd8974d1777e327"
+          "value": "a1875588217f77cd922e2650a8b17203ddabe55d87c5ab73209778c31698846c"
         },
         "schema_version": 3,
         "ordinal": 39,
@@ -4822,14 +4822,14 @@
                 "name": "stdout_max_bytes",
                 "value": {
                   "type": "integer",
-                  "value": 8388608
+                  "value": 65536
                 }
               },
               {
                 "name": "stderr_max_bytes",
                 "value": {
                   "type": "integer",
-                  "value": 8388608
+                  "value": 65536
                 }
               }
             ]
@@ -14457,7 +14457,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "3526697943ff16dab5be414bf2eda85d6d1d60e7366ed1d4c8100704f266274d"
+          "value": "dddcd5ba48a0f1d4e805b9909ce18e3c04126e609dcab64fdd5d85ebbd629623"
         },
         "schema_version": 3,
         "ordinal": 106,
@@ -14491,8 +14491,8 @@
           "value": {
             "type": "decimal",
             "value": {
-              "coefficient": 1,
-              "scale": 0
+              "coefficient": 98,
+              "scale": 2
             }
           }
         },
@@ -14536,11 +14536,11 @@
             {
               "type": "external_ceiling",
               "field": "$",
-              "ceiling": "tenant_scope",
+              "ceiling": "context_window",
               "projection": "whole_value",
-              "relation": "attested_domain",
+              "relation": "upper_bound",
               "violation": {
-                "type": "reject"
+                "type": "clamp_numeric"
               }
             }
           ]
@@ -14574,7 +14574,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "529d1acbd57e7964317efc004906ede7f034538e3cb52c446a1d2a4da8888c06"
+          "value": "3b664e6379b94186d4ef9ac2d672e6f0a2d4b032d115f915483137dbf8b6ff78"
         },
         "schema_version": 3,
         "ordinal": 107,
@@ -14610,8 +14610,8 @@
           "value": {
             "type": "decimal",
             "value": {
-              "coefficient": 1,
-              "scale": 0
+              "coefficient": 85,
+              "scale": 2
             }
           }
         },
@@ -20677,7 +20677,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "13c0ca48c8f83af82d7973554b1b6456687df513127da2c047fb291986d18cca"
+          "value": "e5ccba7ec919dfe78deac2066cff0e0869ae5b9f39c2bd61246fe8c1e2b54c5b"
         },
         "schema_version": 3,
         "ordinal": 152,
@@ -20717,7 +20717,7 @@
                 "name": "visible_max_bytes",
                 "value": {
                   "type": "integer",
-                  "value": 1048576
+                  "value": 65536
                 }
               },
               {

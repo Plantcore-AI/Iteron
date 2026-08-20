@@ -242,7 +242,7 @@ impl Agent {
         let trigger = self.compaction.effective_trigger_tokens(
             self.execution_context_window(),
             self.model_max_output_tokens
-                .unwrap_or(crate::runtime_tunables::core_facts::UNKNOWN_MODEL_OUTPUT_TOKENS),
+                .unwrap_or(crate::runtime_tunables::core_facts::DEFAULT_REQUEST_OUTPUT_TOKENS),
         );
         let compaction = iteron_ctx::CompactionEvidence {
             trigger_tokens: u64::try_from(trigger).unwrap_or(u64::MAX),
@@ -267,7 +267,7 @@ impl Agent {
         ledger.model_context_window = self.execution_context_window();
         let output_reserve = self
             .model_max_output_tokens
-            .unwrap_or(crate::runtime_tunables::core_facts::UNKNOWN_MODEL_OUTPUT_TOKENS);
+            .unwrap_or(crate::runtime_tunables::core_facts::DEFAULT_REQUEST_OUTPUT_TOKENS);
         ledger.usable_window = self
             .execution_context_window()
             .map(|window| window.saturating_sub(u64::from(output_reserve)));
@@ -387,12 +387,12 @@ impl Agent {
         {
             return;
         }
-        // Same ceiling rule as the request path: a declared capability is used as declared, and
-        // 8192 is the default for an UNKNOWN one only (#I-02). Clamping here would plan against a
-        // window the route does not actually have.
+        // Use the checkpointed interactive request reservation. Provider metadata is only its
+        // physical upper ceiling; treating that maximum as the routine reservation would make a
+        // large-capability route compact early for output the coding loop did not request.
         let request_max_tokens = self
             .model_max_output_tokens
-            .unwrap_or(crate::runtime_tunables::core_facts::UNKNOWN_MODEL_OUTPUT_TOKENS);
+            .unwrap_or(crate::runtime_tunables::core_facts::DEFAULT_REQUEST_OUTPUT_TOKENS);
         let system = self.effective_system();
         let tools = self.advertised_tool_specs_for_task("");
         // The live working set is the exact projected transcript for an ordinary completed turn.
@@ -411,13 +411,18 @@ impl Agent {
             let trigger = self
                 .compaction
                 .approaching_trigger_tokens(self.execution_context_window(), request_max_tokens);
+            let pressure = self.context_budget_policy.recoverable_pressure(
+                &self.inspect_context_budget(&projected, &estimate).usage(),
+                self.compaction.hysteresis.enter_ratio_ppm,
+            );
             (
                 projected.len() > self.compaction.keep_recent.saturating_add(2)
-                    && estimate.total_tokens > trigger,
+                    && (estimate.total_tokens > trigger || pressure.is_some()),
                 projected,
+                pressure,
             )
         });
-        if prechecked.as_ref().is_some_and(|(needed, _)| !needed) {
+        if prechecked.as_ref().is_some_and(|(needed, _, _)| !needed) {
             return;
         }
         // Plan against the durable projected transcript only after the cheap precheck says a
@@ -426,9 +431,12 @@ impl Agent {
         let Ok(messages) = Self::messages_from_rollout(&path) else {
             return;
         };
-        let plan = match prechecked {
-            Some((true, _)) => self.compaction.force_plan(&messages),
-            Some((false, _)) => None,
+        let planned = match prechecked {
+            Some((true, _, pressure)) => self
+                .compaction
+                .force_plan(&messages)
+                .map(|plan| (plan, pressure)),
+            Some((false, _, _)) => None,
             None => {
                 let estimate = self.context_estimator.estimate_with_tool_tokens(
                     &system,
@@ -442,24 +450,41 @@ impl Agent {
                     self.execution_context_window(),
                     request_max_tokens,
                 );
+                let pressure = self.context_budget_policy.recoverable_pressure(
+                    &self.inspect_context_budget(&messages, &estimate).usage(),
+                    self.compaction.hysteresis.enter_ratio_ppm,
+                );
                 if messages.len() > self.compaction.keep_recent.saturating_add(2)
-                    && estimate.total_tokens > trigger
+                    && (estimate.total_tokens > trigger || pressure.is_some())
                 {
-                    self.compaction.force_plan(&messages)
+                    self.compaction
+                        .force_plan(&messages)
+                        .map(|plan| (plan, pressure))
                 } else {
                     None
                 }
             }
         };
-        let Some(plan) = plan else { return };
+        let Some((plan, component_pressure)) = planned else {
+            return;
+        };
+        let considered_payload = component_pressure.map_or_else(
+            || LifecyclePayload {
+                count: Some(u64::try_from(plan.to_summarize.len()).unwrap_or(u64::MAX)),
+                ..LifecyclePayload::default()
+            },
+            |pressure| LifecyclePayload {
+                reason_code: Some(pressure.class.reason_code().into()),
+                count: Some(u64::try_from(pressure.ceiling).unwrap_or(u64::MAX)),
+                magnitude: Some(u64::try_from(pressure.used).unwrap_or(u64::MAX)),
+                ..LifecyclePayload::default()
+            },
+        );
         let Ok(report) = self
             .brokered_lifecycle_gate(
                 TurnId(self.seq_turn),
                 "context.compaction.considered",
-                LifecyclePayload {
-                    count: Some(u64::try_from(plan.to_summarize.len()).unwrap_or(u64::MAX)),
-                    ..LifecyclePayload::default()
-                },
+                considered_payload,
             )
             .await
         else {
@@ -506,7 +531,7 @@ impl Agent {
                     &messages,
                     &plan,
                     &summary,
-                    "turn_end",
+                    component_pressure.map_or("turn_end", |pressure| pressure.class.reason_code()),
                     self.compaction.coverage_check && covered,
                 );
                 // The in-memory working set was captured by `drive_admitted` BEFORE this ran, so it

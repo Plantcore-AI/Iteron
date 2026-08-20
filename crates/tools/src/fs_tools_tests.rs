@@ -282,7 +282,11 @@ async fn d3_06_g4_small_whole_file_and_schema_remain_explicit() {
         .find(|spec| spec.name == "read_file")
         .unwrap();
     assert!(spec.description.contains("optional 1-based first line"));
-    assert!(spec.description.contains("capped at 400000 bytes"));
+    let output_ceiling = ObservationToolPolicy::default().read_file.output_max_bytes;
+    assert!(
+        spec.description
+            .contains(&format!("capped at {output_ceiling} bytes"))
+    );
     assert_eq!(spec.input_schema["properties"]["offset"]["type"], "integer");
     assert_eq!(spec.input_schema["properties"]["offset"]["minimum"], 1);
     assert_eq!(spec.input_schema["properties"]["limit"]["type"], "integer");

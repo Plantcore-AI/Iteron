@@ -4188,7 +4188,7 @@ mod gate_integration_tests {
         // The executor future is `pending`, so without cancellation this never returns: the
         // bound proves the interrupt lands, it does not measure latency. One second was tight
         // enough that a loaded machine failed it while the feature worked.
-        let (outcome, ()) = tokio::time::timeout(Duration::from_secs(5), async {
+        let (outcome, ()) = tokio::time::timeout(Duration::from_secs(20), async {
             tokio::join!(agent.run("run concurrent effects"), request_interrupt)
         })
         .await
@@ -11868,14 +11868,13 @@ ant-api03-SuperSecretModelToken12345"
 
     /// Regression for the 0.0.14 failure where six successful tool rounds accumulated more than
     /// the independently-owned 18k ToolResults ceiling and the seventh model round was refused
-    /// locally. A recoverable component overflow must buy exactly one summary, re-admit the
-    /// rebuilt transcript, and return control to the original task.
+    /// locally. The general pressure controller now fits each new result into the remaining
+    /// partition, so the seventh request is admitted directly without buying a summary round.
     #[tokio::test]
-    async fn tool_result_budget_overflow_compacts_once_before_the_seventh_model_round() {
+    async fn tool_result_pressure_projects_before_the_seventh_model_round() {
         const TOOL_RESULT_CEILING: usize = 18_000;
         const TOOL_RESULT_BYTES_PER_ROUND: usize = 10_000;
         const TOOL_ROUNDS: usize = 6;
-        const COMPONENT_REASON: &str = "context_budget_tool_results";
 
         #[derive(Default)]
         struct SeventhRoundProvider {
@@ -11964,7 +11963,7 @@ ant-api03-SuperSecretModelToken12345"
             provider.clone(),
             registry,
             rollout,
-            "deepseek-chat".into(),
+            "generic-coding-model".into(),
             "sys".into(),
             Budget {
                 max_turns: 12,
@@ -12002,21 +12001,17 @@ ant-api03-SuperSecretModelToken12345"
         );
         assert_eq!(
             provider.summary_requests.load(Ordering::SeqCst),
-            1,
-            "the component bridge is one-shot"
+            0,
+            "admission-side result projection avoids a synchronous summary request"
         );
         let requests = provider.requests.lock().unwrap().clone();
-        assert_eq!(requests.len(), TOOL_ROUNDS + 2);
+        assert_eq!(requests.len(), TOOL_ROUNDS + 1);
         assert!(requests[..TOOL_ROUNDS]
             .iter()
             .all(|request| !request.tools.is_empty()));
         assert!(
-            requests[TOOL_ROUNDS].tools.is_empty(),
-            "component recovery is the one tool-free summary request"
-        );
-        assert!(
-            !requests[TOOL_ROUNDS + 1].tools.is_empty(),
-            "the original seventh request is re-admitted after recovery"
+            !requests[TOOL_ROUNDS].tools.is_empty(),
+            "the original seventh request is admitted without an intermediate summary"
         );
 
         let durable = iteron_record::replay(agent.rollout.path()).unwrap();
@@ -12025,8 +12020,8 @@ ant-api03-SuperSecretModelToken12345"
                 .iter()
                 .filter(|event| matches!(event.kind, EventKind::Compaction { .. }))
                 .count(),
-            1,
-            "one overflow produces one durable transcript rewrite"
+            0,
+            "bounded result admission prevents the overflow instead of repairing it later"
         );
         assert!(durable.iter().any(|event| matches!(
             &event.kind,
@@ -12053,15 +12048,18 @@ ant-api03-SuperSecretModelToken12345"
                 .filter(|block| matches!(block, Block::ToolResult(_)))
                 .count(),
             TOOL_ROUNDS,
-            "all six successful tool results exist before recovery"
+            "all six successful tool results remain structurally visible"
         );
+        assert!(before_messages.iter().any(|message| message.content.iter().any(
+            |block| matches!(block, Block::ToolResult(result) if result.content.contains("tool output context projection"))
+        )));
         let mut before_estimator =
-            iteron_ctx::RequestEstimator::for_route(None, "deepseek-chat");
+            iteron_ctx::RequestEstimator::for_route(None, "generic-coding-model");
         let before_tool_results = before_estimator
             .estimate("sys", &before_messages, &[])
             .tool_result_tokens;
         let mut fifth_result_estimator =
-            iteron_ctx::RequestEstimator::for_route(None, "deepseek-chat");
+            iteron_ctx::RequestEstimator::for_route(None, "generic-coding-model");
         let sixth_main_request = &requests[TOOL_ROUNDS - 1];
         let first_five_tool_results = fifth_result_estimator
             .estimate(
@@ -12070,50 +12068,26 @@ ant-api03-SuperSecretModelToken12345"
                 &sixth_main_request.tools,
             )
             .tool_result_tokens;
-        let mut after_estimator = iteron_ctx::RequestEstimator::for_route(None, "deepseek-chat");
-        let seventh = &requests[TOOL_ROUNDS + 1];
+        let mut after_estimator =
+            iteron_ctx::RequestEstimator::for_route(None, "generic-coding-model");
+        let seventh = &requests[TOOL_ROUNDS];
         let after_tool_results = after_estimator
             .estimate(&seventh.system, &seventh.messages, &seventh.tools)
             .tool_result_tokens;
         assert!(first_five_tool_results <= TOOL_RESULT_CEILING);
-        assert!(before_tool_results > TOOL_RESULT_CEILING);
+        assert!(before_tool_results <= TOOL_RESULT_CEILING);
         assert!(after_tool_results <= TOOL_RESULT_CEILING);
 
         let lifecycle = lifecycle.snapshot();
-        let component_events = lifecycle
-            .events
-            .iter()
-            .filter(|event| event.payload.reason_code.as_deref() == Some(COMPONENT_REASON))
-            .collect::<Vec<_>>();
-        assert_eq!(
-            component_events
-                .iter()
-                .map(|event| event.event_id.as_str())
-                .collect::<Vec<_>>(),
-            vec![
-                "context.compaction.considered",
-                "context.compaction.started",
-                "context.segment.budget_granted",
-            ]
-        );
-        assert_eq!(component_events[0].payload.count, Some(18_000));
-        assert_eq!(
-            component_events[0].payload.magnitude,
-            Some(u64::try_from(before_tool_results).unwrap())
-        );
-        assert_eq!(
-            component_events[1].payload.magnitude,
-            component_events[0].payload.magnitude
-        );
-        assert_eq!(component_events[2].payload.count, Some(18_000));
-        assert_eq!(
-            component_events[2].payload.magnitude,
-            Some(u64::try_from(after_tool_results).unwrap())
-        );
-        assert!(lifecycle.events.iter().all(|event| {
-            event.event_id.as_str() != "context.segment.budget_denied"
-                || event.payload.reason_code.as_deref() != Some(COMPONENT_REASON)
+        assert!(lifecycle.events.iter().any(|event| {
+            event.event_id.as_str() == "context.source.truncated"
+                && event.payload.reason_code.as_deref()
+                    == Some("tool_result_pressure_projection")
         }));
+        assert!(lifecycle.events.iter().all(|event| !matches!(
+            event.event_id.as_str(),
+            "context.compaction.started" | "context.segment.budget_denied"
+        )));
 
         let compaction_ledgers = agent
             .context_ledgers
@@ -12122,8 +12096,7 @@ ant-api03-SuperSecretModelToken12345"
             .into_iter()
             .filter_map(|ledger| ledger.compaction)
             .collect::<Vec<_>>();
-        assert_eq!(compaction_ledgers.len(), 1);
-        assert!(compaction_ledgers[0].before_tokens > compaction_ledgers[0].after_tokens);
+        assert!(compaction_ledgers.is_empty());
 
         drop(requests);
         std::fs::remove_dir_all(ws).ok();
@@ -13005,6 +12978,12 @@ ant-api03-SuperSecretModelToken12345"
         assert_eq!(agent.run("use the fallback").await.unwrap(), Outcome::Done);
         assert_eq!(primary_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert_eq!(fallback_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(agent.model_context_window, Some(1_000_000));
+        assert_eq!(
+            agent.model_max_output_tokens,
+            Some(8_192),
+            "fallback activation must not turn the route's 32K physical maximum into every request's reservation"
+        );
         let events = iteron_record::replay(&runs.join(format!("{run}.jsonl"))).unwrap();
         let terminals = events
             .iter()

@@ -1541,8 +1541,8 @@ fn external_constraint_policy_ledger_is_exact_unique_and_executable() {
     assert_eq!(keys.len(), 197);
     assert_eq!(whole_value_count, 181);
     assert_eq!(whole_catalog.len(), 16);
-    assert_eq!(relation_counts, [100, 91, 6]);
-    assert_eq!(action_counts, [100, 18, 79]);
+    assert_eq!(relation_counts, [101, 90, 6]);
+    assert_eq!(action_counts, [101, 18, 78]);
     assert_eq!(
         whole_catalog,
         BTreeSet::from([
@@ -1643,7 +1643,7 @@ fn external_constraint_policy_ledger_is_exact_unique_and_executable() {
         counts,
         BTreeMap::from([
             (ExternalCeiling::BenchmarkProtocol, 6),
-            (ExternalCeiling::ContextWindow, 22),
+            (ExternalCeiling::ContextWindow, 23),
             (ExternalCeiling::OperatorAuthority, 36),
             (ExternalCeiling::ParentCost, 6),
             (ExternalCeiling::ParentTokens, 10),
@@ -1652,7 +1652,7 @@ fn external_constraint_policy_ledger_is_exact_unique_and_executable() {
             (ExternalCeiling::ProcessBudget, 6),
             (ExternalCeiling::ProviderCapability, 18),
             (ExternalCeiling::RunBudget, 19),
-            (ExternalCeiling::TenantScope, 8),
+            (ExternalCeiling::TenantScope, 7),
             (ExternalCeiling::ToolBudget, 16),
             (ExternalCeiling::VerificationFloor, 11),
         ])

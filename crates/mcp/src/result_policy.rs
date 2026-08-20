@@ -12,7 +12,10 @@ use crate::{MAX_RESPONSE_BYTES, McpError};
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
-pub const DEFAULT_MCP_VISIBLE_RESULT_BYTES: usize = 1024 * 1024;
+/// Model-visible prefix/tail retained from one MCP result. The complete bounded result remains in
+/// private spill storage, but admitting a megabyte directly into a coding transcript made every
+/// later provider request pay for it and could exceed the component budget before compaction.
+pub const DEFAULT_MCP_VISIBLE_RESULT_BYTES: usize = 64 * 1024;
 pub const DEFAULT_MCP_SPILL_RESULT_BYTES: usize = MAX_RESPONSE_BYTES;
 pub const MAX_MCP_SPILL_RESULT_BYTES: usize = 1024 * 1024 * 1024;
 

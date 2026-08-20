@@ -17,7 +17,7 @@
     },
     "ctx": {
       "bounded": 48,
-      "searchable": 24,
+      "searchable": 28,
       "structural": 15
     },
     "eval": {
@@ -92,7 +92,7 @@
     },
     "tools": {
       "bounded": 103,
-      "searchable": 60,
+      "searchable": 61,
       "structural": 16
     },
     "tunables": {
@@ -112,7 +112,7 @@
     }
   },
   "schema_version": 1,
-  "settable": 1382,
+  "settable": 1387,
   "structural": 766,
-  "total": 2148
+  "total": 2153
 }

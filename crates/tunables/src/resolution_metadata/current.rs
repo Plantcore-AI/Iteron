@@ -58,8 +58,8 @@ pub(super) const DEFAULTS: [DefaultSpec; 85] = [
         "shell_timeout_output",
         object_value!(
             "timeout_seconds" => integer_value!(120),
-            "stdout_max_bytes" => integer_value!(8_388_608),
-            "stderr_max_bytes" => integer_value!(8_388_608),
+            "stdout_max_bytes" => integer_value!(65_536),
+            "stderr_max_bytes" => integer_value!(65_536),
         )
     ), // 39 shell_timeout_output
     derived_default!("read_file_limits"),    // 40 read_file_limits

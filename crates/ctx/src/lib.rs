@@ -38,7 +38,7 @@ mod token_estimator;
 pub use compact::{
     CompactionPlan, CompactionPolicy, ContextEstimate, RequestEstimator, TokenEstimateProvenance,
     compaction_seed, compaction_summary_message, compaction_summary_range,
-    estimate_request_context, replay_compaction,
+    estimate_request_context, replay_compaction, result_budget_class,
 };
 pub use compaction_runtime::{CompactionHysteresis, SummaryProfile, SummaryTopology};
 pub use context_assembly::{assemble_recorded_context, assemble_system_prompt};
@@ -85,8 +85,8 @@ pub use memory_trace::{
 };
 pub use outline::{repo_outline, repo_outline_for_task, repo_outline_for_task_with_limits};
 pub use runtime_policy::{
-    ContextBudgetClass, ContextBudgetPolicy, ContextBudgetViolation, ContextComponentUsage,
-    ContextMaterializationPolicy,
+    ContextBudgetClass, ContextBudgetPolicy, ContextBudgetPressure, ContextBudgetViolation,
+    ContextComponentUsage, ContextMaterializationPolicy,
 };
 pub use token_calibration::{
     CalibrationObservation, RouteTokenCalibration, TOKEN_CALIBRATION_SCHEMA_VERSION,

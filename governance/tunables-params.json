@@ -2831,12 +2831,12 @@
         },
         {
           "path": "crates/cli/src/runtime_tunables/effective_core.rs",
-          "line": 420,
+          "line": 421,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime_tunables/effective_core.rs",
-          "line": 421,
+          "line": 422,
           "evidence": "Rust path reference"
         },
         {
@@ -4314,7 +4314,7 @@
         },
         {
           "path": "crates/cli/src/runtime_tunables/provider_process_facts.rs",
-          "line": 353,
+          "line": 362,
           "evidence": "Rust path reference"
         }
       ]
@@ -5444,12 +5444,12 @@
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1541,
+          "line": 1545,
           "evidence": "param_str runtime resolution"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1553,
+          "line": 1557,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -5485,12 +5485,12 @@
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1542,
+          "line": 1546,
           "evidence": "param_str runtime resolution"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1554,
+          "line": 1558,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -5542,17 +5542,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1905,
+          "line": 1909,
           "evidence": "param_str runtime resolution"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3849,
+          "line": 3853,
           "evidence": "param_str runtime resolution"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 4062,
+          "line": 4066,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -5579,22 +5579,22 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1943,
+          "line": 1947,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1961,
+          "line": 1965,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 2273,
+          "line": 2277,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 2612,
+          "line": 2616,
           "evidence": "Rust path reference"
         }
       ]
@@ -5619,7 +5619,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3721,
+          "line": 3725,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -5701,7 +5701,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3710,
+          "line": 3714,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -5728,7 +5728,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 2479,
+          "line": 2483,
           "evidence": "Rust path reference"
         }
       ]
@@ -5779,7 +5779,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3723,
+          "line": 3727,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -5831,7 +5831,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3968,
+          "line": 3972,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -5857,17 +5857,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 2437,
+          "line": 2441,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 4110,
+          "line": 4114,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 4514,
+          "line": 4518,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -6286,77 +6286,82 @@
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1406,
+          "line": 1344,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1511,
+          "line": 1410,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1579,
+          "line": 1515,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1591,
+          "line": 1583,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1604,
+          "line": 1595,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1632,
+          "line": 1608,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1645,
+          "line": 1636,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1654,
+          "line": 1649,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1685,
+          "line": 1658,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1712,
+          "line": 1689,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3224,
+          "line": 1716,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3351,
+          "line": 3228,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3882,
+          "line": 3355,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3912,
+          "line": 3886,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3948,
+          "line": 3916,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/cli/src/main.rs",
+          "line": 3952,
           "evidence": "Rust path reference"
         },
         {
@@ -6560,7 +6565,7 @@
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1402,
+          "line": 1406,
           "evidence": "macro token reference"
         },
         {
@@ -6691,7 +6696,7 @@
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1401,
+          "line": 1405,
           "evidence": "macro token reference"
         },
         {
@@ -9198,7 +9203,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/compaction.rs",
-          "line": 482,
+          "line": 507,
           "evidence": "param_bool runtime resolution"
         }
       ],
@@ -9254,7 +9259,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/context_runtime.rs",
-          "line": 189,
+          "line": 210,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -9280,7 +9285,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/context_runtime.rs",
-          "line": 327,
+          "line": 348,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -9306,7 +9311,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/context_runtime.rs",
-          "line": 334,
+          "line": 355,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -9338,7 +9343,7 @@
         },
         {
           "path": "crates/cli/src/runtime/context_runtime.rs",
-          "line": 225,
+          "line": 246,
           "evidence": "Rust path reference"
         }
       ]
@@ -10672,7 +10677,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/context_runtime.rs",
-          "line": 445,
+          "line": 518,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -10698,7 +10703,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/context_runtime.rs",
-          "line": 429,
+          "line": 502,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -10725,7 +10730,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 7472,
+          "line": 7525,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -11228,17 +11233,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/context_runtime.rs",
-          "line": 771,
+          "line": 844,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime/context_runtime.rs",
-          "line": 790,
+          "line": 863,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime/context_runtime.rs",
-          "line": 804,
+          "line": 877,
           "evidence": "Rust path reference"
         }
       ]
@@ -11290,17 +11295,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/context_runtime.rs",
-          "line": 818,
+          "line": 891,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime/context_runtime.rs",
-          "line": 827,
+          "line": 900,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime/context_runtime.rs",
-          "line": 841,
+          "line": 914,
           "evidence": "Rust path reference"
         }
       ]
@@ -11484,17 +11489,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 4782,
+          "line": 4784,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 4795,
+          "line": 4797,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 4809,
+          "line": 4811,
           "evidence": "Rust path reference"
         }
       ]
@@ -12615,7 +12620,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/tool_output_spill/store.rs",
-          "line": 124,
+          "line": 128,
           "evidence": "Rust path reference"
         }
       ]
@@ -12700,7 +12705,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 5487,
+          "line": 5498,
           "evidence": "param_bool runtime resolution"
         }
       ],
@@ -12757,7 +12762,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 7563,
+          "line": 7616,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -12811,7 +12816,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 7488,
+          "line": 7541,
           "evidence": "Rust path reference"
         },
         {
@@ -13711,6 +13716,32 @@
       "behavior_oracle": "installed profile id cli.runtime_tunables.core_facts.constraints.unbounded_parent_token_ceiling is resolved at every listed production helper call"
     },
     {
+      "id": "cli.runtime_tunables.core_facts.default_request_output_tokens",
+      "module": "context_assembly",
+      "class": "searchable",
+      "type": "integer",
+      "rust_type": "u32",
+      "default": "8_192",
+      "krate": "cli",
+      "decl": "crates/cli/src/runtime_tunables/core_facts.rs",
+      "applied": true,
+      "candidate_kind": "const",
+      "disposition": "runtime_settable",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/runtime_tunables/core_facts.rs",
+        "symbol": "DEFAULT_REQUEST_OUTPUT_TOKENS"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/runtime_tunables/core_facts.rs",
+          "line": 721,
+          "evidence": "param_integer runtime resolution"
+        }
+      ],
+      "behavior_oracle": "installed profile id cli.runtime_tunables.core_facts.default_request_output_tokens is resolved at every listed production helper call"
+    },
+    {
       "id": "cli.runtime_tunables.core_facts.memory_fact_bytes",
       "module": "context_assembly",
       "class": "searchable",
@@ -13756,12 +13787,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime_tunables/core_facts.rs",
-          "line": 700,
+          "line": 701,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/runtime_tunables/core_facts.rs",
-          "line": 708,
+          "line": 709,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -13792,32 +13823,6 @@
         }
       ],
       "behavior_oracle": "installed profile id cli.runtime_tunables.core_facts.summary_output_tokens is resolved at every listed production helper call"
-    },
-    {
-      "id": "cli.runtime_tunables.core_facts.unknown_model_output_tokens",
-      "module": "context_assembly",
-      "class": "searchable",
-      "type": "integer",
-      "rust_type": "u32",
-      "default": "8_192",
-      "krate": "cli",
-      "decl": "crates/cli/src/runtime_tunables/core_facts.rs",
-      "applied": true,
-      "candidate_kind": "const",
-      "disposition": "runtime_settable",
-      "owner": {
-        "krate": "cli",
-        "path": "crates/cli/src/runtime_tunables/core_facts.rs",
-        "symbol": "UNKNOWN_MODEL_OUTPUT_TOKENS"
-      },
-      "use_sites": [
-        {
-          "path": "crates/cli/src/runtime_tunables/core_facts.rs",
-          "line": 724,
-          "evidence": "param_integer runtime resolution"
-        }
-      ],
-      "behavior_oracle": "installed profile id cli.runtime_tunables.core_facts.unknown_model_output_tokens is resolved at every listed production helper call"
     },
     {
       "id": "cli.runtime_tunables.effective_content.agent_catalog_id",
@@ -13947,7 +13952,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime_tunables/effective_core.rs",
-          "line": 876,
+          "line": 877,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -13973,7 +13978,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime_tunables/effective_core.rs",
-          "line": 869,
+          "line": 870,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -13999,7 +14004,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime_tunables/effective_core.rs",
-          "line": 1142,
+          "line": 1153,
           "evidence": "param_bool runtime resolution"
         }
       ],
@@ -14025,7 +14030,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime_tunables/effective_core.rs",
-          "line": 183,
+          "line": 184,
           "evidence": "param_bool runtime resolution"
         }
       ],
@@ -14051,7 +14056,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime_tunables/effective_core.rs",
-          "line": 1186,
+          "line": 1197,
           "evidence": "param_bool runtime resolution"
         }
       ],
@@ -14282,7 +14287,7 @@
         },
         {
           "path": "crates/cli/src/runtime_tunables/provider_process_facts.rs",
-          "line": 353,
+          "line": 362,
           "evidence": "Rust path reference"
         }
       ]
@@ -14477,7 +14482,7 @@
         },
         {
           "path": "crates/cli/src/runtime_tunables/provider_process_facts.rs",
-          "line": 353,
+          "line": 362,
           "evidence": "Rust path reference"
         }
       ]
@@ -21768,7 +21773,7 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/compact.rs",
-          "line": 756,
+          "line": 767,
           "evidence": "Rust path reference"
         }
       ]
@@ -21794,7 +21799,7 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/compact.rs",
-          "line": 755,
+          "line": 766,
           "evidence": "Rust path reference"
         }
       ]
@@ -21819,12 +21824,12 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/compact.rs",
-          "line": 381,
+          "line": 392,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/ctx/src/compact.rs",
-          "line": 383,
+          "line": 394,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -22477,7 +22482,7 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 1676,
+          "line": 1711,
           "evidence": "Rust path reference"
         }
       ]
@@ -22506,7 +22511,7 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 1690,
+          "line": 1725,
           "evidence": "param_usize runtime resolution"
         }
       ],
@@ -22660,7 +22665,7 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 2023,
+          "line": 2058,
           "evidence": "param_usize runtime resolution"
         }
       ],
@@ -22686,7 +22691,7 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 2019,
+          "line": 2054,
           "evidence": "param_usize runtime resolution"
         }
       ],
@@ -22713,22 +22718,22 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 2308,
+          "line": 2343,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 2316,
+          "line": 2351,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 2339,
+          "line": 2374,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 2345,
+          "line": 2380,
           "evidence": "Rust path reference"
         }
       ]
@@ -22754,12 +22759,12 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 2308,
+          "line": 2343,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 2309,
+          "line": 2344,
           "evidence": "Rust path reference"
         }
       ]
@@ -22793,12 +22798,12 @@
         },
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 2545,
+          "line": 2580,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 2574,
+          "line": 2609,
           "evidence": "param_usize runtime resolution"
         }
       ],
@@ -22828,7 +22833,7 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 1276,
+          "line": 1311,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -22858,27 +22863,27 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 1179,
+          "line": 1214,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 1244,
+          "line": 1279,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 1254,
+          "line": 1289,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 1880,
+          "line": 1915,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 2154,
+          "line": 2189,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -22943,7 +22948,7 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 1266,
+          "line": 1301,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -23003,22 +23008,22 @@
         },
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 2529,
+          "line": 2564,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 2531,
+          "line": 2566,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 2611,
+          "line": 2646,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 2613,
+          "line": 2648,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -23048,7 +23053,7 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 1210,
+          "line": 1245,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -23078,7 +23083,7 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 1175,
+          "line": 1210,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -23104,12 +23109,12 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 2732,
+          "line": 2767,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 2734,
+          "line": 2769,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -23136,7 +23141,7 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 2758,
+          "line": 2793,
           "evidence": "Rust path reference"
         }
       ]
@@ -23162,7 +23167,7 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 2739,
+          "line": 2774,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -23189,17 +23194,17 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 1170,
+          "line": 1205,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 1193,
+          "line": 1228,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/ctx/src/memory.rs",
-          "line": 1206,
+          "line": 1241,
           "evidence": "Rust path reference"
         }
       ]
@@ -23224,7 +23229,7 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory_runtime.rs",
-          "line": 101,
+          "line": 105,
           "evidence": "param_u64 runtime resolution"
         }
       ],
@@ -23250,17 +23255,17 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory_runtime.rs",
-          "line": 139,
+          "line": 143,
           "evidence": "param_i128 runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory_runtime.rs",
-          "line": 141,
+          "line": 145,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory_runtime.rs",
-          "line": 146,
+          "line": 150,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -23286,21 +23291,47 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory_runtime.rs",
-          "line": 125,
+          "line": 129,
           "evidence": "param_i128 runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory_runtime.rs",
-          "line": 127,
+          "line": 131,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory_runtime.rs",
-          "line": 132,
+          "line": 136,
           "evidence": "param_integer runtime resolution"
         }
       ],
       "behavior_oracle": "installed profile id ctx.memory_runtime.default_bm25_k1_milli is resolved at every listed production helper call"
+    },
+    {
+      "id": "ctx.memory_runtime.default_novelty_dedup_threshold_ppm",
+      "module": "memory_recall",
+      "class": "searchable",
+      "type": "integer",
+      "rust_type": "u32",
+      "default": "850_000",
+      "krate": "ctx",
+      "decl": "crates/ctx/src/memory_runtime.rs",
+      "applied": true,
+      "candidate_kind": "const",
+      "disposition": "runtime_settable",
+      "owner": {
+        "krate": "ctx",
+        "path": "crates/ctx/src/memory_runtime.rs",
+        "symbol": "DEFAULT_NOVELTY_DEDUP_THRESHOLD_PPM"
+      },
+      "use_sites": [
+        {
+          "path": "crates/ctx/src/memory_runtime.rs",
+          "line": 60,
+          "evidence": "param_integer runtime resolution"
+        }
+      ],
+      "behavior_oracle": "installed profile id ctx.memory_runtime.default_novelty_dedup_threshold_ppm is resolved at every listed production helper call"
     },
     {
       "id": "ctx.memory_runtime.default_recall_limit",
@@ -23308,10 +23339,10 @@
       "class": "bounded",
       "type": "integer",
       "rust_type": "u32",
-      "default": "32",
+      "default": "12",
       "domain": {
         "min": 0,
-        "max": 32
+        "max": 12
       },
       "krate": "ctx",
       "decl": "crates/ctx/src/memory_runtime.rs",
@@ -23326,21 +23357,47 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory_runtime.rs",
-          "line": 153,
+          "line": 157,
           "evidence": "param_i128 runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory_runtime.rs",
-          "line": 155,
+          "line": 159,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory_runtime.rs",
-          "line": 160,
+          "line": 164,
           "evidence": "param_integer runtime resolution"
         }
       ],
       "behavior_oracle": "installed profile id ctx.memory_runtime.default_recall_limit is resolved at every listed production helper call"
+    },
+    {
+      "id": "ctx.memory_runtime.default_recency_decay_ppm",
+      "module": "memory_recall",
+      "class": "searchable",
+      "type": "integer",
+      "rust_type": "u32",
+      "default": "980_000",
+      "krate": "ctx",
+      "decl": "crates/ctx/src/memory_runtime.rs",
+      "applied": true,
+      "candidate_kind": "const",
+      "disposition": "runtime_settable",
+      "owner": {
+        "krate": "ctx",
+        "path": "crates/ctx/src/memory_runtime.rs",
+        "symbol": "DEFAULT_RECENCY_DECAY_PPM"
+      },
+      "use_sites": [
+        {
+          "path": "crates/ctx/src/memory_runtime.rs",
+          "line": 56,
+          "evidence": "param_integer runtime resolution"
+        }
+      ],
+      "behavior_oracle": "installed profile id ctx.memory_runtime.default_recency_decay_ppm is resolved at every listed production helper call"
     },
     {
       "id": "ctx.memory_runtime.max_buckets",
@@ -23366,7 +23423,7 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory_runtime.rs",
-          "line": 102,
+          "line": 106,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -23392,52 +23449,42 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/memory_runtime.rs",
-          "line": 42,
+          "line": 46,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory_runtime.rs",
-          "line": 52,
+          "line": 77,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory_runtime.rs",
-          "line": 56,
+          "line": 82,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory_runtime.rs",
-          "line": 73,
+          "line": 87,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory_runtime.rs",
-          "line": 78,
+          "line": 89,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory_runtime.rs",
-          "line": 83,
+          "line": 110,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory_runtime.rs",
-          "line": 85,
+          "line": 116,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/ctx/src/memory_runtime.rs",
-          "line": 106,
-          "evidence": "param_integer runtime resolution"
-        },
-        {
-          "path": "crates/ctx/src/memory_runtime.rs",
-          "line": 112,
-          "evidence": "param_integer runtime resolution"
-        },
-        {
-          "path": "crates/ctx/src/memory_runtime.rs",
-          "line": 117,
+          "line": 121,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -23815,6 +23862,32 @@
       "behavior_oracle": "installed profile id ctx.outline.max_outline_total_source_bytes is resolved at every listed production helper call"
     },
     {
+      "id": "ctx.runtime_policy.context_pressure_scale",
+      "module": "context_assembly",
+      "class": "searchable",
+      "type": "integer",
+      "rust_type": "u32",
+      "default": "1_000_000",
+      "krate": "ctx",
+      "decl": "crates/ctx/src/runtime_policy.rs",
+      "applied": true,
+      "candidate_kind": "const",
+      "disposition": "runtime_settable",
+      "owner": {
+        "krate": "ctx",
+        "path": "crates/ctx/src/runtime_policy.rs",
+        "symbol": "CONTEXT_PRESSURE_SCALE"
+      },
+      "use_sites": [
+        {
+          "path": "crates/ctx/src/runtime_policy.rs",
+          "line": 312,
+          "evidence": "param_integer runtime resolution"
+        }
+      ],
+      "behavior_oracle": "installed profile id ctx.runtime_policy.context_pressure_scale is resolved at every listed production helper call"
+    },
+    {
       "id": "ctx.runtime_policy.default_model_window_tokens",
       "module": "context_assembly",
       "class": "searchable",
@@ -23834,12 +23907,12 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/runtime_policy.rs",
-          "line": 41,
+          "line": 49,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/ctx/src/runtime_policy.rs",
-          "line": 43,
+          "line": 51,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -23865,17 +23938,17 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/runtime_policy.rs",
-          "line": 48,
+          "line": 56,
           "evidence": "param_i128 runtime resolution"
         },
         {
           "path": "crates/ctx/src/runtime_policy.rs",
-          "line": 50,
+          "line": 58,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/ctx/src/runtime_policy.rs",
-          "line": 55,
+          "line": 63,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -23901,21 +23974,47 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/runtime_policy.rs",
-          "line": 59,
+          "line": 67,
           "evidence": "param_i128 runtime resolution"
         },
         {
           "path": "crates/ctx/src/runtime_policy.rs",
-          "line": 61,
+          "line": 69,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/ctx/src/runtime_policy.rs",
-          "line": 66,
+          "line": 74,
           "evidence": "param_integer runtime resolution"
         }
       ],
       "behavior_oracle": "installed profile id ctx.runtime_policy.default_verification_reserve_tokens is resolved at every listed production helper call"
+    },
+    {
+      "id": "ctx.runtime_policy.min_tool_result_visible_bytes",
+      "module": "context_assembly",
+      "class": "searchable",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "1_024",
+      "krate": "ctx",
+      "decl": "crates/ctx/src/runtime_policy.rs",
+      "applied": true,
+      "candidate_kind": "const",
+      "disposition": "runtime_settable",
+      "owner": {
+        "krate": "ctx",
+        "path": "crates/ctx/src/runtime_policy.rs",
+        "symbol": "MIN_TOOL_RESULT_VISIBLE_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/ctx/src/runtime_policy.rs",
+          "line": 289,
+          "evidence": "param_usize runtime resolution"
+        }
+      ],
+      "behavior_oracle": "installed profile id ctx.runtime_policy.min_tool_result_visible_bytes is resolved at every listed production helper call"
     },
     {
       "id": "ctx.skills.default_codex_skill_enabled",
@@ -39812,7 +39911,7 @@
       "use_sites": [
         {
           "path": "crates/mcp/src/result_policy.rs",
-          "line": 108,
+          "line": 111,
           "evidence": "Rust path reference"
         }
       ]
@@ -39823,7 +39922,7 @@
       "class": "searchable",
       "type": "integer",
       "rust_type": "usize",
-      "default": "1024 * 1024",
+      "default": "64 * 1024",
       "krate": "mcp",
       "decl": "crates/mcp/src/result_policy.rs",
       "applied": true,
@@ -39837,7 +39936,7 @@
       "use_sites": [
         {
           "path": "crates/mcp/src/result_policy.rs",
-          "line": 110,
+          "line": 113,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -39864,12 +39963,12 @@
       "use_sites": [
         {
           "path": "crates/mcp/src/result_policy.rs",
-          "line": 142,
+          "line": 145,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/mcp/src/result_policy.rs",
-          "line": 143,
+          "line": 146,
           "evidence": "Rust path reference"
         }
       ]
@@ -39898,12 +39997,12 @@
       "use_sites": [
         {
           "path": "crates/mcp/src/result_policy.rs",
-          "line": 72,
+          "line": 75,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/mcp/src/result_policy.rs",
-          "line": 104,
+          "line": 107,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -39933,12 +40032,12 @@
       "use_sites": [
         {
           "path": "crates/mcp/src/result_policy.rs",
-          "line": 282,
+          "line": 285,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/mcp/src/result_policy.rs",
-          "line": 288,
+          "line": 291,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -39965,12 +40064,12 @@
       "use_sites": [
         {
           "path": "crates/mcp/src/result_policy.rs",
-          "line": 130,
+          "line": 133,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/mcp/src/result_policy.rs",
-          "line": 139,
+          "line": 142,
           "evidence": "Rust path reference"
         }
       ]
@@ -39996,7 +40095,7 @@
       "use_sites": [
         {
           "path": "crates/mcp/src/result_policy.rs",
-          "line": 171,
+          "line": 174,
           "evidence": "Rust path reference"
         }
       ]
@@ -52614,12 +52713,12 @@
       "use_sites": [
         {
           "path": "crates/record/src/resolved_fixture.rs",
-          "line": 672,
+          "line": 673,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/record/src/resolved_fixture.rs",
-          "line": 677,
+          "line": 678,
           "evidence": "Rust path reference"
         }
       ]
@@ -52681,27 +52780,27 @@
         },
         {
           "path": "crates/record/src/resolved_fixture.rs",
-          "line": 306,
+          "line": 307,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/record/src/resolved_fixture.rs",
-          "line": 324,
+          "line": 325,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/record/src/resolved_fixture.rs",
-          "line": 1545,
+          "line": 1546,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/record/src/resolved_fixture.rs",
-          "line": 1724,
+          "line": 1725,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/record/src/resolved_fixture.rs",
-          "line": 1748,
+          "line": 1749,
           "evidence": "Rust path reference"
         }
       ]
@@ -52727,17 +52826,17 @@
       "use_sites": [
         {
           "path": "crates/record/src/resolved_fixture.rs",
-          "line": 325,
+          "line": 326,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/record/src/resolved_fixture.rs",
-          "line": 387,
+          "line": 388,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/record/src/resolved_fixture.rs",
-          "line": 421,
+          "line": 422,
           "evidence": "macro token reference"
         }
       ]
@@ -55608,10 +55707,10 @@
       "class": "bounded",
       "type": "integer",
       "rust_type": "usize",
-      "default": "100",
+      "default": "50",
       "domain": {
         "min": 0,
-        "max": 100
+        "max": 50
       },
       "krate": "tools",
       "decl": "crates/tools/src/execution_policy.rs",
@@ -55626,12 +55725,12 @@
       "use_sites": [
         {
           "path": "crates/tools/src/execution_policy.rs",
-          "line": 325,
+          "line": 345,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/tools/src/execution_policy.rs",
-          "line": 327,
+          "line": 347,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -55661,12 +55760,12 @@
       "use_sites": [
         {
           "path": "crates/tools/src/execution_policy.rs",
-          "line": 311,
+          "line": 331,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/tools/src/execution_policy.rs",
-          "line": 313,
+          "line": 333,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -55678,10 +55777,10 @@
       "class": "bounded",
       "type": "integer",
       "rust_type": "usize",
-      "default": "2_048",
+      "default": "512",
       "domain": {
         "min": 0,
-        "max": 2048
+        "max": 512
       },
       "krate": "tools",
       "decl": "crates/tools/src/execution_policy.rs",
@@ -55696,12 +55795,12 @@
       "use_sites": [
         {
           "path": "crates/tools/src/execution_policy.rs",
-          "line": 318,
+          "line": 338,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/tools/src/execution_policy.rs",
-          "line": 320,
+          "line": 340,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -55713,7 +55812,7 @@
       "class": "searchable",
       "type": "integer",
       "rust_type": "u64",
-      "default": "30",
+      "default": "20",
       "krate": "tools",
       "decl": "crates/tools/src/execution_policy.rs",
       "applied": true,
@@ -55727,12 +55826,12 @@
       "use_sites": [
         {
           "path": "crates/tools/src/execution_policy.rs",
-          "line": 304,
+          "line": 324,
           "evidence": "param_u64 runtime resolution"
         },
         {
           "path": "crates/tools/src/execution_policy.rs",
-          "line": 306,
+          "line": 326,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -55762,12 +55861,12 @@
       "use_sites": [
         {
           "path": "crates/tools/src/execution_policy.rs",
-          "line": 189,
+          "line": 197,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/tools/src/execution_policy.rs",
-          "line": 191,
+          "line": 199,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -55779,10 +55878,10 @@
       "class": "bounded",
       "type": "integer",
       "rust_type": "usize",
-      "default": "400",
+      "default": "200",
       "domain": {
         "min": 0,
-        "max": 400
+        "max": 200
       },
       "krate": "tools",
       "decl": "crates/tools/src/execution_policy.rs",
@@ -55797,12 +55896,12 @@
       "use_sites": [
         {
           "path": "crates/tools/src/execution_policy.rs",
-          "line": 196,
+          "line": 204,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/tools/src/execution_policy.rs",
-          "line": 198,
+          "line": 206,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -55814,10 +55913,10 @@
       "class": "bounded",
       "type": "integer",
       "rust_type": "usize",
-      "default": "1_000_000",
+      "default": "32 * 1024",
       "domain": {
         "min": 0,
-        "max": 1000000
+        "max": 32768
       },
       "krate": "tools",
       "decl": "crates/tools/src/execution_policy.rs",
@@ -55832,12 +55931,12 @@
       "use_sites": [
         {
           "path": "crates/tools/src/execution_policy.rs",
-          "line": 203,
+          "line": 211,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/tools/src/execution_policy.rs",
-          "line": 205,
+          "line": 213,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -55849,10 +55948,10 @@
       "class": "bounded",
       "type": "integer",
       "rust_type": "usize",
-      "default": "1_000",
+      "default": "200",
       "domain": {
         "min": 0,
-        "max": 1000
+        "max": 200
       },
       "krate": "tools",
       "decl": "crates/tools/src/execution_policy.rs",
@@ -55867,12 +55966,12 @@
       "use_sites": [
         {
           "path": "crates/tools/src/execution_policy.rs",
-          "line": 281,
+          "line": 301,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/tools/src/execution_policy.rs",
-          "line": 283,
+          "line": 303,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -55884,10 +55983,10 @@
       "class": "bounded",
       "type": "integer",
       "rust_type": "usize",
-      "default": "512 * 1024",
+      "default": "64 * 1024",
       "domain": {
         "min": 0,
-        "max": 524288
+        "max": 65536
       },
       "krate": "tools",
       "decl": "crates/tools/src/execution_policy.rs",
@@ -55902,12 +56001,12 @@
       "use_sites": [
         {
           "path": "crates/tools/src/execution_policy.rs",
-          "line": 295,
+          "line": 315,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/tools/src/execution_policy.rs",
-          "line": 297,
+          "line": 317,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -55919,10 +56018,10 @@
       "class": "bounded",
       "type": "integer",
       "rust_type": "usize",
-      "default": "1_024",
+      "default": "512",
       "domain": {
         "min": 0,
-        "max": 1024
+        "max": 512
       },
       "krate": "tools",
       "decl": "crates/tools/src/execution_policy.rs",
@@ -55937,12 +56036,12 @@
       "use_sites": [
         {
           "path": "crates/tools/src/execution_policy.rs",
-          "line": 288,
+          "line": 308,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/tools/src/execution_policy.rs",
-          "line": 290,
+          "line": 310,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -55954,10 +56053,10 @@
       "class": "bounded",
       "type": "integer",
       "rust_type": "usize",
-      "default": "6",
+      "default": "3",
       "domain": {
         "min": 0,
-        "max": 6
+        "max": 3
       },
       "krate": "tools",
       "decl": "crates/tools/src/execution_policy.rs",
@@ -55972,12 +56071,12 @@
       "use_sites": [
         {
           "path": "crates/tools/src/execution_policy.rs",
-          "line": 166,
+          "line": 174,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/tools/src/execution_policy.rs",
-          "line": 168,
+          "line": 176,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -55985,6 +56084,76 @@
     },
     {
       "id": "tools.execution_policy.default_list_dir_max_entries",
+      "module": "tool_arguments",
+      "class": "bounded",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "200",
+      "domain": {
+        "min": 0,
+        "max": 200
+      },
+      "krate": "tools",
+      "decl": "crates/tools/src/execution_policy.rs",
+      "applied": true,
+      "candidate_kind": "const",
+      "disposition": "runtime_settable",
+      "owner": {
+        "krate": "tools",
+        "path": "crates/tools/src/execution_policy.rs",
+        "symbol": "DEFAULT_LIST_DIR_MAX_ENTRIES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/tools/src/execution_policy.rs",
+          "line": 181,
+          "evidence": "param_usize runtime resolution"
+        },
+        {
+          "path": "crates/tools/src/execution_policy.rs",
+          "line": 183,
+          "evidence": "param_integer runtime resolution"
+        }
+      ],
+      "behavior_oracle": "installed profile id tools.execution_policy.default_list_dir_max_entries is resolved at every listed production helper call"
+    },
+    {
+      "id": "tools.execution_policy.default_list_dir_output_max_bytes",
+      "module": "tool_arguments",
+      "class": "bounded",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "32 * 1024",
+      "domain": {
+        "min": 0,
+        "max": 32768
+      },
+      "krate": "tools",
+      "decl": "crates/tools/src/execution_policy.rs",
+      "applied": true,
+      "candidate_kind": "const",
+      "disposition": "runtime_settable",
+      "owner": {
+        "krate": "tools",
+        "path": "crates/tools/src/execution_policy.rs",
+        "symbol": "DEFAULT_LIST_DIR_OUTPUT_MAX_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/tools/src/execution_policy.rs",
+          "line": 188,
+          "evidence": "param_usize runtime resolution"
+        },
+        {
+          "path": "crates/tools/src/execution_policy.rs",
+          "line": 190,
+          "evidence": "param_integer runtime resolution"
+        }
+      ],
+      "behavior_oracle": "installed profile id tools.execution_policy.default_list_dir_output_max_bytes is resolved at every listed production helper call"
+    },
+    {
+      "id": "tools.execution_policy.default_read_file_max_lines",
       "module": "tool_arguments",
       "class": "bounded",
       "type": "integer",
@@ -56002,87 +56171,17 @@
       "owner": {
         "krate": "tools",
         "path": "crates/tools/src/execution_policy.rs",
-        "symbol": "DEFAULT_LIST_DIR_MAX_ENTRIES"
-      },
-      "use_sites": [
-        {
-          "path": "crates/tools/src/execution_policy.rs",
-          "line": 173,
-          "evidence": "param_usize runtime resolution"
-        },
-        {
-          "path": "crates/tools/src/execution_policy.rs",
-          "line": 175,
-          "evidence": "param_integer runtime resolution"
-        }
-      ],
-      "behavior_oracle": "installed profile id tools.execution_policy.default_list_dir_max_entries is resolved at every listed production helper call"
-    },
-    {
-      "id": "tools.execution_policy.default_list_dir_output_max_bytes",
-      "module": "tool_arguments",
-      "class": "bounded",
-      "type": "integer",
-      "rust_type": "usize",
-      "default": "1_000_000",
-      "domain": {
-        "min": 0,
-        "max": 1000000
-      },
-      "krate": "tools",
-      "decl": "crates/tools/src/execution_policy.rs",
-      "applied": true,
-      "candidate_kind": "const",
-      "disposition": "runtime_settable",
-      "owner": {
-        "krate": "tools",
-        "path": "crates/tools/src/execution_policy.rs",
-        "symbol": "DEFAULT_LIST_DIR_OUTPUT_MAX_BYTES"
-      },
-      "use_sites": [
-        {
-          "path": "crates/tools/src/execution_policy.rs",
-          "line": 180,
-          "evidence": "param_usize runtime resolution"
-        },
-        {
-          "path": "crates/tools/src/execution_policy.rs",
-          "line": 182,
-          "evidence": "param_integer runtime resolution"
-        }
-      ],
-      "behavior_oracle": "installed profile id tools.execution_policy.default_list_dir_output_max_bytes is resolved at every listed production helper call"
-    },
-    {
-      "id": "tools.execution_policy.default_read_file_max_lines",
-      "module": "tool_arguments",
-      "class": "bounded",
-      "type": "integer",
-      "rust_type": "usize",
-      "default": "1_000_000",
-      "domain": {
-        "min": 0,
-        "max": 1000000
-      },
-      "krate": "tools",
-      "decl": "crates/tools/src/execution_policy.rs",
-      "applied": true,
-      "candidate_kind": "const",
-      "disposition": "runtime_settable",
-      "owner": {
-        "krate": "tools",
-        "path": "crates/tools/src/execution_policy.rs",
         "symbol": "DEFAULT_READ_FILE_MAX_LINES"
       },
       "use_sites": [
         {
           "path": "crates/tools/src/execution_policy.rs",
-          "line": 157,
+          "line": 165,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/tools/src/execution_policy.rs",
-          "line": 159,
+          "line": 167,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -56094,10 +56193,10 @@
       "class": "bounded",
       "type": "integer",
       "rust_type": "usize",
-      "default": "400_000",
+      "default": "32 * 1024",
       "domain": {
         "min": 0,
-        "max": 400000
+        "max": 32768
       },
       "krate": "tools",
       "decl": "crates/tools/src/execution_policy.rs",
@@ -56112,12 +56211,12 @@
       "use_sites": [
         {
           "path": "crates/tools/src/execution_policy.rs",
-          "line": 150,
+          "line": 158,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/tools/src/execution_policy.rs",
-          "line": 152,
+          "line": 160,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -56147,12 +56246,12 @@
       "use_sites": [
         {
           "path": "crates/tools/src/execution_policy.rs",
-          "line": 143,
+          "line": 151,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/tools/src/execution_policy.rs",
-          "line": 145,
+          "line": 153,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -56182,17 +56281,17 @@
       "use_sites": [
         {
           "path": "crates/tools/src/execution_policy.rs",
-          "line": 219,
+          "line": 227,
           "evidence": "param_i128 runtime resolution"
         },
         {
           "path": "crates/tools/src/execution_policy.rs",
-          "line": 221,
+          "line": 229,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/tools/src/execution_policy.rs",
-          "line": 226,
+          "line": 234,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -56222,12 +56321,12 @@
       "use_sites": [
         {
           "path": "crates/tools/src/execution_policy.rs",
-          "line": 212,
+          "line": 220,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/tools/src/execution_policy.rs",
-          "line": 214,
+          "line": 222,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -56239,10 +56338,10 @@
       "class": "bounded",
       "type": "integer",
       "rust_type": "usize",
-      "default": "6_000",
+      "default": "4_000",
       "domain": {
         "min": 0,
-        "max": 6000
+        "max": 4000
       },
       "krate": "tools",
       "decl": "crates/tools/src/execution_policy.rs",
@@ -56257,16 +56356,57 @@
       "use_sites": [
         {
           "path": "crates/tools/src/execution_policy.rs",
-          "line": 230,
+          "line": 238,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/tools/src/execution_policy.rs",
-          "line": 232,
+          "line": 240,
           "evidence": "param_integer runtime resolution"
         }
       ],
       "behavior_oracle": "installed profile id tools.execution_policy.default_repo_map_max_tokens is resolved at every listed production helper call"
+    },
+    {
+      "id": "tools.execution_policy.default_shell_output_bytes_per_stream",
+      "module": "tool_arguments",
+      "class": "searchable",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "64 * 1024",
+      "krate": "tools",
+      "decl": "crates/tools/src/execution_policy.rs",
+      "applied": true,
+      "candidate_kind": "const",
+      "disposition": "runtime_settable",
+      "owner": {
+        "krate": "tools",
+        "path": "crates/tools/src/execution_policy.rs",
+        "symbol": "DEFAULT_SHELL_OUTPUT_BYTES_PER_STREAM"
+      },
+      "use_sites": [
+        {
+          "path": "crates/tools/src/execution_policy.rs",
+          "line": 285,
+          "evidence": "param_usize runtime resolution"
+        },
+        {
+          "path": "crates/tools/src/execution_policy.rs",
+          "line": 287,
+          "evidence": "param_integer runtime resolution"
+        },
+        {
+          "path": "crates/tools/src/execution_policy.rs",
+          "line": 292,
+          "evidence": "param_usize runtime resolution"
+        },
+        {
+          "path": "crates/tools/src/execution_policy.rs",
+          "line": 294,
+          "evidence": "param_integer runtime resolution"
+        }
+      ],
+      "behavior_oracle": "installed profile id tools.execution_policy.default_shell_output_bytes_per_stream is resolved at every listed production helper call"
     },
     {
       "id": "tools.execution_policy.default_shell_timeout_seconds",
@@ -56288,7 +56428,7 @@
       "use_sites": [
         {
           "path": "crates/tools/src/execution_policy.rs",
-          "line": 273,
+          "line": 281,
           "evidence": "param_u64 runtime resolution"
         }
       ],
@@ -56300,10 +56440,10 @@
       "class": "bounded",
       "type": "integer",
       "rust_type": "usize",
-      "default": "1_000_000",
+      "default": "128 * 1024",
       "domain": {
         "min": 0,
-        "max": 1000000
+        "max": 131072
       },
       "krate": "tools",
       "decl": "crates/tools/src/execution_policy.rs",
@@ -56318,12 +56458,12 @@
       "use_sites": [
         {
           "path": "crates/tools/src/execution_policy.rs",
-          "line": 239,
+          "line": 247,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/tools/src/execution_policy.rs",
-          "line": 241,
+          "line": 249,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -56335,10 +56475,10 @@
       "class": "bounded",
       "type": "integer",
       "rust_type": "usize",
-      "default": "15_000",
+      "default": "3_000",
       "domain": {
         "min": 0,
-        "max": 15000
+        "max": 3000
       },
       "krate": "tools",
       "decl": "crates/tools/src/execution_policy.rs",
@@ -56353,12 +56493,12 @@
       "use_sites": [
         {
           "path": "crates/tools/src/execution_policy.rs",
-          "line": 260,
+          "line": 268,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/tools/src/execution_policy.rs",
-          "line": 262,
+          "line": 270,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -56370,10 +56510,10 @@
       "class": "bounded",
       "type": "integer",
       "rust_type": "usize",
-      "default": "5",
+      "default": "3",
       "domain": {
         "min": 0,
-        "max": 5
+        "max": 3
       },
       "krate": "tools",
       "decl": "crates/tools/src/execution_policy.rs",
@@ -56388,12 +56528,12 @@
       "use_sites": [
         {
           "path": "crates/tools/src/execution_policy.rs",
-          "line": 246,
+          "line": 254,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/tools/src/execution_policy.rs",
-          "line": 248,
+          "line": 256,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -56405,7 +56545,7 @@
       "class": "searchable",
       "type": "integer",
       "rust_type": "u64",
-      "default": "60",
+      "default": "30",
       "krate": "tools",
       "decl": "crates/tools/src/execution_policy.rs",
       "applied": true,
@@ -56419,12 +56559,12 @@
       "use_sites": [
         {
           "path": "crates/tools/src/execution_policy.rs",
-          "line": 253,
+          "line": 261,
           "evidence": "param_u64 runtime resolution"
         },
         {
           "path": "crates/tools/src/execution_policy.rs",
-          "line": 255,
+          "line": 263,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -60194,7 +60334,7 @@
       "class": "structural",
       "type": "array",
       "rust_type": "&[&str]",
-      "default": "&[\n    \"read_file\",\n    \"write_file\",\n    \"edit\",\n    \"bash\",\n    \"grep\",\n    \"glob\",\n    \"list_dir\",\n]",
+      "default": "&[\n    \"read_file\",\n    \"write_file\",\n    \"edit\",\n    \"apply_patch\",\n    \"bash\",\n    // `bash` may yield a live session. Its continuation/cancellation surface must already be\n    // callable on the very next turn; requiring a tool-search round here invites duplicate test\n    // launches and stranded child processes.\n    \"process_poll\",\n    \"process_stop\",\n    \"grep\",\n    \"glob\",\n    \"list_dir\",\n    // The base prompt requires a final diff review. Hiding that exact tool behind discovery made\n    // the prompt manufacture an avoidable provider round on ordinary coding tasks.\n    \"git_diff\",\n    \"git_status\",\n]",
       "krate": "tools",
       "decl": "crates/tools/src/tool_search.rs",
       "applied": false,
@@ -60209,7 +60349,7 @@
       "use_sites": [
         {
           "path": "crates/tools/src/tool_search.rs",
-          "line": 92,
+          "line": 102,
           "evidence": "Rust path reference"
         }
       ]
@@ -60250,7 +60390,7 @@
       "class": "searchable",
       "type": "integer",
       "rust_type": "usize",
-      "default": "8",
+      "default": "4",
       "krate": "tools",
       "decl": "crates/tools/src/tool_search.rs",
       "applied": true,
@@ -60264,12 +60404,12 @@
       "use_sites": [
         {
           "path": "crates/tools/src/tool_search.rs",
-          "line": 192,
+          "line": 197,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/tools/src/tool_search.rs",
-          "line": 194,
+          "line": 199,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -60299,7 +60439,7 @@
       "use_sites": [
         {
           "path": "crates/tools/src/tool_search.rs",
-          "line": 110,
+          "line": 120,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -60329,12 +60469,12 @@
       "use_sites": [
         {
           "path": "crates/tools/src/tool_search.rs",
-          "line": 116,
+          "line": 126,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/tools/src/tool_search.rs",
-          "line": 118,
+          "line": 128,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -60360,27 +60500,27 @@
       "use_sites": [
         {
           "path": "crates/tools/src/tool_search.rs",
-          "line": 84,
+          "line": 94,
           "evidence": "param_str runtime resolution"
         },
         {
           "path": "crates/tools/src/tool_search.rs",
-          "line": 89,
+          "line": 99,
           "evidence": "param_str runtime resolution"
         },
         {
           "path": "crates/tools/src/tool_search.rs",
-          "line": 131,
+          "line": 141,
           "evidence": "param_str runtime resolution"
         },
         {
           "path": "crates/tools/src/tool_search.rs",
-          "line": 162,
+          "line": 167,
           "evidence": "param_str runtime resolution"
         },
         {
           "path": "crates/tools/src/tool_search.rs",
-          "line": 210,
+          "line": 215,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -60793,7 +60933,7 @@
       "use_sites": [
         {
           "path": "crates/tools/src/execution_policy.rs",
-          "line": 268,
+          "line": 276,
           "evidence": "param_integer runtime resolution"
         },
         {
@@ -61563,7 +61703,7 @@
       "class": "structural",
       "type": "text",
       "rust_type": "&str",
-      "default": "\"b1e222beae09e6f2d38e557bab940a6a83daf8c24fb3ebe193f54dab3735834c\"",
+      "default": "\"d38ed6b9f5d07a87f69b878b03a3855e0ff525946c24e0a627d81d9a78e19cf8\"",
       "krate": "tunables",
       "decl": "crates/tunables/src/lib.rs",
       "applied": false,
@@ -61720,7 +61860,7 @@
       "class": "structural",
       "type": "integer",
       "rust_type": "u16",
-      "default": "21",
+      "default": "23",
       "krate": "tunables",
       "decl": "crates/tunables/src/lib.rs",
       "applied": false,
@@ -64023,7 +64163,7 @@
       "class": "structural",
       "type": "array",
       "rust_type": "[DefaultSpec; 75]",
-      "default": "[\n    literal_default!(list_value!()), // 86 model_fallback_chain\n    literal_default!(list_value!(\n        object_value!(\n            \"error_class\" => text_value!(\"provider.connect_failed\"),\n            \"eligible\" => boolean_value!(true),\n            \"dispatch_state\" => enum_value!(\"pre_dispatch\"),\n            \"version\" => text_value!(\"1.0.0\"),\n        ),\n        object_value!(\n            \"error_class\" => text_value!(\"provider.rate_limited\"),\n            \"eligible\" => boolean_value!(true),\n            \"dispatch_state\" => enum_value!(\"post_dispatch\"),\n            \"version\" => text_value!(\"1.0.0\"),\n        ),\n        object_value!(\n            \"error_class\" => text_value!(\"provider.overloaded\"),\n            \"eligible\" => boolean_value!(true),\n            \"dispatch_state\" => enum_value!(\"post_dispatch\"),\n            \"version\" => text_value!(\"1.0.0\"),\n        ),\n        object_value!(\n            \"error_class\" => text_value!(\"model.unavailable\"),\n            \"eligible\" => boolean_value!(true),\n            \"dispatch_state\" => enum_value!(\"pre_dispatch\"),\n            \"version\" => text_value!(\"1.0.0\"),\n        ),\n    )), // 87 failover_eligible_error_taxonomy\n    derived_default!(\"route_quality_cost_latency_objective_weights\"), // 88\n    observation_default!(\"provider.route_health\"), // 89\n    literal_default!(object_value!(\n        \"enabled\" => boolean_value!(false),\n        \"delay_milliseconds\" => integer_value!(0),\n        \"max_duplicates\" => integer_value!(0),\n        \"idempotent_only\" => boolean_value!(true),\n    )), // 90 hedged_request_policy\n    provider_default!(\"service_tier\"), // 91 provider_service_tier\n    model_default!(\"response_verbosity\"), // 92 response_verbosity\n    derived_default!(\"role_specific_model_map\"), // 93\n    derived_default_with_value!(\"provider_request_total_deadline\", integer_value!(300_000)), // 94\n    derived_default_with_value!(\"stream_idle_watchdog\", integer_value!(60_000)), // 95 stream_idle_watchdog\n    model_default!(\"context_window_and_output_reserve\"),                         // 96\n    derived_default!(\"system_prefix_budget\"),                                    // 97\n    derived_default!(\"conversation_history_budget\"),                             // 98\n    derived_default!(\"tool_result_history_budget\"),                              // 99\n    // The local ContextMaterializationPolicy owns the executable budget. Provider multimodal\n    // capability is an upper clamp (exact zero for text-only routes), not the default resolver.\n    derived_default!(\"multimodal_token_budget\"), // 100\n    literal_default!(boolean_value!(true)),      // 101 auto_compaction_enable\n    derived_default!(\"compaction_cooldown_hysteresis\"), // 102\n    literal_default!(enum_value!(\"single_stage\")), // 103\n    literal_default!(boolean_value!(true)),      // 104\n    derived_default_with_value!(\n        \"hybrid_retrieval_fusion_weights\",\n        map_value!(\"lexical\" => decimal_value!(1, 0))\n    ), // 105\n    derived_default_with_value!(\"retrieval_recency_decay\", decimal_value!(1, 0)), // 106\n    derived_default_with_value!(\"context_novelty_dedup_threshold\", decimal_value!(1, 0)), // 107\n    dynamic_observation_default!(\"process.backend\"), // 108 persistent_pty_backend\n    dynamic_observation_default!(\"process.background_job_cap\"), // 109 concurrent_background_job_cap\n    dynamic_observation_default!(\"process.idle_stall_timeout\"), // 110\n    dynamic_observation_default!(\"interactive_process.stdin_wait\"), // 111\n    literal_default!(enum_value!(\"term_grace_kill_reap\")), // 112\n    derived_default!(\"process_cwd_continuity\"),  // 113 process_cwd_continuity\n    derived_default!(\"child_process_environment_reuse\"), // 114 child_process_environment_reuse\n    // Mirrors the fixed physical scheduler owner. Pure and effecting calls share this outer\n    // ceiling; write-set admission below independently narrows effecting batches.\n    derived_default_with_value!(\"effecting_tool_concurrency\", integer_value!(16)), // 115 effecting_tool_concurrency\n    literal_default!(object_value!(\n        \"declared_set_required\" => boolean_value!(true),\n        \"overlap\" => enum_value!(\"reject\"),\n        \"unknown_set\" => enum_value!(\"reject\"),\n    )), // 116 write_set_conflict_admission\n    derived_default!(\"tool_output_spill_to_disk_policy\"),                          // 117\n    // The local BinaryMediaInspectionPolicy owns routing before provider dispatch.\n    derived_default!(\"binary_media_inspection_routing\"), // 118\n    dynamic_observation_default!(\"workspace.languages_and_servers\"), // 119\n    dynamic_observation_default!(\"lsp.timeout_restart_policy\"), // 120\n    derived_default!(\"lsp_result_context_budget\"),       // 121\n    derived_default!(\"tool_result_cache_ttl\"),           // 122\n    derived_default!(\"test_selection_strategy\"),         // 123\n    derived_default_with_value!(\n        \"incremental_versus_full_verification\",\n        enum_value!(\"impacted\")\n    ), // 124\n    derived_default_with_value!(\n        \"flaky_test_detection_quarantine\",\n        object_value!(\n            \"repeat_count\" => integer_value!(2),\n            \"minimum_disagreements\" => integer_value!(1),\n            \"quarantine_seconds\" => integer_value!(300),\n            \"report_disagreement\" => boolean_value!(true),\n        )\n    ), // 125 flaky_test_detection_quarantine\n    catalog_default!(\"failure_classification_taxonomy\"), // 126\n    derived_default!(\"retry_eligibility_policy\"),        // 127\n    literal_default!(enum_value!(\"off\")),                // 128\n    literal_default!(object_value!(\n        \"turn_boundary\" => boolean_value!(true),\n            \"before_verification\" => boolean_value!(true),\n        \"before_drain\" => boolean_value!(true),\n        \"minimum_turn_interval\" => integer_value!(1),\n    )), // 129 workspace_checkpoint_cadence\n    literal_default!(object_value!(\n        \"mode\" => enum_value!(\"workspace\"),\n    )), // 130 selective_restore_scope\n    derived_default_with_value!(\n        \"verification_quorum_consensus\",\n        object_value!(\n            \"verifiers\" => integer_value!(1),\n            \"required_agreement\" => integer_value!(1),\n            \"strong_veto\" => boolean_value!(true),\n        )\n    ), // 131 verification_quorum_consensus\n    literal_default!(enum_value!(\"retry_replan_stop\")),  // 132\n    derived_default!(\"per_agent_model\"),                 // 133\n    derived_default!(\"per_agent_effort_thinking\"),       // 134\n    derived_default!(\"per_agent_tool_profile\"),          // 135\n    literal_default!(object_value!(\n        \"mode\" => enum_value!(\"isolated\"),\n        \"inherit_parent\" => boolean_value!(false),\n    )), // 136 per_agent_memory_scope\n    literal_default!(integer_value!(1)),                 // 137 spawn_depth_control\n    derived_default!(\"per_session_spawn_cap\"),           // 138\n    literal_default!(object_value!(\n        \"priority_levels\" => integer_value!(1),\n        \"tie_break\" => enum_value!(\"fifo\"),\n        \"dependency_ready_only\" => boolean_value!(true),\n    )), // 139 task_priority_scheduling\n    derived_default_with_value!(\"speculative_sibling_count\", integer_value!(2)), // 140 speculative_sibling_count\n    derived_default!(\"speculative_sibling_cancellation\"),                        // 141\n    derived_default_with_value!(\n        \"early_stop_quorum_policy\",\n        object_value!(\n            \"minimum_evidence\" => integer_value!(1),\n            \"required_roles\" => integer_value!(0),\n            \"strong_veto\" => boolean_value!(true),\n        )\n    ), // 142 early_stop_quorum_policy\n    literal_default!(boolean_value!(true)), // 143 writer_worktree_isolation_mode\n    derived_default!(\"merge_conflict_arbitration\"), // 144\n    literal_default!(enum_value!(\"parent_mediated\")), // 145\n    derived_default!(\"task_retry_reassignment_policy\"), // 146\n    literal_default!(list_value!(enum_value!(\"stdio\"))), // 147 mcp_transport_selection\n    derived_default_with_value!(\"deferred_discovery_threshold\", integer_value!(4)), // 148 deferred_discovery_threshold\n    derived_default!(\"mcp_reconnect_backoff\"),                                      // 149\n    derived_default!(\"per_server_startup_deadline\"),                                // 150\n    derived_default!(\"per_tool_mcp_deadline\"),                                      // 151\n    derived_default_with_value!(\n        \"mcp_result_cap_spill_policy\",\n        object_value!(\n            \"visible_max_bytes\" => integer_value!(1_048_576),\n            \"spill_max_bytes\" => integer_value!(4_194_304),\n            \"cleanup\" => enum_value!(\"session_end\"),\n            \"private_storage\" => boolean_value!(true),\n        )\n    ), // 152 mcp_result_cap_spill_policy\n    transport_default!(\"oauth_lifecycle\"),                                          // 153\n    literal_default!(object_value!(\n        \"resource_discovery\" => enum_value!(\"disabled\"),\n        \"prompt_discovery\" => enum_value!(\"disabled\"),\n        \"resource_tool_ids\" => list_value!(),\n        \"prompt_tool_ids\" => list_value!(),\n        \"plugin_binding_ids\" => list_value!(),\n        \"server_binding_ids\" => list_value!(),\n        \"max_visible_bytes\" => integer_value!(0),\n    )), // 154 resource_prompt_plugin_capability_exposure\n    provider_default!(\"request_compression\"),                                       // 155\n    derived_default_with_value!(\n        \"http_pool_keepalive_idle_policy\",\n        object_value!(\n            \"pool_idle_seconds\" => integer_value!(300),\n            \"tcp_keepalive_seconds\" => integer_value!(30),\n            \"connection_reuse\" => boolean_value!(true),\n        )\n    ), // 156 http_pool_keepalive_idle_policy\n    dynamic_observation_default_with_value!(\n        \"provider.rate_limit_snapshot\",\n        object_value!(\n            \"minimum_remaining_requests\" => integer_value!(0),\n            \"minimum_remaining_tokens\" => integer_value!(0),\n            \"reset_wait_max_seconds\" => integer_value!(0),\n            \"unknown_quota\" => enum_value!(\"conservative\"),\n        )\n    ), // 157 rate_limit_aware_admission\n    provider_default!(\"prompt_cache_ttl_breakpoint_strategy\"),                      // 158\n    derived_default_with_value!(\"session_isolation_profile\", enum_value!(\"hermetic\")), // 159\n    literal_default!(object_value!(\n        \"verify_hash_chain\" => boolean_value!(true),\n        \"verify_identity_scope\" => boolean_value!(true),\n        \"verify_effect_terminals\" => boolean_value!(true),\n        \"on_divergence\" => enum_value!(\"fail_closed\"),\n    )), // 160 replay_divergence_detection_policy\n]",
+      "default": "[\n    literal_default!(list_value!()), // 86 model_fallback_chain\n    literal_default!(list_value!(\n        object_value!(\n            \"error_class\" => text_value!(\"provider.connect_failed\"),\n            \"eligible\" => boolean_value!(true),\n            \"dispatch_state\" => enum_value!(\"pre_dispatch\"),\n            \"version\" => text_value!(\"1.0.0\"),\n        ),\n        object_value!(\n            \"error_class\" => text_value!(\"provider.rate_limited\"),\n            \"eligible\" => boolean_value!(true),\n            \"dispatch_state\" => enum_value!(\"post_dispatch\"),\n            \"version\" => text_value!(\"1.0.0\"),\n        ),\n        object_value!(\n            \"error_class\" => text_value!(\"provider.overloaded\"),\n            \"eligible\" => boolean_value!(true),\n            \"dispatch_state\" => enum_value!(\"post_dispatch\"),\n            \"version\" => text_value!(\"1.0.0\"),\n        ),\n        object_value!(\n            \"error_class\" => text_value!(\"model.unavailable\"),\n            \"eligible\" => boolean_value!(true),\n            \"dispatch_state\" => enum_value!(\"pre_dispatch\"),\n            \"version\" => text_value!(\"1.0.0\"),\n        ),\n    )), // 87 failover_eligible_error_taxonomy\n    derived_default!(\"route_quality_cost_latency_objective_weights\"), // 88\n    observation_default!(\"provider.route_health\"), // 89\n    literal_default!(object_value!(\n        \"enabled\" => boolean_value!(false),\n        \"delay_milliseconds\" => integer_value!(0),\n        \"max_duplicates\" => integer_value!(0),\n        \"idempotent_only\" => boolean_value!(true),\n    )), // 90 hedged_request_policy\n    provider_default!(\"service_tier\"), // 91 provider_service_tier\n    model_default!(\"response_verbosity\"), // 92 response_verbosity\n    derived_default!(\"role_specific_model_map\"), // 93\n    derived_default_with_value!(\"provider_request_total_deadline\", integer_value!(300_000)), // 94\n    derived_default_with_value!(\"stream_idle_watchdog\", integer_value!(60_000)), // 95 stream_idle_watchdog\n    model_default!(\"context_window_and_output_reserve\"),                         // 96\n    derived_default!(\"system_prefix_budget\"),                                    // 97\n    derived_default!(\"conversation_history_budget\"),                             // 98\n    derived_default!(\"tool_result_history_budget\"),                              // 99\n    // The local ContextMaterializationPolicy owns the executable budget. Provider multimodal\n    // capability is an upper clamp (exact zero for text-only routes), not the default resolver.\n    derived_default!(\"multimodal_token_budget\"), // 100\n    literal_default!(boolean_value!(true)),      // 101 auto_compaction_enable\n    derived_default!(\"compaction_cooldown_hysteresis\"), // 102\n    literal_default!(enum_value!(\"single_stage\")), // 103\n    literal_default!(boolean_value!(true)),      // 104\n    derived_default_with_value!(\n        \"hybrid_retrieval_fusion_weights\",\n        map_value!(\"lexical\" => decimal_value!(1, 0))\n    ), // 105\n    derived_default_with_value!(\"retrieval_recency_decay\", decimal_value!(98, 2)), // 106\n    derived_default_with_value!(\"context_novelty_dedup_threshold\", decimal_value!(85, 2)), // 107\n    dynamic_observation_default!(\"process.backend\"), // 108 persistent_pty_backend\n    dynamic_observation_default!(\"process.background_job_cap\"), // 109 concurrent_background_job_cap\n    dynamic_observation_default!(\"process.idle_stall_timeout\"), // 110\n    dynamic_observation_default!(\"interactive_process.stdin_wait\"), // 111\n    literal_default!(enum_value!(\"term_grace_kill_reap\")), // 112\n    derived_default!(\"process_cwd_continuity\"),  // 113 process_cwd_continuity\n    derived_default!(\"child_process_environment_reuse\"), // 114 child_process_environment_reuse\n    // Mirrors the fixed physical scheduler owner. Pure and effecting calls share this outer\n    // ceiling; write-set admission below independently narrows effecting batches.\n    derived_default_with_value!(\"effecting_tool_concurrency\", integer_value!(16)), // 115 effecting_tool_concurrency\n    literal_default!(object_value!(\n        \"declared_set_required\" => boolean_value!(true),\n        \"overlap\" => enum_value!(\"reject\"),\n        \"unknown_set\" => enum_value!(\"reject\"),\n    )), // 116 write_set_conflict_admission\n    derived_default!(\"tool_output_spill_to_disk_policy\"),                          // 117\n    // The local BinaryMediaInspectionPolicy owns routing before provider dispatch.\n    derived_default!(\"binary_media_inspection_routing\"), // 118\n    dynamic_observation_default!(\"workspace.languages_and_servers\"), // 119\n    dynamic_observation_default!(\"lsp.timeout_restart_policy\"), // 120\n    derived_default!(\"lsp_result_context_budget\"),       // 121\n    derived_default!(\"tool_result_cache_ttl\"),           // 122\n    derived_default!(\"test_selection_strategy\"),         // 123\n    derived_default_with_value!(\n        \"incremental_versus_full_verification\",\n        enum_value!(\"impacted\")\n    ), // 124\n    derived_default_with_value!(\n        \"flaky_test_detection_quarantine\",\n        object_value!(\n            \"repeat_count\" => integer_value!(2),\n            \"minimum_disagreements\" => integer_value!(1),\n            \"quarantine_seconds\" => integer_value!(300),\n            \"report_disagreement\" => boolean_value!(true),\n        )\n    ), // 125 flaky_test_detection_quarantine\n    catalog_default!(\"failure_classification_taxonomy\"), // 126\n    derived_default!(\"retry_eligibility_policy\"),        // 127\n    literal_default!(enum_value!(\"off\")),                // 128\n    literal_default!(object_value!(\n        \"turn_boundary\" => boolean_value!(true),\n            \"before_verification\" => boolean_value!(true),\n        \"before_drain\" => boolean_value!(true),\n        \"minimum_turn_interval\" => integer_value!(1),\n    )), // 129 workspace_checkpoint_cadence\n    literal_default!(object_value!(\n        \"mode\" => enum_value!(\"workspace\"),\n    )), // 130 selective_restore_scope\n    derived_default_with_value!(\n        \"verification_quorum_consensus\",\n        object_value!(\n            \"verifiers\" => integer_value!(1),\n            \"required_agreement\" => integer_value!(1),\n            \"strong_veto\" => boolean_value!(true),\n        )\n    ), // 131 verification_quorum_consensus\n    literal_default!(enum_value!(\"retry_replan_stop\")),  // 132\n    derived_default!(\"per_agent_model\"),                 // 133\n    derived_default!(\"per_agent_effort_thinking\"),       // 134\n    derived_default!(\"per_agent_tool_profile\"),          // 135\n    literal_default!(object_value!(\n        \"mode\" => enum_value!(\"isolated\"),\n        \"inherit_parent\" => boolean_value!(false),\n    )), // 136 per_agent_memory_scope\n    literal_default!(integer_value!(1)),                 // 137 spawn_depth_control\n    derived_default!(\"per_session_spawn_cap\"),           // 138\n    literal_default!(object_value!(\n        \"priority_levels\" => integer_value!(1),\n        \"tie_break\" => enum_value!(\"fifo\"),\n        \"dependency_ready_only\" => boolean_value!(true),\n    )), // 139 task_priority_scheduling\n    derived_default_with_value!(\"speculative_sibling_count\", integer_value!(2)), // 140 speculative_sibling_count\n    derived_default!(\"speculative_sibling_cancellation\"),                        // 141\n    derived_default_with_value!(\n        \"early_stop_quorum_policy\",\n        object_value!(\n            \"minimum_evidence\" => integer_value!(1),\n            \"required_roles\" => integer_value!(0),\n            \"strong_veto\" => boolean_value!(true),\n        )\n    ), // 142 early_stop_quorum_policy\n    literal_default!(boolean_value!(true)), // 143 writer_worktree_isolation_mode\n    derived_default!(\"merge_conflict_arbitration\"), // 144\n    literal_default!(enum_value!(\"parent_mediated\")), // 145\n    derived_default!(\"task_retry_reassignment_policy\"), // 146\n    literal_default!(list_value!(enum_value!(\"stdio\"))), // 147 mcp_transport_selection\n    derived_default_with_value!(\"deferred_discovery_threshold\", integer_value!(4)), // 148 deferred_discovery_threshold\n    derived_default!(\"mcp_reconnect_backoff\"),                                      // 149\n    derived_default!(\"per_server_startup_deadline\"),                                // 150\n    derived_default!(\"per_tool_mcp_deadline\"),                                      // 151\n    derived_default_with_value!(\n        \"mcp_result_cap_spill_policy\",\n        object_value!(\n            \"visible_max_bytes\" => integer_value!(65_536),\n            \"spill_max_bytes\" => integer_value!(4_194_304),\n            \"cleanup\" => enum_value!(\"session_end\"),\n            \"private_storage\" => boolean_value!(true),\n        )\n    ), // 152 mcp_result_cap_spill_policy\n    transport_default!(\"oauth_lifecycle\"),                                          // 153\n    literal_default!(object_value!(\n        \"resource_discovery\" => enum_value!(\"disabled\"),\n        \"prompt_discovery\" => enum_value!(\"disabled\"),\n        \"resource_tool_ids\" => list_value!(),\n        \"prompt_tool_ids\" => list_value!(),\n        \"plugin_binding_ids\" => list_value!(),\n        \"server_binding_ids\" => list_value!(),\n        \"max_visible_bytes\" => integer_value!(0),\n    )), // 154 resource_prompt_plugin_capability_exposure\n    provider_default!(\"request_compression\"),                                       // 155\n    derived_default_with_value!(\n        \"http_pool_keepalive_idle_policy\",\n        object_value!(\n            \"pool_idle_seconds\" => integer_value!(300),\n            \"tcp_keepalive_seconds\" => integer_value!(30),\n            \"connection_reuse\" => boolean_value!(true),\n        )\n    ), // 156 http_pool_keepalive_idle_policy\n    dynamic_observation_default_with_value!(\n        \"provider.rate_limit_snapshot\",\n        object_value!(\n            \"minimum_remaining_requests\" => integer_value!(0),\n            \"minimum_remaining_tokens\" => integer_value!(0),\n            \"reset_wait_max_seconds\" => integer_value!(0),\n            \"unknown_quota\" => enum_value!(\"conservative\"),\n        )\n    ), // 157 rate_limit_aware_admission\n    provider_default!(\"prompt_cache_ttl_breakpoint_strategy\"),                      // 158\n    derived_default_with_value!(\"session_isolation_profile\", enum_value!(\"hermetic\")), // 159\n    literal_default!(object_value!(\n        \"verify_hash_chain\" => boolean_value!(true),\n        \"verify_identity_scope\" => boolean_value!(true),\n        \"verify_effect_terminals\" => boolean_value!(true),\n        \"on_divergence\" => enum_value!(\"fail_closed\"),\n    )), // 160 replay_divergence_detection_policy\n]",
       "krate": "tunables",
       "decl": "crates/tunables/src/resolution_metadata/appendix.rs",
       "applied": false,
@@ -64054,7 +64194,7 @@
       "class": "structural",
       "type": "array",
       "rust_type": "[DefaultSpec; 85]",
-      "default": "[\n    literal_default!(enum_value!(\"glm\")), // 1 provider\n    model_default_with_value!(\"default_model\", enum_value!(\"glm-5.2\")), // 2 model\n    derived_default!(\"base_url\"),         // 3 base_url\n    literal_default!(enum_value!(\"medium\")), // 4 effort\n    literal_default!(integer_value!(64)), // 5 max_turns\n    operator_default!(\"max_usd\"),         // 6 max_usd\n    operator_default!(\"max_tokens\"),      // 7 max_tokens\n    literal_default!(integer_value!(3_600)), // 8 max_wall_secs\n    literal_default!(boolean_value!(true)), // 9 allow_code\n    literal_default!(enum_value!(\"default\")), // 10 permission_mode\n    derived_default!(\"permission_rules\"), // 11 permission_rules\n    literal_default!(boolean_value!(true)), // 12 bypass_permissions\n    derived_default_with_value!(\n        \"compaction_trigger\",\n        object_value!(\n            \"mode\" => enum_value!(\"adaptive\"),\n            \"usable_window_ratio\" => decimal_value!(82, 2),\n            \"fallback_trigger_tokens\" => integer_value!(120_000),\n            \"output_reserve_tokens\" => integer_value!(8_192),\n        )\n    ), // 13 compaction_trigger\n    operator_default!(\"verify_command\"),  // 14 verify_command\n    literal_default!(integer_value!(500)), // 15 retry_backoff_base\n    literal_default!(integer_value!(30_000)), // 16 retry_backoff_cap\n    literal_default!(integer_value!(3)),  // 17 retry_max_attempts\n    literal_default!(list_value!()),      // 18 egress_allow\n    model_default_with_value!(\"max_output_tokens\", integer_value!(8_192)), // 19 request_output_cap\n    derived_default!(\"effort_reasoning_map\"), // 20 effort_reasoning_map\n    derived_default!(\"thinking_map\"),     // 21 thinking_map\n    derived_default!(\"orchestration_map\"), // 22 orchestration_map\n    literal_default!(boolean_value!(true)), // 23 prompt_cache\n    derived_default_with_value!(\n        \"compaction_adaptive\",\n        object_value!(\n            \"usable_window_ratio\" => decimal_value!(82, 2),\n            \"keep_recent_messages\" => integer_value!(0),\n            \"output_reserve_tokens\" => integer_value!(8_192),\n        )\n    ), // 24 compaction_adaptive\n    derived_default_with_value!(\"compaction_keep_recent\", integer_value!(0)), // 25 compaction_keep_recent\n    derived_default!(\"token_estimator\"),                                      // 26 token_estimator\n    derived_default!(\"summary_profile\"),                                      // 27 summary_profile\n    derived_default!(\"compaction_failure\"), // 28 compaction_failure\n    derived_default!(\"instruction_discovery_render\"), // 29 instruction_discovery_render\n    literal_default!(boolean_value!(true)), // 30 memory_enable\n    derived_default!(\"memory_budgets\"),     // 31 memory_budgets\n    derived_default!(\"bm25\"),               // 32 bm25\n    derived_default!(\"skill_listing_budget\"), // 33 skill_listing_budget\n    derived_default_with_value!(\"max_consecutive_tool_errors\", integer_value!(5)), // 34 max_consecutive_tool_errors\n    derived_default!(\"pure_overlap\"),        // 35 pure_overlap\n    derived_default!(\"pure_concurrency\"),    // 36 pure_concurrency\n    derived_default!(\"failed_action_dedup\"), // 37 failed_action_dedup\n    derived_default!(\"pure_memo_cache\"),     // 38 pure_memo_cache\n    derived_default_with_value!(\n        \"shell_timeout_output\",\n        object_value!(\n            \"timeout_seconds\" => integer_value!(120),\n            \"stdout_max_bytes\" => integer_value!(8_388_608),\n            \"stderr_max_bytes\" => integer_value!(8_388_608),\n        )\n    ), // 39 shell_timeout_output\n    derived_default!(\"read_file_limits\"),    // 40 read_file_limits\n    derived_default!(\"list_dir_limits\"),     // 41 list_dir_limits\n    derived_default!(\"glob_limits\"),         // 42 glob_limits\n    derived_default!(\"grep_limits\"),         // 43 grep_limits\n    derived_default!(\"repo_map\"),            // 44 repo_map\n    derived_default!(\"git_limits\"),          // 45 git_limits\n    derived_default!(\"web_fetch_limits\"),    // 46 web_fetch_limits\n    derived_default!(\"web_search_cap\"),      // 47 web_search_cap\n    derived_default!(\"verifier_attempts\"),   // 48 verifier_attempts\n    derived_default!(\"verifier_feedback_tails\"), // 49 verifier_feedback_tails\n    derived_default_with_value!(\"verifier_timeout\", integer_value!(180)), // 50 verifier_timeout\n    derived_default!(\"route_topology\"),      // 51 route_topology\n    derived_default!(\"decomposition_profile\"), // 52 decomposition_profile\n    derived_default!(\"fan_breadth\"),         // 53 fan_breadth\n    derived_default!(\"admission\"),           // 54 admission\n    derived_default!(\"writer_fan_turn_split\"), // 55 writer_fan_turn_split\n    derived_default!(\"worker_min_turns\"),    // 56 worker_min_turns\n    derived_default!(\"wall_split\"),          // 57 wall_split\n    derived_default!(\"token_split\"),         // 58 token_split\n    derived_default!(\"fan_concurrency\"),     // 59 fan_concurrency\n    derived_default!(\"child_ceiling\"),       // 60 child_ceiling\n    derived_default!(\"direct_child_allocation\"), // 61 direct_child_allocation\n    derived_default!(\"subagent_effort_inheritance\"), // 62 subagent_effort_inheritance\n    derived_default!(\"report_budget\"),       // 63 report_budget\n    derived_default!(\"join_reduce\"),         // 64 join_reduce\n    derived_default!(\"workflow_aggregate\"),  // 65 workflow_aggregate\n    derived_default!(\"schema_retry_jitter\"), // 66 schema_retry_jitter\n    derived_default_with_value!(\"provider_connect_tls_timeout\", integer_value!(10)), // 67 provider_connect_tls_timeout\n    literal_default!(object_value!(\n        \"max_images\" => integer_value!(8),\n        \"per_image_raw_bytes\" => integer_value!(6_291_456),\n        \"aggregate_raw_bytes\" => integer_value!(25_165_824),\n        \"max_dimension\" => integer_value!(8_192),\n        \"max_frames\" => integer_value!(256),\n    )), // 68 multimodal_input_admission_decode_envelope\n    derived_default_with_value!(\n        \"app_server_sq_eq_backpressure\",\n        object_value!(\n            \"submission_entries\" => integer_value!(256),\n            \"submission_bytes\" => integer_value!(34_866_176),\n            \"event_entries\" => integer_value!(1_024),\n            \"cosmetic_overflow\" => enum_value!(\"coalesce\"),\n            \"authoritative_overflow\" => enum_value!(\"wait\"),\n        )\n    ), // 69 app_server_sq_eq_backpressure\n    literal_default!(object_value!(\n        \"eager_budget_milliseconds\" => integer_value!(0),\n        \"positive_ttl_seconds\" => integer_value!(900),\n        \"failure_backoff_base_seconds\" => integer_value!(60),\n        \"failure_backoff_cap_seconds\" => integer_value!(86_400),\n    )), // 70 provider_discovery_account_probe_cache_policy\n    operator_default!(\"operator_prompt_stream\"), // 71 operator_prompt_stream\n    catalog_default!(\"builtin_prompt_corpus\"),   // 72 builtin_prompt_corpus\n    catalog_default!(\"instruction_bundle\"),      // 73 instruction_bundle\n    catalog_default!(\"memory_corpus\"),           // 74 memory_corpus\n    catalog_default!(\"skill_catalog\"),           // 75 skill_catalog\n    catalog_default!(\"agent_catalog\"),           // 76 agent_catalog\n    catalog_default!(\"provider_model_capability_catalog\"), // 77 provider_model_capability_catalog\n    catalog_default!(\"mcp_topology_tool_catalog\"), // 78 mcp_topology_tool_catalog\n    catalog_default!(\"hooks_map\"),               // 79 hooks_map\n    catalog_default!(\"workflow_graph\"),          // 80 workflow_graph\n    catalog_default!(\"tool_action_space\"),       // 81 tool_action_space\n    catalog_default!(\"rate_card_catalog\"),       // 82 rate_card_catalog\n    catalog_default!(\"router_lexicons\"),         // 83 router_lexicons\n    observation_default!(\"run_boundary.environment_snapshot\"), // 84 environment_snapshot\n    catalog_default!(\"web_search_backend_catalog\"), // 85 web_search_backend_catalog\n]",
+      "default": "[\n    literal_default!(enum_value!(\"glm\")), // 1 provider\n    model_default_with_value!(\"default_model\", enum_value!(\"glm-5.2\")), // 2 model\n    derived_default!(\"base_url\"),         // 3 base_url\n    literal_default!(enum_value!(\"medium\")), // 4 effort\n    literal_default!(integer_value!(64)), // 5 max_turns\n    operator_default!(\"max_usd\"),         // 6 max_usd\n    operator_default!(\"max_tokens\"),      // 7 max_tokens\n    literal_default!(integer_value!(3_600)), // 8 max_wall_secs\n    literal_default!(boolean_value!(true)), // 9 allow_code\n    literal_default!(enum_value!(\"default\")), // 10 permission_mode\n    derived_default!(\"permission_rules\"), // 11 permission_rules\n    literal_default!(boolean_value!(true)), // 12 bypass_permissions\n    derived_default_with_value!(\n        \"compaction_trigger\",\n        object_value!(\n            \"mode\" => enum_value!(\"adaptive\"),\n            \"usable_window_ratio\" => decimal_value!(82, 2),\n            \"fallback_trigger_tokens\" => integer_value!(120_000),\n            \"output_reserve_tokens\" => integer_value!(8_192),\n        )\n    ), // 13 compaction_trigger\n    operator_default!(\"verify_command\"),  // 14 verify_command\n    literal_default!(integer_value!(500)), // 15 retry_backoff_base\n    literal_default!(integer_value!(30_000)), // 16 retry_backoff_cap\n    literal_default!(integer_value!(3)),  // 17 retry_max_attempts\n    literal_default!(list_value!()),      // 18 egress_allow\n    model_default_with_value!(\"max_output_tokens\", integer_value!(8_192)), // 19 request_output_cap\n    derived_default!(\"effort_reasoning_map\"), // 20 effort_reasoning_map\n    derived_default!(\"thinking_map\"),     // 21 thinking_map\n    derived_default!(\"orchestration_map\"), // 22 orchestration_map\n    literal_default!(boolean_value!(true)), // 23 prompt_cache\n    derived_default_with_value!(\n        \"compaction_adaptive\",\n        object_value!(\n            \"usable_window_ratio\" => decimal_value!(82, 2),\n            \"keep_recent_messages\" => integer_value!(0),\n            \"output_reserve_tokens\" => integer_value!(8_192),\n        )\n    ), // 24 compaction_adaptive\n    derived_default_with_value!(\"compaction_keep_recent\", integer_value!(0)), // 25 compaction_keep_recent\n    derived_default!(\"token_estimator\"),                                      // 26 token_estimator\n    derived_default!(\"summary_profile\"),                                      // 27 summary_profile\n    derived_default!(\"compaction_failure\"), // 28 compaction_failure\n    derived_default!(\"instruction_discovery_render\"), // 29 instruction_discovery_render\n    literal_default!(boolean_value!(true)), // 30 memory_enable\n    derived_default!(\"memory_budgets\"),     // 31 memory_budgets\n    derived_default!(\"bm25\"),               // 32 bm25\n    derived_default!(\"skill_listing_budget\"), // 33 skill_listing_budget\n    derived_default_with_value!(\"max_consecutive_tool_errors\", integer_value!(5)), // 34 max_consecutive_tool_errors\n    derived_default!(\"pure_overlap\"),        // 35 pure_overlap\n    derived_default!(\"pure_concurrency\"),    // 36 pure_concurrency\n    derived_default!(\"failed_action_dedup\"), // 37 failed_action_dedup\n    derived_default!(\"pure_memo_cache\"),     // 38 pure_memo_cache\n    derived_default_with_value!(\n        \"shell_timeout_output\",\n        object_value!(\n            \"timeout_seconds\" => integer_value!(120),\n            \"stdout_max_bytes\" => integer_value!(65_536),\n            \"stderr_max_bytes\" => integer_value!(65_536),\n        )\n    ), // 39 shell_timeout_output\n    derived_default!(\"read_file_limits\"),    // 40 read_file_limits\n    derived_default!(\"list_dir_limits\"),     // 41 list_dir_limits\n    derived_default!(\"glob_limits\"),         // 42 glob_limits\n    derived_default!(\"grep_limits\"),         // 43 grep_limits\n    derived_default!(\"repo_map\"),            // 44 repo_map\n    derived_default!(\"git_limits\"),          // 45 git_limits\n    derived_default!(\"web_fetch_limits\"),    // 46 web_fetch_limits\n    derived_default!(\"web_search_cap\"),      // 47 web_search_cap\n    derived_default!(\"verifier_attempts\"),   // 48 verifier_attempts\n    derived_default!(\"verifier_feedback_tails\"), // 49 verifier_feedback_tails\n    derived_default_with_value!(\"verifier_timeout\", integer_value!(180)), // 50 verifier_timeout\n    derived_default!(\"route_topology\"),      // 51 route_topology\n    derived_default!(\"decomposition_profile\"), // 52 decomposition_profile\n    derived_default!(\"fan_breadth\"),         // 53 fan_breadth\n    derived_default!(\"admission\"),           // 54 admission\n    derived_default!(\"writer_fan_turn_split\"), // 55 writer_fan_turn_split\n    derived_default!(\"worker_min_turns\"),    // 56 worker_min_turns\n    derived_default!(\"wall_split\"),          // 57 wall_split\n    derived_default!(\"token_split\"),         // 58 token_split\n    derived_default!(\"fan_concurrency\"),     // 59 fan_concurrency\n    derived_default!(\"child_ceiling\"),       // 60 child_ceiling\n    derived_default!(\"direct_child_allocation\"), // 61 direct_child_allocation\n    derived_default!(\"subagent_effort_inheritance\"), // 62 subagent_effort_inheritance\n    derived_default!(\"report_budget\"),       // 63 report_budget\n    derived_default!(\"join_reduce\"),         // 64 join_reduce\n    derived_default!(\"workflow_aggregate\"),  // 65 workflow_aggregate\n    derived_default!(\"schema_retry_jitter\"), // 66 schema_retry_jitter\n    derived_default_with_value!(\"provider_connect_tls_timeout\", integer_value!(10)), // 67 provider_connect_tls_timeout\n    literal_default!(object_value!(\n        \"max_images\" => integer_value!(8),\n        \"per_image_raw_bytes\" => integer_value!(6_291_456),\n        \"aggregate_raw_bytes\" => integer_value!(25_165_824),\n        \"max_dimension\" => integer_value!(8_192),\n        \"max_frames\" => integer_value!(256),\n    )), // 68 multimodal_input_admission_decode_envelope\n    derived_default_with_value!(\n        \"app_server_sq_eq_backpressure\",\n        object_value!(\n            \"submission_entries\" => integer_value!(256),\n            \"submission_bytes\" => integer_value!(34_866_176),\n            \"event_entries\" => integer_value!(1_024),\n            \"cosmetic_overflow\" => enum_value!(\"coalesce\"),\n            \"authoritative_overflow\" => enum_value!(\"wait\"),\n        )\n    ), // 69 app_server_sq_eq_backpressure\n    literal_default!(object_value!(\n        \"eager_budget_milliseconds\" => integer_value!(0),\n        \"positive_ttl_seconds\" => integer_value!(900),\n        \"failure_backoff_base_seconds\" => integer_value!(60),\n        \"failure_backoff_cap_seconds\" => integer_value!(86_400),\n    )), // 70 provider_discovery_account_probe_cache_policy\n    operator_default!(\"operator_prompt_stream\"), // 71 operator_prompt_stream\n    catalog_default!(\"builtin_prompt_corpus\"),   // 72 builtin_prompt_corpus\n    catalog_default!(\"instruction_bundle\"),      // 73 instruction_bundle\n    catalog_default!(\"memory_corpus\"),           // 74 memory_corpus\n    catalog_default!(\"skill_catalog\"),           // 75 skill_catalog\n    catalog_default!(\"agent_catalog\"),           // 76 agent_catalog\n    catalog_default!(\"provider_model_capability_catalog\"), // 77 provider_model_capability_catalog\n    catalog_default!(\"mcp_topology_tool_catalog\"), // 78 mcp_topology_tool_catalog\n    catalog_default!(\"hooks_map\"),               // 79 hooks_map\n    catalog_default!(\"workflow_graph\"),          // 80 workflow_graph\n    catalog_default!(\"tool_action_space\"),       // 81 tool_action_space\n    catalog_default!(\"rate_card_catalog\"),       // 82 rate_card_catalog\n    catalog_default!(\"router_lexicons\"),         // 83 router_lexicons\n    observation_default!(\"run_boundary.environment_snapshot\"), // 84 environment_snapshot\n    catalog_default!(\"web_search_backend_catalog\"), // 85 web_search_backend_catalog\n]",
       "krate": "tunables",
       "decl": "crates/tunables/src/resolution_metadata/current.rs",
       "applied": false,
@@ -65298,7 +65438,7 @@
       "class": "structural",
       "type": "array",
       "rust_type": "[ValueSchema; 25]",
-      "default": "[\n    list_schema!(\n        \"model_fallback_chain\",\n        0,\n        32,\n        true,\n        catalog_enum_domain!(\"model-routes\"),\n        [external_rule!(\"$\", ProviderCapability)]\n    ),\n    catalog_schema!(\n        \"failover_eligible_error_taxonomy\",\n        1024,\n        [\n            scalar_field!(\"error_class\", true, text_domain!(1, 96, NamespacedId)),\n            scalar_field!(\"eligible\", true, bool_domain!()),\n            scalar_field!(\n                \"dispatch_state\",\n                true,\n                finite_enum_domain!(\"pre_dispatch\", \"unknown\", \"post_dispatch\")\n            ),\n            scalar_field!(\"version\", true, text_domain!(1, 64, Semver))\n        ],\n        [external_catalog_rule!(\"version\", BenchmarkProtocol)]\n    ),\n    map_schema!(\n        \"route_quality_cost_latency_objective_weights\",\n        3,\n        3,\n        finite_enum_domain!(\"quality\", \"cost\", \"latency\"),\n        crate::FieldDomain::Scalar {\n            domain: decimal_domain!(0, 0, 1, 0, 6, \"weight\")\n        },\n        [sum_equals_decimal_rule!(\n            [\"quality\", \"cost\", \"latency\"],\n            1,\n            0\n        )]\n    ),\n    object_schema!(\n        \"provider_health_circuit_breaker_state_policy\",\n        [\n            scalar_field!(\"failure_threshold\", true, int_domain!(1, 1024, \"failures\")),\n            scalar_field!(\"open_seconds\", true, int_domain!(1, 86_400, \"seconds\")),\n            scalar_field!(\"half_open_probes\", true, int_domain!(1, 1024, \"probes\")),\n            scalar_field!(\"success_threshold\", true, int_domain!(1, 1024, \"successes\"))\n        ],\n        [\n            external_rule!(\"open_seconds\", ParentWall),\n            external_rule!(\"half_open_probes\", RunBudget)\n        ]\n    ),\n    object_schema!(\n        \"hedged_request_policy\",\n        [\n            scalar_field!(\"enabled\", true, bool_domain!()),\n            scalar_field!(\n                \"delay_milliseconds\",\n                true,\n                int_domain!(0, 86_400_000, \"milliseconds\")\n            ),\n            scalar_field!(\"max_duplicates\", true, int_domain!(0, 8, \"requests\")),\n            scalar_field!(\"idempotent_only\", true, bool_domain!())\n        ],\n        [\n            requires_bool_rule!(\"enabled\", true, \"max_duplicates\"),\n            requires_bool_rule!(\"enabled\", true, \"idempotent_only\"),\n            external_rule!(\"delay_milliseconds\", ParentWall),\n            external_rule!(\"max_duplicates\", ParentCost)\n        ]\n    ),\n    scalar_schema!(\n        \"provider_service_tier\",\n        Enum,\n        catalog_enum_domain!(\"provider-service-tiers\"),\n        [\n            external_rule!(\"$\", ProviderCapability),\n            external_domain_rule!(\"$\", ParentCost)\n        ]\n    ),\n    scalar_schema!(\n        \"response_verbosity\",\n        Enum,\n        finite_enum_domain!(\"model_default\", \"concise\", \"balanced\", \"detailed\"),\n        [\n            external_rule!(\"$\", ProviderCapability),\n            external_domain_rule!(\"$\", ParentTokens)\n        ]\n    ),\n    map_schema!(\n        \"role_specific_model_map\",\n        0,\n        256,\n        catalog_enum_domain!(\"agent-roles\"),\n        crate::FieldDomain::Scalar {\n            domain: catalog_enum_domain!(\"model-routes\")\n        },\n        [\n            external_rule!(\"$\", ProviderCapability),\n            external_domain_rule!(\"$\", ParentCost)\n        ]\n    ),\n    scalar_schema!(\n        \"provider_request_total_deadline\",\n        Duration,\n        int_domain!(1, 86_400_000, \"milliseconds\"),\n        [external_rule!(\"$\", ParentWall)]\n    ),\n    scalar_schema!(\n        \"stream_idle_watchdog\",\n        Duration,\n        int_domain!(1, 86_400_000, \"milliseconds\"),\n        [external_rule!(\"$\", ParentWall)]\n    ),\n    object_schema!(\n        \"context_window_override_reserve\",\n        [\n            scalar_field!(\n                \"model_window_tokens\",\n                true,\n                int_domain!(1, 10_000_000, \"tokens\")\n            ),\n            scalar_field!(\n                \"operator_override_tokens\",\n                false,\n                int_domain!(1, 10_000_000, \"tokens\")\n            ),\n            scalar_field!(\n                \"output_reserve_tokens\",\n                true,\n                int_domain!(0, 1_000_000, \"tokens\")\n            ),\n            scalar_field!(\n                \"verification_reserve_tokens\",\n                true,\n                int_domain!(0, 1_000_000, \"tokens\")\n            ),\n            scalar_field!(\n                \"instruction_budget_tokens\",\n                true,\n                int_domain!(0, 10_000_000, \"tokens\")\n            ),\n            scalar_field!(\n                \"task_context_budget_tokens\",\n                true,\n                int_domain!(0, 10_000_000, \"tokens\")\n            ),\n            scalar_field!(\n                \"memory_budget_tokens\",\n                true,\n                int_domain!(0, 10_000_000, \"tokens\")\n            ),\n            scalar_field!(\n                \"attachment_budget_tokens\",\n                true,\n                int_domain!(0, 10_000_000, \"tokens\")\n            ),\n            scalar_field!(\n                \"tool_schema_budget_tokens\",\n                true,\n                int_domain!(0, 10_000_000, \"tokens\")\n            )\n        ],\n        [\n            sum_rule!(\n                [\"output_reserve_tokens\", \"verification_reserve_tokens\"],\n                \"model_window_tokens\"\n            ),\n            resolved_set_sum_rule!(\n                \"iteron://tunables/resolved-set-rules/context-window-components-v1\",\n                [\n                    \"context_window_override_reserve\" => \"output_reserve_tokens\",\n                    \"context_window_override_reserve\" => \"verification_reserve_tokens\",\n                    \"context_window_override_reserve\" => \"instruction_budget_tokens\",\n                    \"context_window_override_reserve\" => \"task_context_budget_tokens\",\n                    \"context_window_override_reserve\" => \"memory_budget_tokens\",\n                    \"context_window_override_reserve\" => \"attachment_budget_tokens\",\n                    \"context_window_override_reserve\" => \"tool_schema_budget_tokens\",\n                    \"system_prefix_budget\" => \"$\",\n                    \"conversation_history_budget\" => \"$\",\n                    \"tool_result_history_budget\" => \"$\",\n                    \"multimodal_token_budget\" => \"$\",\n                    \"lsp_result_context_budget\" => \"$\"\n                ],\n                \"context_window_override_reserve\" => \"model_window_tokens\"\n            ),\n            external_rule!(\"model_window_tokens\", ProviderCapability),\n            external_rule!(\"model_window_tokens\", ContextWindow)\n        ]\n    ),\n    scalar_schema!(\n        \"system_prefix_budget\",\n        Count,\n        int_domain!(0, 10_000_000, \"tokens\"),\n        [external_rule!(\"$\", ContextWindow)]\n    ),\n    scalar_schema!(\n        \"conversation_history_budget\",\n        Count,\n        int_domain!(0, 10_000_000, \"tokens\"),\n        [external_rule!(\"$\", ContextWindow)]\n    ),\n    scalar_schema!(\n        \"tool_result_history_budget\",\n        Count,\n        int_domain!(0, 10_000_000, \"tokens\"),\n        [external_rule!(\"$\", ContextWindow)]\n    ),\n    scalar_schema!(\n        \"multimodal_token_budget\",\n        Count,\n        int_domain!(0, 10_000_000, \"tokens\"),\n        [\n            external_rule!(\"$\", ContextWindow),\n            external_rule!(\"$\", ProviderCapability)\n        ]\n    ),\n    scalar_schema!(\n        \"auto_compaction_enable\",\n        Bool,\n        bool_domain!(),\n        [external_domain_rule!(\"$\", ContextWindow)]\n    ),\n    object_schema!(\n        \"compaction_cooldown_hysteresis\",\n        [\n            scalar_field!(\"cooldown_turns\", true, int_domain!(0, 10_000, \"turns\")),\n            scalar_field!(\"enter_ratio\", true, decimal_domain!(0, 0, 1, 0, 6, \"ratio\")),\n            scalar_field!(\"exit_ratio\", true, decimal_domain!(0, 0, 1, 0, 6, \"ratio\"))\n        ],\n        [\n            less_equal_rule!(\"exit_ratio\", \"enter_ratio\"),\n            external_rule!(\"cooldown_turns\", ParentTurns)\n        ]\n    ),\n    scalar_schema!(\n        \"multi_stage_summary_topology\",\n        Enum,\n        finite_enum_domain!(\"single_stage\", \"hierarchical\", \"map_reduce\"),\n        [external_domain_rule!(\"$\", ContextWindow)]\n    ),\n    scalar_schema!(\n        \"summary_consistency_coverage_check\",\n        Bool,\n        bool_domain!(),\n        [external_rule!(\"$\", VerificationFloor)]\n    ),\n    map_schema!(\n        \"hybrid_retrieval_fusion_weights\",\n        1,\n        8,\n        finite_enum_domain!(\"lexical\", \"vector\", \"structural\", \"reranker\"),\n        crate::FieldDomain::Scalar {\n            domain: decimal_domain!(0, 0, 1, 0, 6, \"weight\")\n        },\n        [\n            at_least_one_non_zero_rule!([\"lexical\", \"structural\", \"vector\", \"reranker\"]),\n            equals_decimal_rule!(\"vector\", 0, 0),\n            equals_decimal_rule!(\"reranker\", 0, 0)\n        ]\n    ),\n    scalar_schema!(\n        \"retrieval_recency_decay\",\n        Ratio,\n        decimal_domain!(0, 0, 1, 0, 6, \"ratio\"),\n        [external_rule!(\"$\", TenantScope)]\n    ),\n    scalar_schema!(\n        \"context_novelty_dedup_threshold\",\n        Ratio,\n        decimal_domain!(0, 0, 1, 0, 6, \"ratio\"),\n        [external_rule!(\"$\", ContextWindow)]\n    ),\n    scalar_schema!(\n        \"persistent_pty_backend\",\n        Enum,\n        finite_enum_domain!(\"disabled\", \"one_shot\", \"persistent\"),\n        [\n            external_domain_rule!(\"$\", ProcessBudget),\n            external_rule!(\"$\", OperatorAuthority)\n        ]\n    ),\n    scalar_schema!(\n        \"concurrent_background_job_cap\",\n        Count,\n        int_domain!(0, 16, \"jobs\"),\n        [external_rule!(\"$\", ProcessBudget)]\n    ),\n    scalar_schema!(\n        \"job_idle_stall_timeout\",\n        Duration,\n        int_domain!(1, 86_400_000, \"milliseconds\"),\n        [external_rule!(\"$\", ParentWall)]\n    ),\n]",
+      "default": "[\n    list_schema!(\n        \"model_fallback_chain\",\n        0,\n        32,\n        true,\n        catalog_enum_domain!(\"model-routes\"),\n        [external_rule!(\"$\", ProviderCapability)]\n    ),\n    catalog_schema!(\n        \"failover_eligible_error_taxonomy\",\n        1024,\n        [\n            scalar_field!(\"error_class\", true, text_domain!(1, 96, NamespacedId)),\n            scalar_field!(\"eligible\", true, bool_domain!()),\n            scalar_field!(\n                \"dispatch_state\",\n                true,\n                finite_enum_domain!(\"pre_dispatch\", \"unknown\", \"post_dispatch\")\n            ),\n            scalar_field!(\"version\", true, text_domain!(1, 64, Semver))\n        ],\n        [external_catalog_rule!(\"version\", BenchmarkProtocol)]\n    ),\n    map_schema!(\n        \"route_quality_cost_latency_objective_weights\",\n        3,\n        3,\n        finite_enum_domain!(\"quality\", \"cost\", \"latency\"),\n        crate::FieldDomain::Scalar {\n            domain: decimal_domain!(0, 0, 1, 0, 6, \"weight\")\n        },\n        [sum_equals_decimal_rule!(\n            [\"quality\", \"cost\", \"latency\"],\n            1,\n            0\n        )]\n    ),\n    object_schema!(\n        \"provider_health_circuit_breaker_state_policy\",\n        [\n            scalar_field!(\"failure_threshold\", true, int_domain!(1, 1024, \"failures\")),\n            scalar_field!(\"open_seconds\", true, int_domain!(1, 86_400, \"seconds\")),\n            scalar_field!(\"half_open_probes\", true, int_domain!(1, 1024, \"probes\")),\n            scalar_field!(\"success_threshold\", true, int_domain!(1, 1024, \"successes\"))\n        ],\n        [\n            external_rule!(\"open_seconds\", ParentWall),\n            external_rule!(\"half_open_probes\", RunBudget)\n        ]\n    ),\n    object_schema!(\n        \"hedged_request_policy\",\n        [\n            scalar_field!(\"enabled\", true, bool_domain!()),\n            scalar_field!(\n                \"delay_milliseconds\",\n                true,\n                int_domain!(0, 86_400_000, \"milliseconds\")\n            ),\n            scalar_field!(\"max_duplicates\", true, int_domain!(0, 8, \"requests\")),\n            scalar_field!(\"idempotent_only\", true, bool_domain!())\n        ],\n        [\n            requires_bool_rule!(\"enabled\", true, \"max_duplicates\"),\n            requires_bool_rule!(\"enabled\", true, \"idempotent_only\"),\n            external_rule!(\"delay_milliseconds\", ParentWall),\n            external_rule!(\"max_duplicates\", ParentCost)\n        ]\n    ),\n    scalar_schema!(\n        \"provider_service_tier\",\n        Enum,\n        catalog_enum_domain!(\"provider-service-tiers\"),\n        [\n            external_rule!(\"$\", ProviderCapability),\n            external_domain_rule!(\"$\", ParentCost)\n        ]\n    ),\n    scalar_schema!(\n        \"response_verbosity\",\n        Enum,\n        finite_enum_domain!(\"model_default\", \"concise\", \"balanced\", \"detailed\"),\n        [\n            external_rule!(\"$\", ProviderCapability),\n            external_domain_rule!(\"$\", ParentTokens)\n        ]\n    ),\n    map_schema!(\n        \"role_specific_model_map\",\n        0,\n        256,\n        catalog_enum_domain!(\"agent-roles\"),\n        crate::FieldDomain::Scalar {\n            domain: catalog_enum_domain!(\"model-routes\")\n        },\n        [\n            external_rule!(\"$\", ProviderCapability),\n            external_domain_rule!(\"$\", ParentCost)\n        ]\n    ),\n    scalar_schema!(\n        \"provider_request_total_deadline\",\n        Duration,\n        int_domain!(1, 86_400_000, \"milliseconds\"),\n        [external_rule!(\"$\", ParentWall)]\n    ),\n    scalar_schema!(\n        \"stream_idle_watchdog\",\n        Duration,\n        int_domain!(1, 86_400_000, \"milliseconds\"),\n        [external_rule!(\"$\", ParentWall)]\n    ),\n    object_schema!(\n        \"context_window_override_reserve\",\n        [\n            scalar_field!(\n                \"model_window_tokens\",\n                true,\n                int_domain!(1, 10_000_000, \"tokens\")\n            ),\n            scalar_field!(\n                \"operator_override_tokens\",\n                false,\n                int_domain!(1, 10_000_000, \"tokens\")\n            ),\n            scalar_field!(\n                \"output_reserve_tokens\",\n                true,\n                int_domain!(0, 1_000_000, \"tokens\")\n            ),\n            scalar_field!(\n                \"verification_reserve_tokens\",\n                true,\n                int_domain!(0, 1_000_000, \"tokens\")\n            ),\n            scalar_field!(\n                \"instruction_budget_tokens\",\n                true,\n                int_domain!(0, 10_000_000, \"tokens\")\n            ),\n            scalar_field!(\n                \"task_context_budget_tokens\",\n                true,\n                int_domain!(0, 10_000_000, \"tokens\")\n            ),\n            scalar_field!(\n                \"memory_budget_tokens\",\n                true,\n                int_domain!(0, 10_000_000, \"tokens\")\n            ),\n            scalar_field!(\n                \"attachment_budget_tokens\",\n                true,\n                int_domain!(0, 10_000_000, \"tokens\")\n            ),\n            scalar_field!(\n                \"tool_schema_budget_tokens\",\n                true,\n                int_domain!(0, 10_000_000, \"tokens\")\n            )\n        ],\n        [\n            sum_rule!(\n                [\"output_reserve_tokens\", \"verification_reserve_tokens\"],\n                \"model_window_tokens\"\n            ),\n            resolved_set_sum_rule!(\n                \"iteron://tunables/resolved-set-rules/context-window-components-v1\",\n                [\n                    \"context_window_override_reserve\" => \"output_reserve_tokens\",\n                    \"context_window_override_reserve\" => \"verification_reserve_tokens\",\n                    \"context_window_override_reserve\" => \"instruction_budget_tokens\",\n                    \"context_window_override_reserve\" => \"task_context_budget_tokens\",\n                    \"context_window_override_reserve\" => \"memory_budget_tokens\",\n                    \"context_window_override_reserve\" => \"attachment_budget_tokens\",\n                    \"context_window_override_reserve\" => \"tool_schema_budget_tokens\",\n                    \"system_prefix_budget\" => \"$\",\n                    \"conversation_history_budget\" => \"$\",\n                    \"tool_result_history_budget\" => \"$\",\n                    \"multimodal_token_budget\" => \"$\",\n                    \"lsp_result_context_budget\" => \"$\"\n                ],\n                \"context_window_override_reserve\" => \"model_window_tokens\"\n            ),\n            external_rule!(\"model_window_tokens\", ProviderCapability),\n            external_rule!(\"model_window_tokens\", ContextWindow)\n        ]\n    ),\n    scalar_schema!(\n        \"system_prefix_budget\",\n        Count,\n        int_domain!(0, 10_000_000, \"tokens\"),\n        [external_rule!(\"$\", ContextWindow)]\n    ),\n    scalar_schema!(\n        \"conversation_history_budget\",\n        Count,\n        int_domain!(0, 10_000_000, \"tokens\"),\n        [external_rule!(\"$\", ContextWindow)]\n    ),\n    scalar_schema!(\n        \"tool_result_history_budget\",\n        Count,\n        int_domain!(0, 10_000_000, \"tokens\"),\n        [external_rule!(\"$\", ContextWindow)]\n    ),\n    scalar_schema!(\n        \"multimodal_token_budget\",\n        Count,\n        int_domain!(0, 10_000_000, \"tokens\"),\n        [\n            external_rule!(\"$\", ContextWindow),\n            external_rule!(\"$\", ProviderCapability)\n        ]\n    ),\n    scalar_schema!(\n        \"auto_compaction_enable\",\n        Bool,\n        bool_domain!(),\n        [external_domain_rule!(\"$\", ContextWindow)]\n    ),\n    object_schema!(\n        \"compaction_cooldown_hysteresis\",\n        [\n            scalar_field!(\"cooldown_turns\", true, int_domain!(0, 10_000, \"turns\")),\n            scalar_field!(\"enter_ratio\", true, decimal_domain!(0, 0, 1, 0, 6, \"ratio\")),\n            scalar_field!(\"exit_ratio\", true, decimal_domain!(0, 0, 1, 0, 6, \"ratio\"))\n        ],\n        [\n            less_equal_rule!(\"exit_ratio\", \"enter_ratio\"),\n            external_rule!(\"cooldown_turns\", ParentTurns)\n        ]\n    ),\n    scalar_schema!(\n        \"multi_stage_summary_topology\",\n        Enum,\n        finite_enum_domain!(\"single_stage\", \"hierarchical\", \"map_reduce\"),\n        [external_domain_rule!(\"$\", ContextWindow)]\n    ),\n    scalar_schema!(\n        \"summary_consistency_coverage_check\",\n        Bool,\n        bool_domain!(),\n        [external_rule!(\"$\", VerificationFloor)]\n    ),\n    map_schema!(\n        \"hybrid_retrieval_fusion_weights\",\n        1,\n        8,\n        finite_enum_domain!(\"lexical\", \"vector\", \"structural\", \"reranker\"),\n        crate::FieldDomain::Scalar {\n            domain: decimal_domain!(0, 0, 1, 0, 6, \"weight\")\n        },\n        [\n            at_least_one_non_zero_rule!([\"lexical\", \"structural\", \"vector\", \"reranker\"]),\n            equals_decimal_rule!(\"vector\", 0, 0),\n            equals_decimal_rule!(\"reranker\", 0, 0)\n        ]\n    ),\n    scalar_schema!(\n        \"retrieval_recency_decay\",\n        Ratio,\n        decimal_domain!(0, 0, 1, 0, 6, \"ratio\"),\n        [external_rule!(\"$\", ContextWindow)]\n    ),\n    scalar_schema!(\n        \"context_novelty_dedup_threshold\",\n        Ratio,\n        decimal_domain!(0, 0, 1, 0, 6, \"ratio\"),\n        [external_rule!(\"$\", ContextWindow)]\n    ),\n    scalar_schema!(\n        \"persistent_pty_backend\",\n        Enum,\n        finite_enum_domain!(\"disabled\", \"one_shot\", \"persistent\"),\n        [\n            external_domain_rule!(\"$\", ProcessBudget),\n            external_rule!(\"$\", OperatorAuthority)\n        ]\n    ),\n    scalar_schema!(\n        \"concurrent_background_job_cap\",\n        Count,\n        int_domain!(0, 16, \"jobs\"),\n        [external_rule!(\"$\", ProcessBudget)]\n    ),\n    scalar_schema!(\n        \"job_idle_stall_timeout\",\n        Duration,\n        int_domain!(1, 86_400_000, \"milliseconds\"),\n        [external_rule!(\"$\", ParentWall)]\n    ),\n]",
       "krate": "tunables",
       "decl": "crates/tunables/src/value_schemas/appendix/first.rs",
       "applied": false,

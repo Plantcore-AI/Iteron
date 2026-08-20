@@ -246,6 +246,50 @@ fn tool_breakdown_uses_the_tool_name_not_the_provider_call_id() {
 }
 
 #[test]
+fn token_economy_exposes_prompt_replay_growth_without_reading_content() {
+    let turns = [
+        event(
+            0,
+            EventKind::TurnEnd {
+                usage: Usage {
+                    input: 1_000,
+                    output: 100,
+                    cache_creation: 0,
+                    cache_read: 0,
+                    thinking: 10,
+                },
+                ttft_ms: Some(1),
+                decode_ms: Some(2),
+                stream_items: Some(3),
+            },
+        ),
+        event(
+            1,
+            EventKind::TurnEnd {
+                usage: Usage {
+                    input: 500,
+                    output: 200,
+                    cache_creation: 0,
+                    cache_read: 3_500,
+                    thinking: 20,
+                },
+                ttft_ms: Some(1),
+                decode_ms: Some(2),
+                stream_items: Some(3),
+            },
+        ),
+    ];
+    let timeline = fold(turns.iter().map(|event| (Some(event.seq.0), event)));
+    let economy = timeline.token_economy;
+    assert_eq!(economy.prompt_tokens, 5_000);
+    assert_eq!(economy.first_turn_prompt_tokens, Some(1_000));
+    assert_eq!(economy.last_turn_prompt_tokens, Some(4_000));
+    assert_eq!(economy.prompt_growth_tokens, Some(3_000));
+    assert_eq!(economy.output_tokens, 300);
+    assert_eq!(economy.cache_hit_ratio_ppm, 700_000);
+}
+
+#[test]
 fn phase_partition_separates_idle_time_from_active_harness_work() {
     let events = [
         phase(0, Phase::Context),
