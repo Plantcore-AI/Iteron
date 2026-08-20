@@ -111,7 +111,7 @@ pub(super) fn apply(
     )?;
 
     let provider_connect_timeout = provider_connect_timeout_owner_value()?;
-    builder.attest_literal_owner(
+    builder.observe_default(
         "provider_connect_tls_timeout",
         provider_connect_timeout.clone(),
     )?;

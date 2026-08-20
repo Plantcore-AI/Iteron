@@ -1,12 +1,12 @@
 {
   "digest": {
     "algorithm": "sha256",
-    "value": "888709a96acca2151b94e0276e80597d70aa6e2317947d53aa544b26a550b467"
+    "value": "487c554cdcc97e7e86d9af2ae4c6f588e4e250fdefb868a9755c7201ad9e5fd6"
   },
   "payload": {
     "schema_version": 4,
     "registry_id": "iteron-tunables",
-    "registry_revision": 19,
+    "registry_revision": 20,
     "canonicalization": "iteron-tunables-json-v4",
     "family_count": 160,
     "scalar_catalogs": [
@@ -4775,7 +4775,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "65010238a8a18bc808881c39b81c347b152e99b699ffa804ddcb8f518a73431b"
+          "value": "4f546e4930b000a731545ad3a14cfdb3db79625646124f1a0fd8974d1777e327"
         },
         "schema_version": 3,
         "ordinal": 39,
@@ -4802,9 +4802,10 @@
           "core/tool_policy"
         ],
         "default": {
-          "kind": "literal",
+          "kind": "derived",
           "resolver": {
-            "type": "literal"
+            "type": "builtin",
+            "resolver_id": "iteron://tunables/resolvers/shell_timeout_output-v1"
           },
           "requirement": "optional",
           "value": {
@@ -8597,7 +8598,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "200f40c6b766b4be873a80a1fd3066466c002651b272873d1eb3e8b5464b629e"
+          "value": "592be7cf3cc4926974ec6aecdc2b75280a53c976b372ad4b4dd783ebb784cc7e"
         },
         "schema_version": 3,
         "ordinal": 67,
@@ -8625,9 +8626,10 @@
           "core/model_router"
         ],
         "default": {
-          "kind": "literal",
+          "kind": "derived",
           "resolver": {
-            "type": "literal"
+            "type": "builtin",
+            "resolver_id": "iteron://tunables/resolvers/provider_connect_tls_timeout-v1"
           },
           "requirement": "optional",
           "value": {
@@ -8904,7 +8906,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "18c1d31b496121ee10c4ad371a7f394ce9576461cb76a3b9492d99d2e2af39aa"
+          "value": "161aabefd388978ed4bb4f49703130ab02446fd570f404d2f53f79a284256749"
         },
         "schema_version": 3,
         "ordinal": 69,
@@ -8930,9 +8932,10 @@
           "core/router"
         ],
         "default": {
-          "kind": "literal",
+          "kind": "derived",
           "resolver": {
-            "type": "literal"
+            "type": "builtin",
+            "resolver_id": "iteron://tunables/resolvers/app_server_sq_eq_backpressure-v1"
           },
           "requirement": "optional",
           "value": {
@@ -12980,7 +12983,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "8edd42c6859ab1235be27437125b5102bfe8d48ff43e3449bd18e49f8718dbc0"
+          "value": "52efdcea84ea3eb01013bde69188bdd53a59405a1fe19e218e16d848b156c96d"
         },
         "schema_version": 3,
         "ordinal": 95,
@@ -13007,9 +13010,10 @@
           "core/model_router"
         ],
         "default": {
-          "kind": "literal",
+          "kind": "derived",
           "resolver": {
-            "type": "literal"
+            "type": "builtin",
+            "resolver_id": "iteron://tunables/resolvers/stream_idle_watchdog-v1"
           },
           "requirement": "optional",
           "value": {
@@ -14287,7 +14291,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "8903c303340c2a9ede2b986057b2f9a149cc2282b86d8972137adb72f26eb538"
+          "value": "0d44323af9a6280f203c93def4c90afe5725254af4d2a1cd179d9609529fd8e0"
         },
         "schema_version": 3,
         "ordinal": 105,
@@ -14314,9 +14318,10 @@
           "core/context"
         ],
         "default": {
-          "kind": "literal",
+          "kind": "derived",
           "resolver": {
-            "type": "literal"
+            "type": "builtin",
+            "resolver_id": "iteron://tunables/resolvers/hybrid_retrieval_fusion_weights-v1"
           },
           "requirement": "optional",
           "value": {
@@ -14449,7 +14454,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "4b4897022fdbd5b8ae27c04d4c04852d3530fb12062f3a444124b19cb3ce0162"
+          "value": "3526697943ff16dab5be414bf2eda85d6d1d60e7366ed1d4c8100704f266274d"
         },
         "schema_version": 3,
         "ordinal": 106,
@@ -14474,9 +14479,10 @@
           "core/memory"
         ],
         "default": {
-          "kind": "literal",
+          "kind": "derived",
           "resolver": {
-            "type": "literal"
+            "type": "builtin",
+            "resolver_id": "iteron://tunables/resolvers/retrieval_recency_decay-v1"
           },
           "requirement": "optional",
           "value": {
@@ -14565,7 +14571,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "6f2d70ffcf2794f65ff287cffd6e53289e178f10a14d45957848816d9f978b5a"
+          "value": "529d1acbd57e7964317efc004906ede7f034538e3cb52c446a1d2a4da8888c06"
         },
         "schema_version": 3,
         "ordinal": 107,
@@ -14592,9 +14598,10 @@
           "core/memory"
         ],
         "default": {
-          "kind": "literal",
+          "kind": "derived",
           "resolver": {
-            "type": "literal"
+            "type": "builtin",
+            "resolver_id": "iteron://tunables/resolvers/context_novelty_dedup_threshold-v1"
           },
           "requirement": "optional",
           "value": {
@@ -15609,7 +15616,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "b5a12107c87dd77d783b91cb3dc12753140b0cb0677f6a62bcac430cb2378f90"
+          "value": "d851a058baae149c47a78b3a931c9a2fd409110fa7e2e581a9c02529e5bd7bf3"
         },
         "schema_version": 3,
         "ordinal": 115,
@@ -15637,9 +15644,10 @@
           "core/tool_policy"
         ],
         "default": {
-          "kind": "literal",
+          "kind": "derived",
           "resolver": {
-            "type": "literal"
+            "type": "builtin",
+            "resolver_id": "iteron://tunables/resolvers/effecting_tool_concurrency-v1"
           },
           "requirement": "optional",
           "value": {
@@ -17030,7 +17038,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "4e8f8a76805791a101c353264cdde582e244a8cf5e5b88c92b8801c69986331d"
+          "value": "5203623b54c8b0c76cf02a6ab4c50aa043274d83ad534dc695bf354a64e9ca90"
         },
         "schema_version": 3,
         "ordinal": 125,
@@ -17055,9 +17063,10 @@
           "core/verifier"
         ],
         "default": {
-          "kind": "literal",
+          "kind": "derived",
           "resolver": {
-            "type": "literal"
+            "type": "builtin",
+            "resolver_id": "iteron://tunables/resolvers/flaky_test_detection_quarantine-v1"
           },
           "requirement": "optional",
           "value": {
@@ -17950,7 +17959,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "1955363823d624715d506da10e02fb675da84d28c22618bce0868a73eccadaf9"
+          "value": "984ad7ce62a05ca16384c6d7b50e52f3555650fe917c5bf20bbde25b9fee425c"
         },
         "schema_version": 3,
         "ordinal": 131,
@@ -17977,9 +17986,10 @@
           "core/collaboration"
         ],
         "default": {
-          "kind": "literal",
+          "kind": "derived",
           "resolver": {
-            "type": "literal"
+            "type": "builtin",
+            "resolver_id": "iteron://tunables/resolvers/verification_quorum_consensus-v1"
           },
           "requirement": "optional",
           "value": {
@@ -19090,7 +19100,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "7ad8be286b83d80b5389cf25383dcd3526018dee50e16f896aae730e38c9b58e"
+          "value": "effe3df41044d01007ae3d54c7e9f0be4cdac50732f0b31c9c41b4d577e89c51"
         },
         "schema_version": 3,
         "ordinal": 140,
@@ -19115,9 +19125,10 @@
           "core/scheduler"
         ],
         "default": {
-          "kind": "literal",
+          "kind": "derived",
           "resolver": {
-            "type": "literal"
+            "type": "builtin",
+            "resolver_id": "iteron://tunables/resolvers/speculative_sibling_count-v1"
           },
           "requirement": "optional",
           "value": {
@@ -19366,7 +19377,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "963864f89ba8bff5444808ed4beb4cc1b766c52eaff2fb1ed0954cf765a5a83b"
+          "value": "b566a220e8dfe6ada2655a0ffdedc10fd194d04b1029bd63a662a961b256ca0b"
         },
         "schema_version": 3,
         "ordinal": 142,
@@ -19392,9 +19403,10 @@
           "core/collaboration"
         ],
         "default": {
-          "kind": "literal",
+          "kind": "derived",
           "resolver": {
-            "type": "literal"
+            "type": "builtin",
+            "resolver_id": "iteron://tunables/resolvers/early_stop_quorum_policy-v1"
           },
           "requirement": "optional",
           "value": {
@@ -20150,7 +20162,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "ef0e7f8b807e23e8016df26982a21e1104ba5a664a8fa2b906c20f94ab1fbcd6"
+          "value": "be50536d5ffce90638ed5b4d32eefa195edbf10e9cd208f14fedf32fe1ee5c3f"
         },
         "schema_version": 3,
         "ordinal": 148,
@@ -20177,9 +20189,10 @@
           "core/tool_policy"
         ],
         "default": {
-          "kind": "literal",
+          "kind": "derived",
           "resolver": {
-            "type": "literal"
+            "type": "builtin",
+            "resolver_id": "iteron://tunables/resolvers/deferred_discovery_threshold-v1"
           },
           "requirement": "optional",
           "value": {
@@ -20658,7 +20671,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "fd84480d3479966cd3b36a9ab46978fcf39917b337533ea8d9cc735b9e4be426"
+          "value": "13c0ca48c8f83af82d7973554b1b6456687df513127da2c047fb291986d18cca"
         },
         "schema_version": 3,
         "ordinal": 152,
@@ -20685,9 +20698,10 @@
           "core/tool_policy"
         ],
         "default": {
-          "kind": "literal",
+          "kind": "derived",
           "resolver": {
-            "type": "literal"
+            "type": "builtin",
+            "resolver_id": "iteron://tunables/resolvers/mcp_result_cap_spill_policy-v1"
           },
           "requirement": "optional",
           "value": {
@@ -21463,7 +21477,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "01aba48a551cde798712245d72cfdf3c5c4eec6eb3918412518ea5ce8773e0e2"
+          "value": "d4dd49e54e30f66019e0b870d5e9b3023d875921f8151e769adb24843a53f989"
         },
         "schema_version": 3,
         "ordinal": 156,
@@ -21488,9 +21502,10 @@
           "core/model_router"
         ],
         "default": {
-          "kind": "literal",
+          "kind": "derived",
           "resolver": {
-            "type": "literal"
+            "type": "builtin",
+            "resolver_id": "iteron://tunables/resolvers/http_pool_keepalive_idle_policy-v1"
           },
           "requirement": "optional",
           "value": {

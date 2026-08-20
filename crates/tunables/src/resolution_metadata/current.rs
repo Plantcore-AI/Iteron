@@ -54,11 +54,14 @@ pub(super) const DEFAULTS: [DefaultSpec; 85] = [
     derived_default!("pure_concurrency"),    // 36 pure_concurrency
     derived_default!("failed_action_dedup"), // 37 failed_action_dedup
     derived_default!("pure_memo_cache"),     // 38 pure_memo_cache
-    literal_default!(object_value!(
-        "timeout_seconds" => integer_value!(120),
-        "stdout_max_bytes" => integer_value!(8_388_608),
-        "stderr_max_bytes" => integer_value!(8_388_608),
-    )), // 39 shell_timeout_output
+    derived_default_with_value!(
+        "shell_timeout_output",
+        object_value!(
+            "timeout_seconds" => integer_value!(120),
+            "stdout_max_bytes" => integer_value!(8_388_608),
+            "stderr_max_bytes" => integer_value!(8_388_608),
+        )
+    ), // 39 shell_timeout_output
     derived_default!("read_file_limits"),    // 40 read_file_limits
     derived_default!("list_dir_limits"),     // 41 list_dir_limits
     derived_default!("glob_limits"),         // 42 glob_limits
@@ -86,7 +89,7 @@ pub(super) const DEFAULTS: [DefaultSpec; 85] = [
     derived_default!("join_reduce"),         // 64 join_reduce
     derived_default!("workflow_aggregate"),  // 65 workflow_aggregate
     derived_default!("schema_retry_jitter"), // 66 schema_retry_jitter
-    literal_default!(integer_value!(10)),    // 67 provider_connect_tls_timeout
+    derived_default_with_value!("provider_connect_tls_timeout", integer_value!(10)), // 67 provider_connect_tls_timeout
     literal_default!(object_value!(
         "max_images" => integer_value!(8),
         "per_image_raw_bytes" => integer_value!(6_291_456),
@@ -94,13 +97,16 @@ pub(super) const DEFAULTS: [DefaultSpec; 85] = [
         "max_dimension" => integer_value!(8_192),
         "max_frames" => integer_value!(256),
     )), // 68 multimodal_input_admission_decode_envelope
-    literal_default!(object_value!(
-        "submission_entries" => integer_value!(256),
-        "submission_bytes" => integer_value!(34_866_176),
-        "event_entries" => integer_value!(1_024),
-        "cosmetic_overflow" => enum_value!("coalesce"),
-        "authoritative_overflow" => enum_value!("wait"),
-    )), // 69 app_server_sq_eq_backpressure
+    derived_default_with_value!(
+        "app_server_sq_eq_backpressure",
+        object_value!(
+            "submission_entries" => integer_value!(256),
+            "submission_bytes" => integer_value!(34_866_176),
+            "event_entries" => integer_value!(1_024),
+            "cosmetic_overflow" => enum_value!("coalesce"),
+            "authoritative_overflow" => enum_value!("wait"),
+        )
+    ), // 69 app_server_sq_eq_backpressure
     literal_default!(object_value!(
         "eager_budget_milliseconds" => integer_value!(0),
         "positive_ttl_seconds" => integer_value!(900),
@@ -108,18 +114,18 @@ pub(super) const DEFAULTS: [DefaultSpec; 85] = [
         "failure_backoff_cap_seconds" => integer_value!(86_400),
     )), // 70 provider_discovery_account_probe_cache_policy
     operator_default!("operator_prompt_stream"), // 71 operator_prompt_stream
-    catalog_default!("builtin_prompt_corpus"), // 72 builtin_prompt_corpus
-    catalog_default!("instruction_bundle"),  // 73 instruction_bundle
-    catalog_default!("memory_corpus"),       // 74 memory_corpus
-    catalog_default!("skill_catalog"),       // 75 skill_catalog
-    catalog_default!("agent_catalog"),       // 76 agent_catalog
+    catalog_default!("builtin_prompt_corpus"),   // 72 builtin_prompt_corpus
+    catalog_default!("instruction_bundle"),      // 73 instruction_bundle
+    catalog_default!("memory_corpus"),           // 74 memory_corpus
+    catalog_default!("skill_catalog"),           // 75 skill_catalog
+    catalog_default!("agent_catalog"),           // 76 agent_catalog
     catalog_default!("provider_model_capability_catalog"), // 77 provider_model_capability_catalog
     catalog_default!("mcp_topology_tool_catalog"), // 78 mcp_topology_tool_catalog
-    catalog_default!("hooks_map"),           // 79 hooks_map
-    catalog_default!("workflow_graph"),      // 80 workflow_graph
-    catalog_default!("tool_action_space"),   // 81 tool_action_space
-    catalog_default!("rate_card_catalog"),   // 82 rate_card_catalog
-    catalog_default!("router_lexicons"),     // 83 router_lexicons
+    catalog_default!("hooks_map"),               // 79 hooks_map
+    catalog_default!("workflow_graph"),          // 80 workflow_graph
+    catalog_default!("tool_action_space"),       // 81 tool_action_space
+    catalog_default!("rate_card_catalog"),       // 82 rate_card_catalog
+    catalog_default!("router_lexicons"),         // 83 router_lexicons
     observation_default!("run_boundary.environment_snapshot"), // 84 environment_snapshot
     catalog_default!("web_search_backend_catalog"), // 85 web_search_backend_catalog
 ];
