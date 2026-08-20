@@ -46,8 +46,8 @@ Manual `git tag` commands, especially lightweight tags, must not be used for
 version releases. A lightweight tag causes `release.yml` to fail the annotated-tag
 verification and burns a version number.
 
-A pre-push hook template is available in `.githooks/pre-push` for developers who
-want a local guard. It is not installed automatically; copy it to
+A pre-push hook template is available in `release-tools/githooks/pre-push` for
+developers who want a local guard. It is not installed automatically; copy it to
 `.git/hooks/pre-push` and make it executable. CI remains the authoritative
 enforcement because hooks can be skipped or missing.
 

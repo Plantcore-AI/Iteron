@@ -2984,10 +2984,6 @@
         },
         {
           "kind": "file",
-          "path": ".githooks/pre-push"
-        },
-        {
-          "kind": "file",
           "path": ".gitignore"
         },
         {
