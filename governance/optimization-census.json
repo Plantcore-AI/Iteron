@@ -1,19 +1,19 @@
 {
   "schema_version": 4,
-  "total": 2900,
-  "runtime_settable": 2027,
-  "invariant_read_only": 873,
+  "total": 2904,
+  "runtime_settable": 2029,
+  "invariant_read_only": 875,
   "binding_required": 0,
-  "advertised_runtime_settable": 2027,
-  "runtime_applied": 2027,
-  "externally_addressed_runtime_settable": 2027,
+  "advertised_runtime_settable": 2029,
+  "runtime_applied": 2029,
+  "externally_addressed_runtime_settable": 2029,
   "unaddressed_runtime_settable": 0,
-  "mechanical_invariant_dispositions": 873,
-  "owning_human_review_required": 873,
+  "mechanical_invariant_dispositions": 875,
+  "owning_human_review_required": 875,
   "explicit_invariant_overrides": 221,
   "address_kind_counts": {
     "unified_profile": 1388,
-    "direct_config": 313,
+    "direct_config": 315,
     "caller_input": 326
   },
   "invariant_kind_counts": {
@@ -21,7 +21,7 @@
     "wire_compatibility": 53,
     "authority": 43,
     "security": 30,
-    "durability": 79,
+    "durability": 81,
     "replay": 9,
     "hard_budget": 123,
     "effect_ledger": 12,
@@ -31,10 +31,10 @@
     "completeness_claim": "complete_for_declared_production_source_forms_not_mathematical_universe",
     "production_rust_files_scanned": 673,
     "source_form_counts": {
-      "const": 2056,
+      "const": 2058,
       "static": 56,
       "associated_const": 41,
-      "serde_default": 290,
+      "serde_default": 292,
       "clap_default": 22,
       "policy_default_constructor": 542,
       "policy_fallback_call": 11,
@@ -45,10 +45,10 @@
       "dynamic_plugin_manifest": 0
     },
     "candidate_row_counts": {
-      "const": 2056,
+      "const": 2058,
       "static": 56,
       "associated_const": 41,
-      "serde_default": 290,
+      "serde_default": 292,
       "clap_default": 22,
       "policy_default_constructor": 13,
       "policy_fallback_call": 0,
@@ -31662,7 +31662,7 @@
         },
         {
           "path": "crates/eval/src/tuner/journal.rs",
-          "line": 163,
+          "line": 167,
           "evidence": "Rust path reference"
         }
       ],
@@ -31982,7 +31982,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/contract.rs",
-          "line": 90,
+          "line": 91,
           "evidence": "serde(default) production parser/deserializer default"
         }
       ],
@@ -32011,13 +32011,13 @@
       "use_sites": [
         {
           "path": "crates/eval/src/contract.rs",
-          "line": 571,
+          "line": 676,
           "evidence": "Rust path reference"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "identity",
-      "review_evidence": "closed Tier-2 disposition rule: `ITERON_CLI_SCHEMA_VERSION` at crates/eval/src/contract.rs — the value participates in stable identity/canonical naming; observed at crates/eval/src/contract.rs:571 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "closed Tier-2 disposition rule: `ITERON_CLI_SCHEMA_VERSION` at crates/eval/src/contract.rs — the value participates in stable identity/canonical naming; observed at crates/eval/src/contract.rs:676 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": false,
       "applied": false,
@@ -32036,7 +32036,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/contract.rs",
-          "line": 426,
+          "line": 529,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -32066,7 +32066,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/contract.rs",
-          "line": 401,
+          "line": 504,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -32096,13 +32096,13 @@
       "use_sites": [
         {
           "path": "crates/eval/src/contract.rs",
-          "line": 568,
+          "line": 673,
           "evidence": "Rust path reference"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "identity",
-      "review_evidence": "closed Tier-2 disposition rule: `SUPPORTED_ITERON_CLI_SCHEMA_VERSIONS` at crates/eval/src/contract.rs — the value participates in stable identity/canonical naming; observed at crates/eval/src/contract.rs:568 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "closed Tier-2 disposition rule: `SUPPORTED_ITERON_CLI_SCHEMA_VERSIONS` at crates/eval/src/contract.rs — the value participates in stable identity/canonical naming; observed at crates/eval/src/contract.rs:673 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": false,
       "applied": false,
@@ -32121,13 +32121,13 @@
       "use_sites": [
         {
           "path": "crates/eval/src/contract.rs",
-          "line": 574,
+          "line": 679,
           "evidence": "Rust path reference"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "identity",
-      "review_evidence": "closed Tier-2 disposition rule: `SUPPORTED_ITERON_CLI_TYPE_VERSIONS` at crates/eval/src/contract.rs — the value participates in stable identity/canonical naming; observed at crates/eval/src/contract.rs:574 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "closed Tier-2 disposition rule: `SUPPORTED_ITERON_CLI_TYPE_VERSIONS` at crates/eval/src/contract.rs — the value participates in stable identity/canonical naming; observed at crates/eval/src/contract.rs:679 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": false,
       "applied": false,
@@ -33446,12 +33446,12 @@
         },
         {
           "path": "crates/eval/src/reference_harness.rs",
-          "line": 619,
+          "line": 620,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/eval/src/reference_harness.rs",
-          "line": 628,
+          "line": 629,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -35224,12 +35224,12 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 1251,
+          "line": 1255,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 1685,
+          "line": 1689,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -35384,7 +35384,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 1614,
+          "line": 1618,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -35414,13 +35414,13 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 1483,
+          "line": 1487,
           "evidence": "Rust path reference"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "non_value_structural",
-      "review_evidence": "explicit census disposition override: `PROCESS_OUTPUT_LIMIT` at crates/eval/src/runner.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/eval/src/runner.rs:1483 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "explicit census disposition override: `PROCESS_OUTPUT_LIMIT` at crates/eval/src/runner.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/eval/src/runner.rs:1487 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": true,
       "applied": false,
@@ -36686,7 +36686,7 @@
         },
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 187,
+          "line": 190,
           "evidence": "Rust path reference"
         }
       ],
@@ -36989,17 +36989,17 @@
         },
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 189,
+          "line": 192,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 244,
+          "line": 247,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 366,
+          "line": 383,
           "evidence": "Rust path reference"
         }
       ],
@@ -37194,7 +37194,7 @@
         },
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 588,
+          "line": 605,
           "evidence": "macro token reference"
         }
       ],
@@ -37205,6 +37205,36 @@
       "explicit_invariant_override": false,
       "applied": false,
       "tier2_id": "eval.tuner.implementation_protocol"
+    },
+    {
+      "id": "eval.tuner.journal.current_journal_schema_version",
+      "candidate_kind": "const",
+      "rust_type": "u8",
+      "value": "2",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/tuner/journal.rs",
+        "symbol": "CURRENT_JOURNAL_SCHEMA_VERSION"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/tuner/journal.rs",
+          "line": 11,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/tuner/journal.rs",
+          "line": 118,
+          "evidence": "Rust path reference"
+        }
+      ],
+      "disposition": "invariant_read_only",
+      "invariant_kind": "durability",
+      "review_evidence": "closed Tier-2 disposition rule: `CURRENT_JOURNAL_SCHEMA_VERSION` at crates/eval/src/tuner/journal.rs — the value fixes durable storage or checkpoint interpretation; observed at crates/eval/src/tuner/journal.rs:11 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "owning_human_review": "required_not_source_proven",
+      "explicit_invariant_override": false,
+      "applied": false,
+      "tier2_id": "eval.tuner.journal.current_journal_schema_version"
     },
     {
       "id": "eval.tuner.journal.domain",
@@ -37224,7 +37254,7 @@
         },
         {
           "path": "crates/eval/src/tuner/journal.rs",
-          "line": 163,
+          "line": 167,
           "evidence": "Rust path reference"
         }
       ],
@@ -37249,12 +37279,12 @@
       "use_sites": [
         {
           "path": "crates/eval/src/tuner/journal.rs",
-          "line": 50,
+          "line": 54,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/eval/src/tuner/journal.rs",
-          "line": 134,
+          "line": 138,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -37284,12 +37314,12 @@
       "use_sites": [
         {
           "path": "crates/eval/src/tuner/journal.rs",
-          "line": 70,
+          "line": 74,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/eval/src/tuner/journal.rs",
-          "line": 129,
+          "line": 133,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -37307,6 +37337,31 @@
       "tier2_id": "eval.tuner.journal.max_record_bytes"
     },
     {
+      "id": "eval.tuner.journal.supported_journal_schema_versions",
+      "candidate_kind": "const",
+      "rust_type": "&[u8]",
+      "value": "&[1, CURRENT_JOURNAL_SCHEMA_VERSION]",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/tuner/journal.rs",
+        "symbol": "SUPPORTED_JOURNAL_SCHEMA_VERSIONS"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/tuner/journal.rs",
+          "line": 85,
+          "evidence": "Rust path reference"
+        }
+      ],
+      "disposition": "invariant_read_only",
+      "invariant_kind": "durability",
+      "review_evidence": "closed Tier-2 disposition rule: `SUPPORTED_JOURNAL_SCHEMA_VERSIONS` at crates/eval/src/tuner/journal.rs — the value fixes durable storage or checkpoint interpretation; observed at crates/eval/src/tuner/journal.rs:85 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "owning_human_review": "required_not_source_proven",
+      "explicit_invariant_override": false,
+      "applied": false,
+      "tier2_id": "eval.tuner.journal.supported_journal_schema_versions"
+    },
+    {
       "id": "eval.tuner.legacy_implementation_protocol",
       "candidate_kind": "const",
       "rust_type": "&str",
@@ -37319,13 +37374,13 @@
       "use_sites": [
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 588,
+          "line": 605,
           "evidence": "macro token reference"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "non_value_structural",
-      "review_evidence": "closed Tier-2 disposition rule: `LEGACY_IMPLEMENTATION_PROTOCOL` at crates/eval/src/tuner.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/eval/src/tuner/state_ops.rs:588 (macro token reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "closed Tier-2 disposition rule: `LEGACY_IMPLEMENTATION_PROTOCOL` at crates/eval/src/tuner.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/eval/src/tuner/state_ops.rs:605 (macro token reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": false,
       "applied": false,
@@ -37344,18 +37399,18 @@
       "use_sites": [
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 242,
+          "line": 245,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 383,
+          "line": 400,
           "evidence": "Rust path reference"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "identity",
-      "review_evidence": "closed Tier-2 disposition rule: `LEGACY_UNIVERSAL_CANDIDATE_SCHEMA_VERSION` at crates/eval/src/tuner.rs — the value participates in stable identity/canonical naming; observed at crates/eval/src/tuner/state_ops.rs:242 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "closed Tier-2 disposition rule: `LEGACY_UNIVERSAL_CANDIDATE_SCHEMA_VERSION` at crates/eval/src/tuner.rs — the value participates in stable identity/canonical naming; observed at crates/eval/src/tuner/state_ops.rs:245 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": false,
       "applied": false,
@@ -37374,7 +37429,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 150,
+          "line": 153,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -37404,13 +37459,13 @@
       "use_sites": [
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 219,
+          "line": 222,
           "evidence": "Rust path reference"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "identity",
-      "review_evidence": "explicit census disposition override: `MAX_FAMILIES_PER_CANDIDATE` at crates/eval/src/tuner.rs — the value participates in stable identity/canonical naming; observed at crates/eval/src/tuner/state_ops.rs:219 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "explicit census disposition override: `MAX_FAMILIES_PER_CANDIDATE` at crates/eval/src/tuner.rs — the value participates in stable identity/canonical naming; observed at crates/eval/src/tuner/state_ops.rs:222 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": true,
       "applied": false,
@@ -37429,7 +37484,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 129,
+          "line": 132,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -37459,7 +37514,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 137,
+          "line": 140,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -37489,7 +37544,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 135,
+          "line": 138,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -37524,7 +37579,7 @@
         },
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 415,
+          "line": 432,
           "evidence": "Rust path reference"
         }
       ],
@@ -37593,6 +37648,35 @@
       "explicit_invariant_override": false,
       "applied": true,
       "behavior_oracle": "explicit input for TrialResult::average_tokens replaces the declared serde(default) default"
+    },
+    {
+      "id": "eval.tuner.trialresult.optimization.serde.default",
+      "candidate_kind": "serde_default",
+      "rust_type": "Option < TrialOptimizationSummary >",
+      "value": "Default::default()",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/tuner.rs",
+        "symbol": "TrialResult::optimization"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/tuner.rs",
+          "line": 203,
+          "evidence": "serde(default) production parser/deserializer default"
+        }
+      ],
+      "disposition": "runtime_settable",
+      "external_address": {
+        "kind": "direct_config",
+        "selector_kind": "path",
+        "selector": "TrialResult.optimization",
+        "owner_kind": "schema",
+        "owner": "serde::TrialResult"
+      },
+      "explicit_invariant_override": false,
+      "applied": true,
+      "behavior_oracle": "explicit input for TrialResult::optimization replaces the declared serde(default) default"
     },
     {
       "id": "eval.tuner.tunercandidate.graph.serde.default",
@@ -37823,6 +37907,35 @@
       "tier2_id": "eval.tuner.universal_candidate_schema_version"
     },
     {
+      "id": "eval.types.agentmetrics.optimization.serde.default",
+      "candidate_kind": "serde_default",
+      "rust_type": "Option < OptimizationMetrics >",
+      "value": "Default::default()",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/types.rs",
+        "symbol": "AgentMetrics::optimization"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/types.rs",
+          "line": 44,
+          "evidence": "serde(default) production parser/deserializer default"
+        }
+      ],
+      "disposition": "runtime_settable",
+      "external_address": {
+        "kind": "direct_config",
+        "selector_kind": "path",
+        "selector": "AgentMetrics.optimization",
+        "owner_kind": "schema",
+        "owner": "serde::AgentMetrics"
+      },
+      "explicit_invariant_override": false,
+      "applied": true,
+      "behavior_oracle": "explicit input for AgentMetrics::optimization replaces the declared serde(default) default"
+    },
+    {
       "id": "eval.types.cellresult.agent.metrics.serde.default",
       "candidate_kind": "serde_default",
       "rust_type": "Option < AgentMetrics >",
@@ -37835,7 +37948,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/types.rs",
-          "line": 225,
+          "line": 275,
           "evidence": "serde(default) production parser/deserializer default"
         }
       ],
@@ -37864,13 +37977,13 @@
       "use_sites": [
         {
           "path": "crates/eval/src/types.rs",
-          "line": 43,
+          "line": 93,
           "evidence": "production declaration"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "non_value_structural",
-      "review_evidence": "closed Tier-2 disposition rule: `EVAL_EXIT_HARNESS` at crates/eval/src/types.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/eval/src/types.rs:43 (production declaration); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "closed Tier-2 disposition rule: `EVAL_EXIT_HARNESS` at crates/eval/src/types.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/eval/src/types.rs:93 (production declaration); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": false,
       "applied": false,
@@ -37889,13 +38002,13 @@
       "use_sites": [
         {
           "path": "crates/eval/src/types.rs",
-          "line": 320,
+          "line": 370,
           "evidence": "Rust path reference"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "non_value_structural",
-      "review_evidence": "closed Tier-2 disposition rule: `EVAL_EXIT_RUN_FAILURES` at crates/eval/src/types.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/eval/src/types.rs:320 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "closed Tier-2 disposition rule: `EVAL_EXIT_RUN_FAILURES` at crates/eval/src/types.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/eval/src/types.rs:370 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": false,
       "applied": false,
@@ -37914,13 +38027,13 @@
       "use_sites": [
         {
           "path": "crates/eval/src/types.rs",
-          "line": 322,
+          "line": 372,
           "evidence": "Rust path reference"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "non_value_structural",
-      "review_evidence": "closed Tier-2 disposition rule: `EVAL_EXIT_SUCCESS` at crates/eval/src/types.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/eval/src/types.rs:322 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "closed Tier-2 disposition rule: `EVAL_EXIT_SUCCESS` at crates/eval/src/types.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/eval/src/types.rs:372 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": false,
       "applied": false,
@@ -37930,7 +38043,7 @@
       "id": "eval.types.eval_schema_version",
       "candidate_kind": "const",
       "rust_type": "u32",
-      "value": "4",
+      "value": "5",
       "owner": {
         "krate": "eval",
         "path": "crates/eval/src/types.rs",

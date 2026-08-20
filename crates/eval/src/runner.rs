@@ -869,6 +869,7 @@ async fn run_cell(
             cell.agent_metrics = Some(AgentMetrics {
                 elapsed_ms: agent_elapsed_ms,
                 usage: None,
+                optimization: None,
             });
             cell.elapsed_ms = agent_elapsed_ms;
             return cell;
@@ -890,6 +891,7 @@ async fn run_cell(
         cell.agent_metrics = Some(AgentMetrics {
             elapsed_ms: agent_elapsed_ms,
             usage: None,
+            optimization: None,
         });
         cell.elapsed_ms = agent_elapsed_ms;
         return cell;
@@ -903,6 +905,7 @@ async fn run_cell(
             cell.agent_metrics = Some(AgentMetrics {
                 elapsed_ms: agent_elapsed_ms,
                 usage: None,
+                optimization: None,
             });
             cell.elapsed_ms = agent_elapsed_ms;
             return cell;
@@ -948,6 +951,7 @@ async fn run_cell(
         agent_metrics: Some(AgentMetrics {
             elapsed_ms: agent_elapsed_ms,
             usage: parsed_output.usage,
+            optimization: parsed_output.optimization,
         }),
         elapsed_ms: agent_elapsed_ms,
         error: final_result.error.clone(),
@@ -1718,6 +1722,7 @@ fn timeout_cell(
     cell.agent_metrics = Some(AgentMetrics {
         elapsed_ms,
         usage: None,
+        optimization: None,
     });
     cell.elapsed_ms = elapsed_ms;
     cell

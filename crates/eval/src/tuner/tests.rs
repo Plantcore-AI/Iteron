@@ -153,6 +153,35 @@ fn with_usage(mut manifest: EvaluationManifest, input_tokens: u64) -> Evaluation
             cache_read: 0,
             thinking: 0,
         }),
+        optimization: None,
+    });
+    manifest
+}
+
+fn with_optimization(
+    manifest: EvaluationManifest,
+    tool_errors: u64,
+    context_tokens: u64,
+) -> EvaluationManifest {
+    let mut manifest = with_usage(manifest, 50);
+    manifest.cells[0]
+        .agent_metrics
+        .as_mut()
+        .unwrap()
+        .optimization = Some(crate::types::OptimizationMetrics {
+        tool_calls_started: 2,
+        tool_calls_completed: 2,
+        tool_errors,
+        peak_tool_concurrency: 2,
+        context_samples: 2,
+        cumulative_context_tokens: context_tokens.saturating_mul(2),
+        peak_context_tokens: context_tokens.saturating_add(100),
+        final_context_tokens: Some(context_tokens),
+        peak_system_tokens: 100,
+        peak_tool_schema_tokens: 200,
+        peak_transcript_tokens: context_tokens,
+        transcript_shrink_events: 1,
+        transcript_tokens_reclaimed: 300,
     });
     manifest
 }
@@ -201,6 +230,66 @@ fn complete_token_measurements_break_equal_quality_ties_without_treating_missing
     assert_eq!(missing.average_tokens, None);
     assert_eq!(missing.average_agent_latency_ms, None);
     assert_eq!(tuner.advance_round().unwrap().as_deref(), Some("b"));
+}
+
+#[test]
+fn typed_optimization_trace_survives_the_tuner_and_breaks_only_primary_metric_ties() {
+    let root = TempRoot::new("optimization-trace-ranking");
+    let mut tuner = OfflineTuner::create(
+        spec(
+            vec![
+                candidate("a", "x"),
+                candidate("b", "y"),
+                candidate("c", "z"),
+            ],
+            3,
+            vec![1],
+        ),
+        &root.join("tuner.jsonl"),
+    )
+    .unwrap();
+    let trials = tuner.issue_trials().unwrap();
+    let noisy = tuner
+        .record_manifest(
+            &trials[0].trial_id,
+            &with_optimization(manifest(&trials[0], true, EvaluationPurpose::Tune), 1, 500),
+            "arm",
+        )
+        .unwrap();
+    let clean = tuner
+        .record_manifest(
+            &trials[1].trial_id,
+            &with_optimization(manifest(&trials[1], true, EvaluationPurpose::Tune), 0, 900),
+            "arm",
+        )
+        .unwrap();
+    let mut incomplete = with_usage(manifest(&trials[2], true, EvaluationPurpose::Tune), 50);
+    incomplete.cells[0]
+        .agent_metrics
+        .as_mut()
+        .unwrap()
+        .optimization = Some(crate::types::OptimizationMetrics {
+        tool_calls_started: 1,
+        ..crate::types::OptimizationMetrics::default()
+    });
+    let missing = tuner
+        .record_manifest(&trials[2].trial_id, &incomplete, "arm")
+        .unwrap();
+
+    assert_eq!(noisy.optimization.unwrap().average_tool_error_rate, 0.5);
+    assert_eq!(
+        clean.optimization.unwrap().average_context_tokens_per_turn,
+        900.0
+    );
+    assert_eq!(
+        missing.optimization, None,
+        "a partial stream without a turn sample is not measured zero context"
+    );
+    assert_eq!(
+        tuner.advance_round().unwrap().as_deref(),
+        Some("b"),
+        "after exact quality/token/latency/cost ties, fewer tool errors wins"
+    );
 }
 
 #[test]

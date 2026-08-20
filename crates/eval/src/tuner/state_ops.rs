@@ -82,6 +82,9 @@ pub(super) fn apply_event(
                 || result
                     .average_tokens
                     .is_some_and(|tokens| !tokens.is_finite() || tokens < 0.0)
+                || result
+                    .optimization
+                    .is_some_and(|summary| !summary.is_valid())
                 || !valid_digest(&result.manifest_digest)
             {
                 return Err(invalid("observation does not match its issued trial"));
@@ -314,6 +317,20 @@ pub(super) fn result_order(left: &&TrialResult, right: &&TrialResult) -> Orderin
         })
         .then_with(|| match (left.average_cost_usd, right.average_cost_usd) {
             (Some(left), Some(right)) => left.partial_cmp(&right).unwrap_or(Ordering::Equal),
+            (Some(_), None) => Ordering::Less,
+            (None, Some(_)) => Ordering::Greater,
+            (None, None) => Ordering::Equal,
+        })
+        .then_with(|| match (left.optimization, right.optimization) {
+            (Some(left), Some(right)) => left
+                .average_tool_error_rate
+                .partial_cmp(&right.average_tool_error_rate)
+                .unwrap_or(Ordering::Equal)
+                .then_with(|| {
+                    left.average_context_tokens_per_turn
+                        .partial_cmp(&right.average_context_tokens_per_turn)
+                        .unwrap_or(Ordering::Equal)
+                }),
             (Some(_), None) => Ordering::Less,
             (None, Some(_)) => Ordering::Greater,
             (None, None) => Ordering::Equal,

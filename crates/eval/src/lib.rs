@@ -143,12 +143,12 @@ pub use tuner::{
     CandidateOwnerKind, CandidatePatch, CandidateProductionPlan, CandidateSelectorKind,
     CandidateTopologyEdge, IMPLEMENTATION_PROTOCOL, LEGACY_IMPLEMENTATION_PROTOCOL,
     LEGACY_UNIVERSAL_CANDIDATE_SCHEMA_VERSION, MAX_CANDIDATE_TOPOLOGY_EDGES, MAX_TUNER_CONCURRENCY,
-    MAX_TUNER_TRIALS, MAX_UNIVERSAL_CANDIDATE_DIMENSIONS, OfflineTuner, TrialRequest, TrialResult,
-    TunerCandidate, TunerError, TunerEvidenceInspection, TunerSnapshot, TunerSpec, TunerStatus,
-    UNIVERSAL_CANDIDATE_SCHEMA_VERSION,
+    MAX_TUNER_TRIALS, MAX_UNIVERSAL_CANDIDATE_DIMENSIONS, OfflineTuner, TrialOptimizationSummary,
+    TrialRequest, TrialResult, TunerCandidate, TunerError, TunerEvidenceInspection, TunerSnapshot,
+    TunerSpec, TunerStatus, UNIVERSAL_CANDIDATE_SCHEMA_VERSION,
 };
 pub use types::{
     AgentMetrics, BenchmarkReference, CellKey, CellResult, CostObservation, CostStatus,
-    EvaluationManifest, EvaluationPurpose, KernelTaxObservation, OracleStatus, Partition,
-    RunStatus, SamplingControl, TwoSidedOracleReceipt,
+    EvaluationManifest, EvaluationPurpose, KernelTaxObservation, OptimizationMetrics, OracleStatus,
+    Partition, RunStatus, SamplingControl, TwoSidedOracleReceipt,
 };

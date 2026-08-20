@@ -453,6 +453,7 @@ impl ReferenceHarnessAdapter {
         let measured = AgentMetrics {
             elapsed_ms: agent_elapsed_ms,
             usage: reported_usage,
+            optimization: None,
         };
         if reported_usage.is_some() && measured.total_tokens().is_none() {
             return Err(ReferenceHarnessError::Output(

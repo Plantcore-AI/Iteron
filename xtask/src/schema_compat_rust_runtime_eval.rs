@@ -40,6 +40,22 @@ fn validate_contract(contract: &syn::File) -> Result<()> {
         contract,
         "parse_machine_record",
         r#"pub fn parse_machine_record(bytes: &[u8]) -> Result<CliMachineRecord, ContractError> {
+            match parse_machine_record_payload(bytes)? {
+                ParsedCliMachineRecord::Event(event) => {
+                    let (schema_version, kind) = event.schema_and_kind();
+                    Ok(CliMachineRecord::Event {
+                        schema_version,
+                        kind,
+                    })
+                }
+                ParsedCliMachineRecord::Result(result) => Ok(CliMachineRecord::Result(result)),
+            }
+        }"#,
+    )?;
+    require_function(
+        contract,
+        "parse_machine_record_payload",
+        r#"fn parse_machine_record_payload(bytes: &[u8]) -> Result<ParsedCliMachineRecord, ContractError> {
             let value = parse_json_no_duplicates(bytes)
                 .map_err(|error| ContractError::MalformedJson(error.to_string()))?;
             let kind = value
@@ -50,13 +66,13 @@ fn validate_contract(contract: &syn::File) -> Result<()> {
                 let result: CliFinalResult = serde_json::from_value(value)
                     .map_err(|error| ContractError::MalformedJson(error.to_string()))?;
                 admit_type_version("result", result.schema_version)?;
-                return Ok(CliMachineRecord::Result(result));
+                return Ok(ParsedCliMachineRecord::Result(result));
             }
             let event: CliStreamEvent = serde_json::from_value(value)
                 .map_err(|error| ContractError::MalformedJson(error.to_string()))?;
             let (schema_version, kind) = event.schema_and_kind();
             admit_type_version(kind.as_str(), schema_version)?;
-            Ok(CliMachineRecord::Event { schema_version, kind, })
+            Ok(ParsedCliMachineRecord::Event(event))
         }"#,
     )?;
     require_function(
@@ -100,26 +116,27 @@ fn validate_contract(contract: &syn::File) -> Result<()> {
         ) -> Result<CliRunOutput, ContractError> {
             let mut result = None;
             let mut usage = None::<CliUsage>;
+            let mut optimization = OptimizationAccumulator::default();
             for line in stdout
                 .split(|byte| *byte == b'\n')
                 .filter(|line| !line.iter().all(u8::is_ascii_whitespace))
             {
-                match parse_machine_record(line)? {
-                    CliMachineRecord::Event { kind, .. } => {
+                match parse_machine_record_payload(line)? {
+                    ParsedCliMachineRecord::Event(event) => {
                         if result.is_some() {
                             return Err(ContractError::EventAfterResult);
                         }
-                        if kind == CliMachineEventKind::TurnEnd {
-                            let sample = parse_turn_usage(line)?;
+                        if let CliStreamEvent::TurnEnd { usage: sample, .. } = &event {
                             usage = Some(match usage {
                                 Some(total) => total
-                                    .checked_add(sample)
+                                    .checked_add(*sample)
                                     .ok_or(ContractError::UsageOverflow)?,
-                                None => sample,
+                                None => *sample,
                             });
                         }
+                        optimization.observe(&event)?;
                     }
-                    CliMachineRecord::Result(observed) => {
+                    ParsedCliMachineRecord::Result(observed) => {
                         if result.replace(observed).is_some() {
                             return Err(ContractError::TerminalResultCardinality);
                         }
@@ -130,23 +147,8 @@ fn validate_contract(contract: &syn::File) -> Result<()> {
             Ok(CliRunOutput {
                 result: validate_final_result(result, process_exit)?,
                 usage: usage.map(CliUsage::into_usage),
+                optimization: optimization.finish(),
             })
-        }"#,
-    )?;
-    require_function(
-        contract,
-        "parse_turn_usage",
-        r#"fn parse_turn_usage(bytes: &[u8]) -> Result<CliUsage, ContractError> {
-            let value = parse_json_no_duplicates(bytes)
-                .map_err(|error| ContractError::MalformedJson(error.to_string()))?;
-            let event: CliStreamEvent = serde_json::from_value(value)
-                .map_err(|error| ContractError::MalformedJson(error.to_string()))?;
-            let (schema_version, kind) = event.schema_and_kind();
-            admit_type_version(kind.as_str(), schema_version)?;
-            match event {
-                CliStreamEvent::TurnEnd { usage, .. } => Ok(usage),
-                _ => Err(ContractError::WrongType(kind.as_str().into())),
-            }
         }"#,
     )?;
     require_function(

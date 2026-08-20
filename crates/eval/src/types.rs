@@ -1,7 +1,35 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-pub const EVAL_SCHEMA_VERSION: u32 = 4;
+pub const EVAL_SCHEMA_VERSION: u32 = 5;
+
+/// Content-free runtime behavior observed from the stable CLI event stream.
+///
+/// These are diagnostic optimization signals, not task-success substitutes. Ground-truth still
+/// decides whether a candidate resolved the task; this record explains where equal-quality
+/// candidates spent tool and context work. Every counter is derived from typed machine events,
+/// never from model text, notices, provider identity, or a harness-specific log parser.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OptimizationMetrics {
+    pub tool_calls_started: u64,
+    pub tool_calls_completed: u64,
+    pub tool_errors: u64,
+    pub peak_tool_concurrency: u64,
+    pub context_samples: u64,
+    /// Sum of per-turn request-context estimates. This is an area-under-context signal: repeatedly
+    /// replaying a large prefix costs more than reaching the same peak once.
+    pub cumulative_context_tokens: u64,
+    pub peak_context_tokens: u64,
+    pub final_context_tokens: Option<u64>,
+    pub peak_system_tokens: u64,
+    pub peak_tool_schema_tokens: u64,
+    pub peak_transcript_tokens: u64,
+    /// Typed transcript decreases between consecutive turn-end estimates. A decrease is evidence
+    /// of reclaimed transcript, without claiming which runtime mechanism caused it.
+    pub transcript_shrink_events: u64,
+    pub transcript_tokens_reclaimed: u64,
+}
 
 /// Provider-independent work performed by the agent process itself.
 ///
@@ -13,6 +41,11 @@ pub const EVAL_SCHEMA_VERSION: u32 = 4;
 pub struct AgentMetrics {
     pub elapsed_ms: u64,
     pub usage: Option<iteron_protocol::Usage>,
+    /// Present when the selected machine-output surface carried typed tool/context events. Legacy
+    /// v4 manifests and final-result-only harnesses leave this absent rather than synthesizing
+    /// zero behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub optimization: Option<OptimizationMetrics>,
 }
 
 impl AgentMetrics {
@@ -26,6 +59,23 @@ impl AgentMetrics {
             .checked_add(usage.cache_creation)?
             .checked_add(usage.cache_read)?
             .checked_add(usage.output)
+    }
+}
+
+#[cfg(test)]
+mod agent_metrics_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_v4_agent_metrics_do_not_invent_optimization_evidence() {
+        let metrics: AgentMetrics = serde_json::from_str(
+            r#"{"elapsed_ms":17,"usage":{"input":3,"output":2,"cache_creation":0,"cache_read":0,"thinking":0}}"#,
+        )
+        .expect("the additive v5 field must preserve v4 manifest readability");
+
+        assert_eq!(metrics.elapsed_ms, 17);
+        assert_eq!(metrics.optimization, None);
+        assert_eq!(metrics.total_tokens(), Some(5));
     }
 }
 

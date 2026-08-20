@@ -1,11 +1,12 @@
 //! Parser for the stable one-shot Core CLI result object.
 
 use crate::strict_json::parse_json_no_duplicates;
-use crate::types::CostStatus;
 #[cfg(test)]
 use crate::types::RunStatus;
+use crate::types::{CostStatus, OptimizationMetrics};
 use serde::Deserialize;
 use serde_json::Value;
+use std::collections::BTreeSet;
 
 /// Versions of the frozen `iteron --output-format json` contract this consumer can read.
 ///
@@ -152,12 +153,114 @@ pub enum CliMachineRecord {
     Result(CliFinalResult),
 }
 
+#[derive(Debug)]
+// Like the public projection above, the terminal result is intentionally kept inline. This
+// private form retains the fully decoded event so stream consumers do not parse each line twice.
+#[allow(clippy::large_enum_variant)]
+enum ParsedCliMachineRecord {
+    Event(CliStreamEvent),
+    Result(CliFinalResult),
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct CliRunOutput {
     pub(crate) result: CliFinalResult,
     /// Sum of every admitted `turn_end` usage sample. `None` means the selected output surface did
     /// not carry usage; it is never rewritten to a misleading measured zero.
     pub(crate) usage: Option<iteron_protocol::Usage>,
+    /// Content-free tool/context behavior from typed stream events. A final-result-only surface has
+    /// no such evidence and remains `None`.
+    pub(crate) optimization: Option<OptimizationMetrics>,
+}
+
+#[derive(Debug, Default)]
+struct OptimizationAccumulator {
+    metrics: OptimizationMetrics,
+    open_tools: BTreeSet<String>,
+    prior_transcript_tokens: Option<u64>,
+    observed: bool,
+}
+
+impl OptimizationAccumulator {
+    fn observe(&mut self, event: &CliStreamEvent) -> Result<(), ContractError> {
+        match event {
+            CliStreamEvent::ToolStart { tool_use_id, .. } => {
+                self.observed = true;
+                self.metrics.tool_calls_started =
+                    checked_increment(self.metrics.tool_calls_started, "tool_calls_started")?;
+                self.open_tools.insert(tool_use_id.clone());
+                self.metrics.peak_tool_concurrency = self.metrics.peak_tool_concurrency.max(
+                    u64::try_from(self.open_tools.len())
+                        .map_err(|_| ContractError::OptimizationOverflow("open_tools"))?,
+                );
+            }
+            CliStreamEvent::ToolEnd {
+                tool_use_id, ok, ..
+            } => {
+                self.observed = true;
+                self.metrics.tool_calls_completed =
+                    checked_increment(self.metrics.tool_calls_completed, "tool_calls_completed")?;
+                if !ok {
+                    self.metrics.tool_errors =
+                        checked_increment(self.metrics.tool_errors, "tool_errors")?;
+                }
+                self.open_tools.remove(tool_use_id);
+            }
+            CliStreamEvent::TurnEnd { context, .. } => {
+                self.observed = true;
+                self.metrics.context_samples =
+                    checked_increment(self.metrics.context_samples, "context_samples")?;
+                self.metrics.cumulative_context_tokens = self
+                    .metrics
+                    .cumulative_context_tokens
+                    .checked_add(context.input_tokens)
+                    .ok_or(ContractError::OptimizationOverflow(
+                        "cumulative_context_tokens",
+                    ))?;
+                self.metrics.peak_context_tokens =
+                    self.metrics.peak_context_tokens.max(context.input_tokens);
+                self.metrics.final_context_tokens = Some(context.input_tokens);
+                self.metrics.peak_system_tokens =
+                    self.metrics.peak_system_tokens.max(context.system_tokens);
+                self.metrics.peak_tool_schema_tokens = self
+                    .metrics
+                    .peak_tool_schema_tokens
+                    .max(context.tool_tokens);
+                self.metrics.peak_transcript_tokens = self
+                    .metrics
+                    .peak_transcript_tokens
+                    .max(context.transcript_tokens);
+                if let Some(prior) = self.prior_transcript_tokens
+                    && context.transcript_tokens < prior
+                {
+                    self.metrics.transcript_shrink_events = checked_increment(
+                        self.metrics.transcript_shrink_events,
+                        "transcript_shrink_events",
+                    )?;
+                    self.metrics.transcript_tokens_reclaimed = self
+                        .metrics
+                        .transcript_tokens_reclaimed
+                        .checked_add(prior - context.transcript_tokens)
+                        .ok_or(ContractError::OptimizationOverflow(
+                            "transcript_tokens_reclaimed",
+                        ))?;
+                }
+                self.prior_transcript_tokens = Some(context.transcript_tokens);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn finish(self) -> Option<OptimizationMetrics> {
+        self.observed.then_some(self.metrics)
+    }
+}
+
+fn checked_increment(value: u64, field: &'static str) -> Result<u64, ContractError> {
+    value
+        .checked_add(1)
+        .ok_or(ContractError::OptimizationOverflow(field))
 }
 
 #[allow(dead_code)]
@@ -474,15 +577,15 @@ impl CliUsage {
 #[serde(deny_unknown_fields)]
 struct CliContextEstimate {
     kind: String,
-    input_tokens: usize,
-    system_tokens: usize,
-    tool_tokens: usize,
-    transcript_tokens: usize,
-    framing_tokens: usize,
+    input_tokens: u64,
+    system_tokens: u64,
+    tool_tokens: u64,
+    transcript_tokens: u64,
+    framing_tokens: u64,
     estimator: String,
-    model_context_window: Option<usize>,
-    reserved_output_tokens: usize,
-    compaction_trigger_tokens: usize,
+    model_context_window: Option<u64>,
+    reserved_output_tokens: u64,
+    compaction_trigger_tokens: u64,
 }
 
 #[allow(dead_code)]
@@ -562,6 +665,8 @@ pub enum ContractError {
     EventAfterResult,
     #[error("iteron stream token usage overflowed its u64 accounting bound")]
     UsageOverflow,
+    #[error("iteron stream optimization metric `{0}` overflowed its u64 accounting bound")]
+    OptimizationOverflow(&'static str),
 }
 
 fn admit_type_version(kind: &str, actual: u32) -> Result<(), ContractError> {
@@ -586,6 +691,19 @@ fn admit_type_version(kind: &str, actual: u32) -> Result<(), ContractError> {
 /// check. Additive producer changes therefore require both a new frozen fixture and an updated
 /// consumer before the schema version can be admitted.
 pub fn parse_machine_record(bytes: &[u8]) -> Result<CliMachineRecord, ContractError> {
+    match parse_machine_record_payload(bytes)? {
+        ParsedCliMachineRecord::Event(event) => {
+            let (schema_version, kind) = event.schema_and_kind();
+            Ok(CliMachineRecord::Event {
+                schema_version,
+                kind,
+            })
+        }
+        ParsedCliMachineRecord::Result(result) => Ok(CliMachineRecord::Result(result)),
+    }
+}
+
+fn parse_machine_record_payload(bytes: &[u8]) -> Result<ParsedCliMachineRecord, ContractError> {
     let value = parse_json_no_duplicates(bytes)
         .map_err(|error| ContractError::MalformedJson(error.to_string()))?;
     let kind = value
@@ -596,17 +714,14 @@ pub fn parse_machine_record(bytes: &[u8]) -> Result<CliMachineRecord, ContractEr
         let result: CliFinalResult = serde_json::from_value(value)
             .map_err(|error| ContractError::MalformedJson(error.to_string()))?;
         admit_type_version("result", result.schema_version)?;
-        return Ok(CliMachineRecord::Result(result));
+        return Ok(ParsedCliMachineRecord::Result(result));
     }
 
     let event: CliStreamEvent = serde_json::from_value(value)
         .map_err(|error| ContractError::MalformedJson(error.to_string()))?;
     let (schema_version, kind) = event.schema_and_kind();
     admit_type_version(kind.as_str(), schema_version)?;
-    Ok(CliMachineRecord::Event {
-        schema_version,
-        kind,
-    })
+    Ok(ParsedCliMachineRecord::Event(event))
 }
 
 pub fn parse_final_result(
@@ -646,26 +761,27 @@ pub(crate) fn parse_run_output(
 ) -> Result<CliRunOutput, ContractError> {
     let mut result = None;
     let mut usage = None::<CliUsage>;
+    let mut optimization = OptimizationAccumulator::default();
     for line in stdout
         .split(|byte| *byte == b'\n')
         .filter(|line| !line.iter().all(u8::is_ascii_whitespace))
     {
-        match parse_machine_record(line)? {
-            CliMachineRecord::Event { kind, .. } => {
+        match parse_machine_record_payload(line)? {
+            ParsedCliMachineRecord::Event(event) => {
                 if result.is_some() {
                     return Err(ContractError::EventAfterResult);
                 }
-                if kind == CliMachineEventKind::TurnEnd {
-                    let sample = parse_turn_usage(line)?;
+                if let CliStreamEvent::TurnEnd { usage: sample, .. } = &event {
                     usage = Some(match usage {
                         Some(total) => total
-                            .checked_add(sample)
+                            .checked_add(*sample)
                             .ok_or(ContractError::UsageOverflow)?,
-                        None => sample,
+                        None => *sample,
                     });
                 }
+                optimization.observe(&event)?;
             }
-            CliMachineRecord::Result(observed) => {
+            ParsedCliMachineRecord::Result(observed) => {
                 if result.replace(observed).is_some() {
                     return Err(ContractError::TerminalResultCardinality);
                 }
@@ -676,20 +792,8 @@ pub(crate) fn parse_run_output(
     Ok(CliRunOutput {
         result: validate_final_result(result, process_exit)?,
         usage: usage.map(CliUsage::into_usage),
+        optimization: optimization.finish(),
     })
-}
-
-fn parse_turn_usage(bytes: &[u8]) -> Result<CliUsage, ContractError> {
-    let value = parse_json_no_duplicates(bytes)
-        .map_err(|error| ContractError::MalformedJson(error.to_string()))?;
-    let event: CliStreamEvent = serde_json::from_value(value)
-        .map_err(|error| ContractError::MalformedJson(error.to_string()))?;
-    let (schema_version, kind) = event.schema_and_kind();
-    admit_type_version(kind.as_str(), schema_version)?;
-    match event {
-        CliStreamEvent::TurnEnd { usage, .. } => Ok(usage),
-        _ => Err(ContractError::WrongType(kind.as_str().into())),
-    }
 }
 
 fn validate_final_result(
@@ -1094,5 +1198,128 @@ mod tests {
             parse_run_output(b"{\"schema_version\":5,\"type\":\"run_done\"}\n", 0),
             Err(ContractError::TerminalResultCardinality)
         ));
+    }
+
+    #[test]
+    fn stream_output_preserves_generic_tool_and_context_optimization_evidence() {
+        fn turn(turn: u32, input: u64, system: u64, tools: u64, transcript: u64) -> Value {
+            serde_json::json!({
+                "schema_version": 5,
+                "type": "turn_end",
+                "turn": turn,
+                "cost_usd": null,
+                "cumulative_cost_usd": null,
+                "cost_status": "unknown",
+                "cost_reason": "fixture",
+                "usage": {
+                    "input": input,
+                    "output": 1,
+                    "cache_creation": 0,
+                    "cache_read": 0,
+                    "thinking": 0
+                },
+                "cache_hit": 0.0,
+                "context": {
+                    "kind": "estimate",
+                    "input_tokens": input,
+                    "system_tokens": system,
+                    "tool_tokens": tools,
+                    "transcript_tokens": transcript,
+                    "framing_tokens": 200,
+                    "estimator": "fixture",
+                    "model_context_window": 10000,
+                    "reserved_output_tokens": 1000,
+                    "compaction_trigger_tokens": 8000
+                },
+                "effort": {
+                    "enforcement": "unsupported",
+                    "capability_proven_by_catalog": false,
+                    "requested": "medium"
+                }
+            })
+        }
+
+        let records = vec![
+            serde_json::json!({
+                "schema_version": 5,
+                "type": "tool_start",
+                "tool_use_id": "call-a",
+                "name": "read_file",
+                "args": {}
+            }),
+            serde_json::json!({
+                "schema_version": 5,
+                "type": "tool_start",
+                "tool_use_id": "call-b",
+                "name": "grep",
+                "args": {}
+            }),
+            serde_json::json!({
+                "schema_version": 5,
+                "type": "tool_end",
+                "tool_use_id": "call-a",
+                "ok": true,
+                "exit_code": null,
+                "output": "",
+                "diff": null
+            }),
+            turn(1, 1500, 100, 200, 1000),
+            serde_json::json!({
+                "schema_version": 5,
+                "type": "tool_end",
+                "tool_use_id": "call-b",
+                "ok": false,
+                "exit_code": 1,
+                "output": "",
+                "diff": null
+            }),
+            turn(2, 900, 110, 250, 400),
+            serde_json::json!({
+                "schema_version": 5,
+                "type": "result",
+                "outcome": "done",
+                "reason": null,
+                "success": true,
+                "assistant_text": "done",
+                "run_id": "optimization-fixture",
+                "cost_usd": null,
+                "cost_status": "unknown",
+                "cost_reason": "fixture",
+                "turns": 2,
+                "kernel_tax": {
+                    "admission_latency_us": 0,
+                    "broker_latency_us": 0,
+                    "record_fsync_latency_us": 0,
+                    "estimated_tokens": 0,
+                    "failed_runs": 0
+                },
+                "exit_code": 0,
+                "error": null
+            }),
+        ];
+        let stream = records
+            .into_iter()
+            .map(|record| serde_json::to_string(&record).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let parsed = parse_run_output(stream.as_bytes(), 0).expect("typed stream parses");
+        assert_eq!(
+            parsed.optimization,
+            Some(OptimizationMetrics {
+                tool_calls_started: 2,
+                tool_calls_completed: 2,
+                tool_errors: 1,
+                peak_tool_concurrency: 2,
+                context_samples: 2,
+                cumulative_context_tokens: 2400,
+                peak_context_tokens: 1500,
+                final_context_tokens: Some(900),
+                peak_system_tokens: 110,
+                peak_tool_schema_tokens: 250,
+                peak_transcript_tokens: 1000,
+                transcript_shrink_events: 1,
+                transcript_tokens_reclaimed: 600,
+            })
+        );
     }
 }

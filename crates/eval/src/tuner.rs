@@ -193,14 +193,101 @@ pub struct TrialResult {
     pub average_cost_usd: Option<f64>,
     /// Legacy end-to-end cell latency, including evaluator/oracle work.
     pub average_latency_ms: f64,
-    /// Agent-process latency when the manifest supplies complete v4 measurements.
+    /// Agent-process latency when the manifest supplies complete v4+ measurements.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub average_agent_latency_ms: Option<f64>,
     /// Mean provider-accounted tokens per attempted cell. Missing usage remains `None` and ranks
     /// behind complete measurements; it is never treated as zero.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub average_tokens: Option<f64>,
+    /// Content-free behavioral diagnosis aggregated only when every selected cell carried typed
+    /// stream evidence. It never outranks resolved rate, measured tokens, latency, or cost.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub optimization: Option<TrialOptimizationSummary>,
     pub manifest_digest: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TrialOptimizationSummary {
+    pub average_tool_calls: f64,
+    pub average_tool_error_rate: f64,
+    pub average_peak_tool_concurrency: f64,
+    pub average_context_tokens_per_turn: f64,
+    pub average_peak_context_tokens: f64,
+    pub average_transcript_tokens_reclaimed: f64,
+}
+
+impl TrialOptimizationSummary {
+    fn from_cells(cells: &[&crate::types::CellResult]) -> Option<Self> {
+        if cells.is_empty() {
+            return None;
+        }
+        let metrics = cells
+            .iter()
+            .map(|cell| cell.agent_metrics?.optimization)
+            .collect::<Option<Vec<_>>>()?;
+        let count = metrics.len() as f64;
+        let completed_tools = metrics
+            .iter()
+            .map(|metric| metric.tool_calls_completed)
+            .try_fold(0_u64, u64::checked_add)?;
+        let tool_errors = metrics
+            .iter()
+            .map(|metric| metric.tool_errors)
+            .try_fold(0_u64, u64::checked_add)?;
+        let context_samples = metrics
+            .iter()
+            .map(|metric| metric.context_samples)
+            .try_fold(0_u64, u64::checked_add)?;
+        if context_samples == 0 {
+            // A tool-only prefix or interrupted stream is useful diagnosis but cannot establish
+            // context efficiency. Do not let absent turn samples masquerade as a measured zero.
+            return None;
+        }
+        let cumulative_context = metrics
+            .iter()
+            .map(|metric| metric.cumulative_context_tokens)
+            .try_fold(0_u64, u64::checked_add)?;
+        Some(Self {
+            average_tool_calls: completed_tools as f64 / count,
+            average_tool_error_rate: if completed_tools == 0 {
+                0.0
+            } else {
+                tool_errors as f64 / completed_tools as f64
+            },
+            average_peak_tool_concurrency: metrics
+                .iter()
+                .map(|metric| metric.peak_tool_concurrency as f64)
+                .sum::<f64>()
+                / count,
+            average_context_tokens_per_turn: cumulative_context as f64 / context_samples as f64,
+            average_peak_context_tokens: metrics
+                .iter()
+                .map(|metric| metric.peak_context_tokens as f64)
+                .sum::<f64>()
+                / count,
+            average_transcript_tokens_reclaimed: metrics
+                .iter()
+                .map(|metric| metric.transcript_tokens_reclaimed as f64)
+                .sum::<f64>()
+                / count,
+        })
+    }
+
+    fn is_valid(self) -> bool {
+        [
+            self.average_tool_calls,
+            self.average_tool_error_rate,
+            self.average_peak_tool_concurrency,
+            self.average_context_tokens_per_turn,
+            self.average_peak_context_tokens,
+            self.average_transcript_tokens_reclaimed,
+        ]
+        .into_iter()
+        .all(|value| value.is_finite() && value >= 0.0)
+            && self.average_tool_error_rate <= 1.0
+    }
 }
 
 /// Read-only acceptance result for a frozen evidence-row document. It deliberately carries the
@@ -438,11 +525,13 @@ impl OfflineTuner {
             .collect::<Option<Vec<_>>>()
             .filter(|latencies| !latencies.is_empty())
             .map(|latencies| latencies.iter().sum::<f64>() / latencies.len() as f64);
+        let optimization = TrialOptimizationSummary::from_cells(&selected);
         self.record_evidence_document(
             trial_id,
             &evidence,
             average_tokens,
             average_agent_latency_ms,
+            optimization,
         )
     }
 
@@ -456,7 +545,7 @@ impl OfflineTuner {
         bundle
             .validate_in_memory_seal()
             .map_err(|error| TunerError::EvidenceRows(error.to_string()))?;
-        self.record_evidence_document(trial_id, &bundle.evidence_rows, None, None)
+        self.record_evidence_document(trial_id, &bundle.evidence_rows, None, None, None)
     }
 
     fn record_evidence_document(
@@ -465,6 +554,7 @@ impl OfflineTuner {
         evidence: &EvidenceRowsDocument,
         average_tokens: Option<f64>,
         average_agent_latency_ms: Option<f64>,
+        optimization: Option<TrialOptimizationSummary>,
     ) -> Result<TrialResult, TunerError> {
         let inspection = Self::inspect_evidence_rows(evidence)?;
         if !inspection.feedback_eligible {
@@ -529,6 +619,7 @@ impl OfflineTuner {
                 / rows.len() as f64,
             average_agent_latency_ms,
             average_tokens,
+            optimization,
             manifest_digest: evidence.document_sha256.clone(),
         };
         self.commit(TunerEvent::ObservationRecorded {

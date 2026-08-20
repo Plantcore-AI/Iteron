@@ -21,12 +21,12 @@ fn eval_admission_and_typed_decode_cannot_be_bypassed() {
         1,
     );
     assert!(validate_contract(&syn::parse_file(&untyped).unwrap()).is_err());
-    let usage_bypass = contract.replacen(
-        "let sample = parse_turn_usage(line)?;",
-        "let sample = evil(line)?;",
+    let stream_bypass = contract.replacen(
+        "match parse_machine_record_payload(line)? {",
+        "match evil(line)? {",
         1,
     );
-    assert!(validate_contract(&syn::parse_file(&usage_bypass).unwrap()).is_err());
+    assert!(validate_contract(&syn::parse_file(&stream_bypass).unwrap()).is_err());
 
     let type_shadow = format!("{contract}\nstruct serde_json;");
     assert!(validate_contract(&syn::parse_file(&type_shadow).unwrap()).is_err());

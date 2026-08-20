@@ -5,6 +5,10 @@ use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 
 const DOMAIN: &[u8] = b"iteron-eval/offline-tuner-journal/v1\0";
+// V2 adds optional content-free optimization summaries to recorded trial observations. The
+// reader remains backward-compatible with V1 records, including mixed journals resumed by V2.
+const CURRENT_JOURNAL_SCHEMA_VERSION: u8 = 2;
+const SUPPORTED_JOURNAL_SCHEMA_VERSIONS: &[u8] = &[1, CURRENT_JOURNAL_SCHEMA_VERSION];
 const MAX_JOURNAL_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_RECORD_BYTES: usize = 1024 * 1024;
 
@@ -78,7 +82,7 @@ impl TunerJournal {
             }
             let record: Record = serde_json::from_slice(&line)
                 .map_err(|error| TunerError::Journal(error.to_string()))?;
-            if record.schema_version != 1
+            if !SUPPORTED_JOURNAL_SCHEMA_VERSIONS.contains(&record.schema_version)
                 || record.sequence != sequence
                 || record.previous_hash != previous_hash
                 || record.hash != record_hash(sequence, &previous_hash, &record.event)?
@@ -111,7 +115,7 @@ impl TunerJournal {
     pub(super) fn append(&mut self, event: &TunerEvent) -> Result<(), TunerError> {
         let hash = record_hash(self.next_sequence, &self.previous_hash, event)?;
         let record = Record {
-            schema_version: 1,
+            schema_version: CURRENT_JOURNAL_SCHEMA_VERSION,
             sequence: self.next_sequence,
             previous_hash: self.previous_hash.clone(),
             event: event.clone(),
@@ -169,4 +173,63 @@ fn record_hash(sequence: u64, previous: &str, event: &TunerEvent) -> Result<Stri
 
 fn io(path: &Path, error: std::io::Error) -> TunerError {
     TunerError::Journal(format!("{}: {error}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn v2_writer_resumes_a_v1_journal_without_rewriting_history() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "iteron-eval-journal-schema-{}-{nonce:x}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("journal.jsonl");
+
+        let previous_hash = "0".repeat(64);
+        let event = TunerEvent::Initialized {
+            spec_digest: "a".repeat(64),
+        };
+        let legacy = Record {
+            schema_version: 1,
+            sequence: 1,
+            previous_hash: previous_hash.clone(),
+            hash: record_hash(1, &previous_hash, &event).unwrap(),
+            event: event.clone(),
+        };
+        std::fs::write(
+            &path,
+            format!("{}\n", serde_json::to_string(&legacy).unwrap()),
+        )
+        .unwrap();
+
+        let (mut journal, events) = TunerJournal::open(&path).unwrap();
+        assert_eq!(events, vec![event]);
+        journal
+            .append(&TunerEvent::Completed {
+                selected_candidate: "candidate-a".into(),
+            })
+            .unwrap();
+        drop(journal);
+
+        let versions = std::fs::read_to_string(&path)
+            .unwrap()
+            .lines()
+            .map(|line| {
+                serde_json::from_str::<serde_json::Value>(line).unwrap()["schema_version"]
+                    .as_u64()
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(versions, vec![1, u64::from(CURRENT_JOURNAL_SCHEMA_VERSION)]);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

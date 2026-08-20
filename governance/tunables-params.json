@@ -24812,7 +24812,7 @@
         },
         {
           "path": "crates/eval/src/tuner/journal.rs",
-          "line": 163,
+          "line": 167,
           "evidence": "Rust path reference"
         }
       ]
@@ -25134,7 +25134,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/contract.rs",
-          "line": 571,
+          "line": 676,
           "evidence": "Rust path reference"
         }
       ]
@@ -25163,7 +25163,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/contract.rs",
-          "line": 426,
+          "line": 529,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -25193,7 +25193,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/contract.rs",
-          "line": 401,
+          "line": 504,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -25220,7 +25220,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/contract.rs",
-          "line": 568,
+          "line": 673,
           "evidence": "Rust path reference"
         }
       ]
@@ -25246,7 +25246,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/contract.rs",
-          "line": 574,
+          "line": 679,
           "evidence": "Rust path reference"
         }
       ]
@@ -26141,12 +26141,12 @@
         },
         {
           "path": "crates/eval/src/reference_harness.rs",
-          "line": 619,
+          "line": 620,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/eval/src/reference_harness.rs",
-          "line": 628,
+          "line": 629,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -27446,12 +27446,12 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 1251,
+          "line": 1255,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 1685,
+          "line": 1689,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -27606,7 +27606,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 1614,
+          "line": 1618,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -27633,7 +27633,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 1483,
+          "line": 1487,
           "evidence": "Rust path reference"
         }
       ]
@@ -28566,7 +28566,7 @@
         },
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 187,
+          "line": 190,
           "evidence": "Rust path reference"
         }
       ]
@@ -28668,17 +28668,17 @@
         },
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 189,
+          "line": 192,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 244,
+          "line": 247,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 366,
+          "line": 383,
           "evidence": "Rust path reference"
         }
       ]
@@ -28879,8 +28879,39 @@
         },
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 588,
+          "line": 605,
           "evidence": "macro token reference"
+        }
+      ]
+    },
+    {
+      "id": "eval.tuner.journal.current_journal_schema_version",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "u8",
+      "default": "2",
+      "krate": "eval",
+      "decl": "crates/eval/src/tuner/journal.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "durability_replay",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/tuner/journal.rs",
+        "symbol": "CURRENT_JOURNAL_SCHEMA_VERSION"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/tuner/journal.rs",
+          "line": 11,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/eval/src/tuner/journal.rs",
+          "line": 118,
+          "evidence": "Rust path reference"
         }
       ]
     },
@@ -28910,7 +28941,7 @@
         },
         {
           "path": "crates/eval/src/tuner/journal.rs",
-          "line": 163,
+          "line": 167,
           "evidence": "Rust path reference"
         }
       ]
@@ -28939,12 +28970,12 @@
       "use_sites": [
         {
           "path": "crates/eval/src/tuner/journal.rs",
-          "line": 50,
+          "line": 54,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/eval/src/tuner/journal.rs",
-          "line": 134,
+          "line": 138,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -28974,16 +29005,42 @@
       "use_sites": [
         {
           "path": "crates/eval/src/tuner/journal.rs",
-          "line": 70,
+          "line": 74,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/eval/src/tuner/journal.rs",
-          "line": 129,
+          "line": 133,
           "evidence": "param_integer runtime resolution"
         }
       ],
       "behavior_oracle": "installed profile id eval.tuner.journal.max_record_bytes is resolved at every listed production helper call"
+    },
+    {
+      "id": "eval.tuner.journal.supported_journal_schema_versions",
+      "module": "verification_quorum",
+      "class": "structural",
+      "type": "array",
+      "rust_type": "&[u8]",
+      "default": "&[1, CURRENT_JOURNAL_SCHEMA_VERSION]",
+      "krate": "eval",
+      "decl": "crates/eval/src/tuner/journal.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "durability_replay",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/tuner/journal.rs",
+        "symbol": "SUPPORTED_JOURNAL_SCHEMA_VERSIONS"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/tuner/journal.rs",
+          "line": 85,
+          "evidence": "Rust path reference"
+        }
+      ]
     },
     {
       "id": "eval.tuner.legacy_implementation_protocol",
@@ -29006,7 +29063,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 588,
+          "line": 605,
           "evidence": "macro token reference"
         }
       ]
@@ -29032,12 +29089,12 @@
       "use_sites": [
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 242,
+          "line": 245,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 383,
+          "line": 400,
           "evidence": "Rust path reference"
         }
       ]
@@ -29066,7 +29123,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 150,
+          "line": 153,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -29093,7 +29150,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 219,
+          "line": 222,
           "evidence": "Rust path reference"
         }
       ]
@@ -29122,7 +29179,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 129,
+          "line": 132,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -29152,7 +29209,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 137,
+          "line": 140,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -29182,7 +29239,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 135,
+          "line": 138,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -29214,7 +29271,7 @@
         },
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 415,
+          "line": 432,
           "evidence": "Rust path reference"
         }
       ]
@@ -29266,7 +29323,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/types.rs",
-          "line": 43,
+          "line": 93,
           "evidence": "production declaration"
         }
       ]
@@ -29292,7 +29349,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/types.rs",
-          "line": 320,
+          "line": 370,
           "evidence": "Rust path reference"
         }
       ]
@@ -29318,7 +29375,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/types.rs",
-          "line": 322,
+          "line": 372,
           "evidence": "Rust path reference"
         }
       ]
@@ -29329,7 +29386,7 @@
       "class": "structural",
       "type": "integer",
       "rust_type": "u32",
-      "default": "4",
+      "default": "5",
       "krate": "eval",
       "decl": "crates/eval/src/types.rs",
       "applied": false,

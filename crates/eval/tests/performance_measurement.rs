@@ -40,7 +40,11 @@ fn cell(task: &str, resolved: bool, elapsed_ms: u64, usage: Option<Usage>) -> Ce
             enforcement: "fixed_fixture".into(),
             reason: None,
         },
-        agent_metrics: Some(AgentMetrics { elapsed_ms, usage }),
+        agent_metrics: Some(AgentMetrics {
+            elapsed_ms,
+            usage,
+            optimization: None,
+        }),
         elapsed_ms: elapsed_ms.saturating_add(10_000),
         error: None,
         candidate_diff: Some(format!("diff-{task}")),
