@@ -1093,7 +1093,11 @@ impl PtyHarness {
         drop(self.writer.take());
         drop(self.slave.take());
         drop(self.master.take());
-        let deadline = Instant::now() + Duration::from_secs(2);
+        // Scaled like every other bound in this file. Two seconds is generous on a dedicated
+        // machine and not generous on a runner compiling another worktree on the same cores; the
+        // assertion below turns that into a failure indistinguishable from a reader that never
+        // reached EOF.
+        let deadline = Instant::now() + Duration::from_secs(2) * timeout_scale();
         while !self.reader_closed && Instant::now() < deadline {
             let _ = self.pump_once(Duration::from_millis(25));
             self.drain_ready();
@@ -2210,9 +2214,22 @@ fn double_ctrl_c_forces_exit_while_a_bash_tool_is_still_running() {
     pty.send(b"\x03\x03");
     let status = pty.wait_for_exit();
     assert!(status.success(), "forced TUI exit failed: {status}");
+    // The claim is that a second Ctrl-C skips the shutdown grace -- not that this machine is fast.
+    //
+    // The normal path waits `workflow::SHUTDOWN_GRACE` (5s) plus `SHUTDOWN_WAIT_SLACK` (1s), so
+    // the property is "well under six seconds". The bound was a hardcoded 2s, which measured
+    // process teardown and PTY drain as well as the grace, and had no relation to the 5s it was
+    // supposed to be proving the absence of. Locally it failed roughly one run in three at
+    // 2.4-3.1s -- every one of those runs having correctly skipped the grace. Four seconds is
+    // comfortably below the six the slow path costs and comfortably above the teardown, so it
+    // fails only if the grace is actually taken, and it scales like every other bound here.
+    const GRACE_PLUS_SLACK: Duration = Duration::from_secs(6);
+    let forced_budget = Duration::from_secs(4) * timeout_scale();
+    let forced_elapsed = forced_at.elapsed();
     assert!(
-        forced_at.elapsed() < Duration::from_secs(2),
-        "double Ctrl-C waited through the normal workflow shutdown grace"
+        forced_elapsed < forced_budget,
+        "double Ctrl-C waited through the normal workflow shutdown grace \
+         ({GRACE_PLUS_SLACK:?}): took {forced_elapsed:?}, budget {forced_budget:?}"
     );
     assert_termios_restored(&pty);
     pty.close_and_drain();
