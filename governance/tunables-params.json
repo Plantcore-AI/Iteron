@@ -12502,7 +12502,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/tool_output_spill.rs",
-          "line": 104,
+          "line": 126,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -12532,7 +12532,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/tool_output_spill.rs",
-          "line": 108,
+          "line": 120,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -12563,6 +12563,11 @@
         {
           "path": "crates/cli/src/runtime/tool_output_spill.rs",
           "line": 65,
+          "evidence": "param_integer runtime resolution"
+        },
+        {
+          "path": "crates/cli/src/runtime/tool_output_spill.rs",
+          "line": 115,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -39649,12 +39654,17 @@
       "use_sites": [
         {
           "path": "crates/mcp/src/reconnect.rs",
-          "line": 35,
+          "line": 27,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/mcp/src/reconnect.rs",
-          "line": 42,
+          "line": 58,
+          "evidence": "param_integer runtime resolution"
+        },
+        {
+          "path": "crates/mcp/src/reconnect.rs",
+          "line": 65,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -39684,12 +39694,17 @@
       "use_sites": [
         {
           "path": "crates/mcp/src/reconnect.rs",
-          "line": 49,
+          "line": 31,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/mcp/src/reconnect.rs",
-          "line": 56,
+          "line": 72,
+          "evidence": "param_integer runtime resolution"
+        },
+        {
+          "path": "crates/mcp/src/reconnect.rs",
+          "line": 79,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -39719,12 +39734,17 @@
       "use_sites": [
         {
           "path": "crates/mcp/src/reconnect.rs",
-          "line": 63,
+          "line": 35,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/mcp/src/reconnect.rs",
-          "line": 70,
+          "line": 86,
+          "evidence": "param_integer runtime resolution"
+        },
+        {
+          "path": "crates/mcp/src/reconnect.rs",
+          "line": 93,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -39777,7 +39797,7 @@
       "use_sites": [
         {
           "path": "crates/mcp/src/result_policy.rs",
-          "line": 106,
+          "line": 108,
           "evidence": "Rust path reference"
         }
       ]
@@ -39802,7 +39822,7 @@
       "use_sites": [
         {
           "path": "crates/mcp/src/result_policy.rs",
-          "line": 102,
+          "line": 110,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -39829,12 +39849,12 @@
       "use_sites": [
         {
           "path": "crates/mcp/src/result_policy.rs",
-          "line": 133,
+          "line": 142,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/mcp/src/result_policy.rs",
-          "line": 134,
+          "line": 143,
           "evidence": "Rust path reference"
         }
       ]
@@ -39865,6 +39885,11 @@
           "path": "crates/mcp/src/result_policy.rs",
           "line": 72,
           "evidence": "param_integer runtime resolution"
+        },
+        {
+          "path": "crates/mcp/src/result_policy.rs",
+          "line": 104,
+          "evidence": "param_integer runtime resolution"
         }
       ],
       "behavior_oracle": "installed profile id mcp.result_policy.max_mcp_spill_result_bytes is resolved at every listed production helper call"
@@ -39893,12 +39918,12 @@
       "use_sites": [
         {
           "path": "crates/mcp/src/result_policy.rs",
-          "line": 273,
+          "line": 282,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/mcp/src/result_policy.rs",
-          "line": 279,
+          "line": 288,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -39925,12 +39950,12 @@
       "use_sites": [
         {
           "path": "crates/mcp/src/result_policy.rs",
-          "line": 121,
+          "line": 130,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/mcp/src/result_policy.rs",
-          "line": 130,
+          "line": 139,
           "evidence": "Rust path reference"
         }
       ]
@@ -39956,7 +39981,7 @@
       "use_sites": [
         {
           "path": "crates/mcp/src/result_policy.rs",
-          "line": 162,
+          "line": 171,
           "evidence": "Rust path reference"
         }
       ]
@@ -45240,17 +45265,17 @@
       "use_sites": [
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 3374,
+          "line": 3378,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 3380,
+          "line": 3384,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 3386,
+          "line": 3390,
           "evidence": "Rust path reference"
         }
       ]
@@ -45276,7 +45301,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 3440,
+          "line": 3444,
           "evidence": "Rust path reference"
         }
       ]
@@ -45307,12 +45332,12 @@
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 3439,
+          "line": 3443,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/provider/src/static_metadata.rs",
-          "line": 545,
+          "line": 572,
           "evidence": "Rust path reference"
         }
       ]
@@ -45728,12 +45753,12 @@
       "use_sites": [
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 3416,
+          "line": 3420,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 3422,
+          "line": 3426,
           "evidence": "Rust path reference"
         }
       ]
@@ -45759,7 +45784,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 3446,
+          "line": 3450,
           "evidence": "Rust path reference"
         }
       ]
@@ -45785,7 +45810,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 3445,
+          "line": 3449,
           "evidence": "Rust path reference"
         },
         {
@@ -45795,7 +45820,7 @@
         },
         {
           "path": "crates/provider/src/static_metadata.rs",
-          "line": 501,
+          "line": 528,
           "evidence": "Rust path reference"
         }
       ]
@@ -46220,12 +46245,12 @@
       "use_sites": [
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 2865,
+          "line": 2867,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 2867,
+          "line": 2869,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -46260,17 +46285,17 @@
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 2950,
+          "line": 2954,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 3166,
+          "line": 3170,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 3202,
+          "line": 3206,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -46300,12 +46325,12 @@
       "use_sites": [
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 2883,
+          "line": 2886,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 2885,
+          "line": 2888,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -46355,12 +46380,12 @@
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 2956,
+          "line": 2960,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 3208,
+          "line": 3212,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -46455,12 +46480,12 @@
       "use_sites": [
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 5130,
+          "line": 5134,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 5132,
+          "line": 5136,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -46490,7 +46515,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 5169,
+          "line": 5173,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -46556,12 +46581,12 @@
       "use_sites": [
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 3492,
+          "line": 3496,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 3496,
+          "line": 3500,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -46639,12 +46664,12 @@
       "use_sites": [
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 2874,
+          "line": 2877,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 2876,
+          "line": 2879,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -46671,12 +46696,12 @@
       "use_sites": [
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 5107,
+          "line": 5111,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 5121,
+          "line": 5125,
           "evidence": "Rust path reference"
         }
       ]
@@ -46702,12 +46727,12 @@
       "use_sites": [
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 3398,
+          "line": 3402,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 3404,
+          "line": 3408,
           "evidence": "Rust path reference"
         }
       ]
@@ -46733,7 +46758,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 3443,
+          "line": 3447,
           "evidence": "Rust path reference"
         }
       ]
@@ -46764,7 +46789,7 @@
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 3442,
+          "line": 3446,
           "evidence": "Rust path reference"
         }
       ]
@@ -48870,12 +48895,12 @@
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 3439,
+          "line": 3443,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/provider/src/static_metadata.rs",
-          "line": 545,
+          "line": 572,
           "evidence": "Rust path reference"
         }
       ]
@@ -48936,7 +48961,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/static_metadata.rs",
-          "line": 152,
+          "line": 164,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -48963,7 +48988,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/static_metadata.rs",
-          "line": 233,
+          "line": 260,
           "evidence": "Rust path reference"
         },
         {
@@ -48994,7 +49019,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/static_metadata.rs",
-          "line": 255,
+          "line": 282,
           "evidence": "Rust path reference"
         }
       ]
@@ -49072,7 +49097,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 3445,
+          "line": 3449,
           "evidence": "Rust path reference"
         },
         {
@@ -49082,7 +49107,7 @@
         },
         {
           "path": "crates/provider/src/static_metadata.rs",
-          "line": 501,
+          "line": 528,
           "evidence": "Rust path reference"
         }
       ]
@@ -49111,7 +49136,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/static_metadata.rs",
-          "line": 567,
+          "line": 594,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -49141,22 +49166,22 @@
       "use_sites": [
         {
           "path": "crates/provider/src/static_metadata.rs",
-          "line": 203,
+          "line": 230,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/provider/src/static_metadata.rs",
-          "line": 266,
+          "line": 293,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/provider/src/static_metadata.rs",
-          "line": 277,
+          "line": 304,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/provider/src/static_metadata.rs",
-          "line": 285,
+          "line": 312,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -49186,7 +49211,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/static_metadata.rs",
-          "line": 370,
+          "line": 397,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -49216,7 +49241,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/static_metadata.rs",
-          "line": 552,
+          "line": 579,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -49246,7 +49271,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/static_metadata.rs",
-          "line": 606,
+          "line": 633,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -49276,12 +49301,12 @@
       "use_sites": [
         {
           "path": "crates/provider/src/static_metadata.rs",
-          "line": 513,
+          "line": 540,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/provider/src/static_metadata.rs",
-          "line": 594,
+          "line": 621,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -49346,12 +49371,12 @@
       "use_sites": [
         {
           "path": "crates/provider/src/static_metadata.rs",
-          "line": 493,
+          "line": 520,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/provider/src/static_metadata.rs",
-          "line": 579,
+          "line": 606,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -49408,7 +49433,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/static_metadata.rs",
-          "line": 488,
+          "line": 515,
           "evidence": "Rust path reference"
         }
       ]
@@ -49621,7 +49646,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/static_metadata.rs",
-          "line": 233,
+          "line": 260,
           "evidence": "Rust path reference"
         },
         {
@@ -49678,7 +49703,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/static_metadata.rs",
-          "line": 148,
+          "line": 161,
           "evidence": "Rust path reference"
         }
       ]
@@ -57818,12 +57843,12 @@
       "use_sites": [
         {
           "path": "crates/tools/src/lsp/policy.rs",
-          "line": 113,
+          "line": 147,
           "evidence": "param_u64 runtime resolution"
         },
         {
           "path": "crates/tools/src/lsp/policy.rs",
-          "line": 115,
+          "line": 149,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -57853,12 +57878,12 @@
       "use_sites": [
         {
           "path": "crates/tools/src/lsp/policy.rs",
-          "line": 120,
+          "line": 107,
           "evidence": "param_u64 runtime resolution"
         },
         {
           "path": "crates/tools/src/lsp/policy.rs",
-          "line": 122,
+          "line": 109,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -57888,17 +57913,17 @@
       "use_sites": [
         {
           "path": "crates/tools/src/lsp/policy.rs",
-          "line": 102,
+          "line": 131,
           "evidence": "param_i128 runtime resolution"
         },
         {
           "path": "crates/tools/src/lsp/policy.rs",
-          "line": 104,
+          "line": 133,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/tools/src/lsp/policy.rs",
-          "line": 109,
+          "line": 138,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -57924,12 +57949,12 @@
       "use_sites": [
         {
           "path": "crates/tools/src/lsp/policy.rs",
-          "line": 95,
+          "line": 116,
           "evidence": "param_u64 runtime resolution"
         },
         {
           "path": "crates/tools/src/lsp/policy.rs",
-          "line": 97,
+          "line": 118,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -57955,7 +57980,7 @@
       "use_sites": [
         {
           "path": "crates/tools/src/lsp/policy.rs",
-          "line": 265,
+          "line": 307,
           "evidence": "param_str_list runtime resolution"
         }
       ],
@@ -57985,12 +58010,12 @@
       "use_sites": [
         {
           "path": "crates/tools/src/lsp/policy.rs",
-          "line": 176,
+          "line": 210,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/tools/src/lsp/policy.rs",
-          "line": 275,
+          "line": 317,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -58020,12 +58045,17 @@
       "use_sites": [
         {
           "path": "crates/tools/src/lsp/policy.rs",
-          "line": 66,
+          "line": 69,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/tools/src/lsp/policy.rs",
-          "line": 71,
+          "line": 74,
+          "evidence": "param_integer runtime resolution"
+        },
+        {
+          "path": "crates/tools/src/lsp/policy.rs",
+          "line": 103,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -58090,7 +58120,12 @@
       "use_sites": [
         {
           "path": "crates/tools/src/lsp/policy.rs",
-          "line": 52,
+          "line": 54,
+          "evidence": "param_integer runtime resolution"
+        },
+        {
+          "path": "crates/tools/src/lsp/policy.rs",
+          "line": 125,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -58120,7 +58155,12 @@
       "use_sites": [
         {
           "path": "crates/tools/src/lsp/policy.rs",
-          "line": 61,
+          "line": 64,
+          "evidence": "param_integer runtime resolution"
+        },
+        {
+          "path": "crates/tools/src/lsp/policy.rs",
+          "line": 142,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -58150,7 +58190,12 @@
       "use_sites": [
         {
           "path": "crates/tools/src/lsp/policy.rs",
-          "line": 144,
+          "line": 174,
+          "evidence": "param_integer runtime resolution"
+        },
+        {
+          "path": "crates/tools/src/lsp/policy.rs",
+          "line": 254,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -66933,7 +66978,7 @@
       "use_sites": [
         {
           "path": "crates/workflow/src/execution_policy.rs",
-          "line": 312,
+          "line": 333,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -66959,12 +67004,12 @@
       "use_sites": [
         {
           "path": "crates/workflow/src/execution_policy.rs",
-          "line": 305,
+          "line": 338,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/workflow/src/execution_policy.rs",
-          "line": 307,
+          "line": 340,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -66990,12 +67035,12 @@
       "use_sites": [
         {
           "path": "crates/workflow/src/execution_policy.rs",
-          "line": 396,
+          "line": 437,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/workflow/src/execution_policy.rs",
-          "line": 398,
+          "line": 439,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -67021,7 +67066,7 @@
       "use_sites": [
         {
           "path": "crates/workflow/src/execution_policy.rs",
-          "line": 403,
+          "line": 445,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -67052,7 +67097,7 @@
       "use_sites": [
         {
           "path": "crates/workflow/src/execution_policy.rs",
-          "line": 264,
+          "line": 305,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -67089,6 +67134,16 @@
           "path": "crates/workflow/src/execution_policy.rs",
           "line": 252,
           "evidence": "param_integer runtime resolution"
+        },
+        {
+          "path": "crates/workflow/src/execution_policy.rs",
+          "line": 313,
+          "evidence": "param_usize runtime resolution"
+        },
+        {
+          "path": "crates/workflow/src/execution_policy.rs",
+          "line": 315,
+          "evidence": "param_integer runtime resolution"
         }
       ],
       "behavior_oracle": "installed profile id workflow.execution_policy.max_speculative_siblings is resolved at every listed production helper call"
@@ -67117,12 +67172,22 @@
       "use_sites": [
         {
           "path": "crates/workflow/src/execution_policy.rs",
-          "line": 363,
+          "line": 395,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/workflow/src/execution_policy.rs",
-          "line": 365,
+          "line": 397,
+          "evidence": "param_integer runtime resolution"
+        },
+        {
+          "path": "crates/workflow/src/execution_policy.rs",
+          "line": 429,
+          "evidence": "param_usize runtime resolution"
+        },
+        {
+          "path": "crates/workflow/src/execution_policy.rs",
+          "line": 431,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -67149,7 +67214,7 @@
       "use_sites": [
         {
           "path": "crates/workflow/src/execution_policy.rs",
-          "line": 260,
+          "line": 301,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -67789,12 +67854,12 @@
       "use_sites": [
         {
           "path": "crates/workflow/src/quorum.rs",
-          "line": 71,
+          "line": 74,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/workflow/src/quorum.rs",
-          "line": 73,
+          "line": 76,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -67820,12 +67885,12 @@
       "use_sites": [
         {
           "path": "crates/workflow/src/quorum.rs",
-          "line": 79,
+          "line": 92,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/workflow/src/quorum.rs",
-          "line": 81,
+          "line": 94,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -67851,7 +67916,7 @@
       "use_sites": [
         {
           "path": "crates/workflow/src/quorum.rs",
-          "line": 91,
+          "line": 104,
           "evidence": "param_bool runtime resolution"
         }
       ],
@@ -67881,12 +67946,22 @@
       "use_sites": [
         {
           "path": "crates/workflow/src/quorum.rs",
-          "line": 32,
+          "line": 34,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/workflow/src/quorum.rs",
-          "line": 34,
+          "line": 36,
+          "evidence": "param_integer runtime resolution"
+        },
+        {
+          "path": "crates/workflow/src/quorum.rs",
+          "line": 83,
+          "evidence": "param_usize runtime resolution"
+        },
+        {
+          "path": "crates/workflow/src/quorum.rs",
+          "line": 85,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -67947,12 +68022,12 @@
       "use_sites": [
         {
           "path": "crates/workflow/src/schema_retry.rs",
-          "line": 90,
+          "line": 96,
           "evidence": "param_u64 runtime resolution"
         },
         {
           "path": "crates/workflow/src/schema_retry.rs",
-          "line": 92,
+          "line": 98,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -68024,6 +68099,16 @@
           "path": "crates/workflow/src/schema_retry.rs",
           "line": 27,
           "evidence": "param_integer runtime resolution"
+        },
+        {
+          "path": "crates/workflow/src/schema_retry.rs",
+          "line": 109,
+          "evidence": "param_u64 runtime resolution"
+        },
+        {
+          "path": "crates/workflow/src/schema_retry.rs",
+          "line": 111,
+          "evidence": "param_integer runtime resolution"
         }
       ],
       "behavior_oracle": "installed profile id workflow.schema_retry.max_schema_retry_attempts is resolved at every listed production helper call"
@@ -68058,6 +68143,16 @@
         {
           "path": "crates/workflow/src/schema_retry.rs",
           "line": 39,
+          "evidence": "param_integer runtime resolution"
+        },
+        {
+          "path": "crates/workflow/src/schema_retry.rs",
+          "line": 89,
+          "evidence": "param_u64 runtime resolution"
+        },
+        {
+          "path": "crates/workflow/src/schema_retry.rs",
+          "line": 91,
           "evidence": "param_integer runtime resolution"
         }
       ],

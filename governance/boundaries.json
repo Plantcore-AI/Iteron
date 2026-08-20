@@ -689,10 +689,6 @@
         },
         {
           "kind": "file",
-          "path": "crates/provider/static-provider-metadata-v1.json"
-        },
-        {
-          "kind": "file",
           "path": "crates/provider/src/catalog.rs"
         },
         {
@@ -730,6 +726,14 @@
         {
           "kind": "file",
           "path": "crates/provider/src/usage.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/provider/static-provider-metadata-v1.json"
+        },
+        {
+          "kind": "file",
+          "path": "crates/provider/tests/bounded_minimum_does_not_abort.rs"
         },
         {
           "kind": "file",
@@ -1279,15 +1283,11 @@
         },
         {
           "kind": "file",
-          "path": "crates/tools/src/tool_search.rs"
-        },
-        {
-          "kind": "file",
           "path": "crates/tools/src/tool_policy.rs"
         },
         {
           "kind": "file",
-          "path": "crates/tools/src/write_file.rs"
+          "path": "crates/tools/src/tool_search.rs"
         },
         {
           "kind": "file",
@@ -1295,7 +1295,15 @@
         },
         {
           "kind": "file",
+          "path": "crates/tools/src/write_file.rs"
+        },
+        {
+          "kind": "file",
           "path": "crates/tools/src/write_file_tests.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/tools/tests/bounded_minimum_does_not_abort.rs"
         }
       ],
       "contracts": [
