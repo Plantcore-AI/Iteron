@@ -76,7 +76,29 @@ const CURSOR_POSITION_QUERY: &[u8] = b"\x1b[6n";
 /// A glyph from the startup banner, i.e. proof that a real frame reached the terminal.
 const FIRST_FRAME_MARKER: &[u8] = "ask about this codebase or describe a task".as_bytes();
 static SCRATCH_ID: AtomicU64 = AtomicU64::new(0);
-const MAX_CONCURRENT_PTYS: usize = 4;
+const DEFAULT_MAX_CONCURRENT_PTYS: usize = 4;
+/// Measured ceiling, not a guess. On a 14-core M-series Mac this binary runs 28 tests in 48.4s at
+/// a cap of 4 and 39.0s at 6, both green; at 8 it drops a test on the first run -- the same
+/// scheduler storm the permit exists to prevent. Six is therefore the highest value observed to
+/// hold, and anything above it is refused rather than silently accepted.
+const MAX_SETTABLE_CONCURRENT_PTYS: usize = 6;
+
+/// Read once. The default is deliberately unchanged: the shared CI runner compiles other jobs'
+/// worktrees on the same cores, so `available_parallelism` there reports cores this binary does
+/// not actually get, and raising the cap from what the machine claims would reintroduce exactly
+/// the flakiness the permit removed. An operator on a dedicated machine can opt in, the same way
+/// `ITERON_TEST_TIMEOUT_SCALE` already lets the machine say how slow it is.
+fn max_concurrent_ptys() -> usize {
+    static CAP: OnceLock<usize> = OnceLock::new();
+    *CAP.get_or_init(|| {
+        std::env::var("ITERON_TEST_MAX_CONCURRENT_PTYS")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<usize>().ok())
+            .filter(|cap| (1..=MAX_SETTABLE_CONCURRENT_PTYS).contains(cap))
+            .unwrap_or(DEFAULT_MAX_CONCURRENT_PTYS)
+    })
+}
+
 static PTY_CAPACITY: LazyLock<(Mutex<usize>, Condvar)> =
     LazyLock::new(|| (Mutex::new(0), Condvar::new()));
 
@@ -92,7 +114,7 @@ impl PtyPermit {
         let mut active = active
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        while *active >= MAX_CONCURRENT_PTYS {
+        while *active >= max_concurrent_ptys() {
             active = ready
                 .wait(active)
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
