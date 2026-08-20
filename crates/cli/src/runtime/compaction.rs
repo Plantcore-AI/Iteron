@@ -240,7 +240,7 @@ impl Agent {
             .context_estimator
             .estimate_uncached(&system, &rebuilt, &tools);
         let trigger = self.compaction.effective_trigger_tokens(
-            self.model_context_window,
+            self.execution_context_window(),
             self.model_max_output_tokens
                 .unwrap_or(crate::runtime_tunables::core_facts::UNKNOWN_MODEL_OUTPUT_TOKENS),
         );
@@ -264,12 +264,12 @@ impl Agent {
         };
         let mut ledger =
             iteron_ctx::ContextLedger::new(turn, self.context_estimator.tokenizer_identity());
-        ledger.model_context_window = self.model_context_window;
+        ledger.model_context_window = self.execution_context_window();
         let output_reserve = self
             .model_max_output_tokens
             .unwrap_or(crate::runtime_tunables::core_facts::UNKNOWN_MODEL_OUTPUT_TOKENS);
         ledger.usable_window = self
-            .model_context_window
+            .execution_context_window()
             .map(|window| window.saturating_sub(u64::from(output_reserve)));
         ledger.output_reserved_tokens = u64::from(output_reserve);
         ledger.record_transform(iteron_ctx::ContextTransformEvidence {
@@ -410,7 +410,7 @@ impl Agent {
             let estimate = self.calibrated_context_estimate(estimate);
             let trigger = self
                 .compaction
-                .approaching_trigger_tokens(self.model_context_window, request_max_tokens);
+                .approaching_trigger_tokens(self.execution_context_window(), request_max_tokens);
             (
                 projected.len() > self.compaction.keep_recent.saturating_add(2)
                     && estimate.total_tokens > trigger,
@@ -438,9 +438,10 @@ impl Agent {
                     tools.cache_identity(),
                 );
                 let estimate = self.calibrated_context_estimate(estimate);
-                let trigger = self
-                    .compaction
-                    .approaching_trigger_tokens(self.model_context_window, request_max_tokens);
+                let trigger = self.compaction.approaching_trigger_tokens(
+                    self.execution_context_window(),
+                    request_max_tokens,
+                );
                 if messages.len() > self.compaction.keep_recent.saturating_add(2)
                     && estimate.total_tokens > trigger
                 {

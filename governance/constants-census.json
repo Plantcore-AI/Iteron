@@ -11,7 +11,7 @@
       "structural": 0
     },
     "cli": {
-      "bounded": 212,
+      "bounded": 213,
       "searchable": 245,
       "structural": 180
     },
@@ -112,7 +112,7 @@
     }
   },
   "schema_version": 1,
-  "settable": 1381,
+  "settable": 1382,
   "structural": 766,
-  "total": 2147
+  "total": 2148
 }

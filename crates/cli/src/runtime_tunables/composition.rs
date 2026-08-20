@@ -671,6 +671,15 @@ mod tests {
             .resolve(run_limits.max_concurrency(), false)
             .unwrap();
         let tenant = TenantId::default();
+        let tunables_profile = super::super::adhoc::apply_set_arguments(
+            None,
+            &[
+                "max_turns=10".to_owned(),
+                "multimodal_token_budget=1024".to_owned(),
+            ],
+        )
+        .expect("Tier-1 --set assignments are valid")
+        .expect("assignments create a value-bearing profile");
 
         let fresh = resolve_fresh(FreshCompositionInput {
             directory: &directory,
@@ -747,7 +756,7 @@ mod tests {
             provider_control_capabilities: &provider_controls,
             authority_ceiling: CapabilitySet::from_iter_capabilities([Capability::ReadOnly]),
             run_limits,
-            tunables_profile: None,
+            tunables_profile: Some(&tunables_profile),
         })
         .unwrap_or_else(|error| {
             panic!("fresh production composition must resolve and seal: {error:#?}")
@@ -763,6 +772,8 @@ mod tests {
             "every effective Full family was observed by its exact production owner"
         );
         assert_eq!(fresh.fact_summary.active_full_gaps, 0);
+        assert_eq!(fresh.settings.budget.max_turns, 10);
+        assert_eq!(fresh.settings.context_budget.multimodal_tokens, 1_024);
         assert!(
             fresh.settings.model_context_window.is_some(),
             "unknown provider metadata must resolve to a pinned conservative effective window"
@@ -810,6 +821,19 @@ mod tests {
         // enough to admit the run.
         let checkpoint = iteron_record::TunablesCheckpoint::V2(
             iteron_record::snapshot_v2_from_resolved(&fresh.resolved).unwrap(),
+        );
+        let snapshot = checkpoint.as_v2().expect("fresh checkpoint is V2");
+        let empty_profile_digest =
+            iteron_tunables::runtime_profile_digest(RuntimeProfile::Interactive).unwrap();
+        assert_ne!(
+            snapshot.profile_digest_sha256.as_deref(),
+            Some(empty_profile_digest.as_str()),
+            "the immutable digest must continue to identify the complete value-bearing profile"
+        );
+        assert_eq!(
+            super::super::effective_view::checkpoint_runtime_profile(&checkpoint),
+            Some(RuntimeProfile::Interactive),
+            "physical identity comes from the immutable session-isolation family"
         );
         let view =
             super::super::effective_view::EffectiveTunablesView::from_checkpoint(&checkpoint)

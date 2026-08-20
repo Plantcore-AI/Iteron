@@ -409,6 +409,29 @@ impl Agent {
         &self,
         input_images: &'a [iteron_protocol::ImageContent],
     ) -> Result<&'a [iteron_protocol::ImageContent], KernelError> {
+        if input_images.is_empty() {
+            return Ok(input_images);
+        }
+        // Capability admission owns the route before any payload work. Besides making an
+        // unsupported submission's reason truthful, this ensures a route that cannot consume
+        // images performs no binary decode/inspection, token estimation, or component-budget
+        // admission on them.
+        if !self.provider.supports_image_input() {
+            self.lifecycle_event(
+                "context.source.rejected",
+                Some(TurnId(self.seq_turn)),
+                LifecyclePayload {
+                    count: Some(u64::try_from(input_images.len()).unwrap_or(u64::MAX)),
+                    reason_code: Some("image_input_unsupported".into()),
+                    ..LifecyclePayload::default()
+                },
+            );
+            return Err(KernelError::InvalidSubmission(iteron_tunables::param_str(
+                "cli.runtime.image_input_unsupported_reason",
+                IMAGE_INPUT_UNSUPPORTED_REASON,
+            )));
+        }
+
         let reject = || {
             self.lifecycle_event(
                 "context.source.rejected",
@@ -447,22 +470,7 @@ impl Agent {
         self.context_budget_policy
             .admit_multimodal(estimated_tokens)
             .map_err(|error| KernelError::ContextBudget(error.to_string()))?;
-        if input_images.is_empty() || self.provider.supports_image_input() {
-            return Ok(input_images);
-        }
-        self.lifecycle_event(
-            "context.source.rejected",
-            Some(TurnId(self.seq_turn)),
-            LifecyclePayload {
-                count: Some(u64::try_from(input_images.len()).unwrap_or(u64::MAX)),
-                reason_code: Some("image_input_unsupported".into()),
-                ..LifecyclePayload::default()
-            },
-        );
-        Err(KernelError::InvalidSubmission(iteron_tunables::param_str(
-            "cli.runtime.image_input_unsupported_reason",
-            IMAGE_INPUT_UNSUPPORTED_REASON,
-        )))
+        Ok(input_images)
     }
 
     /// The system prompt for a turn: the base plus ONCE-resolved context (REC-INJECT).

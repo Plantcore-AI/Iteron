@@ -199,16 +199,16 @@ fn all_family_input() -> ResolutionInput {
                 },
                 // The total request deadline is a derived transport owner rather than a
                 // Literal family, so the generic scalar sampler would choose 1 ms. That is
-                // schema-valid but physically inconsistent with the fixed 30 s connect and
-                // 120 s stream-idle owners consumed by every provider adapter.
-                "provider_request_total_deadline" => ResolutionValue::Integer { value: 900_000 },
+                // schema-valid but physically inconsistent with the fixed 10 s connect and
+                // 60 s stream-idle owners consumed by every provider adapter.
+                "provider_request_total_deadline" => ResolutionValue::Integer { value: 300_000 },
                 // Verification families form one executable policy. Keep the public fixture on
-                // the conservative full-workspace owner with a valid non-zero retry ceiling;
+                // the impacted-first owner with a valid full-workspace fallback and retry ceiling;
                 // generic per-schema sampling can produce individually valid fields that the
                 // physical policy correctly rejects as an inconsistent set.
                 "test_selection_strategy" => verification_test_selection_strategy(),
                 "incremental_versus_full_verification" => ResolutionValue::Enum {
-                    value: "full".to_owned(),
+                    value: "impacted".to_owned(),
                 },
                 // `ProcessRuntimePolicy` rejects a disabled backend that still admits background
                 // jobs. That pairing spans two families, which a per-family value schema cannot
@@ -452,7 +452,7 @@ fn effort_reasoning_map() -> ResolutionValue {
 fn compaction_trigger() -> ResolutionValue {
     object([
         ("mode", enumv("adaptive")),
-        ("usable_window_ratio", decimal(1, 0)),
+        ("usable_window_ratio", decimal(82, 2)),
         ("fallback_trigger_tokens", integer(120_000)),
         ("output_reserve_tokens", integer(8_192)),
     ])
@@ -460,7 +460,7 @@ fn compaction_trigger() -> ResolutionValue {
 
 fn compaction_adaptive() -> ResolutionValue {
     object([
-        ("usable_window_ratio", decimal(1, 0)),
+        ("usable_window_ratio", decimal(82, 2)),
         ("keep_recent_messages", integer(0)),
         ("output_reserve_tokens", integer(8_192)),
     ])
@@ -521,7 +521,7 @@ fn execution_runtime_owner_value(family: &str, route: &RouteIdentity) -> Resolut
         "report_budget" => integer(16 * 1024),
         "workflow_aggregate" => object([
             ("max_calls", integer(8)),
-            ("max_wall_seconds", integer(14_400)),
+            ("max_wall_seconds", integer(3_600)),
             ("max_concurrency", integer(1)),
         ]),
         "schema_retry_jitter" => object([
@@ -986,7 +986,7 @@ fn verification_checkpoint_cadence() -> ResolutionValue {
             ),
             (
                 "before_verification".to_owned(),
-                ResolutionValue::Boolean { value: false },
+                ResolutionValue::Boolean { value: true },
             ),
             (
                 "before_drain".to_owned(),

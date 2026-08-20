@@ -28,11 +28,11 @@ This page is generated from the argument parser, so every shipped flag and subco
 | `--machine-contract` | Print the bounded, provider-free CLI capability report as JSON and exit. |
 | `-C`, `--repo <REPO>` | The repository to work in (defaults to the current directory). Default `.`. |
 | `--model <MODEL>` | Model id (overrides config / default). |
-| `--max-turns <MAX_TURNS>` | Max turns (bounded invariant; overrides config / default). |
+| `--max-turns <MAX_TURNS>` | Max turns (bounded invariant; overrides config / default of 64). |
 | `--max-usd <MAX_USD>` | Max spend in USD (bounded invariant; overrides config / default). |
 | `--max-tokens <MAX_TOKENS>` | Aggregate provider-token ceiling across this run and all descendants. |
-| `--max-consecutive-tool-errors <MAX_CONSECUTIVE_TOOL_ERRORS>` | Consecutive failing tool calls before the run stops as stuck (stability floor; overrides the default of 25). Raised from 3 on 2026-08-05: three was reachable by a model correcting its own mistake, so the floor fired on runs that were making progress. |
-| `--max-wall-secs <MAX_WALL_SECS>` | Wall-clock ceiling for ONE submission, in seconds (bounded invariant; overrides config / default). The default is 14400s (4h), raised from 1800s on 2026-08-05 because one long refactor turn reached the old ceiling and ended reporting a budget instead of a result. |
+| `--max-consecutive-tool-errors <MAX_CONSECUTIVE_TOOL_ERRORS>` | Consecutive failing tool calls before the run stops as stuck (stability floor; overrides the default of 5). |
+| `--max-wall-secs <MAX_WALL_SECS>` | Wall-clock ceiling for ONE submission, in seconds (bounded invariant; overrides config / default). The default is 3600s (1h). |
 | `--allow-code` | Enable code execution (bash/build/test). ON by default; a trusted `~/.iteron/config.json` "allow_code": false, a project `.iteron/config.json` "allow_code": false, or `--mode plan` tightens it back off. The command runs with your own user authority unless `--confine`. |
 | `--confine` | Put code execution back inside the platform sandbox: network denied, writes confined to the workspace, ambient HOME credential paths denied (ADR-007). Off by default — bash otherwise runs with your own user authority, which is what makes `git push`, `gh`, `curl` and package installs work. Filesystem tools address the host either way; this flag governs executed code only. |
 | `--dangerously-bypass-permissions` | Auto-approve EVERY tool so the agent never prompts. ON by default since 2026-08-05, so this flag is now an explicit statement of the default rather than a change to it; pass `--ask-permissions` for the opposite. Plan mode still hard-denies and an explicit `/permissions deny` is still honored either way. |

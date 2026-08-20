@@ -3885,6 +3885,45 @@ mod gate_integration_tests {
         }
     }
 
+    /// The first provider turn cannot reach its terminal until the read has actually started.
+    /// This is a causal (not stopwatch) proof that a gated pure tool still executes before the
+    /// provider stream completes.
+    struct StreamingGateProbe {
+        turn: AtomicUsize,
+        tool_started: std::sync::Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for StreamingGateProbe {
+        async fn turn(
+            &self,
+            _req: &TurnRequest,
+            on_item: &mut (dyn FnMut(StreamItem) + Send),
+        ) -> Result<TurnResult, ProviderError> {
+            if self.turn.fetch_add(1, Ordering::SeqCst) > 0 {
+                return Ok(TurnResult {
+                    blocks: vec![Block::Text {
+                        text: "done".into(),
+                    }],
+                    stop_reason: StopReason::EndTurn,
+                    usage: UsageReport::complete(Usage::default()),
+                });
+            }
+            let call = ToolUse {
+                id: "streaming-gated-read".into(),
+                name: "streaming_gated_read".into(),
+                input: serde_json::json!({}),
+            };
+            on_item(StreamItem::ToolUseComplete(call.clone()));
+            self.tool_started.notified().await;
+            Ok(TurnResult {
+                blocks: vec![Block::ToolUse(call)],
+                stop_reason: StopReason::ToolUse,
+                usage: UsageReport::complete(Usage::default()),
+            })
+        }
+    }
+
     #[async_trait::async_trait]
     impl Provider for ScriptedBurst {
         async fn turn(
@@ -4304,9 +4343,84 @@ mod gate_integration_tests {
             .collect();
         assert_eq!(
             shape,
-            vec!["intent", "intent", "terminal", "terminal"],
-            "gate completion admits an ordinal-preserving concurrent tool group"
+            vec!["intent", "terminal", "intent", "terminal"],
+            "completed concurrent reads are projected as ordinal-preserving durable pairs"
         );
+        std::fs::remove_dir_all(ws).ok();
+    }
+
+    #[tokio::test]
+    async fn i01_pretooluse_allows_a_pure_read_before_stream_completion() {
+        let ws = temp_ws("pretooluse-keeps-stream-overlap");
+        let home = ws.join("operator-home");
+        write_user_hooks(&home, serde_json::json!({"PreToolUse":["true"]}));
+        let started = std::sync::Arc::new(tokio::sync::Notify::new());
+        let mut registry = Registry::coding_agent(&ws).unwrap();
+        let tool_started = started.clone();
+        registry
+            .register_external(
+                ToolSpec {
+                    name: "streaming_gated_read".into(),
+                    description: "proves gated mid-stream dispatch".into(),
+                    input_schema: serde_json::json!({"type":"object"}),
+                    purity: Purity::Pure,
+                    capability: Capability::ReadOnly,
+                },
+                move |call, _root| {
+                    let tool_started = tool_started.clone();
+                    iteron_tools::boxfut::box_it(async move {
+                        tool_started.notify_one();
+                        ToolResult {
+                            tool_use_id: call.id,
+                            content: "started-before-stream-terminal".into(),
+                            is_error: false,
+                            trust: Trust::Workspace,
+                            latency_ms: 0,
+                        }
+                    })
+                },
+            )
+            .unwrap();
+        let run = iteron_protocol::RunId("pretooluse-keeps-stream-overlap".into());
+        let rollout = Rollout::open(
+            &ws.join(".iteron/runs"),
+            &run,
+            iteron_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let provider = StreamingGateProbe {
+            turn: AtomicUsize::new(0),
+            tool_started: started,
+        };
+        let mut agent = Agent::new(
+            std::sync::Arc::new(provider),
+            registry,
+            rollout,
+            "model-a".into(),
+            "sys".into(),
+            Budget {
+                max_turns: 3,
+                max_usd: None,
+                max_tokens: None,
+                max_wall_secs: 30,
+                max_consecutive_tool_errors: 3,
+            },
+        );
+        agent.workspace = ws.clone();
+        agent.context_budget_policy.tool_schema_tokens = 20_000;
+        install_test_hooks(&mut agent, &home);
+
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(5),
+            agent.run("run one hook-gated streaming read"),
+        )
+        .await
+        .expect("the read must start while the provider is still streaming")
+        .unwrap();
+        assert_eq!(outcome, Outcome::Done);
+        assert!(recorded_tool_contents(&ws, &run)
+            .iter()
+            .any(|content| content == "started-before-stream-terminal"));
         std::fs::remove_dir_all(ws).ok();
     }
 
@@ -4631,14 +4745,32 @@ mod gate_integration_tests {
     }
 
     #[test]
-    fn undeclared_bash_conflicts_only_with_the_bash_domain() {
+    fn undeclared_bash_stays_serial_and_declared_bash_uses_a_conflict_domain() {
         let bash = scheduling_write_paths("bash", &serde_json::json!({"command":"make"})).unwrap();
-        let another_bash =
-            scheduling_write_paths("bash", &serde_json::json!({"command":"test"})).unwrap();
+        let declared_bash = scheduling_write_paths(
+            "bash",
+            &serde_json::json!({"command":"make generated", "writes":["generated"]}),
+        )
+        .unwrap();
+        let another_bash = scheduling_write_paths(
+            "bash",
+            &serde_json::json!({"command":"test generated", "writes":["other"]}),
+        )
+        .unwrap();
         let edit =
             scheduling_write_paths("edit", &serde_json::json!({"path":"src/lib.rs"})).unwrap();
-        assert!(!bash.is_disjoint(&another_bash));
+        assert!(bash.is_empty());
+        assert!(!declared_bash.is_disjoint(&another_bash));
         assert!(bash.is_disjoint(&edit));
+    }
+
+    #[test]
+    fn write_path_conflicts_include_ancestor_and_descendant_paths() {
+        assert!(write_paths_conflict("src", "src/lib.rs"));
+        assert!(write_paths_conflict("src/lib.rs", "src"));
+        assert!(write_paths_conflict("src/lib.rs", "src/lib.rs"));
+        assert!(!write_paths_conflict("src/lib.rs", "tests/lib.rs"));
+        assert!(!write_paths_conflict("bash:*", "src/lib.rs"));
     }
 
     #[tokio::test]
@@ -5055,7 +5187,7 @@ mod gate_integration_tests {
     }
 
     #[tokio::test]
-    async fn capable_provider_receives_typed_images_for_each_writer_turn_then_they_clear() {
+    async fn capable_provider_has_a_nonzero_default_and_receives_images_until_they_clear() {
         let ws = temp_ws("multimodal-capable-provider");
         std::fs::write(ws.join("fixture.txt"), "workspace fixture").unwrap();
         let provider = std::sync::Arc::new(CaptureTwoTurnImages::default());
@@ -5082,6 +5214,10 @@ mod gate_integration_tests {
         agent.workspace = ws.clone();
         let (content, image) = test_multimodal_content("inspect the attached screenshot");
 
+        assert!(
+            agent.context_budget_policy.multimodal_tokens > 0,
+            "a capable route with usable default context must receive a nonzero image budget"
+        );
         assert_eq!(agent.run_content(&content).await.unwrap(), Outcome::Done);
         assert_eq!(
             agent.follow_up("plain text follow-up").await.unwrap(),
@@ -5222,7 +5358,7 @@ mod gate_integration_tests {
     }
 
     #[tokio::test]
-    async fn text_only_provider_refuses_images_before_recording_or_dispatching_text() {
+    async fn text_only_provider_refuses_images_before_inspection_zero_budget_or_dispatch() {
         let ws = temp_ws("multimodal-text-only-provider");
         let runs = ws.join(".iteron/runs");
         let run = iteron_protocol::RunId("multimodal-text-only-provider".into());
@@ -5240,16 +5376,52 @@ mod gate_integration_tests {
             Budget::default(),
         );
         agent.workspace = ws.clone();
-        let text = "describe this screenshot without dropping my text";
-        let (content, _) = test_multimodal_content(text);
-
-        assert!(matches!(
-            agent.run_content(&content).await.unwrap_err(),
-            KernelError::InvalidSubmission(reason) if reason == IMAGE_INPUT_UNSUPPORTED_REASON
+        agent.context_budget_policy.multimodal_tokens = 0;
+        let lifecycle = iteron_obs::lifecycle::LifecycleBus::default();
+        agent.set_lifecycle_emitter(iteron_obs::lifecycle::LifecycleEmitter::new(
+            lifecycle.clone(),
         ));
+        let text = "describe this screenshot without dropping my text";
+        // The bytes are PNG while the claimed media type is JPEG. A supported route would refuse
+        // this at binary inspection, and the zero budget would refuse any nonempty estimate after
+        // that. The unsupported capability gate must win before both boundaries.
+        let image = iteron_protocol::ImageContent::new(
+            ImageMediaType::Jpeg,
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+        )
+        .unwrap();
+        let content = iteron_protocol::ContentSegments::new(vec![
+            ContentSegment::Text { text: text.into() },
+            ContentSegment::Image { image },
+        ])
+        .unwrap();
+
+        let error = agent.run_content(&content).await.unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                KernelError::InvalidSubmission(reason)
+                    if *reason == IMAGE_INPUT_UNSUPPORTED_REASON
+            ),
+            "unsupported capability must outrank inspection and multimodal budget: {error:?}"
+        );
+        assert!(
+            !error.public_summary().contains("multimodal_token_budget"),
+            "an unsupported route must not receive supported-route budget advice"
+        );
         let requests = provider.requests.lock().unwrap();
         assert!(requests.is_empty());
         drop(requests);
+
+        let lifecycle = lifecycle.snapshot();
+        assert!(lifecycle.events.iter().any(|event| {
+            event.event_id.as_str() == "context.source.rejected"
+                && event.payload.reason_code.as_deref() == Some("image_input_unsupported")
+        }));
+        assert!(lifecycle.events.iter().all(|event| {
+            event.payload.reason_code.as_deref()
+                != Some("multimodal_decode_envelope_rejected")
+        }));
 
         let events = iteron_record::replay(agent.rollout.path()).unwrap();
         assert!(!events.iter().any(|event| matches!(
@@ -8161,6 +8333,7 @@ ant-api03-SuperSecretModelToken12345"
                 },
             )],
         );
+        agent.verification_policy.checkpoint.before_verification = false;
         let (ui_tx, mut ui_rx) = tokio::sync::mpsc::channel(64);
         agent.set_ui(ui_tx);
 
@@ -8328,13 +8501,13 @@ ant-api03-SuperSecretModelToken12345"
             outcomes: std::sync::Arc::new(std::sync::Mutex::new(
                 [
                     FixedVerificationOracle::strong(
-                        iteron_verify::VerificationOutcome::Pass,
-                        "first pass",
+                        iteron_verify::VerificationOutcome::TestFailure,
+                        "first failure",
                     )
                     .0,
                     FixedVerificationOracle::strong(
-                        iteron_verify::VerificationOutcome::TestFailure,
-                        "contradictory failure",
+                        iteron_verify::VerificationOutcome::Pass,
+                        "contradictory pass",
                     )
                     .0,
                 ]
@@ -8476,7 +8649,7 @@ ant-api03-SuperSecretModelToken12345"
                 EventKind::VerificationPolicy {
                     version: iteron_protocol::VerificationPolicyEventVersion::V1,
                     event: iteron_protocol::VerificationPolicyEvent::Reduced {
-                        selection: iteron_protocol::VerificationSelectionEvidence::Full,
+                        selection: iteron_protocol::VerificationSelectionEvidence::Impacted,
                         physical_runs: 1,
                         pass_lanes: 1,
                         test_failure_lanes: 0,
@@ -8608,6 +8781,7 @@ ant-api03-SuperSecretModelToken12345"
         let policy = iteron_verify::VerificationRuntimePolicy {
             required_commands: vec!["project-check".into()],
             flaky: iteron_verify::FlakyQuarantinePolicy {
+                repeat_count: 1,
                 quarantine_seconds: 3_600,
                 ..Default::default()
             },
@@ -9024,6 +9198,7 @@ ant-api03-SuperSecretModelToken12345"
             iteron_verify::VerificationOutcome::TestFailure,
             "injected candidate failure",
         )));
+        agent.verification_policy.checkpoint.before_verification = false;
 
         let outcome = agent
             .run("finish only when verification passes")
@@ -9084,6 +9259,7 @@ ant-api03-SuperSecretModelToken12345"
             ..Default::default()
         };
         agent.set_verification_policy(policy).unwrap();
+        agent.verification_policy.checkpoint.before_verification = false;
         agent.verify_oracle = Some(std::sync::Arc::new(FixedVerificationOracle::strong(
             iteron_verify::VerificationOutcome::TestFailure,
             "injected candidate failure",
@@ -9133,6 +9309,7 @@ ant-api03-SuperSecretModelToken12345"
             ..Default::default()
         };
         agent.set_verification_policy(policy).unwrap();
+        agent.verification_policy.checkpoint.before_verification = false;
         agent.verify_oracle = Some(std::sync::Arc::new(FixedVerificationOracle::strong(
             iteron_verify::VerificationOutcome::TestFailure,
             "injected candidate failure",
@@ -9221,6 +9398,7 @@ ant-api03-SuperSecretModelToken12345"
             ws.clone(),
             "project-check".into(),
         )));
+        agent.verification_policy.checkpoint.before_verification = false;
 
         let outcome = agent.run("finish only after checks").await.unwrap();
 
@@ -9279,6 +9457,8 @@ ant-api03-SuperSecretModelToken12345"
             &ws,
             [("verification_quorum_consensus", single_verifier_consensus())],
         );
+        agent.verification_policy.checkpoint.before_verification = false;
+        agent.verification_policy.flaky.repeat_count = 1;
 
         let outcome = agent.run("finish only after checks").await.unwrap();
 
@@ -9445,6 +9625,7 @@ ant-api03-SuperSecretModelToken12345"
             &ws,
             [("verification_quorum_consensus", single_verifier_consensus())],
         );
+        agent.verification_policy.checkpoint.before_verification = false;
 
         // This bound covers encrypted journal fsyncs, the 25 ms cancellation poll, and scheduler
         // contention from the full CLI suite. It remains far below the configured 300-second
@@ -9499,6 +9680,7 @@ ant-api03-SuperSecretModelToken12345"
             iteron_verify::VerificationOutcome::Pass,
             "healthy verifier",
         )));
+        resumed.verification_policy.checkpoint.before_verification = false;
         resumed.set_resume(resume_messages).unwrap();
 
         assert_eq!(resumed.run("").await.unwrap(), Outcome::Done);
@@ -16774,8 +16956,8 @@ ant-api03-SuperSecretModelToken12345"
 
     #[tokio::test]
     async fn pretooluse_hook_blocks_a_read_tool() {
-        // Security review #2: a PreToolUse hook must be able to block a READ (pure) tool — with a
-        // hook configured, pure tools are routed through the hook instead of early-dispatching.
+        // Security review #2: a PreToolUse hook must be able to block a READ (pure) tool. The hook
+        // now runs inside the early task, but the registry future remains unpolled until it allows.
         let ws = temp_ws("hookread");
         std::fs::write(ws.join("secret.txt"), "TOP-SECRET-CONTENT").unwrap();
         let home = ws.join("home");

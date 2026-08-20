@@ -725,6 +725,30 @@ fn object_integer(id: &str, name: &str) -> i64 {
     }
 }
 
+fn object_decimal(id: &str, name: &str) -> (i64, u8) {
+    let value = object_default(id)
+        .iter()
+        .find(|field| field.name == name)
+        .unwrap_or_else(|| panic!("{id} has no default field {name}"))
+        .value;
+    match value {
+        TunableValue::Decimal { value } => (value.coefficient, value.scale),
+        other => panic!("{id}.{name} is not a decimal: {other:?}"),
+    }
+}
+
+fn object_boolean(id: &str, name: &str) -> bool {
+    let value = object_default(id)
+        .iter()
+        .find(|field| field.name == name)
+        .unwrap_or_else(|| panic!("{id} has no default field {name}"))
+        .value;
+    match value {
+        TunableValue::Boolean { value } => value,
+        other => panic!("{id}.{name} is not a boolean: {other:?}"),
+    }
+}
+
 #[test]
 fn exact_160_entry_contract_is_pinned_per_ordinal() {
     validate_registry().unwrap();
@@ -845,9 +869,9 @@ fn defaults_resolvers_and_provenance_match_production_truth() {
         Some(TunableValue::Enum { value: "glm-5.2" })
     );
 
-    assert_eq!(integer_default("max_turns"), 600);
-    assert_eq!(integer_default("max_wall_secs"), 14_400);
-    assert_eq!(integer_default("max_consecutive_tool_errors"), 25);
+    assert_eq!(integer_default("max_turns"), 64);
+    assert_eq!(integer_default("max_wall_secs"), 3_600);
+    assert_eq!(integer_default("max_consecutive_tool_errors"), 5);
     assert_eq!(integer_default("deferred_discovery_threshold"), 4);
     assert_eq!(
         family("allow_code").default.value,
@@ -865,11 +889,15 @@ fn defaults_resolvers_and_provenance_match_production_truth() {
         object_integer("compaction_trigger", "fallback_trigger_tokens"),
         120_000
     );
+    assert_eq!(
+        object_decimal("compaction_trigger", "usable_window_ratio"),
+        (82, 2)
+    );
     assert_eq!(integer_default("compaction_keep_recent"), 0);
     for (id, expected, environment) in [
         ("retry_backoff_base", 500, "ITERON_RETRY_BASE_MS"),
         ("retry_backoff_cap", 30_000, "ITERON_RETRY_CAP_MS"),
-        ("retry_max_attempts", 6, "ITERON_RETRY_MAX_ATTEMPTS"),
+        ("retry_max_attempts", 3, "ITERON_RETRY_MAX_ATTEMPTS"),
     ] {
         let family = family(id);
         assert_eq!(family.default.kind, DefaultKind::Literal);
@@ -891,7 +919,25 @@ fn defaults_resolvers_and_provenance_match_production_truth() {
     }
 
     assert_eq!(integer_default("provider_connect_tls_timeout"), 10);
-    assert_eq!(integer_default("stream_idle_watchdog"), 120_000);
+    assert_eq!(integer_default("provider_request_total_deadline"), 300_000);
+    assert_eq!(integer_default("stream_idle_watchdog"), 60_000);
+    assert_eq!(integer_default("verifier_timeout"), 180);
+    assert_eq!(
+        object_integer("flaky_test_detection_quarantine", "repeat_count"),
+        2
+    );
+    assert_eq!(
+        object_integer("flaky_test_detection_quarantine", "quarantine_seconds"),
+        300
+    );
+    assert_eq!(
+        family("incremental_versus_full_verification").default.value,
+        Some(TunableValue::Enum { value: "impacted" })
+    );
+    assert!(object_boolean(
+        "workspace_checkpoint_cadence",
+        "before_verification"
+    ));
     assert_eq!(
         object_integer("http_pool_keepalive_idle_policy", "pool_idle_seconds"),
         300

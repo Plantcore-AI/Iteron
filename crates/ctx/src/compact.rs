@@ -33,7 +33,7 @@ const DEFAULT_TRIGGER_TOKENS: usize = 120_000;
 
 /// Fraction of the usable window at which admission-side compaction becomes mandatory.
 ///
-/// 80%: the remaining fifth absorbs both this estimator's error against the provider's real
+/// 82%: the remaining margin absorbs both this estimator's error against the provider's real
 /// tokenizer and the growth of one more assistant answer plus its tool results before the next
 /// admission check. 85% leaves too little for a single large tool result to land without
 /// overshooting into a hard refusal; 75% is already what the end-of-turn hysteresis applies ON TOP
@@ -41,7 +41,7 @@ const DEFAULT_TRIGGER_TOKENS: usize = 120_000;
 /// its window warrants. The percentage is optimizable; that it is strictly below 100 is not — a
 /// trigger at the full usable window fires only once the request has already been refused.
 fn trigger_usable_ratio_percent() -> u64 {
-    iteron_tunables::param_integer("ctx.compact.trigger_usable_ratio_percent", 80_u64).clamp(1, 100)
+    iteron_tunables::param_integer("ctx.compact.trigger_usable_ratio_percent", 82_u64).clamp(1, 100)
 }
 
 /// Hard context-retention bounds. They are structural memory/admission ceilings rather than
@@ -1123,13 +1123,13 @@ mod tests {
     #[test]
     fn adaptive_trigger_is_a_pure_function_of_window_and_output_reservation() {
         let policy = CompactionPolicy::default();
-        assert_eq!(policy.effective_trigger_tokens(Some(32_768), 8_192), 19_660);
+        assert_eq!(policy.effective_trigger_tokens(Some(32_768), 8_192), 20_152);
         assert_eq!(
             policy.effective_trigger_tokens(Some(1_000_000), 8_192),
-            793_446
+            813_282
         );
         assert_eq!(policy.effective_trigger_tokens(None, 8_192), 120_000);
-        assert_eq!(policy.effective_trigger_tokens(Some(32_768), 8_192), 19_660);
+        assert_eq!(policy.effective_trigger_tokens(Some(32_768), 8_192), 20_152);
     }
 
     #[test]
@@ -1247,7 +1247,7 @@ mod tests {
         let policy = CompactionPolicy::default();
         assert_eq!(
             policy.approaching_trigger_tokens(Some(32_768), 8_192),
-            14_745
+            15_114
         );
         assert_eq!(policy.approaching_trigger_tokens(None, 8_192), 90_000);
         let mut fixed = CompactionPolicy::default();

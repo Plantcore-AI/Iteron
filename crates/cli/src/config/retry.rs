@@ -177,7 +177,7 @@ mod tests {
         let defaults = resolve_retry_policy(RetryConfig::default(), None, None).unwrap();
         assert_eq!(defaults.policy.base_ms, 500);
         assert_eq!(defaults.policy.cap_ms, 30_000);
-        assert_eq!(defaults.policy.max_attempts, 6);
+        assert_eq!(defaults.policy.max_attempts, 3);
         assert_eq!(defaults.base_origin, ConfigOrigin::Builtin);
         assert_eq!(defaults.cap_origin, ConfigOrigin::Builtin);
         assert_eq!(defaults.max_attempts_origin, ConfigOrigin::Builtin);

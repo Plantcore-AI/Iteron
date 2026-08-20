@@ -5,10 +5,10 @@ pub(super) const DEFAULTS: [DefaultSpec; 85] = [
     model_default_with_value!("default_model", enum_value!("glm-5.2")), // 2 model
     derived_default!("base_url"),         // 3 base_url
     literal_default!(enum_value!("medium")), // 4 effort
-    literal_default!(integer_value!(600)), // 5 max_turns
+    literal_default!(integer_value!(64)), // 5 max_turns
     operator_default!("max_usd"),         // 6 max_usd
     operator_default!("max_tokens"),      // 7 max_tokens
-    literal_default!(integer_value!(14_400)), // 8 max_wall_secs
+    literal_default!(integer_value!(3_600)), // 8 max_wall_secs
     literal_default!(boolean_value!(true)), // 9 allow_code
     literal_default!(enum_value!("default")), // 10 permission_mode
     derived_default!("permission_rules"), // 11 permission_rules
@@ -17,7 +17,7 @@ pub(super) const DEFAULTS: [DefaultSpec; 85] = [
         "compaction_trigger",
         object_value!(
             "mode" => enum_value!("adaptive"),
-            "usable_window_ratio" => decimal_value!(1, 0),
+            "usable_window_ratio" => decimal_value!(82, 2),
             "fallback_trigger_tokens" => integer_value!(120_000),
             "output_reserve_tokens" => integer_value!(8_192),
         )
@@ -25,7 +25,7 @@ pub(super) const DEFAULTS: [DefaultSpec; 85] = [
     operator_default!("verify_command"),  // 14 verify_command
     literal_default!(integer_value!(500)), // 15 retry_backoff_base
     literal_default!(integer_value!(30_000)), // 16 retry_backoff_cap
-    literal_default!(integer_value!(6)),  // 17 retry_max_attempts
+    literal_default!(integer_value!(3)),  // 17 retry_max_attempts
     literal_default!(list_value!()),      // 18 egress_allow
     model_default_with_value!("max_output_tokens", integer_value!(8_192)), // 19 request_output_cap
     derived_default!("effort_reasoning_map"), // 20 effort_reasoning_map
@@ -35,7 +35,7 @@ pub(super) const DEFAULTS: [DefaultSpec; 85] = [
     derived_default_with_value!(
         "compaction_adaptive",
         object_value!(
-            "usable_window_ratio" => decimal_value!(1, 0),
+            "usable_window_ratio" => decimal_value!(82, 2),
             "keep_recent_messages" => integer_value!(0),
             "output_reserve_tokens" => integer_value!(8_192),
         )
@@ -49,7 +49,7 @@ pub(super) const DEFAULTS: [DefaultSpec; 85] = [
     derived_default!("memory_budgets"),     // 31 memory_budgets
     derived_default!("bm25"),               // 32 bm25
     derived_default!("skill_listing_budget"), // 33 skill_listing_budget
-    derived_default_with_value!("max_consecutive_tool_errors", integer_value!(25)), // 34 max_consecutive_tool_errors
+    derived_default_with_value!("max_consecutive_tool_errors", integer_value!(5)), // 34 max_consecutive_tool_errors
     derived_default!("pure_overlap"),        // 35 pure_overlap
     derived_default!("pure_concurrency"),    // 36 pure_concurrency
     derived_default!("failed_action_dedup"), // 37 failed_action_dedup
@@ -72,7 +72,7 @@ pub(super) const DEFAULTS: [DefaultSpec; 85] = [
     derived_default!("web_search_cap"),      // 47 web_search_cap
     derived_default!("verifier_attempts"),   // 48 verifier_attempts
     derived_default!("verifier_feedback_tails"), // 49 verifier_feedback_tails
-    derived_default!("verifier_timeout"),    // 50 verifier_timeout
+    derived_default_with_value!("verifier_timeout", integer_value!(180)), // 50 verifier_timeout
     derived_default!("route_topology"),      // 51 route_topology
     derived_default!("decomposition_profile"), // 52 decomposition_profile
     derived_default!("fan_breadth"),         // 53 fan_breadth

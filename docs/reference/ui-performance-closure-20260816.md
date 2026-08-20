@@ -36,11 +36,11 @@ by copying comparator constants. Its accepted findings have these exact outcomes
 
 - deferred provider discovery is dormant until the interactive TUI has painted;
   one-shot and headless callers use a separate bounded first-use settlement path;
-- the stream-idle default is 120 seconds, per-route provider concurrency defaults
+- the stream-idle default is 60 seconds, per-route provider concurrency defaults
   to four independently of workflow fan-out, and rendering coalesces at 16 ms with
   a 63-frame-per-second ceiling;
 - adaptive compaction derives usable input from the selected model window minus
-  the output reserve, retains 25 percent of that usable window, and applies the
+  the output reserve, triggers at 82 percent, retains 25 percent of that usable window, and applies the
   immutable 2,000--15,000-token host clamp;
 - a bare 5xx may select a different route only with proven pre-dispatch or terminal
   evidence; it is never retried on the same route, preserving at-most-once effects;

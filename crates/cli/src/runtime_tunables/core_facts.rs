@@ -27,10 +27,10 @@ use std::collections::BTreeMap;
 
 use super::fixed_artifacts::FixedAuthoritySample;
 
-fn ratio_one() -> DecimalValue {
+fn usable_window_ratio() -> DecimalValue {
     DecimalValue {
-        coefficient: 1,
-        scale: 0,
+        coefficient: 82,
+        scale: 2,
     }
 }
 const SUMMARY_OUTPUT_TOKENS: i64 = 2_048;
@@ -328,7 +328,7 @@ fn add_budget_values(
     literal_with_override(
         builder,
         "max_turns",
-        int(600),
+        int(64),
         input.budget_origins.max_turns,
         int(b.max_turns.into()),
     )?;
@@ -346,7 +346,7 @@ fn add_budget_values(
     literal_with_override(
         builder,
         "max_wall_secs",
-        int(14_400),
+        int(3_600),
         input.budget_origins.max_wall_secs,
         int(i64v(b.max_wall_secs, "max_wall_secs")?),
     )?;
@@ -400,7 +400,7 @@ fn add_compaction(
                 },
             ),
         ),
-        ("usable_window_ratio", dec(ratio_one())),
+        ("usable_window_ratio", dec(usable_window_ratio())),
         (
             "fallback_trigger_tokens",
             int(i64u(input.compaction.trigger_tokens, "compaction_trigger")?),
@@ -416,7 +416,7 @@ fn add_compaction(
         builder.declare("compaction_trigger", SourceKind::UserConfig, trigger)?;
     }
     let compaction_adaptive = object([
-        ("usable_window_ratio", dec(ratio_one())),
+        ("usable_window_ratio", dec(usable_window_ratio())),
         (
             "keep_recent_messages",
             int(i64u(input.compaction.keep_recent, "keep_recent")?),
@@ -431,7 +431,7 @@ fn add_compaction(
     builder.observe_default(
         "compaction_adaptive",
         object([
-            ("usable_window_ratio", dec(ratio_one())),
+            ("usable_window_ratio", dec(usable_window_ratio())),
             (
                 "keep_recent_messages",
                 int(i64u(input.compaction.keep_recent, "keep_recent")?),
@@ -478,7 +478,7 @@ fn add_retry_and_verify(
     literal_with_override(
         builder,
         "retry_max_attempts",
-        int(6),
+        int(3),
         input.retry_origins.max_attempts,
         int(input.retry.max_attempts.into()),
     )?;

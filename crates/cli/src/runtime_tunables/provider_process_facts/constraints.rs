@@ -888,12 +888,23 @@ fn add_verification_constraints(
         "$",
         ExternalCeiling::VerificationFloor,
     );
+    let repeat_ceiling = if matches!(
+        input.verification,
+        VerificationOwnerFacts::Configured { .. }
+    ) {
+        input.budget.max_turns.clamp(1, 64)
+    } else {
+        // With no verifier owner there can be no physical repeat dispatch. Preserve the typed
+        // dormant policy instead of letting an unrelated one-turn provider-free run invalidate
+        // startup; the real run ceiling is applied when a verifier is configured.
+        u32::from(input.verification_policy.flaky.repeat_count)
+    };
     upper(
         builder,
         "flaky_test_detection_quarantine",
         "repeat_count",
         ExternalCeiling::RunBudget,
-        int(i64::from(input.budget.max_turns.clamp(1, 64))),
+        int(i64::from(repeat_ceiling)),
     )?;
     report.constrained(
         "flaky_test_detection_quarantine",

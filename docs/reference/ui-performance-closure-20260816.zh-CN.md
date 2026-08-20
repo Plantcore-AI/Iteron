@@ -32,9 +32,9 @@ F-001 至 F-046、D1 至 D49。规范性定义仍以
 
 - 交互式 TUI 首帧前，deferred provider discovery 保持 dormant；one-shot 与 headless 使用独立、
   有界的首次使用 settle 路径；
-- stream idle 默认 120 秒；单 route provider 并发默认 4，且与 workflow fan-out 独立；renderer
+- stream idle 默认 60 秒；单 route provider 并发默认 4，且与 workflow fan-out 独立；renderer
   以 16 ms 合帧，并以每秒 63 帧为 ceiling；
-- adaptive compaction 用所选模型 window 减去 output reserve 得到可用输入，保留其中 25%，再受
+- adaptive compaction 用所选模型 window 减去 output reserve 得到可用输入，在 82% 触发，保留其中 25%，再受
   host 不可变的 2,000--15,000 token clamp 约束；
 - 裸 5xx 只有在证明 pre-dispatch 或 terminal 后才可切换 route；同一 route 永不因 5xx 重试，
   从而保留 effect 的 at-most-once；

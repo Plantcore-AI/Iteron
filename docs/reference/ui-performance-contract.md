@@ -64,9 +64,9 @@ and response streaming. Retry and route failover always expose their attempt, bo
 selected route; a quiet stream is never presented as an unexplained hang.
 
 The shipped interactive defaults are a 10 second connect deadline, a 60 second response-header
-deadline, and a 120 second stream-idle deadline. Slow-first-token guidance appears after three
+deadline, and a 60 second stream-idle deadline. Slow-first-token guidance appears after three
 seconds and stall guidance after twelve seconds. A server retry delay is a lower bound, but an
-interactive wait above 60 seconds terminates with a typed remedy instead of silently sleeping.
+interactive wait above 20 seconds terminates with a typed remedy instead of silently sleeping.
 The default route concurrency is four, is independently tunable from workflow fan concurrency, and
 remains narrowed by provider quotas, cost authority, session budgets, and an installed host ceiling.
 Interactive deferred discovery starts only after the first frame; a selected uncached route may use
@@ -87,7 +87,8 @@ approximate until provider usage arrives; cache read/write counts are shown only
 provider usage and unknown values never render as zero.
 
 Adaptive compaction derives usable input from the selected model context window minus its output
-reservation. Its default recent-tail budget is 25 percent of that usable input, clamped by the host
+reservation and activates at 82 percent of that usable window. Its default recent-tail budget is
+25 percent of usable input, clamped by the host
 to 2,000--15,000 tokens. Process and shell tools expose 30,000 bytes to the model by default; a
 profile may widen that view only up to 150,000 bytes, while the independent 256 KiB evidence ring
 and its resume cursor remain authoritative.

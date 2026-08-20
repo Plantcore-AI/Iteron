@@ -103,8 +103,10 @@ pub(crate) struct EffectiveCoreSettings {
     pub memory_enabled: bool,
     pub session_spawn_cap: usize,
     pub deferred_tool_eager_limit: Option<usize>,
-    /// Exact effective context authority captured in family 96. Unknown provider metadata uses the
-    /// pinned conservative local ceiling; resume must not widen it from a newly discovered value.
+    /// Exact provider-attested physical context authority captured in family 96. Unknown provider
+    /// metadata uses the pinned conservative local ceiling; resume must not widen it from a newly
+    /// discovered value. Runtime admission derives its separately bounded execution window from
+    /// this value plus `request_output_cap`.
     pub model_context_window: Option<u64>,
     /// Exact provider response cap captured in family 19 after all parent ceilings were applied.
     pub request_output_cap: Option<u32>,
@@ -524,7 +526,8 @@ fn decode_verification(
     let selection = match optional_enum(view, "incremental_versus_full_verification")? {
         Some("incremental") => VerificationSelectionMode::Incremental,
         Some("impacted") => VerificationSelectionMode::Impacted,
-        Some("full") | None => VerificationSelectionMode::Full,
+        Some("full") => VerificationSelectionMode::Full,
+        None => VerificationSelectionMode::Impacted,
         Some(other) => return Err(unknown("incremental_versus_full_verification", other)),
     };
     let (required_commands, max_commands) =
@@ -793,7 +796,6 @@ fn decode_context_policies(
                     "context_window_override_reserve",
                     "model_window_tokens",
                 )?;
-                let window = usizev(window_value, "context_window_override_reserve")?;
                 let model_context_window = u64v(window_value, "context_window_override_reserve")?;
                 let output = u32v(
                     integer_field(
@@ -811,6 +813,15 @@ fn decode_context_policies(
                     )?,
                     "context_window_override_reserve",
                 )?;
+                let window = usize::try_from(
+                    super::provider_process_facts::effective_execution_context_window(
+                        model_context_window,
+                        output,
+                    ),
+                )
+                .map_err(|_| EffectiveCoreError::Range {
+                    family: "context_window_override_reserve",
+                })?;
                 (
                     window,
                     Some(model_context_window),
@@ -1084,6 +1095,10 @@ fn decode_compaction(
     let family = "compaction_trigger";
     let trigger = view.object(family)?;
     let mode = enum_field(trigger, family, "mode")?;
+    let trigger_ratio = decimal_ppm(
+        decimal_field(trigger, family, "usable_window_ratio")?,
+        family,
+    )?;
     let fallback = usizev(
         integer_field(trigger, family, "fallback_trigger_tokens")?,
         family,
@@ -1110,7 +1125,8 @@ fn decode_compaction(
         integer_field(trigger, family, "output_reserve_tokens")?,
         family,
     )?;
-    if adaptive_ratio != 1_000_000
+    if trigger_ratio != 820_000
+        || adaptive_ratio != trigger_ratio
         || adaptive_keep_recent != keep_recent
         || adaptive_output_reserve != trigger_output_reserve
     {
@@ -1554,7 +1570,7 @@ mod memory_schema_agreement_tests {
     }
 
     #[test]
-    fn checkpoint_model_limits_are_execution_values_and_live_capabilities_only_narrow_admission() {
+    fn checkpoint_model_limits_preserve_attested_truth_and_live_capabilities_only_narrow() {
         assert!(
             verify_model_capability_ceiling(
                 Some(120_000),
@@ -1572,7 +1588,7 @@ mod memory_schema_agreement_tests {
                 Some(16_384),
             )
             .is_ok(),
-            "a larger live capability must not replace or reject the pinned lower execution value"
+            "a larger live capability must not replace or reject the pinned attested value"
         );
         assert!(matches!(
             verify_model_capability_ceiling(Some(120_000), Some(8_192), Some(64_000), Some(8_192),),
@@ -1583,12 +1599,12 @@ mod memory_schema_agreement_tests {
         ));
         assert!(
             verify_model_capability_ceiling(Some(120_000), Some(8_192), None, Some(8_192)).is_ok(),
-            "missing context metadata is not evidence that the pinned effective ceiling shrank"
+            "missing context metadata is not evidence that the pinned capability shrank"
         );
         assert!(
             verify_model_capability_ceiling(Some(120_000), Some(8_192), Some(120_000), None,)
                 .is_ok(),
-            "unknown output metadata preserves the checkpoint's conservative execution cap"
+            "unknown output metadata preserves the checkpoint's pinned output cap"
         );
         assert!(matches!(
             verify_model_capability_ceiling(Some(120_000), Some(8_192), Some(120_000), Some(4_096),),

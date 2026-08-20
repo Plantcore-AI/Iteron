@@ -392,3 +392,57 @@ pub(crate) fn render_effect(document: &ProfileDocument) -> String {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn value_bearing_document() -> ProfileDocument {
+        apply_set_arguments(
+            None,
+            &[
+                "max_turns=10".to_owned(),
+                "multimodal_token_budget=1024".to_owned(),
+            ],
+        )
+        .expect("both Tier-1 assignments are valid")
+        .expect("--set creates a profile document")
+    }
+
+    #[test]
+    fn tier_one_set_arguments_remain_typed_profile_values() {
+        let document = value_bearing_document();
+        assert_eq!(document.values.len(), 2);
+        assert!(document.values.iter().any(|value| {
+            value.family == "max_turns"
+                && matches!(&value.value, ResolutionValue::Integer { value: 10 })
+        }));
+        assert!(document.values.iter().any(|value| {
+            value.family == "multimodal_token_budget"
+                && matches!(&value.value, ResolutionValue::Integer { value: 1_024 })
+        }));
+    }
+
+    #[test]
+    fn inline_and_digest_pinned_files_accept_the_same_value_bearing_profile() {
+        let document = value_bearing_document();
+        let rendered = iteron_tunables::render_profile(&document).unwrap();
+        let (inline, inline_origin) = load(None, Some(&rendered), None)
+            .unwrap()
+            .expect("inline profile is present");
+        assert_eq!(inline_origin, ProfileOrigin::Unpinned);
+        assert_eq!(inline, document);
+
+        let path = std::env::temp_dir().join(format!(
+            "iteron-value-bearing-profile-{}.json",
+            std::process::id()
+        ));
+        std::fs::write(&path, &rendered).unwrap();
+        let digest = iteron_tunables::document_digest(&rendered);
+        let loaded = load(Some(&path), None, Some(&digest));
+        std::fs::remove_file(&path).unwrap();
+        let (pinned, pinned_origin) = loaded.unwrap().expect("pinned profile is present");
+        assert_eq!(pinned_origin, ProfileOrigin::PinnedFile);
+        assert_eq!(pinned, document);
+    }
+}

@@ -20,12 +20,148 @@ pub use iteron_kernel::{diagnostics, effect_admission, effect_class, effect_jour
 type PureToolInFlight = (
     usize,
     ToolUse,
-    tokio::task::JoinHandle<(
-        tool_output_spill::ManagedToolResult,
-        Option<std::sync::Arc<tool_output_spill::ToolOutputSpillStore>>,
-    )>,
+    tokio::task::JoinHandle<EarlyPureToolOutcome>,
     Instant,
+    EarlyHookEffectTickets,
 );
+
+enum EarlyPureToolOutcome {
+    Completed {
+        managed: tool_output_spill::ManagedToolResult,
+        spill_store: Option<std::sync::Arc<tool_output_spill::ToolOutputSpillStore>>,
+        hook: Option<EarlyHookSummary>,
+    },
+    Refused {
+        reason: String,
+        hook: EarlyHookSummary,
+    },
+}
+
+#[derive(Debug, Clone, Copy)]
+struct EarlyHookSummary {
+    completed: u32,
+    failed: u32,
+    timed_out: u32,
+    lifecycle_dispatch_failed: bool,
+}
+
+#[derive(Default)]
+struct EarlyHookEffectTickets {
+    compatibility: Option<(usize, effects::EffectTicket)>,
+    lifecycle: Option<(usize, effects::EffectTicket)>,
+}
+
+struct EarlyHookRefusal {
+    reason: String,
+    summary: EarlyHookSummary,
+}
+
+struct EarlyHookGateContext<'a> {
+    journal: Option<&'a hooks::journal::HookEffectJournal>,
+    compatibility_enabled: bool,
+    lifecycle_enabled: bool,
+    compatibility_json: &'a str,
+    lifecycle_json: &'a str,
+    interrupt: Option<&'a std::sync::atomic::AtomicBool>,
+    drain: &'a std::sync::atomic::AtomicBool,
+}
+
+/// Execute an early read's blocking tool gates only after the caller has fsynced the matching
+/// kernel effect intents. This has the same role as the app-server gate of the same name: the
+/// caller owns the universal effect tickets, while this helper owns the bounded journaled process
+/// dispatch. Keeping it separate lets the provider callback start the future without lending the
+/// spawned task mutable access to the rollout.
+async fn run_lifecycle_gate(
+    hooks: &Hooks,
+    context: EarlyHookGateContext<'_>,
+) -> Result<Option<EarlyHookSummary>, EarlyHookRefusal> {
+    if !context.compatibility_enabled && !context.lifecycle_enabled {
+        return Ok(None);
+    }
+    let Some(journal) = context.journal else {
+        return Err(EarlyHookRefusal {
+            reason: "tool gate hook journal is unavailable; the read was not started".into(),
+            summary: EarlyHookSummary {
+                completed: 0,
+                failed: 1,
+                timed_out: 0,
+                lifecycle_dispatch_failed: context.lifecycle_enabled,
+            },
+        });
+    };
+    let compatibility = if context.compatibility_enabled {
+        Some(
+            hooks
+                .run_cancellable_journaled_report(
+                    HookEvent::PreToolUse,
+                    context.compatibility_json,
+                    context.interrupt,
+                    Some(context.drain),
+                    journal,
+                )
+                .await,
+        )
+    } else {
+        None
+    };
+    let lifecycle = if context.lifecycle_enabled {
+        Some(
+            hooks
+                .run_lifecycle_cancellable_journaled(
+                    "tool.call_proposed",
+                    context.lifecycle_json,
+                    context.interrupt,
+                    Some(context.drain),
+                    journal,
+                )
+                .await,
+        )
+    } else {
+        None
+    };
+    let lifecycle_report = lifecycle.as_ref().and_then(|value| value.as_ref().ok());
+    let summary = EarlyHookSummary {
+        completed: compatibility
+            .as_ref()
+            .map_or(0, |report| report.completed)
+            .saturating_add(lifecycle_report.map_or(0, |report| report.completed)),
+        failed: compatibility
+            .as_ref()
+            .map_or(0, |report| report.failed)
+            .saturating_add(lifecycle_report.map_or(0, |report| report.failed))
+            .saturating_add(u32::from(lifecycle.as_ref().is_some_and(Result::is_err))),
+        timed_out: compatibility
+            .as_ref()
+            .map_or(0, |report| report.timed_out)
+            .saturating_add(lifecycle_report.map_or(0, |report| report.timed_out)),
+        lifecycle_dispatch_failed: lifecycle.as_ref().is_some_and(Result::is_err),
+    };
+    let denial = compatibility
+        .as_ref()
+        .and_then(|report| match &report.decision {
+            HookDecision::Allow => None,
+            HookDecision::Deny(reason) => Some(reason.clone()),
+        })
+        .or_else(|| {
+            lifecycle_report.and_then(|report| match &report.decision {
+                HookDecision::Allow => None,
+                HookDecision::Deny(reason) => Some(reason.clone()),
+            })
+        })
+        .or_else(|| {
+            lifecycle
+                .as_ref()
+                .and_then(|result| result.as_ref().err().map(|reason| (*reason).to_owned()))
+        })
+        .or_else(|| {
+            (summary.failed > 0 || summary.timed_out > 0)
+                .then(|| "tool gate hook did not produce a complete allow decision".to_owned())
+        });
+    match denial {
+        Some(reason) => Err(EarlyHookRefusal { reason, summary }),
+        None => Ok(Some(summary)),
+    }
+}
 
 mod agent_config;
 mod agent_loop;
@@ -84,7 +220,7 @@ use iteron_ctx::{CompactionPolicy, ContextEstimate};
 pub(crate) use deferred_tools::EffectingToolAdmissionPolicy;
 #[cfg(test)]
 use deferred_tools::declared_write_paths;
-use deferred_tools::{AutoApprovedCall, scheduling_write_paths};
+use deferred_tools::{AutoApprovedCall, scheduling_write_paths, write_paths_conflict};
 use diagnostics::{DiagnosticEmitter, KernelDiagnostic};
 use hooks::{HookDecision, HookEvent, Hooks};
 #[cfg(test)]
@@ -2064,8 +2200,9 @@ pub struct Agent {
     /// Child-terminal identity authenticated into every local cost projection. Top-level runs have
     /// no attribution; direct and workflow children set this before their first provider attempt.
     projection_attribution: Option<CostAttribution>,
-    /// Proven, exact-route context limit. `None` means unknown and is never replaced with the
-    /// compaction threshold.
+    /// Proven, exact-route physical context limit. `None` means unknown and is never replaced with
+    /// the compaction threshold. Admission derives a separately bounded execution window so
+    /// truthful provider capability and local context policy cannot overwrite one another.
     pub model_context_window: Option<u64>,
     /// Proven, exact-route maximum output. The harness still applies its smaller per-turn policy.
     pub model_max_output_tokens: Option<u32>,
@@ -2459,6 +2596,21 @@ pub struct Agent {
 }
 
 impl Agent {
+    /// Local total context ceiling used for prompt admission and compaction. The provider-attested
+    /// physical window remains in `model_context_window` for route validation and telemetry.
+    pub(crate) fn execution_context_window(&self) -> Option<u64> {
+        self.model_context_window
+            .filter(|window| *window > 0)
+            .map(|window| {
+                crate::runtime_tunables::provider_process_facts::effective_execution_context_window(
+                    window,
+                    self.model_max_output_tokens.unwrap_or(
+                        crate::runtime_tunables::core_facts::UNKNOWN_MODEL_OUTPUT_TOKENS,
+                    ),
+                )
+            })
+    }
+
     /// Continue an already-run agent with one validated text-plus-image operator submission.
     ///
     /// Attachments remain invocation-local: the durable transcript records the text, while the
@@ -2961,21 +3113,20 @@ impl Agent {
             // serialize every tool schema a second time just to answer the same threshold test.
             // Also avoid running a `context.compaction.considered` hook on every ordinary turn:
             // only a request that actually crossed the overflow precheck reaches that effect. ----
-            let context_window_overflow =
-                match self.model_context_window.filter(|window| *window > 0) {
-                    Some(window) => {
-                        u64::try_from(context_estimate.total_tokens)
-                            .unwrap_or(u64::MAX)
-                            .saturating_add(u64::from(request_max_tokens))
-                            > window
-                    }
-                    None => {
-                        context_estimate.total_tokens
-                            > self
-                                .compaction
-                                .effective_trigger_tokens(None, request_max_tokens)
-                    }
-                };
+            let context_window_overflow = match self.execution_context_window() {
+                Some(window) => {
+                    u64::try_from(context_estimate.total_tokens)
+                        .unwrap_or(u64::MAX)
+                        .saturating_add(u64::from(request_max_tokens))
+                        > window
+                }
+                None => {
+                    context_estimate.total_tokens
+                        > self
+                            .compaction
+                            .effective_trigger_tokens(None, request_max_tokens)
+                }
+            };
             let compaction_eligible = self.compaction.enabled
                 && !self.compacted_in_run
                 && messages.len() > self.compaction.keep_recent.saturating_add(2);
@@ -3075,7 +3226,7 @@ impl Agent {
                         }
                         let exit_threshold = self.compaction.hysteresis.exit_threshold(
                             self.compaction.effective_trigger_tokens(
-                                self.model_context_window,
+                                self.execution_context_window(),
                                 request_max_tokens,
                             ),
                         );
@@ -3208,9 +3359,7 @@ impl Agent {
                 )
                 .unwrap_or(u64::MAX),
             );
-            if let Some(context_window_tokens) =
-                self.model_context_window.filter(|window| *window > 0)
-            {
+            if let Some(context_window_tokens) = self.execution_context_window() {
                 let estimated_input_tokens =
                     u64::try_from(context_estimate.total_tokens).unwrap_or(u64::MAX);
                 if estimated_input_tokens.saturating_add(u64::from(request_max_tokens))
@@ -3459,15 +3608,22 @@ impl Agent {
             let tool_interrupt = self.interrupt.clone();
             let tool_force_cancel = self.force_cancel.clone();
             let tool_drain = self.drain.clone();
-            // If a PreToolUse hook is configured, pure tools must NOT early-dispatch — the read
-            // would be in flight before the hook could block it (security review MEDIUM #2: an
-            // operator hook meant to block reading ~/.ssh would silently no-op). Route them through
-            // the deferred path (gate=Auto for ReadOnly, then the hook) instead. This trades the
-            // overlap for hook coverage, and ONLY for the event that can actually block a read:
-            // asking `is_empty()` let one `Stop` cleanup hook — which never sees a tool, let alone
-            // vetoes one — silently cost the whole session its concurrent read dispatch.
-            let hook_gates_reads = !self.hooks.commands(HookEvent::PreToolUse).is_empty()
-                || !self.hooks.is_empty_for_lifecycle("tool.call_proposed");
+            // A PreToolUse/tool.call_proposed hook must gate the read, but it is a per-call gate,
+            // not a session-wide reason to give up mid-stream dispatch. The early task below runs
+            // the hook first and does not poll the registry future until the hook allows it. An
+            // unrelated Stop observer is intentionally absent from this predicate.
+            let compatibility_pre_tool_hook =
+                !self.hooks.commands(HookEvent::PreToolUse).is_empty();
+            let lifecycle_pre_tool_hook = !self.hooks.is_empty_for_lifecycle("tool.call_proposed");
+            let hook_gates_reads = compatibility_pre_tool_hook || lifecycle_pre_tool_hook;
+            // A gate hook is executable operator code even when the admitted tool itself is a
+            // pure read. Mark the turn before provider decode starts; the hook may now run in the
+            // early-dispatch task below and must never let checkpoint policy call the turn pure.
+            if hook_gates_reads {
+                self.turn_mutated_workspace = true;
+            }
+            let early_hooks = self.hooks.clone();
+            let early_hook_journal = self.hook_effect_journal.clone();
             let pure_overlap_enabled = self.pure_overlap_enabled;
             // Bounded concurrency (invariant #1): pure tools dispatched early are capped by a
             // governor. Past the cap a call QUEUES for a permit instead of being pushed onto an
@@ -3786,12 +3942,85 @@ impl Agent {
                                 let is_pure = proposal
                                     .as_ref()
                                     .is_ok_and(|proposal| proposal.intent.purity == Purity::Pure);
-                                if is_pure && pure_overlap_enabled && !hook_gates_reads {
+                                if is_pure && pure_overlap_enabled {
                                     let proposal =
                                         proposal.expect("checked pure tool-policy proposal");
                                     let tu_ui = proposal.intent.call.clone();
+                                    if hook_gates_reads {
+                                        self.lifecycle_event(
+                                            "hook.started",
+                                            Some(turn_id),
+                                            LifecyclePayload {
+                                                count: Some(1),
+                                                ..LifecyclePayload::default()
+                                            },
+                                        );
+                                    }
                                     let intent =
                                         proposal.admit(CapabilitySet::only(Capability::ReadOnly));
+                                    let compatibility_context = serde_json::json!({
+                                        "event": "PreToolUse",
+                                        "tool": tu_ui.name,
+                                        "input": tu_ui.input,
+                                    })
+                                    .to_string();
+                                    let lifecycle_context = serde_json::json!({
+                                        "catalog_version": iteron_protocol::lifecycle::LIFECYCLE_CATALOG_VERSION.0,
+                                        "event_id": "tool.call_proposed",
+                                        "turn_id": turn_id.0,
+                                    })
+                                    .to_string();
+                                    // Hook commands are effects even when the protected operation is
+                                    // a pure read. Open their universal-boundary intents synchronously
+                                    // before the spawned future can poll either journaled command.
+                                    let mut hook_effect_tickets = EarlyHookEffectTickets::default();
+                                    if early_hook_journal.is_some() {
+                                        let class = effect_class::EffectClass::Hook;
+                                        if compatibility_pre_tool_hook {
+                                            let ordinal = self.next_effect_ordinal(turn_id, class);
+                                            match self.open_kernel_effect(
+                                                turn_id,
+                                                class,
+                                                ordinal,
+                                                Capability::CodeExecuting,
+                                                serde_json::json!({
+                                                    "event": HookEvent::PreToolUse.key(),
+                                                    "tool_index": idx,
+                                                }),
+                                            ) {
+                                                Ok(ticket) => {
+                                                    hook_effect_tickets.compatibility =
+                                                        Some((ordinal, ticket));
+                                                }
+                                                Err(error) => {
+                                                    tool_policy_record_error = Some(error);
+                                                    return;
+                                                }
+                                            }
+                                        }
+                                        if lifecycle_pre_tool_hook {
+                                            let ordinal = self.next_effect_ordinal(turn_id, class);
+                                            match self.open_kernel_effect(
+                                                turn_id,
+                                                class,
+                                                ordinal,
+                                                Capability::CodeExecuting,
+                                                serde_json::json!({
+                                                    "event": "tool.call_proposed",
+                                                    "tool_index": idx,
+                                                }),
+                                            ) {
+                                                Ok(ticket) => {
+                                                    hook_effect_tickets.lifecycle =
+                                                        Some((ordinal, ticket));
+                                                }
+                                                Err(error) => {
+                                                    tool_policy_record_error = Some(error);
+                                                    return;
+                                                }
+                                            }
+                                        }
+                                    }
                                     // Spawn now — I/O overlaps the remaining decode. The permit is held for
                                     // the task's lifetime and released on completion (bounded). At the cap
                                     // the task still spawns and awaits a permit inside itself: the future
@@ -3810,10 +4039,34 @@ impl Agent {
                                         queued_pure += 1;
                                     }
                                     let gov = gov.clone();
+                                    let hooks = early_hooks.clone();
+                                    let hook_journal = early_hook_journal.clone();
                                     let handle = tokio::spawn(async move {
                                         let _permit = match permit {
                                             Some(permit) => permit,
                                             None => gov.acquire().await,
+                                        };
+                                        let hook = match run_lifecycle_gate(
+                                            &hooks,
+                                            EarlyHookGateContext {
+                                                journal: hook_journal.as_ref(),
+                                                compatibility_enabled: compatibility_pre_tool_hook,
+                                                lifecycle_enabled: lifecycle_pre_tool_hook,
+                                                compatibility_json: &compatibility_context,
+                                                lifecycle_json: &lifecycle_context,
+                                                interrupt: interrupt.as_deref(),
+                                                drain: drain.as_ref(),
+                                            },
+                                        )
+                                        .await
+                                        {
+                                            Ok(summary) => summary,
+                                            Err(refusal) => {
+                                                return EarlyPureToolOutcome::Refused {
+                                                    reason: refusal.reason,
+                                                    hook: refusal.summary,
+                                                };
+                                            }
                                         };
                                         let result = match await_tool_or_interrupt(
                                             fut,
@@ -3844,9 +4097,19 @@ impl Agent {
                                             spill_store.as_deref(),
                                             result,
                                         );
-                                        (managed, spill_store)
+                                        EarlyPureToolOutcome::Completed {
+                                            managed,
+                                            spill_store,
+                                            hook,
+                                        }
                                     });
-                                    pure.push((idx, tu_ui, handle, Instant::now()));
+                                    pure.push((
+                                        idx,
+                                        tu_ui,
+                                        handle,
+                                        Instant::now(),
+                                        hook_effect_tickets,
+                                    ));
                                 } else {
                                     deferred.push((idx, tu, proposal));
                                 }
@@ -4190,10 +4453,7 @@ impl Agent {
                     // A streaming adapter can fail after emitting a complete pure tool call.
                     // Dropping JoinHandles would detach those reads and let work outlive the
                     // failed turn. Abort *and await* them before crossing the turn boundary.
-                    for (_, _, handle, _) in pure.drain(..) {
-                        handle.abort();
-                        let _ = handle.await;
-                    }
+                    self.abort_early_pure_tools(turn_id, &mut pure).await?;
                     // Before the error leaves: keep what the model already said (I-39).
                     self.preserve_interrupted_stream(
                         turn_id,
@@ -4221,10 +4481,7 @@ impl Agent {
                 // The provider route terminal already committed its exact physical charge. A
                 // malformed tool projection invalidates the semantic turn, not the billing
                 // receipt, so preserve the known monetary state while failing the turn.
-                for (_, _, handle, _) in pure.drain(..) {
-                    handle.abort();
-                    let _ = handle.await;
-                }
+                self.abort_early_pure_tools(turn_id, &mut pure).await?;
                 if let Some(outcome) = self.collect_and_finish_requested_control(turn_id).await? {
                     return Ok(outcome);
                 }
@@ -4235,7 +4492,7 @@ impl Agent {
             // provider adapter could execute one projection and durably commit another.
             let mut streamed_tools: Vec<(usize, ToolUse)> = pure
                 .iter()
-                .map(|(index, tool, _, _)| (*index, tool.clone()))
+                .map(|(index, tool, _, _, _)| (*index, tool.clone()))
                 .chain(
                     deferred
                         .iter()
@@ -4258,10 +4515,7 @@ impl Agent {
             {
                 // Stream/transcript disagreement is a provider contract failure after an exact
                 // physical terminal. It cannot erase or weaken that already-verified charge.
-                for (_, _, handle, _) in pure.drain(..) {
-                    handle.abort();
-                    let _ = handle.await;
-                }
+                self.abort_early_pure_tools(turn_id, &mut pure).await?;
                 if let Some(outcome) = self.collect_and_finish_requested_control(turn_id).await? {
                     return Ok(outcome);
                 }
@@ -4324,9 +4578,10 @@ impl Agent {
                     context: context_estimate,
                     model_context_window: self.model_context_window,
                     reserved_output_tokens: request_max_tokens,
-                    compaction_trigger_tokens: self
-                        .compaction
-                        .effective_trigger_tokens(self.model_context_window, request_max_tokens),
+                    compaction_trigger_tokens: self.compaction.effective_trigger_tokens(
+                        self.execution_context_window(),
+                        request_max_tokens,
+                    ),
                     effort: effort_application,
                 });
             } else {
@@ -4369,10 +4624,7 @@ impl Agent {
                         | StopReason::Unknown(_)
                 )
             {
-                for (_, _, handle, _) in pure.drain(..) {
-                    handle.abort();
-                    let _ = handle.await;
-                }
+                self.abort_early_pure_tools(turn_id, &mut pure).await?;
                 if let Some(outcome) = self.collect_and_finish_requested_control(turn_id).await? {
                     return Ok(outcome);
                 }
@@ -4855,23 +5107,13 @@ impl Agent {
 
             let mut results: Vec<Option<ToolResult>> = (0..total_tools).map(|_| None).collect();
             let mut any_error = false;
+            let mut completed_pure = Vec::new();
 
             // Pure tools: await their already-running handles. Time from dispatch to stream end
             // is the overlap we won (they ran during the decode tail).
-            for (idx, tu, mut handle, dispatched_at) in pure {
+            for (idx, tu, mut handle, dispatched_at, hook_effect_tickets) in pure {
                 let since_dispatch = dispatched_at.duration_since(stream_start);
                 let overlap_ms = stream_elapsed.saturating_sub(since_dispatch).as_millis() as u64;
-                // ADR-004 dispatched this read from inside the provider stream callback, which
-                // holds no mutable borrow of the journal and cannot fsync, so its admission is
-                // written here: at the collection boundary, before the outcome is observed and
-                // before anything is committed. Earlier is structurally impossible without giving
-                // up the decode overlap the ADR exists for, and this is the one class where the
-                // ordering costs nothing — a `Pure` tool has no observable effect (ADR-007 §5
-                // makes that true by construction: a no-egress read-only cell), so the
-                // at-most-once guarantee write-ahead order buys is vacuous for it. What the record
-                // gains is what I-42 found missing: an admission event and an identity for a
-                // completion that had neither.
-                let ticket = self.open_tool_call_effect(turn_id, idx, &tu, Capability::ReadOnly)?;
                 let joined = match self.run_time_remaining() {
                     Some(remaining) if remaining.is_zero() => {
                         handle.abort();
@@ -4888,8 +5130,27 @@ impl Agent {
                     },
                     None => Some(handle.await),
                 };
+                let hook_summary = match joined.as_ref() {
+                    Some(Ok(EarlyPureToolOutcome::Completed { hook, .. })) => *hook,
+                    Some(Ok(EarlyPureToolOutcome::Refused { hook, .. })) => Some(*hook),
+                    Some(Err(_)) | None => None,
+                };
+                self.settle_early_pure_hook_effects(turn_id, hook_effect_tickets, hook_summary)?;
                 match joined {
-                    Some(Ok((mut managed, spill_store))) => {
+                    Some(Ok(EarlyPureToolOutcome::Completed {
+                        managed,
+                        spill_store,
+                        hook,
+                    })) => {
+                        if let Some(hook) = hook {
+                            self.observe_early_pure_hook(turn_id, hook, false);
+                        }
+                        // ADR-004 dispatched this read from inside the provider stream callback,
+                        // which holds no mutable borrow of the rollout. Pure reads have no
+                        // externally visible effect by construction, so their durable admission
+                        // may be written here after overlap but before the outcome is committed.
+                        let ticket =
+                            self.open_tool_call_effect(turn_id, idx, &tu, Capability::ReadOnly)?;
                         let r = &managed.result;
                         self.commit_admitted_tool_result(
                             ticket,
@@ -4904,19 +5165,29 @@ impl Agent {
                             // alive after the private spill boundary replaces it.
                             self.registry.invalidate_pure_cache();
                         }
-                        tool_output_spill::cleanup_managed_result(
-                            spill_store.as_deref(),
-                            &mut managed,
-                        )?;
-                        self.ui(tool_end_ui(&tu, &managed.result));
-                        results[idx] = Some(managed.result);
+                        completed_pure.push((idx, tu, managed, spill_store));
+                    }
+                    Some(Ok(EarlyPureToolOutcome::Refused { reason, hook })) => {
+                        self.observe_early_pure_hook(turn_id, hook, true);
+                        let result = ToolResult {
+                            tool_use_id: tu.id.clone(),
+                            content: format!(
+                                "tool `{}` blocked by a tool gate hook: {reason}",
+                                tu.name
+                            ),
+                            is_error: true,
+                            trust: Trust::Workspace,
+                            latency_ms: 0,
+                        };
+                        self.commit_refused_tool_result(turn_id, &tu.name, &result)?;
+                        self.ui(tool_end_ui(&tu, &result));
+                        results[idx] = Some(result);
+                        any_error = true;
                     }
                     Some(Err(_)) | None => {
-                        // The spawned pure-tool task panicked or was cancelled. Answer its
-                        // tool_use with an error result so the transcript has no dangling
-                        // tool_use (which the model API would reject next turn). The admission is
-                        // already durable, so this settles it as a proven failure rather than
-                        // leaving recovery a dangling intent.
+                        // The spawned pure-tool task panicked or was cancelled before it returned
+                        // an authoritative gate/tool outcome. A pure read has no external effect,
+                        // so refuse it rather than minting an admission after an unknown gate.
                         let r = ToolResult {
                             tool_use_id: tu.id.clone(),
                             content: "tool task failed, was cancelled, or exceeded the run wall deadline before producing a result".into(),
@@ -4924,13 +5195,44 @@ impl Agent {
                             trust: Trust::Workspace,
                             latency_ms: 0,
                         };
-                        self.commit_admitted_tool_result(ticket, &tu.name, &r, 0)?;
+                        self.commit_refused_tool_result(turn_id, &tu.name, &r)?;
+                        if hook_gates_reads {
+                            self.lifecycle_event(
+                                "hook.failed",
+                                Some(turn_id),
+                                LifecyclePayload {
+                                    count: Some(0),
+                                    reason_code: Some("early_tool_task_lost".into()),
+                                    ..LifecyclePayload::default()
+                                },
+                            );
+                        }
                         any_error = true;
                         self.ui(tool_end_ui(&tu, &r));
                         results[idx] = Some(r);
                     }
                 }
             }
+
+            // A read may finish while the provider is still streaming, but its observational
+            // PostToolUse hook remains ordered after the durable tool terminal. Run independent
+            // observers together, then publish ToolEnd in model-declared order. Keeping managed
+            // spill leases alive through the observer also preserves the same result visibility
+            // as the deferred-tool path.
+            let pure_post_inputs = completed_pure
+                .iter()
+                .map(|(_, call, managed, _)| (call.clone(), managed.result.clone()))
+                .collect::<Vec<_>>();
+            let pure_post_result = self
+                .observe_concurrent_post_tool_hooks(turn_id, &pure_post_inputs)
+                .await;
+            for (idx, call, mut managed, spill_store) in completed_pure {
+                let terminal_ui = tool_end_ui(&call, &managed.result);
+                tool_output_spill::cleanup_managed_result(spill_store.as_deref(), &mut managed)?;
+                self.ui(terminal_ui);
+                results[idx] = Some(managed.result);
+            }
+            pure_post_result?;
 
             // Effecting tools: gated by capability, run in order, AFTER message_stop.
             //
@@ -5727,7 +6029,11 @@ impl Agent {
             {
                 break;
             }
-            if declared.iter().any(|path| claimed.contains(path)) {
+            if declared.iter().any(|path| {
+                claimed
+                    .iter()
+                    .any(|existing| write_paths_conflict(path, existing))
+            }) {
                 break;
             }
             claimed.extend(declared);
@@ -5748,6 +6054,83 @@ impl Agent {
     /// any hook process starts; handler execution is concurrent but globally capped by the
     /// semaphore shared by all `Hooks` clones; terminals and denials are then projected in model
     /// order. A denied call is settled as a refused tool result and removed from the executor set.
+    fn observe_early_pure_hook(&self, turn: TurnId, report: EarlyHookSummary, blocked: bool) {
+        let event_id = if blocked {
+            "hook.blocked"
+        } else if report.timed_out > 0 {
+            "hook.timed_out"
+        } else if report.failed > 0 {
+            "hook.failed"
+        } else {
+            "hook.completed"
+        };
+        self.lifecycle_event(
+            event_id,
+            Some(turn),
+            LifecyclePayload {
+                count: Some(u64::from(report.completed)),
+                magnitude: Some(u64::from(report.timed_out)),
+                ..LifecyclePayload::default()
+            },
+        );
+    }
+
+    /// Close the universal effect tickets opened before an early hook task was spawned. A joined
+    /// task proves the hook process lifecycle ended; a lost task is explicitly unknown and is
+    /// never rewritten into a clean terminal merely because the protected tool was a pure read.
+    fn settle_early_pure_hook_effects(
+        &mut self,
+        turn: TurnId,
+        tickets: EarlyHookEffectTickets,
+        summary: Option<EarlyHookSummary>,
+    ) -> Result<(), KernelError> {
+        let class = effect_class::EffectClass::Hook;
+        if let Some((ordinal, ticket)) = tickets.compatibility {
+            let settlement = summary.map_or_else(
+                || {
+                    effects::Settlement::Unknown(
+                        "early compatibility hook task ended without an observable terminal".into(),
+                    )
+                },
+                |_| effects::Settlement::Definite(effect_done_terminal(turn, class, ordinal)),
+            );
+            self.settle_kernel_effect(ticket, settlement)?;
+        }
+        if let Some((ordinal, ticket)) = tickets.lifecycle {
+            let settlement = match summary {
+                None => effects::Settlement::Unknown(
+                    "early lifecycle hook task ended without an observable terminal".into(),
+                ),
+                Some(summary) if summary.lifecycle_dispatch_failed => {
+                    effects::Settlement::Definite(effect_failed_terminal(
+                        turn,
+                        class,
+                        ordinal,
+                        "lifecycle hook dispatch failed before a valid report",
+                    ))
+                }
+                Some(_) => {
+                    effects::Settlement::Definite(effect_done_terminal(turn, class, ordinal))
+                }
+            };
+            self.settle_kernel_effect(ticket, settlement)?;
+        }
+        Ok(())
+    }
+
+    async fn abort_early_pure_tools(
+        &mut self,
+        turn: TurnId,
+        pure: &mut Vec<PureToolInFlight>,
+    ) -> Result<(), KernelError> {
+        for (_, _, handle, _, hook_effect_tickets) in pure.drain(..) {
+            handle.abort();
+            let _ = handle.await;
+            self.settle_early_pure_hook_effects(turn, hook_effect_tickets, None)?;
+        }
+        Ok(())
+    }
+
     async fn gate_concurrent_deferred_batch(
         &mut self,
         turn: TurnId,

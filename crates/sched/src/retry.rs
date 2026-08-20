@@ -756,7 +756,7 @@ mod tests {
                         status: 429,
                         body: "wait".into(),
                         body_truncated: false,
-                        retry_after: Some(std::time::Duration::from_secs(60)),
+                        retry_after: Some(std::time::Duration::from_secs(10)),
                         normalized: Box::new(NormalizedFailure {
                             adapter: AdapterKind::OpenAiCompatibleChat,
                             error_profile: ErrorProfile::OpenAi,
@@ -810,7 +810,7 @@ mod tests {
         assert!(rp.turn(&req, &mut |_| {}).await.is_ok());
         assert_eq!(
             observed.lock().unwrap().as_slice(),
-            &[std::time::Duration::from_secs(60)]
+            &[std::time::Duration::from_secs(10)]
         );
     }
 

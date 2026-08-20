@@ -266,23 +266,10 @@ impl Session {
     }
 
     pub(crate) fn runtime_profile_id(&self) -> Option<&'static str> {
-        let digest = match self.tunables_checkpoint()? {
-            iteron_record::TunablesCheckpoint::V1(snapshot) => {
-                snapshot.profile_digest_sha256.as_deref()
-            }
-            iteron_record::TunablesCheckpoint::V2(snapshot) => {
-                snapshot.profile_digest_sha256.as_deref()
-            }
-        }?;
-        iteron_tunables::RuntimeProfile::ALL
-            .into_iter()
-            .find(|profile| {
-                iteron_tunables::runtime_profile_digest(*profile)
-                    .ok()
-                    .as_deref()
-                    == Some(digest)
-            })
-            .map(iteron_tunables::RuntimeProfile::id)
+        crate::runtime_tunables::effective_view::checkpoint_runtime_profile(
+            self.tunables_checkpoint()?,
+        )
+        .map(iteron_tunables::RuntimeProfile::id)
     }
 
     pub(crate) fn model(&self) -> &str {

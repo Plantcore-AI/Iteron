@@ -476,6 +476,35 @@ mod tests {
         let mut input_b = iteron_record::resolved_fixture::input();
         input_b.profile.as_mut().unwrap().profile_id =
             iteron_tunables::RuntimeProfile::Research.id().to_owned();
+        input_b
+            .declared_values
+            .iter_mut()
+            .find(|value| value.family == "session_isolation_profile")
+            .expect("the fixture carries the immutable profile identity")
+            .value = iteron_tunables::ResolutionValue::Enum {
+            value: "durable".into(),
+        };
+        let mut isolation_constraints = 0;
+        for constraint in input_b
+            .constraint_evidence
+            .iter_mut()
+            .filter(|value| value.family == "session_isolation_profile")
+        {
+            let iteron_tunables::ConstraintValue::Domain {
+                allowed_values: Some(values),
+                ..
+            } = &mut constraint.value
+            else {
+                panic!("session isolation must be constrained by attested domains")
+            };
+            *values = std::collections::BTreeSet::from([
+                iteron_tunables::ResolutionValue::Enum {
+                    value: "durable".into(),
+                },
+            ]);
+            isolation_constraints += 1;
+        }
+        assert!(isolation_constraints > 0);
         let resolved_b = iteron_tunables::resolve(input_b).unwrap();
         let resolved_b =
             iteron_tunables::with_synthetic_fixed_authority_attestations_for_test(resolved_b)

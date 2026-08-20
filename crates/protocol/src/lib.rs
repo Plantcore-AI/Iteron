@@ -492,21 +492,14 @@ impl Default for Budget {
     fn default() -> Self {
         // Turn and wall ceilings are always enforceable. Monetary control is opt-in because a
         // guessed universal price table is worse than no dollar claim at all.
-        //
-        // Owner-directed 2026-08-05: the ceilings were raised, not removed — invariant #1 is that
-        // everything HAS a ceiling, not that the ceiling is small. Each old value was reached in
-        // ordinary use and read as the agent giving up rather than as a declared bound.
         Self {
-            max_turns: 600,
+            max_turns: 64,
             max_usd: None,
             max_tokens: None,
-            max_wall_secs: 14_400,
-            // Three consecutive tool errors used to end a run. That interacted badly with the
-            // path rules removed in this change: an absolute path failed, the model retried with
-            // another absolute path, and the third failure killed a run that had nothing wrong
-            // with it. A stability floor should catch a model that cannot make progress, which
-            // takes more than three tries to establish.
-            max_consecutive_tool_errors: 25,
+            max_wall_secs: 3_600,
+            // Five failures leave room for one correction cycle while bounding stuck loops well
+            // before they consume the full interactive turn or wall budget.
+            max_consecutive_tool_errors: 5,
         }
     }
 }
@@ -704,5 +697,15 @@ mod effort_tests {
         assert_eq!(budget.validate(), Err("max_usd must be non-negative"));
         budget.max_usd = Some(0.0);
         assert_eq!(budget.validate(), Ok(()));
+    }
+
+    #[test]
+    fn interactive_budget_defaults_are_bounded_for_one_work_session() {
+        let budget = Budget::default();
+        assert_eq!(budget.max_turns, 64);
+        assert_eq!(budget.max_wall_secs, 3_600);
+        assert_eq!(budget.max_consecutive_tool_errors, 5);
+        assert_eq!(budget.max_usd, None);
+        assert_eq!(budget.max_tokens, None);
     }
 }

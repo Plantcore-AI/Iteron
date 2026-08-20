@@ -745,7 +745,7 @@ struct Cli {
     #[arg(long)]
     model: Option<String>,
 
-    /// Max turns (bounded invariant; overrides config / default).
+    /// Max turns (bounded invariant; overrides config / default of 64).
     #[arg(long)]
     max_turns: Option<u32>,
 
@@ -758,14 +758,12 @@ struct Cli {
     max_tokens: Option<u64>,
 
     /// Consecutive failing tool calls before the run stops as stuck (stability floor; overrides
-    /// the default of 25). Raised from 3 on 2026-08-05: three was reachable by a model correcting
-    /// its own mistake, so the floor fired on runs that were making progress.
+    /// the default of 5).
     #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
     max_consecutive_tool_errors: Option<u32>,
 
     /// Wall-clock ceiling for ONE submission, in seconds (bounded invariant; overrides config /
-    /// default). The default is 14400s (4h), raised from 1800s on 2026-08-05 because one long
-    /// refactor turn reached the old ceiling and ended reporting a budget instead of a result.
+    /// default). The default is 3600s (1h).
     #[arg(long)]
     max_wall_secs: Option<u64>,
 
@@ -2023,9 +2021,8 @@ async fn run_cli() -> anyhow::Result<u8> {
         Some((model, origin)) => (Some(model), Some(origin)),
         None => (None, None),
     };
-    // Owner-directed 2026-08-05: the CLI default follows `Budget::default()` instead of carrying
-    // its own smaller number. 40 turns was reached by ordinary multi-file work, and the run ended
-    // reporting a budget rather than a result.
+    // Keep the CLI fallback identical to the protocol owner so interactive budget policy has one
+    // default and repository/user configuration can only tighten or explicitly override it.
     let trusted_max_turns = config::pick_with_origin(
         cli.max_turns,
         config::env_u32("ITERON_MAX_TURNS"),
@@ -4635,7 +4632,11 @@ fn print_timeline(run: &iteron_protocol::RunId, report: &iteron_obs::timeline::T
         }
     }
 
-    for (title, table) in [("effects", &report.effects), ("tools", &report.tools)] {
+    for (title, table) in [
+        ("phases", &report.phases),
+        ("effects", &report.effects),
+        ("tools", &report.tools),
+    ] {
         if table.is_empty() {
             continue;
         }
@@ -4670,6 +4671,23 @@ fn print_timeline(run: &iteron_protocol::RunId, report: &iteron_obs::timeline::T
     if report.coverage.residual_ms.is_some_and(|value| value < 0) {
         println!(
             "    negative residual = overlap: pure tools ran during the stream, which is the harness working"
+        );
+    }
+    println!(
+        "  phase_attributed={}ms  phase_residual={}",
+        report.coverage.phase_attributed_ms,
+        report
+            .coverage
+            .phase_residual_ms
+            .map_or_else(|| "unknown".into(), |value| format!("{value}ms")),
+    );
+    if report
+        .coverage
+        .phase_residual_ms
+        .is_some_and(|value| value > 0)
+    {
+        println!(
+            "    positive phase residual = time outside a declared controller phase; inspect run-start/finalization gaps"
         );
     }
 }

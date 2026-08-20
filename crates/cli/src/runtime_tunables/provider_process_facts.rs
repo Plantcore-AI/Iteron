@@ -39,9 +39,23 @@ use iteron_verify::{VerifierPlan, VerifierSlotObservation};
 use owner::OwnerSnapshot;
 use std::path::Path;
 
+/// Local input-context ceiling. Provider capability remains separately attested in
+/// `actual_window`; the effective total window adds the selected route's output reservation so
+/// prompt materialization is capped once, rather than subtracting output headroom twice.
+pub(crate) const MAX_EFFECTIVE_EXECUTION_CONTEXT_TOKENS: u64 = 272_000;
+
+pub(crate) fn effective_execution_context_window(window: u64, output_reserve: u32) -> u64 {
+    let input_ceiling = iteron_tunables::param_integer(
+        "cli.runtime_tunables.provider_process_facts.max_effective_execution_context_tokens",
+        MAX_EFFECTIVE_EXECUTION_CONTEXT_TOKENS,
+    );
+    window.min(input_ceiling.saturating_add(u64::from(output_reserve)))
+}
+
 /// Exact context owner projection shared by value and constraint collection. `actual_window` is
-/// provider-attested; `execution_window` is the conservative local ceiling used when metadata is
-/// unknown and matches `EffectiveCore`'s compaction-trigger + family-19 fallback byte-for-byte.
+/// provider-attested; `execution_window` is the local effective ceiling. Unknown metadata retains
+/// `EffectiveCore`'s compaction-trigger + family-19 fallback, while every route is capped locally
+/// without changing its provider-capability claim.
 pub(super) fn context_owner_window(
     input: &ProviderProcessFactsInput<'_>,
 ) -> Result<(Option<usize>, usize, u32), ProviderProcessFactError> {
@@ -56,14 +70,46 @@ pub(super) fn context_owner_window(
         .unwrap_or(super::core_facts::UNKNOWN_MODEL_OUTPUT_TOKENS);
     let output_reserve_usize = usize::try_from(output_reserve)
         .map_err(|_| ProviderProcessFactError::IntegerOverflow("max_output_tokens"))?;
-    let execution_window = actual_window.unwrap_or_else(|| {
+    let attested_or_fallback_window = actual_window.unwrap_or_else(|| {
         input
             .compaction
             .trigger_tokens
             .saturating_add(output_reserve_usize)
             .min(10_000_000)
     });
+    let execution_window = usize::try_from(effective_execution_context_window(
+        u64::try_from(attested_or_fallback_window)
+            .map_err(|_| ProviderProcessFactError::IntegerOverflow("context_window_tokens"))?,
+        output_reserve,
+    ))
+    .map_err(|_| ProviderProcessFactError::IntegerOverflow("context_window_tokens"))?;
     Ok((actual_window, execution_window, output_reserve))
+}
+
+#[cfg(test)]
+mod context_window_tests {
+    use super::effective_execution_context_window;
+
+    #[test]
+    fn effective_context_cap_does_not_rewrite_attested_capability() {
+        let actual_window = Some(1_000_000_u64);
+        let execution_window = effective_execution_context_window(1_000_000, 128_000);
+        assert_eq!(actual_window, Some(1_000_000));
+        assert_eq!(execution_window, 400_000);
+        assert_eq!(execution_window - 128_000, 272_000);
+    }
+
+    #[test]
+    fn effective_context_cap_never_widens_a_smaller_route() {
+        assert_eq!(effective_execution_context_window(128_000, 8_192), 128_000);
+    }
+
+    #[test]
+    fn large_output_reserve_does_not_erase_the_input_context_ceiling() {
+        let execution_window = effective_execution_context_window(1_000_000, 384_000);
+        assert_eq!(execution_window, 656_000);
+        assert_eq!(execution_window - 384_000, 272_000);
+    }
 }
 
 /// Verification facts already chosen by the verifier owner. Absence and inability to query the
@@ -252,12 +298,18 @@ fn validate_input(input: &ProviderProcessFactsInput<'_>) -> Result<(), ProviderP
             }
         }
     }
+    let verification_dispatches = matches!(
+        input.verification,
+        VerificationOwnerFacts::Configured { .. }
+    );
     if !input
         .verification_policy
         .restore
         .require_operator_confirmation
-        || u32::from(input.verification_policy.quorum.verifiers) > input.budget.max_turns
-        || u32::from(input.verification_policy.flaky.repeat_count) > input.budget.max_turns
+        || (verification_dispatches
+            && (u32::from(input.verification_policy.quorum.verifiers) > input.budget.max_turns
+                || u32::from(input.verification_policy.flaky.repeat_count)
+                    > input.budget.max_turns))
     {
         return Err(ProviderProcessFactError::InvalidVerificationPolicy);
     }

@@ -631,12 +631,10 @@ fn add_context_defaults(
     let policy =
         iteron_ctx::ContextBudgetPolicy::for_usable_window(execution_window, output_reserve, 0);
 
-    // A catalog window is stronger evidence, but absence must not make an otherwise usable
-    // compatible endpoint impossible to start.  The runtime already owns a conservative
-    // execution ceiling: compaction trigger + the bounded output reserve.  Pin that lower local
-    // ceiling into family 96 until provider metadata proves a different capability.  This never
-    // widens authority (a later smaller live capability is still rejected by resume validation),
-    // and it keeps the effective profile deterministic instead of inventing an unbounded window.
+    // Family 96 preserves the provider-attested physical window for durable route identity and
+    // truthful telemetry. The component budgets below are still sized from `execution_window`;
+    // EffectiveCore re-derives that same local cap before validating or materializing a prompt.
+    // Unknown metadata keeps the already-bounded fallback rather than inventing a capability.
     let effective_window = actual_window.unwrap_or(execution_window);
     builder.observe_default(
         "context_window_override_reserve",
@@ -698,23 +696,22 @@ fn add_context_defaults(
         builder.observe_default(family, int(super::value::i64u(value as u64, family)?))?;
         report.observed_defaults.push(family);
     }
-    if input.model_capabilities.image_input == Some(true) {
-        builder.observe_default(
+    // Family 100 follows the selected execution window. A larger provider-attested physical
+    // window must not re-widen this default after the composition root chooses a narrower local
+    // execution ceiling. Unsupported and unverified routes continue to own an exact zero.
+    let multimodal_tokens = default_multimodal_tokens(
+        input.model_capabilities.image_input,
+        execution_window,
+        output_reserve,
+    );
+    builder.observe_default(
+        "multimodal_token_budget",
+        int(super::value::i64u(
+            multimodal_tokens as u64,
             "multimodal_token_budget",
-            int(super::value::i64u(
-                policy.multimodal_tokens as u64,
-                "multimodal_token_budget",
-            )?),
-        )?;
-        report.observed_defaults.push("multimodal_token_budget");
-    } else {
-        // A text-only route owns an exact zero-sized multimodal allocation. Family 100 is always
-        // active; treating the absent capability as an absent default would leave the supposedly
-        // Full family unresolved even though the physical image admission path correctly allows
-        // no multimodal tokens.
-        builder.observe_default("multimodal_token_budget", int(0))?;
-        report.observed_defaults.push("multimodal_token_budget");
-    }
+        )?),
+    )?;
+    report.observed_defaults.push("multimodal_token_budget");
     // Zero is an exact disabled-surface budget, not missing evidence. If LSP is installed the same
     // pinned field becomes its physical admission ceiling.
     builder.observe_default(
@@ -786,6 +783,26 @@ fn add_context_defaults(
         .declared_owner_values
         .push("summary_consistency_coverage_check");
     Ok(())
+}
+
+fn default_multimodal_tokens(
+    image_input: Option<bool>,
+    execution_window: usize,
+    output_reserve: u32,
+) -> usize {
+    if image_input != Some(true) {
+        return 0;
+    }
+    let usable =
+        execution_window.saturating_sub(usize::try_from(output_reserve).unwrap_or(usize::MAX));
+    if usable == 0 {
+        return 0;
+    }
+    // Preserve the context owner's normal ten-percent split while ensuring that every capable
+    // route with usable context can admit at least one estimated multimodal token.
+    iteron_ctx::ContextBudgetPolicy::for_usable_window(execution_window, output_reserve, 0)
+        .multimodal_tokens
+        .max(1)
 }
 
 fn ppm_decimal(value: u32) -> iteron_tunables::ResolutionValue {
@@ -963,7 +980,7 @@ fn add_verification_defaults(
         "workspace_checkpoint_cadence",
         object([
             ("turn_boundary", boolv(true)),
-            ("before_verification", boolv(false)),
+            ("before_verification", boolv(true)),
             ("before_drain", boolv(true)),
             ("minimum_turn_interval", int(1)),
         ]),
@@ -1086,5 +1103,33 @@ const fn scope(scope: VerifierScope) -> &'static str {
     match scope {
         VerifierScope::Lane => "lane",
         VerifierScope::Workspace => "workspace",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::default_multimodal_tokens;
+
+    #[test]
+    fn multimodal_default_uses_the_selected_execution_window() {
+        let execution_window = 280_192;
+        let output_reserve = 8_192;
+        let expected =
+            iteron_ctx::ContextBudgetPolicy::for_usable_window(execution_window, output_reserve, 0)
+                .multimodal_tokens;
+
+        assert!(expected > 0);
+        assert_eq!(
+            default_multimodal_tokens(Some(true), execution_window, output_reserve),
+            expected
+        );
+    }
+
+    #[test]
+    fn multimodal_default_is_nonzero_only_for_a_capable_route_with_usable_context() {
+        assert_eq!(default_multimodal_tokens(Some(true), 9, 8), 1);
+        assert_eq!(default_multimodal_tokens(Some(true), 8, 8), 0);
+        assert_eq!(default_multimodal_tokens(Some(false), 280_192, 8_192), 0);
+        assert_eq!(default_multimodal_tokens(None, 280_192, 8_192), 0);
     }
 }

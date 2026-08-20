@@ -1,12 +1,12 @@
 {
   "digest": {
     "algorithm": "sha256",
-    "value": "487c554cdcc97e7e86d9af2ae4c6f588e4e250fdefb868a9755c7201ad9e5fd6"
+    "value": "b1e222beae09e6f2d38e557bab940a6a83daf8c24fb3ebe193f54dab3735834c"
   },
   "payload": {
     "schema_version": 4,
     "registry_id": "iteron-tunables",
-    "registry_revision": 20,
+    "registry_revision": 21,
     "canonicalization": "iteron-tunables-json-v4",
     "family_count": 160,
     "scalar_catalogs": [
@@ -580,7 +580,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "58620c476bb61db1237614a5e95aafd4579102aebd5090d38bebe58ea55d6593"
+          "value": "330d270cbb58c4ebde76c44dd5106e94b0188f5e5fc3892cb2b103d05a2c2615"
         },
         "schema_version": 3,
         "ordinal": 5,
@@ -612,7 +612,7 @@
           "requirement": "optional",
           "value": {
             "type": "integer",
-            "value": 600
+            "value": 64
           }
         },
         "source": {
@@ -934,7 +934,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "1ea0897667a5b3e7979c444b0e22ce4256132d621df93aea4e86163bbff5e542"
+          "value": "7200650e9f03c89ffc0cf7c6e9337fb51640ef382155a0b799de007fd383a548"
         },
         "schema_version": 3,
         "ordinal": 8,
@@ -968,7 +968,7 @@
           "requirement": "optional",
           "value": {
             "type": "integer",
-            "value": 14400
+            "value": 3600
           }
         },
         "source": {
@@ -1494,7 +1494,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "8e0f9366110e66a50e6a789a82f7c8bd644e98b5d8f18b6adac4b253058dac4e"
+          "value": "79a3d107287a5e1fee9c642f226e97eb3b53510776620eb3d988467d498a57df"
         },
         "schema_version": 3,
         "ordinal": 13,
@@ -1540,8 +1540,8 @@
                 "value": {
                   "type": "decimal",
                   "value": {
-                    "coefficient": 1,
-                    "scale": 0
+                    "coefficient": 82,
+                    "scale": 2
                   }
                 }
               },
@@ -2035,7 +2035,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "e845380ddd81dc8d854074ed68ee0b147abce1474e0a006831062d0cd60e4833"
+          "value": "b06b413287547638d7b50df489891e7ff996a9cc47e8f69aa9fbbb1cc4cfe5cc"
         },
         "schema_version": 3,
         "ordinal": 17,
@@ -2068,7 +2068,7 @@
           "requirement": "optional",
           "value": {
             "type": "integer",
-            "value": 6
+            "value": 3
           }
         },
         "source": {
@@ -2864,7 +2864,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "5e1782825d53b8b4488696b8f8c98acbb15b248ea9f406e3bc8efd1fa540ff2d"
+          "value": "1d43a71c7d435675fbc9adf04d58346d93146644e3a33672e4e1a26293adc481"
         },
         "schema_version": 3,
         "ordinal": 24,
@@ -2903,8 +2903,8 @@
                 "value": {
                   "type": "decimal",
                   "value": {
-                    "coefficient": 1,
-                    "scale": 0
+                    "coefficient": 82,
+                    "scale": 2
                   }
                 }
               },
@@ -4208,7 +4208,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "f16a260a21ad0a845eb480d71d7a3b289cc514a9ea4089cb50b3980c94637ce4"
+          "value": "f4995c3716ee187267c9919955ee6afef3196167e228e94abe9d0d00f0aa10ba"
         },
         "schema_version": 3,
         "ordinal": 34,
@@ -4242,7 +4242,7 @@
           "requirement": "optional",
           "value": {
             "type": "integer",
-            "value": 25
+            "value": 5
           }
         },
         "source": {
@@ -6344,7 +6344,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "3a929f2e811c41c01f0e8972b7f79dfd54d2d29148201d054a471322c8a6446c"
+          "value": "e4dcbc13f41eb912a2e4f4ea3826c12bc5639d354e2d92257a1a66b5bc983677"
         },
         "schema_version": 3,
         "ordinal": 50,
@@ -6376,7 +6376,10 @@
             "resolver_id": "iteron://tunables/resolvers/verifier_timeout-v1"
           },
           "requirement": "optional",
-          "value": null
+          "value": {
+            "type": "integer",
+            "value": 180
+          }
         },
         "source": {
           "bindings": [
@@ -12880,7 +12883,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "99d90ab0c843deaf11183894c016c89fc0cacf40f34136b6d4d844c704ec48f0"
+          "value": "04ede9f5bfbbaf5809e57e58571795d7d997161c60ed6aa2481ed45b6c8241ad"
         },
         "schema_version": 3,
         "ordinal": 94,
@@ -12915,7 +12918,7 @@
           "requirement": "optional",
           "value": {
             "type": "integer",
-            "value": 900000
+            "value": 300000
           }
         },
         "source": {
@@ -12983,7 +12986,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "52efdcea84ea3eb01013bde69188bdd53a59405a1fe19e218e16d848b156c96d"
+          "value": "f2bf36cbbc6b2b4fab26bae54f63f2bde6f5962de7d166522663f1a5e8e99362"
         },
         "schema_version": 3,
         "ordinal": 95,
@@ -13018,7 +13021,7 @@
           "requirement": "optional",
           "value": {
             "type": "integer",
-            "value": 120000
+            "value": 60000
           }
         },
         "source": {
@@ -16931,7 +16934,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "40eab3cb10e8d9f759511499d36e330f4cefc9ed3d49a9585766e5115b17870a"
+          "value": "78141e25796164bc74d7aa51792b05897aac292efbe78d7efa7344bf0530982a"
         },
         "schema_version": 3,
         "ordinal": 124,
@@ -16962,7 +16965,10 @@
             "resolver_id": "iteron://tunables/resolvers/incremental_versus_full_verification-v1"
           },
           "requirement": "optional",
-          "value": null
+          "value": {
+            "type": "enum",
+            "value": "impacted"
+          }
         },
         "source": {
           "bindings": [
@@ -17038,7 +17044,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "5203623b54c8b0c76cf02a6ab4c50aa043274d83ad534dc695bf354a64e9ca90"
+          "value": "a1e685c56f4e7392ec4fbec07a249a0e6c631878d3d7d4896383814122da55f6"
         },
         "schema_version": 3,
         "ordinal": 125,
@@ -17076,7 +17082,7 @@
                 "name": "repeat_count",
                 "value": {
                   "type": "integer",
-                  "value": 1
+                  "value": 2
                 }
               },
               {
@@ -17090,7 +17096,7 @@
                 "name": "quarantine_seconds",
                 "value": {
                   "type": "integer",
-                  "value": 0
+                  "value": 300
                 }
               },
               {
@@ -17639,7 +17645,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "5983abbe24e7380e0118cb22e9535c3f8bad8d27a2a32f65a0554224914167a9"
+          "value": "2ffbff12e37c9ad18f922c10c60710547f2e4a954c9fda24782d518fa53f5978"
         },
         "schema_version": 3,
         "ordinal": 129,
@@ -17685,7 +17691,7 @@
                 "name": "before_verification",
                 "value": {
                   "type": "boolean",
-                  "value": false
+                  "value": true
                 }
               },
               {

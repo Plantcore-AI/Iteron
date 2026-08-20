@@ -368,6 +368,8 @@ impl Agent {
         {
             return Err(KernelError::UnpricedUsdCeiling);
         }
+        // Preserve the fallback's exact attested capability. Admission and compaction derive the
+        // same bounded execution window as primary-route composition from these two route facts.
         self.model_context_window = route.context_window_tokens;
         self.model_max_output_tokens = route.max_output_tokens;
         Ok(route)

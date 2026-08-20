@@ -198,32 +198,38 @@ impl Agent {
             }
         }
 
-        let repeat_count = usize::from(
+        let repeat_limit = usize::from(
             self.verification_policy
                 .flaky
                 .repeat_count
                 .max(u8::try_from(plan.attempts).unwrap_or(u8::MAX)),
         );
         let verifier_count = usize::from(self.verification_policy.quorum.verifiers);
-        let physical_runs = configured
+        let physical_run_limit = configured
             .len()
-            .saturating_mul(repeat_count)
+            .saturating_mul(repeat_limit)
             .saturating_mul(verifier_count);
-        if physical_runs > iteron_verify::MAX_PHYSICAL_VERIFIER_RUNS {
+        if physical_run_limit > iteron_verify::MAX_PHYSICAL_VERIFIER_RUNS {
             return Err(KernelError::ContextResolution(
                 "verification physical-run product exceeds its immutable ceiling".into(),
             ));
         }
-        let mut representative_outcomes = Vec::with_capacity(verifier_count);
-        let mut details = Vec::with_capacity(physical_runs);
-        let mut observed_flake = false;
-        let mut observed_disagreements = 0usize;
-        for _ in 0..verifier_count {
-            let mut lane_outcome = iteron_verify::VerificationOutcome::Pass;
-            for command in &configured {
-                let mut outcomes = Vec::with_capacity(repeat_count);
-                let mut last_detail = String::new();
-                for _ in 0..repeat_count {
+        // Repeats are a diagnostic tail, not a tax on every healthy verification. Run the whole
+        // selected/quorum rectangle once; only a non-pass in that first round admits the bounded
+        // follow-up round(s). Keeping the decision at a round boundary preserves rectangular,
+        // exactly accountable receipts even with multiple commands or verifier lanes.
+        let mut outcomes =
+            vec![vec![Vec::with_capacity(repeat_limit); configured.len()]; verifier_count];
+        let mut last_details = vec![vec![String::new(); configured.len()]; verifier_count];
+        let mut first_round_non_pass = false;
+        let mut repeat_count = 0usize;
+        for repeat_index in 0..repeat_limit {
+            if repeat_index > 0 && !first_round_non_pass {
+                break;
+            }
+            repeat_count = repeat_count.saturating_add(1);
+            for verifier_index in 0..verifier_count {
+                for (command_index, command) in configured.iter().enumerate() {
                     let verdict = self.run_verify(command).await?;
                     // Operator cancellation is control flow, not verifier evidence. Folding it
                     // into quorum would turn the typed cancellation into `Indeterminate`, then
@@ -239,14 +245,35 @@ impl Agent {
                     if self.requested_control() == InboundControl::Drain {
                         return Ok(verdict);
                     }
-                    last_detail = truncate_tail(
+                    last_details[verifier_index][command_index] = truncate_tail(
                         &verdict.detail,
                         self.verification_policy.feedback.command_output_bytes,
                     );
-                    outcomes.push(verdict.outcome);
+                    if repeat_index == 0
+                        && verdict.outcome != iteron_verify::VerificationOutcome::Pass
+                    {
+                        first_round_non_pass = true;
+                    }
+                    outcomes[verifier_index][command_index].push(verdict.outcome);
                 }
-                let first = outcomes[0];
-                let disagreements = outcomes.iter().filter(|outcome| **outcome != first).count();
+            }
+        }
+        let physical_runs = configured
+            .len()
+            .saturating_mul(repeat_count)
+            .saturating_mul(verifier_count);
+        let mut representative_outcomes = Vec::with_capacity(verifier_count);
+        let mut details = Vec::with_capacity(physical_runs);
+        let mut observed_flake = false;
+        let mut observed_disagreements = 0usize;
+        for (lane_outcomes, lane_details) in outcomes.iter().zip(&last_details) {
+            let mut lane_outcome = iteron_verify::VerificationOutcome::Pass;
+            for (command_outcomes, last_detail) in lane_outcomes.iter().zip(lane_details) {
+                let first = command_outcomes[0];
+                let disagreements = command_outcomes
+                    .iter()
+                    .filter(|outcome| **outcome != first)
+                    .count();
                 observed_disagreements = observed_disagreements.saturating_add(disagreements);
                 if disagreements
                     >= usize::from(self.verification_policy.flaky.minimum_disagreements)
@@ -256,12 +283,12 @@ impl Agent {
                 // Repeats below the configured quarantine threshold still may not disappear. A
                 // later definite test failure vetoes an earlier pass; any other non-pass keeps the
                 // lane indeterminate instead of manufacturing green from `outcomes[0]`.
-                let command_outcome = outcomes
+                let command_outcome = command_outcomes
                     .iter()
                     .copied()
                     .find(|outcome| *outcome == iteron_verify::VerificationOutcome::TestFailure)
                     .or_else(|| {
-                        outcomes
+                        command_outcomes
                             .iter()
                             .copied()
                             .find(|outcome| *outcome != iteron_verify::VerificationOutcome::Pass)
@@ -278,7 +305,7 @@ impl Agent {
                     (current, iteron_verify::VerificationOutcome::Pass) => current,
                     (current, _) => current,
                 };
-                details.push(last_detail);
+                details.push(last_detail.clone());
             }
             representative_outcomes.push(lane_outcome);
         }

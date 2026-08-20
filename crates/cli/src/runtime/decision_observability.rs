@@ -767,11 +767,11 @@ impl Agent {
             elapsed_us,
         } = observation;
         let mut ledger = ContextLedger::new(turn, self.context_estimator.tokenizer_identity());
-        ledger.model_context_window = self.model_context_window;
+        let execution_window = self.execution_context_window();
+        ledger.model_context_window = execution_window;
         ledger.output_reserved_tokens = u64::from(output_reserved_tokens);
-        ledger.usable_window = self
-            .model_context_window
-            .map(|window| window.saturating_sub(u64::from(output_reserved_tokens)));
+        ledger.usable_window =
+            execution_window.map(|window| window.saturating_sub(u64::from(output_reserved_tokens)));
         for segment in &self.context_source_evidence {
             ledger.record_segment(segment.clone());
         }
@@ -1063,7 +1063,7 @@ impl Agent {
                 ..LifecyclePayload::default()
             },
         );
-        if let Some(window) = self.model_context_window {
+        if let Some(window) = execution_window {
             self.lifecycle_event(
                 "context.window.capacity_resolved",
                 Some(turn),
@@ -1090,7 +1090,7 @@ impl Agent {
                     ..LifecyclePayload::default()
                 },
             );
-            if self.model_context_window.is_some_and(|window| {
+            if execution_window.is_some_and(|window| {
                 headroom.saturating_mul(iteron_tunables::param_integer(
                     "cli.runtime.decision_observability.context_high_watermark_divisor",
                     CONTEXT_HIGH_WATERMARK_DIVISOR,

@@ -96,17 +96,31 @@ pub(super) fn declared_write_paths(
     Ok(paths)
 }
 
-/// Scheduler conflict keys for one admitted call. Shell without a declared set is isolated in a
-/// synthetic tool domain, while shell with a set retains both that domain and its exact paths.
+/// Scheduler conflict keys for one admitted call. An undeclared shell write set remains empty so
+/// the caller's `declared_set_required` policy keeps it in the ordered executor. A shell call with
+/// an explicit set retains both its tool domain and its exact paths, preventing two shell commands
+/// from racing even when their declarations differ.
 pub(super) fn scheduling_write_paths(
     tool: &str,
     input: &serde_json::Value,
 ) -> Result<std::collections::BTreeSet<String>, &'static str> {
     let mut paths = declared_write_paths(input)?;
-    if tool == "bash" {
+    if tool == "bash" && !paths.is_empty() {
         paths.insert(BASH_WRITE_DOMAIN.to_owned());
     }
     Ok(paths)
+}
+
+/// True when two normalized scheduler keys name the same path or an ancestor/descendant pair.
+/// The synthetic shell domain contains `*` but no slash, so it only conflicts with itself.
+pub(super) fn write_paths_conflict(left: &str, right: &str) -> bool {
+    left == right
+        || left
+            .strip_prefix(right)
+            .is_some_and(|suffix| suffix.starts_with('/'))
+        || right
+            .strip_prefix(left)
+            .is_some_and(|suffix| suffix.starts_with('/'))
 }
 
 fn validated_relative_write_path(path: &str) -> Result<String, &'static str> {

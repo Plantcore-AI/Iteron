@@ -53,8 +53,8 @@ terminal event 仍是 authority。Activity 携带 run/activity/parent 身份、�
 provider 生成中、首字节、首 token、reasoning 和响应流。Retry 与 route failover 必须展示 attempt、
 有界等待和选中的 route；安静的 stream 不得被展示成无法解释的卡死。
 
-交互默认值为：连接 10 秒、响应 header 60 秒、stream idle 120 秒；首 token 3 秒开始提示慢，
-12 秒给出 stall 处理建议。服务端 retry delay 是下界，但交互等待超过 60 秒时必须用 typed
+交互默认值为：连接 10 秒、响应 header 60 秒、stream idle 60 秒；首 token 3 秒开始提示慢，
+12 秒给出 stall 处理建议。服务端 retry delay 是下界，但交互等待超过 20 秒时必须用 typed
 remedy 结束，不能静默休眠。单 route 默认并发为 4，与 workflow fan concurrency 独立调参，并继续
 受 provider quota、cost authority、session budget 与 host ceiling 收窄。
 交互式 deferred discovery 只有首帧后才启动；未缓存的 selected route 可以使用有界的首次使用
@@ -71,8 +71,8 @@ unknown terminal 仍然 fail closed。
 重排并破坏稳定 provider prefix。Skill 先按任务/路径相关性选择，再按确定性顺序补足。实时 token
 明确标为估算，直到 provider usage 到达；cache read/write 只展示真实测量，未知值不得显示成 0。
 
-Adaptive compaction 用所选模型 context window 减去 output reservation 得到可用输入；默认 recent
-tail 为可用输入的 25%，并受 host 的 2,000--15,000 token clamp 约束。Process/shell 默认向模型
+Adaptive compaction 用所选模型 context window 减去 output reservation 得到可用输入，并在其
+82% 处触发；默认 recent tail 为可用输入的 25%，并受 host 的 2,000--15,000 token clamp 约束。Process/shell 默认向模型
 展示 30,000 bytes；profile 只可上调到 150,000 bytes；独立的 256 KiB evidence ring 与 resume
 cursor 仍为 authority。
 

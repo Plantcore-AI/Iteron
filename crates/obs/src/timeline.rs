@@ -27,7 +27,7 @@
 //! as an explicit signed remainder rather than silently absorbed. A reader that presented these as
 //! slices of a pie would be lying about the concurrency the harness was built to have.
 
-use iteron_protocol::{Event, EventKind};
+use iteron_protocol::{Event, EventKind, Phase};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -102,6 +102,15 @@ pub struct Coverage {
     /// did what it was designed to do and overlapped tool execution with decode. A negative
     /// residual is a health signal, not an error.
     pub residual_ms: Option<i64>,
+    /// Sum of the non-overlapping controller phase intervals below. Unlike effect attribution,
+    /// phases form a wall-clock partition: provider/tool overlap cannot double-count them.
+    #[serde(default)]
+    pub phase_attributed_ms: u64,
+    /// `wall_ms - phase_attributed_ms`. A large positive value is time before the first declared
+    /// phase or otherwise outside the controller state machine; unlike `residual_ms`, it is not
+    /// inflated by ordinary provider/tool overlap.
+    #[serde(default)]
+    pub phase_residual_ms: Option<i64>,
 }
 
 /// The full report.
@@ -116,6 +125,10 @@ pub struct Timeline {
     /// rather than at the effect boundary, because that is the number the record actually holds
     /// for them and two scopes for one call would disagree.
     pub tools: BTreeMap<String, Distribution>,
+    /// Non-overlapping wall time between durable phase transitions. In particular, `idle` makes
+    /// operator/TUI think time visible instead of mixing it into effect residual.
+    #[serde(default)]
+    pub phases: BTreeMap<String, Distribution>,
     pub turns: Turns,
     pub coverage: Coverage,
 }
@@ -145,6 +158,8 @@ where
 
     let mut effect_samples: BTreeMap<String, (Vec<u64>, u64)> = BTreeMap::new();
     let mut tool_samples: BTreeMap<String, (Vec<u64>, u64)> = BTreeMap::new();
+    let mut phase_samples: BTreeMap<String, (Vec<u64>, u64)> = BTreeMap::new();
+    let mut active_phase: Option<OpenPhase> = None;
     let mut ttft: Vec<u64> = Vec::new();
     let mut decode: Vec<u64> = Vec::new();
     let mut unmeasured_turns = 0u64;
@@ -163,6 +178,9 @@ where
             (None, Some(_)) => previous_ts.is_none() && segment.is_none(),
             _ => false,
         };
+        if starts_segment {
+            close_phase(&mut phase_samples, active_phase.take(), previous_ts);
+        }
         let seq = event.seq.0;
         match segment.as_mut() {
             Some(open) if !starts_segment => {
@@ -202,12 +220,19 @@ where
             // No terminal was observed, so there is no duration and never will be. It is counted
             // as an observation so the class's `count` stays truthful.
             EventKind::EffectUnknown { tool, .. } => record_sample(&mut effect_samples, tool, None),
-            EventKind::ToolDone { result, .. } => {
+            EventKind::ToolDone { result, tool, .. } => {
                 record_sample(
                     &mut tool_samples,
-                    &result.tool_use_id,
+                    tool.as_deref().unwrap_or("unknown_registry_tool"),
                     Some(result.latency_ms),
                 );
+            }
+            EventKind::Phase { phase } => {
+                close_phase(&mut phase_samples, active_phase.take(), ts_us);
+                active_phase = Some(OpenPhase {
+                    phase: *phase,
+                    start_us: ts_us,
+                });
             }
             EventKind::TurnEnd {
                 ttft_ms,
@@ -231,6 +256,7 @@ where
             _ => {}
         }
     }
+    close_phase(&mut phase_samples, active_phase.take(), previous_ts);
     if let Some(open) = segment.take() {
         timeline.segments.push(close_segment(open));
     }
@@ -240,6 +266,10 @@ where
         .map(|(key, (samples, unmeasured))| (key, Distribution::from_samples(samples, unmeasured)))
         .collect();
     timeline.tools = tool_samples
+        .into_iter()
+        .map(|(key, (samples, unmeasured))| (key, Distribution::from_samples(samples, unmeasured)))
+        .collect();
+    timeline.phases = phase_samples
         .into_iter()
         .map(|(key, (samples, unmeasured))| (key, Distribution::from_samples(samples, unmeasured)))
         .collect();
@@ -263,7 +293,45 @@ where
         i64::try_from(wall).unwrap_or(i64::MAX)
             - i64::try_from(timeline.coverage.attributed_ms).unwrap_or(i64::MAX)
     });
+    timeline.coverage.phase_attributed_ms =
+        timeline.phases.values().fold(0u64, |total, distribution| {
+            total.saturating_add(distribution.total_ms)
+        });
+    timeline.coverage.phase_residual_ms = timeline.coverage.wall_ms.map(|wall| {
+        i64::try_from(wall).unwrap_or(i64::MAX)
+            - i64::try_from(timeline.coverage.phase_attributed_ms).unwrap_or(i64::MAX)
+    });
     timeline
+}
+
+struct OpenPhase {
+    phase: Phase,
+    start_us: Option<u64>,
+}
+
+fn close_phase(
+    samples: &mut BTreeMap<String, (Vec<u64>, u64)>,
+    open: Option<OpenPhase>,
+    end_us: Option<u64>,
+) {
+    let Some(open) = open else {
+        return;
+    };
+    let sample = match (open.start_us, end_us) {
+        (Some(start), Some(end)) if end >= start => Some(end.saturating_sub(start).div_ceil(1_000)),
+        _ => None,
+    };
+    record_sample(samples, phase_key(open.phase), sample);
+}
+
+const fn phase_key(phase: Phase) -> &'static str {
+    match phase {
+        Phase::Context => "context",
+        Phase::Model => "model",
+        Phase::Tools => "tools",
+        Phase::Verify => "verify",
+        Phase::Idle => "idle",
+    }
 }
 
 /// A segment still being accumulated. Named rather than a tuple because `start`/`end` are both

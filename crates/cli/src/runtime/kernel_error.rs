@@ -161,12 +161,12 @@ impl KernelError {
                 let mut text = format!(
                     "one request context component exceeded its immutable run ceiling: {violation}"
                 );
-                // `ContextBudgetViolation` already rendered which class overflowed; the
-                // multimodal one is the only ceiling an operator can raise from a profile
-                // (family 100 is profile-addressable and defaults to 10% of the usable window),
-                // so it is the only one worth naming a next step for. Matching the rendered text
-                // rather than the class is the narrower change: the typed value is discarded at
-                // the two call sites that build this error, and widening that is a separate job.
+                // `ContextBudgetViolation` already rendered which class overflowed. Capability
+                // admission runs before image inspection and budgeting, so a Multimodal
+                // violation here is from a route with verified image support. That real budget
+                // ceiling is profile-addressable and is the only class worth naming a next step
+                // for. Matching rendered text rather than the class remains the narrow change:
+                // the typed value is discarded at the two call sites that build this error.
                 if violation.starts_with("Multimodal ") {
                     text.push_str(
                         "; raise it with `--set multimodal_token_budget=<tokens>`, or attach a \
@@ -269,9 +269,9 @@ mod context_budget_message_tests {
         );
     }
 
-    /// The multimodal ceiling is the one an operator can raise, so that refusal names how.
+    /// A supported route that reaches its multimodal ceiling names the setting that can raise it.
     #[test]
-    fn a_multimodal_refusal_names_the_setting_that_raises_it() {
+    fn a_supported_route_multimodal_overflow_names_the_setting_that_raises_it() {
         let violation = ContextBudgetViolation {
             class: ContextBudgetClass::Multimodal,
             used: 20_000,
@@ -296,6 +296,17 @@ mod context_budget_message_tests {
         assert!(
             !rendered.contains("multimodal_token_budget"),
             "only the multimodal ceiling is profile-addressable: {rendered}"
+        );
+    }
+
+    /// Unsupported image input is capability refusal, never a multimodal-budget escape hatch.
+    #[test]
+    fn an_unsupported_route_refusal_does_not_advertise_a_multimodal_budget() {
+        let rendered =
+            KernelError::InvalidSubmission("image input is unsupported").public_summary();
+        assert!(
+            !rendered.contains("multimodal_token_budget"),
+            "unsupported routes cannot be repaired by widening a component budget: {rendered}"
         );
     }
 }
