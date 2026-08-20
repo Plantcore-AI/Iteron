@@ -268,6 +268,7 @@ pub(crate) struct StopHookDispatcher {
     tx: tokio::sync::mpsc::Sender<StopHookRequest>,
     next_invocation: Arc<AtomicU64>,
     active: Arc<Mutex<BTreeMap<u64, Arc<AtomicBool>>>>,
+    admission_closed: Arc<AtomicBool>,
     saturated: Arc<AtomicU64>,
 }
 
@@ -296,33 +297,42 @@ impl StopHookDispatcher {
             started_at_unix_ms: unix_ms(),
         };
         let cancel = Arc::new(AtomicBool::new(false));
-        self.active
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(invocation, cancel.clone());
         let request = StopHookRequest {
             identity: identity.clone(),
             context: context.to_owned(),
             cancel,
         };
+        // Admission and the active-count snapshot used by graceful shutdown share this lock. A
+        // dispatch therefore lands wholly before shutdown's bound is derived, or is rejected.
+        let mut active = self
+            .active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.admission_closed.load(Ordering::Acquire) {
+            return (StopHookDispatch::Closed, None);
+        }
+        active.insert(invocation, request.cancel.clone());
         match self.tx.try_send(request) {
             Ok(()) => (StopHookDispatch::Queued, Some(identity)),
             Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                self.active
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .remove(&invocation);
+                active.remove(&invocation);
                 self.saturated.fetch_add(1, Ordering::Relaxed);
                 (StopHookDispatch::Saturated, None)
             }
             Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                self.active
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .remove(&invocation);
+                active.remove(&invocation);
                 (StopHookDispatch::Closed, None)
             }
         }
+    }
+
+    fn close_admission(&self) -> usize {
+        let active = self
+            .active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.admission_closed.store(true, Ordering::Release);
+        active.len()
     }
 
     /// Force every queued/running compatibility Stop hook toward its existing process-group
@@ -358,6 +368,7 @@ impl StopHookObserverRuntime {
             tx: request_tx,
             next_invocation: Arc::new(AtomicU64::new(1)),
             active: active.clone(),
+            admission_closed: Arc::new(AtomicBool::new(false)),
             saturated: Arc::new(AtomicU64::new(0)),
         };
         let task = tokio::spawn(run_stop_hook_observer(
@@ -376,19 +387,35 @@ impl StopHookObserverRuntime {
         }
     }
 
-    /// Stop accepting work, cancel every queued/running command, and retain ownership until the
-    /// worker has published cleanup terminals. The caller may time-bound this future, but must not
-    /// detach the task.
+    /// Stop accepting work and gracefully drain every admitted command. If that fixed drain bound
+    /// expires, force cancellation retains ownership until the worker reaches a terminal.
     pub(crate) async fn shutdown(mut self) -> Result<Vec<StopHookObservation>, &'static str> {
-        self.dispatcher.cancel_active();
+        let admitted = self.dispatcher.close_admission();
         let _ = self.shutdown.try_send(());
-        match tokio::time::timeout(stop_hook_terminal_budget(), &mut self.task).await {
+        let admitted = u32::try_from(admitted).unwrap_or(u32::MAX);
+        let graceful_bound = stop_hook_terminal_budget()
+            .saturating_mul(admitted)
+            .saturating_add(stop_hook_cleanup_reserve());
+        match tokio::time::timeout(graceful_bound, &mut self.task).await {
             Ok(Ok(())) => {}
             Ok(Err(_)) => return Err("stop hook observer task failed before cleanup terminal"),
             Err(_) => {
-                self.task.abort();
-                let _ = self.task.await;
-                return Err("stop hook cleanup did not prove terminal within 3s");
+                self.dispatcher.cancel_active();
+                match tokio::time::timeout(stop_hook_cleanup_reserve(), &mut self.task).await {
+                    Ok(Ok(())) => {
+                        return Err("stop hook graceful drain exceeded its fixed deadline");
+                    }
+                    Ok(Err(_)) => {
+                        return Err("stop hook observer task failed during forced cleanup");
+                    }
+                    Err(_) => {
+                        // Aborting drops the armed process-group guard (SIGKILL); awaiting the join
+                        // retains task ownership instead of detaching a live hook process.
+                        self.task.abort();
+                        let _ = self.task.await;
+                        return Err("stop hook forced cleanup did not reach a task terminal");
+                    }
+                }
             }
         }
         let mut remaining = Vec::new();
@@ -1003,27 +1030,23 @@ async fn run_stop_hook_observer(
     mut shutdown: tokio::sync::mpsc::Receiver<()>,
     active: Arc<Mutex<BTreeMap<u64, Arc<AtomicBool>>>>,
 ) {
+    let mut draining = false;
     loop {
-        let request = tokio::select! {
-            biased;
-            _ = shutdown.recv() => {
-                requests.close();
-                cancel_stop_requests(&active);
-                while let Ok(request) = requests.try_recv() {
-                    settle_stop_request(
-                        &active,
-                        &observations,
-                        request,
-                        StopHookTerminal::Cancelled,
-                        empty_stop_report(),
-                    );
+        let request = if draining {
+            requests.recv().await
+        } else {
+            tokio::select! {
+                biased;
+                _ = shutdown.recv() => {
+                    requests.close();
+                    draining = true;
+                    continue;
                 }
-                break;
+                request = requests.recv() => request,
             }
-            request = requests.recv() => match request {
-                Some(request) => request,
-                None => break,
-            },
+        };
+        let Some(request) = request else {
+            break;
         };
 
         let cancel_before_deadline = request.cancel.clone();
@@ -1064,29 +1087,6 @@ async fn run_stop_hook_observer(
         };
         settle_stop_request(&active, &observations, request, terminal, report);
     }
-
-    // Dropping the receiver rejects late child clones. Cancel and settle anything admitted before
-    // close so the resident task never exits with a live hook process or an unowned request.
-    requests.close();
-    cancel_stop_requests(&active);
-    while let Ok(request) = requests.try_recv() {
-        settle_stop_request(
-            &active,
-            &observations,
-            request,
-            StopHookTerminal::Cancelled,
-            empty_stop_report(),
-        );
-    }
-}
-
-fn cancel_stop_requests(active: &Arc<Mutex<BTreeMap<u64, Arc<AtomicBool>>>>) {
-    let active = active
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    for cancel in active.values() {
-        cancel.store(true, Ordering::SeqCst);
-    }
 }
 
 fn settle_stop_request(
@@ -1107,16 +1107,6 @@ fn settle_stop_request(
         terminal,
         report,
     });
-}
-
-fn empty_stop_report() -> CompatibilityHookReport {
-    CompatibilityHookReport {
-        decision: HookDecision::Allow,
-        matched: 0,
-        completed: 0,
-        failed: 0,
-        timed_out: 0,
-    }
 }
 
 fn unix_ms() -> u64 {
@@ -1905,6 +1895,48 @@ mod tests {
         );
         assert_eq!(terminal.terminal, StopHookTerminal::Completed);
         observer.shutdown().await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn immediate_shutdown_drains_admitted_stop_hook() {
+        let home = tmp("stop-observer-immediate-shutdown");
+        let marker_path = home.join("stop-hook.marker");
+        let journal_path = home.join("stop-hooks.jsonl");
+        let journal = HookEffectJournal::open(&journal_path).unwrap();
+        let mut hooks = stop_hooks(format!("printf completed > {}", shell_quote(&marker_path)));
+        let observer = StopHookObserverRuntime::start(hooks.clone(), journal);
+        hooks.install_stop_observer(observer.dispatcher.clone());
+
+        assert_eq!(
+            hooks
+                .dispatch_stop(iteron_protocol::TurnId(9), r#"{"event":"Stop"}"#)
+                .0,
+            StopHookDispatch::Queued
+        );
+        let observations = observer.shutdown().await.unwrap();
+
+        assert_eq!(std::fs::read_to_string(&marker_path).unwrap(), "completed");
+        assert_eq!(observations.len(), 1);
+        assert_eq!(observations[0].terminal, StopHookTerminal::Completed);
+        assert_eq!(observations[0].report.completed, 1);
+
+        let entries = std::fs::read_to_string(&journal_path).unwrap();
+        let entries = entries
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0]["phase"], "intent");
+        assert_eq!(entries[1]["phase"], "terminal");
+        assert_eq!(entries[1]["outcome"], "completed");
+        assert_eq!(
+            HookEffectJournal::open(&journal_path)
+                .unwrap()
+                .recovered_unknown(),
+            0
+        );
+        let _ = std::fs::remove_dir_all(home);
     }
 
     #[cfg(unix)]

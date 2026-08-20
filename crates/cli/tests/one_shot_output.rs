@@ -1,4 +1,6 @@
 use serde_json::{Value, json};
+#[cfg(unix)]
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -408,6 +410,7 @@ impl Drop for Scratch {
 enum Reply {
     Success,
     ParitySuccess,
+    ReadReadme,
     InvalidStream,
     FailingRead { index: u32 },
 }
@@ -675,6 +678,13 @@ fn write_reply(stream: &mut TcpStream, reply: Reply) {
             "data: [DONE]\n\n",
         )
         .to_string(),
+        Reply::ReadReadme => concat!(
+            "data: {\"id\":\"chatcmpl-read-readme\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"id\":\"call-report-readme\",\"type\":\"function\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"README.md\\\"}\"}}]},\"finish_reason\":null}],\"usage\":null}\n\n",
+            "data: {\"id\":\"chatcmpl-read-readme\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":null}\n\n",
+            "data: {\"id\":\"chatcmpl-read-readme\",\"object\":\"chat.completion.chunk\",\"choices\":[],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":1,\"total_tokens\":12,\"prompt_tokens_details\":{\"cached_tokens\":0},\"completion_tokens_details\":{\"reasoning_tokens\":0}}}\n\n",
+            "data: [DONE]\n\n",
+        )
+        .to_string(),
         Reply::InvalidStream => "data: this-is-not-json\n\n".to_string(),
         Reply::FailingRead { index } => format!(
             concat!(
@@ -914,6 +924,12 @@ fn only_rollout_path(scratch: &Scratch) -> PathBuf {
     paths.sort();
     assert_eq!(paths.len(), 1, "real process creates exactly one rollout");
     paths.pop().expect("one rollout path")
+}
+
+#[cfg(unix)]
+fn shell_quote_path(path: &std::path::Path) -> String {
+    let text = path.to_str().expect("scratch shell path is UTF-8");
+    format!("'{}'", text.replace('\'', "'\"'\"'"))
 }
 
 fn collect_core(mut child: Child) -> Output {
@@ -1279,6 +1295,471 @@ fn client_parity_scripted_task_completes_in_one_shot() {
     assert_terminal_result(&results[0], 0, "done");
     assert_eq!(results[0]["assistant_text"], "parity reply");
     assert_eq!(results[0]["turns"], 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn legacy_hook_report_one_shot_proves_all_five_commands_complete() {
+    const LEGACY_EVENTS: [&str; 5] = [
+        "SessionStart",
+        "UserPromptSubmit",
+        "PreToolUse",
+        "PostToolUse",
+        "Stop",
+    ];
+    const README_EVIDENCE: &str = "legacy-hook-readme-fixture";
+
+    let (server, requests) =
+        MockProvider::spawn_capturing_script(vec![Reply::ReadReadme, Reply::Success]);
+    let scratch = Scratch::new("legacy-hook-report", &server.api_root);
+    fs::write(
+        scratch.repo().join("README.md"),
+        format!("# Hook fixture\n\n{README_EVIDENCE}\n"),
+    )
+    .expect("write the README fixture read by the real tool");
+
+    let evidence_path = scratch.root.join("hook-evidence.log");
+    let marker_dir = scratch.root.join("hook-markers");
+    let probe_path = scratch.root.join("hook-probe.sh");
+    fs::create_dir(&marker_dir).expect("create isolated hook marker directory");
+    fs::write(
+        &probe_path,
+        r#"#!/bin/sh
+set -eu
+umask 077
+log_path=$1
+marker_dir=$2
+event=$(sed -n 's/.*"event"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+case "$event" in
+    SessionStart|UserPromptSubmit|PreToolUse|PostToolUse|Stop) ;;
+    *) exit 64 ;;
+esac
+timestamp=$(date +%s)
+printf '%s %s\n' "$event" "$timestamp" >> "$log_path"
+printf '%s\n' "$timestamp" > "$marker_dir/$event"
+"#,
+    )
+    .expect("write the shared portable hook probe");
+    let probe_command = format!(
+        "/bin/sh {} {} {}",
+        shell_quote_path(&probe_path),
+        shell_quote_path(&evidence_path),
+        shell_quote_path(&marker_dir)
+    );
+
+    let config_path = scratch.home().join(".iteron/config.json");
+    let mut config: Value = serde_json::from_slice(
+        &fs::read(&config_path).expect("read isolated provider configuration"),
+    )
+    .expect("isolated provider configuration is JSON");
+    config["hooks"] = json!({
+        "SessionStart": [probe_command.clone()],
+        "UserPromptSubmit": [probe_command.clone()],
+        "PreToolUse": [probe_command.clone()],
+        "PostToolUse": [probe_command.clone()],
+        "Stop": [probe_command],
+    });
+    fs::write(
+        &config_path,
+        serde_json::to_vec(&config).expect("encode isolated hook configuration"),
+    )
+    .expect("install the five Legacy hooks in the isolated user configuration");
+
+    let task = format!(
+        "list files in {} and read README.md",
+        scratch.repo().display()
+    );
+    let output = collect_core(
+        core_command_with_task(&scratch, "json", 2, &["--max-wall-secs", "30"], &task)
+            .spawn()
+            .expect("spawn the real one-shot Legacy-hook client"),
+    );
+    let first_request = requests
+        .recv_timeout(SERVER_TIMEOUT)
+        .expect("capture the report-style provider request");
+    let second_request = requests
+        .recv_timeout(SERVER_TIMEOUT)
+        .expect("capture the provider request after README execution");
+    server.finish();
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "the report-style one-shot run failed; stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result = json_lines(&output.stdout);
+    assert_eq!(result.len(), 1, "json mode emits one terminal result");
+    assert_terminal_result(&result[0], 0, "done");
+    assert!(
+        serde_json::to_string(&first_request)
+            .expect("encode first captured request")
+            .contains(&task),
+        "the real provider did not receive the report-style task"
+    );
+    assert!(
+        serde_json::to_string(&second_request)
+            .expect("encode second captured request")
+            .contains(README_EVIDENCE),
+        "the second provider turn must contain the successful real README tool result"
+    );
+
+    let mut evidence_counts = BTreeMap::<String, usize>::new();
+    let evidence = fs::read_to_string(&evidence_path)
+        .expect("every Legacy command, including Stop, writes probe evidence before process exit");
+    for (index, line) in evidence.lines().enumerate() {
+        let mut fields = line.split_whitespace();
+        let event = fields
+            .next()
+            .unwrap_or_else(|| panic!("empty hook evidence line {}", index + 1));
+        let timestamp = fields
+            .next()
+            .unwrap_or_else(|| panic!("hook evidence line {} has no timestamp", index + 1));
+        assert!(
+            fields.next().is_none(),
+            "hook evidence line {} has unexpected fields: {line}",
+            index + 1
+        );
+        assert!(
+            LEGACY_EVENTS.contains(&event),
+            "probe observed an unknown Legacy event: {event}"
+        );
+        assert!(
+            timestamp.parse::<u64>().is_ok_and(|value| value > 0),
+            "hook evidence line {} has an invalid timestamp: {timestamp}",
+            index + 1
+        );
+        *evidence_counts.entry(event.to_owned()).or_default() += 1;
+    }
+    for event in LEGACY_EVENTS {
+        assert!(
+            evidence_counts.get(event).is_some_and(|count| *count >= 1),
+            "the {event} command did not append probe evidence"
+        );
+    }
+
+    let marker_names = fs::read_dir(&marker_dir)
+        .expect("read isolated hook marker directory")
+        .map(|entry| {
+            entry
+                .expect("read hook marker entry")
+                .file_name()
+                .into_string()
+                .expect("hook marker name is UTF-8")
+        })
+        .collect::<BTreeSet<_>>();
+    let expected_marker_names = LEGACY_EVENTS
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        marker_names, expected_marker_names,
+        "markers must name exactly the five Legacy events"
+    );
+    for event in LEGACY_EVENTS {
+        let timestamp = fs::read_to_string(marker_dir.join(event))
+            .unwrap_or_else(|error| panic!("read {event} command marker: {error}"));
+        assert!(
+            timestamp.trim().parse::<u64>().is_ok_and(|value| value > 0),
+            "the {event} marker does not contain its probe timestamp"
+        );
+    }
+
+    let mut journal_paths = fs::read_dir(scratch.runs())
+        .expect("read isolated rollout directory")
+        .map(|entry| entry.expect("read rollout entry").path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with(".hooks.jsonl"))
+        })
+        .collect::<Vec<_>>();
+    journal_paths.sort();
+    assert_eq!(
+        journal_paths.len(),
+        1,
+        "the real one-shot run creates exactly one hook journal"
+    );
+    let journal = fs::read_to_string(&journal_paths[0]).expect("read the real hook journal");
+    let mut intents = BTreeMap::<u64, String>::new();
+    let mut completed = BTreeMap::<String, usize>::new();
+    for (index, line) in journal.lines().enumerate() {
+        let entry: Value = serde_json::from_str(line)
+            .unwrap_or_else(|error| panic!("invalid hook journal line {}: {error}", index + 1));
+        let invocation = entry["invocation"]
+            .as_u64()
+            .unwrap_or_else(|| panic!("hook journal line {} has no invocation", index + 1));
+        let event = entry["event_id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("hook journal line {} has no event_id", index + 1));
+        assert!(
+            LEGACY_EVENTS.contains(&event),
+            "hook journal contains an unknown Legacy event: {event}"
+        );
+        match entry["phase"].as_str() {
+            Some("intent") => {
+                assert!(
+                    entry["outcome"].is_null(),
+                    "intent {invocation} unexpectedly has an outcome"
+                );
+                assert!(
+                    intents.insert(invocation, event.to_owned()).is_none(),
+                    "hook journal repeats intent {invocation}"
+                );
+            }
+            Some("terminal") => {
+                let outcome = entry["outcome"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("hook terminal {invocation} has no string outcome"));
+                assert_ne!(
+                    outcome, "cancelled",
+                    "Legacy hook {event} invocation {invocation} was cancelled"
+                );
+                assert_eq!(
+                    outcome, "completed",
+                    "Legacy hook {event} invocation {invocation} did not complete"
+                );
+                let intent_event = intents
+                    .remove(&invocation)
+                    .unwrap_or_else(|| panic!("hook terminal {invocation} has no matching intent"));
+                assert_eq!(
+                    intent_event, event,
+                    "hook terminal {invocation} does not match its intent"
+                );
+                *completed.entry(event.to_owned()).or_default() += 1;
+            }
+            phase => panic!(
+                "hook journal line {} has unknown phase {phase:?}",
+                index + 1
+            ),
+        }
+    }
+    assert!(
+        intents.is_empty(),
+        "hook journal has unmatched intents: {intents:?}"
+    );
+    for event in LEGACY_EVENTS {
+        assert!(
+            completed.get(event).is_some_and(|count| *count >= 1),
+            "hook journal has no completed intent/terminal pair for {event}"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn canonical_session_stopped_hook_completes_before_one_shot_process_exit() {
+    const EVENT_ID: &str = "session.stopped";
+    const README_EVIDENCE: &str = "canonical-shutdown-readme-fixture";
+
+    let (server, requests) =
+        MockProvider::spawn_capturing_script(vec![Reply::ReadReadme, Reply::Success]);
+    let scratch = Scratch::new("canonical-session-stopped", &server.api_root);
+    fs::write(
+        scratch.repo().join("README.md"),
+        format!("# Canonical shutdown fixture\n\n{README_EVIDENCE}\n"),
+    )
+    .expect("write the README fixture read by the real tool");
+
+    let evidence_path = scratch.root.join("canonical-hook-evidence.log");
+    let marker_dir = scratch.root.join("canonical-hook-markers");
+    let probe_path = scratch.root.join("canonical-hook-probe.sh");
+    fs::create_dir(&marker_dir).expect("create isolated canonical hook marker directory");
+    fs::write(
+        &probe_path,
+        r#"#!/bin/sh
+set -eu
+umask 077
+log_path=$1
+marker_dir=$2
+event_id=$(sed -n 's/.*"event_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+case "$event_id" in
+    session.stopped) ;;
+    *) exit 64 ;;
+esac
+timestamp=$(date +%s)
+printf '%s %s\n' "$event_id" "$timestamp" >> "$log_path"
+printf '%s\n' "$timestamp" > "$marker_dir/$event_id"
+"#,
+    )
+    .expect("write the portable canonical shutdown probe");
+    let probe_command = format!(
+        "/bin/sh {} {} {}",
+        shell_quote_path(&probe_path),
+        shell_quote_path(&evidence_path),
+        shell_quote_path(&marker_dir)
+    );
+
+    let config_path = scratch.home().join(".iteron/config.json");
+    let mut config: Value = serde_json::from_slice(
+        &fs::read(&config_path).expect("read isolated provider configuration"),
+    )
+    .expect("isolated provider configuration is JSON");
+    config["hooks"] = json!({(EVENT_ID): [probe_command]});
+    fs::write(
+        &config_path,
+        serde_json::to_vec(&config).expect("encode canonical hook configuration"),
+    )
+    .expect("install the isolated session.stopped hook");
+
+    let task = format!(
+        "list files in {} and read README.md",
+        scratch.repo().display()
+    );
+    let output = collect_core(
+        core_command_with_task(&scratch, "json", 2, &["--max-wall-secs", "30"], &task)
+            .spawn()
+            .expect("spawn the real one-shot canonical-shutdown client"),
+    );
+    let _first_request = requests
+        .recv_timeout(SERVER_TIMEOUT)
+        .expect("capture the canonical-shutdown provider request");
+    let second_request = requests
+        .recv_timeout(SERVER_TIMEOUT)
+        .expect("capture the provider request after README execution");
+    server.finish();
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "the canonical-shutdown one-shot run failed; stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result = json_lines(&output.stdout);
+    assert_eq!(result.len(), 1, "json mode emits one terminal result");
+    assert_terminal_result(&result[0], 0, "done");
+    assert!(
+        serde_json::to_string(&second_request)
+            .expect("encode second captured request")
+            .contains(README_EVIDENCE),
+        "the second provider turn must contain the successful real README tool result"
+    );
+
+    // No sleep or retry follows process exit: these immediate reads are the shutdown ordering
+    // oracle. A marker that appears later is a failure, not eventual success.
+    let evidence = fs::read_to_string(&evidence_path)
+        .expect("session.stopped probe evidence must exist before one-shot process exit");
+    let evidence_lines = evidence.lines().collect::<Vec<_>>();
+    assert_eq!(
+        evidence_lines.len(),
+        1,
+        "the one session terminal invokes its canonical hook exactly once"
+    );
+    let mut fields = evidence_lines[0].split_whitespace();
+    assert_eq!(fields.next(), Some(EVENT_ID));
+    let evidence_timestamp = fields
+        .next()
+        .expect("session.stopped evidence carries a timestamp");
+    assert!(
+        fields.next().is_none(),
+        "canonical evidence has extra fields"
+    );
+    assert!(
+        evidence_timestamp
+            .parse::<u64>()
+            .is_ok_and(|value| value > 0),
+        "session.stopped evidence has an invalid timestamp"
+    );
+    let marker_names = fs::read_dir(&marker_dir)
+        .expect("read isolated canonical marker directory")
+        .map(|entry| {
+            entry
+                .expect("read canonical marker entry")
+                .file_name()
+                .into_string()
+                .expect("canonical marker name is UTF-8")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        marker_names,
+        [EVENT_ID.to_owned()],
+        "the shutdown probe creates only the session.stopped marker"
+    );
+    let marker_timestamp = fs::read_to_string(marker_dir.join(EVENT_ID))
+        .expect("session.stopped marker must exist before process exit");
+    assert!(
+        marker_timestamp
+            .trim()
+            .parse::<u64>()
+            .is_ok_and(|value| value > 0),
+        "session.stopped marker has an invalid timestamp"
+    );
+
+    let mut journal_paths = fs::read_dir(scratch.runs())
+        .expect("read isolated rollout directory")
+        .map(|entry| entry.expect("read rollout entry").path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with(".hooks.jsonl"))
+        })
+        .collect::<Vec<_>>();
+    journal_paths.sort();
+    assert_eq!(
+        journal_paths.len(),
+        1,
+        "the real one-shot run creates exactly one canonical hook journal"
+    );
+    let journal = fs::read_to_string(&journal_paths[0]).expect("read the real hook journal");
+    let mut intents = BTreeMap::<u64, String>::new();
+    let mut completed = 0usize;
+    for (index, line) in journal.lines().enumerate() {
+        let entry: Value = serde_json::from_str(line)
+            .unwrap_or_else(|error| panic!("invalid hook journal line {}: {error}", index + 1));
+        let invocation = entry["invocation"]
+            .as_u64()
+            .unwrap_or_else(|| panic!("hook journal line {} has no invocation", index + 1));
+        let event_id = entry["event_id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("hook journal line {} has no event_id", index + 1));
+        assert_eq!(
+            event_id, EVENT_ID,
+            "canonical shutdown journal contains an unknown event"
+        );
+        match entry["phase"].as_str() {
+            Some("intent") => {
+                assert!(
+                    entry["outcome"].is_null(),
+                    "intent {invocation} unexpectedly has an outcome"
+                );
+                assert!(
+                    intents.insert(invocation, event_id.to_owned()).is_none(),
+                    "hook journal repeats intent {invocation}"
+                );
+            }
+            Some("terminal") => {
+                let outcome = entry["outcome"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("hook terminal {invocation} has no string outcome"));
+                assert_ne!(
+                    outcome, "cancelled",
+                    "session.stopped invocation {invocation} was cancelled"
+                );
+                assert_eq!(
+                    outcome, "completed",
+                    "session.stopped invocation {invocation} did not complete"
+                );
+                assert_eq!(
+                    intents.remove(&invocation).as_deref(),
+                    Some(EVENT_ID),
+                    "session.stopped terminal {invocation} has no matching intent"
+                );
+                completed += 1;
+            }
+            phase => panic!(
+                "hook journal line {} has unknown phase {phase:?}",
+                index + 1
+            ),
+        }
+    }
+    assert!(
+        intents.is_empty(),
+        "canonical shutdown journal has unmatched intents: {intents:?}"
+    );
+    assert_eq!(
+        completed, 1,
+        "session.stopped must have one completed intent/terminal pair"
+    );
 }
 
 #[test]
