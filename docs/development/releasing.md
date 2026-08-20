@@ -22,6 +22,35 @@ three-target macOS/Linux test/package, SBOM, and attestation graph, but the publ
 and canary jobs are structurally restricted to `refs/tags/v*`. All preflight jobs must
 be green before the Owner creates the tag.
 
+## Creating the release tag
+
+Use the provided script so the tag is created consistently and only after the
+required checks pass:
+
+```console
+$ release-tools/create_release_tag.sh [VERSION]
+```
+
+If `VERSION` is omitted, the script reads it from `[workspace.package] version` in
+`Cargo.toml`. The script:
+
+- refuses to run outside the `main` branch or with a dirty working tree,
+- verifies the requested version matches the workspace manifest,
+- requires a successful `workflow_dispatch` run of `release.yml` for the current
+  commit,
+- refuses if the tag already exists locally or on `origin`,
+- creates an **annotated** tag (`git tag -a`) with the message `Iteron X.Y.Z`,
+- asks for confirmation before pushing the tag.
+
+Manual `git tag` commands, especially lightweight tags, must not be used for
+version releases. A lightweight tag causes `release.yml` to fail the annotated-tag
+verification and burns a version number.
+
+A pre-push hook template is available in `.githooks/pre-push` for developers who
+want a local guard. It is not installed automatically; copy it to
+`.git/hooks/pre-push` and make it executable. CI remains the authoritative
+enforcement because hooks can be skipped or missing.
+
 ## Required artifacts
 
 Every platform archive contains the `iteron` binary, `LICENSE`, `README.md`, audited

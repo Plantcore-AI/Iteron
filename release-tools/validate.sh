@@ -35,8 +35,10 @@ shellcheck -s sh install.sh
 shellcheck -s bash \
   release-tools/audit_dependencies.sh \
   release-tools/check_docs.sh \
+  release-tools/create_release_tag.sh \
   release-tools/validate.sh \
-  release-tools/tests/test_install.sh
+  release-tools/tests/test_install.sh \
+  .githooks/pre-push
 release-tools/check_docs.sh
 release-tools/tests/test_install.sh
 python3 release-tools/fetch_tool.py actionlint "$host" --output "$temporary/actionlint"
