@@ -239,11 +239,52 @@ pub enum ContextBudgetClass {
     Multimodal,
 }
 
+impl ContextBudgetClass {
+    /// Whether compacting prior transcript entries can reduce this component's usage.
+    ///
+    /// Keep this exhaustive: budget classes outside transcript history must fail closed rather
+    /// than enter a recovery path that cannot change their projection.
+    pub const fn is_transcript_compaction_recoverable(self) -> bool {
+        matches!(
+            self,
+            Self::Transcript | Self::ToolResults | Self::LspResults
+        )
+    }
+
+    /// Stable, allocation-free reason code suitable for lifecycle event labels.
+    pub const fn reason_code(self) -> &'static str {
+        match self {
+            Self::StablePrefix => "context_budget_stable_prefix",
+            Self::Instructions => "context_budget_instructions",
+            Self::TaskContext => "context_budget_task_context",
+            Self::Memory => "context_budget_memory",
+            Self::Transcript => "context_budget_transcript",
+            Self::Attachments => "context_budget_attachments",
+            Self::ToolSchemas => "context_budget_tool_schemas",
+            Self::ToolResults => "context_budget_tool_results",
+            Self::LspResults => "context_budget_lsp_results",
+            Self::Multimodal => "context_budget_multimodal",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ContextBudgetViolation {
     pub class: ContextBudgetClass,
     pub used: usize,
     pub ceiling: usize,
+}
+
+impl ContextBudgetViolation {
+    /// Whether transcript compaction can make a subsequent admission attempt succeed.
+    pub const fn is_transcript_compaction_recoverable(&self) -> bool {
+        self.class.is_transcript_compaction_recoverable()
+    }
+
+    /// Stable, allocation-free lifecycle reason code for the violated component.
+    pub const fn reason_code(&self) -> &'static str {
+        self.class.reason_code()
+    }
 }
 
 impl std::fmt::Display for ContextBudgetViolation {
@@ -336,5 +377,85 @@ mod tests {
         let violation = policy.admit_components(&usage).unwrap_err();
         assert_eq!(violation.class, ContextBudgetClass::LspResults);
         assert_eq!(violation.ceiling, policy.lsp_result_tokens);
+    }
+
+    #[test]
+    fn only_transcript_owned_components_are_compaction_recoverable() {
+        for class in [
+            ContextBudgetClass::Transcript,
+            ContextBudgetClass::ToolResults,
+            ContextBudgetClass::LspResults,
+        ] {
+            assert!(class.is_transcript_compaction_recoverable());
+            assert!(
+                ContextBudgetViolation {
+                    class,
+                    used: 2,
+                    ceiling: 1,
+                }
+                .is_transcript_compaction_recoverable()
+            );
+        }
+
+        for class in [
+            ContextBudgetClass::StablePrefix,
+            ContextBudgetClass::Instructions,
+            ContextBudgetClass::TaskContext,
+            ContextBudgetClass::Memory,
+            ContextBudgetClass::Attachments,
+            ContextBudgetClass::ToolSchemas,
+            ContextBudgetClass::Multimodal,
+        ] {
+            assert!(!class.is_transcript_compaction_recoverable());
+        }
+    }
+
+    #[test]
+    fn budget_reason_codes_are_stable_and_lifecycle_safe() {
+        let expected = [
+            (
+                ContextBudgetClass::StablePrefix,
+                "context_budget_stable_prefix",
+            ),
+            (
+                ContextBudgetClass::Instructions,
+                "context_budget_instructions",
+            ),
+            (
+                ContextBudgetClass::TaskContext,
+                "context_budget_task_context",
+            ),
+            (ContextBudgetClass::Memory, "context_budget_memory"),
+            (ContextBudgetClass::Transcript, "context_budget_transcript"),
+            (
+                ContextBudgetClass::Attachments,
+                "context_budget_attachments",
+            ),
+            (
+                ContextBudgetClass::ToolSchemas,
+                "context_budget_tool_schemas",
+            ),
+            (
+                ContextBudgetClass::ToolResults,
+                "context_budget_tool_results",
+            ),
+            (ContextBudgetClass::LspResults, "context_budget_lsp_results"),
+            (ContextBudgetClass::Multimodal, "context_budget_multimodal"),
+        ];
+
+        for (class, expected_code) in expected {
+            let violation = ContextBudgetViolation {
+                class,
+                used: 2,
+                ceiling: 1,
+            };
+            assert_eq!(class.reason_code(), expected_code);
+            assert_eq!(violation.reason_code(), expected_code);
+            assert!(expected_code.bytes().all(|byte| {
+                byte.is_ascii_lowercase()
+                    || byte.is_ascii_digit()
+                    || matches!(byte, b'_' | b'.' | b'-')
+            }));
+        }
     }
 }

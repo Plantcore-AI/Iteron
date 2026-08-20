@@ -2888,6 +2888,10 @@ impl Agent {
         // and the terminal checkpoint happens in a later one, so clearing this inside the loop
         // would discard exactly the writes the checkpoint exists to capture.
         self.turn_mutated_workspace = false;
+        // A component-budget overflow may bridge into transcript compaction once for this admitted
+        // submission. If the rebuilt projection still does not fit, the next admission fails
+        // closed instead of recursively buying summaries.
+        let mut context_budget_recovery = context_runtime::ContextBudgetRecoveryGuard::default();
 
         loop {
             let mut agent_loop = agent_loop::AgentLoopGuard::begin(TurnId(self.seq_turn));
@@ -2934,6 +2938,9 @@ impl Agent {
             );
             let mut uncalibrated_context_total = estimated.total_tokens;
             let mut context_estimate = self.calibrated_context_estimate(estimated);
+            let mut context_budget_inspection =
+                self.inspect_context_budget(messages, &context_estimate);
+            let initial_context_budget_violation = context_budget_inspection.violation();
             self.lifecycle_event(
                 "context.tokenizer.estimate_completed",
                 Some(turn_id),
@@ -2945,7 +2952,8 @@ impl Agent {
                 },
             );
             // ---- compaction, emergency valve only (ADR-002): this projection no longer fits the
-            // proven window, so the alternative to summarizing here is a refused request. The
+            // proven window or one independently-owned transcript component. In either case the
+            // alternative to summarizing here is a refused request. The
             // ROUTINE compaction moved off the critical path to `settle_compaction`, at the end of
             // the turn: buying an extra synchronous round and a cold prefix inside the turn the
             // operator is waiting on was the whole defect. The exact request estimate above is
@@ -2953,9 +2961,8 @@ impl Agent {
             // serialize every tool schema a second time just to answer the same threshold test.
             // Also avoid running a `context.compaction.considered` hook on every ordinary turn:
             // only a request that actually crossed the overflow precheck reaches that effect. ----
-            let compaction_needed = self.compaction.enabled
-                && messages.len() > self.compaction.keep_recent.saturating_add(2)
-                && match self.model_context_window.filter(|window| *window > 0) {
+            let context_window_overflow =
+                match self.model_context_window.filter(|window| *window > 0) {
                     Some(window) => {
                         u64::try_from(context_estimate.total_tokens)
                             .unwrap_or(u64::MAX)
@@ -2969,17 +2976,40 @@ impl Agent {
                                 .effective_trigger_tokens(None, request_max_tokens)
                     }
                 };
+            let compaction_eligible = self.compaction.enabled
+                && !self.compacted_in_run
+                && messages.len() > self.compaction.keep_recent.saturating_add(2);
+            let component_budget_recovery = if compaction_eligible {
+                initial_context_budget_violation
+                    .filter(|violation| context_budget_recovery.claim(violation))
+            } else {
+                None
+            };
+            let component_budget_before = component_budget_recovery
+                .map(|violation| context_budget_inspection.component_tokens(violation.class));
+            let mut component_budget_after = None;
+            let compaction_needed = compaction_eligible
+                && (context_window_overflow || component_budget_recovery.is_some());
             let compaction_allowed = if compaction_needed {
+                let payload = component_budget_recovery.map_or_else(
+                    || LifecyclePayload {
+                        magnitude: Some(
+                            u64::try_from(context_estimate.total_tokens).unwrap_or(u64::MAX),
+                        ),
+                        ..LifecyclePayload::default()
+                    },
+                    |violation| {
+                        Self::context_budget_recovery_payload(
+                            &violation,
+                            component_budget_before.unwrap_or(violation.used),
+                        )
+                    },
+                );
                 let compaction_gate = self
                     .brokered_lifecycle_gate(
                         turn_id,
-                        "context.compaction.considered",
-                        LifecyclePayload {
-                            magnitude: Some(
-                                u64::try_from(context_estimate.total_tokens).unwrap_or(u64::MAX),
-                            ),
-                            ..LifecyclePayload::default()
-                        },
+                        context_runtime::ContextBudgetRecoveryStage::Considered.event_id(),
+                        payload,
                     )
                     .await?;
                 matches!(compaction_gate.decision, HookDecision::Allow)
@@ -2988,15 +3018,23 @@ impl Agent {
             };
             if compaction_allowed && let Some(plan) = self.compaction.force_plan(messages) {
                 let before_messages = messages.clone();
-                // Best-effort: if the summary call fails, continue uncompacted rather than lose
-                // the run (it retries next turn).
+                // Best-effort: if the summary call fails, continue to the exact local refusal
+                // rather than recursively retrying compaction inside this submission.
                 self.lifecycle_event(
-                    "context.compaction.started",
+                    context_runtime::ContextBudgetRecoveryStage::Started.event_id(),
                     Some(turn_id),
-                    LifecyclePayload {
-                        count: Some(u64::try_from(plan.to_summarize.len()).unwrap_or(u64::MAX)),
-                        ..LifecyclePayload::default()
-                    },
+                    component_budget_recovery.map_or_else(
+                        || LifecyclePayload {
+                            count: Some(u64::try_from(plan.to_summarize.len()).unwrap_or(u64::MAX)),
+                            ..LifecyclePayload::default()
+                        },
+                        |violation| {
+                            Self::context_budget_recovery_payload(
+                                &violation,
+                                component_budget_before.unwrap_or(violation.used),
+                            )
+                        },
+                    ),
                 );
                 match self.summarize_compaction(&plan.to_summarize, None).await {
                     Ok(summary) => {
@@ -3021,51 +3059,87 @@ impl Agent {
                             true
                         };
                         let compaction_result_turn = TurnId(self.seq_turn.saturating_sub(1));
-                        if !covered || !self.compaction_exits_hysteresis(&plan, &summary) {
+                        let rebuilt = CompactionPolicy::rebuild(&plan, summary.clone());
+                        let candidate = self.context_estimator.estimate_uncached(
+                            &effective_system,
+                            &rebuilt,
+                            tool_specs.as_ref(),
+                        );
+                        let candidate_uncalibrated_total = candidate.total_tokens;
+                        let candidate_estimate = self.calibrated_context_estimate(candidate);
+                        let candidate_inspection =
+                            self.inspect_context_budget(&rebuilt, &candidate_estimate);
+                        if let Some(violation) = component_budget_recovery {
+                            component_budget_after =
+                                Some(candidate_inspection.component_tokens(violation.class));
+                        }
+                        let exit_threshold = self.compaction.hysteresis.exit_threshold(
+                            self.compaction.effective_trigger_tokens(
+                                self.model_context_window,
+                                request_max_tokens,
+                            ),
+                        );
+                        let exits_required_hysteresis = !context_window_overflow
+                            || candidate_estimate.total_tokens <= exit_threshold;
+                        let components_admitted = candidate_inspection.violation().is_none();
+                        if !covered || !exits_required_hysteresis || !components_admitted {
+                            let failure_reason = if !covered {
+                                "summary_coverage_missing"
+                            } else if !components_admitted {
+                                "component_budget_not_recovered"
+                            } else {
+                                "hysteresis_exit_not_reached"
+                            };
                             self.lifecycle_event(
                                 "context.compaction.failed",
                                 Some(compaction_result_turn),
                                 LifecyclePayload {
-                                    reason_code: Some(if covered {
-                                        "hysteresis_exit_not_reached".into()
-                                    } else {
-                                        "summary_coverage_missing".into()
-                                    }),
+                                    reason_code: Some(failure_reason.into()),
                                     ..LifecyclePayload::default()
                                 },
                             );
-                            return Err(KernelError::ContextResolution(if covered {
-                                "emergency compaction did not cross the resolved hysteresis exit"
-                                    .into()
-                            } else {
-                                "emergency compaction summary failed the resolved coverage check"
-                                    .into()
-                            }));
+                            if initial_context_budget_violation.is_none() {
+                                return Err(KernelError::ContextResolution(if covered {
+                                    "emergency compaction did not cross the resolved hysteresis exit"
+                                        .into()
+                                } else {
+                                    "emergency compaction summary failed the resolved coverage check"
+                                        .into()
+                                }));
+                            }
+                        } else {
+                            self.record_compaction(
+                                compaction_result_turn,
+                                &before_messages,
+                                &plan,
+                                &summary,
+                                if component_budget_recovery.is_some() {
+                                    "component_budget_recovery"
+                                } else {
+                                    "overflow_emergency"
+                                },
+                                self.compaction.coverage_check && covered,
+                            );
+                            *messages = rebuilt;
+                            // The source file bytes no longer cross the provider boundary once the
+                            // containing user message has been replaced by a compacted summary.
+                            self.input_file_evidence = None;
+                            // The transcript was rewritten, not appended to. The candidate above
+                            // is the one re-estimate/re-admission; invalidate only the incremental
+                            // cache so a later appended turn starts from the rebuilt transcript.
+                            self.context_estimator.invalidate_transcript();
+                            uncalibrated_context_total = candidate_uncalibrated_total;
+                            context_estimate = candidate_estimate;
+                            context_budget_inspection = candidate_inspection;
+                            if let Some(violation) = component_budget_recovery {
+                                self.emit_context_budget_recovery_event(
+                                    compaction_result_turn,
+                                    context_runtime::ContextBudgetRecoveryStage::Completed,
+                                    &violation,
+                                    component_budget_after.unwrap_or(violation.used),
+                                );
+                            }
                         }
-                        self.record_compaction(
-                            compaction_result_turn,
-                            &before_messages,
-                            &plan,
-                            &summary,
-                            "overflow_emergency",
-                            self.compaction.coverage_check && covered,
-                        );
-                        *messages = CompactionPolicy::rebuild(&plan, summary.clone());
-                        // The source file bytes no longer cross the provider boundary once the
-                        // containing user message has been replaced by a compacted summary.
-                        self.input_file_evidence = None;
-                        // The transcript was rewritten, not appended to: drop the cached per-message
-                        // estimates and re-account this turn against the compacted history.
-                        self.context_estimator.invalidate_transcript();
-                        let estimated = self.context_estimator.estimate_with_tool_tokens(
-                            &effective_system,
-                            messages,
-                            tool_specs.len(),
-                            tool_specs.estimated_tokens(),
-                            tool_specs.cache_identity(),
-                        );
-                        uncalibrated_context_total = estimated.total_tokens;
-                        context_estimate = self.calibrated_context_estimate(estimated);
                     }
                     Err(_) => self.lifecycle_event(
                         "context.compaction.failed",
@@ -3073,6 +3147,19 @@ impl Agent {
                         LifecyclePayload::default(),
                     ),
                 }
+            }
+
+            if let Some(violation) = component_budget_recovery
+                && context_budget_inspection.violation().is_some()
+            {
+                self.emit_context_budget_recovery_event(
+                    TurnId(self.seq_turn.saturating_sub(1).max(turn_id.0)),
+                    context_runtime::ContextBudgetRecoveryStage::Failed,
+                    &violation,
+                    component_budget_after
+                        .or(component_budget_before)
+                        .unwrap_or(violation.used),
+                );
             }
 
             // Summarization is itself an admitted provider turn. Once it quiesces, observe control
@@ -3142,9 +3229,9 @@ impl Agent {
                     });
                 }
             }
-            self.context_budget_policy
-                .admit_components(&self.context_component_usage(messages, &context_estimate))
-                .map_err(|error| KernelError::ContextBudget(error.to_string()))?;
+            if let Some(error) = context_budget_inspection.violation() {
+                return Err(KernelError::ContextBudget(error.to_string()));
+            }
 
             let context_gates = [(
                 "context.segment.budget_requested",

@@ -49,6 +49,76 @@ const NO_ACTIVE_TASK_TOKENS: usize = 0;
 /// Attachment token count charged when the turn carries no input-file evidence.
 const NO_ATTACHMENT_TOKENS: usize = 0;
 
+/// Per-submission guard for the component-budget recovery bridge. Component admission runs again
+/// after compaction, but a later refusal in the same agent loop must fail closed instead of
+/// recursively compacting.
+#[derive(Debug, Default)]
+pub(super) struct ContextBudgetRecoveryGuard {
+    attempted: bool,
+}
+
+impl ContextBudgetRecoveryGuard {
+    pub(super) fn claim(&mut self, violation: &iteron_ctx::ContextBudgetViolation) -> bool {
+        if self.attempted || !violation.is_transcript_compaction_recoverable() {
+            return false;
+        }
+        self.attempted = true;
+        true
+    }
+}
+
+/// Content-free component accounting captured at one provider-admission boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ContextBudgetInspection {
+    usage: iteron_ctx::ContextComponentUsage,
+    violation: Option<iteron_ctx::ContextBudgetViolation>,
+}
+
+impl ContextBudgetInspection {
+    pub(super) fn violation(self) -> Option<iteron_ctx::ContextBudgetViolation> {
+        self.violation
+    }
+
+    pub(super) fn component_tokens(self, class: iteron_ctx::ContextBudgetClass) -> usize {
+        match class {
+            iteron_ctx::ContextBudgetClass::StablePrefix => self.usage.stable_prefix_tokens,
+            iteron_ctx::ContextBudgetClass::Instructions => self.usage.instruction_tokens,
+            iteron_ctx::ContextBudgetClass::TaskContext => self.usage.task_context_tokens,
+            iteron_ctx::ContextBudgetClass::Memory => self.usage.memory_tokens,
+            iteron_ctx::ContextBudgetClass::Transcript => self.usage.transcript_tokens,
+            iteron_ctx::ContextBudgetClass::Attachments => self.usage.attachment_tokens,
+            iteron_ctx::ContextBudgetClass::ToolSchemas => self.usage.tool_schema_tokens,
+            iteron_ctx::ContextBudgetClass::ToolResults => self.usage.tool_result_tokens,
+            iteron_ctx::ContextBudgetClass::LspResults => self.usage.lsp_result_tokens,
+            // Multimodal admission is a separate preflight and is never recovered by transcript
+            // compaction. Keep this branch total without pretending image bytes were measured here.
+            iteron_ctx::ContextBudgetClass::Multimodal => 0,
+        }
+    }
+}
+
+/// Existing registered lifecycle events reused by component-budget recovery. `Considered` remains
+/// a brokered gate at the call site. The terminal variants deliberately use segment-budget events:
+/// the compaction machinery already emits its own completed/failed transition exactly once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ContextBudgetRecoveryStage {
+    Considered,
+    Started,
+    Completed,
+    Failed,
+}
+
+impl ContextBudgetRecoveryStage {
+    pub(super) const fn event_id(self) -> &'static str {
+        match self {
+            Self::Considered => "context.compaction.considered",
+            Self::Started => "context.compaction.started",
+            Self::Completed => "context.segment.budget_granted",
+            Self::Failed => "context.segment.budget_denied",
+        }
+    }
+}
+
 impl Agent {
     pub(super) fn token_calibration_route(&self) -> (&str, &str) {
         self.selected_route.as_ref().map_or_else(
@@ -284,6 +354,52 @@ impl Agent {
             tool_result_tokens: estimate.tool_result_tokens,
             lsp_result_tokens: estimate.lsp_result_tokens,
         }
+    }
+
+    /// Inspect the exact source-separated projection used by provider admission. The policy's
+    /// deterministic class order makes `violation` the first breached component, which is the
+    /// only recovery candidate for this one-shot attempt.
+    pub(super) fn inspect_context_budget(
+        &self,
+        messages: &[iteron_protocol::Message],
+        estimate: &iteron_ctx::ContextEstimate,
+    ) -> ContextBudgetInspection {
+        let usage = self.context_component_usage(messages, estimate);
+        let violation = self.context_budget_policy.admit_components(&usage).err();
+        ContextBudgetInspection { usage, violation }
+    }
+
+    /// Standard payload for component-triggered compaction. `magnitude` is the measured usage of
+    /// the breached component at this stage and `count` is its fixed ceiling. Paired pre/post
+    /// events therefore expose before/after tokens without recording transcript content.
+    pub(super) fn context_budget_recovery_payload(
+        violation: &iteron_ctx::ContextBudgetViolation,
+        observed_tokens: usize,
+    ) -> LifecyclePayload {
+        LifecyclePayload {
+            reason_code: Some(violation.reason_code().into()),
+            count: Some(u64::try_from(violation.ceiling).unwrap_or(u64::MAX)),
+            magnitude: Some(u64::try_from(observed_tokens).unwrap_or(u64::MAX)),
+            ..LifecyclePayload::default()
+        }
+    }
+
+    /// Emit one non-gating recovery transition. `Considered` callers must use
+    /// `brokered_lifecycle_gate` with [`Self::context_budget_recovery_payload`] instead so Hooks
+    /// retain their existing ability to deny compaction. The terminal transition attributes
+    /// success/failure to the component budget without duplicating compaction's own terminal event.
+    pub(super) fn emit_context_budget_recovery_event(
+        &self,
+        turn: TurnId,
+        stage: ContextBudgetRecoveryStage,
+        violation: &iteron_ctx::ContextBudgetViolation,
+        observed_tokens: usize,
+    ) {
+        self.lifecycle_event(
+            stage.event_id(),
+            Some(turn),
+            Self::context_budget_recovery_payload(violation, observed_tokens),
+        );
     }
 
     /// Bind attachments to one admitted top-level submission. A route without verified image
@@ -827,5 +943,87 @@ impl Agent {
                 .chain(tool_trust),
         )
         .unwrap_or(Trust::Trusted)
+    }
+}
+
+#[cfg(test)]
+mod context_budget_recovery_tests {
+    use super::*;
+
+    fn violation(class: iteron_ctx::ContextBudgetClass) -> iteron_ctx::ContextBudgetViolation {
+        iteron_ctx::ContextBudgetViolation {
+            class,
+            used: 25_666,
+            ceiling: 18_000,
+        }
+    }
+
+    #[test]
+    fn recovery_guard_claims_a_recoverable_violation_only_once() {
+        let violation = violation(iteron_ctx::ContextBudgetClass::ToolResults);
+        let mut guard = ContextBudgetRecoveryGuard::default();
+
+        assert!(guard.claim(&violation));
+        assert!(!guard.claim(&violation));
+    }
+
+    #[test]
+    fn recovery_guard_rejects_non_compactable_components() {
+        let violation = violation(iteron_ctx::ContextBudgetClass::StablePrefix);
+        let mut guard = ContextBudgetRecoveryGuard::default();
+
+        assert!(!guard.claim(&violation));
+    }
+
+    #[test]
+    fn inspection_preserves_first_violation_and_component_usage() {
+        let violation = violation(iteron_ctx::ContextBudgetClass::ToolResults);
+        let inspection = ContextBudgetInspection {
+            usage: iteron_ctx::ContextComponentUsage {
+                tool_result_tokens: violation.used,
+                ..iteron_ctx::ContextComponentUsage::default()
+            },
+            violation: Some(violation),
+        };
+
+        assert_eq!(inspection.violation(), Some(violation));
+        assert_eq!(
+            inspection.component_tokens(iteron_ctx::ContextBudgetClass::ToolResults),
+            25_666
+        );
+    }
+
+    #[test]
+    fn recovery_payload_is_content_free_and_token_attributed() {
+        let violation = violation(iteron_ctx::ContextBudgetClass::ToolResults);
+        let payload = Agent::context_budget_recovery_payload(&violation, 9_000);
+
+        assert_eq!(
+            payload.reason_code.as_deref(),
+            Some(violation.reason_code())
+        );
+        assert_eq!(payload.count, Some(18_000));
+        assert_eq!(payload.magnitude, Some(9_000));
+        assert!(payload.outcome_code.is_none());
+    }
+
+    #[test]
+    fn recovery_stages_reuse_registered_compaction_events() {
+        assert_eq!(
+            ContextBudgetRecoveryStage::Considered.event_id(),
+            "context.compaction.considered"
+        );
+        assert_eq!(
+            ContextBudgetRecoveryStage::Started.event_id(),
+            "context.compaction.started"
+        );
+        assert_eq!(
+            ContextBudgetRecoveryStage::Completed.event_id(),
+            "context.segment.budget_granted"
+        );
+        assert_eq!(
+            ContextBudgetRecoveryStage::Failed.event_id(),
+            "context.segment.budget_denied"
+        );
     }
 }

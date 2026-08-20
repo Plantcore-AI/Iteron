@@ -11684,6 +11684,269 @@ ant-api03-SuperSecretModelToken12345"
         let _ = std::fs::remove_dir_all(&ws);
     }
 
+    /// Regression for the 0.0.14 failure where six successful tool rounds accumulated more than
+    /// the independently-owned 18k ToolResults ceiling and the seventh model round was refused
+    /// locally. A recoverable component overflow must buy exactly one summary, re-admit the
+    /// rebuilt transcript, and return control to the original task.
+    #[tokio::test]
+    async fn tool_result_budget_overflow_compacts_once_before_the_seventh_model_round() {
+        const TOOL_RESULT_CEILING: usize = 18_000;
+        const TOOL_RESULT_BYTES_PER_ROUND: usize = 10_000;
+        const TOOL_ROUNDS: usize = 6;
+        const COMPONENT_REASON: &str = "context_budget_tool_results";
+
+        #[derive(Default)]
+        struct SeventhRoundProvider {
+            main_requests: AtomicUsize,
+            summary_requests: AtomicUsize,
+            requests: std::sync::Mutex<Vec<TurnRequest>>,
+        }
+
+        #[async_trait::async_trait]
+        impl Provider for SeventhRoundProvider {
+            async fn turn(
+                &self,
+                request: &TurnRequest,
+                on_item: &mut (dyn FnMut(StreamItem) + Send),
+            ) -> Result<TurnResult, ProviderError> {
+                self.requests.lock().unwrap().push(request.clone());
+                if request.tools.is_empty() {
+                    self.summary_requests.fetch_add(1, Ordering::SeqCst);
+                    return Ok(TurnResult {
+                        blocks: vec![Block::Text {
+                            text: "six read rounds completed; continue the original task".into(),
+                        }],
+                        stop_reason: StopReason::EndTurn,
+                        usage: UsageReport::complete(Usage::default()),
+                    });
+                }
+
+                let round = self.main_requests.fetch_add(1, Ordering::SeqCst);
+                if round < TOOL_ROUNDS {
+                    let tool = ToolUse {
+                        id: format!("bulky-read-{round}"),
+                        name: "bulky_read".into(),
+                        input: serde_json::json!({"round": round}),
+                    };
+                    on_item(StreamItem::ToolUseComplete(tool.clone()));
+                    return Ok(TurnResult {
+                        blocks: vec![Block::ToolUse(tool)],
+                        stop_reason: StopReason::ToolUse,
+                        usage: UsageReport::complete(Usage::default()),
+                    });
+                }
+
+                Ok(TurnResult {
+                    blocks: vec![Block::Text {
+                        text: "original task completed on the seventh model round".into(),
+                    }],
+                    stop_reason: StopReason::EndTurn,
+                    usage: UsageReport::complete(Usage::default()),
+                })
+            }
+        }
+
+        let ws = temp_ws("tool-result-component-recovery");
+        let mut registry = Registry::read_only(&ws).unwrap();
+        registry
+            .register_external(
+                ToolSpec {
+                    name: "bulky_read".into(),
+                    description: "test-only read that returns one bounded context fixture".into(),
+                    input_schema: serde_json::json!({"type":"object"}),
+                    purity: Purity::Pure,
+                    capability: Capability::ReadOnly,
+                },
+                |call, _root| {
+                    iteron_tools::boxfut::box_it(async move {
+                        ToolResult {
+                            tool_use_id: call.id,
+                            content: "x".repeat(TOOL_RESULT_BYTES_PER_ROUND),
+                            is_error: false,
+                            trust: Trust::Workspace,
+                            latency_ms: 0,
+                        }
+                    })
+                },
+            )
+            .unwrap();
+        let run = iteron_protocol::RunId("tool-result-component-recovery".into());
+        let rollout = Rollout::open(
+            &ws.join(".iteron/runs"),
+            &run,
+            iteron_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let provider = std::sync::Arc::new(SeventhRoundProvider::default());
+        let mut agent = Agent::new(
+            provider.clone(),
+            registry,
+            rollout,
+            "deepseek-chat".into(),
+            "sys".into(),
+            Budget {
+                max_turns: 12,
+                max_usd: None,
+                max_tokens: None,
+                max_wall_secs: 30,
+                max_consecutive_tool_errors: 3,
+            },
+        );
+        agent.workspace = ws.clone();
+        agent.model_context_window = Some(1_000_000);
+        agent.model_max_output_tokens = Some(8_192);
+        agent.context_budget_policy =
+            iteron_ctx::ContextBudgetPolicy::for_usable_window(1_000_000, 8_192, 4_096);
+        agent.context_budget_policy.tool_result_tokens = TOOL_RESULT_CEILING;
+        // Keep aggregate/window compaction far away: only the ToolResults component may trigger
+        // this recovery. Disable coverage so one recovery means exactly one tool-free request.
+        agent.compaction.set_fixed_trigger_tokens(500_000);
+        agent.compaction.coverage_check = false;
+        let lifecycle = iteron_obs::lifecycle::LifecycleBus::default();
+        agent.set_lifecycle_emitter(iteron_obs::lifecycle::LifecycleEmitter::new(
+            lifecycle.clone(),
+        ));
+
+        assert_eq!(
+            agent.run("finish the original task after inspecting six sources")
+                .await
+                .unwrap(),
+            Outcome::Done
+        );
+        assert_eq!(
+            provider.main_requests.load(Ordering::SeqCst),
+            TOOL_ROUNDS + 1,
+            "six tool-producing rounds and the seventh main request must reach the provider"
+        );
+        assert_eq!(
+            provider.summary_requests.load(Ordering::SeqCst),
+            1,
+            "the component bridge is one-shot"
+        );
+        let requests = provider.requests.lock().unwrap().clone();
+        assert_eq!(requests.len(), TOOL_ROUNDS + 2);
+        assert!(requests[..TOOL_ROUNDS]
+            .iter()
+            .all(|request| !request.tools.is_empty()));
+        assert!(
+            requests[TOOL_ROUNDS].tools.is_empty(),
+            "component recovery is the one tool-free summary request"
+        );
+        assert!(
+            !requests[TOOL_ROUNDS + 1].tools.is_empty(),
+            "the original seventh request is re-admitted after recovery"
+        );
+
+        let durable = iteron_record::replay(agent.rollout.path()).unwrap();
+        assert_eq!(
+            durable
+                .iter()
+                .filter(|event| matches!(event.kind, EventKind::Compaction { .. }))
+                .count(),
+            1,
+            "one overflow produces one durable transcript rewrite"
+        );
+        assert!(durable.iter().any(|event| matches!(
+            &event.kind,
+            EventKind::Message { message }
+                if message.content.iter().any(|block| matches!(
+                    block,
+                    Block::Text { text }
+                        if text == "original task completed on the seventh model round"
+                ))
+        )));
+
+        let before_messages = durable
+            .iter()
+            .take_while(|event| !matches!(event.kind, EventKind::Compaction { .. }))
+            .filter_map(|event| match &event.kind {
+                EventKind::Message { message } => Some(message.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            before_messages
+                .iter()
+                .flat_map(|message| message.content.iter())
+                .filter(|block| matches!(block, Block::ToolResult(_)))
+                .count(),
+            TOOL_ROUNDS,
+            "all six successful tool results exist before recovery"
+        );
+        let mut before_estimator =
+            iteron_ctx::RequestEstimator::for_route(None, "deepseek-chat");
+        let before_tool_results = before_estimator
+            .estimate("sys", &before_messages, &[])
+            .tool_result_tokens;
+        let mut fifth_result_estimator =
+            iteron_ctx::RequestEstimator::for_route(None, "deepseek-chat");
+        let sixth_main_request = &requests[TOOL_ROUNDS - 1];
+        let first_five_tool_results = fifth_result_estimator
+            .estimate(
+                &sixth_main_request.system,
+                &sixth_main_request.messages,
+                &sixth_main_request.tools,
+            )
+            .tool_result_tokens;
+        let mut after_estimator = iteron_ctx::RequestEstimator::for_route(None, "deepseek-chat");
+        let seventh = &requests[TOOL_ROUNDS + 1];
+        let after_tool_results = after_estimator
+            .estimate(&seventh.system, &seventh.messages, &seventh.tools)
+            .tool_result_tokens;
+        assert!(first_five_tool_results <= TOOL_RESULT_CEILING);
+        assert!(before_tool_results > TOOL_RESULT_CEILING);
+        assert!(after_tool_results <= TOOL_RESULT_CEILING);
+
+        let lifecycle = lifecycle.snapshot();
+        let component_events = lifecycle
+            .events
+            .iter()
+            .filter(|event| event.payload.reason_code.as_deref() == Some(COMPONENT_REASON))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            component_events
+                .iter()
+                .map(|event| event.event_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "context.compaction.considered",
+                "context.compaction.started",
+                "context.segment.budget_granted",
+            ]
+        );
+        assert_eq!(component_events[0].payload.count, Some(18_000));
+        assert_eq!(
+            component_events[0].payload.magnitude,
+            Some(u64::try_from(before_tool_results).unwrap())
+        );
+        assert_eq!(
+            component_events[1].payload.magnitude,
+            component_events[0].payload.magnitude
+        );
+        assert_eq!(component_events[2].payload.count, Some(18_000));
+        assert_eq!(
+            component_events[2].payload.magnitude,
+            Some(u64::try_from(after_tool_results).unwrap())
+        );
+        assert!(lifecycle.events.iter().all(|event| {
+            event.event_id.as_str() != "context.segment.budget_denied"
+                || event.payload.reason_code.as_deref() != Some(COMPONENT_REASON)
+        }));
+
+        let compaction_ledgers = agent
+            .context_ledgers
+            .snapshot()
+            .ledgers
+            .into_iter()
+            .filter_map(|ledger| ledger.compaction)
+            .collect::<Vec<_>>();
+        assert_eq!(compaction_ledgers.len(), 1);
+        assert!(compaction_ledgers[0].before_tokens > compaction_ledgers[0].after_tokens);
+
+        drop(requests);
+        std::fs::remove_dir_all(ws).ok();
+    }
+
     #[tokio::test]
     async fn unpriced_usd_ceiling_fails_before_a_provider_request() {
         let ws = temp_ws("unpriced-usd-ceiling");
