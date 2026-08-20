@@ -77,6 +77,32 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 
+/// One bounded binding shared by frontend/client emitters and the server-side publisher. The
+/// dispatcher itself owns the bounded hook queue; this slot only makes its single handle visible
+/// after the session has installed hooks.
+type LifecycleHookRoute =
+    Arc<std::sync::Mutex<Option<crate::runtime::lifecycle_hooks::LifecycleHookDispatcher>>>;
+
+fn bound_lifecycle_hook(
+    route: &LifecycleHookRoute,
+) -> Option<crate::runtime::lifecycle_hooks::LifecycleHookDispatcher> {
+    route
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
+fn dispatch_lifecycle_hook(
+    route: &LifecycleHookRoute,
+    event: iteron_protocol::LifecycleEventEnvelope,
+) {
+    // Never hold the route lock while enqueueing. Dispatch is non-blocking, but keeping the two
+    // synchronization domains separate also makes bind/unbind independent of hook queue pressure.
+    if let Some(dispatcher) = bound_lifecycle_hook(route) {
+        dispatcher.dispatch(event);
+    }
+}
+
 /// Submission-queue depth.
 ///
 /// Sized for the burst a human can produce with a held key or a paste, not for a backlog: past this
@@ -134,11 +160,6 @@ fn sq_byte_capacity() -> usize {
 /// Streamed text arrives far faster than a terminal repaints, so this is the elastic that absorbs a
 /// burst between frames. It is a bound, not a buffer to be filled: see the drop policy above.
 pub(crate) const EQ_CAPACITY: usize = 1024;
-
-/// How long session teardown waits for the lifecycle-hook task to drain after the last event is
-/// published. Bounded, because a hook that never returns must not hold the session open; past it
-/// the task is aborted.
-const LIFECYCLE_HOOK_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// The authoritative terminal facts needed by every non-interactive client.
 ///
@@ -768,6 +789,9 @@ pub(crate) struct AppServerClient {
     negotiated_version: u32,
     next_submission_id: Arc<AtomicU64>,
     lifecycle: iteron_obs::lifecycle::LifecycleEmitter,
+    lifecycle_hooks: LifecycleHookRoute,
+    lifecycle_session_id: Option<SessionId>,
+    lifecycle_run_id: Option<RunId>,
 }
 
 #[derive(Debug, Clone)]
@@ -882,11 +906,31 @@ impl AppServerClient {
     /// Record a frontend-owned local boundary (for example an explicit memory mutation). The
     /// event is content-free and shares the same bounded stream as runtime events.
     pub(crate) fn record_lifecycle(&self, event_name: &str, payload: LifecyclePayload) {
-        let _ = self.lifecycle.emit(
+        self.emit_lifecycle(
             event_name,
             iteron_obs::lifecycle::LifecycleCorrelation::default(),
             payload,
         );
+    }
+
+    fn emit_lifecycle(
+        &self,
+        event_name: &str,
+        mut correlation: iteron_obs::lifecycle::LifecycleCorrelation,
+        payload: LifecyclePayload,
+    ) {
+        correlation
+            .session_id
+            .clone_from(&self.lifecycle_session_id);
+        correlation.run_id.clone_from(&self.lifecycle_run_id);
+        if let Ok(event) = self.lifecycle.emit(event_name, correlation, payload) {
+            dispatch_lifecycle_hook(&self.lifecycle_hooks, event);
+        }
+    }
+
+    fn bind_lifecycle_identity(&mut self, session_id: SessionId, run_id: RunId) {
+        self.lifecycle_session_id = Some(session_id);
+        self.lifecycle_run_id = Some(run_id);
     }
 
     fn queue_depth(&self) -> usize {
@@ -928,6 +972,7 @@ impl AppServerClient {
             iteron_obs::lifecycle::LifecycleEmitter::new(
                 iteron_obs::lifecycle::LifecycleBus::default(),
             ),
+            Arc::new(std::sync::Mutex::new(None)),
         )
     }
 
@@ -946,6 +991,7 @@ impl AppServerClient {
             budget,
             lifecycle,
             AppServerQueuePolicy::owner(),
+            Arc::new(std::sync::Mutex::new(None)),
         )
     }
 
@@ -956,6 +1002,7 @@ impl AppServerClient {
         budget: Arc<Semaphore>,
         lifecycle: iteron_obs::lifecycle::LifecycleEmitter,
         queue_policy: AppServerQueuePolicy,
+        lifecycle_hooks: LifecycleHookRoute,
     ) -> Result<Self, ProtocolVersionError> {
         Self::connect_to(
             server_version,
@@ -967,6 +1014,7 @@ impl AppServerClient {
                 priority_slots: Arc::new(Semaphore::new(queue_policy.priority_entries())),
             },
             lifecycle,
+            lifecycle_hooks,
         )
     }
 
@@ -974,6 +1022,7 @@ impl AppServerClient {
         server_version: u32,
         submissions: SubmissionSender,
         lifecycle: iteron_obs::lifecycle::LifecycleEmitter,
+        lifecycle_hooks: LifecycleHookRoute,
     ) -> Result<Self, ProtocolVersionError> {
         if server_version != PROTOCOL_VERSION {
             return Err(ProtocolVersionError {
@@ -986,6 +1035,9 @@ impl AppServerClient {
             negotiated_version: server_version,
             next_submission_id: Arc::new(AtomicU64::new(1)),
             lifecycle,
+            lifecycle_hooks,
+            lifecycle_session_id: None,
+            lifecycle_run_id: None,
         })
     }
 
@@ -1024,15 +1076,13 @@ impl AppServerClient {
             submission_id: Some(id),
             ..iteron_obs::lifecycle::LifecycleCorrelation::default()
         };
-        let _ = self.lifecycle.emit(
+        self.emit_lifecycle(
             "submission.created",
             correlation.clone(),
             LifecyclePayload::default(),
         );
         if let Some(event_id) = requested_event {
-            let _ = self
-                .lifecycle
-                .emit(event_id, correlation.clone(), LifecyclePayload::default());
+            self.emit_lifecycle(event_id, correlation.clone(), LifecyclePayload::default());
         }
         let result = match &self.submissions {
             #[cfg(test)]
@@ -1079,12 +1129,12 @@ impl AppServerClient {
         };
         match result {
             Ok(()) => {
-                let _ = self.lifecycle.emit(
+                self.emit_lifecycle(
                     "submission.enqueued",
                     correlation.clone(),
                     LifecyclePayload::default(),
                 );
-                let _ = self.lifecycle.emit(
+                self.emit_lifecycle(
                     "queue.depth_changed",
                     correlation,
                     LifecyclePayload {
@@ -1099,7 +1149,7 @@ impl AppServerClient {
                     SubmitError::Busy => "queue_full",
                     SubmitError::Disconnected => "runtime_disconnected",
                 };
-                let _ = self.lifecycle.emit(
+                self.emit_lifecycle(
                     "submission.rejected",
                     correlation,
                     LifecyclePayload {
@@ -1108,7 +1158,7 @@ impl AppServerClient {
                     },
                 );
                 if matches!(&error, SubmitError::Busy) {
-                    let _ = self.lifecycle.emit(
+                    self.emit_lifecycle(
                         "queue.overflow",
                         iteron_obs::lifecycle::LifecycleCorrelation {
                             submission_id: Some(id),
@@ -1255,17 +1305,22 @@ pub(crate) fn attach(
     lossless_events: bool,
 ) -> Result<Attached, ProtocolVersionError> {
     let queue_policy = agent.app_server_queue_policy();
-    let (handle, ends) = wire_with_queue_policy(lossless_events, queue_policy)?;
+    let (mut handle, ends) = wire_with_queue_policy(lossless_events, queue_policy)?;
 
     let interrupt = Arc::new(AtomicBool::new(false));
     agent.set_interrupt(interrupt.clone());
     let drain = Arc::new(AtomicBool::new(false));
     agent.set_drain(drain.clone());
+    let lifecycle_run_id = agent.rollout.run_id().clone();
+    let lifecycle_session_id = SessionId(format!("session-{}", lifecycle_run_id.0));
+    handle
+        .client
+        .bind_lifecycle_identity(lifecycle_session_id.clone(), lifecycle_run_id);
 
     // Attach needs three light frontend fields, not owned copies of every full JSON schema.
     let tool_specs = agent.registry.spec_snapshot();
     let facts = SessionFacts {
-        session_id: SessionId(format!("session-{}", agent.rollout.run_id().0)),
+        session_id: lifecycle_session_id,
         context_ledgers: agent.context_ledgers.clone(),
         memory_traces: agent.memory_traces.clone(),
         hook_health: handle.hook_health.clone(),
@@ -1334,7 +1389,7 @@ pub(crate) struct EventPublisher {
     next_seq: u64,
     lossless: bool,
     lifecycle: iteron_obs::lifecycle::LifecycleEmitter,
-    lifecycle_hooks: Option<crate::runtime::lifecycle_hooks::LifecycleHookDispatcher>,
+    lifecycle_hooks: LifecycleHookRoute,
     session_id: Option<SessionId>,
     run_id: Option<RunId>,
     workflow_phases: std::collections::BTreeMap<String, String>,
@@ -1461,11 +1516,28 @@ impl EventPublisher {
         Self::new_with_policy(events, lossless, lifecycle, AppServerQueuePolicy::owner())
     }
 
+    #[cfg(test)]
     fn new_with_policy(
         events: mpsc::Sender<EventEnvelope>,
         lossless: bool,
         lifecycle: iteron_obs::lifecycle::LifecycleEmitter,
         queue_policy: AppServerQueuePolicy,
+    ) -> Self {
+        Self::new_with_policy_and_hooks(
+            events,
+            lossless,
+            lifecycle,
+            queue_policy,
+            Arc::new(std::sync::Mutex::new(None)),
+        )
+    }
+
+    fn new_with_policy_and_hooks(
+        events: mpsc::Sender<EventEnvelope>,
+        lossless: bool,
+        lifecycle: iteron_obs::lifecycle::LifecycleEmitter,
+        queue_policy: AppServerQueuePolicy,
+        lifecycle_hooks: LifecycleHookRoute,
     ) -> Self {
         Self {
             events,
@@ -1474,7 +1546,7 @@ impl EventPublisher {
             next_seq: 1,
             lossless,
             lifecycle,
-            lifecycle_hooks: None,
+            lifecycle_hooks,
             session_id: None,
             run_id: None,
             workflow_phases: std::collections::BTreeMap::new(),
@@ -1492,7 +1564,10 @@ impl EventPublisher {
         &mut self,
         dispatcher: crate::runtime::lifecycle_hooks::LifecycleHookDispatcher,
     ) {
-        self.lifecycle_hooks = Some(dispatcher);
+        *self
+            .lifecycle_hooks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(dispatcher);
     }
 
     fn lifecycle_emitter(&self) -> iteron_obs::lifecycle::LifecycleEmitter {
@@ -1524,9 +1599,8 @@ impl EventPublisher {
             event_name,
             self.lifecycle_correlation(turn_id, submission_id),
             payload,
-        ) && let Some(dispatcher) = &self.lifecycle_hooks
-        {
-            dispatcher.dispatch(event);
+        ) {
+            dispatch_lifecycle_hook(&self.lifecycle_hooks, event);
         }
     }
 
@@ -1538,20 +1612,16 @@ impl EventPublisher {
     ) {
         let mut correlation = self.lifecycle_correlation(None, None);
         correlation.workflow_id = workflow_id.map(|id| iteron_protocol::WorkflowId(id.to_owned()));
-        if let Ok(event) = self.lifecycle.emit(event_name, correlation, payload)
-            && let Some(dispatcher) = &self.lifecycle_hooks
-        {
-            dispatcher.dispatch(event);
+        if let Ok(event) = self.lifecycle.emit(event_name, correlation, payload) {
+            dispatch_lifecycle_hook(&self.lifecycle_hooks, event);
         }
     }
 
     fn record_job_lifecycle(&self, event_name: &str, job_id: &str, payload: LifecyclePayload) {
         let mut correlation = self.lifecycle_correlation(None, None);
         correlation.job_id = Some(iteron_protocol::JobId(job_id.to_owned()));
-        if let Ok(event) = self.lifecycle.emit(event_name, correlation, payload)
-            && let Some(dispatcher) = &self.lifecycle_hooks
-        {
-            dispatcher.dispatch(event);
+        if let Ok(event) = self.lifecycle.emit(event_name, correlation, payload) {
+            dispatch_lifecycle_hook(&self.lifecycle_hooks, event);
         }
     }
 
@@ -1567,10 +1637,8 @@ impl EventPublisher {
         correlation.subagent_id = Some(iteron_protocol::SubagentId(format!(
             "{workflow_id}:agent-{index}"
         )));
-        if let Ok(event) = self.lifecycle.emit(event_name, correlation, payload)
-            && let Some(dispatcher) = &self.lifecycle_hooks
-        {
-            dispatcher.dispatch(event);
+        if let Ok(event) = self.lifecycle.emit(event_name, correlation, payload) {
+            dispatch_lifecycle_hook(&self.lifecycle_hooks, event);
         }
     }
 
@@ -1853,15 +1921,7 @@ fn wire_with_queue_policy(
     );
     let lifecycle = iteron_obs::lifecycle::LifecycleBus::default();
     let lifecycle_emitter = iteron_obs::lifecycle::LifecycleEmitter::new(lifecycle.clone());
-    let _ = lifecycle_emitter.emit(
-        "queue.capacity_resolved",
-        iteron_obs::lifecycle::LifecycleCorrelation::default(),
-        LifecyclePayload {
-            count: Some(u64::try_from(queue_policy.submission_entries()).unwrap_or(u64::MAX)),
-            magnitude: Some(u64::try_from(queue_policy.submission_bytes()).unwrap_or(u64::MAX)),
-            ..LifecyclePayload::default()
-        },
-    );
+    let lifecycle_hooks = Arc::new(std::sync::Mutex::new(None));
     let lifecycle_otel =
         iteron_obs::otel::lifecycle::LifecycleTelemetryRuntime::attach(&lifecycle).ok();
     let hook_health = crate::runtime::lifecycle_hooks::LifecycleHookHealth::default();
@@ -1872,6 +1932,7 @@ fn wire_with_queue_policy(
         sq_budget,
         lifecycle_emitter.clone(),
         queue_policy,
+        lifecycle_hooks.clone(),
     )?;
     Ok((
         AppServerHandle {
@@ -1887,11 +1948,12 @@ fn wire_with_queue_policy(
             submissions: sq_rx,
             priority_submissions: priority_sq_rx,
             control: control_rx,
-            events: EventPublisher::new_with_policy(
+            events: EventPublisher::new_with_policy_and_hooks(
                 eq_tx,
                 lossless_events,
                 lifecycle_emitter,
                 queue_policy,
+                lifecycle_hooks,
             ),
             hook_health,
             activity: activity_rx,
@@ -1963,7 +2025,9 @@ pub(crate) struct AppServer {
     priority_submissions: mpsc::Receiver<QueuedSubmission>,
     control: mpsc::Receiver<ControlRequest>,
     events: EventPublisher,
-    hook_health: crate::runtime::lifecycle_hooks::LifecycleHookHealth,
+    hook_journal: Option<crate::runtime::hooks::journal::HookEffectJournal>,
+    stop_hooks: Option<crate::runtime::hooks::StopHookObserverRuntime>,
+    lifecycle_hook_runtime: crate::runtime::lifecycle_hooks::LifecycleHookRuntime,
     /// Forwarded to the kernel's inbound queue. The kernel drains it at its own safe points; the
     /// server never reaches into a running turn.
     to_kernel: mpsc::Sender<SqEnvelope>,
@@ -1992,13 +2056,87 @@ impl AppServer {
         if interactive_approvals {
             agent.set_approvals(kernel_rx);
         }
+        let lifecycle_gate_hooks = agent.hooks.clone();
+        let mut recovered_unknown = 0;
+        let hook_journal = if lifecycle_gate_hooks.is_empty() {
+            None
+        } else {
+            match crate::runtime::hooks::journal::HookEffectJournal::open(
+                &agent.rollout.path().with_extension("hooks.jsonl"),
+            ) {
+                Ok(journal) => {
+                    recovered_unknown = journal.recovered_unknown();
+                    Some(journal)
+                }
+                Err(_) => {
+                    ends.events.record_lifecycle(
+                        "hook.failed",
+                        None,
+                        None,
+                        LifecyclePayload {
+                            reason_code: Some("durable_journal_unavailable".into()),
+                            ..LifecyclePayload::default()
+                        },
+                    );
+                    None
+                }
+            }
+        };
+        agent.set_hook_effect_journal(hook_journal.clone());
+        let stop_hooks = hook_journal.clone().map(|journal| {
+            crate::runtime::hooks::StopHookObserverRuntime::start(lifecycle_gate_hooks, journal)
+        });
+        if let Some(observer) = &stop_hooks {
+            agent
+                .hooks
+                .install_stop_observer(observer.dispatcher.clone());
+        }
+        let (lifecycle_hooks, lifecycle_hook_runtime) =
+            crate::runtime::lifecycle_hooks::LifecycleHookDispatcher::start(
+                agent.hooks.clone(),
+                ends.events.lifecycle_emitter(),
+                ends.events.lifecycle_correlation(None, None),
+                hook_journal.clone(),
+                ends.hook_health,
+            );
+        ends.events.bind_lifecycle_hooks(lifecycle_hooks.clone());
+        ends.events.record_lifecycle(
+            "queue.capacity_resolved",
+            None,
+            None,
+            LifecyclePayload {
+                count: Some(
+                    u64::try_from(ends.events.queue_policy.submission_entries())
+                        .unwrap_or(u64::MAX),
+                ),
+                magnitude: Some(
+                    u64::try_from(ends.events.queue_policy.submission_bytes()).unwrap_or(u64::MAX),
+                ),
+                ..LifecyclePayload::default()
+            },
+        );
+        agent.set_lifecycle_hooks(lifecycle_hooks);
+        if recovered_unknown > 0 {
+            ends.events.record_lifecycle(
+                "hook.failed",
+                None,
+                None,
+                LifecyclePayload {
+                    count: Some(recovered_unknown),
+                    reason_code: Some("recovered_unknown_effect".into()),
+                    ..LifecyclePayload::default()
+                },
+            );
+        }
         Self {
             agent,
             submissions: ends.submissions,
             priority_submissions: ends.priority_submissions,
             control: ends.control,
             events: ends.events,
-            hook_health: ends.hook_health,
+            hook_journal,
+            stop_hooks,
+            lifecycle_hook_runtime,
             to_kernel,
             activity: ends.activity,
         }
@@ -2038,7 +2176,9 @@ impl AppServer {
             mut priority_submissions,
             mut control,
             mut events,
-            hook_health,
+            hook_journal,
+            mut stop_hooks,
+            lifecycle_hook_runtime,
             to_kernel,
             mut activity,
         } = self;
@@ -2115,73 +2255,10 @@ impl AppServer {
         // Canonical Hook observation is bounded and off the turn path. Gate hooks remain at their
         // owning admission sites below; the dispatcher deliberately skips the fixed Gate set.
         let lifecycle_gate_hooks = agent.hooks.clone();
-        let hook_journal = if lifecycle_gate_hooks.is_empty() {
-            None
-        } else {
-            match crate::runtime::hooks::journal::HookEffectJournal::open(
-                &agent.rollout.path().with_extension("hooks.jsonl"),
-            ) {
-                Ok(journal) => {
-                    let recovered_unknown = journal.recovered_unknown();
-                    if recovered_unknown > 0 {
-                        events.record_lifecycle(
-                            "hook.failed",
-                            None,
-                            None,
-                            LifecyclePayload {
-                                count: Some(recovered_unknown),
-                                reason_code: Some("recovered_unknown_effect".into()),
-                                ..LifecyclePayload::default()
-                            },
-                        );
-                    }
-                    Some(journal)
-                }
-                Err(_) => {
-                    events.record_lifecycle(
-                        "hook.failed",
-                        None,
-                        None,
-                        LifecyclePayload {
-                            reason_code: Some("durable_journal_unavailable".into()),
-                            ..LifecyclePayload::default()
-                        },
-                    );
-                    None
-                }
-            }
-        };
-        agent.set_hook_effect_journal(hook_journal.clone());
-        // Compatibility Stop hooks are observers, never terminal authority. Their bounded worker
-        // is owned and joined by this resident session; Agent/workflow-child clones carry only its
-        // non-blocking submission port. No operator command remains on the AnswerComplete ->
-        // RunEnded/InputReady path.
-        let mut stop_hooks = hook_journal.clone().map(|journal| {
-            crate::runtime::hooks::StopHookObserverRuntime::start(
-                lifecycle_gate_hooks.clone(),
-                journal,
-            )
-        });
-        if let Some(observer) = &stop_hooks {
-            agent
-                .hooks
-                .install_stop_observer(observer.dispatcher.clone());
-        }
-        let (lifecycle_hooks, mut lifecycle_hook_task) =
-            crate::runtime::lifecycle_hooks::LifecycleHookDispatcher::start(
-                agent.hooks.clone(),
-                events.lifecycle_emitter(),
-                events.lifecycle_correlation(None, None),
-                hook_journal.clone(),
-                drain_signal.clone(),
-                hook_health,
-            );
-        events.bind_lifecycle_hooks(lifecycle_hooks.clone());
-        agent.set_lifecycle_hooks(lifecycle_hooks);
         if let Some(processes) = &processes {
             let emitter = events.lifecycle_emitter();
             let base_correlation = events.lifecycle_correlation(None, None);
-            let dispatcher = events.lifecycle_hooks.clone();
+            let lifecycle_hooks = events.lifecycle_hooks.clone();
             processes.bind_lifecycle_observer(std::sync::Arc::new(move |notice| {
                 let outcome = match notice.kind {
                     iteron_tools::ProcessLifecycleKind::Spawned => "spawned",
@@ -2226,9 +2303,8 @@ impl AppServer {
                             outcome_code: Some(outcome.to_owned()),
                             ..LifecyclePayload::default()
                         },
-                    ) && let Some(dispatcher) = &dispatcher
-                    {
-                        dispatcher.dispatch(event);
+                    ) {
+                        dispatch_lifecycle_hook(&lifecycle_hooks, event);
                     }
                 }
             }));
@@ -3417,19 +3493,31 @@ impl AppServer {
             .expect("a stopping session publishes one terminal");
         debug_assert!(session_lifecycle.is_terminal());
         events.record_lifecycle("session.stopped", None, None, LifecyclePayload::default());
-        drop(events.lifecycle_hooks.take());
-        if tokio::time::timeout(
-            iteron_tunables::param_duration(
-                "cli.app_server.lifecycle_hook_drain_grace",
-                LIFECYCLE_HOOK_DRAIN_GRACE,
-            ),
-            &mut lifecycle_hook_task,
-        )
-        .await
-        .is_err()
-        {
-            lifecycle_hook_task.abort();
-            let _ = lifecycle_hook_task.await;
+        // `session.stopped` is synchronously admitted above. Release the ordinary agent/publisher
+        // references, then let the runtime atomically close the shared admission state; any leaked
+        // dispatcher clone is rejected after that transition and cannot extend the shutdown
+        // snapshot. If the configured execution budget expires, the runtime explicitly cancels and
+        // settles admitted work before raw task abortion is even eligible.
+        drop(agent);
+        drop(
+            events
+                .lifecycle_hooks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take(),
+        );
+        if let Err(error) = lifecycle_hook_runtime.shutdown().await {
+            events.record_lifecycle(
+                "hook.failed",
+                None,
+                None,
+                LifecyclePayload {
+                    count: Some(1),
+                    reason_code: Some(error.reason_code().into()),
+                    ..LifecyclePayload::default()
+                },
+            );
+            report.lines.push(error.public_summary().into());
         }
         report
     }
@@ -3776,18 +3864,11 @@ async fn run_lifecycle_gate(
         "turn_id": turn_id.map(|turn| turn.0),
     })
     .to_string();
-    let report = hooks
-        .run_lifecycle_cancellable_journaled(event_id, &context, cancel, drain, journal)
-        .await
-        .map_err(str::to_owned)?;
     events.record_lifecycle(
         "hook.matched",
         turn_id,
         Some(submission_id),
-        LifecyclePayload {
-            count: Some(u64::from(report.matched)),
-            ..LifecyclePayload::default()
-        },
+        LifecyclePayload::default(),
     );
     events.record_lifecycle(
         "hook.started",
@@ -3795,6 +3876,10 @@ async fn run_lifecycle_gate(
         Some(submission_id),
         LifecyclePayload::default(),
     );
+    let report = hooks
+        .run_lifecycle_cancellable_journaled(event_id, &context, cancel, drain, journal)
+        .await
+        .map_err(str::to_owned)?;
     if report.timed_out > 0 {
         events.record_lifecycle(
             "hook.timed_out",

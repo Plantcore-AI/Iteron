@@ -1519,7 +1519,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 1848,
+          "line": 1916,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -1546,7 +1546,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 289,
+          "line": 310,
           "evidence": "Rust path reference"
         },
         {
@@ -1576,7 +1576,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 1361,
+          "line": 1416,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -1628,38 +1628,11 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 1986,
+          "line": 2050,
           "evidence": "param_integer runtime resolution"
         }
       ],
       "behavior_oracle": "installed profile id cli.app_server.kernel_inbound_capacity is resolved at every listed production helper call"
-    },
-    {
-      "id": "cli.app_server.lifecycle_hook_drain_grace",
-      "module": "scheduler_parallelism",
-      "class": "searchable",
-      "type": "duration",
-      "rust_type": "std::time::Duration",
-      "unit": "seconds",
-      "default": "std::time::Duration::from_secs(2)",
-      "krate": "cli",
-      "decl": "crates/cli/src/app_server.rs",
-      "applied": true,
-      "candidate_kind": "const",
-      "disposition": "runtime_settable",
-      "owner": {
-        "krate": "cli",
-        "path": "crates/cli/src/app_server.rs",
-        "symbol": "LIFECYCLE_HOOK_DRAIN_GRACE"
-      },
-      "use_sites": [
-        {
-          "path": "crates/cli/src/app_server.rs",
-          "line": 3422,
-          "evidence": "param_duration runtime resolution"
-        }
-      ],
-      "behavior_oracle": "installed profile id cli.app_server.lifecycle_hook_drain_grace is resolved at every listed production helper call"
     },
     {
       "id": "cli.app_server.max_pending_cosmetic_bytes",
@@ -1685,7 +1658,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 1396,
+          "line": 1451,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -1715,7 +1688,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 1434,
+          "line": 1489,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -1745,7 +1718,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 1596,
+          "line": 1664,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -1772,7 +1745,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 639,
+          "line": 660,
           "evidence": "Rust path reference"
         }
       ]
@@ -1824,7 +1797,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 2050,
+          "line": 2190,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -1850,7 +1823,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 129,
+          "line": 155,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -1902,7 +1875,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 104,
+          "line": 130,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -1928,12 +1901,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 122,
+          "line": 148,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 1171,
+          "line": 1221,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -1995,7 +1968,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 840,
+          "line": 864,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -2021,7 +1994,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 2068,
+          "line": 2208,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -2047,7 +2020,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 2085,
+          "line": 2225,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -10007,7 +9980,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 289,
+          "line": 310,
           "evidence": "Rust path reference"
         },
         {
@@ -10098,7 +10071,7 @@
         },
         {
           "path": "crates/cli/src/runtime/hooks.rs",
-          "line": 431,
+          "line": 458,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -10125,7 +10098,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/hooks.rs",
-          "line": 1531,
+          "line": 1521,
           "evidence": "param_duration runtime resolution in macro"
         }
       ],
@@ -10151,7 +10124,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/hooks.rs",
-          "line": 1283,
+          "line": 1273,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -10177,17 +10150,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/hooks.rs",
-          "line": 1292,
+          "line": 1282,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/runtime/hooks.rs",
-          "line": 1300,
+          "line": 1290,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/runtime/hooks.rs",
-          "line": 1312,
+          "line": 1302,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -10213,7 +10186,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/hooks.rs",
-          "line": 1367,
+          "line": 1357,
           "evidence": "param_integer runtime resolution in macro"
         }
       ],
@@ -10311,7 +10284,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/hooks.rs",
-          "line": 815,
+          "line": 842,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -10338,7 +10311,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/hooks.rs",
-          "line": 820,
+          "line": 847,
+          "evidence": "param_duration runtime resolution"
+        },
+        {
+          "path": "crates/cli/src/runtime/lifecycle_hooks.rs",
+          "line": 402,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -10368,17 +10346,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/hooks.rs",
-          "line": 476,
+          "line": 503,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/runtime/hooks.rs",
-          "line": 1140,
+          "line": 1130,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/runtime/hooks.rs",
-          "line": 1156,
+          "line": 1146,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -10408,7 +10386,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/hooks.rs",
-          "line": 1181,
+          "line": 1171,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -10438,12 +10416,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/hooks.rs",
-          "line": 485,
+          "line": 512,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/runtime/hooks.rs",
-          "line": 1151,
+          "line": 1141,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -10473,7 +10451,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/hooks.rs",
-          "line": 921,
+          "line": 948,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -10505,6 +10483,11 @@
           "path": "crates/cli/src/runtime/hooks.rs",
           "line": 61,
           "evidence": "param_integer runtime resolution"
+        },
+        {
+          "path": "crates/cli/src/runtime/lifecycle_hooks.rs",
+          "line": 386,
+          "evidence": "param_integer runtime resolution"
         }
       ],
       "behavior_oracle": "installed profile id cli.runtime.hooks.max_parallel_hooks is resolved at every listed production helper call"
@@ -10530,7 +10513,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/hooks.rs",
-          "line": 1512,
+          "line": 1502,
           "evidence": "Rust path reference"
         }
       ]
@@ -10740,7 +10723,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 7089,
+          "line": 7081,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -10766,7 +10749,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 4334,
+          "line": 4326,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -10861,6 +10844,33 @@
       "behavior_oracle": "installed profile id cli.runtime.interrupted_stream_max_bytes is resolved at every listed production helper call"
     },
     {
+      "id": "cli.runtime.lifecycle_hooks.abort_join_grace",
+      "module": "scheduler_parallelism",
+      "class": "searchable",
+      "type": "duration",
+      "rust_type": "Duration",
+      "unit": "milliseconds",
+      "default": "Duration::from_millis(250)",
+      "krate": "cli",
+      "decl": "crates/cli/src/runtime/lifecycle_hooks.rs",
+      "applied": true,
+      "candidate_kind": "const",
+      "disposition": "runtime_settable",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/runtime/lifecycle_hooks.rs",
+        "symbol": "ABORT_JOIN_GRACE"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/runtime/lifecycle_hooks.rs",
+          "line": 431,
+          "evidence": "param_duration runtime resolution"
+        }
+      ],
+      "behavior_oracle": "installed profile id cli.runtime.lifecycle_hooks.abort_join_grace is resolved at every listed production helper call"
+    },
+    {
       "id": "cli.runtime.lifecycle_hooks.circuit_failure_threshold",
       "module": "scheduler_parallelism",
       "class": "searchable",
@@ -10880,7 +10890,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/lifecycle_hooks.rs",
-          "line": 335,
+          "line": 738,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -10907,16 +10917,43 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/lifecycle_hooks.rs",
-          "line": 345,
+          "line": 748,
           "evidence": "param_duration runtime resolution"
         },
         {
           "path": "crates/cli/src/runtime/lifecycle_hooks.rs",
-          "line": 358,
+          "line": 754,
           "evidence": "param_duration runtime resolution"
         }
       ],
       "behavior_oracle": "installed profile id cli.runtime.lifecycle_hooks.circuit_open_for is resolved at every listed production helper call"
+    },
+    {
+      "id": "cli.runtime.lifecycle_hooks.cleanup_settlement_slack",
+      "module": "scheduler_parallelism",
+      "class": "searchable",
+      "type": "duration",
+      "rust_type": "Duration",
+      "unit": "seconds",
+      "default": "Duration::from_secs(1)",
+      "krate": "cli",
+      "decl": "crates/cli/src/runtime/lifecycle_hooks.rs",
+      "applied": true,
+      "candidate_kind": "const",
+      "disposition": "runtime_settable",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/runtime/lifecycle_hooks.rs",
+        "symbol": "CLEANUP_SETTLEMENT_SLACK"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/runtime/lifecycle_hooks.rs",
+          "line": 422,
+          "evidence": "param_duration runtime resolution"
+        }
+      ],
+      "behavior_oracle": "installed profile id cli.runtime.lifecycle_hooks.cleanup_settlement_slack is resolved at every listed production helper call"
     },
     {
       "id": "cli.runtime.lifecycle_hooks.hook_dispatch_concurrency",
@@ -10938,7 +10975,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/lifecycle_hooks.rs",
-          "line": 190,
+          "line": 371,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -10964,11 +11001,91 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/lifecycle_hooks.rs",
-          "line": 107,
+          "line": 177,
           "evidence": "param_integer runtime resolution"
         }
       ],
       "behavior_oracle": "installed profile id cli.runtime.lifecycle_hooks.hook_dispatch_queue is resolved at every listed production helper call"
+    },
+    {
+      "id": "cli.runtime.lifecycle_hooks.hook_execution_concurrency",
+      "module": "scheduler_parallelism",
+      "class": "searchable",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "4",
+      "krate": "cli",
+      "decl": "crates/cli/src/runtime/lifecycle_hooks.rs",
+      "applied": true,
+      "candidate_kind": "const",
+      "disposition": "runtime_settable",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/runtime/lifecycle_hooks.rs",
+        "symbol": "HOOK_EXECUTION_CONCURRENCY"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/runtime/lifecycle_hooks.rs",
+          "line": 391,
+          "evidence": "param_integer runtime resolution"
+        }
+      ],
+      "behavior_oracle": "installed profile id cli.runtime.lifecycle_hooks.hook_execution_concurrency is resolved at every listed production helper call"
+    },
+    {
+      "id": "cli.runtime.lifecycle_hooks.lifecycle_observer_timeout",
+      "module": "scheduler_parallelism",
+      "class": "searchable",
+      "type": "duration",
+      "rust_type": "Duration",
+      "unit": "seconds",
+      "default": "Duration::from_secs(10)",
+      "krate": "cli",
+      "decl": "crates/cli/src/runtime/lifecycle_hooks.rs",
+      "applied": true,
+      "candidate_kind": "const",
+      "disposition": "runtime_settable",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/runtime/lifecycle_hooks.rs",
+        "symbol": "LIFECYCLE_OBSERVER_TIMEOUT"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/runtime/lifecycle_hooks.rs",
+          "line": 406,
+          "evidence": "param_duration runtime resolution"
+        }
+      ],
+      "behavior_oracle": "installed profile id cli.runtime.lifecycle_hooks.lifecycle_observer_timeout is resolved at every listed production helper call"
+    },
+    {
+      "id": "cli.runtime.lifecycle_hooks.worker_close_slack",
+      "module": "scheduler_parallelism",
+      "class": "searchable",
+      "type": "duration",
+      "rust_type": "Duration",
+      "unit": "milliseconds",
+      "default": "Duration::from_millis(250)",
+      "krate": "cli",
+      "decl": "crates/cli/src/runtime/lifecycle_hooks.rs",
+      "applied": true,
+      "candidate_kind": "const",
+      "disposition": "runtime_settable",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/runtime/lifecycle_hooks.rs",
+        "symbol": "WORKER_CLOSE_SLACK"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/runtime/lifecycle_hooks.rs",
+          "line": 414,
+          "evidence": "param_duration runtime resolution"
+        }
+      ],
+      "behavior_oracle": "installed profile id cli.runtime.lifecycle_hooks.worker_close_slack is resolved at every listed production helper call"
     },
     {
       "id": "cli.runtime.max_committed_provider_run_notices",
@@ -11458,17 +11575,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 3745,
+          "line": 3737,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 3765,
+          "line": 3757,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 3777,
+          "line": 3769,
           "evidence": "Rust path reference"
         },
         {
@@ -11499,17 +11616,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 4530,
+          "line": 4522,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 4543,
+          "line": 4535,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 4557,
+          "line": 4549,
           "evidence": "Rust path reference"
         }
       ]
@@ -12183,12 +12300,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 3127,
+          "line": 3203,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 4147,
+          "line": 4232,
           "evidence": "macro token reference"
         },
         {
@@ -12715,7 +12832,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 5185,
+          "line": 5177,
           "evidence": "param_bool runtime resolution"
         }
       ],
@@ -12772,7 +12889,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 7180,
+          "line": 7172,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -12826,7 +12943,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 7105,
+          "line": 7097,
           "evidence": "Rust path reference"
         },
         {
@@ -21578,7 +21695,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 3351,
+          "line": 3427,
           "evidence": "param_duration runtime resolution"
         },
         {

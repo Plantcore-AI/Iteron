@@ -3517,7 +3517,18 @@ impl Agent {
             // I-53: transport metadata, captured here and folded into the agent after the turn.
             let mut observed_rate_limit: Option<iteron_provider::RateLimitSnapshot> = None;
             let model_lifecycle = self.lifecycle_emitter.clone();
+            let model_lifecycle_hooks = self.lifecycle_hooks.clone();
             let model_correlation = self.lifecycle_correlation(Some(turn_id));
+            let emit_model_lifecycle = |event_id: &str, payload: LifecyclePayload| {
+                let Some(emitter) = &model_lifecycle else {
+                    return;
+                };
+                if let Ok(event) = emitter.emit(event_id, model_correlation.clone(), payload)
+                    && let Some(dispatcher) = &model_lifecycle_hooks
+                {
+                    dispatcher.dispatch(event);
+                }
+            };
             let provider_deadline = self.run_deadline.unwrap_or_else(|| {
                 Instant::now()
                     .checked_add(Duration::from_secs(self.budget.max_wall_secs))
@@ -3576,16 +3587,13 @@ impl Agent {
                                         Some(turn_id),
                                     ));
                                 }
-                                if let Some(emitter) = &model_lifecycle {
-                                    let _ = emitter.emit(
-                                        "model.accepted",
-                                        model_correlation.clone(),
-                                        LifecyclePayload {
-                                            duration_us: Some(elapsed_us(stream_start)),
-                                            ..LifecyclePayload::default()
-                                        },
-                                    );
-                                }
+                                emit_model_lifecycle(
+                                    "model.accepted",
+                                    LifecyclePayload {
+                                        duration_us: Some(elapsed_us(stream_start)),
+                                        ..LifecyclePayload::default()
+                                    },
+                                );
                             }
                             return;
                         }
@@ -3619,24 +3627,18 @@ impl Agent {
                                         Some(turn_id),
                                     ));
                                 }
-                                if let Some(emitter) = &model_lifecycle {
-                                    let _ = emitter.emit(
-                                        "model.first_byte",
-                                        model_correlation.clone(),
-                                        LifecyclePayload {
-                                            duration_us: Some(elapsed_us(stream_start)),
-                                            ..LifecyclePayload::default()
-                                        },
-                                    );
-                                }
-                            }
-                            if let Some(emitter) = &model_lifecycle {
-                                let _ = emitter.emit(
-                                    "model.rate_limit_observed",
-                                    model_correlation.clone(),
-                                    LifecyclePayload::default(),
+                                emit_model_lifecycle(
+                                    "model.first_byte",
+                                    LifecyclePayload {
+                                        duration_us: Some(elapsed_us(stream_start)),
+                                        ..LifecyclePayload::default()
+                                    },
                                 );
                             }
+                            emit_model_lifecycle(
+                                "model.rate_limit_observed",
+                                LifecyclePayload::default(),
+                            );
                             observed_rate_limit = Some(snapshot);
                             attempt_rate_limit = Some(snapshot);
                             return;
@@ -3659,25 +3661,15 @@ impl Agent {
                                 activity_sink
                                     .span(turn_activity::ActivityStage::Decode, Some(turn_id)),
                             );
-                            if let Some(emitter) = &model_lifecycle {
-                                let payload = LifecyclePayload {
-                                    duration_us: Some(elapsed_us(stream_start)),
-                                    ..LifecyclePayload::default()
-                                };
-                                if !first_byte_observed {
-                                    first_byte_observed = true;
-                                    let _ = emitter.emit(
-                                        "model.first_byte",
-                                        model_correlation.clone(),
-                                        payload.clone(),
-                                    );
-                                }
-                                let _ = emitter.emit(
-                                    "model.first_token",
-                                    model_correlation.clone(),
-                                    payload,
-                                );
+                            let payload = LifecyclePayload {
+                                duration_us: Some(elapsed_us(stream_start)),
+                                ..LifecyclePayload::default()
+                            };
+                            if !first_byte_observed {
+                                first_byte_observed = true;
+                                emit_model_lifecycle("model.first_byte", payload.clone());
                             }
+                            emit_model_lifecycle("model.first_token", payload);
                         }
                         stream_items = stream_items.saturating_add(1);
                         match item {
