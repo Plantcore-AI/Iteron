@@ -27,6 +27,9 @@ const UTF8_BOM: &[u8; 3] = b"\xef\xbb\xbf";
 /// First line of a `read_file` window when the caller omits `offset`. Line numbering is 1-based,
 /// so an absent offset has to mean the start of the file, not line zero.
 const DEFAULT_READ_OFFSET_LINE: u64 = 1;
+/// Shallow orientation is the cheapest useful default. The value remains a searchable runtime
+/// parameter so tuning can change it without introducing a model/provider branch.
+const DEFAULT_LIST_DIR_DEPTH: usize = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LineEnding {
@@ -389,14 +392,18 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
     r.push_tool(
         ToolSpec {
             name: "list_dir".into(),
-            description: "List files under a directory, skipping .git and common build/vendor \
-                          dirs. `path` may be relative to the repo root or an absolute host path. \
-                          Returns one path per line: relative when the file is under the repo \
-                          root, absolute when it is not."
+            description: "List one directory level for fast repository orientation, skipping .git \
+                          and common build/vendor dirs. Directories end in `/`; files are returned \
+                          one path per line. `path` may be relative to the repo root or an absolute \
+                          host path. Set optional `depth` only when a bounded recursive listing is \
+                          genuinely useful; prefer `glob` for targeted recursive discovery."
                 .into(),
             input_schema: serde_json::json!({
                 "type":"object",
-                "properties":{"path":{"type":"string","description":"dir relative to the repo root, or an absolute host path; default '.'"}},
+                "properties":{
+                    "path":{"type":"string","description":"dir relative to the repo root, or an absolute host path; default '.'"},
+                    "depth":{"type":"integer","minimum":1,"description":"optional traversal depth; defaults to 1 and cannot exceed the pinned runtime ceiling"}
+                },
             }),
             purity: Purity::Pure,
             capability: Capability::ReadOnly,
@@ -414,7 +421,11 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
                     .and_then(|x| x.as_str())
                     .unwrap_or(".")
                     .to_owned();
-                match tokio::task::spawn_blocking(move || list_directory(&root, &rel, policy.list_dir)).await {
+                let depth = match list_depth(&call.input, policy.list_dir.max_depth) {
+                    Ok(depth) => depth,
+                    Err(error) => return err_result(id, error),
+                };
+                match tokio::task::spawn_blocking(move || list_directory(&root, &rel, depth, policy.list_dir)).await {
                     Ok(Ok(output)) => ok_result(id, output),
                     Ok(Err(error)) => err_result(id, error),
                     Err(error) => err_result(id, format!("list_dir worker failed: {error}")),
@@ -474,6 +485,7 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
 fn list_directory(
     root: &Path,
     relative: &str,
+    depth: usize,
     policy: crate::DirectoryListPolicy,
 ) -> Result<String, String> {
     let base = resolve_in_root(root, relative)?;
@@ -481,12 +493,14 @@ fn list_directory(
     let mut output_bytes = 0usize;
     let mut emitted_entries = 0usize;
     for entry in WalkDir::new(&base)
-        .max_depth(policy.max_depth)
+        .min_depth(1)
+        .max_depth(depth)
+        .sort_by_file_name()
         .into_iter()
         .filter_entry(|entry| !is_ignored(entry.file_name().to_str().unwrap_or("")))
         .flatten()
     {
-        if !entry.file_type().is_file() {
+        if !entry.file_type().is_file() && !entry.file_type().is_dir() {
             continue;
         }
         if emitted_entries >= policy.max_entries {
@@ -500,7 +514,10 @@ fn list_directory(
             );
             break;
         }
-        let line = crate::display_path(root, entry.path());
+        let mut line = crate::display_path(root, entry.path());
+        if entry.file_type().is_dir() {
+            line.push('/');
+        }
         let framed = line.len().saturating_add(usize::from(!out.is_empty()));
         if output_bytes.saturating_add(framed) > policy.output_max_bytes {
             append_bounded_marker(
@@ -515,6 +532,31 @@ fn list_directory(
         emitted_entries = emitted_entries.saturating_add(1);
     }
     Ok(out.join("\n"))
+}
+
+fn list_depth(input: &serde_json::Value, max_depth: usize) -> Result<usize, String> {
+    let Some(value) = input.get("depth") else {
+        return Ok(iteron_tunables::param_usize(
+            "tools.fs_tools.default_list_dir_depth",
+            iteron_tunables::param_integer(
+                "tools.fs_tools.default_list_dir_depth",
+                DEFAULT_LIST_DIR_DEPTH,
+            ),
+        )
+        .min(max_depth));
+    };
+    let Some(value) = value.as_u64().and_then(|value| usize::try_from(value).ok()) else {
+        return Err("list_dir: `depth` must be a positive integer (minimum 1)".into());
+    };
+    if value == 0 {
+        return Err("list_dir: `depth` must be a positive integer (minimum 1)".into());
+    }
+    if value > max_depth {
+        return Err(format!(
+            "list_dir: requested depth {value} exceeds the pinned runtime ceiling {max_depth}; narrow the request or use glob"
+        ));
+    }
+    Ok(value)
 }
 
 fn glob_files(

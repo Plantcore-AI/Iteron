@@ -2349,9 +2349,13 @@ fn module_for(krate: &str, relative: &str, name: &str) -> ModuleId {
             }
         }
         "tools" => {
+            let is_discovery_policy = ["LIST_DIR", "GLOB", "GREP", "REPO_MAP"]
+                .into_iter()
+                .any(|token| name.contains(token));
             if file == "tool_search.rs" && name == "CORE_EAGER_TOOLS" {
                 ModuleId::ToolExposure
-            } else if file.contains("grep")
+            } else if is_discovery_policy
+                || file.contains("grep")
                 || file.contains("glob")
                 || file.contains("outline")
                 || file.contains("repo")
@@ -2663,6 +2667,34 @@ mod tests {
             param_type("std::collections::HashMap<String, bool>", "HashMap::new()"),
             ParamType::Map
         ));
+    }
+
+    #[test]
+    fn discovery_policy_parameters_share_the_search_module_across_source_files() {
+        assert_eq!(
+            module_for(
+                "tools",
+                "crates/tools/src/fs_tools.rs",
+                "DEFAULT_LIST_DIR_DEPTH"
+            ),
+            ModuleId::ToolSearchStrategy
+        );
+        assert_eq!(
+            module_for(
+                "tools",
+                "crates/tools/src/execution_policy.rs",
+                "DEFAULT_GREP_MAX_MATCHES"
+            ),
+            ModuleId::ToolSearchStrategy
+        );
+        assert_eq!(
+            module_for(
+                "tools",
+                "crates/tools/src/execution_policy.rs",
+                "DEFAULT_READ_FILE_MAX_LINES"
+            ),
+            ModuleId::ToolArguments
+        );
     }
 
     #[test]

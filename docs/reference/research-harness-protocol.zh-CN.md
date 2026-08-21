@@ -91,11 +91,11 @@ selection。内置 tuner 还会分别报告 candidate pool 对每个模块是“
 变量对照”，因此全系统调优不能用只改了单个 provider 或单个参数的候选池冒充。
 
 provider/model metadata 只作为 capability ceiling（modality、context、output、tooling）参与
-准入，不是搜索分支，也不是 reward feature。真实 runtime trace 会闭环观测 tool call/error/
-concurrency，以及九个不重叠 context source：stable prefix、instructions、task context、memory、
-transcript、attachments、tool schemas、tool results 和 LSP results。functional acceptance 始终是
-第一层门槛；latency、token、cost、tool policy、compaction 与各 context source 的加权目标只在
-quality 完全相同的候选之间排序。
+准入，不是搜索分支，也不是 reward feature。真实 runtime trace 会闭环观测每个任务的 turn
+数、tool call/error/concurrency、transcript shrink/reclamation，以及九个不重叠 context source：
+stable prefix、instructions、task context、memory、transcript、attachments、tool schemas、tool
+results 和 LSP results。functional acceptance 始终是第一层门槛；latency、token、cost、tool
+policy、compaction 与各 context source 的加权目标只在 quality 完全相同的候选之间排序。
 
 单次模式从 stdin 读取一个请求，从 stdout 写一个响应：
 

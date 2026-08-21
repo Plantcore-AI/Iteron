@@ -4,7 +4,7 @@
   "registry_revision": 23,
   "registry_digest": "d38ed6b9f5d07a87f69b878b03a3855e0ff525946c24e0a627d81d9a78e19cf8",
   "param_registry_id": "iteron-params",
-  "param_registry_digest": "127676f5e5129e708d1aad628044065467256b4e3b1752278b31c06ef60713f0",
+  "param_registry_digest": "f304e01b3a2846f1930ea61d49028c3adef8b8246695afd27c49ae55aeb9b1a5",
   "tool_text_registry_id": "iteron-builtin-tool-descriptions",
   "tool_text_registry_digest": "0ed860c172595c8e2425a76b68a7d840886a9129c40ef103252b1e625fe65a59",
   "counts": {
@@ -12,11 +12,11 @@
     "families_full": 137,
     "families_fixed_hidden": 23,
     "families_profile_addressable": 119,
-    "params": 2158,
-    "params_searchable": 548,
+    "params": 2159,
+    "params_searchable": 549,
     "params_bounded": 840,
     "params_structural": 770,
-    "params_applied": 1388,
+    "params_applied": 1389,
     "modules": 28,
     "prompt_artifacts": 10,
     "prompt_artifacts_overridable": 10,
@@ -129,7 +129,7 @@
       "id": "tool.arguments",
       "kind": "structured",
       "families": 0,
-      "params": 152,
+      "params": 140,
       "artifacts": 0
     },
     {
@@ -143,7 +143,7 @@
       "id": "tool.search_strategy",
       "kind": "structured",
       "families": 4,
-      "params": 13,
+      "params": 26,
       "artifacts": 0
     },
     {
@@ -31247,8 +31247,8 @@
       "module": "verification_quorum",
       "class": "structural",
       "type": "array",
-      "rust_type": "[Self; 20]",
-      "default": "[\n        Self::ResolvedRate,\n        Self::TotalTokens,\n        Self::AgentLatencyMs,\n        Self::TotalLatencyMs,\n        Self::CostUsd,\n        Self::ToolCalls,\n        Self::ToolErrorRate,\n        Self::PeakToolConcurrency,\n        Self::ContextTokensPerTurn,\n        Self::PeakContextTokens,\n        Self::TranscriptTokensReclaimed,\n        Self::StablePrefixTokensPerTurn,\n        Self::InstructionTokensPerTurn,\n        Self::TaskContextTokensPerTurn,\n        Self::MemoryTokensPerTurn,\n        Self::TranscriptTokensPerTurn,\n        Self::AttachmentTokensPerTurn,\n        Self::ToolSchemaTokensPerTurn,\n        Self::ToolResultTokensPerTurn,\n        Self::LspResultTokensPerTurn,\n    ]",
+      "rust_type": "[Self; 22]",
+      "default": "[\n        Self::ResolvedRate,\n        Self::TurnsPerRun,\n        Self::TotalTokens,\n        Self::AgentLatencyMs,\n        Self::TotalLatencyMs,\n        Self::CostUsd,\n        Self::ToolCalls,\n        Self::ToolErrorRate,\n        Self::PeakToolConcurrency,\n        Self::ContextTokensPerTurn,\n        Self::PeakContextTokens,\n        Self::TranscriptTokensReclaimed,\n        Self::TranscriptShrinkEventsPerRun,\n        Self::StablePrefixTokensPerTurn,\n        Self::InstructionTokensPerTurn,\n        Self::TaskContextTokensPerTurn,\n        Self::MemoryTokensPerTurn,\n        Self::TranscriptTokensPerTurn,\n        Self::AttachmentTokensPerTurn,\n        Self::ToolSchemaTokensPerTurn,\n        Self::ToolResultTokensPerTurn,\n        Self::LspResultTokensPerTurn,\n    ]",
       "domain": {},
       "krate": "eval",
       "decl": "crates/eval/src/optimization.rs",
@@ -34132,7 +34132,7 @@
         },
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 428,
+          "line": 436,
           "evidence": "Rust path reference"
         }
       ]
@@ -34344,7 +34344,7 @@
         },
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 687,
+          "line": 695,
           "evidence": "macro token reference"
         }
       ]
@@ -34532,7 +34532,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 687,
+          "line": 695,
           "evidence": "macro token reference"
         }
       ]
@@ -34564,7 +34564,7 @@
         },
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 445,
+          "line": 453,
           "evidence": "Rust path reference"
         }
       ]
@@ -34743,7 +34743,7 @@
         },
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 477,
+          "line": 485,
           "evidence": "Rust path reference"
         }
       ]
@@ -61831,7 +61831,7 @@
     },
     {
       "id": "tools.execution_policy.default_glob_max_depth",
-      "module": "tool_arguments",
+      "module": "tool_search_strategy",
       "class": "bounded",
       "type": "integer",
       "rust_type": "usize",
@@ -61866,7 +61866,7 @@
     },
     {
       "id": "tools.execution_policy.default_glob_max_results",
-      "module": "tool_arguments",
+      "module": "tool_search_strategy",
       "class": "bounded",
       "type": "integer",
       "rust_type": "usize",
@@ -61901,7 +61901,7 @@
     },
     {
       "id": "tools.execution_policy.default_glob_output_max_bytes",
-      "module": "tool_arguments",
+      "module": "tool_search_strategy",
       "class": "bounded",
       "type": "integer",
       "rust_type": "usize",
@@ -61936,7 +61936,7 @@
     },
     {
       "id": "tools.execution_policy.default_grep_max_matches",
-      "module": "tool_arguments",
+      "module": "tool_search_strategy",
       "class": "bounded",
       "type": "integer",
       "rust_type": "usize",
@@ -61971,7 +61971,7 @@
     },
     {
       "id": "tools.execution_policy.default_grep_output_max_bytes",
-      "module": "tool_arguments",
+      "module": "tool_search_strategy",
       "class": "bounded",
       "type": "integer",
       "rust_type": "usize",
@@ -62006,7 +62006,7 @@
     },
     {
       "id": "tools.execution_policy.default_grep_snippet_max_bytes",
-      "module": "tool_arguments",
+      "module": "tool_search_strategy",
       "class": "bounded",
       "type": "integer",
       "rust_type": "usize",
@@ -62041,7 +62041,7 @@
     },
     {
       "id": "tools.execution_policy.default_list_dir_max_depth",
-      "module": "tool_arguments",
+      "module": "tool_search_strategy",
       "class": "bounded",
       "type": "integer",
       "rust_type": "usize",
@@ -62076,7 +62076,7 @@
     },
     {
       "id": "tools.execution_policy.default_list_dir_max_entries",
-      "module": "tool_arguments",
+      "module": "tool_search_strategy",
       "class": "bounded",
       "type": "integer",
       "rust_type": "usize",
@@ -62111,7 +62111,7 @@
     },
     {
       "id": "tools.execution_policy.default_list_dir_output_max_bytes",
-      "module": "tool_arguments",
+      "module": "tool_search_strategy",
       "class": "bounded",
       "type": "integer",
       "rust_type": "usize",
@@ -62251,7 +62251,7 @@
     },
     {
       "id": "tools.execution_policy.default_repo_map_max_depth",
-      "module": "tool_arguments",
+      "module": "tool_search_strategy",
       "class": "bounded",
       "type": "integer",
       "rust_type": "u8",
@@ -62291,7 +62291,7 @@
     },
     {
       "id": "tools.execution_policy.default_repo_map_max_files",
-      "module": "tool_arguments",
+      "module": "tool_search_strategy",
       "class": "bounded",
       "type": "integer",
       "rust_type": "usize",
@@ -62326,7 +62326,7 @@
     },
     {
       "id": "tools.execution_policy.default_repo_map_max_tokens",
-      "module": "tool_arguments",
+      "module": "tool_search_strategy",
       "class": "bounded",
       "type": "integer",
       "rust_type": "usize",
@@ -62566,6 +62566,38 @@
       "behavior_oracle": "installed profile id tools.execution_policy.default_web_fetch_timeout_secs is resolved at every listed production helper call"
     },
     {
+      "id": "tools.fs_tools.default_list_dir_depth",
+      "module": "tool_search_strategy",
+      "class": "searchable",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "1",
+      "domain": {},
+      "krate": "tools",
+      "decl": "crates/tools/src/fs_tools.rs",
+      "applied": true,
+      "candidate_kind": "const",
+      "disposition": "runtime_settable",
+      "owner": {
+        "krate": "tools",
+        "path": "crates/tools/src/fs_tools.rs",
+        "symbol": "DEFAULT_LIST_DIR_DEPTH"
+      },
+      "use_sites": [
+        {
+          "path": "crates/tools/src/fs_tools.rs",
+          "line": 539,
+          "evidence": "param_usize runtime resolution"
+        },
+        {
+          "path": "crates/tools/src/fs_tools.rs",
+          "line": 541,
+          "evidence": "param_integer runtime resolution"
+        }
+      ],
+      "behavior_oracle": "installed profile id tools.fs_tools.default_list_dir_depth is resolved at every listed production helper call"
+    },
+    {
       "id": "tools.fs_tools.default_read_offset_line",
       "module": "tool_edit_strategy",
       "class": "searchable",
@@ -62586,7 +62618,7 @@
       "use_sites": [
         {
           "path": "crates/tools/src/fs_tools.rs",
-          "line": 151,
+          "line": 154,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -62613,12 +62645,12 @@
       "use_sites": [
         {
           "path": "crates/tools/src/fs_tools.rs",
-          "line": 239,
+          "line": 242,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/tools/src/fs_tools.rs",
-          "line": 270,
+          "line": 273,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -62646,17 +62678,17 @@
       "use_sites": [
         {
           "path": "crates/tools/src/fs_tools.rs",
-          "line": 74,
-          "evidence": "Rust path reference"
-        },
-        {
-          "path": "crates/tools/src/fs_tools.rs",
-          "line": 131,
+          "line": 77,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tools/src/fs_tools.rs",
           "line": 134,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/tools/src/fs_tools.rs",
+          "line": 137,
           "evidence": "Rust path reference"
         }
       ]

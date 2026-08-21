@@ -473,6 +473,7 @@ fn method_matches_kind(dimension: &SearchDimension) -> bool {
 #[serde(rename_all = "snake_case")]
 pub enum TuningMetric {
     ResolvedRate,
+    TurnsPerRun,
     TotalTokens,
     AgentLatencyMs,
     TotalLatencyMs,
@@ -483,6 +484,7 @@ pub enum TuningMetric {
     ContextTokensPerTurn,
     PeakContextTokens,
     TranscriptTokensReclaimed,
+    TranscriptShrinkEventsPerRun,
     StablePrefixTokensPerTurn,
     InstructionTokensPerTurn,
     TaskContextTokensPerTurn,
@@ -495,8 +497,9 @@ pub enum TuningMetric {
 }
 
 impl TuningMetric {
-    pub const ALL: [Self; 20] = [
+    pub const ALL: [Self; 22] = [
         Self::ResolvedRate,
+        Self::TurnsPerRun,
         Self::TotalTokens,
         Self::AgentLatencyMs,
         Self::TotalLatencyMs,
@@ -507,6 +510,7 @@ impl TuningMetric {
         Self::ContextTokensPerTurn,
         Self::PeakContextTokens,
         Self::TranscriptTokensReclaimed,
+        Self::TranscriptShrinkEventsPerRun,
         Self::StablePrefixTokensPerTurn,
         Self::InstructionTokensPerTurn,
         Self::TaskContextTokensPerTurn,
@@ -521,6 +525,7 @@ impl TuningMetric {
     pub fn parse(metric: &str) -> Option<Self> {
         match metric {
             "resolved_rate" | "functional_acceptance" | "quality" => Some(Self::ResolvedRate),
+            "turns_per_run" | "average_turns" | "turns" => Some(Self::TurnsPerRun),
             "total_tokens" | "average_tokens" | "tokens" => Some(Self::TotalTokens),
             "agent_latency_ms" | "speed" => Some(Self::AgentLatencyMs),
             "total_latency_ms" | "latency_ms" => Some(Self::TotalLatencyMs),
@@ -536,6 +541,9 @@ impl TuningMetric {
             "peak_context_tokens" | "average_peak_context_tokens" => Some(Self::PeakContextTokens),
             "transcript_tokens_reclaimed" | "average_transcript_tokens_reclaimed" => {
                 Some(Self::TranscriptTokensReclaimed)
+            }
+            "transcript_shrink_events_per_run" | "average_transcript_shrink_events" => {
+                Some(Self::TranscriptShrinkEventsPerRun)
             }
             "stable_prefix_tokens_per_turn" | "average_stable_prefix_tokens_per_turn" => {
                 Some(Self::StablePrefixTokensPerTurn)
@@ -571,6 +579,7 @@ impl TuningMetric {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::ResolvedRate => "resolved_rate",
+            Self::TurnsPerRun => "turns_per_run",
             Self::TotalTokens => "total_tokens",
             Self::AgentLatencyMs => "agent_latency_ms",
             Self::TotalLatencyMs => "total_latency_ms",
@@ -581,6 +590,7 @@ impl TuningMetric {
             Self::ContextTokensPerTurn => "context_tokens_per_turn",
             Self::PeakContextTokens => "peak_context_tokens",
             Self::TranscriptTokensReclaimed => "transcript_tokens_reclaimed",
+            Self::TranscriptShrinkEventsPerRun => "transcript_shrink_events_per_run",
             Self::StablePrefixTokensPerTurn => "stable_prefix_tokens_per_turn",
             Self::InstructionTokensPerTurn => "instruction_tokens_per_turn",
             Self::TaskContextTokensPerTurn => "task_context_tokens_per_turn",
@@ -596,6 +606,7 @@ impl TuningMetric {
     pub fn value(self, result: &TrialResult) -> Option<f64> {
         match self {
             Self::ResolvedRate => Some(result.resolved_rate),
+            Self::TurnsPerRun => result.optimization.and_then(|value| value.average_turns),
             Self::TotalTokens => result.average_tokens,
             Self::AgentLatencyMs => result.average_agent_latency_ms,
             Self::TotalLatencyMs => Some(result.average_latency_ms),
@@ -616,6 +627,9 @@ impl TuningMetric {
             Self::TranscriptTokensReclaimed => result
                 .optimization
                 .map(|value| value.average_transcript_tokens_reclaimed),
+            Self::TranscriptShrinkEventsPerRun => result
+                .optimization
+                .and_then(|value| value.average_transcript_shrink_events),
             Self::StablePrefixTokensPerTurn => component_value(result, |value| value.stable_prefix),
             Self::InstructionTokensPerTurn => component_value(result, |value| value.instructions),
             Self::TaskContextTokensPerTurn => component_value(result, |value| value.task_context),
@@ -775,6 +789,14 @@ mod tests {
         assert_eq!(
             TuningMetric::parse("tool_result_tokens_per_turn"),
             Some(TuningMetric::ToolResultTokensPerTurn)
+        );
+        assert_eq!(
+            TuningMetric::parse("turns_per_run"),
+            Some(TuningMetric::TurnsPerRun)
+        );
+        assert_eq!(
+            TuningMetric::parse("transcript_shrink_events_per_run"),
+            Some(TuningMetric::TranscriptShrinkEventsPerRun)
         );
     }
 }

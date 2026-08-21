@@ -371,6 +371,14 @@ pub(super) fn result_order(left: &&TrialResult, right: &&TrialResult) -> Orderin
                 .average_tool_error_rate
                 .partial_cmp(&right.average_tool_error_rate)
                 .unwrap_or(Ordering::Equal)
+                .then_with(|| match (left.average_turns, right.average_turns) {
+                    (Some(left), Some(right)) => {
+                        left.partial_cmp(&right).unwrap_or(Ordering::Equal)
+                    }
+                    (Some(_), None) => Ordering::Less,
+                    (None, Some(_)) => Ordering::Greater,
+                    (None, None) => Ordering::Equal,
+                })
                 .then_with(|| {
                     left.average_context_tokens_per_turn
                         .partial_cmp(&right.average_context_tokens_per_turn)

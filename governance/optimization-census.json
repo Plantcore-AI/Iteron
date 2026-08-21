@@ -1,19 +1,19 @@
 {
   "schema_version": 4,
-  "total": 2910,
-  "runtime_settable": 2032,
+  "total": 2913,
+  "runtime_settable": 2035,
   "invariant_read_only": 878,
   "binding_required": 0,
-  "advertised_runtime_settable": 2032,
-  "runtime_applied": 2032,
-  "externally_addressed_runtime_settable": 2032,
+  "advertised_runtime_settable": 2035,
+  "runtime_applied": 2035,
+  "externally_addressed_runtime_settable": 2035,
   "unaddressed_runtime_settable": 0,
   "mechanical_invariant_dispositions": 878,
   "owning_human_review_required": 878,
   "explicit_invariant_overrides": 221,
   "address_kind_counts": {
-    "unified_profile": 1388,
-    "direct_config": 318,
+    "unified_profile": 1389,
+    "direct_config": 320,
     "caller_input": 326
   },
   "invariant_kind_counts": {
@@ -31,10 +31,10 @@
     "completeness_claim": "complete_for_declared_production_source_forms_not_mathematical_universe",
     "production_rust_files_scanned": 674,
     "source_form_counts": {
-      "const": 2060,
+      "const": 2061,
       "static": 56,
       "associated_const": 42,
-      "serde_default": 295,
+      "serde_default": 297,
       "clap_default": 22,
       "policy_default_constructor": 543,
       "policy_fallback_call": 11,
@@ -45,10 +45,10 @@
       "dynamic_plugin_manifest": 0
     },
     "candidate_row_counts": {
-      "const": 2060,
+      "const": 2061,
       "static": 56,
       "associated_const": 42,
-      "serde_default": 295,
+      "serde_default": 297,
       "clap_default": 22,
       "policy_default_constructor": 13,
       "policy_fallback_call": 0,
@@ -33234,8 +33234,8 @@
     {
       "id": "eval.optimization.all",
       "candidate_kind": "associated_const",
-      "rust_type": "[Self; 20]",
-      "value": "[\n        Self::ResolvedRate,\n        Self::TotalTokens,\n        Self::AgentLatencyMs,\n        Self::TotalLatencyMs,\n        Self::CostUsd,\n        Self::ToolCalls,\n        Self::ToolErrorRate,\n        Self::PeakToolConcurrency,\n        Self::ContextTokensPerTurn,\n        Self::PeakContextTokens,\n        Self::TranscriptTokensReclaimed,\n        Self::StablePrefixTokensPerTurn,\n        Self::InstructionTokensPerTurn,\n        Self::TaskContextTokensPerTurn,\n        Self::MemoryTokensPerTurn,\n        Self::TranscriptTokensPerTurn,\n        Self::AttachmentTokensPerTurn,\n        Self::ToolSchemaTokensPerTurn,\n        Self::ToolResultTokensPerTurn,\n        Self::LspResultTokensPerTurn,\n    ]",
+      "rust_type": "[Self; 22]",
+      "value": "[\n        Self::ResolvedRate,\n        Self::TurnsPerRun,\n        Self::TotalTokens,\n        Self::AgentLatencyMs,\n        Self::TotalLatencyMs,\n        Self::CostUsd,\n        Self::ToolCalls,\n        Self::ToolErrorRate,\n        Self::PeakToolConcurrency,\n        Self::ContextTokensPerTurn,\n        Self::PeakContextTokens,\n        Self::TranscriptTokensReclaimed,\n        Self::TranscriptShrinkEventsPerRun,\n        Self::StablePrefixTokensPerTurn,\n        Self::InstructionTokensPerTurn,\n        Self::TaskContextTokensPerTurn,\n        Self::MemoryTokensPerTurn,\n        Self::TranscriptTokensPerTurn,\n        Self::AttachmentTokensPerTurn,\n        Self::ToolSchemaTokensPerTurn,\n        Self::ToolResultTokensPerTurn,\n        Self::LspResultTokensPerTurn,\n    ]",
       "owner": {
         "krate": "eval",
         "path": "crates/eval/src/optimization.rs",
@@ -37178,7 +37178,7 @@
         },
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 428,
+          "line": 436,
           "evidence": "Rust path reference"
         }
       ],
@@ -37378,7 +37378,7 @@
         },
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 687,
+          "line": 695,
           "evidence": "macro token reference"
         }
       ],
@@ -37558,13 +37558,13 @@
       "use_sites": [
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 687,
+          "line": 695,
           "evidence": "macro token reference"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "non_value_structural",
-      "review_evidence": "closed Tier-2 disposition rule: `LEGACY_IMPLEMENTATION_PROTOCOL` at crates/eval/src/tuner.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/eval/src/tuner/state_ops.rs:687 (macro token reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "closed Tier-2 disposition rule: `LEGACY_IMPLEMENTATION_PROTOCOL` at crates/eval/src/tuner.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/eval/src/tuner/state_ops.rs:695 (macro token reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": false,
       "applied": false,
@@ -37588,7 +37588,7 @@
         },
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 445,
+          "line": 453,
           "evidence": "Rust path reference"
         }
       ],
@@ -37763,7 +37763,7 @@
         },
         {
           "path": "crates/eval/src/tuner/state_ops.rs",
-          "line": 477,
+          "line": 485,
           "evidence": "Rust path reference"
         }
       ],
@@ -37788,7 +37788,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/tuner.rs",
-          "line": 223,
+          "line": 231,
           "evidence": "serde(default) production parser/deserializer default"
         }
       ],
@@ -37803,6 +37803,64 @@
       "explicit_invariant_override": false,
       "applied": true,
       "behavior_oracle": "explicit input for TrialOptimizationSummary::average_context_components_per_turn replaces the declared serde(default) default"
+    },
+    {
+      "id": "eval.tuner.trialoptimizationsummary.average.transcript.shrink.events.serde.default",
+      "candidate_kind": "serde_default",
+      "rust_type": "Option < f64 >",
+      "value": "Default::default()",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/tuner.rs",
+        "symbol": "TrialOptimizationSummary::average_transcript_shrink_events"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/tuner.rs",
+          "line": 227,
+          "evidence": "serde(default) production parser/deserializer default"
+        }
+      ],
+      "disposition": "runtime_settable",
+      "external_address": {
+        "kind": "direct_config",
+        "selector_kind": "path",
+        "selector": "TrialOptimizationSummary.average_transcript_shrink_events",
+        "owner_kind": "schema",
+        "owner": "serde::TrialOptimizationSummary"
+      },
+      "explicit_invariant_override": false,
+      "applied": true,
+      "behavior_oracle": "explicit input for TrialOptimizationSummary::average_transcript_shrink_events replaces the declared serde(default) default"
+    },
+    {
+      "id": "eval.tuner.trialoptimizationsummary.average.turns.serde.default",
+      "candidate_kind": "serde_default",
+      "rust_type": "Option < f64 >",
+      "value": "Default::default()",
+      "owner": {
+        "krate": "eval",
+        "path": "crates/eval/src/tuner.rs",
+        "symbol": "TrialOptimizationSummary::average_turns"
+      },
+      "use_sites": [
+        {
+          "path": "crates/eval/src/tuner.rs",
+          "line": 217,
+          "evidence": "serde(default) production parser/deserializer default"
+        }
+      ],
+      "disposition": "runtime_settable",
+      "external_address": {
+        "kind": "direct_config",
+        "selector_kind": "path",
+        "selector": "TrialOptimizationSummary.average_turns",
+        "owner_kind": "schema",
+        "owner": "serde::TrialOptimizationSummary"
+      },
+      "explicit_invariant_override": false,
+      "applied": true,
+      "behavior_oracle": "explicit input for TrialOptimizationSummary::average_turns replaces the declared serde(default) default"
     },
     {
       "id": "eval.tuner.trialresult.average.agent.latency.ms.serde.default",
@@ -77715,6 +77773,41 @@
       "tier2_id": "tools.execution_policy.default_web_fetch_timeout_secs"
     },
     {
+      "id": "tools.fs_tools.default_list_dir_depth",
+      "candidate_kind": "const",
+      "rust_type": "usize",
+      "value": "1",
+      "owner": {
+        "krate": "tools",
+        "path": "crates/tools/src/fs_tools.rs",
+        "symbol": "DEFAULT_LIST_DIR_DEPTH"
+      },
+      "use_sites": [
+        {
+          "path": "crates/tools/src/fs_tools.rs",
+          "line": 539,
+          "evidence": "param_usize runtime resolution"
+        },
+        {
+          "path": "crates/tools/src/fs_tools.rs",
+          "line": 541,
+          "evidence": "param_integer runtime resolution"
+        }
+      ],
+      "disposition": "runtime_settable",
+      "external_address": {
+        "kind": "unified_profile",
+        "selector_kind": "key",
+        "selector": "tools.fs_tools.default_list_dir_depth",
+        "owner_kind": "schema",
+        "owner": "iteron_tunables::Param/ResolutionValue"
+      },
+      "explicit_invariant_override": false,
+      "applied": true,
+      "behavior_oracle": "installed profile id tools.fs_tools.default_list_dir_depth is resolved at every listed production helper call",
+      "tier2_id": "tools.fs_tools.default_list_dir_depth"
+    },
+    {
       "id": "tools.fs_tools.default_read_offset_line",
       "candidate_kind": "const",
       "rust_type": "u64",
@@ -77727,7 +77820,7 @@
       "use_sites": [
         {
           "path": "crates/tools/src/fs_tools.rs",
-          "line": 151,
+          "line": 154,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -77757,12 +77850,12 @@
       "use_sites": [
         {
           "path": "crates/tools/src/fs_tools.rs",
-          "line": 239,
+          "line": 242,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/tools/src/fs_tools.rs",
-          "line": 270,
+          "line": 273,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -77792,23 +77885,23 @@
       "use_sites": [
         {
           "path": "crates/tools/src/fs_tools.rs",
-          "line": 74,
-          "evidence": "Rust path reference"
-        },
-        {
-          "path": "crates/tools/src/fs_tools.rs",
-          "line": 131,
+          "line": 77,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/tools/src/fs_tools.rs",
           "line": 134,
           "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/tools/src/fs_tools.rs",
+          "line": 137,
+          "evidence": "Rust path reference"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "non_value_structural",
-      "review_evidence": "explicit census disposition override: `UTF8_BOM` at crates/tools/src/fs_tools.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/tools/src/fs_tools.rs:74 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "explicit census disposition override: `UTF8_BOM` at crates/tools/src/fs_tools.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/tools/src/fs_tools.rs:77 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": true,
       "applied": false,

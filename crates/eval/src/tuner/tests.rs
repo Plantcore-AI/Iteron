@@ -217,12 +217,14 @@ fn observed_result(
         average_agent_latency_ms: Some(latency_ms),
         average_tokens: Some(tokens),
         optimization: Some(TrialOptimizationSummary {
+            average_turns: Some(2.0),
             average_tool_calls: 2.0,
             average_tool_error_rate: 0.0,
             average_peak_tool_concurrency: 2.0,
             average_context_tokens_per_turn: tokens,
             average_peak_context_tokens: tokens,
             average_transcript_tokens_reclaimed: 0.0,
+            average_transcript_shrink_events: Some(0.0),
             average_context_components_per_turn: None,
         }),
         manifest_digest: prefixed_digest('f'),
@@ -320,6 +322,11 @@ fn typed_optimization_trace_survives_the_tuner_and_breaks_only_primary_metric_ti
         .unwrap();
 
     assert_eq!(noisy.optimization.unwrap().average_tool_error_rate, 0.5);
+    assert_eq!(clean.optimization.unwrap().average_turns, Some(2.0));
+    assert_eq!(
+        clean.optimization.unwrap().average_transcript_shrink_events,
+        Some(1.0)
+    );
     assert_eq!(
         clean.optimization.unwrap().average_context_tokens_per_turn,
         900.0
@@ -848,12 +855,17 @@ fn weighted_generic_objectives_rank_equal_quality_candidates_but_never_a_failure
             RewardObjective {
                 metric: "total_tokens".into(),
                 direction: RewardDirection::Minimize,
-                weight_micros: 300_000,
+                weight_micros: 200_000,
             },
             RewardObjective {
                 metric: "agent_latency_ms".into(),
                 direction: RewardDirection::Minimize,
-                weight_micros: 700_000,
+                weight_micros: 500_000,
+            },
+            RewardObjective {
+                metric: "turns_per_run".into(),
+                direction: RewardDirection::Minimize,
+                weight_micros: 300_000,
             },
         ],
     };
@@ -872,8 +884,10 @@ fn weighted_generic_objectives_rank_equal_quality_candidates_but_never_a_failure
         candidates,
     };
     validate_spec(&spec).unwrap();
-    let fast = observed_result("fast", 1.0, 200.0, 10.0);
-    let lean = observed_result("lean", 1.0, 100.0, 100.0);
+    let mut fast = observed_result("fast", 1.0, 200.0, 10.0);
+    fast.optimization.as_mut().unwrap().average_turns = Some(1.0);
+    let mut lean = observed_result("lean", 1.0, 100.0, 100.0);
+    lean.optimization.as_mut().unwrap().average_turns = Some(4.0);
     let failed = observed_result("failed", 0.0, 1.0, 1.0);
     let ranked = super::state_ops::rank_results(&spec, vec![&lean, &failed, &fast]);
     assert_eq!(

@@ -39,6 +39,14 @@ fn read_call(id: &str, input: serde_json::Value) -> ToolUse {
     }
 }
 
+fn list_call(id: &str, input: serde_json::Value) -> ToolUse {
+    ToolUse {
+        id: id.into(),
+        name: "list_dir".into(),
+        input,
+    }
+}
+
 fn edit_call(id: &str, path: &str, old: &str, new: &str) -> ToolUse {
     ToolUse {
         id: id.into(),
@@ -79,6 +87,54 @@ fn glob_matches_segments_and_globstar() {
     assert!(glob_match("**", "any/thing/here"));
     assert!(glob_match("Cargo.toml", "Cargo.toml"));
     assert!(!glob_match("Cargo.toml", "crates/Cargo.toml"));
+}
+
+#[tokio::test]
+async fn list_dir_defaults_to_one_sorted_level_and_recurses_only_when_requested() {
+    let root = TestRoot::new("list-dir-depth");
+    std::fs::create_dir_all(root.0.join("src/nested")).unwrap();
+    std::fs::create_dir_all(root.0.join("assets")).unwrap();
+    std::fs::write(root.0.join("z-root.txt"), "root\n").unwrap();
+    std::fs::write(root.0.join("src/lib.rs"), "lib\n").unwrap();
+    std::fs::write(root.0.join("src/nested/deep.rs"), "deep\n").unwrap();
+    let canonical_root = root.0.canonicalize().unwrap();
+    let registry = read_only_registry(&canonical_root);
+
+    let shallow = registry
+        .dispatch(list_call("shallow", serde_json::json!({"path":"."})))
+        .await;
+    assert!(!shallow.is_error, "{}", shallow.content);
+    assert_eq!(shallow.content, "assets/\nsrc/\nz-root.txt");
+
+    let two_levels = registry
+        .dispatch(list_call(
+            "two-levels",
+            serde_json::json!({"path":".","depth":2}),
+        ))
+        .await;
+    assert!(!two_levels.is_error, "{}", two_levels.content);
+    assert_eq!(
+        two_levels.content,
+        "assets/\nsrc/\nsrc/lib.rs\nsrc/nested/\nz-root.txt"
+    );
+    assert!(!two_levels.content.contains("deep.rs"));
+
+    let too_deep = registry
+        .dispatch(list_call(
+            "too-deep",
+            serde_json::json!({"path":".","depth":4}),
+        ))
+        .await;
+    assert!(too_deep.is_error);
+    assert!(too_deep.content.contains("pinned runtime ceiling 3"));
+
+    let spec = registry
+        .specs()
+        .into_iter()
+        .find(|spec| spec.name == "list_dir")
+        .unwrap();
+    assert_eq!(spec.input_schema["properties"]["depth"]["minimum"], 1);
+    assert!(spec.description.contains("List one directory level"));
 }
 
 #[tokio::test]

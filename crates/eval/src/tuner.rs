@@ -214,12 +214,20 @@ pub struct TrialResult {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TrialOptimizationSummary {
+    /// Mean provider-independent inference turns per attempted cell. Older tuner journals may not
+    /// carry this additive signal and remain `None` instead of being misread as zero turns.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub average_turns: Option<f64>,
     pub average_tool_calls: f64,
     pub average_tool_error_rate: f64,
     pub average_peak_tool_concurrency: f64,
     pub average_context_tokens_per_turn: f64,
     pub average_peak_context_tokens: f64,
     pub average_transcript_tokens_reclaimed: f64,
+    /// Mean typed transcript-decrease observations per attempted cell. This is useful for tuning
+    /// compaction frequency without claiming that every decrease came from one implementation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub average_transcript_shrink_events: Option<f64>,
     /// Mean source-separated tokens per sampled request. Absent for pre-v6 CLI evidence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub average_context_components_per_turn: Option<TrialContextComponentAverages>,
@@ -313,6 +321,7 @@ impl TrialOptimizationSummary {
         let average_context_components_per_turn =
             TrialContextComponentAverages::from_metrics(&metrics, context_samples);
         Some(Self {
+            average_turns: Some(context_samples as f64 / count),
             average_tool_calls: completed_tools as f64 / count,
             average_tool_error_rate: if completed_tools == 0 {
                 0.0
@@ -335,6 +344,13 @@ impl TrialOptimizationSummary {
                 .map(|metric| metric.transcript_tokens_reclaimed as f64)
                 .sum::<f64>()
                 / count,
+            average_transcript_shrink_events: Some(
+                metrics
+                    .iter()
+                    .map(|metric| metric.transcript_shrink_events as f64)
+                    .sum::<f64>()
+                    / count,
+            ),
             average_context_components_per_turn,
         })
     }
@@ -350,6 +366,10 @@ impl TrialOptimizationSummary {
         ]
         .into_iter()
         .all(|value| value.is_finite() && value >= 0.0)
+            && [self.average_turns, self.average_transcript_shrink_events]
+                .into_iter()
+                .flatten()
+                .all(|value| value.is_finite() && value >= 0.0)
             && self.average_tool_error_rate <= 1.0
             && self
                 .average_context_components_per_turn

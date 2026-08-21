@@ -97,10 +97,11 @@ provider or one parameter family.
 
 Provider/model metadata is admitted only as a capability ceiling (modalities, context, output,
 tooling), never as a search branch or reward feature. Runtime observations close the loop across
-tool calls/errors/concurrency and nine non-overlapping context sources: stable prefix,
-instructions, task context, memory, transcript, attachments, tool schemas, tool results, and LSP
-results. Functional acceptance is the first-order gate; weighted latency, token, cost, tool-policy,
-compaction, and context-source objectives rank candidates only within an equal-quality stratum.
+turns per run, tool calls/errors/concurrency, transcript shrink/reclamation, and nine
+non-overlapping context sources: stable prefix, instructions, task context, memory, transcript,
+attachments, tool schemas, tool results, and LSP results. Functional acceptance is the first-order
+gate; weighted latency, token, cost, tool-policy, compaction, and context-source objectives rank
+candidates only within an equal-quality stratum.
 
 One-shot calls read one request from stdin and write one response to stdout:
 
