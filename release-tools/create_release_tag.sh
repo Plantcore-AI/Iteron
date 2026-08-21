@@ -98,6 +98,57 @@ if [[ -z "$successful_dispatch" ]]; then
   fail "commit $commit has no successful branch workflow_dispatch run of release.yml; dispatch release.yml from this commit first"
 fi
 
+# Require successful protected CI evidence on main for this exact commit.
+ci_evidence_run=$(
+  gh api "repos/$owner/$repo/actions/workflows/ci.yml/runs" \
+    --paginate \
+    --jq ".workflow_runs[] | select(
+      .head_sha == \"$commit\"
+      and .head_branch == \"main\"
+      and .event == \"push\"
+      and .status == \"completed\"
+      and .conclusion == \"success\"
+    ) | .id" \
+    2>/dev/null | head -n 1
+) || true
+
+if [[ -z "$ci_evidence_run" ]]; then
+  fail "commit $commit has no successful CI push run on main; push the commit to main and wait for CI first"
+fi
+
+ci_required_jobs=$(
+  gh api "repos/$owner/$repo/actions/runs/$ci_evidence_run/jobs" \
+    --jq '[.jobs[] | select(.name == "ci / required" and .status == "completed" and .conclusion == "success")] | length' \
+    2>/dev/null
+) || true
+
+if [[ "$ci_required_jobs" != "1" ]]; then
+  fail "CI evidence run $ci_evidence_run must contain exactly one successful \"ci / required\" job (found: ${ci_required_jobs:-none})"
+fi
+
+# Require the candidate version to be newer than every existing immutable release.
+# This mirrors the immutable-schema release gate and prevents a stale version from
+# burning a tag.
+latest_immutable_version=$(
+  gh api "repos/$owner/$repo/releases" \
+    --paginate \
+    --jq '[.[] | select(.draft == false and .prerelease == false and .immutable == true and (.tag_name | type) == "string") | .tag_name | capture("^v(?<major>0|[1-9][0-9]*)\\.(?<minor>0|[1-9][0-9]*)\\.(?<patch>0|[1-9][0-9]*)$")] | map([(.major | tonumber), (.minor | tonumber), (.patch | tonumber)]) | sort | last | if . then "v\(.[0]).\(.[1]).\(.[2])" else empty end' \
+    2>/dev/null
+) || true
+
+if [[ -n "$latest_immutable_version" ]]; then
+  semver_gt() {
+    local a=$1 b=$2
+    local a1 a2 a3 b1 b2 b3
+    IFS=. read -r a1 a2 a3 <<< "$a"
+    IFS=. read -r b1 b2 b3 <<< "$b"
+    (( a1 > b1 || (a1 == b1 && a2 > b2) || (a1 == b1 && a2 == b2 && a3 > b3) ))
+  }
+  if ! semver_gt "$version" "${latest_immutable_version#v}"; then
+    fail "version $version is not newer than the latest immutable release $latest_immutable_version"
+  fi
+fi
+
 # Refuse to overwrite an existing tag locally or remotely.
 if git rev-parse -q --verify "$tag" >/dev/null; then
   fail "tag $tag already exists locally"
