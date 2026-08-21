@@ -2,21 +2,23 @@
 """Shell-level fixtures for release-tools/create_release_tag.sh.
 
 These tests exercise the script's exit-code/API paths with fake `gh` and `git`
-commands, rather than inspecting the script text.
+commands, rather than inspecting the script text. They run under unittest so
+that release-tools/validate.sh discovers them.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 import textwrap
+import unittest
 from pathlib import Path
 
 TOOLS = Path(__file__).resolve().parents[1]
-REPO_ROOT = TOOLS.parent
 SCRIPT = TOOLS / "create_release_tag.sh"
 
 
@@ -80,7 +82,7 @@ class CreateReleaseTagFixture:
 
     def _write_fake_gh(self) -> None:
         (self.bin / "gh").write_text(
-            textwrap.dedent(f"""\
+            textwrap.dedent("""\
                 #!/usr/bin/env python3
                 import json
                 import os
@@ -88,7 +90,7 @@ class CreateReleaseTagFixture:
                 from pathlib import Path
 
                 REPO = Path(os.environ["CREATE_TAG_TEST_REPO"])
-                ORIGIN = Path(os.environ["CREATE_TAG_TEST_ORIGIN"])
+                EXPECTED_API = "repos/Plantcore-AI/Iteron/"
 
                 def parse_jq_filter(args):
                     result = "."
@@ -112,69 +114,79 @@ class CreateReleaseTagFixture:
 
                 def workflow_dispatch_on_main():
                     return [
-                        {{
+                        {
                             "id": 111,
                             "head_sha": head_sha(),
                             "event": "workflow_dispatch",
                             "conclusion": "success",
                             "head_branch": "main",
-                        }}
+                        }
                     ]
 
                 def ci_push_on_main():
                     return [
-                        {{
+                        {
                             "id": 222,
                             "head_sha": head_sha(),
                             "head_branch": "main",
                             "event": "push",
                             "status": "completed",
                             "conclusion": "success",
-                        }}
+                        }
                     ]
 
                 def ci_jobs():
-                    return {{
+                    return {
                         "jobs": [
-                            {{
+                            {
                                 "name": "ci / required",
                                 "status": "completed",
                                 "conclusion": "success",
-                            }}
+                            }
                         ]
-                    }}
+                    }
 
                 def releases():
                     return [
-                        {{
+                        {
                             "tag_name": "v0.0.98",
                             "draft": False,
                             "prerelease": False,
                             "immutable": True,
-                        }}
+                        }
                     ]
 
                 def main():
-                    from pathlib import Path
-
-                    if len(sys.argv) >= 3 and sys.argv[1] == "auth" and sys.argv[2] == "status":
+                    if (
+                        len(sys.argv) >= 3
+                        and sys.argv[1] == "auth"
+                        and sys.argv[2] == "status"
+                    ):
                         sys.exit(0)
 
                     url = sys.argv[2]
+                    if EXPECTED_API not in url:
+                        print(
+                            f"fake-gh: unexpected API path {url!r}",
+                            file=sys.stderr,
+                        )
+                        sys.exit(1)
+
                     jq_filter = parse_jq_filter(sys.argv[3:])
 
                     if "actions/workflows/release.yml/runs" in url:
-                        data = {{"workflow_runs": workflow_dispatch_on_main()}}
+                        data = {"workflow_runs": workflow_dispatch_on_main()}
                     elif "actions/workflows/ci.yml/runs" in url:
-                        data = {{"workflow_runs": ci_push_on_main()}}
+                        data = {"workflow_runs": ci_push_on_main()}
                     elif "actions/runs/222/jobs" in url:
-                        data = {{"jobs": ci_jobs()["jobs"]}}
+                        data = ci_jobs()
                     elif "releases" in url:
                         data = releases()
                     else:
                         sys.exit(1)
 
                     import subprocess
+
                     result = subprocess.run(
                         ["jq", "-r", jq_filter],
                         input=json.dumps(data),
@@ -193,11 +205,11 @@ class CreateReleaseTagFixture:
 
     def _write_fake_git(self) -> None:
         (self.bin / "git").write_text(
-            textwrap.dedent(f"""\
+            textwrap.dedent("""\
                 #!/usr/bin/env bash
                 set -euo pipefail
-                repo="${{CREATE_TAG_TEST_REPO}}"
-                origin="${{CREATE_TAG_TEST_ORIGIN}}"
+                repo="${CREATE_TAG_TEST_REPO}"
+                origin="${CREATE_TAG_TEST_ORIGIN}"
                 case "$*" in
                   "ls-remote --get-url origin")
                     printf 'https://github.com/Plantcore-AI/Iteron.git\\n'
@@ -205,8 +217,8 @@ class CreateReleaseTagFixture:
                   "fetch --quiet origin main")
                     /usr/bin/git -C "$repo" fetch --quiet "$origin" main || true
                     ;;
-                  "rev-parse origin/main^{{commit}}")
-                    /usr/bin/git -C "$origin" rev-parse refs/heads/main^{{commit}}
+                  "rev-parse origin/main^{commit}")
+                    /usr/bin/git -C "$origin" rev-parse refs/heads/main^{commit}
                     ;;
                   "rev-parse -q --verify v"*)
                     exit 1
@@ -215,10 +227,10 @@ class CreateReleaseTagFixture:
                     exit 0
                     ;;
                   "tag -a v"*" -m Iteron "*)
-                    /usr/bin/git -C "$repo" tag -a "${{3}}" -m "${{4}} ${{5}}"
+                    /usr/bin/git -C "$repo" tag -a "${3}" -m "${4} ${5}"
                     ;;
                   "push origin v"*)
-                    /usr/bin/git -C "$repo" push "$origin" "${{3}}"
+                    /usr/bin/git -C "$repo" push "$origin" "${3}"
                     ;;
                   *)
                     /usr/bin/git -C "$repo" "$@"
@@ -228,6 +240,19 @@ class CreateReleaseTagFixture:
             encoding="utf-8",
         )
         (self.bin / "git").chmod(0o755)
+
+    def rewrite_fake_gh(self, old: str, new: str) -> None:
+        path = self.bin / "gh"
+        path.write_text(path.read_text(encoding="utf-8").replace(old, new), encoding="utf-8")
+
+    def rewrite_fake_git_url(self, url: str) -> None:
+        path = self.bin / "git"
+        content = path.read_text(encoding="utf-8")
+        content = content.replace(
+            "printf 'https://github.com/Plantcore-AI/Iteron.git\\n'",
+            f"printf '{url}\\n'",
+        )
+        path.write_text(content, encoding="utf-8")
 
     def run(self, *args: str, input_text: str = "") -> subprocess.CompletedProcess[str]:
         return subprocess.run(
@@ -240,93 +265,79 @@ class CreateReleaseTagFixture:
         )
 
 
-def test_successful_dry_run() -> None:
-    """Happy path reaches the confirmation prompt and aborts on 'n'."""
-    fixture = CreateReleaseTagFixture()
-    try:
-        result = fixture.run("0.0.99", input_text="n\n")
-        assert result.returncode == 1
-        assert "Preparing annotated tag v0.0.99" in result.stdout
-        assert "Verified successful main dispatch" in result.stdout
-        assert "Aborted. No tag was created or pushed." in result.stderr
-    finally:
-        fixture.cleanup()
+class CreateReleaseTagTest(unittest.TestCase):
+    def test_successful_dry_run(self) -> None:
+        """Happy path reaches the confirmation prompt and aborts on 'n'."""
+        fixture = CreateReleaseTagFixture()
+        try:
+            result = fixture.run("0.0.99", input_text="n\n")
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("Preparing annotated tag v0.0.99", result.stdout)
+            self.assertIn("Verified successful main dispatch", result.stdout)
+            self.assertIn("Aborted. No tag was created or pushed.", result.stderr)
+        finally:
+            fixture.cleanup()
 
+    def test_rejects_non_main_branch_dispatch(self) -> None:
+        """A workflow_dispatch whose head_branch is not main must be rejected."""
+        fixture = CreateReleaseTagFixture()
+        try:
+            fixture.rewrite_fake_gh(
+                '"head_branch": "main"', '"head_branch": "rehearse/release-validate"'
+            )
+            result = fixture.run("0.0.99")
+            self.assertEqual(result.returncode, 1)
+            self.assertIn(
+                "no successful workflow_dispatch run of release.yml on main",
+                result.stderr,
+            )
+        finally:
+            fixture.cleanup()
 
-def test_rejects_non_main_branch_dispatch() -> None:
-    """A workflow_dispatch whose head_branch is not main must be rejected."""
-    fixture = CreateReleaseTagFixture()
-    try:
-        fake_gh = fixture.bin / "gh"
-        original = fake_gh.read_text(encoding="utf-8")
-        fake_gh.write_text(
-            original.replace('"head_branch": "main"', '"head_branch": "rehearse/release-validate"'),
-            encoding="utf-8",
-        )
-        result = fixture.run("0.0.99")
-        assert result.returncode == 1
-        assert "no successful workflow_dispatch run of release.yml on main" in result.stderr
-    finally:
-        fixture.cleanup()
+    def test_rejects_stale_local_main(self) -> None:
+        """Local main ahead of origin/main must be rejected."""
+        fixture = CreateReleaseTagFixture()
+        try:
+            (fixture.repo / "stale.txt").write_text("x", encoding="utf-8")
+            fixture._run_git("add", "stale.txt")
+            fixture._run_git("commit", "-m", "stale")
+            result = fixture.run("0.0.99")
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("does not match origin/main", result.stderr)
+        finally:
+            fixture.cleanup()
 
+    def test_rejects_version_not_newer_than_latest_immutable(self) -> None:
+        """Candidate version older than latest immutable release must be rejected."""
+        fixture = CreateReleaseTagFixture()
+        try:
+            fixture.rewrite_fake_gh(
+                '"tag_name": "v0.0.98"', '"tag_name": "v0.0.100"'
+            )
+            result = fixture.run("0.0.99")
+            self.assertEqual(result.returncode, 1)
+            self.assertIn(
+                "not newer than the latest immutable release",
+                result.stderr,
+            )
+        finally:
+            fixture.cleanup()
 
-def test_rejects_stale_local_main() -> None:
-    """Local main ahead of origin/main must be rejected."""
-    fixture = CreateReleaseTagFixture()
-    try:
-        (fixture.repo / "stale.txt").write_text("x", encoding="utf-8")
-        fixture._run_git("add", "stale.txt")
-        fixture._run_git("commit", "-m", "stale")
-        result = fixture.run("0.0.99")
-        assert result.returncode == 1
-        assert "does not match origin/main" in result.stderr
-    finally:
-        fixture.cleanup()
-
-
-def test_rejects_version_not_newer_than_latest_immutable() -> None:
-    """Candidate version older than latest immutable release must be rejected."""
-    fixture = CreateReleaseTagFixture()
-    try:
-        fake_gh = fixture.bin / "gh"
-        original = fake_gh.read_text(encoding="utf-8")
-        fake_gh.write_text(
-            original.replace('"tag_name": "v0.0.98"', '"tag_name": "v0.0.100"'),
-            encoding="utf-8",
-        )
-        result = fixture.run("0.0.99")
-        assert result.returncode == 1
-        assert "not newer than the latest immutable release" in result.stderr
-    finally:
-        fixture.cleanup()
-
-
-def test_ssh_remote_parses_without_git_suffix() -> None:
-    """SSH origin URL with .git suffix must resolve to repo name 'Iteron'."""
-    fixture = CreateReleaseTagFixture()
-    try:
-        fake_git = fixture.bin / "git"
-        original = fake_git.read_text(encoding="utf-8")
-        fake_git.write_text(
-            original.replace(
-                "printf 'https://github.com/Plantcore-AI/Iteron.git\\n'",
-                "printf 'git@github.com:Plantcore-AI/Iteron.git\\n'",
-            ),
-            encoding="utf-8",
-        )
-        result = fixture.run("0.0.99", input_text="n\n")
-        # If the repo were parsed as 'Iteron.git', the gh API calls would 404 and
-        # the script would fail before reaching the confirmation prompt.
-        assert result.returncode == 1
-        assert "Preparing annotated tag v0.0.99" in result.stdout
-    finally:
-        fixture.cleanup()
+    def test_ssh_remote_parses_without_git_suffix(self) -> None:
+        """SSH origin URL with .git suffix must resolve to repo name 'Iteron'."""
+        fixture = CreateReleaseTagFixture()
+        try:
+            fixture.rewrite_fake_git_url("git@github.com:Plantcore-AI/Iteron.git")
+            result = fixture.run("0.0.99", input_text="n\n")
+            # If the repo were parsed as 'Iteron.git', the gh API calls would
+            # 404 and the script would fail before reaching the confirmation
+            # prompt. The fake gh asserts the exact repos/Plantcore-AI/Iteron/
+            # path, so reaching the prompt proves parsing is correct.
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("Preparing annotated tag v0.0.99", result.stdout)
+        finally:
+            fixture.cleanup()
 
 
 if __name__ == "__main__":
-    test_successful_dry_run()
-    test_rejects_non_main_branch_dispatch()
-    test_rejects_stale_local_main()
-    test_rejects_version_not_newer_than_latest_immutable()
-    test_ssh_remote_parses_without_git_suffix()
-    print("create_release_tag fixtures passed")
+    unittest.main()

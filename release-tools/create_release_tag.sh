@@ -137,12 +137,30 @@ fi
 # published immutable release. This does NOT prove schema compatibility; the
 # immutable-schema gate in release.yml is the authoritative check. It only
 # prevents an obvious stale-version tag from burning a version number.
-latest_immutable_version=$(
-  gh api "repos/$owner/$repo/releases?per_page=100" \
-    --paginate \
-    --jq '[.[] | select(.draft == false and .prerelease == false and .immutable == true and (.tag_name | type) == "string") | .tag_name | capture("^v(?<major>0|[1-9][0-9]*)\\.(?<minor>0|[1-9][0-9]*)\\.(?<patch>0|[1-9][0-9]*)$")] | map([(.major | tonumber), (.minor | tonumber), (.patch | tonumber)]) | sort | last | if . then "v\(.[0]).\(.[1]).\(.[2])" else empty end' \
-    2>/dev/null
-) || true
+#
+# Bound the API surface: walk at most 10 pages of 100 releases. The sentinel
+# exits early when a page returns fewer than 100 items.
+latest_immutable_version=""
+page=1
+while [[ $page -le 10 ]]; do
+  page_info=$(
+    gh api "repos/$owner/$repo/releases?per_page=100&page=$page" \
+      --jq '(([.[] | select(.draft == false and .prerelease == false and .immutable == true and (.tag_name | type) == "string") | .tag_name | capture("^v(?<major>0|[1-9][0-9]*)\\.(?<minor>0|[1-9][0-9]*)\\.(?<patch>0|[1-9][0-9]*)$")] | map([(.major | tonumber), (.minor | tonumber), (.patch | tonumber)]) | sort | last | if . then "v\(.[0]).\(.[1]).\(.[2])" else "_" end) + "\t" + (length | tostring))' \
+      2>/dev/null
+  ) || fail "could not list releases from GitHub API (page $page)"
+
+  IFS=$'\t' read -r page_latest count <<< "$page_info"
+  [[ "$page_latest" == "_" ]] && page_latest=""
+
+  if [[ -n "$page_latest" ]]; then
+    latest_immutable_version="$page_latest"
+  fi
+
+  if [[ -z "$count" || "$count" -lt 100 ]]; then
+    break
+  fi
+  page=$((page + 1))
+done
 
 if [[ -n "$latest_immutable_version" ]]; then
   semver_gt() {

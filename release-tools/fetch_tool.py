@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 import ssl
@@ -24,6 +25,13 @@ MAX_DOWNLOAD_BYTES = 128 * 1024 * 1024
 DOWNLOAD_ATTEMPTS = 3
 RETRY_PAUSE_SECONDS = 5
 
+# Persistent runner-local caches can grow without bound if multiple tools or
+# many pin revisions accumulate. These limits are intentionally conservative:
+# they cover the current release-tool set with headroom while preventing an
+# unbounded disk leak on a long-lived self-hosted runner.
+MAX_CACHE_ENTRIES = 32
+MAX_CACHE_BYTES = 2 * 1024 * 1024 * 1024
+
 
 class TruncatedDownload(ReleaseToolError):
     """The transfer ended before the server's declared length.
@@ -40,6 +48,132 @@ ALLOWED_FINAL_HOSTS = (
     "objects.githubusercontent.com",
     "release-assets.githubusercontent.com",
 )
+
+
+def _cache_dir() -> Path | None:
+    """Return a persistent cache directory if the operator has configured one.
+
+    Self-hosted runners on slow or unstable links can set ITERON_RELEASE_TOOLS_CACHE
+    to a directory that survives between jobs. The cache key is the pinned SHA-256 of
+    the tool archive, so a changed pin automatically misses and re-downloads.
+    """
+    raw = os.environ.get("ITERON_RELEASE_TOOLS_CACHE")
+    if not raw:
+        return None
+    return Path(raw)
+
+
+def _cache_path(cache_dir: Path, tool: str, host: str, archive: str, sha256: str) -> Path:
+    return cache_dir / f"{tool}-{host}-{sha256}.{archive}"
+
+
+def _require_regular_file(path: Path, max_bytes: int) -> int:
+    """Return the size of a regular file, or raise if it is not regular or too large."""
+    info = path.lstat()
+    if stat.S_ISLNK(info.st_mode):
+        raise ReleaseToolError(f"cache entry is a symbolic link: {path}")
+    if not stat.S_ISREG(info.st_mode):
+        raise ReleaseToolError(f"cache entry is not a regular file: {path}")
+    if info.st_size > max_bytes:
+        raise ReleaseToolError(
+            f"cache entry exceeds size limit: {info.st_size} > {max_bytes}"
+        )
+    return info.st_size
+
+
+def _copy_file(source: Path, destination: Path) -> None:
+    """Atomically copy source to destination with bounded reads."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{destination.name}.", dir=destination.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            with source.open("rb") as src:
+                copied = 0
+                while True:
+                    chunk = src.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    copied += len(chunk)
+                    if copied > MAX_DOWNLOAD_BYTES:
+                        raise ReleaseToolError("cache copy exceeds size limit")
+                    handle.write(chunk)
+                handle.flush()
+                os.fsync(handle.fileno())
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _evict_cache(cache_dir: Path) -> None:
+    """Keep the cache bounded by entries and total bytes, evicting oldest first.
+
+    The contract is: after any successful write, the cache contains at most
+    MAX_CACHE_ENTRIES files and at most MAX_CACHE_BYTES total. Files are ordered
+    by mtime so that the least-recently-used entries are removed first.
+    """
+    entries = []
+    for path in cache_dir.iterdir():
+        try:
+            info = path.lstat()
+        except OSError:
+            continue
+        if stat.S_ISREG(info.st_mode):
+            entries.append((info.st_mtime, info.st_size, path))
+
+    # Evict by total bytes first, then by count, so both limits are respected.
+    entries.sort(key=lambda item: item[0])
+    total = sum(size for _, size, _ in entries)
+    while total > MAX_CACHE_BYTES and entries:
+        _, size, path = entries.pop(0)
+        try:
+            path.unlink()
+        except OSError:
+            continue
+        total -= size
+    while len(entries) > MAX_CACHE_ENTRIES and entries:
+        _, _, path = entries.pop(0)
+        try:
+            path.unlink()
+        except OSError:
+            continue
+
+
+def download(url: str, destination: Path) -> None:
+    request = urllib.request.Request(url, headers={"User-Agent": "Iteron-release/1"})
+    context = ssl.create_default_context()
+    opener = urllib.request.build_opener(
+        StrictRedirectHandler(), urllib.request.HTTPSHandler(context=context)
+    )
+    declared_length: str | None = None
+    with opener.open(request, timeout=60) as response:  # noqa: S310
+        validate_download_url(response.geturl())
+        declared_length = response.headers.get("Content-Length")
+        if declared_length is not None and int(declared_length) > MAX_DOWNLOAD_BYTES:
+            raise ReleaseToolError("tool download exceeds the size limit")
+        total = 0
+        with destination.open("wb") as handle:
+            while True:
+                chunk = response.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > MAX_DOWNLOAD_BYTES:
+                    raise ReleaseToolError("tool download exceeds the size limit")
+                handle.write(chunk)
+            handle.flush()
+            os.fsync(handle.fileno())
+    if total == 0:
+        raise ReleaseToolError("tool download was empty")
+    # Without this, a transfer that ends early is discovered only by the digest check, which then
+    # reports a checksum mismatch. That message means "this artifact is not the one we pinned" --
+    # a supply-chain claim -- and a link that dropped a connection must not be able to make it.
+    if declared_length is not None and total != int(declared_length):
+        raise TruncatedDownload(
+            f"tool download ended after {total} of {int(declared_length)} bytes"
+        )
 
 
 def validate_download_url(url: str, *, initial: bool = False) -> None:
@@ -102,77 +236,6 @@ def load_entry(lock_path: Path, tool: str, host: str) -> dict[str, str]:
     if entry["archive"] not in ("tar.gz", "tar.xz", "zip"):
         raise ReleaseToolError("unsupported tool archive format")
     return entry
-
-
-def _cache_dir() -> Path | None:
-    """Return a persistent cache directory if the operator has configured one.
-
-    Self-hosted runners on slow or unstable links can set ITERON_RELEASE_TOOLS_CACHE
-    to a directory that survives between jobs. The cache key is the pinned SHA-256 of
-    the tool archive, so a changed pin automatically misses and re-downloads.
-    """
-    raw = os.environ.get("ITERON_RELEASE_TOOLS_CACHE")
-    if not raw:
-        return None
-    return Path(raw)
-
-
-def _cache_path(cache_dir: Path, tool: str, host: str, archive: str, sha256: str) -> Path:
-    return cache_dir / f"{tool}-{host}-{sha256}.{archive}"
-
-
-def _copy_file(source: Path, destination: Path) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{destination.name}.", dir=destination.parent)
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "wb") as handle:
-            with source.open("rb") as src:
-                while True:
-                    chunk = src.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    handle.write(chunk)
-                handle.flush()
-                os.fsync(handle.fileno())
-        os.replace(temporary, destination)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
-def download(url: str, destination: Path) -> None:
-    request = urllib.request.Request(url, headers={"User-Agent": "Iteron-release/1"})
-    context = ssl.create_default_context()
-    opener = urllib.request.build_opener(
-        StrictRedirectHandler(), urllib.request.HTTPSHandler(context=context)
-    )
-    declared_length: str | None = None
-    with opener.open(request, timeout=60) as response:  # noqa: S310
-        validate_download_url(response.geturl())
-        declared_length = response.headers.get("Content-Length")
-        if declared_length is not None and int(declared_length) > MAX_DOWNLOAD_BYTES:
-            raise ReleaseToolError("tool download exceeds the size limit")
-        total = 0
-        with destination.open("wb") as handle:
-            while True:
-                chunk = response.read(1024 * 1024)
-                if not chunk:
-                    break
-                total += len(chunk)
-                if total > MAX_DOWNLOAD_BYTES:
-                    raise ReleaseToolError("tool download exceeds the size limit")
-                handle.write(chunk)
-            handle.flush()
-            os.fsync(handle.fileno())
-    if total == 0:
-        raise ReleaseToolError("tool download was empty")
-    # Without this, a transfer that ends early is discovered only by the digest check, which then
-    # reports a checksum mismatch. That message means "this artifact is not the one we pinned" --
-    # a supply-chain claim -- and a link that dropped a connection must not be able to make it.
-    if declared_length is not None and total != int(declared_length):
-        raise TruncatedDownload(
-            f"tool download ended after {total} of {int(declared_length)} bytes"
-        )
 
 
 def extract_binary(archive_path: Path, binary_name: str, output: Path) -> None:
@@ -258,6 +321,21 @@ def extract_binary(archive_path: Path, binary_name: str, output: Path) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def _is_retryable_network_error(error: Exception) -> bool:
+    """Return True for transient transport failures that should be retried."""
+    return isinstance(
+        error,
+        (
+            TruncatedDownload,
+            urllib.error.URLError,
+            TimeoutError,
+            ssl.SSLError,
+            ConnectionResetError,
+            http.client.RemoteDisconnected,
+        ),
+    )
+
+
 def main() -> None:
     arguments = parser().parse_args()
     entry = load_entry(arguments.lock, arguments.tool, arguments.host)
@@ -270,34 +348,39 @@ def main() -> None:
 
     with tempfile.TemporaryDirectory(prefix="iteron-tool-") as temporary_dir:
         archive = Path(temporary_dir) / f"download.{entry['archive']}"
+        cache_valid = False
 
         if cached is not None and cached.exists():
-            actual = sha256_file(cached)
-            if actual == entry["sha256"]:
+            try:
+                _require_regular_file(cached, MAX_DOWNLOAD_BYTES)
+                actual = sha256_file(cached)
+                if actual == entry["sha256"]:
+                    print(
+                        f"release-tool: using cached {arguments.tool} for {arguments.host}",
+                        file=sys.stderr,
+                    )
+                    _copy_file(cached, archive)
+                    cache_valid = True
+                else:
+                    print(
+                        f"release-tool: cached {arguments.tool} digest mismatch, "
+                        "re-downloading",
+                        file=sys.stderr,
+                    )
+            except ReleaseToolError as reason:
                 print(
-                    f"release-tool: using cached {arguments.tool} for {arguments.host}",
+                    f"release-tool: cached {arguments.tool} unusable ({reason}), "
+                    "re-downloading",
                     file=sys.stderr,
                 )
-                _copy_file(cached, archive)
-            else:
-                print(
-                    f"release-tool: cached {arguments.tool} digest mismatch, re-downloading",
-                    file=sys.stderr,
-                )
-                cached = None
 
-        if cached is None or not archive.exists():
+        if not cache_valid:
             for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
                 try:
                     download(entry["url"], archive)
                     break
-                except (
-                    TruncatedDownload,
-                    urllib.error.URLError,
-                    TimeoutError,
-                    ssl.SSLError,
-                ) as failure:
-                    if attempt == DOWNLOAD_ATTEMPTS:
+                except Exception as failure:
+                    if not _is_retryable_network_error(failure) or attempt == DOWNLOAD_ATTEMPTS:
                         raise
                     print(
                         f"release-tool: transfer failed ({failure}); "
@@ -314,8 +397,9 @@ def main() -> None:
                 f"tool archive checksum mismatch: expected {entry['sha256']}, got {actual}"
             )
 
-        if cached is not None and not cached.exists():
+        if cached is not None:
             _copy_file(archive, cached)
+            _evict_cache(cache_dir)
 
         extract_binary(archive, entry["binary"], arguments.output)
     print(arguments.output)
