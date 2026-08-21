@@ -812,6 +812,9 @@ jobs:
             archive-suffix: zip
             binary: iteron.exe
             timeout-minutes: 120
+            # The Windows runner has a slow/unstable link to GitHub releases.
+            # Cache downloaded tools between jobs in a persistent runner-local directory.
+            tools-cache-dir: C:/actions-runner/iteron/tools-cache
     runs-on: ${{ fromJSON(matrix.runner) }}
     timeout-minutes: ${{ matrix.timeout-minutes }}
     defaults:
@@ -1084,6 +1087,11 @@ jobs:
           path: ${{ runner.temp }}/legal
       - name: Fetch checksum-pinned build and SBOM tools
         shell: bash
+        env:
+          # Non-Windows matrix entries omit tools-cache-dir, which leaves this empty
+          # and disables caching. Windows uses a persistent runner-local directory
+          # to avoid re-downloading large tools over a slow link every run.
+          ITERON_RELEASE_TOOLS_CACHE: ${{ matrix.tools-cache-dir }}
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/release-bin"

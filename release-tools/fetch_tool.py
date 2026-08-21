@@ -104,6 +104,42 @@ def load_entry(lock_path: Path, tool: str, host: str) -> dict[str, str]:
     return entry
 
 
+def _cache_dir() -> Path | None:
+    """Return a persistent cache directory if the operator has configured one.
+
+    Self-hosted runners on slow or unstable links can set ITERON_RELEASE_TOOLS_CACHE
+    to a directory that survives between jobs. The cache key is the pinned SHA-256 of
+    the tool archive, so a changed pin automatically misses and re-downloads.
+    """
+    raw = os.environ.get("ITERON_RELEASE_TOOLS_CACHE")
+    if not raw:
+        return None
+    return Path(raw)
+
+
+def _cache_path(cache_dir: Path, tool: str, host: str, archive: str, sha256: str) -> Path:
+    return cache_dir / f"{tool}-{host}-{sha256}.{archive}"
+
+
+def _copy_file(source: Path, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{destination.name}.", dir=destination.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            with source.open("rb") as src:
+                while True:
+                    chunk = src.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    handle.write(chunk)
+                handle.flush()
+                os.fsync(handle.fileno())
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def download(url: str, destination: Path) -> None:
     request = urllib.request.Request(url, headers={"User-Agent": "Iteron-release/1"})
     context = ssl.create_default_context()
@@ -225,26 +261,51 @@ def extract_binary(archive_path: Path, binary_name: str, output: Path) -> None:
 def main() -> None:
     arguments = parser().parse_args()
     entry = load_entry(arguments.lock, arguments.tool, arguments.host)
+    cache_dir = _cache_dir()
+    cached = (
+        _cache_path(cache_dir, arguments.tool, arguments.host, entry["archive"], entry["sha256"])
+        if cache_dir is not None
+        else None
+    )
+
     with tempfile.TemporaryDirectory(prefix="iteron-tool-") as temporary_dir:
         archive = Path(temporary_dir) / f"download.{entry['archive']}"
-        for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
-            try:
-                download(entry["url"], archive)
-                break
-            except (
-                TruncatedDownload,
-                urllib.error.URLError,
-                TimeoutError,
-                ssl.SSLError,
-            ) as failure:
-                if attempt == DOWNLOAD_ATTEMPTS:
-                    raise
+
+        if cached is not None and cached.exists():
+            actual = sha256_file(cached)
+            if actual == entry["sha256"]:
                 print(
-                    f"release-tool: transfer failed ({failure}); "
-                    f"retrying, attempt {attempt + 1} of {DOWNLOAD_ATTEMPTS}",
+                    f"release-tool: using cached {arguments.tool} for {arguments.host}",
                     file=sys.stderr,
                 )
-                time.sleep(RETRY_PAUSE_SECONDS)
+                _copy_file(cached, archive)
+            else:
+                print(
+                    f"release-tool: cached {arguments.tool} digest mismatch, re-downloading",
+                    file=sys.stderr,
+                )
+                cached = None
+
+        if cached is None or not archive.exists():
+            for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+                try:
+                    download(entry["url"], archive)
+                    break
+                except (
+                    TruncatedDownload,
+                    urllib.error.URLError,
+                    TimeoutError,
+                    ssl.SSLError,
+                ) as failure:
+                    if attempt == DOWNLOAD_ATTEMPTS:
+                        raise
+                    print(
+                        f"release-tool: transfer failed ({failure}); "
+                        f"retrying, attempt {attempt + 1} of {DOWNLOAD_ATTEMPTS}",
+                        file=sys.stderr,
+                    )
+                    time.sleep(RETRY_PAUSE_SECONDS)
+
         actual = sha256_file(archive)
         # Deliberately outside the retry: a complete artifact whose digest is not the pinned one
         # is never a transport problem, and fetching it again would only hide that.
@@ -252,6 +313,10 @@ def main() -> None:
             raise ReleaseToolError(
                 f"tool archive checksum mismatch: expected {entry['sha256']}, got {actual}"
             )
+
+        if cached is not None and not cached.exists():
+            _copy_file(archive, cached)
+
         extract_binary(archive, entry["binary"], arguments.output)
     print(arguments.output)
 
