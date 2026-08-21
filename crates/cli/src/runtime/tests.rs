@@ -1018,10 +1018,11 @@ mod gate_integration_tests {
     #[derive(Default)]
     struct ScriptedForcedCandidateAction {
         turn: AtomicUsize,
-        saw_action_surface: AtomicBool,
+        saw_action_checkpoint: AtomicBool,
+        saw_gate_refusal: AtomicBool,
         saw_restored_surface: AtomicBool,
-        initial_schema_tokens: AtomicUsize,
-        action_schema_tokens: AtomicUsize,
+        schema_json: std::sync::Mutex<Vec<std::sync::Arc<str>>>,
+        schema_tokens: std::sync::Mutex<Vec<usize>>,
     }
 
     #[async_trait::async_trait]
@@ -1037,14 +1038,18 @@ mod gate_integration_tests {
                 .iter()
                 .map(|tool| tool.name.as_str())
                 .collect::<std::collections::BTreeSet<_>>();
+            self.schema_json
+                .lock()
+                .unwrap()
+                .push(req.tools.canonical_json().to_owned());
+            self.schema_tokens
+                .lock()
+                .unwrap()
+                .push(req.tools.estimated_tokens());
             if turn
                 < usize::try_from(investigation_convergence::DEFAULT_IMPLEMENTATION_ROUNDS)
                     .unwrap()
             {
-                if turn == 0 {
-                    self.initial_schema_tokens
-                        .store(req.tools.estimated_tokens(), Ordering::SeqCst);
-                }
                 assert!(tool_names.contains("read_file"), "{tool_names:?}");
                 let tool = ToolUse {
                     id: format!("forced-investigation-{turn}"),
@@ -1067,13 +1072,37 @@ mod gate_integration_tests {
                         matches!(block, Block::Text { text } if text.contains("[Iteron action checkpoint]"))
                     })
                 }));
-                assert!(tool_names.contains("edit"), "{tool_names:?}");
-                for paused in ["read_file", "grep", "bash", "dispatch_agent", "Workflow"] {
-                    assert!(!tool_names.contains(paused), "{paused}: {tool_names:?}");
+                for stable in ["edit", "read_file"] {
+                    assert!(tool_names.contains(stable), "{stable}: {tool_names:?}");
                 }
-                self.saw_action_surface.store(true, Ordering::SeqCst);
-                self.action_schema_tokens
-                    .store(req.tools.estimated_tokens(), Ordering::SeqCst);
+                self.saw_action_checkpoint.store(true, Ordering::SeqCst);
+                let tool = ToolUse {
+                    id: "refused-after-action-checkpoint".into(),
+                    name: "read_file".into(),
+                    input: serde_json::json!({"path":"fixture.txt"}),
+                };
+                on_item(StreamItem::ToolUseComplete(tool.clone()));
+                return Ok(TurnResult {
+                    blocks: vec![Block::ToolUse(tool)],
+                    stop_reason: StopReason::ToolUse,
+                    usage: UsageReport::complete(Usage::default()),
+                });
+            }
+            if turn
+                == usize::try_from(investigation_convergence::DEFAULT_IMPLEMENTATION_ROUNDS)
+                    .unwrap()
+                    + 1
+            {
+                let refused = req.messages.iter().any(|message| {
+                    message.content.iter().any(|block| {
+                        matches!(block, Block::ToolResult(result)
+                            if result.tool_use_id == "refused-after-action-checkpoint"
+                                && result.is_error
+                                && result.content.contains("bounded-investigation gate"))
+                    })
+                });
+                assert!(refused, "the broad read must be refused before dispatch");
+                self.saw_gate_refusal.store(true, Ordering::SeqCst);
                 let tool = ToolUse {
                     id: "forced-candidate-change".into(),
                     name: "edit".into(),
@@ -7438,7 +7467,7 @@ ant-api03-SuperSecretModelToken12345"
     }
 
     #[tokio::test]
-    async fn prolonged_investigation_gets_one_candidate_action_surface_then_restores_tools() {
+    async fn prolonged_investigation_refuses_more_reads_without_changing_tool_schemas() {
         let ws = temp_ws("forced-candidate-action");
         std::fs::write(ws.join("fixture.txt"), "stable evidence\n").unwrap();
         let provider = std::sync::Arc::new(ScriptedForcedCandidateAction::default());
@@ -7471,19 +7500,26 @@ ant-api03-SuperSecretModelToken12345"
             agent.run("find and fix the defect").await.unwrap(),
             Outcome::Done
         );
-        assert!(provider.saw_action_surface.load(Ordering::SeqCst));
+        assert!(provider.saw_action_checkpoint.load(Ordering::SeqCst));
+        assert!(provider.saw_gate_refusal.load(Ordering::SeqCst));
         assert!(provider.saw_restored_surface.load(Ordering::SeqCst));
-        let initial_schema_tokens = provider.initial_schema_tokens.load(Ordering::SeqCst);
-        let action_schema_tokens = provider.action_schema_tokens.load(Ordering::SeqCst);
-        assert!(initial_schema_tokens > 0);
-        assert!(action_schema_tokens > 0);
-        assert!(
-            action_schema_tokens.saturating_mul(2) < initial_schema_tokens,
-            "candidate action schema should use less than half the tokens: action={action_schema_tokens}, initial={initial_schema_tokens}"
+        let schema_json = provider.schema_json.lock().unwrap();
+        let first_schema = schema_json.first().expect("at least one provider request");
+        assert_eq!(
+            schema_json.len(),
+            usize::try_from(investigation_convergence::DEFAULT_IMPLEMENTATION_ROUNDS).unwrap() + 3
         );
+        assert!(
+            schema_json.iter().all(|schema| schema == first_schema),
+            "convergence must not invalidate the provider's tool-schema cache prefix"
+        );
+        let schema_tokens = provider.schema_tokens.lock().unwrap();
+        let first_tokens = *schema_tokens.first().expect("schema token estimate");
+        assert!(first_tokens > 0);
+        assert!(schema_tokens.iter().all(|tokens| *tokens == first_tokens));
         assert_eq!(
             provider.turn.load(Ordering::SeqCst),
-            usize::try_from(investigation_convergence::DEFAULT_IMPLEMENTATION_ROUNDS).unwrap() + 2
+            usize::try_from(investigation_convergence::DEFAULT_IMPLEMENTATION_ROUNDS).unwrap() + 3
         );
         assert_eq!(
             std::fs::read_to_string(ws.join("fixture.txt")).unwrap(),
@@ -7511,6 +7547,24 @@ ant-api03-SuperSecretModelToken12345"
                 .iter()
                 .any(|text| text.contains("action checkpoint"))
         );
+        let events = iteron_record::replay(agent.rollout.path()).unwrap();
+        let refusals = events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    &event.kind,
+                    EventKind::ToolDone {
+                        result,
+                        effect_id: None,
+                        tool: Some(tool),
+                    } if tool == "read_file"
+                        && result.tool_use_id == "refused-after-action-checkpoint"
+                        && result.is_error
+                        && result.content.contains("bounded-investigation gate")
+                )
+            })
+            .count();
+        assert_eq!(refusals, 1, "the denied read must have one durable terminal");
         let _ = std::fs::remove_dir_all(&ws);
     }
 

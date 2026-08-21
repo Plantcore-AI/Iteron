@@ -3061,10 +3061,8 @@ impl Agent {
                 return Ok(outcome);
             }
             let effective_system = self.effective_system();
-            let tool_specs = self.advertised_tool_specs_for_task_with_strategy(
-                relevance_task,
-                investigation_convergence.tool_strategy(),
-            );
+            let investigation_execution_gate = investigation_convergence.execution_gate();
+            let tool_specs = self.advertised_tool_specs_for_task(relevance_task);
             // This is the checkpointed coding-request reservation. The provider's documented
             // maximum is an external ceiling applied during composition, not the amount every
             // ordinary tool turn should reserve by default.
@@ -3643,6 +3641,11 @@ impl Agent {
                 ToolUse,
                 Result<iteron_tools::ToolPolicyProposal, iteron_tools::ToolPolicyError>,
             )> = Vec::new();
+            // Keep the provider-visible schema byte-stable across convergence checkpoints. Calls
+            // outside the action surface are tagged here, before a pure read can enter the
+            // mid-stream dispatcher, and materialized as refused ToolResults after decode.
+            let mut convergence_refused: std::collections::BTreeSet<usize> =
+                std::collections::BTreeSet::new();
             // The provider transport below owns cloned, read-only dispatch state instead of a
             // borrow of the Agent. That lets this callback synchronously fsync each policy
             // selection through the Agent-owned rollout before constructing an early pure-tool
@@ -3935,6 +3938,14 @@ impl Agent {
                                 });
                                 if let Err(error) = recorded {
                                     tool_policy_record_error = Some(error);
+                                    return;
+                                }
+                                if investigation_execution_gate
+                                    == investigation_convergence::InvestigationExecutionGate::CandidateChangeOnly
+                                    && !self.registry.is_candidate_change_tool(&tu.name)
+                                {
+                                    convergence_refused.insert(idx);
+                                    deferred.push((idx, tu, proposal));
                                     return;
                                 }
                                 let is_pure = proposal
@@ -5258,8 +5269,12 @@ impl Agent {
             // gate auto-approves, with no declared write path in common, executes concurrently
             // under the same governor the pure path uses; the loop below then owns every call that
             // group did not take, in the order it always ran them.
-            let batch =
-                self.select_concurrent_deferred_batch(&deferred, argument_trust, messages)?;
+            let batch = self.select_concurrent_deferred_batch(
+                &deferred,
+                &convergence_refused,
+                argument_trust,
+                messages,
+            )?;
             if batch.len() > 1 {
                 let effecting_governor = iteron_sched::Governor::new(
                     self.execution_policy
@@ -5289,6 +5304,28 @@ impl Agent {
             for (idx, tu, proposal) in deferred {
                 // Already settled by the concurrent group above, terminal and all.
                 if results[idx].is_some() {
+                    continue;
+                }
+                if convergence_refused.contains(&idx) {
+                    let result = ToolResult {
+                        tool_use_id: tu.id.clone(),
+                        content: format!(
+                            "refused by Iteron's bounded-investigation gate: `{}` would continue broad observation or orchestration after the action checkpoint. Use a registered candidate-change tool, finish the read-only answer, or state the exact blocker.",
+                            tu.name
+                        ),
+                        is_error: true,
+                        trust: Trust::Trusted,
+                        latency_ms: 0,
+                    };
+                    self.commit_refused_tool_result_with_reason(
+                        turn_id,
+                        &tu.name,
+                        &result,
+                        "strategy_candidate_action_required",
+                    )?;
+                    self.ui(tool_end_ui(&tu, &result));
+                    results[idx] = Some(result);
+                    any_error = true;
                     continue;
                 }
                 // Every effect has its own admission boundary. Once Drain/Interrupt is observed,
@@ -5999,6 +6036,7 @@ impl Agent {
             ToolUse,
             Result<iteron_tools::ToolPolicyProposal, iteron_tools::ToolPolicyError>,
         )],
+        convergence_refused: &std::collections::BTreeSet<usize>,
         _argument_trust: Trust,
         messages: &[Message],
     ) -> Result<Vec<AutoApprovedCall>, KernelError> {
@@ -6011,6 +6049,9 @@ impl Agent {
         let mut claimed: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         let mut signatures: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for (index, call, proposal) in deferred {
+            if convergence_refused.contains(index) {
+                break;
+            }
             // Both fan out real children and spend provider budget through their own effect
             // classes; neither is a registry dispatch, so neither can join a registry group.
             if call.name == iteron_tools::DISPATCH_AGENT || call.name == iteron_tools::WORKFLOW_TOOL
@@ -6827,6 +6868,16 @@ impl Agent {
         tool: &str,
         result: &ToolResult,
     ) -> Result<(), KernelError> {
+        self.commit_refused_tool_result_with_reason(turn, tool, result, "refused_before_dispatch")
+    }
+
+    fn commit_refused_tool_result_with_reason(
+        &mut self,
+        turn: TurnId,
+        tool: &str,
+        result: &ToolResult,
+        reason_code: &'static str,
+    ) -> Result<(), KernelError> {
         debug_assert!(
             result.is_error,
             "a refused tool result is an error result; a success has an admission to name"
@@ -6859,7 +6910,7 @@ impl Agent {
             turn,
             None,
             LifecyclePayload {
-                reason_code: Some("refused_before_dispatch".into()),
+                reason_code: Some(reason_code.into()),
                 duration_us: Some(result.latency_ms.saturating_mul(1_000)),
                 ..LifecyclePayload::default()
             },

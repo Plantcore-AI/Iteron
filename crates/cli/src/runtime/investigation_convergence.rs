@@ -3,16 +3,17 @@
 /// Consecutive tool-only rounds without a candidate-changing action before the controller asks the
 /// model to converge.
 pub(super) const INVESTIGATION_CONVERGENCE_ROUNDS: u32 = 6;
-/// A second, wider ceiling switches one request surface from open investigation to registered
-/// candidate-change tools. The model can still finish a read-only task or name a blocker without
-/// a tool, but it cannot keep broadening a coding investigation indefinitely.
+/// A second, wider ceiling enables a local execution gate that admits registered candidate-change
+/// tools while keeping the provider-visible tool schemas stable. The model can still finish a
+/// read-only task or name a blocker without a tool, but it cannot keep executing a broader coding
+/// investigation indefinitely.
 pub(super) const DEFAULT_IMPLEMENTATION_ROUNDS: u32 = 10;
 const INVESTIGATION_CONVERGENCE_INSTRUCTION: &str = "[Iteron strategy checkpoint] You have completed several consecutive investigation-only rounds without attempting a candidate change. Stop broadening the search and synthesize the evidence already collected. If the operator requested a code change and the evidence supports one, make the smallest coherent change now and verify it. If the task is read-only, answer now. If a specific blocker remains, state it precisely. Perform another read or search only when it can falsify a named unresolved hypothesis; do not reread the same evidence merely for confidence.";
-const DEFAULT_IMPLEMENTATION_INSTRUCTION: &str = "[Iteron action checkpoint] The bounded investigation phase is complete. On the next turn, either use an advertised candidate-change tool to implement the smallest evidence-supported fix, finish the requested read-only answer, or state the exact blocker. Broad observation and orchestration tools are intentionally paused until a candidate change occurs; do not substitute shell discovery for the paused tools.";
+const DEFAULT_IMPLEMENTATION_INSTRUCTION: &str = "[Iteron action checkpoint] The bounded investigation phase is complete. On the next turn, either use a registered candidate-change tool to implement the smallest evidence-supported fix, finish the requested read-only answer, or state the exact blocker. The runtime will refuse further broad observation and orchestration calls until a candidate change occurs; do not substitute shell discovery for them.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum InvestigationToolStrategy {
-    Full,
+pub(super) enum InvestigationExecutionGate {
+    Open,
     CandidateChangeOnly,
 }
 
@@ -69,17 +70,18 @@ impl Default for InvestigationConvergence {
 }
 
 impl InvestigationConvergence {
-    pub(super) const fn tool_strategy(&self) -> InvestigationToolStrategy {
+    pub(super) const fn execution_gate(&self) -> InvestigationExecutionGate {
         if self.action_required {
-            InvestigationToolStrategy::CandidateChangeOnly
+            InvestigationExecutionGate::CandidateChangeOnly
         } else {
-            InvestigationToolStrategy::Full
+            InvestigationExecutionGate::Open
         }
     }
 
     /// Observe one completed tool round. A semantically registered candidate-change attempt opens
-    /// a fresh bounded phase. The first threshold asks for synthesis; the second makes the next
-    /// advertised surface action-only instead of trusting a model to obey an unlimited soft hint.
+    /// a fresh bounded phase. The first threshold asks for synthesis; the second enables a local
+    /// action gate instead of trusting a model to obey an unlimited soft hint. Tool schemas stay
+    /// byte-stable across that transition so provider prompt caches remain reusable.
     pub(super) fn observe_round(
         &mut self,
         attempted_candidate_change: bool,
@@ -130,7 +132,7 @@ mod tests {
             synthesis_sent: false,
             action_required: false,
         };
-        assert_eq!(policy.tool_strategy(), InvestigationToolStrategy::Full);
+        assert_eq!(policy.execution_gate(), InvestigationExecutionGate::Open);
         assert_eq!(policy.observe_round(false), None);
         assert_eq!(policy.observe_round(false), None);
         let request = policy.observe_round(false).expect("threshold crossing");
@@ -142,12 +144,12 @@ mod tests {
         assert_eq!(action.rounds, 5);
         assert_eq!(action.stage, ConvergenceStage::CandidateAction);
         assert_eq!(
-            policy.tool_strategy(),
-            InvestigationToolStrategy::CandidateChangeOnly
+            policy.execution_gate(),
+            InvestigationExecutionGate::CandidateChangeOnly
         );
         assert_eq!(policy.observe_round(false), None);
         assert_eq!(policy.observe_round(true), None);
-        assert_eq!(policy.tool_strategy(), InvestigationToolStrategy::Full);
+        assert_eq!(policy.execution_gate(), InvestigationExecutionGate::Open);
         assert_eq!(policy.observe_round(false), None);
         assert_eq!(policy.observe_round(false), None);
         assert_eq!(

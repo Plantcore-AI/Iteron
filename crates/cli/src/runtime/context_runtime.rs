@@ -39,7 +39,6 @@ pub(super) struct AdvertisedToolSpecsCache {
     task: String,
     admitted_names: std::collections::BTreeSet<String>,
     eager_limit: Option<usize>,
-    strategy: investigation_convergence::InvestigationToolStrategy,
     authority_visible: usize,
     prepared: PreparedToolSchemas,
 }
@@ -584,17 +583,6 @@ impl Agent {
     }
 
     pub(super) fn advertised_tool_specs_for_task(&mut self, task: &str) -> PreparedToolSchemas {
-        self.advertised_tool_specs_for_task_with_strategy(
-            task,
-            investigation_convergence::InvestigationToolStrategy::Full,
-        )
-    }
-
-    pub(super) fn advertised_tool_specs_for_task_with_strategy(
-        &mut self,
-        task: &str,
-        strategy: investigation_convergence::InvestigationToolStrategy,
-    ) -> PreparedToolSchemas {
         let admitted = self.authority_ceiling.intersect(self.policy_capabilities);
         let base = self.registry.spec_snapshot();
         let total = base.specs().len();
@@ -606,7 +594,7 @@ impl Agent {
                 ..LifecyclePayload::default()
             },
         );
-        let mut admitted_names = base
+        let admitted_names = base
             .specs()
             .iter()
             .filter(|spec| {
@@ -620,17 +608,11 @@ impl Agent {
             .map(|spec| spec.name.clone())
             .collect::<std::collections::BTreeSet<_>>();
         let authority_visible = admitted_names.len();
-        if strategy == investigation_convergence::InvestigationToolStrategy::CandidateChangeOnly {
-            admitted_names.retain(|name| self.registry.is_candidate_change_tool(name));
-        }
-        let strategy_visible = admitted_names.len();
-        let strategy_filtered = authority_visible.saturating_sub(strategy_visible);
         let cached = self.advertised_tool_specs_cache.as_ref().filter(|cached| {
             cached.revision == base.revision()
                 && cached.task == task
                 && cached.admitted_names == admitted_names
                 && cached.eager_limit == self.deferred_tool_eager_limit
-                && cached.strategy == strategy
         });
         let cache_hit = cached.is_some();
         let (visible, schema_tokens) = if let Some(cached) = cached {
@@ -659,14 +641,13 @@ impl Agent {
                 task: task.to_owned(),
                 admitted_names: admitted_names.clone(),
                 eager_limit: self.deferred_tool_eager_limit,
-                strategy,
                 authority_visible,
                 prepared: prepared.clone(),
             });
             (prepared, schema_tokens)
         };
         let authority_filtered = total.saturating_sub(authority_visible);
-        let relevance_deferred = strategy_visible.saturating_sub(visible.len());
+        let relevance_deferred = authority_visible.saturating_sub(visible.len());
         let filtered = authority_filtered;
         if filtered > 0 {
             let payload = LifecyclePayload {
@@ -683,17 +664,6 @@ impl Agent {
                 "context.tool_schema.rejected",
                 Some(TurnId(self.seq_turn)),
                 payload,
-            );
-        }
-        if strategy_filtered > 0 {
-            self.lifecycle_event(
-                "context.tool_schema.rejected",
-                Some(TurnId(self.seq_turn)),
-                LifecyclePayload {
-                    count: Some(u64::try_from(strategy_filtered).unwrap_or(u64::MAX)),
-                    reason_code: Some("strategy_candidate_action_required".into()),
-                    ..LifecyclePayload::default()
-                },
             );
         }
         if relevance_deferred > 0 {

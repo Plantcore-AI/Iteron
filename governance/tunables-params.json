@@ -9260,7 +9260,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 3203,
+          "line": 3201,
           "evidence": "param_bool runtime resolution"
         }
       ],
@@ -9290,7 +9290,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/context_runtime.rs",
-          "line": 211,
+          "line": 210,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -9316,7 +9316,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/context_runtime.rs",
-          "line": 349,
+          "line": 348,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -9342,7 +9342,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/context_runtime.rs",
-          "line": 356,
+          "line": 355,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -9374,7 +9374,7 @@
         },
         {
           "path": "crates/cli/src/runtime/context_runtime.rs",
-          "line": 247,
+          "line": 246,
           "evidence": "Rust path reference"
         }
       ]
@@ -10708,7 +10708,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/context_runtime.rs",
-          "line": 519,
+          "line": 518,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -10734,7 +10734,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/context_runtime.rs",
-          "line": 503,
+          "line": 502,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -10761,7 +10761,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 7544,
+          "line": 7595,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -10787,7 +10787,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 4589,
+          "line": 4600,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -10887,7 +10887,7 @@
       "class": "searchable",
       "type": "text",
       "rust_type": "&str",
-      "default": "\"[Iteron action checkpoint] The bounded investigation phase is complete. On the next turn, either use an advertised candidate-change tool to implement the smallest evidence-supported fix, finish the requested read-only answer, or state the exact blocker. Broad observation and orchestration tools are intentionally paused until a candidate change occurs; do not substitute shell discovery for the paused tools.\"",
+      "default": "\"[Iteron action checkpoint] The bounded investigation phase is complete. On the next turn, either use a registered candidate-change tool to implement the smallest evidence-supported fix, finish the requested read-only answer, or state the exact blocker. The runtime will refuse further broad observation and orchestration calls until a candidate change occurs; do not substitute shell discovery for them.\"",
       "krate": "cli",
       "decl": "crates/cli/src/runtime/investigation_convergence.rs",
       "applied": true,
@@ -10901,7 +10901,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/investigation_convergence.rs",
-          "line": 109,
+          "line": 111,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -10927,7 +10927,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/investigation_convergence.rs",
-          "line": 60,
+          "line": 61,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -10953,7 +10953,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/investigation_convergence.rs",
-          "line": 98,
+          "line": 100,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -10979,7 +10979,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/investigation_convergence.rs",
-          "line": 52,
+          "line": 53,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -11368,17 +11368,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/context_runtime.rs",
-          "line": 874,
+          "line": 844,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime/context_runtime.rs",
-          "line": 893,
+          "line": 863,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime/context_runtime.rs",
-          "line": 907,
+          "line": 877,
           "evidence": "Rust path reference"
         }
       ]
@@ -11430,17 +11430,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/context_runtime.rs",
-          "line": 921,
+          "line": 891,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime/context_runtime.rs",
-          "line": 930,
+          "line": 900,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime/context_runtime.rs",
-          "line": 944,
+          "line": 914,
           "evidence": "Rust path reference"
         }
       ]
@@ -11583,17 +11583,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 3899,
+          "line": 3902,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 3919,
+          "line": 3922,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 3931,
+          "line": 3934,
           "evidence": "Rust path reference"
         },
         {
@@ -11624,17 +11624,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 4787,
+          "line": 4798,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 4800,
+          "line": 4811,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 4814,
+          "line": 4825,
           "evidence": "Rust path reference"
         }
       ]
@@ -12840,7 +12840,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 5501,
+          "line": 5538,
           "evidence": "param_bool runtime resolution"
         }
       ],
@@ -12897,7 +12897,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 7635,
+          "line": 7686,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -12951,7 +12951,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 7560,
+          "line": 7611,
           "evidence": "Rust path reference"
         },
         {
