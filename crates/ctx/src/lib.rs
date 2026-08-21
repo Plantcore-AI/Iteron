@@ -93,12 +93,12 @@ pub use token_calibration::{
     TokenCalibrationError, TokenCalibrationSnapshot, TokenCalibrationStore,
 };
 pub use token_estimator::{
-    ROUTE_AWARE_ESTIMATOR_POLICY_ID, TokenEstimatorPolicy, TokenEstimatorProfile,
+    OBSERVED_USAGE_ESTIMATOR_POLICY_ID, TokenEstimatorPolicy, TokenEstimatorProfile,
 };
 
-/// A fast, provider-agnostic token upper bound. Real tokenization is the provider's; until a route
-/// is known this uses four bytes/token with a 15% admission reserve and a multilingual scalar
-/// floor. It remains explicitly inexact and can be reconciled with actual provider usage.
+/// A fast, provider-agnostic token upper bound. Real tokenization is the provider's; this uses four
+/// bytes/token with a 15% admission reserve and a multilingual scalar floor. It remains explicitly
+/// inexact and is reconciled with actual provider usage by the session-scoped calibration store.
 pub fn estimate_tokens(text: &str) -> usize {
     TokenEstimatorProfile::GenericBytesPerToken35.estimate(text)
 }

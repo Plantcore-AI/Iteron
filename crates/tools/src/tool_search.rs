@@ -115,6 +115,9 @@ impl DeferredToolCatalog {
         }
         let ranked = ranked_names(&state, admitted, task);
         for name in ranked.into_iter().take(eager_limit) {
+            // Keep already-visible/core matches inside the bounded ranking prefix. Inserting them
+            // is idempotent, and—critically—does not let a repeated task reveal the next page or
+            // let a compiled fallback widen an installed exposure profile.
             // Prompt-cache identity may grow after a discovery but must never shrink merely
             // because the next task text ranked a different prefix.
             state.exposed.insert(name.clone());
@@ -229,19 +232,69 @@ pub(crate) fn register(registry: &mut Registry) -> Result<DeferredToolCatalog, T
 
 fn ranked_names(state: &CatalogState, admitted: &BTreeSet<String>, query: &str) -> Vec<String> {
     let terms = terms(query);
-    let mut ranked = admitted
+    if terms.is_empty() {
+        return Vec::new();
+    }
+    let candidates = admitted
         .iter()
         .filter_map(|name| state.specs.get(name))
         .map(|spec| {
-            let name = spec.name.to_ascii_lowercase();
-            let description = spec.description.to_ascii_lowercase();
-            let score = terms.iter().fold(0u32, |score, term| {
-                score
-                    .saturating_add(u32::from(name == *term) * 16)
-                    .saturating_add(u32::from(name.contains(term)) * 8)
-                    .saturating_add(u32::from(description.contains(term)) * 2)
-            });
-            (std::cmp::Reverse(score), spec.name.clone())
+            let name = spec.name.to_lowercase();
+            let name_terms = searchable_terms(&name);
+            let description_terms = searchable_terms(&spec.description);
+            (spec, name, name_terms, description_terms)
+        })
+        .collect::<Vec<_>>();
+    let candidate_count = candidates.len();
+    let document_frequency = terms
+        .iter()
+        .map(|term| {
+            candidates
+                .iter()
+                .filter(|(_, _, name_terms, description_terms)| {
+                    contains_term(name_terms, term) || contains_term(description_terms, term)
+                })
+                .count()
+        })
+        .collect::<Vec<_>>();
+    // Task text can be much wider than an explicit `tool_search` query. Preserve the bounded
+    // tokenizer above and allocate an exact-name probe only when it fits the same public query
+    // ceiling; exact matching a paragraph is not useful anyway.
+    let normalized_query =
+        (query.trim().len() <= MAX_QUERY_BYTES).then(|| query.trim().to_lowercase());
+    let mut ranked = candidates
+        .into_iter()
+        .filter_map(|(spec, name, name_terms, description_terms)| {
+            let exact_name = normalized_query.as_deref() == Some(name.as_str());
+            let score = terms.iter().zip(&document_frequency).fold(
+                u32::from(exact_name).saturating_mul(128),
+                |score, (term, frequency)| {
+                    // A term present in most catalog entries (for example "the", "use", or
+                    // "tool") cannot distinguish one schema from another. Derive that decision
+                    // from the admitted catalog instead of maintaining a language/provider table.
+                    if *frequency == 0
+                        || frequency.saturating_mul(2) > candidate_count
+                        || term.chars().count() < 2
+                    {
+                        return score;
+                    }
+                    let specificity = u32::try_from(candidate_count / frequency)
+                        .unwrap_or(u32::MAX)
+                        .clamp(1, 16);
+                    score
+                        .saturating_add(
+                            u32::from(contains_term(&name_terms, term))
+                                .saturating_mul(16)
+                                .saturating_mul(specificity),
+                        )
+                        .saturating_add(
+                            u32::from(contains_term(&description_terms, term))
+                                .saturating_mul(2)
+                                .saturating_mul(specificity),
+                        )
+                },
+            );
+            (score > 0).then(|| (std::cmp::Reverse(score), spec.name.clone()))
         })
         .collect::<Vec<_>>();
     ranked.sort();
@@ -249,12 +302,28 @@ fn ranked_names(state: &CatalogState, admitted: &BTreeSet<String>, query: &str) 
 }
 
 fn terms(value: &str) -> Vec<String> {
-    value
-        .split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
-        .filter(|term| !term.is_empty())
-        .map(str::to_ascii_lowercase)
+    let mut terms = value
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|term| !term.is_empty() && term.len() <= MAX_QUERY_BYTES)
+        .map(str::to_lowercase)
         .take(32)
+        .collect::<Vec<_>>();
+    terms.sort();
+    terms.dedup();
+    terms
+}
+
+fn searchable_terms(value: &str) -> Vec<String> {
+    value
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|term| !term.is_empty() && term.len() <= MAX_QUERY_BYTES)
+        .map(str::to_lowercase)
+        .take(256)
         .collect()
+}
+
+fn contains_term(terms: &[String], needle: &str) -> bool {
+    terms.iter().any(|term| term == needle)
 }
 
 #[cfg(test)]
@@ -386,6 +455,109 @@ mod tests {
         assert!(schema_bytes <= 48 * 1024, "{schema_bytes}");
     }
 
+    #[test]
+    fn zero_relevance_never_fabricates_task_specific_schemas_or_tokens() {
+        let registry = Registry::coding_agent(std::env::temp_dir()).unwrap();
+        let admitted = registry
+            .specs()
+            .into_iter()
+            .map(|spec| spec.name)
+            .collect::<BTreeSet<_>>();
+        let visible = registry.specs_for_task_snapshot(&admitted, "zzzxxyy qqqvvv", Some(4));
+        let visible_names = visible
+            .iter()
+            .map(|spec| spec.name.as_str())
+            .collect::<BTreeSet<_>>();
+        let expected = core_eager_tools()
+            .iter()
+            .copied()
+            .chain(std::iter::once(TOOL_SEARCH))
+            .filter(|name| admitted.contains(*name))
+            .collect::<BTreeSet<_>>();
+        assert_eq!(visible_names, expected);
+
+        let oversized_unbroken_term = "x".repeat(MAX_QUERY_BYTES.saturating_mul(4));
+        let oversized = registry.specs_for_task(&admitted, &oversized_unbroken_term, Some(4));
+        assert_eq!(
+            oversized
+                .iter()
+                .map(|spec| spec.name.as_str())
+                .collect::<BTreeSet<_>>(),
+            expected
+        );
+
+        let all = registry.specs_for_task_snapshot(&admitted, "", None);
+        assert!(
+            visible.estimated_tokens().saturating_mul(100)
+                <= all.estimated_tokens().saturating_mul(55),
+            "zero-relevance tasks should avoid at least 45% of schema tokens: visible={} all={}",
+            visible.estimated_tokens(),
+            all.estimated_tokens()
+        );
+    }
+
+    #[test]
+    fn task_eager_limit_selects_relevant_non_core_tools_and_stays_stable() {
+        let registry = Registry::coding_agent(std::env::temp_dir()).unwrap();
+        let admitted = registry
+            .specs()
+            .into_iter()
+            .map(|spec| spec.name)
+            .collect::<BTreeSet<_>>();
+        let first =
+            registry.specs_for_task(&admitted, "search the web and fetch an HTTP page", Some(1));
+        let first_names = first
+            .iter()
+            .map(|spec| spec.name.as_str())
+            .collect::<BTreeSet<_>>();
+        let selected_web_tools = ["web_fetch", "web_search"]
+            .into_iter()
+            .filter(|name| first_names.contains(name))
+            .collect::<Vec<_>>();
+        assert_eq!(selected_web_tools.len(), 1, "{first_names:?}");
+
+        let second =
+            registry.specs_for_task(&admitted, "search the web and fetch an HTTP page", Some(1));
+        let second_names = second
+            .iter()
+            .map(|spec| spec.name.as_str())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(second_names, first_names);
+    }
+
+    #[test]
+    fn natural_task_terms_reach_each_specialized_tool_domain_without_provider_rules() {
+        for (task, expected) in [
+            ("show the recent commit log", "git_log"),
+            ("read a remembered fact from memory", "read_memory"),
+            (
+                "query a definition, references, or hover from the language server",
+                "lsp_query",
+            ),
+            (
+                "map repository declarations without reading bodies",
+                "repo_map",
+            ),
+            ("search the web for current facts", "web_search"),
+        ] {
+            let registry = Registry::coding_agent(std::env::temp_dir()).unwrap();
+            let admitted = registry
+                .specs()
+                .into_iter()
+                .map(|spec| spec.name)
+                .collect::<BTreeSet<_>>();
+            let visible = registry.specs_for_task(&admitted, task, Some(2));
+            assert!(
+                visible.iter().any(|spec| spec.name == expected),
+                "task {task:?} did not expose {expected}: {:?}",
+                visible
+                    .iter()
+                    .map(|spec| spec.name.as_str())
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
     #[tokio::test]
     async fn discovery_returns_only_new_names_without_duplicating_schemas() {
         let registry = Registry::coding_agent(std::env::temp_dir()).unwrap();
@@ -404,7 +576,10 @@ mod tests {
             .run(ToolUse {
                 id: "compact-search-1".into(),
                 name: TOOL_SEARCH.into(),
-                input: serde_json::json!({"query":"tool", "limit":32}),
+                input: serde_json::json!({
+                    "query":"web memory commit language server workflow",
+                    "limit":32
+                }),
             })
             .await;
         let payload: serde_json::Value = serde_json::from_str(&first.content).unwrap();
@@ -424,7 +599,10 @@ mod tests {
             .run(ToolUse {
                 id: "compact-search-2".into(),
                 name: TOOL_SEARCH.into(),
-                input: serde_json::json!({"query":"tool", "limit":32}),
+                input: serde_json::json!({
+                    "query":"web memory commit language server workflow",
+                    "limit":32
+                }),
             })
             .await;
         let second: serde_json::Value = serde_json::from_str(&second.content).unwrap();

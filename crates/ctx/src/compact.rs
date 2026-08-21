@@ -71,14 +71,14 @@ fn max_recent_retention_tokens() -> usize {
 pub enum TokenEstimateProvenance {
     /// Legacy pre-v2 estimate retained so historical UI/test events remain representable.
     HeuristicBytesPerToken35,
-    /// One token per UTF-8 byte: an explicitly identified upper-bound fallback for an unknown
-    /// provider/model route. Provider-reported usage remains authoritative after the request.
+    /// Provider-independent byte/scalar baseline. Provider-reported usage remains authoritative
+    /// after the request and calibrates subsequent estimates for that observed route.
     ConservativeByteUpperBound,
-    /// Route-selected, content-aware approximation for OpenAI-compatible BPE tokenizers.
+    /// Historical route-selected approximation retained so old UI/test events are representable.
     OpenAiBpeApproximation,
-    /// Route-selected, content-aware approximation for Anthropic tokenizers.
+    /// Historical route-selected approximation retained so old UI/test events are representable.
     AnthropicBpeApproximation,
-    /// Route-selected, content-aware approximation for SentencePiece-like provider families.
+    /// Historical route-selected approximation retained so old UI/test events are representable.
     SentencePieceApproximation,
 }
 
@@ -224,29 +224,18 @@ impl RequestEstimator {
         Self::default()
     }
 
-    pub fn for_route(provider_id: Option<&str>, model_id: &str) -> Self {
-        Self {
-            profile: crate::TokenEstimatorProfile::for_route(provider_id, model_id),
-            ..Self::default()
-        }
+    /// Compatibility constructor for callers that still carry a route pair. Route strings are
+    /// deliberately ignored: actual usage calibration, not naming, adapts the neutral baseline.
+    pub fn for_route(_provider_id: Option<&str>, _model_id: &str) -> Self {
+        Self::new()
     }
 
-    pub fn set_route(&mut self, provider_id: Option<&str>, model_id: &str) {
-        let profile = match self.policy {
-            crate::TokenEstimatorPolicy::RouteAwareV2 => {
-                crate::TokenEstimatorProfile::for_route(provider_id, model_id)
-            }
-        };
-        if self.profile != profile {
-            self.profile = profile;
-            self.invalidate_transcript();
-            self.tools = None;
-            self.prepared_tools = None;
-        }
-    }
+    /// Compatibility hook for route-switching callers. A switch changes the host's calibration
+    /// partition but never this estimator's algorithm or cached content accounting.
+    pub fn set_route(&mut self, _provider_id: Option<&str>, _model_id: &str) {}
 
-    /// Pin the exact selector policy recovered from the immutable tunables checkpoint. Concrete
-    /// profiles remain route-aware and every selected identity is exposed to ContextLedger.
+    /// Pin the exact estimator policy recovered from the immutable tunables checkpoint. Route
+    /// observations are applied by the host without changing this neutral baseline identity.
     pub fn pin_policy(&mut self, policy: crate::TokenEstimatorPolicy) {
         self.policy = policy;
     }
@@ -988,22 +977,23 @@ mod tests {
     }
 
     #[test]
-    fn route_aware_checkpointed_selector_tracks_cross_provider_changes() {
-        let mut estimator = RequestEstimator::for_route(Some("openai"), "gpt-5");
-        estimator.pin_policy(crate::TokenEstimatorPolicy::RouteAwareV2);
+    fn checkpointed_selector_is_route_name_independent() {
+        let mut estimator = RequestEstimator::new();
+        estimator.pin_policy(crate::TokenEstimatorPolicy::ObservedUsageV3);
         assert_eq!(
             estimator.tokenizer_identity().catalog_id,
-            "iteron.openai-bpe-approx"
+            "iteron.generic-bpt4-reserve15"
+        );
+        assert_eq!(
+            crate::TokenEstimatorPolicy::ObservedUsageV3.id(),
+            crate::OBSERVED_USAGE_ESTIMATOR_POLICY_ID
         );
 
-        estimator.set_route(Some("anthropic"), "claude-opus");
+        let mut arbitrary = RequestEstimator::for_route(Some("opaque-gateway"), "release/42");
+        arbitrary.set_route(Some("renamed-gateway"), "custom@next");
         assert_eq!(
-            estimator.tokenizer_identity().catalog_id,
-            "iteron.anthropic-bpe-approx"
-        );
-        assert_eq!(
-            crate::TokenEstimatorPolicy::RouteAwareV2.id(),
-            crate::ROUTE_AWARE_ESTIMATOR_POLICY_ID
+            arbitrary.tokenizer_identity(),
+            estimator.tokenizer_identity()
         );
     }
 

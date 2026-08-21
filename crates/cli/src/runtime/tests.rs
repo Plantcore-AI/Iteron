@@ -5053,7 +5053,7 @@ mod gate_integration_tests {
                 ],
             },
         ];
-        let mut estimator = iteron_ctx::RequestEstimator::for_route(Some("unknown"), "model-a");
+        let mut estimator = iteron_ctx::RequestEstimator::new();
         let estimate = estimator.estimate("sys", &messages, &[]);
         assert!(estimate.lsp_result_tokens > 0);
         assert!(estimate.tool_result_tokens > 0);
@@ -12053,13 +12053,11 @@ ant-api03-SuperSecretModelToken12345"
         assert!(before_messages.iter().any(|message| message.content.iter().any(
             |block| matches!(block, Block::ToolResult(result) if result.content.contains("tool output context projection"))
         )));
-        let mut before_estimator =
-            iteron_ctx::RequestEstimator::for_route(None, "generic-coding-model");
+        let mut before_estimator = iteron_ctx::RequestEstimator::new();
         let before_tool_results = before_estimator
             .estimate("sys", &before_messages, &[])
             .tool_result_tokens;
-        let mut fifth_result_estimator =
-            iteron_ctx::RequestEstimator::for_route(None, "generic-coding-model");
+        let mut fifth_result_estimator = iteron_ctx::RequestEstimator::new();
         let sixth_main_request = &requests[TOOL_ROUNDS - 1];
         let first_five_tool_results = fifth_result_estimator
             .estimate(
@@ -12068,8 +12066,7 @@ ant-api03-SuperSecretModelToken12345"
                 &sixth_main_request.tools,
             )
             .tool_result_tokens;
-        let mut after_estimator =
-            iteron_ctx::RequestEstimator::for_route(None, "generic-coding-model");
+        let mut after_estimator = iteron_ctx::RequestEstimator::new();
         let seventh = &requests[TOOL_ROUNDS];
         let after_tool_results = after_estimator
             .estimate(&seventh.system, &seventh.messages, &seventh.tools)

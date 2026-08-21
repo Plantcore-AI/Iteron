@@ -1089,8 +1089,8 @@ fn decode_token_estimator(
         ));
     }
     match enum_field(fields, family, "estimator")? {
-        iteron_ctx::ROUTE_AWARE_ESTIMATOR_POLICY_ID => {
-            Ok(iteron_ctx::TokenEstimatorPolicy::RouteAwareV2)
+        iteron_ctx::OBSERVED_USAGE_ESTIMATOR_POLICY_ID => {
+            Ok(iteron_ctx::TokenEstimatorPolicy::ObservedUsageV3)
         }
         other => Err(unknown(family, other)),
     }

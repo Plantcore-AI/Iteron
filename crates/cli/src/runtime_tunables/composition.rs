@@ -138,17 +138,13 @@ pub(crate) fn resolve_fresh(input: FreshCompositionInput<'_>) -> anyhow::Result<
     })?;
 
     let token_estimators = CatalogObservation::observed(
-        "iteron-ctx:request-estimator-v2",
-        std::iter::once(iteron_ctx::ROUTE_AWARE_ESTIMATOR_POLICY_ID.to_owned()).chain(
-            [
-                iteron_ctx::TokenEstimatorProfile::GenericBytesPerToken35,
-                iteron_ctx::TokenEstimatorProfile::OpenAiBpeApprox,
-                iteron_ctx::TokenEstimatorProfile::AnthropicBpeApprox,
-                iteron_ctx::TokenEstimatorProfile::SentencePieceApprox,
-            ]
-            .into_iter()
-            .map(|profile| profile.identity().catalog_id),
-        ),
+        "iteron-ctx:request-estimator-v3",
+        [
+            iteron_ctx::OBSERVED_USAGE_ESTIMATOR_POLICY_ID.to_owned(),
+            iteron_ctx::TokenEstimatorProfile::default()
+                .identity()
+                .catalog_id,
+        ],
     );
     let service_tiers = CatalogObservation::observed(
         format!(

@@ -103,8 +103,7 @@ impl Agent {
             Capability::IrreversibleExternal,
         ]);
         let compiled_policy_bundle = crate::bundle_adapter::baseline_compiled_bundle();
-        let context_estimator =
-            iteron_ctx::RequestEstimator::for_route(provider.provider_instance_id(), &model);
+        let context_estimator = iteron_ctx::RequestEstimator::new();
         let token_calibration = super::context_runtime::load_token_calibration(&runtime_state_dir);
         #[cfg(test)]
         let context_budget_policy = {

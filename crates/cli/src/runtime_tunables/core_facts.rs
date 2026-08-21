@@ -585,10 +585,13 @@ fn add_internal_defaults(
             builder.declare("prompt_cache", SourceKind::RustBuilder, prompt_cache)?;
         }
     }
-    // The checkpoint pins the deterministic route-aware selector policy, not one concrete route's
-    // profile. Each selected profile is still exposed through ContextLedger's tokenizer identity.
+    // The checkpoint pins the neutral estimator plus observed-usage calibration policy. Route
+    // identity partitions observations but never selects an algorithm by provider/model name.
     let token_estimator = object([
-        ("estimator", en(iteron_ctx::ROUTE_AWARE_ESTIMATOR_POLICY_ID)),
+        (
+            "estimator",
+            en(iteron_ctx::OBSERVED_USAGE_ESTIMATOR_POLICY_ID),
+        ),
         (
             "safety_margin",
             dec(DecimalValue {

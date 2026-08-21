@@ -720,7 +720,7 @@ fn token_estimator() -> ResolutionValue {
             (
                 "estimator".to_owned(),
                 ResolutionValue::Enum {
-                    value: "iteron.request-estimator-route-aware-v2".to_owned(),
+                    value: "iteron.request-estimator-observed-usage-v3".to_owned(),
                 },
             ),
             ("safety_margin".to_owned(), decimal(0, 0)),
@@ -741,11 +741,8 @@ fn production_catalog_values(catalog_id: &str, route: &RouteIdentity) -> BTreeSe
                 .collect()
         }
         "iteron://tunables/catalogs/token-estimators-v1" => [
-            "iteron.request-estimator-route-aware-v2",
-            "iteron.conservative-byte-upper-bound",
-            "iteron.openai-bpe-approx",
-            "iteron.anthropic-bpe-approx",
-            "iteron.sentencepiece-approx",
+            "iteron.request-estimator-observed-usage-v3",
+            "iteron.generic-bpt4-reserve15",
         ]
         .into_iter()
         .map(str::to_owned)

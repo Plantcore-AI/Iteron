@@ -2387,7 +2387,9 @@ fn module_for(krate: &str, relative: &str, name: &str) -> ModuleId {
         "protocol" | "tunables" => ModuleId::BudgetAllocation,
         "statusline" => ModuleId::SessionStop,
         "cli" => {
-            if file.starts_with("tui") {
+            if name == "SYSTEM_PROMPT" {
+                ModuleId::PromptSystem
+            } else if file.starts_with("tui") {
                 ModuleId::SessionStop
             } else if file.contains("runtime_tunables") || file.contains("context") {
                 ModuleId::ContextAssembly
@@ -2694,6 +2696,22 @@ mod tests {
                 "DEFAULT_READ_FILE_MAX_LINES"
             ),
             ModuleId::ToolArguments
+        );
+    }
+
+    #[test]
+    fn the_cli_base_prompt_is_not_misclassified_as_scheduler_policy() {
+        assert_eq!(
+            module_for("cli", "crates/cli/src/main.rs", "SYSTEM_PROMPT"),
+            ModuleId::PromptSystem
+        );
+        assert_eq!(
+            module_for(
+                "cli",
+                "crates/cli/src/runtime.rs",
+                "DEFAULT_MAX_TOOL_CONCURRENCY"
+            ),
+            ModuleId::SchedulerParallelism
         );
     }
 
