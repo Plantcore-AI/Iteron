@@ -12,12 +12,13 @@ import os
 import sys
 import tarfile
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
 
 import fetch_tool
-from common import sha256_file
+from common import ReleaseToolError, sha256_file
 
 
 class FetchToolCacheTest(unittest.TestCase):
@@ -173,6 +174,58 @@ class FetchToolCacheTest(unittest.TestCase):
         self.assertLessEqual(len(entries), fetch_tool.MAX_CACHE_ENTRIES)
         # The just-written entry must survive eviction.
         self.assertTrue(self._cache_path().exists())
+
+    def test_eviction_respects_byte_limit(self) -> None:
+        """Eviction removes oldest entries when the byte limit is exceeded."""
+        with mock.patch.object(fetch_tool, "MAX_CACHE_ENTRIES", 100):
+            with mock.patch.object(fetch_tool, "MAX_CACHE_BYTES", 200):
+                # Pre-fill with two older 80-byte entries.
+                for index in range(2):
+                    data = b"x" * 80
+                    digest = hashlib.sha256(str(index).encode()).hexdigest()
+                    path = self.cache / f"mytool-linux-x86_64-{digest}.tar.gz"
+                    path.write_bytes(data)
+                    old_time = time.time() - 3600 - index
+                    os.utime(path, (old_time, old_time))
+
+                def fake_download(url: str, destination: Path) -> None:
+                    destination.write_bytes(self.archive_bytes)
+
+                with mock.patch("fetch_tool.download", side_effect=fake_download):
+                    self._run()
+
+        cache_files = [
+            p for p in self.cache.iterdir() if fetch_tool._CACHE_FILE_RE.match(p.name)
+        ]
+        total = sum(p.stat().st_size for p in cache_files)
+        self.assertLessEqual(total, 200)
+        # The just-written entry must survive eviction.
+        self.assertTrue(self._cache_path().exists())
+
+    def test_eviction_refuses_unbounded_scan(self) -> None:
+        """An unexpectedly large cache directory scan is rejected."""
+        with mock.patch.object(fetch_tool, "MAX_CACHE_SCAN_ENTRIES", 5):
+            for index in range(6):
+                data = b"x"
+                digest = hashlib.sha256(str(index).encode()).hexdigest()
+                path = self.cache / f"mytool-linux-x86_64-{digest}.tar.gz"
+                path.write_bytes(data)
+
+            with self.assertRaises(ReleaseToolError):
+                fetch_tool._evict_cache(self.cache)
+
+    def test_eviction_ignores_unrelated_files(self) -> None:
+        """Non-cache files in the cache directory are never removed."""
+        unrelated = self.cache / "unrelated.txt"
+        unrelated.write_bytes(b"do not delete")
+        self._populate_cache()
+
+        with mock.patch("fetch_tool.download") as fake_download:
+            self._run()
+            fake_download.assert_not_called()
+
+        self.assertTrue(unrelated.exists())
+        self.assertEqual(unrelated.read_bytes(), b"do not delete")
 
     def test_remote_disconnected_is_retried(self) -> None:
         """http.client.RemoteDisconnected triggers main's bounded retry loop."""

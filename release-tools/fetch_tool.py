@@ -7,6 +7,7 @@ import argparse
 import http.client
 import json
 import os
+import re
 import ssl
 import stat
 import sys
@@ -31,6 +32,14 @@ RETRY_PAUSE_SECONDS = 5
 # unbounded disk leak on a long-lived self-hosted runner.
 MAX_CACHE_ENTRIES = 32
 MAX_CACHE_BYTES = 2 * 1024 * 1024 * 1024
+# Scanning an unexpectedly large cache directory must also be bounded.
+MAX_CACHE_SCAN_ENTRIES = MAX_CACHE_ENTRIES * 4
+
+# Only evict files that match the cache-key naming convention, so a misconfigured
+# cache directory cannot erase unrelated runner data.
+_CACHE_FILE_RE = re.compile(
+    r"^[^/]+-[^/]+-[0-9a-f]{64}\.(?:tar\.gz|tar\.xz|zip)$"
+)
 
 
 class TruncatedDownload(ReleaseToolError):
@@ -113,15 +122,24 @@ def _evict_cache(cache_dir: Path) -> None:
     The contract is: after any successful write, the cache contains at most
     MAX_CACHE_ENTRIES files and at most MAX_CACHE_BYTES total. Files are ordered
     by mtime so that the least-recently-used entries are removed first.
+    Only files matching the tool-cache naming convention are considered, and the
+    directory scan itself is bounded.
     """
     entries = []
     for path in cache_dir.iterdir():
+        if not _CACHE_FILE_RE.match(path.name):
+            continue
         try:
             info = path.lstat()
         except OSError:
             continue
         if stat.S_ISREG(info.st_mode):
             entries.append((info.st_mtime, info.st_size, path))
+            if len(entries) > MAX_CACHE_SCAN_ENTRIES:
+                raise ReleaseToolError(
+                    f"cache directory contains more than {MAX_CACHE_SCAN_ENTRIES} "
+                    "cache entries; refusing unbounded scan"
+                )
 
     # Evict by total bytes first, then by count, so both limits are respected.
     entries.sort(key=lambda item: item[0])

@@ -146,15 +146,31 @@ class CreateReleaseTagFixture:
                         ]
                     }
 
-                def releases():
-                    return [
-                        {
-                            "tag_name": "v0.0.98",
-                            "draft": False,
-                            "prerelease": False,
-                            "immutable": True,
-                        }
-                    ]
+                import urllib.parse
+
+                def releases(page):
+                    import json
+                    import os
+
+                    sentinel = os.environ.get("CREATE_TAG_TEST_RELEASES_SENTINEL", "")
+                    if page == 11 and sentinel == "overflow":
+                        return [
+                            {
+                                "tag_name": "v0.0.1",
+                                "draft": False,
+                                "prerelease": False,
+                                "immutable": True,
+                            }
+                        ]
+                    pages = json.loads(
+                        os.environ.get(
+                            "CREATE_TAG_TEST_RELEASES_PAGES",
+                            '[[{"tag_name": "v0.0.98", "draft": false, "prerelease": false, "immutable": true}]]',
+                        )
+                    )
+                    if page <= len(pages):
+                        return pages[page - 1]
+                    return []
 
                 def main():
                     if (
@@ -181,7 +197,10 @@ class CreateReleaseTagFixture:
                     elif "actions/runs/222/jobs" in url:
                         data = ci_jobs()
                     elif "releases" in url:
-                        data = releases()
+                        parsed = urllib.parse.urlparse(url)
+                        params = urllib.parse.parse_qs(parsed.query)
+                        page = int(params.get("page", ["1"])[0])
+                        data = releases(page)
                     else:
                         sys.exit(1)
 
@@ -244,6 +263,11 @@ class CreateReleaseTagFixture:
     def rewrite_fake_gh(self, old: str, new: str) -> None:
         path = self.bin / "gh"
         path.write_text(path.read_text(encoding="utf-8").replace(old, new), encoding="utf-8")
+
+    def set_releases_pages(self, pages: list[list[dict]]) -> None:
+        import json
+
+        self.env["CREATE_TAG_TEST_RELEASES_PAGES"] = json.dumps(pages)
 
     def rewrite_fake_git_url(self, url: str) -> None:
         path = self.bin / "git"
@@ -335,6 +359,67 @@ class CreateReleaseTagTest(unittest.TestCase):
             # path, so reaching the prompt proves parsing is correct.
             self.assertEqual(result.returncode, 1)
             self.assertIn("Preparing annotated tag v0.0.99", result.stdout)
+        finally:
+            fixture.cleanup()
+
+    def test_keeps_global_maximum_across_release_pages(self) -> None:
+        """A higher version on an earlier page must not be overwritten by a later page."""
+        fixture = CreateReleaseTagFixture()
+        try:
+            fixture.set_releases_pages(
+                [
+                    [
+                        {
+                            "tag_name": "v0.0.100",
+                            "draft": False,
+                            "prerelease": False,
+                            "immutable": True,
+                        }
+                    ],
+                    [
+                        {
+                            "tag_name": "v0.0.98",
+                            "draft": False,
+                            "prerelease": False,
+                            "immutable": True,
+                        }
+                    ],
+                ]
+            )
+            result = fixture.run("0.0.99")
+            self.assertEqual(result.returncode, 1)
+            self.assertIn(
+                "version 0.0.99 is not newer than the latest immutable release v0.0.100",
+                result.stderr,
+            )
+        finally:
+            fixture.cleanup()
+
+    def test_sentinel_rejects_more_than_1000_releases(self) -> None:
+        """A non-empty 11th page must fail closed instead of silently ignoring it."""
+        fixture = CreateReleaseTagFixture()
+        try:
+            fixture.set_releases_pages(
+                [
+                    [
+                        {
+                            "tag_name": f"v0.{page:02d}.0",
+                            "draft": False,
+                            "prerelease": False,
+                            "immutable": True,
+                        }
+                        for _ in range(100)
+                    ]
+                    for page in range(1, 11)
+                ]
+            )
+            fixture.env["CREATE_TAG_TEST_RELEASES_SENTINEL"] = "overflow"
+            result = fixture.run("0.0.99")
+            self.assertEqual(result.returncode, 1)
+            self.assertIn(
+                "more than 1000 immutable releases exist",
+                result.stderr,
+            )
         finally:
             fixture.cleanup()
 

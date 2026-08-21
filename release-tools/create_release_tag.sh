@@ -133,15 +133,26 @@ if [[ "$ci_required_jobs" != "1" ]]; then
   fail "CI evidence run $ci_evidence_run must contain exactly one successful \"ci / required\" job (found: ${ci_required_jobs:-none})"
 fi
 
+semver_gt() {
+  local a=$1 b=$2
+  local a1 a2 a3 b1 b2 b3
+  IFS=. read -r a1 a2 a3 <<< "$a"
+  IFS=. read -r b1 b2 b3 <<< "$b"
+  (( a1 > b1 || (a1 == b1 && a2 > b2) || (a1 == b1 && a2 == b2 && a3 > b3) ))
+}
+
 # Early local guard: the candidate version must be greater than the latest
 # published immutable release. This does NOT prove schema compatibility; the
 # immutable-schema gate in release.yml is the authoritative check. It only
 # prevents an obvious stale-version tag from burning a version number.
 #
-# Bound the API surface: walk at most 10 pages of 100 releases. The sentinel
-# exits early when a page returns fewer than 100 items.
+# Bound the API surface: walk at most 10 pages of 100 releases. GitHub returns
+# releases ordered by creation time, not by version, so keep the global maximum
+# across all pages. If page 10 is exactly full, query page 11 as a sentinel;
+# any releases beyond 1000 immutable releases fail closed.
 latest_immutable_version=""
 page=1
+count=""
 while [[ $page -le 10 ]]; do
   page_info=$(
     gh api "repos/$owner/$repo/releases?per_page=100&page=$page" \
@@ -153,7 +164,9 @@ while [[ $page -le 10 ]]; do
   [[ "$page_latest" == "_" ]] && page_latest=""
 
   if [[ -n "$page_latest" ]]; then
-    latest_immutable_version="$page_latest"
+    if [[ -z "$latest_immutable_version" ]] || semver_gt "${page_latest#v}" "${latest_immutable_version#v}"; then
+      latest_immutable_version="$page_latest"
+    fi
   fi
 
   if [[ -z "$count" || "$count" -lt 100 ]]; then
@@ -162,14 +175,18 @@ while [[ $page -le 10 ]]; do
   page=$((page + 1))
 done
 
+if [[ "$page" -eq 11 && "$count" -eq 100 ]]; then
+  sentinel_count=$(
+    gh api "repos/$owner/$repo/releases?per_page=100&page=11" \
+      --jq 'length' \
+      2>/dev/null
+  ) || fail "could not list releases from GitHub API (page 11)"
+  if [[ -n "$sentinel_count" && "$sentinel_count" -gt 0 ]]; then
+    fail "more than 1000 immutable releases exist; cannot safely determine the latest version"
+  fi
+fi
+
 if [[ -n "$latest_immutable_version" ]]; then
-  semver_gt() {
-    local a=$1 b=$2
-    local a1 a2 a3 b1 b2 b3
-    IFS=. read -r a1 a2 a3 <<< "$a"
-    IFS=. read -r b1 b2 b3 <<< "$b"
-    (( a1 > b1 || (a1 == b1 && a2 > b2) || (a1 == b1 && a2 == b2 && a3 > b3) ))
-  }
   if ! semver_gt "$version" "${latest_immutable_version#v}"; then
     fail "version $version is not newer than the latest immutable release $latest_immutable_version"
   fi
