@@ -252,7 +252,7 @@ pub(super) fn apply_server_event<T: notification::NotificationTransport + ?Sized
             app.last_turn_usage = snapshot.last_turn_usage;
             session.adopt(*snapshot);
 
-            let result = summary.result_v5();
+            let result = summary.current_result();
             let canonical_outcome = result
                 .get("outcome")
                 .and_then(serde_json::Value::as_str)

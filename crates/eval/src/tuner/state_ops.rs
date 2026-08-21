@@ -92,7 +92,7 @@ pub(super) fn apply_event(
             state.results.push(result.as_ref().clone());
         }
         TunerEvent::RoundAdvanced { round, survivors } => {
-            let ranked = ranked_current(state);
+            let ranked = ranked_current(spec, state);
             let expected = ranked.as_ref().map(|ranked| {
                 ranked
                     .iter()
@@ -112,7 +112,7 @@ pub(super) fn apply_event(
             state.eligible = survivors.clone();
         }
         TunerEvent::Completed { selected_candidate } => {
-            let expected = ranked_current(state)
+            let expected = ranked_current(spec, state)
                 .and_then(|ranked| ranked.first().map(|result| result.candidate_id.as_str()));
             if state.selected.is_some()
                 || !state.inflight.is_empty()
@@ -173,6 +173,11 @@ pub(super) fn validate_spec(spec: &TunerSpec) -> Result<(), TunerError> {
         bridge
             .validate()
             .map_err(|error| TunerError::InvalidSpec(error.to_string()))?;
+        if !crate::optimization::validate_objectives(&bridge.reward.objectives) {
+            return Err(TunerError::InvalidSpec(
+                "the built-in offline tuner does not implement one or more reward metrics".into(),
+            ));
+        }
         if spec.param_registry_digest.as_deref()
             != Some(iteron_tunables::param_registry_digest_sha256().as_str())
             || spec.tool_text_registry_digest.as_deref()
@@ -267,11 +272,11 @@ pub(super) fn validate_spec(spec: &TunerSpec) -> Result<(), TunerError> {
     Ok(())
 }
 
-fn ranked_current(state: &TunerState) -> Option<Vec<&TrialResult>> {
+fn ranked_current<'a>(spec: &TunerSpec, state: &'a TunerState) -> Option<Vec<&'a TrialResult>> {
     if !state.inflight.is_empty() {
         return None;
     }
-    let mut ranked = state
+    let ranked = state
         .results
         .iter()
         .filter(|result| result.round == state.round)
@@ -286,8 +291,48 @@ fn ranked_current(state: &TunerState) -> Option<Vec<&TrialResult>> {
     {
         return None;
     }
-    ranked.sort_by(result_order);
-    Some(ranked)
+    Some(rank_results(spec, ranked))
+}
+
+pub(super) fn rank_results<'a>(
+    spec: &TunerSpec,
+    mut results: Vec<&'a TrialResult>,
+) -> Vec<&'a TrialResult> {
+    let objectives = spec
+        .trainer_bridge
+        .as_ref()
+        .map(|bridge| bridge.reward.objectives.as_slice())
+        .unwrap_or(&[]);
+    // Efficiency evidence is compared only inside an exact functional-quality stratum. A cheap
+    // failed run must neither beat nor perturb the ordering of successful runs. `resolved_rate`
+    // is validated as finite in [0, 1], so its IEEE bits are a stable exact grouping key.
+    let mut strata = BTreeMap::<u64, Vec<&TrialResult>>::new();
+    for result in &results {
+        strata
+            .entry(result.resolved_rate.to_bits())
+            .or_default()
+            .push(*result);
+    }
+    let penalties = strata
+        .into_values()
+        .flat_map(|stratum| crate::optimization::objective_penalties(&stratum, objectives))
+        .collect::<BTreeMap<_, _>>();
+    results.sort_by(|left, right| {
+        // Functional completion is the non-learnable ground-truth gate. Within an equal-quality
+        // group, the declared multi-objective contract combines every available generic runtime
+        // signal by weighted rank, which is scale-free and transitive.
+        right
+            .resolved_rate
+            .partial_cmp(&left.resolved_rate)
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| {
+                penalties
+                    .get(&left.candidate_id)
+                    .cmp(&penalties.get(&right.candidate_id))
+            })
+            .then_with(|| result_order(left, right))
+    });
+    results
 }
 
 pub(super) fn result_order(left: &&TrialResult, right: &&TrialResult) -> Ordering {
@@ -520,7 +565,10 @@ pub(super) fn candidate_features(candidate: &TunerCandidate) -> BTreeMap<String,
     if let Some(graph) = &candidate.graph {
         for dimension in &graph.dimensions {
             if let Ok(token) = serde_json::to_string(dimension) {
-                let key = format!("graph/{}", dimension.address().selector);
+                // Learn one semantic dimension across candidate wire versions. Prefixing a v3
+                // family/parameter as `graph/...` made the same runtime control look unrelated to
+                // its v1/v2 form and made two native owners with the same selector collide.
+                let key = dimension_feature_key(dimension);
                 observe_module_feature(
                     &mut modules,
                     dimension_module(dimension),
@@ -552,6 +600,40 @@ pub(super) fn candidate_features(candidate: &TunerCandidate) -> BTreeMap<String,
         }
     }
     features
+}
+
+fn dimension_feature_key(dimension: &CandidateDimension) -> String {
+    match dimension {
+        CandidateDimension::Family { family, .. } => format!("family/{family}"),
+        CandidateDimension::Param { param, .. } => format!("param/{param}"),
+        CandidateDimension::Artifact { artifact, .. } => format!("artifact/{artifact}"),
+        CandidateDimension::NativeValue { address, .. } => {
+            let address_bytes = serde_json::to_vec(address).unwrap_or_default();
+            format!(
+                "native/{}/{}/{}@sha256:{}",
+                address_kind_name(address.kind),
+                selector_kind_name(address.selector_kind),
+                address.selector,
+                hex::encode(Sha256::digest(address_bytes))
+            )
+        }
+    }
+}
+
+const fn address_kind_name(kind: CandidateAddressKind) -> &'static str {
+    match kind {
+        CandidateAddressKind::UnifiedProfile => "unified_profile",
+        CandidateAddressKind::DirectConfig => "direct_config",
+        CandidateAddressKind::CallerInput => "caller_input",
+    }
+}
+
+const fn selector_kind_name(kind: CandidateSelectorKind) -> &'static str {
+    match kind {
+        CandidateSelectorKind::Key => "key",
+        CandidateSelectorKind::Path => "path",
+        CandidateSelectorKind::Argument => "argument",
+    }
 }
 
 fn observe_module_feature(

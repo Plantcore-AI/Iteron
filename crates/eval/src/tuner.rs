@@ -25,7 +25,11 @@ pub use candidate_graph::{
     MAX_CANDIDATE_TOPOLOGY_EDGES,
 };
 use journal::TunerJournal;
-use state_ops::{apply_event, digest, initial_state, result_order, tpe_score, validate_spec};
+use state_ops::{apply_event, digest, initial_state, rank_results, tpe_score, validate_spec};
+
+pub(crate) fn tuning_candidate_features(candidate: &TunerCandidate) -> BTreeMap<String, String> {
+    state_ops::candidate_features(candidate)
+}
 
 pub const MAX_TUNER_TRIALS: u16 = 256;
 pub const MAX_TUNER_CONCURRENCY: u16 = 64;
@@ -216,6 +220,63 @@ pub struct TrialOptimizationSummary {
     pub average_context_tokens_per_turn: f64,
     pub average_peak_context_tokens: f64,
     pub average_transcript_tokens_reclaimed: f64,
+    /// Mean source-separated tokens per sampled request. Absent for pre-v6 CLI evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub average_context_components_per_turn: Option<TrialContextComponentAverages>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TrialContextComponentAverages {
+    pub stable_prefix: f64,
+    pub instructions: f64,
+    pub task_context: f64,
+    pub memory: f64,
+    pub transcript: f64,
+    pub attachments: f64,
+    pub tool_schemas: f64,
+    pub tool_results: f64,
+    pub lsp_results: f64,
+}
+
+impl TrialContextComponentAverages {
+    fn from_metrics(
+        metrics: &[crate::types::OptimizationMetrics],
+        context_samples: u64,
+    ) -> Option<Self> {
+        let cumulative = metrics.iter().try_fold(
+            crate::types::ContextComponentTokens::default(),
+            |total, metric| total.checked_add(metric.context_components?.cumulative),
+        )?;
+        let samples = context_samples as f64;
+        Some(Self {
+            stable_prefix: cumulative.stable_prefix as f64 / samples,
+            instructions: cumulative.instructions as f64 / samples,
+            task_context: cumulative.task_context as f64 / samples,
+            memory: cumulative.memory as f64 / samples,
+            transcript: cumulative.transcript as f64 / samples,
+            attachments: cumulative.attachments as f64 / samples,
+            tool_schemas: cumulative.tool_schemas as f64 / samples,
+            tool_results: cumulative.tool_results as f64 / samples,
+            lsp_results: cumulative.lsp_results as f64 / samples,
+        })
+    }
+
+    fn is_valid(self) -> bool {
+        [
+            self.stable_prefix,
+            self.instructions,
+            self.task_context,
+            self.memory,
+            self.transcript,
+            self.attachments,
+            self.tool_schemas,
+            self.tool_results,
+            self.lsp_results,
+        ]
+        .into_iter()
+        .all(|value| value.is_finite() && value >= 0.0)
+    }
 }
 
 impl TrialOptimizationSummary {
@@ -249,6 +310,8 @@ impl TrialOptimizationSummary {
             .iter()
             .map(|metric| metric.cumulative_context_tokens)
             .try_fold(0_u64, u64::checked_add)?;
+        let average_context_components_per_turn =
+            TrialContextComponentAverages::from_metrics(&metrics, context_samples);
         Some(Self {
             average_tool_calls: completed_tools as f64 / count,
             average_tool_error_rate: if completed_tools == 0 {
@@ -272,6 +335,7 @@ impl TrialOptimizationSummary {
                 .map(|metric| metric.transcript_tokens_reclaimed as f64)
                 .sum::<f64>()
                 / count,
+            average_context_components_per_turn,
         })
     }
 
@@ -287,6 +351,9 @@ impl TrialOptimizationSummary {
         .into_iter()
         .all(|value| value.is_finite() && value >= 0.0)
             && self.average_tool_error_rate <= 1.0
+            && self
+                .average_context_components_per_turn
+                .is_none_or(TrialContextComponentAverages::is_valid)
     }
 }
 
@@ -634,8 +701,7 @@ impl OfflineTuner {
                 "round cannot advance with pending or in-flight candidates".into(),
             ));
         }
-        let mut ranked = self.current_results();
-        ranked.sort_by(result_order);
+        let ranked = rank_results(&self.spec, self.current_results());
         if ranked.is_empty() {
             return Err(TunerError::InvalidTransition(
                 "round has no completed observations".into(),
@@ -729,8 +795,7 @@ impl OfflineTuner {
         if completed.len() < 4 {
             return left.cmp(right);
         }
-        let mut ranked = completed;
-        ranked.sort_by(result_order);
+        let ranked = rank_results(&self.spec, completed);
         let good_count = ranked.len().div_ceil(5).max(1);
         let good = &ranked[..good_count];
         let bad = &ranked[good_count..];

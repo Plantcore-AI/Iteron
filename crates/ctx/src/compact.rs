@@ -99,6 +99,9 @@ pub struct ContextEstimate {
     pub framing_tokens: usize,
     pub total_tokens: usize,
     pub provenance: TokenEstimateProvenance,
+    /// Optional non-overlapping source attribution attached by the host at the final admission
+    /// boundary. Core estimation leaves it absent because source ownership is host context.
+    pub components: Option<crate::ContextComponentUsage>,
 }
 
 /// Estimate the complete provider input projection. The model's actual context window is a
@@ -175,6 +178,7 @@ fn assemble_estimate(
         framing_tokens,
         total_tokens,
         provenance,
+        components: None,
     }
 }
 

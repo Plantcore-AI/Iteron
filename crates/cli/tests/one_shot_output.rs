@@ -1035,6 +1035,11 @@ fn normalize_runtime_fields(values: &mut [Value]) {
                     *slot = json!(0);
                 }
             }
+            if let Some(components) = context.get_mut("components").and_then(Value::as_object_mut) {
+                for slot in components.values_mut() {
+                    *slot = json!(0);
+                }
+            }
         }
     }
 }
@@ -1060,7 +1065,7 @@ fn assert_diagnostics_on_stderr(output: &Output, outcome: &str) {
     assert!(!stdout.contains("iteron · repo="));
     assert!(!stdout.contains("record: "));
     assert!(
-        !stderr.contains("\"schema_version\":5"),
+        !stderr.contains("\"type\":\"result\"") && !stderr.contains("\"type\": \"result\""),
         "machine result records belong exclusively on stdout"
     );
     assert!(!stderr.contains("golden reply"));
@@ -1068,7 +1073,7 @@ fn assert_diagnostics_on_stderr(output: &Output, outcome: &str) {
 
 fn assert_terminal_result(value: &Value, expected_exit: i32, expected_outcome: &str) {
     assert!(value.is_object(), "terminal result is a JSON object");
-    assert_eq!(value["schema_version"], 5);
+    assert_eq!(value["schema_version"], 6);
     let tax = &value["kernel_tax"];
     assert!(tax["admission_latency_us"].as_u64().is_some());
     assert!(tax["broker_latency_us"].as_u64().is_some());
@@ -1256,8 +1261,8 @@ fn json_one_shot_process_contract_matches_golden() {
     assert_eq!(
         actual,
         golden_lines(
-            "one_shot_json_success_v5.json",
-            include_str!("golden/one_shot_json_success_v5.json")
+            "one_shot_json_success_v6.json",
+            include_str!("golden/one_shot_json_success_v6.json")
         )
     );
 }
@@ -1327,8 +1332,8 @@ fn stream_json_one_shot_process_contract_matches_golden() {
     assert_diagnostics_on_stderr(&output, "Done");
     normalize_runtime_fields(&mut actual);
     let mut expected = golden_lines(
-        "one_shot_stream_json_success_v5.jsonl",
-        include_str!("golden/one_shot_stream_json_success_v5.jsonl"),
+        "one_shot_stream_json_success_v6.jsonl",
+        include_str!("golden/one_shot_stream_json_success_v6.jsonl"),
     );
     let turn_context = expected
         .iter_mut()
@@ -1362,7 +1367,7 @@ fn image_one_shot_emits_metadata_then_uploads_to_a_declared_capable_provider() {
     assert_eq!(
         records.first(),
         Some(&json!({
-            "schema_version": 5,
+            "schema_version": 6,
             "type": "input_attachment",
             "ordinal": 1,
             "media_type": "image/gif",

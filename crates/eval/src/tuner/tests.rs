@@ -182,8 +182,51 @@ fn with_optimization(
         peak_transcript_tokens: context_tokens,
         transcript_shrink_events: 1,
         transcript_tokens_reclaimed: 300,
+        context_components: Some(crate::types::ContextComponentMetrics {
+            cumulative: crate::types::ContextComponentTokens {
+                stable_prefix: 20,
+                instructions: 40,
+                task_context: 60,
+                memory: 80,
+                transcript: context_tokens.saturating_mul(2),
+                attachments: 100,
+                tool_schemas: 120,
+                tool_results: 140,
+                lsp_results: 160,
+            },
+            peak: crate::types::ContextComponentTokens::default(),
+            final_turn: crate::types::ContextComponentTokens::default(),
+        }),
     });
     manifest
+}
+
+fn observed_result(
+    candidate_id: &str,
+    resolved_rate: f64,
+    tokens: f64,
+    latency_ms: f64,
+) -> TrialResult {
+    TrialResult {
+        trial_id: format!("trial-{candidate_id}"),
+        candidate_id: candidate_id.into(),
+        round: 0,
+        resolved_rate,
+        average_cost_usd: Some(1.0),
+        average_latency_ms: latency_ms,
+        average_agent_latency_ms: Some(latency_ms),
+        average_tokens: Some(tokens),
+        optimization: Some(TrialOptimizationSummary {
+            average_tool_calls: 2.0,
+            average_tool_error_rate: 0.0,
+            average_peak_tool_concurrency: 2.0,
+            average_context_tokens_per_turn: tokens,
+            average_peak_context_tokens: tokens,
+            average_transcript_tokens_reclaimed: 0.0,
+            average_context_components_per_turn: None,
+        }),
+        manifest_digest: prefixed_digest('f'),
+    }
 }
 
 #[test]
@@ -280,6 +323,15 @@ fn typed_optimization_trace_survives_the_tuner_and_breaks_only_primary_metric_ti
     assert_eq!(
         clean.optimization.unwrap().average_context_tokens_per_turn,
         900.0
+    );
+    assert_eq!(
+        clean
+            .optimization
+            .unwrap()
+            .average_context_components_per_turn
+            .unwrap()
+            .memory,
+        40.0
     );
     assert_eq!(
         missing.optimization, None,
@@ -725,6 +777,149 @@ fn tuner_features_reuse_generic_strategy_modules_across_atomic_parameters() {
 }
 
 #[test]
+fn candidate_pool_coverage_distinguishes_presence_from_real_module_contrast() {
+    let mut first = universal_candidate("coverage-a");
+    first
+        .profile
+        .as_mut()
+        .unwrap()
+        .params
+        .push(iteron_tunables::ParamAssignment {
+            param: "ctx.memory.header".into(),
+            value: iteron_tunables::ResolutionValue::Text {
+                value: "memory-a".into(),
+            },
+        });
+    first
+        .profile
+        .as_mut()
+        .unwrap()
+        .params
+        .sort_by(|left, right| left.param.cmp(&right.param));
+    let mut second = first.clone();
+    second.id = "coverage-b".into();
+    second.profile.as_mut().unwrap().profile_id = second.id.clone();
+    let memory = second
+        .profile
+        .as_mut()
+        .unwrap()
+        .params
+        .iter_mut()
+        .find(|assignment| assignment.param == "ctx.memory.header")
+        .unwrap();
+    memory.value = iteron_tunables::ResolutionValue::Text {
+        value: "memory-b".into(),
+    };
+    first.validate_universal().unwrap();
+    second.validate_universal().unwrap();
+
+    let coverage = crate::optimization::candidate_pool_coverage(&[first, second]);
+    let memory = coverage
+        .modules
+        .iter()
+        .find(|module| module.module == iteron_tunables::ModuleId::MemoryRecall)
+        .unwrap();
+    assert!(memory.represented_dimensions > 0);
+    assert!(memory.varying_dimensions > 0);
+
+    let verification = coverage
+        .modules
+        .iter()
+        .find(|module| module.module == iteron_tunables::ModuleId::VerificationQuorum)
+        .unwrap();
+    assert!(verification.implementation_slot_represented);
+    assert!(!verification.implementation_slot_varies);
+    assert!(coverage.modules_varying < coverage.modules_total);
+}
+
+#[test]
+fn weighted_generic_objectives_rank_equal_quality_candidates_but_never_a_failure_first() {
+    use crate::trainer_bridge::{RewardContract, RewardDirection, RewardObjective};
+
+    let candidates = vec![
+        universal_candidate("fast"),
+        universal_candidate("lean"),
+        universal_candidate("failed"),
+    ];
+    let mut bridge = trainer_bridge("objective-ranking", 3);
+    bridge.reward = RewardContract {
+        schema_id: "reward/performance@v1".into(),
+        objectives: vec![
+            RewardObjective {
+                metric: "total_tokens".into(),
+                direction: RewardDirection::Minimize,
+                weight_micros: 300_000,
+            },
+            RewardObjective {
+                metric: "agent_latency_ms".into(),
+                direction: RewardDirection::Minimize,
+                weight_micros: 700_000,
+            },
+        ],
+    };
+    let spec = TunerSpec {
+        schema_version: 2,
+        experiment_id: bridge.experiment_id.clone(),
+        train_dataset_digest: bridge.train.digest.clone(),
+        tunables_registry_digest: iteron_tunables::REGISTRY_DIGEST_SHA256.into(),
+        param_registry_digest: Some(iteron_tunables::param_registry_digest_sha256()),
+        tool_text_registry_digest: Some(iteron_tunables::tool_text_registry_digest_sha256()),
+        trainer_bridge: Some(bridge),
+        max_trials: 3,
+        max_concurrency: 1,
+        reduction_factor: 2,
+        round_budgets: vec![1],
+        candidates,
+    };
+    validate_spec(&spec).unwrap();
+    let fast = observed_result("fast", 1.0, 200.0, 10.0);
+    let lean = observed_result("lean", 1.0, 100.0, 100.0);
+    let failed = observed_result("failed", 0.0, 1.0, 1.0);
+    let ranked = super::state_ops::rank_results(&spec, vec![&lean, &failed, &fast]);
+    assert_eq!(
+        ranked
+            .iter()
+            .map(|result| result.candidate_id.as_str())
+            .collect::<Vec<_>>(),
+        ["fast", "lean", "failed"]
+    );
+}
+
+#[test]
+fn built_in_tuner_rejects_provider_or_model_identity_as_a_reward_metric() {
+    use crate::trainer_bridge::{RewardContract, RewardDirection, RewardObjective};
+
+    let mut bridge = trainer_bridge("identity-metric-refusal", 1);
+    bridge.reward = RewardContract {
+        schema_id: "reward/invalid@v1".into(),
+        objectives: vec![RewardObjective {
+            metric: "provider_id".into(),
+            direction: RewardDirection::Maximize,
+            weight_micros: 1_000_000,
+        }],
+    };
+    let spec = TunerSpec {
+        schema_version: 2,
+        experiment_id: bridge.experiment_id.clone(),
+        train_dataset_digest: bridge.train.digest.clone(),
+        tunables_registry_digest: iteron_tunables::REGISTRY_DIGEST_SHA256.into(),
+        param_registry_digest: Some(iteron_tunables::param_registry_digest_sha256()),
+        tool_text_registry_digest: Some(iteron_tunables::tool_text_registry_digest_sha256()),
+        trainer_bridge: Some(bridge),
+        max_trials: 1,
+        max_concurrency: 1,
+        reduction_factor: 2,
+        round_budgets: vec![1],
+        candidates: vec![universal_candidate("identity-refusal")],
+    };
+    assert!(matches!(
+        validate_spec(&spec),
+        Err(TunerError::InvalidSpec(reason))
+            if reason.contains("does not implement one or more reward metrics")
+    ));
+}
+
+#[test]
 fn universal_candidate_rejects_a_second_address_space() {
     let root = TempRoot::new("universal-legacy-mix");
     let bridge = trainer_bridge("mixed-fixture", 1);
@@ -891,6 +1086,20 @@ fn candidate_graph_v3_materializes_every_address_and_binds_identity() {
     assert_eq!(
         candidate.rendered_profile().unwrap(),
         candidate.rendered_profile().unwrap()
+    );
+    let features = super::state_ops::candidate_features(&candidate);
+    assert!(features.contains_key("param/eval.tuner.max_candidates"));
+    assert_eq!(
+        features
+            .keys()
+            .filter(|feature| feature.starts_with("native/direct_config/path/"))
+            .count(),
+        1
+    );
+    assert!(
+        features
+            .keys()
+            .all(|feature| !feature.starts_with("graph/"))
     );
 }
 

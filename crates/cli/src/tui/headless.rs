@@ -44,7 +44,7 @@ fn terminal_result_frame(seq: u64, summary: &TerminalSummary) -> ServerFrame {
     ServerFrame::Result {
         protocol_version: PROTOCOL_VERSION,
         seq,
-        result: summary.result_v5(),
+        result: summary.current_result(),
     }
 }
 

@@ -15,9 +15,14 @@ use iteron_provider::EffortApplication;
 use serde_json::{Value, json};
 use std::io::{self, Write};
 
-pub const SCHEMA_VERSION: u32 = 5;
+pub const SCHEMA_VERSION: u32 = 6;
+pub const PREVIOUS_SCHEMA_VERSION: u32 = 5;
 pub const LEGACY_SCHEMA_VERSION: u32 = 4;
-pub const SUPPORTED_SCHEMA_VERSIONS: [u32; 2] = [LEGACY_SCHEMA_VERSION, SCHEMA_VERSION];
+pub const SUPPORTED_SCHEMA_VERSIONS: [u32; 3] = [
+    LEGACY_SCHEMA_VERSION,
+    PREVIOUS_SCHEMA_VERSION,
+    SCHEMA_VERSION,
+];
 pub const EXIT_SUCCESS: u8 = 0;
 /// A workflow settled, but one or more fan-out agents failed. Kept distinct from cancellation 130.
 pub const EXIT_WORKFLOW_FAILED: u8 = 1;
@@ -287,6 +292,7 @@ pub fn stream_event(event: UiEvent, turn: &mut u32) -> Value {
                     "tool_tokens": context.tool_tokens,
                     "transcript_tokens": context.transcript_tokens,
                     "framing_tokens": context.framing_tokens,
+                    "components": context.components,
                     "estimator": "heuristic_bytes_per_token_3_5",
                     "model_context_window": model_context_window,
                     "reserved_output_tokens": reserved_output_tokens,
@@ -531,9 +537,9 @@ fn write_json_line(mut writer: impl Write, value: &Value) -> io::Result<()> {
 
 /// Project a current machine record onto one explicitly selected public CLI schema.
 ///
-/// Schema v4 differs from v5 only at the terminal: v5 added `kernel_tax`. Keeping the projection
-/// at the final stdout seam lets the runtime continue producing one current vocabulary while an
-/// older client receives the exact frozen v4 bytes it already knows how to parse.
+/// Keeping compatibility projection at the final stdout seam lets the runtime produce one current
+/// vocabulary while older clients receive the exact frozen bytes they already know how to parse.
+/// V5 predates source-separated context components; v4 additionally predates `kernel_tax`.
 pub(crate) fn project_schema(mut value: Value, schema_version: u32) -> io::Result<Value> {
     if !SUPPORTED_SCHEMA_VERSIONS.contains(&schema_version) {
         return Err(io::Error::new(
@@ -548,6 +554,12 @@ pub(crate) fn project_schema(mut value: Value, schema_version: u32) -> io::Resul
         )
     })?;
     fields.insert("schema_version".into(), Value::from(schema_version));
+    if schema_version < SCHEMA_VERSION
+        && fields.get("type").and_then(Value::as_str) == Some("turn_end")
+        && let Some(context) = fields.get_mut("context").and_then(Value::as_object_mut)
+    {
+        context.remove("components");
+    }
     if schema_version == LEGACY_SCHEMA_VERSION
         && fields.get("type").and_then(Value::as_str) == Some("result")
     {
@@ -791,10 +803,10 @@ mod tests {
         assert_eq!(
             value,
             serde_json::from_str::<Value>(include_str!(
-                "../tests/golden/one_shot_json_drained_v5.json"
+                "../tests/golden/one_shot_json_drained_v6.json"
             ))
             .unwrap(),
-            "the complete drained machine terminal is a frozen schema-v5 contract"
+            "the complete drained machine terminal is a frozen schema-v6 contract"
         );
     }
 
@@ -897,6 +909,7 @@ mod tests {
                     framing_tokens: 0,
                     total_tokens: 0,
                     provenance: iteron_ctx::TokenEstimateProvenance::HeuristicBytesPerToken35,
+                    components: Some(iteron_ctx::ContextComponentUsage::default()),
                 },
                 model_context_window: None,
                 reserved_output_tokens: 8_192,
@@ -979,6 +992,17 @@ mod tests {
                     framing_tokens: 4,
                     total_tokens: 64,
                     provenance: iteron_ctx::TokenEstimateProvenance::HeuristicBytesPerToken35,
+                    components: Some(iteron_ctx::ContextComponentUsage {
+                        stable_prefix_tokens: 1,
+                        instruction_tokens: 2,
+                        task_context_tokens: 3,
+                        memory_tokens: 4,
+                        transcript_tokens: 5,
+                        attachment_tokens: 6,
+                        tool_schema_tokens: 7,
+                        tool_result_tokens: 8,
+                        lsp_result_tokens: 9,
+                    }),
                 },
                 model_context_window: None,
                 reserved_output_tokens: 8_192,
@@ -997,7 +1021,12 @@ mod tests {
         assert_eq!(turn_end["context"]["input_tokens"], 64);
         assert_eq!(turn_end["context"]["model_context_window"], Value::Null);
         assert_eq!(turn_end["context"]["reserved_output_tokens"], 8_192);
+        assert_eq!(turn_end["context"]["components"]["memory_tokens"], 4);
         assert_eq!(turn_end["effort"]["enforcement"], "exact");
+
+        let previous = project_schema(turn_end.clone(), PREVIOUS_SCHEMA_VERSION).unwrap();
+        assert!(previous["context"].get("components").is_none());
+        assert_eq!(previous["schema_version"], PREVIOUS_SCHEMA_VERSION);
 
         let approval = stream_event(
             UiEvent::ApprovalRequest {
@@ -1095,7 +1124,7 @@ mod tests {
     }
 
     #[test]
-    fn d13_14_every_stream_record_type_matches_the_frozen_v5_corpus() {
+    fn d13_14_every_stream_record_type_matches_the_frozen_v6_corpus() {
         fn frozen_turn_end(effort: EffortApplication, turn: &mut u32) -> Value {
             stream_event(
                 UiEvent::TurnEnd {
@@ -1113,6 +1142,7 @@ mod tests {
                         framing_tokens: 0,
                         total_tokens: 0,
                         provenance: iteron_ctx::TokenEstimateProvenance::HeuristicBytesPerToken35,
+                        components: Some(iteron_ctx::ContextComponentUsage::default()),
                     },
                     model_context_window: None,
                     reserved_output_tokens: 8_192,
@@ -1304,9 +1334,9 @@ mod tests {
                 None,
             ),
         ];
-        let frozen = include_str!("../tests/golden/input_attachment_stream_v5.jsonl")
+        let frozen = include_str!("../tests/golden/input_attachment_stream_v6.jsonl")
             .lines()
-            .chain(include_str!("../tests/golden/machine_stream_all_v5.jsonl").lines())
+            .chain(include_str!("../tests/golden/machine_stream_all_v6.jsonl").lines())
             .filter(|line| !line.trim().is_empty())
             .map(|line| serde_json::from_str::<Value>(line).unwrap())
             .collect::<Vec<_>>();
@@ -1456,7 +1486,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     #[test]
     fn input_attachment_is_bounded_metadata_only_and_stream_json_only() {
         let frozen: Value = serde_json::from_str(include_str!(
-            "../tests/golden/input_attachment_stream_v5.jsonl"
+            "../tests/golden/input_attachment_stream_v6.jsonl"
         ))
         .unwrap();
         assert_eq!(

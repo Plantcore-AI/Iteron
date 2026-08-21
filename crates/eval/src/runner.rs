@@ -1410,7 +1410,9 @@ fn core_process_spec(
         "--output-format".into(),
         "stream-json".into(),
         "--output-schema-version".into(),
-        "5".into(),
+        crate::contract::ITERON_CLI_SCHEMA_VERSION
+            .to_string()
+            .into(),
         "--model".into(),
         options.model.clone().into(),
         "--max-wall-secs".into(),

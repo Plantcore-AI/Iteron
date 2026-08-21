@@ -68,7 +68,7 @@ bounded `frame_chunk` frames and occupy one atomic ring entry. A slow or idle
 external client is disconnected instead of blocking the runtime and can
 reconnect from its last fully assembled cursor. If an exact terminal result has
 already left the ring, reconnect fails explicitly with `cursor_expired`;
-Rollout replay is never mislabeled as a reconstruction of result-v5.
+Rollout replay is never mislabeled as a reconstruction of the current terminal result.
 
 Live reattach and session resume are deliberately different operations:
 

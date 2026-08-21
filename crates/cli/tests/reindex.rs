@@ -202,7 +202,12 @@ fn schema_v4_session_argv_is_typed_provider_free_and_tag_preserving() {
         run_core(&scratch.home(), &scratch.repo(), &["--machine-contract"]);
     assert!(status.success(), "stdout={contract}\nstderr={stderr}");
     let contract: serde_json::Value = serde_json::from_str(contract.trim()).unwrap();
-    assert_eq!(contract["cli_stream_versions"], serde_json::json!([4, 5]));
+    assert_eq!(contract["schema_version"], 2);
+    assert_eq!(
+        contract["cli_stream_versions"],
+        serde_json::json!([4, 5, 6])
+    );
+    assert_eq!(contract["default_cli_stream_version"], 6);
     assert_eq!(
         contract["resident_protocol_version"],
         iteron_protocol::wire::PROTOCOL_VERSION

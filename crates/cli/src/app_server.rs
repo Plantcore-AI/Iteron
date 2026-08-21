@@ -144,7 +144,8 @@ const LIFECYCLE_HOOK_DRAIN_GRACE: std::time::Duration = std::time::Duration::fro
 ///
 /// Keeping this projection on the server side is what lets one-shot and headless clients remain
 /// clients: neither needs to reclaim the [`Agent`] or parse `UiEvent::Done`'s debug string. The
-/// stable result-v5 object is still constructed by `output::final_result` at the client boundary.
+/// current versioned result object is still constructed by `output::final_result` at the client
+/// boundary.
 #[derive(Debug, Clone)]
 pub(crate) struct TerminalSummary {
     pub(crate) outcome: Outcome,
@@ -161,7 +162,7 @@ pub(crate) struct TerminalSummary {
 impl TerminalSummary {
     /// Project the one terminal authority into the versioned object consumed by every sibling
     /// client. Presentation remains client-owned; outcome, exit status, and result fields do not.
-    pub(crate) fn result_v5(&self) -> serde_json::Value {
+    pub(crate) fn current_result(&self) -> serde_json::Value {
         crate::output::final_result(
             &self.outcome,
             &self.assistant_text,
@@ -4529,9 +4530,9 @@ mod tests {
             memo_hits: 0,
             memo_misses: 0,
         };
-        let authoritative = summary.result_v5();
+        let authoritative = summary.current_result();
         let transcript: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../governance/client-conformance/client-parity-v5.json"
+            "../../../governance/client-conformance/client-parity-v6.json"
         ))
         .unwrap();
         let captures = transcript["clients"].as_array().unwrap();
@@ -4546,7 +4547,10 @@ mod tests {
         assert_eq!(authoritative["outcome"], "done");
         assert_eq!(authoritative["exit_code"], 0);
         assert_eq!(authoritative["type"], "result");
-        assert_eq!(authoritative["schema_version"], 5);
+        assert_eq!(
+            authoritative["schema_version"],
+            crate::output::SCHEMA_VERSION
+        );
     }
 
     #[test]

@@ -729,7 +729,7 @@ struct Cli {
     output_format: OutputFormat,
 
     /// Pin a published machine stdout schema. Supported versions are reported by
-    /// `--machine-contract`; omission keeps the current v5 default.
+    /// `--machine-contract`; omission keeps the current v6 default.
     #[arg(long, value_name = "VERSION")]
     output_schema_version: Option<u32>,
 
@@ -1243,7 +1243,7 @@ async fn run_cli() -> anyhow::Result<u8> {
     let machine_schema_version = cli.output_schema_version.unwrap_or(output::SCHEMA_VERSION);
     if !output::SUPPORTED_SCHEMA_VERSIONS.contains(&machine_schema_version) {
         anyhow::bail!(
-            "unsupported --output-schema-version {machine_schema_version}; supported versions: 4, 5"
+            "unsupported --output-schema-version {machine_schema_version}; supported versions: 4, 5, 6"
         );
     }
     if cli.output_schema_version.is_some()
@@ -1400,7 +1400,7 @@ async fn run_cli() -> anyhow::Result<u8> {
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
-                "schema_version": 1,
+                "schema_version": 2,
                 "type": "machine_contract",
                 "cli_stream_versions": output::SUPPORTED_SCHEMA_VERSIONS,
                 "default_cli_stream_version": output::SCHEMA_VERSION,

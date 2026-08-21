@@ -46,6 +46,10 @@ const FREE_FUNCTIONS: &[FreeFunctions] = &[
     },
     FreeFunctions {
         path: "crates/cli/src/output.rs",
+        // `stream_event` is the versioned producer itself, so a full-body fingerprint would make
+        // an additive schema release impossible. It evolves behind the CLI parse/token/exact and
+        // writer authorities, which bind the direct UiEvent match, JSON producers, compatibility
+        // projection, and stdout sink. The surrounding helpers remain frozen here.
         names: &[
             "outcome_exit_code",
             "outcome_name",
@@ -55,7 +59,6 @@ const FREE_FUNCTIONS: &[FreeFunctions] = &[
             "scrub",
             "scrub_json",
             "is_token_boundary",
-            "stream_event",
             "final_result",
             "write_json_line",
         ],

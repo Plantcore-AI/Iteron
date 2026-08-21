@@ -40,16 +40,26 @@ fn validate_contract(contract: &syn::File) -> Result<()> {
         contract,
         "parse_machine_record",
         r#"pub fn parse_machine_record(bytes: &[u8]) -> Result<CliMachineRecord, ContractError> {
-            match parse_machine_record_payload(bytes)? {
-                ParsedCliMachineRecord::Event(event) => {
-                    let (schema_version, kind) = event.schema_and_kind();
-                    Ok(CliMachineRecord::Event {
-                        schema_version,
-                        kind,
-                    })
-                }
-                ParsedCliMachineRecord::Result(result) => Ok(CliMachineRecord::Result(result)),
+            let value = parse_json_no_duplicates(bytes)
+                .map_err(|error| ContractError::MalformedJson(error.to_string()))?;
+            let kind = value
+                .get("type")
+                .and_then(Value::as_str)
+                .ok_or_else(|| ContractError::MalformedJson("missing string field `type`".into()))?;
+            if kind == "result" {
+                let result: CliFinalResult = serde_json::from_value(value)
+                    .map_err(|error| ContractError::MalformedJson(error.to_string()))?;
+                admit_type_version("result", result.schema_version)?;
+                return Ok(CliMachineRecord::Result(result));
             }
+            let event: CliStreamEvent = serde_json::from_value(value)
+                .map_err(|error| ContractError::MalformedJson(error.to_string()))?;
+            let (schema_version, kind) = event.schema_and_kind();
+            admit_type_version(kind.as_str(), schema_version)?;
+            Ok(CliMachineRecord::Event {
+                schema_version,
+                kind,
+            })
         }"#,
     )?;
     require_function(
@@ -72,6 +82,21 @@ fn validate_contract(contract: &syn::File) -> Result<()> {
                 .map_err(|error| ContractError::MalformedJson(error.to_string()))?;
             let (schema_version, kind) = event.schema_and_kind();
             admit_type_version(kind.as_str(), schema_version)?;
+            if let CliStreamEvent::TurnEnd { context, .. } = &event {
+                match (schema_version >= 6, context.components.is_some()) {
+                    (true, false) => {
+                        return Err(ContractError::MalformedJson(
+                            "schema v6 turn_end lacks `context.components`".into(),
+                        ));
+                    }
+                    (false, true) => {
+                        return Err(ContractError::MalformedJson(
+                            "pre-v6 turn_end unexpectedly carries `context.components`".into(),
+                        ));
+                    }
+                    (true, true) | (false, false) => {}
+                }
+            }
             Ok(ParsedCliMachineRecord::Event(event))
         }"#,
     )?;

@@ -23,7 +23,7 @@
         {
           "kind": "test",
           "path": "crates/cli/tests/headless_serve.rs",
-          "selector": "fn no_tty_skew_reconnect_and_result_v5_share_one_headless_server()"
+          "selector": "fn no_tty_skew_reconnect_and_current_result_share_one_headless_server()"
         }
       ]
     },
@@ -82,7 +82,7 @@
         {
           "kind": "test",
           "path": "crates/cli/tests/headless_serve.rs",
-          "selector": "fn no_tty_skew_reconnect_and_result_v5_share_one_headless_server()"
+          "selector": "fn no_tty_skew_reconnect_and_current_result_share_one_headless_server()"
         }
       ]
     },
@@ -95,7 +95,7 @@
         {
           "kind": "test",
           "path": "crates/cli/tests/headless_serve.rs",
-          "selector": "fn no_tty_skew_reconnect_and_result_v5_share_one_headless_server()"
+          "selector": "fn no_tty_skew_reconnect_and_current_result_share_one_headless_server()"
         }
       ]
     },
@@ -136,7 +136,7 @@
         {
           "kind": "test",
           "path": "crates/cli/tests/headless_serve.rs",
-          "selector": "fn no_tty_skew_reconnect_and_result_v5_share_one_headless_server()"
+          "selector": "fn no_tty_skew_reconnect_and_current_result_share_one_headless_server()"
         }
       ]
     },
@@ -162,7 +162,7 @@
   "client_parity": {
     "status": "green",
     "clients": ["tui", "one-shot", "headless"],
-    "transcript": "governance/client-conformance/client-parity-v5.json",
+    "transcript": "governance/client-conformance/client-parity-v6.json",
     "test": {
       "kind": "test",
       "path": "crates/cli/src/tui/tests.rs",
@@ -182,7 +182,7 @@
       {
         "kind": "test",
         "path": "crates/cli/tests/headless_serve.rs",
-        "selector": "fn no_tty_skew_reconnect_and_result_v5_share_one_headless_server()"
+        "selector": "fn no_tty_skew_reconnect_and_current_result_share_one_headless_server()"
       },
       {
         "kind": "test",

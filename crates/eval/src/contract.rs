@@ -1,66 +1,84 @@
 //! Parser for the stable one-shot Core CLI result object.
 
 use crate::strict_json::parse_json_no_duplicates;
+use crate::types::CostStatus;
 #[cfg(test)]
 use crate::types::RunStatus;
-use crate::types::{CostStatus, OptimizationMetrics};
 use serde::Deserialize;
 use serde_json::Value;
-use std::collections::BTreeSet;
 
 /// Versions of the frozen `iteron --output-format json` contract this consumer can read.
 ///
 /// Keep the current version last. The schema-compatibility corpus test below binds this list to
 /// every retained machine-output fixture, so a producer bump cannot silently strand evaluation.
-pub const SUPPORTED_ITERON_CLI_SCHEMA_VERSIONS: &[u32] = &[3, 4, 5];
+pub const SUPPORTED_ITERON_CLI_SCHEMA_VERSIONS: &[u32] = &[3, 4, 5, 6];
 /// Version currently emitted by `iteron --output-format json`.
-pub const ITERON_CLI_SCHEMA_VERSION: u32 = 5;
+pub const ITERON_CLI_SCHEMA_VERSION: u32 = 6;
 const MAX_CLI_INPUT_ATTACHMENTS: u8 = 8;
 const MAX_CLI_IMAGE_BASE64_BYTES: u64 = 8 * 1024 * 1024;
 /// Exact machine-record/version pairs admitted by the real evaluation consumer.
 pub const SUPPORTED_ITERON_CLI_TYPE_VERSIONS: &[(&str, u32)] = &[
     ("approval_request", 4),
     ("approval_request", 5),
+    ("approval_request", 6),
     ("assistant_text", 3),
     ("assistant_text", 4),
     ("assistant_text", 5),
+    ("assistant_text", 6),
     ("input_attachment", 5),
+    ("input_attachment", 6),
     ("notice", 4),
     ("notice", 5),
+    ("notice", 6),
     ("phase", 3),
     ("phase", 4),
     ("phase", 5),
+    ("phase", 6),
     ("result", 3),
     ("result", 4),
     ("result", 5),
+    ("result", 6),
     ("run_done", 3),
     ("run_done", 4),
     ("run_done", 5),
+    ("run_done", 6),
     ("steer_applied", 4),
     ("steer_applied", 5),
+    ("steer_applied", 6),
     ("thinking", 4),
     ("thinking", 5),
+    ("thinking", 6),
     ("tool_end", 4),
     ("tool_end", 5),
+    ("tool_end", 6),
     ("tool_start", 4),
     ("tool_start", 5),
+    ("tool_start", 6),
     ("turn_end", 3),
     ("turn_end", 4),
     ("turn_end", 5),
+    ("turn_end", 6),
     ("workflow_agent_activity", 4),
     ("workflow_agent_activity", 5),
+    ("workflow_agent_activity", 6),
     ("workflow_agent_end", 4),
     ("workflow_agent_end", 5),
+    ("workflow_agent_end", 6),
     ("workflow_agent_start", 4),
     ("workflow_agent_start", 5),
+    ("workflow_agent_start", 6),
     ("workflow_end", 4),
     ("workflow_end", 5),
+    ("workflow_end", 6),
     ("workflow_phase", 4),
     ("workflow_phase", 5),
+    ("workflow_phase", 6),
     ("workflow_plan", 4),
     ("workflow_plan", 5),
+    ("workflow_plan", 6),
     ("workflow_start", 4),
     ("workflow_start", 5),
+    ("workflow_start", 6),
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -170,14 +188,18 @@ pub(crate) struct CliRunOutput {
     pub(crate) usage: Option<iteron_protocol::Usage>,
     /// Content-free tool/context behavior from typed stream events. A final-result-only surface has
     /// no such evidence and remains `None`.
-    pub(crate) optimization: Option<OptimizationMetrics>,
+    pub(crate) optimization: Option<crate::types::OptimizationMetrics>,
 }
 
 #[derive(Debug, Default)]
 struct OptimizationAccumulator {
-    metrics: OptimizationMetrics,
-    open_tools: BTreeSet<String>,
+    metrics: crate::types::OptimizationMetrics,
+    open_tools: std::collections::BTreeSet<String>,
     prior_transcript_tokens: Option<u64>,
+    component_samples: u64,
+    cumulative_components: crate::types::ContextComponentTokens,
+    peak_components: crate::types::ContextComponentTokens,
+    final_components: crate::types::ContextComponentTokens,
     observed: bool,
 }
 
@@ -246,13 +268,31 @@ impl OptimizationAccumulator {
                         ))?;
                 }
                 self.prior_transcript_tokens = Some(context.transcript_tokens);
+                if let Some(components) = context.components {
+                    self.component_samples =
+                        checked_increment(self.component_samples, "context_component_samples")?;
+                    let components = components.into_tokens();
+                    self.cumulative_components =
+                        self.cumulative_components.checked_add(components).ok_or(
+                            ContractError::OptimizationOverflow("cumulative_context_components"),
+                        )?;
+                    self.peak_components = self.peak_components.component_max(components);
+                    self.final_components = components;
+                }
             }
             _ => {}
         }
         Ok(())
     }
 
-    fn finish(self) -> Option<OptimizationMetrics> {
+    fn finish(mut self) -> Option<crate::types::OptimizationMetrics> {
+        if self.component_samples > 0 && self.component_samples == self.metrics.context_samples {
+            self.metrics.context_components = Some(crate::types::ContextComponentMetrics {
+                cumulative: self.cumulative_components,
+                peak: self.peak_components,
+                final_turn: self.final_components,
+            });
+        }
         self.observed.then_some(self.metrics)
     }
 }
@@ -308,7 +348,7 @@ enum CliStreamEvent {
         cost_reason: Option<String>,
         usage: CliUsage,
         cache_hit: f64,
-        context: CliContextEstimate,
+        context: Box<CliContextEstimate>,
         effort: CliEffortApplication,
     },
     WorkflowStart {
@@ -582,10 +622,42 @@ struct CliContextEstimate {
     tool_tokens: u64,
     transcript_tokens: u64,
     framing_tokens: u64,
+    #[serde(default)]
+    components: Option<CliContextComponents>,
     estimator: String,
     model_context_window: Option<u64>,
     reserved_output_tokens: u64,
     compaction_trigger_tokens: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CliContextComponents {
+    stable_prefix_tokens: u64,
+    instruction_tokens: u64,
+    task_context_tokens: u64,
+    memory_tokens: u64,
+    transcript_tokens: u64,
+    attachment_tokens: u64,
+    tool_schema_tokens: u64,
+    tool_result_tokens: u64,
+    lsp_result_tokens: u64,
+}
+
+impl CliContextComponents {
+    const fn into_tokens(self) -> crate::types::ContextComponentTokens {
+        crate::types::ContextComponentTokens {
+            stable_prefix: self.stable_prefix_tokens,
+            instructions: self.instruction_tokens,
+            task_context: self.task_context_tokens,
+            memory: self.memory_tokens,
+            transcript: self.transcript_tokens,
+            attachments: self.attachment_tokens,
+            tool_schemas: self.tool_schema_tokens,
+            tool_results: self.tool_result_tokens,
+            lsp_results: self.lsp_result_tokens,
+        }
+    }
 }
 
 #[allow(dead_code)]
@@ -691,16 +763,27 @@ fn admit_type_version(kind: &str, actual: u32) -> Result<(), ContractError> {
 /// check. Additive producer changes therefore require both a new frozen fixture and an updated
 /// consumer before the schema version can be admitted.
 pub fn parse_machine_record(bytes: &[u8]) -> Result<CliMachineRecord, ContractError> {
-    match parse_machine_record_payload(bytes)? {
-        ParsedCliMachineRecord::Event(event) => {
-            let (schema_version, kind) = event.schema_and_kind();
-            Ok(CliMachineRecord::Event {
-                schema_version,
-                kind,
-            })
-        }
-        ParsedCliMachineRecord::Result(result) => Ok(CliMachineRecord::Result(result)),
+    let value = parse_json_no_duplicates(bytes)
+        .map_err(|error| ContractError::MalformedJson(error.to_string()))?;
+    let kind = value
+        .get("type")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ContractError::MalformedJson("missing string field `type`".into()))?;
+    if kind == "result" {
+        let result: CliFinalResult = serde_json::from_value(value)
+            .map_err(|error| ContractError::MalformedJson(error.to_string()))?;
+        admit_type_version("result", result.schema_version)?;
+        return Ok(CliMachineRecord::Result(result));
     }
+
+    let event: CliStreamEvent = serde_json::from_value(value)
+        .map_err(|error| ContractError::MalformedJson(error.to_string()))?;
+    let (schema_version, kind) = event.schema_and_kind();
+    admit_type_version(kind.as_str(), schema_version)?;
+    Ok(CliMachineRecord::Event {
+        schema_version,
+        kind,
+    })
 }
 
 fn parse_machine_record_payload(bytes: &[u8]) -> Result<ParsedCliMachineRecord, ContractError> {
@@ -721,6 +804,21 @@ fn parse_machine_record_payload(bytes: &[u8]) -> Result<ParsedCliMachineRecord, 
         .map_err(|error| ContractError::MalformedJson(error.to_string()))?;
     let (schema_version, kind) = event.schema_and_kind();
     admit_type_version(kind.as_str(), schema_version)?;
+    if let CliStreamEvent::TurnEnd { context, .. } = &event {
+        match (schema_version >= 6, context.components.is_some()) {
+            (true, false) => {
+                return Err(ContractError::MalformedJson(
+                    "schema v6 turn_end lacks `context.components`".into(),
+                ));
+            }
+            (false, true) => {
+                return Err(ContractError::MalformedJson(
+                    "pre-v6 turn_end unexpectedly carries `context.components`".into(),
+                ));
+            }
+            (true, true) | (false, false) => {}
+        }
+    }
     Ok(ParsedCliMachineRecord::Event(event))
 }
 
@@ -1305,7 +1403,7 @@ mod tests {
         let parsed = parse_run_output(stream.as_bytes(), 0).expect("typed stream parses");
         assert_eq!(
             parsed.optimization,
-            Some(OptimizationMetrics {
+            Some(crate::types::OptimizationMetrics {
                 tool_calls_started: 2,
                 tool_calls_completed: 2,
                 tool_errors: 1,
@@ -1319,7 +1417,126 @@ mod tests {
                 peak_transcript_tokens: 1000,
                 transcript_shrink_events: 1,
                 transcript_tokens_reclaimed: 600,
+                context_components: None,
             })
         );
+    }
+
+    #[test]
+    fn v6_turns_aggregate_every_non_overlapping_context_source() {
+        let components = |base: u64| {
+            serde_json::json!({
+                "stable_prefix_tokens": base,
+                "instruction_tokens": base + 1,
+                "task_context_tokens": base + 2,
+                "memory_tokens": base + 3,
+                "transcript_tokens": base + 4,
+                "attachment_tokens": base + 5,
+                "tool_schema_tokens": base + 6,
+                "tool_result_tokens": base + 7,
+                "lsp_result_tokens": base + 8
+            })
+        };
+        let turn = |ordinal: u32, base: u64| {
+            serde_json::json!({
+                "schema_version": 6,
+                "type": "turn_end",
+                "turn": ordinal,
+                "cost_usd": null,
+                "cumulative_cost_usd": null,
+                "cost_status": "unknown",
+                "cost_reason": "fixture",
+                "usage": {"input": 100, "output": 1, "cache_creation": 0, "cache_read": 0, "thinking": 0},
+                "cache_hit": 0.0,
+                "context": {
+                    "kind": "estimate",
+                    "input_tokens": 100,
+                    "system_tokens": 20,
+                    "tool_tokens": 10,
+                    "transcript_tokens": 60,
+                    "framing_tokens": 10,
+                    "components": components(base),
+                    "estimator": "fixture",
+                    "model_context_window": 10000,
+                    "reserved_output_tokens": 1000,
+                    "compaction_trigger_tokens": 8000
+                },
+                "effort": {"enforcement": "unsupported", "capability_proven_by_catalog": false, "requested": "medium"}
+            })
+        };
+        let records = [
+            turn(1, 10),
+            turn(2, 20),
+            serde_json::json!({
+                "schema_version": 6,
+                "type": "result",
+                "outcome": "done",
+                "reason": null,
+                "success": true,
+                "assistant_text": "done",
+                "run_id": "component-fixture",
+                "cost_usd": null,
+                "cost_status": "unknown",
+                "cost_reason": "fixture",
+                "turns": 2,
+                "kernel_tax": {"admission_latency_us": 0, "broker_latency_us": 0, "record_fsync_latency_us": 0, "estimated_tokens": 0, "failed_runs": 0},
+                "exit_code": 0,
+                "error": null
+            }),
+        ];
+        let stream = records
+            .into_iter()
+            .map(|record| serde_json::to_string(&record).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let observed = parse_run_output(stream.as_bytes(), 0)
+            .unwrap()
+            .optimization
+            .unwrap()
+            .context_components
+            .unwrap();
+        assert_eq!(observed.cumulative.stable_prefix, 30);
+        assert_eq!(observed.cumulative.memory, 36);
+        assert_eq!(observed.cumulative.tool_results, 44);
+        assert_eq!(observed.cumulative.lsp_results, 46);
+        assert_eq!(observed.peak.memory, 23);
+        assert_eq!(observed.final_turn.transcript, 24);
+    }
+
+    #[test]
+    fn context_component_shape_is_bound_to_cli_schema_v6() {
+        let mut v6: Value = serde_json::from_str(
+            include_str!("../../cli/tests/golden/one_shot_stream_json_success_v6.jsonl")
+                .lines()
+                .find(|line| line.contains("\"type\":\"turn_end\""))
+                .unwrap(),
+        )
+        .unwrap();
+        v6["context"].as_object_mut().unwrap().remove("components");
+        assert!(matches!(
+            parse_machine_record_payload(&serde_json::to_vec(&v6).unwrap()),
+            Err(ContractError::MalformedJson(_))
+        ));
+
+        let mut v5 = v6;
+        v5["schema_version"] = Value::from(5);
+        v5["context"].as_object_mut().unwrap().insert(
+            "components".into(),
+            serde_json::json!({
+                "stable_prefix_tokens": 0,
+                "instruction_tokens": 0,
+                "task_context_tokens": 0,
+                "memory_tokens": 0,
+                "transcript_tokens": 0,
+                "attachment_tokens": 0,
+                "tool_schema_tokens": 0,
+                "tool_result_tokens": 0,
+                "lsp_result_tokens": 0
+            }),
+        );
+        assert!(matches!(
+            parse_machine_record_payload(&serde_json::to_vec(&v5).unwrap()),
+            Err(ContractError::MalformedJson(_))
+        ));
     }
 }

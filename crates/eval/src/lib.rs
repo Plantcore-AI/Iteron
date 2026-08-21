@@ -14,6 +14,7 @@ pub mod engineering_cycle;
 pub mod evidence;
 pub mod evidence_bundle;
 pub mod measurement;
+pub mod optimization;
 pub mod pareto;
 pub mod process;
 pub mod provisioner;
@@ -73,6 +74,12 @@ pub use measurement::{
     PairedComparison, PairedEvaluationReport, PairedMetricComparison, PerformanceArmSummary,
     PerformanceDecision, PerformanceEvaluationReport, PerformanceThresholds, compare_manifest_arms,
     compare_manifests, compare_performance_manifests,
+};
+pub use optimization::{
+    CandidatePoolCoverage, ModuleCandidateCoverage, ModuleSearchPlan, SearchDimension,
+    SearchDimensionKind, SearchMethod, SearchPlanCounts, SearchPlanError, SearchTier, TuningMetric,
+    UNIVERSAL_SEARCH_PLAN_SCHEMA_VERSION, UniversalSearchPlan, candidate_pool_coverage,
+    universal_search_plan,
 };
 pub use pareto::{ParetoError, ParetoPoint, ParetoReport, pareto_frontier};
 pub use provisioner::{
@@ -143,12 +150,14 @@ pub use tuner::{
     CandidateOwnerKind, CandidatePatch, CandidateProductionPlan, CandidateSelectorKind,
     CandidateTopologyEdge, IMPLEMENTATION_PROTOCOL, LEGACY_IMPLEMENTATION_PROTOCOL,
     LEGACY_UNIVERSAL_CANDIDATE_SCHEMA_VERSION, MAX_CANDIDATE_TOPOLOGY_EDGES, MAX_TUNER_CONCURRENCY,
-    MAX_TUNER_TRIALS, MAX_UNIVERSAL_CANDIDATE_DIMENSIONS, OfflineTuner, TrialOptimizationSummary,
-    TrialRequest, TrialResult, TunerCandidate, TunerError, TunerEvidenceInspection, TunerSnapshot,
-    TunerSpec, TunerStatus, UNIVERSAL_CANDIDATE_SCHEMA_VERSION,
+    MAX_TUNER_TRIALS, MAX_UNIVERSAL_CANDIDATE_DIMENSIONS, OfflineTuner,
+    TrialContextComponentAverages, TrialOptimizationSummary, TrialRequest, TrialResult,
+    TunerCandidate, TunerError, TunerEvidenceInspection, TunerSnapshot, TunerSpec, TunerStatus,
+    UNIVERSAL_CANDIDATE_SCHEMA_VERSION,
 };
 pub use types::{
-    AgentMetrics, BenchmarkReference, CellKey, CellResult, CostObservation, CostStatus,
-    EvaluationManifest, EvaluationPurpose, KernelTaxObservation, OptimizationMetrics, OracleStatus,
-    Partition, RunStatus, SamplingControl, TwoSidedOracleReceipt,
+    AgentMetrics, BenchmarkReference, CellKey, CellResult, ContextComponentMetrics,
+    ContextComponentTokens, CostObservation, CostStatus, EvaluationManifest, EvaluationPurpose,
+    KernelTaxObservation, OptimizationMetrics, OracleStatus, Partition, RunStatus, SamplingControl,
+    TwoSidedOracleReceipt,
 };

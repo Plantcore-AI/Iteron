@@ -37,6 +37,7 @@ fn main() -> std::process::ExitCode {
         return iteron_eval::engineering_cycle::run_synthetic_cycle_cli(&args[1..]);
     }
     let result = match args.as_slice() {
+        [operation] if operation == "search-plan" => write_search_plan(),
         [operation] if operation == "surface" => one_shot(AdapterOperation::Surface),
         [operation] if operation == "candidate-validate" => {
             one_shot(AdapterOperation::CandidateValidate)
@@ -80,7 +81,7 @@ fn main() -> std::process::ExitCode {
         }
         [operation] if operation == "serve" => serve(ResearchExecutionMode::DryRun, None),
         _ => Err(
-            "usage: iteron-harness <surface|candidate-validate|scoreboard BUNDLE_DIR TRUSTED_PUBLIC_KEY|compare-performance BASELINE_JSON BASELINE_ARM TREATMENT_JSON TREATMENT_ARM MIN_PAIRS RESOLUTION_MARGIN LATENCY_REDUCTION TOKEN_REDUCTION|hermetic-fixture --output CREATE_NEW_FILE|synthetic-cycle --authorization FILE --output CREATE_NEW_DIRECTORY|serve|serve --execute --iteron-cli PATH|serve --execute --native-adapter PATH|campaign [--qualification-id ID]>; serve defaults to dry-run"
+            "usage: iteron-harness <search-plan|surface|candidate-validate|scoreboard BUNDLE_DIR TRUSTED_PUBLIC_KEY|compare-performance BASELINE_JSON BASELINE_ARM TREATMENT_JSON TREATMENT_ARM MIN_PAIRS RESOLUTION_MARGIN LATENCY_REDUCTION TOKEN_REDUCTION|hermetic-fixture --output CREATE_NEW_FILE|synthetic-cycle --authorization FILE --output CREATE_NEW_DIRECTORY|serve|serve --execute --iteron-cli PATH|serve --execute --native-adapter PATH|campaign [--qualification-id ID]>; serve defaults to dry-run"
                 .into(),
         ),
     };
@@ -91,6 +92,20 @@ fn main() -> std::process::ExitCode {
             std::process::ExitCode::from(2)
         }
     }
+}
+
+fn write_search_plan() -> Result<(), String> {
+    let plan = iteron_eval::universal_search_plan();
+    plan.validate().map_err(|error| error.to_string())?;
+    let mut bytes = serde_json::to_vec_pretty(&plan).map_err(|error| error.to_string())?;
+    bytes.push(b'\n');
+    if bytes.len() > MAX_PROTOCOL_RESPONSE_BYTES {
+        return Err("optimization search plan exceeds the protocol response byte bound".into());
+    }
+    io::stdout()
+        .lock()
+        .write_all(&bytes)
+        .map_err(|error| error.to_string())
 }
 
 #[allow(clippy::too_many_arguments)]

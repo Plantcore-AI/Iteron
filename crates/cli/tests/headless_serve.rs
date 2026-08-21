@@ -677,7 +677,7 @@ fn background_job_inventory_and_attach_control_survive_client_restart() {
 }
 
 #[test]
-fn no_tty_skew_reconnect_and_result_v5_share_one_headless_server() {
+fn no_tty_skew_reconnect_and_current_result_share_one_headless_server() {
     let provider = PausedProvider::spawn();
     let scratch = Scratch::new(&provider.api_root);
     let (child, token, address) = spawn_core(&scratch);
@@ -750,7 +750,7 @@ fn no_tty_skew_reconnect_and_result_v5_share_one_headless_server() {
     }
     assert_eq!(results.len(), 1);
     let result = &results[0];
-    assert_eq!(result["schema_version"], 5);
+    assert_eq!(result["schema_version"], 6);
     assert_eq!(result["type"], "result");
     assert_eq!(result["assistant_text"], "parity reply");
     assert_eq!(result["outcome"], "done");

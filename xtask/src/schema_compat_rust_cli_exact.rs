@@ -145,6 +145,12 @@ pub(super) fn validate(file: &syn::File) -> Result<()> {
                 )
             })?;
             fields.insert("schema_version".into(), Value::from(schema_version));
+            if schema_version < SCHEMA_VERSION
+                && fields.get("type").and_then(Value::as_str) == Some("turn_end")
+                && let Some(context) = fields.get_mut("context").and_then(Value::as_object_mut)
+            {
+                context.remove("components");
+            }
             if schema_version == LEGACY_SCHEMA_VERSION
                 && fields.get("type").and_then(Value::as_str) == Some("result")
             {

@@ -24,7 +24,7 @@ This page is generated from the argument parser, so every shipped flag and subco
 | `-p`, `--print` | One-shot / non-interactive: run the task, stream text, exit (like `claude -p`). Requires a task. Without -p, iteron opens the interactive TUI (the default). |
 | `--image <PATH>` | Attach a local PNG, JPEG, GIF, or WebP to a one-shot task. On macOS, HEIC/HEIF is locally normalized to bounded JPEG. Repeat up to the attachment limit; bytes are sniffed before SQ. Repeatable. |
 | `--output-format <OUTPUT_FORMAT>` | One-shot stdout contract: text \| json \| stream-json. Machine formats keep stdout as valid JSON/JSONL; diagnostics continue on stderr. Only valid in one-shot mode. Default `text`. |
-| `--output-schema-version <VERSION>` | Pin a published machine stdout schema. Supported versions are reported by `--machine-contract`; omission keeps the current v5 default. |
+| `--output-schema-version <VERSION>` | Pin a published machine stdout schema. Supported versions are reported by `--machine-contract`; omission keeps the current v6 default. |
 | `--machine-contract` | Print the bounded, provider-free CLI capability report as JSON and exit. |
 | `-C`, `--repo <REPO>` | The repository to work in (defaults to the current directory). Default `.`. |
 | `--model <MODEL>` | Model id (overrides config / default). |

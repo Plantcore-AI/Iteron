@@ -76,6 +76,27 @@ schema-v3 Candidate Graph 用一个不可变身份同时表达：
 
 ## CLI
 
+`search-plan` 无需 provider、model 或输入文件，会从当前编译进二进制的 registry 导出通用
+优化空间：
+
+```sh
+target/debug/iteron-harness search-plan > search-plan.json
+```
+
+它自动覆盖可由 profile 设置的 Tier-1 family、全部已接入运行时的 Tier-2 parameter、
+model-visible prompt/tool text，以及每个优化模块的一个 catalog-bound implementation slot；
+不会维护按 provider/model 分支的名单。每个维度的搜索方法由 value shape 推导为 boolean
+bandit、numeric TPE、categorical TPE、structured mutation、text evolution 或 implementation
+selection。内置 tuner 还会分别报告 candidate pool 对每个模块是“出现过”还是“真的产生了
+变量对照”，因此全系统调优不能用只改了单个 provider 或单个参数的候选池冒充。
+
+provider/model metadata 只作为 capability ceiling（modality、context、output、tooling）参与
+准入，不是搜索分支，也不是 reward feature。真实 runtime trace 会闭环观测 tool call/error/
+concurrency，以及九个不重叠 context source：stable prefix、instructions、task context、memory、
+transcript、attachments、tool schemas、tool results 和 LSP results。functional acceptance 始终是
+第一层门槛；latency、token、cost、tool policy、compaction 与各 context source 的加权目标只在
+quality 完全相同的候选之间排序。
+
 单次模式从 stdin 读取一个请求，从 stdout 写一个响应：
 
 ```sh

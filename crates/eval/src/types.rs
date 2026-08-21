@@ -1,7 +1,61 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-pub const EVAL_SCHEMA_VERSION: u32 = 5;
+pub const EVAL_SCHEMA_VERSION: u32 = 6;
+
+/// One provider-independent, non-overlapping context-source vector.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContextComponentTokens {
+    pub stable_prefix: u64,
+    pub instructions: u64,
+    pub task_context: u64,
+    pub memory: u64,
+    pub transcript: u64,
+    pub attachments: u64,
+    pub tool_schemas: u64,
+    pub tool_results: u64,
+    pub lsp_results: u64,
+}
+
+impl ContextComponentTokens {
+    pub(crate) fn checked_add(self, other: Self) -> Option<Self> {
+        Some(Self {
+            stable_prefix: self.stable_prefix.checked_add(other.stable_prefix)?,
+            instructions: self.instructions.checked_add(other.instructions)?,
+            task_context: self.task_context.checked_add(other.task_context)?,
+            memory: self.memory.checked_add(other.memory)?,
+            transcript: self.transcript.checked_add(other.transcript)?,
+            attachments: self.attachments.checked_add(other.attachments)?,
+            tool_schemas: self.tool_schemas.checked_add(other.tool_schemas)?,
+            tool_results: self.tool_results.checked_add(other.tool_results)?,
+            lsp_results: self.lsp_results.checked_add(other.lsp_results)?,
+        })
+    }
+
+    pub(crate) fn component_max(self, other: Self) -> Self {
+        Self {
+            stable_prefix: self.stable_prefix.max(other.stable_prefix),
+            instructions: self.instructions.max(other.instructions),
+            task_context: self.task_context.max(other.task_context),
+            memory: self.memory.max(other.memory),
+            transcript: self.transcript.max(other.transcript),
+            attachments: self.attachments.max(other.attachments),
+            tool_schemas: self.tool_schemas.max(other.tool_schemas),
+            tool_results: self.tool_results.max(other.tool_results),
+            lsp_results: self.lsp_results.max(other.lsp_results),
+        }
+    }
+}
+
+/// Complete source-separated evidence across all sampled turns of one run.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContextComponentMetrics {
+    pub cumulative: ContextComponentTokens,
+    pub peak: ContextComponentTokens,
+    pub final_turn: ContextComponentTokens,
+}
 
 /// Content-free runtime behavior observed from the stable CLI event stream.
 ///
@@ -29,6 +83,10 @@ pub struct OptimizationMetrics {
     /// of reclaimed transcript, without claiming which runtime mechanism caused it.
     pub transcript_shrink_events: u64,
     pub transcript_tokens_reclaimed: u64,
+    /// Present only when every observed turn carried the source-separated v6 context vector.
+    /// Older stream versions remain readable and leave this absent rather than inventing zeros.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_components: Option<ContextComponentMetrics>,
 }
 
 /// Provider-independent work performed by the agent process itself.

@@ -4564,10 +4564,12 @@ impl Agent {
                         ..LifecyclePayload::default()
                     },
                 );
+                let mut observed_context = context_estimate;
+                observed_context.components = Some(context_budget_inspection.usage());
                 self.ui(UiEvent::TurnEnd {
                     cost: self.ledger.cost_state(),
                     usage,
-                    context: context_estimate,
+                    context: observed_context,
                     model_context_window: self.model_context_window,
                     reserved_output_tokens: request_max_tokens,
                     compaction_trigger_tokens: self.compaction.effective_trigger_tokens(

@@ -80,6 +80,28 @@ that identity. Missing and wrong versions fail closed.
 
 ## CLI
 
+`search-plan` is a provider-free snapshot of the compiled optimization space:
+
+```sh
+iteron-harness search-plan > search-plan.json
+```
+
+It derives every entry from the live registries rather than a model/provider table. The document
+groups all profile-addressable Tier-1 families, applied runtime-settable Tier-2 parameters,
+model-visible prompt/tool text, and one catalog-bound implementation slot per optimization module.
+Each dimension carries a value-shape-derived search method (`boolean_bandit`, `numeric_tpe`,
+`categorical_tpe`, `structured_mutation`, `text_evolution`, or `implementation_selection`). The
+built-in tuner separately reports whether a concrete candidate pool merely represents or actually
+varies each dimension, so a claimed whole-system campaign cannot silently exercise only one
+provider or one parameter family.
+
+Provider/model metadata is admitted only as a capability ceiling (modalities, context, output,
+tooling), never as a search branch or reward feature. Runtime observations close the loop across
+tool calls/errors/concurrency and nine non-overlapping context sources: stable prefix,
+instructions, task context, memory, transcript, attachments, tool schemas, tool results, and LSP
+results. Functional acceptance is the first-order gate; weighted latency, token, cost, tool-policy,
+compaction, and context-source objectives rank candidates only within an equal-quality stratum.
+
 One-shot calls read one request from stdin and write one response to stdout:
 
 ```sh

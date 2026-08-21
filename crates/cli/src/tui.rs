@@ -1241,7 +1241,7 @@ struct App {
     transcript_layout: transcript_layout::HeightIndex,
     editor: Editor,
     status: String,
-    /// The canonical result-v5 object from the most recently terminalized run.
+    /// The canonical current-version result object from the most recently terminalized run.
     ///
     /// TUI chrome is presentation, but it must consume the same terminal authority as one-shot and
     /// headless. Keeping the object (rather than a Debug-formatted completion string) also gives
