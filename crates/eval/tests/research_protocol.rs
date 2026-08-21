@@ -1,5 +1,3 @@
-#![cfg_attr(not(unix), allow(unused_imports, dead_code))]
-
 use iteron_eval::{
     AdapterOperation, AdapterPin, ArtifactReference, BenchmarkAdapterRegistry, BenchmarkPin,
     CANDIDATE_GRAPH_SCHEMA_ID, CANDIDATE_GRAPH_SCHEMA_VERSION, CandidateAddress,

@@ -1,8 +1,3 @@
-#![cfg_attr(
-    not(unix),
-    allow(dead_code, unused_imports, unused_variables, unused_mut)
-)]
-
 //! Bounded persistent-process tools.
 //!
 //! These tools expose a real, session-owned kernel PTY under Linux bubblewrap or macOS Seatbelt.

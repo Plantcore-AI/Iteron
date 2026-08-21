@@ -1,5 +1,3 @@
-#![cfg_attr(not(unix), allow(dead_code, unused_imports, unused_variables))]
-
 use serde::Serialize;
 use std::collections::VecDeque;
 

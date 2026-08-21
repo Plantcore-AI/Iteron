@@ -2,7 +2,7 @@
 # Optional pre-push hook template that blocks lightweight version tags.
 #
 # Install by copying into .git/hooks/pre-push and making it executable:
-#   cp .githooks/pre-push .git/hooks/pre-push
+#   cp release-tools/githooks/pre-push .git/hooks/pre-push
 #   chmod +x .git/hooks/pre-push
 #
 # This hook is not enforced automatically; every developer must install it
@@ -16,9 +16,8 @@ while IFS=' ' read -r _ local_sha remote_ref _; do
       object_type=$(git cat-file -t "$local_sha" 2>/dev/null || true)
       if [[ "$object_type" == "commit" ]]; then
         printf 'Refusing to push lightweight tag %s\n' "$remote_ref" >&2
-        printf 'Version tags must be annotated. Run:\n' >&2
-        printf '  git tag -a %s -m "Iteron %s"\n' \
-          "${remote_ref#refs/tags/}" \
+        printf 'Version tags must be annotated. Use the release script:\n' >&2
+        printf '  release-tools/create_release_tag.sh %s\n' \
           "${remote_ref#refs/tags/v}" >&2
         exit 1
       fi
