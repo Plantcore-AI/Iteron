@@ -37,7 +37,11 @@ If `VERSION` is omitted, the script reads it from `[workspace.package] version` 
 - refuses to run outside the `main` branch or with a dirty working tree,
 - verifies the requested version matches the workspace manifest,
 - requires a successful `workflow_dispatch` run of `release.yml` for the current
-  commit,
+  commit from a branch ref,
+- requires a successful CI push run on `main` for the current commit containing
+  exactly one successful `ci / required` job,
+- requires the candidate version to be newer than every existing immutable
+  release,
 - refuses if the tag already exists locally or on `origin`,
 - creates an **annotated** tag (`git tag -a`) with the message `Iteron X.Y.Z`,
 - asks for confirmation before pushing the tag.
