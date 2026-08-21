@@ -305,6 +305,7 @@
 /crates/cli/src/runtime/frontend_tests.rs @fr0m-scratch
 /crates/cli/src/runtime/hooks.rs @fr0m-scratch
 /crates/cli/src/runtime/inbound_control.rs @fr0m-scratch
+/crates/cli/src/runtime/investigation_convergence.rs @fr0m-scratch
 /crates/cli/src/runtime/kernel_error.rs @fr0m-scratch
 /crates/cli/src/runtime/lifecycle_hooks.rs @fr0m-scratch
 /crates/cli/src/runtime/mcp_control.rs @fr0m-scratch

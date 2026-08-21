@@ -963,6 +963,59 @@ mod gate_integration_tests {
     }
 
     #[derive(Default)]
+    struct ScriptedInvestigationConvergence {
+        turn: AtomicUsize,
+        saw_instruction: AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for ScriptedInvestigationConvergence {
+        async fn turn(
+            &self,
+            req: &TurnRequest,
+            on_item: &mut (dyn FnMut(StreamItem) + Send),
+        ) -> Result<TurnResult, ProviderError> {
+            let turn = self.turn.fetch_add(1, Ordering::SeqCst);
+            let saw_instruction = req.messages.iter().any(|message| {
+                message.content.iter().any(|block| {
+                    matches!(block, Block::Text { text } if text.contains("[Iteron strategy checkpoint]"))
+                })
+            });
+            if turn
+                < usize::try_from(
+                    investigation_convergence::INVESTIGATION_CONVERGENCE_ROUNDS,
+                )
+                .unwrap()
+            {
+                assert!(
+                    !saw_instruction,
+                    "the controller must not interrupt a bounded initial investigation"
+                );
+                let tool = ToolUse {
+                    id: format!("investigation-{turn}"),
+                    name: "read_file".into(),
+                    input: serde_json::json!({"path":"fixture.txt"}),
+                };
+                on_item(StreamItem::ToolUseComplete(tool.clone()));
+                return Ok(TurnResult {
+                    blocks: vec![Block::ToolUse(tool)],
+                    stop_reason: StopReason::ToolUse,
+                    usage: UsageReport::complete(Usage::default()),
+                });
+            }
+            self.saw_instruction
+                .store(saw_instruction, Ordering::SeqCst);
+            Ok(TurnResult {
+                blocks: vec![Block::Text {
+                    text: "synthesized answer".into(),
+                }],
+                stop_reason: StopReason::EndTurn,
+                usage: UsageReport::complete(Usage::default()),
+            })
+        }
+    }
+
+    #[derive(Default)]
     struct ScriptedDispatch {
         turn: AtomicUsize,
     }
@@ -7239,6 +7292,61 @@ ant-api03-SuperSecretModelToken12345"
             !ws.join("f.txt").exists(),
             "plan mode must not let the edit touch the tree"
         );
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[tokio::test]
+    async fn repeated_investigation_receives_one_bounded_convergence_instruction() {
+        let ws = temp_ws("investigation-convergence");
+        std::fs::write(ws.join("fixture.txt"), "stable evidence\n").unwrap();
+        let provider = std::sync::Arc::new(ScriptedInvestigationConvergence::default());
+        let rollout = Rollout::open(
+            &ws.join(".iteron/runs"),
+            &iteron_protocol::RunId("investigation-convergence".into()),
+            iteron_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let mut agent = Agent::new(
+            provider.clone(),
+            Registry::coding_agent(&ws).unwrap(),
+            rollout,
+            "m".into(),
+            "sys".into(),
+            Budget {
+                max_turns: 10,
+                max_usd: None,
+                max_tokens: None,
+                // The workspace-wide test binary can be CPU-starved by other
+                // integration tests. Keep this behavioral regression bounded
+                // without coupling it to suite scheduling latency.
+                max_wall_secs: 300,
+                max_consecutive_tool_errors: 3,
+            },
+        );
+        agent.workspace = ws.clone();
+        record_test_genesis(&mut agent, &ws);
+
+        assert_eq!(
+            agent.run("find and fix the defect").await.unwrap(),
+            Outcome::Done
+        );
+        assert!(provider.saw_instruction.load(Ordering::SeqCst));
+        assert_eq!(
+            provider.turn.load(Ordering::SeqCst),
+            usize::try_from(investigation_convergence::INVESTIGATION_CONVERGENCE_ROUNDS).unwrap()
+                + 1
+        );
+        let convergence = agent
+            .working_set
+            .as_ref()
+            .expect("the completed run retains its working set")
+            .iter()
+            .flat_map(|message| message.content.iter())
+            .filter(|block| {
+                matches!(block, Block::Text { text } if text.contains("[Iteron strategy checkpoint]"))
+            })
+            .count();
+        assert_eq!(convergence, 1, "the strategy checkpoint is one-shot");
         let _ = std::fs::remove_dir_all(&ws);
     }
 

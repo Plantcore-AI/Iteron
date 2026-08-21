@@ -9260,7 +9260,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 3197,
+          "line": 3200,
           "evidence": "param_bool runtime resolution"
         }
       ],
@@ -9879,7 +9879,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 1159,
+          "line": 1160,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -9945,7 +9945,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 289,
+          "line": 290,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -10761,7 +10761,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 7519,
+          "line": 7544,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -10787,7 +10787,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 4583,
+          "line": 4586,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -10814,7 +10814,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 1104,
+          "line": 1105,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -10841,7 +10841,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 355,
+          "line": 356,
           "evidence": "production declaration"
         }
       ]
@@ -10880,6 +10880,58 @@
         }
       ],
       "behavior_oracle": "installed profile id cli.runtime.interrupted_stream_max_bytes is resolved at every listed production helper call"
+    },
+    {
+      "id": "cli.runtime.investigation_convergence.investigation_convergence_instruction",
+      "module": "scheduler_parallelism",
+      "class": "searchable",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"[Iteron strategy checkpoint] You have completed several consecutive investigation-only rounds without attempting a candidate change. Stop broadening the search and synthesize the evidence already collected. If the operator requested a code change and the evidence supports one, make the smallest coherent change now and verify it. If the task is read-only, answer now. If a specific blocker remains, state it precisely. Perform another read or search only when it can falsify a named unresolved hypothesis; do not reread the same evidence merely for confidence.\"",
+      "krate": "cli",
+      "decl": "crates/cli/src/runtime/investigation_convergence.rs",
+      "applied": true,
+      "candidate_kind": "const",
+      "disposition": "runtime_settable",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/runtime/investigation_convergence.rs",
+        "symbol": "INVESTIGATION_CONVERGENCE_INSTRUCTION"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/runtime/investigation_convergence.rs",
+          "line": 54,
+          "evidence": "param_str runtime resolution"
+        }
+      ],
+      "behavior_oracle": "installed profile id cli.runtime.investigation_convergence.investigation_convergence_instruction is resolved at every listed production helper call"
+    },
+    {
+      "id": "cli.runtime.investigation_convergence.investigation_convergence_rounds",
+      "module": "scheduler_parallelism",
+      "class": "searchable",
+      "type": "integer",
+      "rust_type": "u32",
+      "default": "6",
+      "krate": "cli",
+      "decl": "crates/cli/src/runtime/investigation_convergence.rs",
+      "applied": true,
+      "candidate_kind": "const",
+      "disposition": "runtime_settable",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/runtime/investigation_convergence.rs",
+        "symbol": "INVESTIGATION_CONVERGENCE_ROUNDS"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/runtime/investigation_convergence.rs",
+          "line": 26,
+          "evidence": "param_integer runtime resolution"
+        }
+      ],
+      "behavior_oracle": "installed profile id cli.runtime.investigation_convergence.investigation_convergence_rounds is resolved at every listed production helper call"
     },
     {
       "id": "cli.runtime.lifecycle_hooks.circuit_failure_threshold",
@@ -11175,7 +11227,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 1722,
+          "line": 1723,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -11479,17 +11531,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 3893,
+          "line": 3896,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 3913,
+          "line": 3916,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 3925,
+          "line": 3928,
           "evidence": "Rust path reference"
         },
         {
@@ -11520,17 +11572,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 4778,
+          "line": 4787,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 4791,
+          "line": 4800,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 4805,
+          "line": 4814,
           "evidence": "Rust path reference"
         }
       ]
@@ -12243,7 +12295,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 296,
+          "line": 297,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -12736,7 +12788,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 5492,
+          "line": 5501,
           "evidence": "param_bool runtime resolution"
         }
       ],
@@ -12793,7 +12845,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 7610,
+          "line": 7635,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -12847,7 +12899,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 7535,
+          "line": 7560,
           "evidence": "Rust path reference"
         },
         {

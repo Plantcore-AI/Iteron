@@ -1680,6 +1680,10 @@
         },
         {
           "kind": "file",
+          "path": "crates/cli/src/runtime/investigation_convergence.rs"
+        },
+        {
+          "kind": "file",
           "path": "crates/cli/src/runtime/kernel_error.rs"
         },
         {

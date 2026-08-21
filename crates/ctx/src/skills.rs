@@ -739,31 +739,14 @@ impl SkillCatalog {
             iteron_tunables::param_usize("ctx.skills.max_listing_bytes", 6_000)
                 .clamp(512, 64 * 1024),
         );
-        if !self
-            .defs
-            .iter()
-            .any(|definition| definition.metadata.model_visible(active_paths))
-        {
-            return String::new();
-        }
-        let mut out = String::from(
-            "\n\nAvailable skills (use the `use_skill` tool to load one when relevant):\n",
-        );
-        if out.len() > budget_bytes {
-            return String::new();
-        }
-        let terms = task
-            .split(|character: char| !character.is_ascii_alphanumeric())
-            .filter(|term| !term.is_empty())
-            .map(str::to_ascii_lowercase)
-            .take(64)
-            .collect::<Vec<_>>();
-        let mut visible = self
+        let query_terms = lexical_terms(task, 64);
+        let task_is_present = !task.trim().is_empty();
+        let candidates = self
             .defs
             .iter()
             .filter(|definition| definition.metadata.model_visible(active_paths))
             .map(|definition| {
-                let text = format!(
+                let searchable = format!(
                     "{} {} {}",
                     definition.name,
                     definition.description,
@@ -772,15 +755,66 @@ impl SkillCatalog {
                         .when_to_use
                         .as_deref()
                         .unwrap_or_default()
+                );
+                (
+                    !definition.metadata.paths.is_empty(),
+                    lexical_terms(&definition.name, 32),
+                    lexical_terms(&searchable, 256),
+                    definition,
                 )
-                .to_ascii_lowercase();
-                let relevance = terms
-                    .iter()
-                    .filter(|term| text.contains(term.as_str()))
-                    .count();
-                (!definition.metadata.paths.is_empty(), relevance, definition)
             })
             .collect::<Vec<_>>();
+        if candidates.is_empty() {
+            return String::new();
+        }
+
+        // Relevance is derived from the current catalog rather than a provider-, language-, or
+        // task-specific keyword table. Terms that occur in most candidate skills carry no
+        // selection weight, while exact name terms receive a larger weight. Path-scoped skills
+        // have already proved relevance through an active-path match and are retained regardless
+        // of lexical score.
+        let document_frequency = query_terms
+            .iter()
+            .map(|term| {
+                candidates
+                    .iter()
+                    .filter(|(_, _, searchable, _)| lexical_match(searchable, term))
+                    .count()
+            })
+            .collect::<Vec<_>>();
+        let candidate_count = candidates.len();
+        let mut visible = candidates
+            .into_iter()
+            .filter_map(|(path_match, name_terms, searchable, definition)| {
+                let relevance = query_terms
+                    .iter()
+                    .zip(document_frequency.iter().copied())
+                    .filter_map(|(term, frequency)| {
+                        if frequency == 0 {
+                            return None;
+                        }
+                        let name_match = lexical_match(&name_terms, term);
+                        let text_match = lexical_match(&searchable, term);
+                        if !name_match && !text_match {
+                            return None;
+                        }
+                        if !name_match
+                            && candidate_count > 2
+                            && frequency.saturating_mul(2) > candidate_count
+                        {
+                            return None;
+                        }
+                        let rarity = candidate_count.saturating_div(frequency).clamp(1, 8);
+                        Some(if name_match { rarity * 8 } else { rarity })
+                    })
+                    .sum::<usize>();
+                (!task_is_present || path_match || relevance > 0)
+                    .then_some((path_match, relevance, definition))
+            })
+            .collect::<Vec<_>>();
+        if visible.is_empty() {
+            return String::new();
+        }
         visible.sort_by(|left, right| {
             right
                 .0
@@ -788,6 +822,12 @@ impl SkillCatalog {
                 .then_with(|| right.1.cmp(&left.1))
                 .then_with(|| left.2.name.cmp(&right.2.name))
         });
+        let mut out = String::from(
+            "\n\nAvailable skills (use the `use_skill` tool to load one when relevant):\n",
+        );
+        if out.len() > budget_bytes {
+            return String::new();
+        }
         let visible_len = visible.len();
         let omitted = iteron_tunables::param_str(
             "ctx.skills.omitted",
@@ -824,6 +864,44 @@ impl SkillCatalog {
         }
         out
     }
+}
+
+/// Produce a bounded, deterministic Unicode lexical view. Long non-ASCII runs also expose
+/// adjacent character pairs: this supports scripts without whitespace word boundaries without a
+/// language table or an unbounded tokenizer. The exact term remains present for precise matches.
+fn lexical_terms(value: &str, limit: usize) -> Vec<String> {
+    let mut terms = Vec::with_capacity(limit.min(64));
+    for raw in value.split(|character: char| !character.is_alphanumeric()) {
+        if terms.len() >= limit {
+            break;
+        }
+        if raw.is_empty() {
+            continue;
+        }
+        let normalized = raw.chars().take(256).collect::<String>().to_lowercase();
+        terms.push(normalized.clone());
+        if !normalized.is_ascii() {
+            let characters = normalized.chars().collect::<Vec<_>>();
+            for pair in characters.windows(2) {
+                if terms.len() >= limit {
+                    break;
+                }
+                terms.push(pair.iter().collect());
+            }
+        }
+    }
+    terms.sort_unstable();
+    terms.dedup();
+    terms.truncate(limit);
+    terms
+}
+
+fn lexical_match(terms: &[String], query: &str) -> bool {
+    terms.iter().any(|term| {
+        term == query
+            || (term.chars().count().min(query.chars().count()) >= 4
+                && (term.contains(query) || query.contains(term)))
+    })
 }
 
 /// A path is a vendor/dependency location whose skills must not be trusted or injected.
@@ -1126,6 +1204,84 @@ mod tests {
         assert!(cat.listing(4000).contains("commit-style"));
         assert!(s.framed().contains("project skill"));
         assert_eq!(cat.governing_trust(), Some(Trust::Workspace));
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn task_listing_exposes_only_lexically_relevant_unscoped_skills() {
+        let repo = tmp("task-relevance");
+        write_skill(
+            &repo,
+            "commit-style",
+            "---\nname: commit-style\ndescription: Write concise source control commit messages\n---\nbody\n",
+        );
+        write_skill(
+            &repo,
+            "image-editor",
+            "---\nname: image-editor\ndescription: Crop and transform raster photographs\n---\nbody\n",
+        );
+        write_skill(
+            &repo,
+            "release-notes",
+            "---\nname: release-notes\ndescription: Summarize shipped changes for customers\n---\nbody\n",
+        );
+        let catalog = SkillCatalog::discover(Path::new("/nonexistent"), &repo);
+
+        let relevant = catalog.listing_for_task(4_000, "write a commit message", &[]);
+        assert!(relevant.contains("commit-style"), "{relevant}");
+        assert!(!relevant.contains("image-editor"), "{relevant}");
+        assert!(!relevant.contains("release-notes"), "{relevant}");
+
+        let unrelated = catalog.listing_for_task(4_000, "explain available database models", &[]);
+        assert!(unrelated.is_empty(), "{unrelated}");
+        assert!(
+            catalog.listing(4_000).contains("image-editor"),
+            "an empty task preserves the complete operator-facing catalog"
+        );
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn active_path_match_survives_zero_lexical_relevance() {
+        let repo = tmp("task-path-relevance");
+        write_skill(
+            &repo,
+            "rust-review",
+            "---\nname: rust-review\ndescription: Review Rust implementation safety\npaths: [src/**]\n---\nbody\n",
+        );
+        write_skill(
+            &repo,
+            "image-editor",
+            "---\nname: image-editor\ndescription: Crop raster photographs\n---\nbody\n",
+        );
+        let catalog = SkillCatalog::discover(Path::new("/nonexistent"), &repo);
+        let listing = catalog.listing_for_task(
+            4_000,
+            "translate a customer invoice",
+            &[PathBuf::from("src/lib.rs")],
+        );
+        assert!(listing.contains("rust-review"), "{listing}");
+        assert!(!listing.contains("image-editor"), "{listing}");
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn task_relevance_supports_unicode_without_a_language_dictionary() {
+        let repo = tmp("task-unicode-relevance");
+        write_skill(
+            &repo,
+            "release-helper",
+            "---\nname: release-helper\ndescription: 生成提交信息和发布说明\n---\nbody\n",
+        );
+        write_skill(
+            &repo,
+            "photo-helper",
+            "---\nname: photo-helper\ndescription: 处理照片尺寸和颜色\n---\nbody\n",
+        );
+        let catalog = SkillCatalog::discover(Path::new("/nonexistent"), &repo);
+        let listing = catalog.listing_for_task(4_000, "请帮我写提交信息", &[]);
+        assert!(listing.contains("release-helper"), "{listing}");
+        assert!(!listing.contains("photo-helper"), "{listing}");
         let _ = std::fs::remove_dir_all(&repo);
     }
 

@@ -1,18 +1,18 @@
 {
   "schema_version": 4,
-  "total": 2913,
-  "runtime_settable": 2035,
+  "total": 2915,
+  "runtime_settable": 2037,
   "invariant_read_only": 878,
   "binding_required": 0,
-  "advertised_runtime_settable": 2035,
-  "runtime_applied": 2035,
-  "externally_addressed_runtime_settable": 2035,
+  "advertised_runtime_settable": 2037,
+  "runtime_applied": 2037,
+  "externally_addressed_runtime_settable": 2037,
   "unaddressed_runtime_settable": 0,
   "mechanical_invariant_dispositions": 878,
   "owning_human_review_required": 878,
   "explicit_invariant_overrides": 221,
   "address_kind_counts": {
-    "unified_profile": 1389,
+    "unified_profile": 1391,
     "direct_config": 320,
     "caller_input": 326
   },
@@ -29,9 +29,9 @@
   },
   "source_coverage": {
     "completeness_claim": "complete_for_declared_production_source_forms_not_mathematical_universe",
-    "production_rust_files_scanned": 674,
+    "production_rust_files_scanned": 675,
     "source_form_counts": {
-      "const": 2061,
+      "const": 2063,
       "static": 56,
       "associated_const": 42,
       "serde_default": 297,
@@ -45,7 +45,7 @@
       "dynamic_plugin_manifest": 0
     },
     "candidate_row_counts": {
-      "const": 2061,
+      "const": 2063,
       "static": 56,
       "associated_const": 42,
       "serde_default": 297,
@@ -12538,7 +12538,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 3197,
+          "line": 3200,
           "evidence": "param_bool runtime resolution"
         }
       ],
@@ -13370,7 +13370,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 1159,
+          "line": 1160,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -13435,7 +13435,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 289,
+          "line": 290,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -14409,7 +14409,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 7519,
+          "line": 7544,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -14439,7 +14439,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 4583,
+          "line": 4586,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -14469,7 +14469,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 1104,
+          "line": 1105,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -14499,13 +14499,13 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 355,
+          "line": 356,
           "evidence": "production declaration"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "identity",
-      "review_evidence": "explicit census disposition override: `INTERRUPTED_STREAM_MARKER` at crates/cli/src/runtime.rs — the value participates in stable identity/canonical naming; observed at crates/cli/src/runtime.rs:355 (production declaration); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "explicit census disposition override: `INTERRUPTED_STREAM_MARKER` at crates/cli/src/runtime.rs — the value participates in stable identity/canonical naming; observed at crates/cli/src/runtime.rs:356 (production declaration); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": true,
       "applied": false,
@@ -14545,6 +14545,66 @@
       "applied": true,
       "behavior_oracle": "installed profile id cli.runtime.interrupted_stream_max_bytes is resolved at every listed production helper call",
       "tier2_id": "cli.runtime.interrupted_stream_max_bytes"
+    },
+    {
+      "id": "cli.runtime.investigation_convergence.investigation_convergence_instruction",
+      "candidate_kind": "const",
+      "rust_type": "&str",
+      "value": "\"[Iteron strategy checkpoint] You have completed several consecutive investigation-only rounds without attempting a candidate change. Stop broadening the search and synthesize the evidence already collected. If the operator requested a code change and the evidence supports one, make the smallest coherent change now and verify it. If the task is read-only, answer now. If a specific blocker remains, state it precisely. Perform another read or search only when it can falsify a named unresolved hypothesis; do not reread the same evidence merely for confidence.\"",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/runtime/investigation_convergence.rs",
+        "symbol": "INVESTIGATION_CONVERGENCE_INSTRUCTION"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/runtime/investigation_convergence.rs",
+          "line": 54,
+          "evidence": "param_str runtime resolution"
+        }
+      ],
+      "disposition": "runtime_settable",
+      "external_address": {
+        "kind": "unified_profile",
+        "selector_kind": "key",
+        "selector": "cli.runtime.investigation_convergence.investigation_convergence_instruction",
+        "owner_kind": "schema",
+        "owner": "iteron_tunables::Param/ResolutionValue"
+      },
+      "explicit_invariant_override": false,
+      "applied": true,
+      "behavior_oracle": "installed profile id cli.runtime.investigation_convergence.investigation_convergence_instruction is resolved at every listed production helper call",
+      "tier2_id": "cli.runtime.investigation_convergence.investigation_convergence_instruction"
+    },
+    {
+      "id": "cli.runtime.investigation_convergence.investigation_convergence_rounds",
+      "candidate_kind": "const",
+      "rust_type": "u32",
+      "value": "6",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/runtime/investigation_convergence.rs",
+        "symbol": "INVESTIGATION_CONVERGENCE_ROUNDS"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/runtime/investigation_convergence.rs",
+          "line": 26,
+          "evidence": "param_integer runtime resolution"
+        }
+      ],
+      "disposition": "runtime_settable",
+      "external_address": {
+        "kind": "unified_profile",
+        "selector_kind": "key",
+        "selector": "cli.runtime.investigation_convergence.investigation_convergence_rounds",
+        "owner_kind": "schema",
+        "owner": "iteron_tunables::Param/ResolutionValue"
+      },
+      "explicit_invariant_override": false,
+      "applied": true,
+      "behavior_oracle": "installed profile id cli.runtime.investigation_convergence.investigation_convergence_rounds is resolved at every listed production helper call",
+      "tier2_id": "cli.runtime.investigation_convergence.investigation_convergence_rounds"
     },
     {
       "id": "cli.runtime.lifecycle_hooks.circuit_failure_threshold",
@@ -14844,7 +14904,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 1722,
+          "line": 1723,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -15149,17 +15209,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 3893,
+          "line": 3896,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 3913,
+          "line": 3916,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 3925,
+          "line": 3928,
           "evidence": "Rust path reference"
         },
         {
@@ -15170,7 +15230,7 @@
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "non_value_structural",
-      "review_evidence": "explicit census disposition override: `TOOL_POLICY_SLOT` at crates/cli/src/runtime/policy_evidence.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/cli/src/runtime.rs:3893 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "explicit census disposition override: `TOOL_POLICY_SLOT` at crates/cli/src/runtime/policy_evidence.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/cli/src/runtime.rs:3896 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": true,
       "applied": false,
@@ -15189,23 +15249,23 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 4778,
+          "line": 4787,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 4791,
+          "line": 4800,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 4805,
+          "line": 4814,
           "evidence": "Rust path reference"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "non_value_structural",
-      "review_evidence": "explicit census disposition override: `VERIFIER_SLOT` at crates/cli/src/runtime/policy_evidence.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/cli/src/runtime.rs:4778 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "explicit census disposition override: `VERIFIER_SLOT` at crates/cli/src/runtime/policy_evidence.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/cli/src/runtime.rs:4787 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": true,
       "applied": false,
@@ -15929,7 +15989,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 296,
+          "line": 297,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -17472,7 +17532,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 5492,
+          "line": 5501,
           "evidence": "param_bool runtime resolution"
         }
       ],
@@ -17537,7 +17597,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 7610,
+          "line": 7635,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -17632,7 +17692,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 7535,
+          "line": 7560,
           "evidence": "Rust path reference"
         },
         {
@@ -17648,7 +17708,7 @@
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "identity",
-      "review_evidence": "closed Tier-2 disposition rule: `VERSION_MISMATCH_SUBMISSION_NOTICE` at crates/cli/src/runtime.rs — the value participates in stable identity/canonical naming; observed at crates/cli/src/runtime.rs:7535 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "closed Tier-2 disposition rule: `VERSION_MISMATCH_SUBMISSION_NOTICE` at crates/cli/src/runtime.rs — the value participates in stable identity/canonical naming; observed at crates/cli/src/runtime.rs:7560 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": false,
       "applied": false,
@@ -28184,7 +28244,7 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/context_port.rs",
-          "line": 327,
+          "line": 329,
           "evidence": "public quality builder typed parameter definition"
         }
       ],
@@ -28200,7 +28260,7 @@
         "kind": "public_method",
         "path": "crates/ctx/src/context_port.rs",
         "symbol": "PortStub::new",
-        "evidence": "public Rust protocol `PortStub::new` directly declares typed parameter `segments` at crates/ctx/src/context_port.rs:327"
+        "evidence": "public Rust protocol `PortStub::new` directly declares typed parameter `segments` at crates/ctx/src/context_port.rs:329"
       },
       "explicit_invariant_override": false,
       "applied": true,

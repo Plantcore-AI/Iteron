@@ -182,6 +182,7 @@ pub(crate) mod force_cancel;
 mod frontend;
 pub mod hooks;
 mod inbound_control;
+mod investigation_convergence;
 mod kernel_error;
 pub(crate) mod lifecycle_hooks;
 mod mcp_control;
@@ -3019,6 +3020,8 @@ impl Agent {
         input_images: &[iteron_protocol::ImageContent],
     ) -> Result<Outcome, KernelError> {
         let mut consecutive_errors: u32 = 0;
+        let mut investigation_convergence =
+            investigation_convergence::InvestigationConvergence::default();
 
         // REC-INJECT: resolve + record the memory segment once, before the first request build,
         // using the task for relevance recall. effective_system() reads the cached result.
@@ -4605,6 +4608,12 @@ impl Agent {
                 },
             );
             let total_tools = pure.len() + deferred.len();
+            let attempted_candidate_change = deferred.iter().any(|(_, _, proposal)| {
+                proposal.as_ref().is_ok_and(|proposal| {
+                    proposal.eligible.contains(Capability::ReversibleLocal)
+                        || proposal.eligible.contains(Capability::TrustMutating)
+                })
+            });
             let result_projection_budget =
                 self.turn_result_projection_budget(context_budget_inspection, &returned_tools);
             if total_tools > 0 {
@@ -5933,11 +5942,27 @@ impl Agent {
 
             consecutive_errors = if any_error { consecutive_errors + 1 } else { 0 };
 
-            let blocks: Vec<Block> = results
+            let mut blocks: Vec<Block> = results
                 .into_iter()
                 .flatten()
                 .map(Block::ToolResult)
                 .collect();
+            if let Some(request) =
+                investigation_convergence.observe_round(attempted_candidate_change)
+            {
+                blocks.push(Block::Text {
+                    text: request.instruction.into(),
+                });
+                self.lifecycle_event(
+                    "context.segment.updated",
+                    Some(turn_id),
+                    LifecyclePayload {
+                        count: Some(u64::from(request.rounds)),
+                        reason_code: Some("strategy_investigation_convergence".into()),
+                        ..LifecyclePayload::default()
+                    },
+                );
+            }
             let tool_msg = Message {
                 role: Role::User,
                 content: blocks,

@@ -293,7 +293,9 @@ impl ContextPort for DefaultContextPort {
                 &plan.task,
                 &active,
             );
-            if let Some(trust) = catalog.governing_trust() {
+            if !listing.is_empty()
+                && let Some(trust) = catalog.governing_trust()
+            {
                 builder.push(listing, trust, ContextSource::Skills);
             }
         }
@@ -481,7 +483,7 @@ mod tests {
         std::fs::create_dir_all(&skill_dir).unwrap();
         std::fs::write(
             skill_dir.join("SKILL.md"),
-            "---\nname: coverage\ndescription: Selector coverage skill\n---\nbody\n",
+            "---\nname: coverage\ndescription: Selector coverage skill\npaths: [src/**]\n---\nbody\n",
         )
         .unwrap();
 
