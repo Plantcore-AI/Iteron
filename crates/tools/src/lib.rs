@@ -33,6 +33,7 @@ mod schema_error;
 mod shell;
 mod skill;
 mod tool_policy;
+mod tool_purpose;
 mod tool_search;
 mod web;
 mod workflow_tool;
@@ -67,6 +68,7 @@ pub use tool_policy::{
     RegisteredToolPolicy, TOOL_POLICY_SLOT_VERSION, ToolPolicy, ToolPolicyDecision,
     ToolPolicyError, ToolPolicyObservation, ToolPolicyProposal,
 };
+use tool_purpose::ToolPurpose;
 
 /// Dispatch->terminal interval reported when the clock never observed a dispatch: a typed
 /// pre-dispatch rejection spent no time in the MCP transport, so the interval is empty rather
@@ -193,6 +195,7 @@ pub struct Tool {
     pub spec: ToolSpec,
     run: Box<dyn Fn(ToolUse, PathBuf) -> registeredfut::BoxFut + Send + Sync>,
     output_owner: ToolOutputOwner,
+    purpose: ToolPurpose,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1052,7 +1055,7 @@ impl Registry {
         spec: ToolSpec,
         run: impl Fn(ToolUse, PathBuf) -> boxfut::BoxFut + Send + Sync + 'static,
     ) -> Result<(), ToolError> {
-        self.push_tool_with_origin(spec, run, ToolOrigin::BuiltIn)
+        self.push_tool_with_origin_and_purpose(spec, run, ToolOrigin::BuiltIn, ToolPurpose::General)
     }
 
     fn push_external_tool(
@@ -1060,14 +1063,20 @@ impl Registry {
         spec: ToolSpec,
         run: impl Fn(ToolUse, PathBuf) -> boxfut::BoxFut + Send + Sync + 'static,
     ) -> Result<(), ToolError> {
-        self.push_tool_with_origin(spec, run, ToolOrigin::External)
+        self.push_tool_with_origin_and_purpose(
+            spec,
+            run,
+            ToolOrigin::External,
+            ToolPurpose::General,
+        )
     }
 
-    fn push_tool_with_origin(
+    fn push_tool_with_origin_and_purpose(
         &mut self,
         spec: ToolSpec,
         run: impl Fn(ToolUse, PathBuf) -> boxfut::BoxFut + Send + Sync + 'static,
         origin: ToolOrigin,
+        purpose: ToolPurpose,
     ) -> Result<(), ToolError> {
         let adapted = move |call, root| {
             let future = run(call, root);
@@ -1083,6 +1092,7 @@ impl Registry {
                 spec,
                 run: Box::new(adapted),
                 output_owner: ToolOutputOwner::Runtime,
+                purpose,
             },
             origin,
         )
@@ -1126,6 +1136,7 @@ impl Registry {
             spec,
             run: Box::new(adapted),
             output_owner: ToolOutputOwner::Runtime,
+            purpose: ToolPurpose::General,
         })
     }
 
@@ -1170,6 +1181,7 @@ impl Registry {
             spec,
             run: Box::new(adapted),
             output_owner: ToolOutputOwner::Mcp,
+            purpose: ToolPurpose::General,
         })
     }
 }
@@ -1377,6 +1389,20 @@ mod tests {
             registry.specs().into_iter().map(|spec| spec.name).collect();
         assert!(after.is_subset(&before));
         assert!(!after.contains("invented_writer"));
+    }
+
+    #[test]
+    fn candidate_change_semantics_are_registered_not_inferred_from_authority() {
+        let registry = Registry::coding_agent(".").unwrap();
+        for tool in ["edit", "apply_patch", "write_file"] {
+            assert!(registry.is_candidate_change_tool(tool), "{tool}");
+        }
+        for broader_authority_without_a_candidate_change in ["bash", "dispatch_agent", "Workflow"] {
+            assert!(
+                !registry.is_candidate_change_tool(broader_authority_without_a_candidate_change),
+                "{broader_authority_without_a_candidate_change}"
+            );
+        }
     }
 
     #[test]

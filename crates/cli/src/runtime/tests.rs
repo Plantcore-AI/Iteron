@@ -1016,6 +1016,93 @@ mod gate_integration_tests {
     }
 
     #[derive(Default)]
+    struct ScriptedForcedCandidateAction {
+        turn: AtomicUsize,
+        saw_action_surface: AtomicBool,
+        saw_restored_surface: AtomicBool,
+        initial_schema_tokens: AtomicUsize,
+        action_schema_tokens: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for ScriptedForcedCandidateAction {
+        async fn turn(
+            &self,
+            req: &TurnRequest,
+            on_item: &mut (dyn FnMut(StreamItem) + Send),
+        ) -> Result<TurnResult, ProviderError> {
+            let turn = self.turn.fetch_add(1, Ordering::SeqCst);
+            let tool_names = req
+                .tools
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<std::collections::BTreeSet<_>>();
+            if turn
+                < usize::try_from(investigation_convergence::DEFAULT_IMPLEMENTATION_ROUNDS)
+                    .unwrap()
+            {
+                if turn == 0 {
+                    self.initial_schema_tokens
+                        .store(req.tools.estimated_tokens(), Ordering::SeqCst);
+                }
+                assert!(tool_names.contains("read_file"), "{tool_names:?}");
+                let tool = ToolUse {
+                    id: format!("forced-investigation-{turn}"),
+                    name: "read_file".into(),
+                    input: serde_json::json!({"path":"fixture.txt"}),
+                };
+                on_item(StreamItem::ToolUseComplete(tool.clone()));
+                return Ok(TurnResult {
+                    blocks: vec![Block::ToolUse(tool)],
+                    stop_reason: StopReason::ToolUse,
+                    usage: UsageReport::complete(Usage::default()),
+                });
+            }
+            if turn
+                == usize::try_from(investigation_convergence::DEFAULT_IMPLEMENTATION_ROUNDS)
+                    .unwrap()
+            {
+                assert!(req.messages.iter().any(|message| {
+                    message.content.iter().any(|block| {
+                        matches!(block, Block::Text { text } if text.contains("[Iteron action checkpoint]"))
+                    })
+                }));
+                assert!(tool_names.contains("edit"), "{tool_names:?}");
+                for paused in ["read_file", "grep", "bash", "dispatch_agent", "Workflow"] {
+                    assert!(!tool_names.contains(paused), "{paused}: {tool_names:?}");
+                }
+                self.saw_action_surface.store(true, Ordering::SeqCst);
+                self.action_schema_tokens
+                    .store(req.tools.estimated_tokens(), Ordering::SeqCst);
+                let tool = ToolUse {
+                    id: "forced-candidate-change".into(),
+                    name: "edit".into(),
+                    input: serde_json::json!({
+                        "path":"fixture.txt",
+                        "old":"stable evidence",
+                        "new":"fixed evidence"
+                    }),
+                };
+                on_item(StreamItem::ToolUseComplete(tool.clone()));
+                return Ok(TurnResult {
+                    blocks: vec![Block::ToolUse(tool)],
+                    stop_reason: StopReason::ToolUse,
+                    usage: UsageReport::complete(Usage::default()),
+                });
+            }
+            assert!(tool_names.contains("read_file"), "{tool_names:?}");
+            self.saw_restored_surface.store(true, Ordering::SeqCst);
+            Ok(TurnResult {
+                blocks: vec![Block::Text {
+                    text: "implemented and verified".into(),
+                }],
+                stop_reason: StopReason::EndTurn,
+                usage: UsageReport::complete(Usage::default()),
+            })
+        }
+    }
+
+    #[derive(Default)]
     struct ScriptedDispatch {
         turn: AtomicUsize,
     }
@@ -7347,6 +7434,83 @@ ant-api03-SuperSecretModelToken12345"
             })
             .count();
         assert_eq!(convergence, 1, "the strategy checkpoint is one-shot");
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[tokio::test]
+    async fn prolonged_investigation_gets_one_candidate_action_surface_then_restores_tools() {
+        let ws = temp_ws("forced-candidate-action");
+        std::fs::write(ws.join("fixture.txt"), "stable evidence\n").unwrap();
+        let provider = std::sync::Arc::new(ScriptedForcedCandidateAction::default());
+        let rollout = Rollout::open(
+            &ws.join(".iteron/runs"),
+            &iteron_protocol::RunId("forced-candidate-action".into()),
+            iteron_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let mut agent = Agent::new(
+            provider.clone(),
+            Registry::coding_agent(&ws).unwrap(),
+            rollout,
+            "m".into(),
+            "sys".into(),
+            Budget {
+                max_turns: investigation_convergence::DEFAULT_IMPLEMENTATION_ROUNDS + 4,
+                max_usd: None,
+                max_tokens: None,
+                // Keep the behavior bounded without coupling it to workspace-suite starvation.
+                max_wall_secs: 300,
+                max_consecutive_tool_errors: 3,
+            },
+        );
+        agent.workspace = ws.clone();
+        agent.permission_mode = PermissionMode::Yolo;
+        record_test_genesis(&mut agent, &ws);
+
+        assert_eq!(
+            agent.run("find and fix the defect").await.unwrap(),
+            Outcome::Done
+        );
+        assert!(provider.saw_action_surface.load(Ordering::SeqCst));
+        assert!(provider.saw_restored_surface.load(Ordering::SeqCst));
+        let initial_schema_tokens = provider.initial_schema_tokens.load(Ordering::SeqCst);
+        let action_schema_tokens = provider.action_schema_tokens.load(Ordering::SeqCst);
+        assert!(initial_schema_tokens > 0);
+        assert!(action_schema_tokens > 0);
+        assert!(
+            action_schema_tokens.saturating_mul(2) < initial_schema_tokens,
+            "candidate action schema should use less than half the tokens: action={action_schema_tokens}, initial={initial_schema_tokens}"
+        );
+        assert_eq!(
+            provider.turn.load(Ordering::SeqCst),
+            usize::try_from(investigation_convergence::DEFAULT_IMPLEMENTATION_ROUNDS).unwrap() + 2
+        );
+        assert_eq!(
+            std::fs::read_to_string(ws.join("fixture.txt")).unwrap(),
+            "fixed evidence\n"
+        );
+        let checkpoints = agent
+            .working_set
+            .as_ref()
+            .expect("the completed run retains its working set")
+            .iter()
+            .flat_map(|message| message.content.iter())
+            .filter_map(|block| match block {
+                Block::Text { text } if text.starts_with("[Iteron ") => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(checkpoints.len(), 2, "{checkpoints:?}");
+        assert!(
+            checkpoints
+                .iter()
+                .any(|text| text.contains("strategy checkpoint"))
+        );
+        assert!(
+            checkpoints
+                .iter()
+                .any(|text| text.contains("action checkpoint"))
+        );
         let _ = std::fs::remove_dir_all(&ws);
     }
 

@@ -273,6 +273,7 @@
 /crates/tools/src/shell.rs @fr0m-scratch
 /crates/tools/src/skill.rs @fr0m-scratch
 /crates/tools/src/tool_policy.rs @fr0m-scratch
+/crates/tools/src/tool_purpose.rs @fr0m-scratch
 /crates/tools/src/tool_search.rs @fr0m-scratch
 /crates/tools/src/web.rs @fr0m-scratch
 /crates/tools/src/workflow_tool.rs @fr0m-scratch

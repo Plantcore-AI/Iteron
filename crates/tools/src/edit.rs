@@ -447,7 +447,7 @@ where
 }
 
 pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
-    r.push_tool(
+    r.push_candidate_change_tool(
         ToolSpec {
             name: "edit".into(),
             description: "Replace one UNIQUE snippet in a file with new text. Exact matching is \

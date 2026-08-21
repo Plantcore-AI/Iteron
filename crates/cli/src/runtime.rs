@@ -3061,7 +3061,10 @@ impl Agent {
                 return Ok(outcome);
             }
             let effective_system = self.effective_system();
-            let tool_specs = self.advertised_tool_specs_for_task(relevance_task);
+            let tool_specs = self.advertised_tool_specs_for_task_with_strategy(
+                relevance_task,
+                investigation_convergence.tool_strategy(),
+            );
             // This is the checkpointed coding-request reservation. The provider's documented
             // maximum is an external ceiling applied during composition, not the amount every
             // ordinary tool turn should reserve by default.
@@ -4608,12 +4611,9 @@ impl Agent {
                 },
             );
             let total_tools = pure.len() + deferred.len();
-            let attempted_candidate_change = deferred.iter().any(|(_, _, proposal)| {
-                proposal.as_ref().is_ok_and(|proposal| {
-                    proposal.eligible.contains(Capability::ReversibleLocal)
-                        || proposal.eligible.contains(Capability::TrustMutating)
-                })
-            });
+            let attempted_candidate_change = deferred
+                .iter()
+                .any(|(_, tool, _)| self.registry.is_candidate_change_tool(&tool.name));
             let result_projection_budget =
                 self.turn_result_projection_budget(context_budget_inspection, &returned_tools);
             if total_tools > 0 {
@@ -5958,7 +5958,7 @@ impl Agent {
                     Some(turn_id),
                     LifecyclePayload {
                         count: Some(u64::from(request.rounds)),
-                        reason_code: Some("strategy_investigation_convergence".into()),
+                        reason_code: Some(request.stage.reason_code().into()),
                         ..LifecyclePayload::default()
                     },
                 );

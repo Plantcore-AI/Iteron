@@ -1291,6 +1291,10 @@
         },
         {
           "kind": "file",
+          "path": "crates/tools/src/tool_purpose.rs"
+        },
+        {
+          "kind": "file",
           "path": "crates/tools/src/tool_search.rs"
         },
         {

@@ -316,7 +316,7 @@ impl StagedWrite {
 }
 
 pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
-    registry.push_tool(
+    registry.push_candidate_change_tool(
         ToolSpec {
             name: "write_file".into(),
             description: "Create or replace one UTF-8 text file inside the workspace. Missing \
