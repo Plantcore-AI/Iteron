@@ -608,6 +608,16 @@ mod tests {
         }
     }
 
+    fn fixture_provider_with_context_window() -> ProviderConfig {
+        let mut provider = fixture_provider();
+        provider
+            .model_capabilities
+            .get_mut("fixture-model")
+            .expect("fixture model capabilities exist")
+            .context_window_tokens = Some(262_144);
+        provider
+    }
+
     #[test]
     fn all_runtime_profiles_project_the_exact_physical_session_isolation_owner() {
         for (profile, projected) in [
@@ -636,23 +646,13 @@ mod tests {
         }
     }
 
-    #[test]
-    fn fresh_composition_executes_owner_and_getter_seals_before_returning() {
+    fn resolve_fixture(provider: ProviderConfig) -> (FreshComposition, ModelCapabilities) {
         let workspace = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let directory = ProviderDirectory::inspect_local(&[fixture_provider()]).unwrap();
+        let directory = ProviderDirectory::inspect_local(&[provider]).unwrap();
         let selection = directory
             .resolve_model("composition-fixture:fixture-model", None)
             .unwrap();
         let model_capabilities = directory.selection_capabilities(&selection);
-        assert_eq!(
-            model_capabilities.image_input,
-            Some(true),
-            "the production composition oracle exercises the image-capable custom route"
-        );
-        assert_eq!(
-            model_capabilities.context_window_tokens, None,
-            "the production composition oracle exercises the unknown-window fallback"
-        );
         let (catalog_digest, capability_digest) = directory.selection_digests(&selection);
         let entry = directory.entry(&selection.provider_id).unwrap();
         let api_root = entry.instance.api_root().as_str().to_owned();
@@ -753,6 +753,22 @@ mod tests {
             panic!("fresh production composition must resolve and seal: {error:#?}")
         });
 
+        (fresh, model_capabilities)
+    }
+
+    #[test]
+    fn fresh_composition_executes_owner_and_getter_seals_before_returning() {
+        let (fresh, model_capabilities) = resolve_fixture(fixture_provider());
+        assert_eq!(
+            model_capabilities.image_input,
+            Some(true),
+            "the production composition oracle exercises the image-capable custom route"
+        );
+        assert_eq!(
+            model_capabilities.context_window_tokens, None,
+            "the production composition oracle exercises the unknown-window fallback"
+        );
+
         assert_eq!(
             fresh.binding_receipt.effective_family_count, fresh.binding_receipt.getter_count,
             "every effective Full family was read by its registered production getter"
@@ -827,6 +843,27 @@ mod tests {
             super::super::effective_view::EffectiveViewError::MissingGetterReceipt(
                 "provider".into()
             )
+        );
+    }
+
+    #[test]
+    fn fresh_composition_uses_one_unknown_output_fallback_for_request_and_context_budget() {
+        let (fresh, model_capabilities) = resolve_fixture(fixture_provider_with_context_window());
+        assert_eq!(model_capabilities.context_window_tokens, Some(262_144));
+        assert_eq!(model_capabilities.max_output_tokens, None);
+        assert_eq!(
+            fresh.settings.request_output_cap,
+            Some(super::super::core_facts::UNKNOWN_MODEL_OUTPUT_TOKENS),
+            "request construction must use the shared unknown-output fallback"
+        );
+        assert_eq!(
+            fresh.settings.context_budget.output_reserve_tokens,
+            super::super::core_facts::UNKNOWN_MODEL_OUTPUT_TOKENS,
+            "context allocation must reserve the same resolved output value"
+        );
+        assert_eq!(
+            fresh.settings.context_budget.transcript_tokens, 63_488,
+            "the component policy must derive from the shared reservation"
         );
     }
 }

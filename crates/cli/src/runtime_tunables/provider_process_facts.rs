@@ -50,10 +50,7 @@ pub(super) fn context_owner_window(
         .context_window_tokens
         .filter(|window| *window > 0)
         .and_then(|window| usize::try_from(window.min(10_000_000)).ok());
-    let output_reserve = input
-        .model_capabilities
-        .max_output_tokens
-        .unwrap_or(super::core_facts::UNKNOWN_MODEL_OUTPUT_TOKENS);
+    let output_reserve = super::core_facts::resolved_model_output_reserve(input.model_capabilities);
     let output_reserve_usize = usize::try_from(output_reserve)
         .map_err(|_| ProviderProcessFactError::IntegerOverflow("max_output_tokens"))?;
     let execution_window = actual_window.unwrap_or_else(|| {
