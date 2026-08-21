@@ -864,19 +864,16 @@ fn console_mode_marker(capture: &[u8], prefix: &[u8], label: &str) -> Option<u32
         .expect("mode marker count and position disagree");
     let payload = &capture[offset + prefix.len()..];
     // The wrapper emits either an 8-digit hex value or the literal "missing". ConPTY can append
-    // additional terminal controls (e.g. EL 0) immediately after the value, so stop at the first
-    // character that is not part of either form.
+    // terminal data immediately after the value, including hexadecimal characters, so read only
+    // the fixed-width marker.
     if payload.starts_with(b"missing") {
         return None;
     }
-    let hex_end = payload
-        .iter()
-        .position(|byte| !(*byte).is_ascii_hexdigit())
-        .unwrap_or(payload.len());
-    let payload = &payload[..hex_end];
-    assert_eq!(
-        payload.len(),
-        8,
+    let payload = payload
+        .get(..8)
+        .expect("same-console mode marker was shorter than eight hexadecimal digits");
+    assert!(
+        payload.iter().all(|byte| byte.is_ascii_hexdigit()),
         "same-console {label} mode was not an eight-digit hexadecimal value: {:?}",
         std::str::from_utf8(payload).unwrap_or("<invalid UTF-8>")
     );
@@ -888,6 +885,18 @@ fn console_mode_marker(capture: &[u8], prefix: &[u8], label: &str) -> Option<u32
     )
 }
 
+#[test]
+fn console_mode_marker_ignores_adjacent_hexadecimal_terminal_data() {
+    let capture = b"ITERON_CONSOLE_INPUT_MODE_BEFORE=00001f7ee";
+    let restored = b"ITERON_CONSOLE_INPUT_MODE_RESTORED=00001f7ee";
+
+    assert_eq!(
+        console_mode_marker(capture, CONSOLE_MODE_BEFORE, "before"),
+        Some(0x1f7e)
+    );
+    assert_eq!(restored_console_mode(restored), Some(0x1f7e));
+}
+
 fn restored_console_mode(capture: &[u8]) -> Option<u32> {
     let offset = capture
         .windows(CONSOLE_MODE_RESTORED.len())
@@ -896,14 +905,11 @@ fn restored_console_mode(capture: &[u8]) -> Option<u32> {
     if payload.starts_with(b"missing") {
         return None;
     }
-    let hex_end = payload
-        .iter()
-        .position(|byte| !(*byte).is_ascii_hexdigit())
-        .unwrap_or(payload.len());
-    let payload = &payload[..hex_end];
-    assert_eq!(
-        payload.len(),
-        8,
+    let payload = payload
+        .get(..8)
+        .expect("restored mode marker was shorter than eight hexadecimal digits");
+    assert!(
+        payload.iter().all(|byte| byte.is_ascii_hexdigit()),
         "restored mode marker was not an eight-digit hexadecimal value: {:?}",
         std::str::from_utf8(payload).unwrap_or("<invalid UTF-8>")
     );
