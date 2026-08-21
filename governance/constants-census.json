@@ -13,7 +13,7 @@
     "cli": {
       "bounded": 212,
       "searchable": 249,
-      "structural": 180
+      "structural": 182
     },
     "ctx": {
       "bounded": 48,
@@ -113,6 +113,6 @@
   },
   "schema_version": 1,
   "settable": 1385,
-  "structural": 766,
-  "total": 2151
+  "structural": 768,
+  "total": 2153
 }

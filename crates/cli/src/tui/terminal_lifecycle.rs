@@ -6,6 +6,83 @@ use crossterm::{cursor, execute, terminal};
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+#[cfg(windows)]
+mod windows_console_mode {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use std::sync::Mutex;
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+    use windows_sys::Win32::System::Console::{GetConsoleMode, SetConsoleMode};
+
+    /// Optional evidence path used by the native ConPTY oracle. The TUI writes the final restored
+    /// console input mode here before exit so the wrapper can verify restoration even though
+    /// ConPTY itself resets the shared input mode after the last client disconnects.
+    const EVIDENCE_PATH_ENV: &str = "ITERON_CONSOLE_MODE_EVIDENCE_PATH";
+
+    static SAVED: Mutex<Option<u32>> = Mutex::new(None);
+
+    fn open_conin() -> std::io::Result<std::fs::File> {
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .open("CONIN$")
+    }
+
+    fn mode(file: &std::fs::File) -> std::io::Result<u32> {
+        let mut mode = 0;
+        // SAFETY: `file` is an open CONIN$ handle owned by this call; `mode` is writable for the
+        // duration of the call.
+        let result = unsafe { GetConsoleMode(file.as_raw_handle() as HANDLE, &mut mode) };
+        if result == 0 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(mode)
+        }
+    }
+
+    fn set_mode(file: &std::fs::File, mode: u32) -> std::io::Result<()> {
+        // SAFETY: `file` is an open CONIN$ handle owned by this call.
+        let result = unsafe { SetConsoleMode(file.as_raw_handle() as HANDLE, mode) };
+        if result == 0 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn write_evidence(label: &str, mode: u32) {
+        if let Some(path) = std::env::var_os(EVIDENCE_PATH_ENV) {
+            let line = format!("{}={:08x}\n", label, mode);
+            let _ = std::fs::write(path, line);
+        }
+    }
+
+    pub fn save() {
+        let result = open_conin().and_then(|conin| mode(&conin));
+        if let Ok(mode) = result {
+            *SAVED
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(mode);
+        }
+    }
+
+    pub fn restore() {
+        let saved = SAVED
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        if let Some(saved_mode) = saved
+            && open_conin()
+                .and_then(|conin| set_mode(&conin, saved_mode))
+                .is_ok()
+        {
+            write_evidence("ITERON_CONSOLE_INPUT_MODE_RESTORED", saved_mode);
+        }
+    }
+}
+
 /// One interactive frontend owns the process terminal title stack frame.
 static TITLE_ACTIVE: AtomicBool = AtomicBool::new(false);
 
@@ -19,6 +96,8 @@ pub(super) fn restore_terminal(keyboard: &keyboard_enhancement::Restorer) {
 fn restore_terminal_modes(stdout: &mut impl Write) {
     restore_terminal_title_to(stdout, &TITLE_ACTIVE);
     let _ = terminal::disable_raw_mode();
+    #[cfg(windows)]
+    windows_console_mode::restore();
     let _ = execute!(stdout, DisableBracketedPaste);
     let _ = mouse_capture::release(stdout);
     let _ = execute!(stdout, cursor::Show);
@@ -107,6 +186,8 @@ pub(super) struct TermGuard {
 impl TermGuard {
     pub(super) fn new() -> std::io::Result<Self> {
         let keyboard = keyboard_enhancement::Controller::default();
+        #[cfg(windows)]
+        windows_console_mode::save();
         terminal::enable_raw_mode()?;
         if let Err(error) = execute!(
             std::io::stdout(),

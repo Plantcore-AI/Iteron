@@ -14,7 +14,9 @@ use crate::git_filters::discover_filter_drivers_bounded;
 #[cfg(test)]
 use crate::git_filters::{MAX_FILTER_DRIVERS, parse_filter_drivers};
 #[cfg(test)]
-use crate::git_harness::{NULL_DEVICE, ResolvedGit, shell_script_command};
+use crate::git_harness::ResolvedGit;
+#[cfg(all(test, unix))]
+use crate::git_harness::{NULL_DEVICE, shell_script_command};
 use crate::git_harness::{
     STDERR_LIMIT, hardened_args, hardened_git_command, resolve_git_executable,
     resolve_repository_layout, run_command_bounded,
@@ -26,7 +28,7 @@ use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-#[cfg(test)]
+#[cfg(all(test, unix))]
 use std::{io, process::Stdio};
 
 /// Diff shape when the call omits `stat`: full patch, because a summary answers fewer questions

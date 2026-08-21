@@ -1,10 +1,14 @@
+#[cfg(unix)]
 use crate::{
-    ActiveImplementationHandle, EvidenceLimits, HotSwapBlockKind, HotSwapCoordinator,
-    HotSwapExecutor, HotSwapGeneration, HotSwapPhase, HotSwapRequest, HotSwapResult,
-    HotSwapStageError, HotSwapTransaction, ImplementationFailurePolicy, ImplementationManifest,
-    ImplementationResponse, ImplementationResponseEnvelope, ImplementationRuntime,
-    ImplementationState, RuntimeGenerationError, RuntimeHotSwapExecutor, Version,
-    implementation_authority_sha256, replay_ledger,
+    ActiveImplementationHandle, EvidenceLimits, ImplementationFailurePolicy,
+    ImplementationManifest, ImplementationResponse, ImplementationResponseEnvelope,
+    ImplementationRuntime, RuntimeGenerationError, RuntimeHotSwapExecutor, Version,
+    implementation_authority_sha256,
+};
+use crate::{
+    HotSwapBlockKind, HotSwapCoordinator, HotSwapExecutor, HotSwapGeneration, HotSwapPhase,
+    HotSwapRequest, HotSwapResult, HotSwapStageError, HotSwapTransaction, ImplementationState,
+    replay_ledger,
 };
 #[cfg(unix)]
 use crate::{ImplementationRegistry, ProcessLaunchPlan};

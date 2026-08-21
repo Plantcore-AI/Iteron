@@ -65,8 +65,8 @@ While that variable is unset, `windows.yml` is skipped outright and the release
 leg falls back to a hosted `windows-2025` runner. See
 `ops/windows-runner/README.md` for the machine's provisioning runbook.
 
-Read a closed Windows tracking issue as closed, not as shipped: until a tag is
-cut with the release leg above, no published tag contains a Windows artifact.
+Windows artifacts are published starting with the release that closed issue
+#344; verify the selected release's asset list for availability.
 
 ## Linux requirements
 

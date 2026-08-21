@@ -264,6 +264,7 @@ impl Drop for TempDraft {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     fn scratch(name: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!(
             "core-external-editor-{name}-{}-{}",

@@ -514,7 +514,7 @@ impl McpClient {
         .await
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     async fn list_tools_with_limits(
         &self,
         limits: ToolListLimits,
@@ -632,7 +632,9 @@ impl McpClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use crate::protocol_version::REQUESTED_PROTOCOL_VERSION;
+    #[cfg(unix)]
     use std::process::Stdio;
     use tokio::io::{AsyncWriteExt, duplex};
 

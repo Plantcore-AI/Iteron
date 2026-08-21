@@ -646,13 +646,21 @@ fn signal_process_group(pid: Option<u32>, signal: libc::c_int) {
 /// collector owns a live group and force-kills that group if an upper runtime layer drops the
 /// collector in response to Ctrl-C/Esc.
 struct ProcessGroupDropGuard {
+    #[cfg(unix)]
     pid: Option<u32>,
     armed: bool,
 }
 
 impl ProcessGroupDropGuard {
     fn new(pid: Option<u32>) -> Self {
-        Self { pid, armed: true }
+        // The pid is only stored on Unix; naming it with a leading underscore suppresses the
+        // unused-variable warning on Windows without duplicating the call site.
+        let _pid = pid;
+        Self {
+            #[cfg(unix)]
+            pid: _pid,
+            armed: true,
+        }
     }
 
     fn disarm(&mut self) {

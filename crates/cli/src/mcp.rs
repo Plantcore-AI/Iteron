@@ -7,7 +7,7 @@ pub(crate) use session::{McpRuntimeControl, McpServerHealth};
 use crate::config::{McpServerConfig, McpTransportConfig};
 use iteron_protocol::ToolSpec;
 use iteron_tools::Registry;
-#[cfg(test)]
+#[cfg(all(test, unix))]
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -15,7 +15,7 @@ use std::sync::Arc;
 /// no interval was actually observed and inventing one would corrupt latency accounting.
 const UNMEASURED_DISPATCH_LATENCY_MS: u64 = 0;
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 struct DiscoveredServer {
     client: Arc<ConfiguredMcpClient>,
     name: String,
@@ -35,7 +35,7 @@ impl ConfiguredMcpClient {
             Self::Http(client) => client.negotiated_protocol_version(),
         }
     }
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn capabilities(&self) -> iteron_mcp::McpServerCapabilities {
         match self {
             Self::Stdio(client) => client.capabilities(),
@@ -43,7 +43,7 @@ impl ConfiguredMcpClient {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     async fn call_extension(
         &self,
         method: &str,
@@ -137,7 +137,7 @@ pub(crate) fn register_configured_servers(
     McpRuntimeControl::register(registry, servers, sensitive_env_names)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 async fn register_configured_servers_with_limit(
     registry: &mut Registry,
     servers: &[McpServerConfig],
@@ -203,7 +203,7 @@ async fn register_configured_servers_with_limit(
 /// Connect and perform read-only discovery under the same finite reconnect schedule used by the
 /// managed MCP lifecycle. No effecting tool call is replayed here: registration has not exposed a
 /// callable tool yet, and every failed client is dropped before the next generation starts.
-#[cfg(test)]
+#[cfg(all(test, unix))]
 async fn discover_configured_server(
     server: &McpServerConfig,
     sensitive_env_names: &[String],
@@ -241,7 +241,7 @@ async fn discover_configured_server(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn startup_retryable(error: &iteron_mcp::McpError) -> bool {
     matches!(
         error,
@@ -256,7 +256,7 @@ fn startup_retryable(error: &iteron_mcp::McpError) -> bool {
     )
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn extension_specs(
     server: &str,
     capabilities: iteron_mcp::McpServerCapabilities,
@@ -329,7 +329,7 @@ fn extension_specs(
     specs
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn register_mcp_extension(
     registry: &mut Registry,
     client: Arc<ConfiguredMcpClient>,
@@ -380,7 +380,7 @@ fn register_mcp_extension(
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 async fn connect_configured_server(
     server: &McpServerConfig,
     sensitive_env_names: &[String],
@@ -527,7 +527,7 @@ fn host_ceiling() -> iteron_protocol::capability_set::CapabilitySet {
     iteron_mcp::default_host_ceiling()
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn startup_error_line(server_name: &str, operation: &str, error: &iteron_mcp::McpError) -> String {
     format!(
         "mcp {server_name}: {operation} failed: {}",
@@ -535,7 +535,7 @@ fn startup_error_line(server_name: &str, operation: &str, error: &iteron_mcp::Mc
     )
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) fn register_mcp_tool(
     registry: &mut Registry,
     client: Arc<ConfiguredMcpClient>,

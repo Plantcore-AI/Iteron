@@ -485,14 +485,17 @@ exit 1
             "python3 release-tools/schema_release.py", workflow
         )
         self.assertIn(
-            'previous=$(jq -er --arg candidate "$GITHUB_REF_NAME"', workflow
+            'previous=$(jq -er --arg candidate "$candidate_tag"', workflow
         )
         self.assertIn('group_by(.version) | any(length > 1)', workflow)
         self.assertIn('any($stable[]; .version >= $candidate_version)', workflow)
         self.assertIn(
             '"$policy_root/release-tools/schema_release.py"', workflow
         )
-        self.assertIn('test "$trusted_previous" = "$previous"', workflow)
+        self.assertIn(
+            'require_eq "schema_release.py selected previous release must match policy-computed previous"',
+            workflow,
+        )
         anchor = workflow.index(
             "- name: Validate against the previous immutable schema release"
         )
@@ -572,8 +575,14 @@ exit 1
         self.assertIn(
             'CARGO_TARGET_DIR="$RUNNER_TEMP/core-schema-bootstrap-target"', workflow
         )
-        self.assertIn('test "$GITHUB_REF_NAME" = v0.0.1', workflow)
-        self.assertIn('steps.metadata.outputs.version }}" = 0.0.1', workflow)
+        self.assertIn(
+            'require_eq "bootstrap release tag must be v0.0.1" "v0.0.1" "$candidate_tag"',
+            workflow,
+        )
+        self.assertIn(
+            'require_eq "bootstrap release version must be 0.0.1" "0.0.1"',
+            workflow,
+        )
         self.assertGreaterEqual(
             workflow.count("ref: ${{ needs.validate.outputs.commit }}"), 3
         )
@@ -651,11 +660,17 @@ exit 1
         )[1].split(
             "- name: Validate against the previous immutable schema release", 1
         )[0]
-        self.assertIn('test "$GITHUB_EVENT_NAME" = workflow_dispatch', metadata)
+        self.assertIn(
+            'require_eq "release must be triggered by a v* tag or workflow_dispatch" "workflow_dispatch" "$GITHUB_EVENT_NAME"',
+            metadata,
+        )
         self.assertIn("tag_commit=$event_commit", metadata)
         self.assertNotIn('test "$GITHUB_REF" = refs/heads/main', metadata)
         self.assertIn('tested_tree=$(git rev-parse "$tag_commit^{tree}")', metadata)
-        self.assertIn('[[ "$tested_tree" =~ ^[0-9a-f]{40}$ ]]', metadata)
+        self.assertIn(
+            '''require_match "source tree must be a 40-character hex SHA" '^[0-9a-f]{40}$' "$tested_tree"''',
+            metadata,
+        )
         self.assertIn('echo "tree=$tested_tree"', metadata)
         self.assertIn("tree: ${{ steps.metadata.outputs.tree }}", release)
 

@@ -1,5 +1,7 @@
 use super::*;
-use crate::git_harness::{NULL_DEVICE, resolve_git_executable, shell_script_command};
+#[cfg(unix)]
+use crate::git_harness::shell_script_command;
+use crate::git_harness::{NULL_DEVICE, resolve_git_executable};
 use iteron_protocol::ToolUse;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
