@@ -16,22 +16,24 @@ fail() {
   exit 1
 }
 
+workspace_version() {
+  awk '
+    /^\[workspace\.package\]$/ { in_section = 1; next }
+    /^\[/ { in_section = 0 }
+    in_section && /^version[[:space:]]*=/ {
+      sub(/^[^"]*"/, "")
+      sub(/".*$/, "")
+      print
+      exit
+    }
+  ' Cargo.toml
+}
+
 version_input=${1:-}
 if [[ -n "$version_input" ]]; then
   version=${version_input#v}
 else
-  version=$(
-    awk '
-      /^\[workspace\.package\]$/ { in_section = 1; next }
-      /^\[/ { in_section = 0 }
-      in_section && /^version[[:space:]]*=/ {
-        sub(/^[^"]*"/, "")
-        sub(/".*$/, "")
-        print
-        exit
-      }
-    ' Cargo.toml
-  )
+  version=$(workspace_version)
   [[ -n "$version" ]] || fail "could not read workspace version from Cargo.toml"
 fi
 
@@ -55,29 +57,15 @@ if [[ "$branch" != main ]]; then
   fail "releases must be created from the 'main' branch (currently on '$branch')"
 fi
 
-if ! git diff --quiet; then
-  fail "working tree has uncommitted changes"
-fi
-if ! git diff --cached --quiet; then
-  fail "index has staged but uncommitted changes"
+if [[ -n "$(git status --porcelain)" ]]; then
+  fail "working tree is not clean (uncommitted, staged, or untracked changes present)"
 fi
 
 commit=$(git rev-parse HEAD)
 [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || fail "could not determine current commit"
 
 # Verify the workspace manifest still agrees with the requested version.
-manifest_version=$(
-  awk '
-    /^\[workspace\.package\]$/ { in_section = 1; next }
-    /^\[/ { in_section = 0 }
-    in_section && /^version[[:space:]]*=/ {
-      sub(/^[^"]*"/, "")
-      sub(/".*$/, "")
-      print
-      exit
-    }
-  ' Cargo.toml
-)
+manifest_version=$(workspace_version)
 [[ "$manifest_version" == "$version" ]] ||
   fail "requested version $version does not match Cargo.toml version $manifest_version"
 
@@ -96,12 +84,18 @@ fi
 successful_dispatch=$(
   gh api "repos/$owner/$repo/actions/workflows/release.yml/runs" \
     --paginate \
-    --jq ".workflow_runs[] | select(.head_sha == \"$commit\" and .event == \"workflow_dispatch\" and .conclusion == \"success\") | .id" \
+    --jq ".workflow_runs[] | select(
+      .head_sha == \"$commit\"
+      and .event == \"workflow_dispatch\"
+      and .conclusion == \"success\"
+      and ((.head_branch // \"\") != \"\")
+      and ((.head_branch // \"\") | startswith(\"refs/tags/\") | not)
+    ) | .id" \
     2>/dev/null | head -n 1
 ) || true
 
 if [[ -z "$successful_dispatch" ]]; then
-  fail "commit $commit has no successful workflow_dispatch run of release.yml; dispatch release.yml from this commit first"
+  fail "commit $commit has no successful branch workflow_dispatch run of release.yml; dispatch release.yml from this commit first"
 fi
 
 # Refuse to overwrite an existing tag locally or remotely.

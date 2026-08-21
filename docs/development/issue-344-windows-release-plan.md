@@ -1,6 +1,6 @@
 # Issue #344 执行计划：Windows lane 与 release gate
 
-> 跟踪 issue: [https://github.com/Plantcore-AI/Iteron/issues/344](https://github.com/Plantcore-AI/Iteron/issues/344)  
+> 跟踪 issue: [https://github.com/Plantcore-AI/Iteron/issues/344](https://github.com/Plantcore-AI/Iteron/issues/344)
 > 范围、授权与非阻塞约定以 issue 为准。本计划只描述如何落地，不覆盖 issue 已有内容。
 
 ---
