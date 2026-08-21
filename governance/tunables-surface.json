@@ -4,7 +4,7 @@
   "registry_revision": 20,
   "registry_digest": "487c554cdcc97e7e86d9af2ae4c6f588e4e250fdefb868a9755c7201ad9e5fd6",
   "param_registry_id": "iteron-params",
-  "param_registry_digest": "a8cffd6f8fbce6cfc6d3677519e80186707b93570ece168e068e9a2d2faf7692",
+  "param_registry_digest": "5be61536de5b9950bb3bf614b81b004059d9f314cf56aef633cb83803b73410e",
   "tool_text_registry_id": "iteron-builtin-tool-descriptions",
   "tool_text_registry_digest": "0ed860c172595c8e2425a76b68a7d840886a9129c40ef103252b1e625fe65a59",
   "counts": {
@@ -9104,7 +9104,7 @@
         },
         {
           "path": "crates/cli/src/runtime_tunables/provider_process_facts.rs",
-          "line": 301,
+          "line": 298,
           "evidence": "Rust path reference"
         }
       ]
@@ -18961,7 +18961,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime_tunables/core_facts.rs",
-          "line": 724,
+          "line": 729,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -19443,7 +19443,7 @@
         },
         {
           "path": "crates/cli/src/runtime_tunables/provider_process_facts.rs",
-          "line": 301,
+          "line": 298,
           "evidence": "Rust path reference"
         }
       ]
@@ -19613,7 +19613,7 @@
         },
         {
           "path": "crates/cli/src/runtime_tunables/provider_process_facts.rs",
-          "line": 301,
+          "line": 298,
           "evidence": "Rust path reference"
         }
       ]
