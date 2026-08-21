@@ -69,39 +69,46 @@ manifest_version=$(workspace_version)
 [[ "$manifest_version" == "$version" ]] ||
   fail "requested version $version does not match Cargo.toml version $manifest_version"
 
-# Require a successful workflow_dispatch of release.yml for this exact commit.
+# Require that the local main matches origin/main. A tag pushed from a stale
+# local main will fail in release.yml anyway and burns a version number.
 remote_url=$(git ls-remote --get-url origin 2>/dev/null) ||
   fail "could not determine remote origin"
+
+git fetch --quiet origin main || fail "could not fetch origin/main"
+main_commit=$(git rev-parse 'origin/main^{commit}')
+if [[ "$commit" != "$main_commit" ]]; then
+  fail "local HEAD ($commit) does not match origin/main ($main_commit); pull the latest main first"
+fi
 
 # Accept either https://github.com/OWNER/REPO(.git) or git@github.com:OWNER/REPO.git
 if [[ "$remote_url" =~ github\.com[/:]([^/]+)/([^/]+)(\.git)?$ ]]; then
   owner="${BASH_REMATCH[1]}"
   repo="${BASH_REMATCH[2]}"
+  repo="${repo%.git}"
 else
   fail "origin does not point to a github.com repository: $remote_url"
 fi
 
+# Bound API surface: at most one page of workflow runs (20 items, ~30s total)
+# is sufficient for a commit that has just been dispatched.
 successful_dispatch=$(
-  gh api "repos/$owner/$repo/actions/workflows/release.yml/runs" \
-    --paginate \
+  gh api "repos/$owner/$repo/actions/workflows/release.yml/runs?per_page=20" \
     --jq ".workflow_runs[] | select(
       .head_sha == \"$commit\"
       and .event == \"workflow_dispatch\"
       and .conclusion == \"success\"
-      and ((.head_branch // \"\") != \"\")
-      and ((.head_branch // \"\") | startswith(\"refs/tags/\") | not)
+      and .head_branch == \"main\"
     ) | .id" \
     2>/dev/null | head -n 1
 ) || true
 
 if [[ -z "$successful_dispatch" ]]; then
-  fail "commit $commit has no successful branch workflow_dispatch run of release.yml; dispatch release.yml from this commit first"
+  fail "commit $commit has no successful workflow_dispatch run of release.yml on main; dispatch release.yml from this commit first"
 fi
 
 # Require successful protected CI evidence on main for this exact commit.
 ci_evidence_run=$(
-  gh api "repos/$owner/$repo/actions/workflows/ci.yml/runs" \
-    --paginate \
+  gh api "repos/$owner/$repo/actions/workflows/ci.yml/runs?branch=main&event=push&status=success&head_sha=$commit&per_page=10" \
     --jq ".workflow_runs[] | select(
       .head_sha == \"$commit\"
       and .head_branch == \"main\"
@@ -117,7 +124,7 @@ if [[ -z "$ci_evidence_run" ]]; then
 fi
 
 ci_required_jobs=$(
-  gh api "repos/$owner/$repo/actions/runs/$ci_evidence_run/jobs" \
+  gh api "repos/$owner/$repo/actions/runs/$ci_evidence_run/jobs?filter=latest&per_page=100" \
     --jq '[.jobs[] | select(.name == "ci / required" and .status == "completed" and .conclusion == "success")] | length' \
     2>/dev/null
 ) || true
@@ -126,11 +133,12 @@ if [[ "$ci_required_jobs" != "1" ]]; then
   fail "CI evidence run $ci_evidence_run must contain exactly one successful \"ci / required\" job (found: ${ci_required_jobs:-none})"
 fi
 
-# Require the candidate version to be newer than every existing immutable release.
-# This mirrors the immutable-schema release gate and prevents a stale version from
-# burning a tag.
+# Early local guard: the candidate version must be greater than the latest
+# published immutable release. This does NOT prove schema compatibility; the
+# immutable-schema gate in release.yml is the authoritative check. It only
+# prevents an obvious stale-version tag from burning a version number.
 latest_immutable_version=$(
-  gh api "repos/$owner/$repo/releases" \
+  gh api "repos/$owner/$repo/releases?per_page=100" \
     --paginate \
     --jq '[.[] | select(.draft == false and .prerelease == false and .immutable == true and (.tag_name | type) == "string") | .tag_name | capture("^v(?<major>0|[1-9][0-9]*)\\.(?<minor>0|[1-9][0-9]*)\\.(?<patch>0|[1-9][0-9]*)$")] | map([(.major | tonumber), (.minor | tonumber), (.patch | tonumber)]) | sort | last | if . then "v\(.[0]).\(.[1]).\(.[2])" else empty end' \
     2>/dev/null
@@ -158,7 +166,7 @@ if git ls-remote --tags origin "refs/tags/$tag" | grep -q "refs/tags/$tag"; then
 fi
 
 printf 'Preparing annotated tag %s for commit %s\n' "$tag" "$commit"
-printf 'Verified successful branch dispatch: run id %s\n' "$successful_dispatch"
+printf 'Verified successful main dispatch: run id %s\n' "$successful_dispatch"
 printf '\nTag message: Iteron %s\n\n' "$version"
 
 read -r -p "Push annotated tag $tag to origin? [y/N] " answer

@@ -259,7 +259,7 @@ jobs:
             echo "version=$version"
           } >> "$GITHUB_OUTPUT"
       - name: Require successful protected CI evidence
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -307,14 +307,59 @@ jobs:
             exit 1
           fi
       - name: Validate against the previous immutable schema release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
-          source "$GITHUB_WORKSPACE/release-tools/release-helpers.sh"
+          fail() {
+            printf 'release validation failed: %s\n' "$*" >&2
+            exit 1
+          }
+
+          require_eq() {
+            local description=$1 expected=$2 actual=$3
+            if [[ "$expected" != "$actual" ]]; then
+              printf 'release validation failed: %s\n  expected: %q\n  actual:   %q\n' "$description" "$expected" "$actual" >&2
+              exit 1
+            fi
+          }
+
+          require_match() {
+            local description=$1 regex=$2 value=$3
+            if [[ ! "$value" =~ $regex ]]; then
+              printf 'release validation failed: %s\n  value: %q\n  regex:  %q\n' "$description" "$value" "$regex" >&2
+              exit 1
+            fi
+          }
+
+          require_empty() {
+            local description=$1 path=$2
+            if [[ -s "$path" ]]; then
+              printf 'release validation failed: %s\n  file should be empty: %q\n' "$description" "$path" >&2
+              exit 1
+            fi
+          }
+
+          require_true() {
+            local description=$1
+            shift
+            if ! "$@"; then
+              printf 'release validation failed: %s\n' "$description" >&2
+              exit 1
+            fi
+          }
+
+          # Derive the candidate tag from the workspace manifest. On a real tag
+          # dispatch this must equal GITHUB_REF_NAME; on a main workflow_dispatch
+          # rehearsal the workflow still validates the release graph as if the tag
+          # were being created.
+          candidate_tag="v${{ steps.metadata.outputs.version }}"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            require_eq "tag ref must match workspace version" "$candidate_tag" "$GITHUB_REF_NAME"
+          fi
 
           api_version=2026-03-10
           pages=$RUNNER_TEMP/core-schema-release-pages.jsonl
@@ -350,7 +395,7 @@ jobs:
           # Select the proposed anchor without executing any candidate-owned
           # repository code. The selected immutable release then recomputes the
           # answer with its own trusted policy before any candidate build runs.
-          previous=$(jq -er --arg candidate "$GITHUB_REF_NAME" '
+          previous=$(jq -er --arg candidate "$candidate_tag" '
             def semver:
               capture(
                 "^v(?<major>0|[1-9][0-9]*)\\.(?<minor>0|[1-9][0-9]*)\\.(?<patch>0|[1-9][0-9]*)$"
@@ -491,7 +536,7 @@ jobs:
             # an isolated target directory. This path exists only for the
             # project's fixed first public version and cannot be reused if
             # predecessor selection ever regresses.
-            require_eq "bootstrap release tag must be v0.0.1" "v0.0.1" "$GITHUB_REF_NAME"
+            require_eq "bootstrap release tag must be v0.0.1" "v0.0.1" "$candidate_tag"
             require_eq "bootstrap release version must be 0.0.1" "0.0.1" "${{ steps.metadata.outputs.version }}"
             if ! jq -e '
               [
@@ -554,7 +599,7 @@ jobs:
           trusted_previous=$(python3 \
             "$policy_root/release-tools/schema_release.py" \
             --input "$releases" \
-            --candidate "$GITHUB_REF_NAME")
+            --candidate "$candidate_tag")
           require_eq "schema_release.py selected previous release must match policy-computed previous" \
             "$previous" "$trusted_previous"
           validator_root=$policy_root
@@ -572,7 +617,7 @@ jobs:
             # d3026afa (#310) widened the binary-target rule so `crates/eval` may
             # declare `iteron-harness` alongside `iteron-eval`, which retired the
             # earlier a9130edb pin.
-            require_eq "v0.0.4 bridge release tag must be v0.0.5" "v0.0.5" "$GITHUB_REF_NAME"
+            require_eq "v0.0.4 bridge release tag must be v0.0.5" "v0.0.5" "$candidate_tag"
             compatibility_commit=d3026afa8258ac29031b8f3007406e2f94aca053
             compatibility_schema_blob=a61c3410a287a937e21714421ef109d91f1f271c
             require_eq "compatibility bridge commit must be a commit object" \

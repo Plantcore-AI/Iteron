@@ -485,7 +485,7 @@ exit 1
             "python3 release-tools/schema_release.py", workflow
         )
         self.assertIn(
-            'previous=$(jq -er --arg candidate "$GITHUB_REF_NAME"', workflow
+            'previous=$(jq -er --arg candidate "$candidate_tag"', workflow
         )
         self.assertIn('group_by(.version) | any(length > 1)', workflow)
         self.assertIn('any($stable[]; .version >= $candidate_version)', workflow)
@@ -576,7 +576,7 @@ exit 1
             'CARGO_TARGET_DIR="$RUNNER_TEMP/core-schema-bootstrap-target"', workflow
         )
         self.assertIn(
-            'require_eq "bootstrap release tag must be v0.0.1" "v0.0.1" "$GITHUB_REF_NAME"',
+            'require_eq "bootstrap release tag must be v0.0.1" "v0.0.1" "$candidate_tag"',
             workflow,
         )
         self.assertIn(
