@@ -717,15 +717,29 @@ fn add_memory_defaults(
 }
 
 pub(super) fn model_output_reserve(input: &CoreFactsInput<'_>) -> u64 {
-    u64::from(
-        input
-            .model_capabilities
-            .max_output_tokens
-            .unwrap_or(iteron_tunables::param_integer(
-                "cli.runtime_tunables.core_facts.unknown_model_output_tokens",
-                UNKNOWN_MODEL_OUTPUT_TOKENS,
-            )),
+    u64::from(resolved_model_output_reserve(input.model_capabilities))
+}
+
+/// Resolve the exact response reservation for every runtime owner that sizes the selected route.
+/// A provider-declared ceiling remains authoritative; otherwise the installed Tier-2 fallback is
+/// the single source of truth for this run.
+pub(super) fn resolved_model_output_reserve(model_capabilities: &ModelCapabilities) -> u32 {
+    model_output_reserve_with_fallback(
+        model_capabilities,
+        iteron_tunables::param_integer(
+            "cli.runtime_tunables.core_facts.unknown_model_output_tokens",
+            UNKNOWN_MODEL_OUTPUT_TOKENS,
+        ),
     )
+}
+
+fn model_output_reserve_with_fallback(
+    model_capabilities: &ModelCapabilities,
+    unknown_model_output_tokens: u32,
+) -> u32 {
+    model_capabilities
+        .max_output_tokens
+        .unwrap_or(unknown_model_output_tokens)
 }
 
 pub(super) fn compaction_context_ceiling(input: &CoreFactsInput<'_>) -> u64 {
@@ -737,4 +751,39 @@ pub(super) fn compaction_context_ceiling(input: &CoreFactsInput<'_>) -> u64 {
                 .unwrap_or(u64::MAX)
                 .saturating_add(model_output_reserve(input))
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn capabilities(max_output_tokens: Option<u32>) -> ModelCapabilities {
+        ModelCapabilities {
+            context_window_tokens: Some(262_144),
+            max_output_tokens,
+            tool_calling: None,
+            semantic_effort: None,
+            image_input: None,
+            image_input_version: None,
+            image_input_source: None,
+            routing_objectives: None,
+            version: None,
+            source: None,
+        }
+    }
+
+    #[test]
+    fn model_output_reserve_uses_the_resolved_unknown_model_fallback_unless_provider_declares_one()
+    {
+        assert_eq!(
+            model_output_reserve_with_fallback(&capabilities(None), 32_768),
+            32_768,
+            "a missing provider ceiling must preserve the installed Tier-2 fallback"
+        );
+        assert_eq!(
+            model_output_reserve_with_fallback(&capabilities(Some(16_384)), 32_768),
+            16_384,
+            "a provider-declared ceiling remains authoritative over the fallback"
+        );
+    }
 }

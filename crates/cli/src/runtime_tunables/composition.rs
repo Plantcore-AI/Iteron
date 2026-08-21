@@ -597,10 +597,10 @@ mod tests {
             model_capabilities: BTreeMap::from([(
                 "fixture-model".into(),
                 ProviderModelCapabilities {
-                    // Compatible gateways often omit this optional catalog field. Fresh
-                    // composition must pin the conservative local execution ceiling instead of
-                    // making the entire CLI unusable before its first request.
-                    context_window_tokens: None,
+                    // Compatible gateways may attest the context window while omitting the
+                    // optional response ceiling. Fresh composition must use the same installed
+                    // fallback for request and context sizing.
+                    context_window_tokens: Some(262_144),
                     image_input: Some(true),
                     routing_objectives: None,
                 },
@@ -650,8 +650,13 @@ mod tests {
             "the production composition oracle exercises the image-capable custom route"
         );
         assert_eq!(
-            model_capabilities.context_window_tokens, None,
-            "the production composition oracle exercises the unknown-window fallback"
+            model_capabilities.context_window_tokens,
+            Some(262_144),
+            "the production composition oracle exercises an attested window without a response ceiling"
+        );
+        assert_eq!(
+            model_capabilities.max_output_tokens, None,
+            "the production composition oracle exercises the unknown-output fallback"
         );
         let (catalog_digest, capability_digest) = directory.selection_digests(&selection);
         let entry = directory.entry(&selection.provider_id).unwrap();
@@ -763,9 +768,20 @@ mod tests {
             "every effective Full family was observed by its exact production owner"
         );
         assert_eq!(fresh.fact_summary.active_full_gaps, 0);
-        assert!(
-            fresh.settings.model_context_window.is_some(),
-            "unknown provider metadata must resolve to a pinned conservative effective window"
+        assert_eq!(fresh.settings.model_context_window, Some(262_144));
+        assert_eq!(
+            fresh.settings.request_output_cap,
+            Some(super::super::core_facts::UNKNOWN_MODEL_OUTPUT_TOKENS),
+            "request construction must use the shared unknown-output fallback"
+        );
+        assert_eq!(
+            fresh.settings.context_budget.output_reserve_tokens,
+            super::super::core_facts::UNKNOWN_MODEL_OUTPUT_TOKENS,
+            "context allocation must reserve the same resolved output value"
+        );
+        assert_eq!(
+            fresh.settings.context_budget.transcript_tokens, 63_488,
+            "the component policy must derive from the shared reservation"
         );
         for family_id in [
             "effort",
