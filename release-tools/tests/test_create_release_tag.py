@@ -370,11 +370,12 @@ class CreateReleaseTagTest(unittest.TestCase):
                 [
                     [
                         {
-                            "tag_name": "v0.0.100",
+                            "tag_name": "v0.0.100" if index == 0 else "v0.0.1",
                             "draft": False,
                             "prerelease": False,
                             "immutable": True,
                         }
+                        for index in range(100)
                     ],
                     [
                         {

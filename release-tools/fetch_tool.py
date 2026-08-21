@@ -35,10 +35,11 @@ MAX_CACHE_BYTES = 2 * 1024 * 1024 * 1024
 # Scanning an unexpectedly large cache directory must also be bounded.
 MAX_CACHE_SCAN_ENTRIES = MAX_CACHE_ENTRIES * 4
 
-# Only evict files that match the cache-key naming convention, so a misconfigured
-# cache directory cannot erase unrelated runner data.
+# ITERON_RELEASE_TOOLS_CACHE is a parent directory. Keeping our cache in a private
+# child makes ownership explicit and leaves other runner data untouched.
+CACHE_DIRECTORY_NAME = "iteron-tool-v1"
 _CACHE_FILE_RE = re.compile(
-    r"^[^/]+-[^/]+-[0-9a-f]{64}\.(?:tar\.gz|tar\.xz|zip)$"
+    r"^iteron-tool-[a-z0-9][a-z0-9._-]*-[0-9a-f]{64}\.(?:tar\.gz|tar\.xz|zip)$"
 )
 
 
@@ -63,17 +64,18 @@ def _cache_dir() -> Path | None:
     """Return a persistent cache directory if the operator has configured one.
 
     Self-hosted runners on slow or unstable links can set ITERON_RELEASE_TOOLS_CACHE
-    to a directory that survives between jobs. The cache key is the pinned SHA-256 of
-    the tool archive, so a changed pin automatically misses and re-downloads.
+    to a directory that survives between jobs. Iteron stores archives in its private
+    child directory. The cache key is the pinned SHA-256 of the tool archive, so a
+    changed pin automatically misses and re-downloads.
     """
     raw = os.environ.get("ITERON_RELEASE_TOOLS_CACHE")
     if not raw:
         return None
-    return Path(raw)
+    return Path(raw) / CACHE_DIRECTORY_NAME
 
 
 def _cache_path(cache_dir: Path, tool: str, host: str, archive: str, sha256: str) -> Path:
-    return cache_dir / f"{tool}-{host}-{sha256}.{archive}"
+    return cache_dir / f"iteron-tool-{tool}-{host}-{sha256}.{archive}"
 
 
 def _require_regular_file(path: Path, max_bytes: int) -> int:
@@ -122,11 +124,18 @@ def _evict_cache(cache_dir: Path) -> None:
     The contract is: after any successful write, the cache contains at most
     MAX_CACHE_ENTRIES files and at most MAX_CACHE_BYTES total. Files are ordered
     by mtime so that the least-recently-used entries are removed first.
-    Only files matching the tool-cache naming convention are considered, and the
-    directory scan itself is bounded.
+    Only files matching the tool-cache naming convention are evicted, and the
+    directory scan itself is bounded even when it contains unrelated files.
     """
     entries = []
+    scanned = 0
     for path in cache_dir.iterdir():
+        scanned += 1
+        if scanned > MAX_CACHE_SCAN_ENTRIES:
+            raise ReleaseToolError(
+                f"cache directory contains more than {MAX_CACHE_SCAN_ENTRIES} "
+                "entries; refusing unbounded scan"
+            )
         if not _CACHE_FILE_RE.match(path.name):
             continue
         try:
@@ -135,11 +144,6 @@ def _evict_cache(cache_dir: Path) -> None:
             continue
         if stat.S_ISREG(info.st_mode):
             entries.append((info.st_mtime, info.st_size, path))
-            if len(entries) > MAX_CACHE_SCAN_ENTRIES:
-                raise ReleaseToolError(
-                    f"cache directory contains more than {MAX_CACHE_SCAN_ENTRIES} "
-                    "cache entries; refusing unbounded scan"
-                )
 
     # Evict by total bytes first, then by count, so both limits are respected.
     entries.sort(key=lambda item: item[0])
@@ -148,15 +152,15 @@ def _evict_cache(cache_dir: Path) -> None:
         _, size, path = entries.pop(0)
         try:
             path.unlink()
-        except OSError:
-            continue
+        except OSError as error:
+            raise ReleaseToolError(f"could not evict cache entry {path}: {error}") from error
         total -= size
     while len(entries) > MAX_CACHE_ENTRIES and entries:
         _, _, path = entries.pop(0)
         try:
             path.unlink()
-        except OSError:
-            continue
+        except OSError as error:
+            raise ReleaseToolError(f"could not evict cache entry {path}: {error}") from error
 
 
 def download(url: str, destination: Path) -> None:

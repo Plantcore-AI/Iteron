@@ -25,8 +25,9 @@ class FetchToolCacheTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory(prefix="iteron-fetch-tool-test-")
         self.root = Path(self.temporary.name)
-        self.cache = self.root / "cache"
-        self.cache.mkdir()
+        self.cache_parent = self.root / "cache"
+        self.cache = self.cache_parent / fetch_tool.CACHE_DIRECTORY_NAME
+        self.cache.mkdir(parents=True)
         self.output = self.root / "output" / "tool"
         self.lock = self.root / "tools-lock.json"
 
@@ -37,7 +38,7 @@ class FetchToolCacheTest(unittest.TestCase):
         self._write_lock(self.archive_digest)
 
         self.env = os.environ.copy()
-        self.env["ITERON_RELEASE_TOOLS_CACHE"] = str(self.cache)
+        self.env["ITERON_RELEASE_TOOLS_CACHE"] = str(self.cache_parent)
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -79,7 +80,7 @@ class FetchToolCacheTest(unittest.TestCase):
 
     def _cache_path(self, digest: str | None = None) -> Path:
         digest = digest or self.archive_digest
-        return self.cache / f"mytool-linux-x86_64-{digest}.tar.gz"
+        return self.cache / f"iteron-tool-mytool-linux-x86_64-{digest}.tar.gz"
 
     def _run(self) -> Path:
         argv = [
@@ -161,7 +162,7 @@ class FetchToolCacheTest(unittest.TestCase):
         # Pre-fill the cache with many small entries.
         for index in range(fetch_tool.MAX_CACHE_ENTRIES + 5):
             data, digest = self._make_archive(self.binary_name, f"entry {index}".encode())
-            path = self.cache / f"mytool-linux-x86_64-{digest}.tar.gz"
+            path = self.cache / f"iteron-tool-mytool-linux-x86_64-{digest}.tar.gz"
             path.write_bytes(data)
 
         def fake_download(url: str, destination: Path) -> None:
@@ -183,7 +184,7 @@ class FetchToolCacheTest(unittest.TestCase):
                 for index in range(2):
                     data = b"x" * 80
                     digest = hashlib.sha256(str(index).encode()).hexdigest()
-                    path = self.cache / f"mytool-linux-x86_64-{digest}.tar.gz"
+                    path = self.cache / f"iteron-tool-mytool-linux-x86_64-{digest}.tar.gz"
                     path.write_bytes(data)
                     old_time = time.time() - 3600 - index
                     os.utime(path, (old_time, old_time))
@@ -208,8 +209,17 @@ class FetchToolCacheTest(unittest.TestCase):
             for index in range(6):
                 data = b"x"
                 digest = hashlib.sha256(str(index).encode()).hexdigest()
-                path = self.cache / f"mytool-linux-x86_64-{digest}.tar.gz"
+                path = self.cache / f"iteron-tool-mytool-linux-x86_64-{digest}.tar.gz"
                 path.write_bytes(data)
+
+            with self.assertRaises(ReleaseToolError):
+                fetch_tool._evict_cache(self.cache)
+
+    def test_eviction_refuses_unbounded_scan_of_unrelated_files(self) -> None:
+        """Non-cache files count toward the bounded directory scan."""
+        with mock.patch.object(fetch_tool, "MAX_CACHE_SCAN_ENTRIES", 5):
+            for index in range(6):
+                (self.cache / f"unrelated-{index}.txt").write_bytes(b"x")
 
             with self.assertRaises(ReleaseToolError):
                 fetch_tool._evict_cache(self.cache)
@@ -226,6 +236,14 @@ class FetchToolCacheTest(unittest.TestCase):
 
         self.assertTrue(unrelated.exists())
         self.assertEqual(unrelated.read_bytes(), b"do not delete")
+
+    def test_eviction_fails_when_a_cache_file_is_locked(self) -> None:
+        """A failed deletion cannot leave the cache silently over its limit."""
+        self._populate_cache()
+        with mock.patch.object(fetch_tool, "MAX_CACHE_BYTES", 0):
+            with mock.patch.object(Path, "unlink", side_effect=PermissionError("locked")):
+                with self.assertRaises(ReleaseToolError):
+                    fetch_tool._evict_cache(self.cache)
 
     def test_remote_disconnected_is_retried(self) -> None:
         """http.client.RemoteDisconnected triggers main's bounded retry loop."""
