@@ -9,7 +9,7 @@ const DEFAULT_BM25_K1_MILLI: u32 = 1_200;
 /// Okapi BM25 b in parts per million. 0.75 is the standard length-normalization setting.
 const DEFAULT_BM25_B_PPM: u32 = 750_000;
 /// Fact bodies one decision may select before the component budget becomes binding.
-const DEFAULT_RECALL_LIMIT: u32 = 12;
+const DEFAULT_RECALL_LIMIT: u32 = 8;
 /// Mild monthly decay: durable facts remain useful, while equally relevant recent evidence wins.
 const DEFAULT_RECENCY_DECAY_PPM: u32 = 980_000;
 /// Near-duplicate facts at or above this token-set similarity add repetition, not evidence.
@@ -185,7 +185,7 @@ mod tests {
     #[test]
     fn coding_defaults_bound_recall_and_remove_redundant_stale_facts() {
         let policy = MemoryRetrievalPolicy::default();
-        assert_eq!(policy.recall_limit, 12);
+        assert_eq!(policy.recall_limit, 8);
         assert_eq!(policy.recency_decay_ppm, 980_000);
         assert_eq!(policy.novelty_dedup_threshold_ppm, 850_000);
         assert!(policy.validate().is_ok());

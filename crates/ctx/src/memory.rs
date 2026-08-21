@@ -933,8 +933,8 @@ impl MemorySegment {
     }
 }
 
-/// Bounds on the injected memory segment (invariant #1). Defaults mirror Claude Code's ~25 KB /
-/// 200-line index, with room for recalled bodies and instructions under a total ceiling.
+/// Bounds on the injected memory segment (invariant #1). Coding defaults reserve a bounded 16 KB
+/// index, with smaller budgets for recalled bodies and instructions under a total ceiling.
 #[derive(Debug, Clone, Copy)]
 pub struct MemBudget {
     pub index_bytes: usize,
@@ -1013,14 +1013,14 @@ impl MemBudget {
     }
 }
 
-/// Bounded index segment ceiling; recalled bodies have their own independently governed budget.
-const DEFAULT_MEM_INDEX_BYTES: usize = 25_000;
-/// Recalled fact bodies admitted on top of the index.
-const DEFAULT_MEM_RECALL_BYTES: usize = 16_000;
+/// Bounded coding index ceiling; recalled bodies have their own independently governed budget.
+const DEFAULT_MEM_INDEX_BYTES: usize = 16_000;
+/// Recalled fact bodies admitted on top of the index with a tighter materialization ceiling.
+const DEFAULT_MEM_RECALL_BYTES: usize = 12_000;
 /// Discovered instruction text carried alongside memory.
 const DEFAULT_MEM_INSTR_BYTES: usize = 8_000;
 /// Total memory-segment ceiling: below the sum of the parts, so the classes compete.
-const DEFAULT_MEM_TOTAL_BYTES: usize = 49_000;
+const DEFAULT_MEM_TOTAL_BYTES: usize = 36_000;
 
 /// Errors from the memory strategy. Zero-dependency: `Display` + `std::error::Error` by hand.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2974,6 +2974,15 @@ pub fn merged_index(stores: &[MemStore]) -> MemIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn coding_defaults_bound_materialized_memory() {
+        let budget = MemBudget::default();
+        assert_eq!(budget.index_bytes, 16_000);
+        assert_eq!(budget.recall_bytes, 12_000);
+        assert_eq!(budget.instr_bytes, 8_000);
+        assert_eq!(budget.total, 36_000);
+    }
 
     #[test]
     fn memory_content_budget_scales_index_and_recall_without_widening_total() {

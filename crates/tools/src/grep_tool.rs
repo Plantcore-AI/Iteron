@@ -28,8 +28,8 @@ const MAX_GITIGNORE_FILES: usize = 128;
 const MAX_GITIGNORE_FILE_BYTES: usize = 64 * 1024;
 const MAX_GITIGNORE_TOTAL_BYTES: usize = 256 * 1024;
 const MAX_GITIGNORE_PATTERNS: usize = 4_096;
-/// Search mode when the call omits `regex`: literal, because a pattern written for literal search
-/// is inert as a regex, while the reverse silently matches the wrong lines.
+/// Owner override for calls that omit `regex`. When false, omitted calls use conservative regex
+/// intent detection; when true, every omitted call uses regex mode. Explicit call values win.
 const DEFAULT_GREP_REGEX_MODE: bool = false;
 
 enum Matcher {
@@ -87,6 +87,40 @@ impl Matcher {
             Self::Regex(pattern) => pattern.is_match(line),
         }
     }
+}
+
+fn regex_mode(pattern: &str, requested: Option<bool>) -> bool {
+    requested.unwrap_or_else(|| {
+        iteron_tunables::param_bool(
+            "tools.grep_tool.default_grep_regex_mode",
+            DEFAULT_GREP_REGEX_MODE,
+        ) || has_common_regex_intent(pattern)
+    })
+}
+
+fn has_common_regex_intent(pattern: &str) -> bool {
+    let bytes = pattern.as_bytes();
+    let mut escaped = false;
+    let mut in_brackets = false;
+    for (index, byte) in bytes.iter().copied().enumerate() {
+        if escaped {
+            escaped = false;
+            if matches!(byte, b'b' | b'B' | b'd' | b'D' | b's' | b'S' | b'w' | b'W') {
+                return true;
+            }
+            continue;
+        }
+        match byte {
+            b'\\' => escaped = true,
+            b'[' => in_brackets = true,
+            b']' => in_brackets = false,
+            b'|' if !in_brackets => return true,
+            b'^' if index == 0 => return true,
+            b'$' if index + 1 == bytes.len() => return true,
+            _ => {}
+        }
+    }
+    false
 }
 
 #[derive(Default)]
@@ -220,9 +254,11 @@ pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
         ToolSpec {
             name: "grep".into(),
             description: "Search bounded UTF-8 files while respecting .gitignore. `path` may be \
-                          relative to the repo root or an absolute host path. Literal matching is \
-                          the backward-compatible default; set `regex=true` for a Rust regular \
-                          expression. Returns `path:line: text` with absolute 1-based line \
+                          relative to the repo root or an absolute host path. When `regex` is \
+                          omitted, common unambiguous regex intent (anchors, unescaped `|`, and \
+                          shorthand escapes such as `\\d`) is detected; otherwise matching is \
+                          literal. Set `regex=false` to force literal matching or `regex=true` for \
+                          a Rust regular expression. Returns `path:line: text` with absolute 1-based line \
                           numbers, the path relative when it is under the repo root and absolute \
                           when it is not. File, traversal, source-byte, match, and output limits \
                           are always disclosed."
@@ -232,7 +268,7 @@ pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
                 "properties":{
                     "pattern":{"type":"string"},
                     "path":{"type":"string","description":"subtree relative to the repo root, or an absolute host path; default '.'"},
-                    "regex":{"type":"boolean","description":"interpret pattern as a Rust regex; default false"}
+                    "regex":{"type":"boolean","description":"true uses Rust regex; false forces literal matching; when omitted, conservatively auto-detect anchors, unescaped alternation, and standard shorthand escapes"}
                 },
                 "required":["pattern"]
             }),
@@ -256,10 +292,12 @@ pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
                     .unwrap_or("");
                 let matcher = match Matcher::compile(
                     pattern,
-                    call.input
-                        .get("regex")
-                        .and_then(serde_json::Value::as_bool)
-                        .unwrap_or(iteron_tunables::param_bool("tools.grep_tool.default_grep_regex_mode", DEFAULT_GREP_REGEX_MODE)),
+                    regex_mode(
+                        pattern,
+                        call.input
+                            .get("regex")
+                            .and_then(serde_json::Value::as_bool),
+                    ),
                 ) {
                     Ok(matcher) => matcher,
                     Err(error) => return err_result(id, error),

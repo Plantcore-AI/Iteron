@@ -32,6 +32,14 @@ fn grep_call(id: &str, pattern: &str, regex: bool) -> ToolUse {
     }
 }
 
+fn grep_call_auto(id: &str, pattern: &str) -> ToolUse {
+    ToolUse {
+        id: id.into(),
+        name: "grep".into(),
+        input: serde_json::json!({"pattern":pattern}),
+    }
+}
+
 fn registry(root: &Path) -> Registry {
     let registry = Registry::read_only(root).unwrap();
     registry
@@ -70,6 +78,68 @@ async fn d3_08_g1_regex_finds_a_match_ten_directories_deep() {
     );
     assert!(!first.content.contains("ordinary"));
     assert_eq!(first.content, second.content, "search order must be stable");
+}
+
+#[tokio::test]
+async fn omitted_regex_mode_detects_common_intent_and_explicit_false_stays_literal() {
+    let root = TestRoot::new("auto-regex");
+    std::fs::write(
+        root.0.join("patterns.txt"),
+        "alpha only\nbeta only\nalpha|beta literal\nitem-42\nitem-x\n",
+    )
+    .unwrap();
+    let registry = registry(&root.0);
+
+    let alternation = registry
+        .dispatch(grep_call_auto("auto-alternation", "alpha|beta"))
+        .await;
+    assert!(!alternation.is_error, "{}", alternation.content);
+    assert!(alternation.content.contains("patterns.txt:1: alpha only"));
+    assert!(alternation.content.contains("patterns.txt:2: beta only"));
+
+    let shorthand = registry
+        .dispatch(grep_call_auto("auto-shorthand", r"^item-\d+$"))
+        .await;
+    assert!(!shorthand.is_error, "{}", shorthand.content);
+    assert!(shorthand.content.contains("patterns.txt:4: item-42"));
+    assert!(!shorthand.content.contains("item-x"));
+
+    let literal = registry
+        .dispatch(grep_call("literal-alternation", "alpha|beta", false))
+        .await;
+    assert!(!literal.is_error, "{}", literal.content);
+    assert!(
+        literal
+            .content
+            .contains("patterns.txt:3: alpha|beta literal")
+    );
+    assert!(!literal.content.contains("patterns.txt:1:"));
+    assert!(!literal.content.contains("patterns.txt:2:"));
+}
+
+#[tokio::test]
+async fn omitted_regex_mode_keeps_dots_brackets_and_paths_literal() {
+    let root = TestRoot::new("auto-literal");
+    std::fs::write(
+        root.0.join("paths.txt"),
+        "src/main.rs[0]\nsrc/mainXrs0\n[alpha|beta]\n",
+    )
+    .unwrap();
+    let registry = registry(&root.0);
+
+    let result = registry
+        .dispatch(grep_call_auto("auto-literal", "src/main.rs[0]"))
+        .await;
+
+    assert!(!result.is_error, "{}", result.content);
+    assert!(result.content.contains("paths.txt:1: src/main.rs[0]"));
+    assert!(!result.content.contains("paths.txt:2:"));
+
+    let bracketed = registry
+        .dispatch(grep_call_auto("auto-bracketed", "[alpha|beta]"))
+        .await;
+    assert!(!bracketed.is_error, "{}", bracketed.content);
+    assert!(bracketed.content.contains("paths.txt:3: [alpha|beta]"));
 }
 
 #[tokio::test]

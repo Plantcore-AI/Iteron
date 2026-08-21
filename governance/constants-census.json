@@ -11,19 +11,19 @@
       "structural": 0
     },
     "cli": {
-      "bounded": 213,
-      "searchable": 245,
-      "structural": 180
+      "bounded": 212,
+      "searchable": 249,
+      "structural": 181
     },
     "ctx": {
       "bounded": 48,
-      "searchable": 28,
-      "structural": 15
+      "searchable": 30,
+      "structural": 13
     },
     "eval": {
-      "bounded": 42,
+      "bounded": 41,
       "searchable": 8,
-      "structural": 95
+      "structural": 101
     },
     "evolve": {
       "bounded": 60,
@@ -92,8 +92,8 @@
     },
     "tools": {
       "bounded": 103,
-      "searchable": 61,
-      "structural": 16
+      "searchable": 63,
+      "structural": 15
     },
     "tunables": {
       "bounded": 18,
@@ -112,7 +112,7 @@
     }
   },
   "schema_version": 1,
-  "settable": 1387,
-  "structural": 766,
-  "total": 2153
+  "settable": 1393,
+  "structural": 770,
+  "total": 2163
 }

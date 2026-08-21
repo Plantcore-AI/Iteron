@@ -2,14 +2,14 @@
 
 /// Consecutive tool-only rounds without a candidate-changing action before the controller asks the
 /// model to converge.
-pub(super) const INVESTIGATION_CONVERGENCE_ROUNDS: u32 = 6;
+pub(super) const INVESTIGATION_CONVERGENCE_ROUNDS: u32 = 4;
 /// A second, wider ceiling enables a local execution gate that admits registered candidate-change
 /// tools while keeping the provider-visible tool schemas stable. The model can still finish a
 /// read-only task or name a blocker without a tool, but it cannot keep executing a broader coding
 /// investigation indefinitely.
-pub(super) const DEFAULT_IMPLEMENTATION_ROUNDS: u32 = 10;
-const INVESTIGATION_CONVERGENCE_INSTRUCTION: &str = "[Iteron strategy checkpoint] You have completed several consecutive investigation-only rounds without attempting a candidate change. Stop broadening the search and synthesize the evidence already collected. If the operator requested a code change and the evidence supports one, make the smallest coherent change now and verify it. If the task is read-only, answer now. If a specific blocker remains, state it precisely. Perform another read or search only when it can falsify a named unresolved hypothesis; do not reread the same evidence merely for confidence.";
-const DEFAULT_IMPLEMENTATION_INSTRUCTION: &str = "[Iteron action checkpoint] The bounded investigation phase is complete. On the next turn, either use a registered candidate-change tool to implement the smallest evidence-supported fix, finish the requested read-only answer, or state the exact blocker. The runtime will refuse further broad observation and orchestration calls until a candidate change occurs; do not substitute shell discovery for them.";
+pub(super) const DEFAULT_IMPLEMENTATION_ROUNDS: u32 = 8;
+const INVESTIGATION_CONVERGENCE_INSTRUCTION: &str = "[Iteron strategy checkpoint] You have completed several consecutive investigation-only rounds without attempting a candidate change. Stop broadening the search and use an explicit evidence -> hypothesis -> candidate-action loop: synthesize the evidence already collected, name the most likely unresolved hypothesis, then choose the smallest evidence-supported action. Perform another observation only when it can falsify that named hypothesis, and batch only independent falsifying observations. Do not repeat identical or semantically equivalent reads merely for confidence. If the operator requested a code change, edit now and run the narrowest relevant verification. If the task is read-only, answer now. If a specific blocker remains, state it precisely.";
+const DEFAULT_IMPLEMENTATION_INSTRUCTION: &str = "[Iteron action checkpoint] The bounded investigation phase is complete. Finish the evidence -> hypothesis -> candidate-action loop now: on the next turn, either use a registered candidate-change tool to implement the smallest evidence-supported fix and then run narrow verification, finish the requested read-only answer, or state the exact blocker. The runtime will refuse further broad observation and orchestration calls until a candidate change occurs; do not repeat confidence reads, substitute shell discovery, or seek dependent observations that should follow the edit.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum InvestigationExecutionGate {

@@ -62,7 +62,7 @@ fn min_recent_retention_tokens() -> usize {
 }
 
 fn max_recent_retention_tokens() -> usize {
-    15_000
+    12_000
 }
 
 /// Provenance for the request-size number. This is never labelled as provider tokenization: it is
@@ -476,7 +476,7 @@ impl CompactionPolicy {
     }
 
     /// Verbatim recent-tail budget derived from the same replayed model-window and output-reserve
-    /// facts as admission. The percentage is optimizable; the 2k..15k clamp is a host ceiling.
+    /// facts as admission. The percentage is optimizable; the 2k..12k clamp is a host ceiling.
     pub fn recent_retention_tokens(
         &self,
         model_context_window: Option<u64>,
@@ -487,7 +487,7 @@ impl CompactionPolicy {
             .map(|window| window.saturating_sub(u64::from(reserved_output_tokens)))
             .unwrap_or_else(|| u64::try_from(self.trigger_tokens).unwrap_or(u64::MAX));
         let ratio =
-            iteron_tunables::param_integer("ctx.compact.recent_retention_ratio_percent", 25_usize)
+            iteron_tunables::param_integer("ctx.compact.recent_retention_ratio_percent", 20_usize)
                 .clamp(1, 100);
         usize::try_from(usable.saturating_mul(u64::try_from(ratio).unwrap_or(100)) / 100)
             .unwrap_or(usize::MAX)
@@ -1138,13 +1138,13 @@ mod tests {
     }
 
     #[test]
-    fn recent_retention_is_one_quarter_of_usable_context_with_hard_clamps() {
+    fn recent_retention_is_one_fifth_of_usable_context_with_hard_clamps() {
         let policy = CompactionPolicy::default();
         assert_eq!(policy.recent_retention_tokens(Some(4_096), 2_048), 2_000);
-        assert_eq!(policy.recent_retention_tokens(Some(32_768), 8_192), 6_144);
+        assert_eq!(policy.recent_retention_tokens(Some(32_768), 8_192), 4_915);
         assert_eq!(
             policy.recent_retention_tokens(Some(1_000_000), 8_192),
-            15_000
+            12_000
         );
     }
 
