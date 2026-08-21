@@ -244,10 +244,6 @@
       "paths": [
         {
           "kind": "file",
-          "path": ".cargo/config.toml"
-        },
-        {
-          "kind": "file",
           "path": ".github/actionlint.yaml"
         },
         {

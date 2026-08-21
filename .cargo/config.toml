@@ -1,8 +1,0 @@
-# Windows targets ship with a 1 MiB default stack, which is too small for the large
-# clap parser built from the `Cli` / `LocalCommand` subcommand tree. Linux and
-# macOS default to 8 MiB, so raise Windows to the same bound.
-[target.x86_64-pc-windows-msvc]
-rustflags = ["-C", "link-arg=/STACK:8388608"]
-
-[target.aarch64-pc-windows-msvc]
-rustflags = ["-C", "link-arg=/STACK:8388608"]
