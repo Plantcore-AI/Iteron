@@ -93,7 +93,9 @@ pub use token_calibration::{
     TokenCalibrationError, TokenCalibrationSnapshot, TokenCalibrationStore,
 };
 pub use token_estimator::{
-    OBSERVED_USAGE_ESTIMATOR_POLICY_ID, TokenEstimatorPolicy, TokenEstimatorProfile,
+    DECODED_PIXEL_IMAGE_ESTIMATOR_POLICY_ID, ENCODED_BYTES_IMAGE_ESTIMATOR_POLICY_ID,
+    ImageTokenEstimate, ImageTokenEstimateProvenance, OBSERVED_USAGE_ESTIMATOR_POLICY_ID,
+    TokenEstimatorPolicy, TokenEstimatorProfile,
 };
 
 /// A fast, provider-agnostic token upper bound. Real tokenization is the provider's; this uses four

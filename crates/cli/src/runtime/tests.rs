@@ -963,38 +963,44 @@ mod gate_integration_tests {
     }
 
     #[derive(Default)]
-    struct ScriptedInvestigationConvergence {
+    struct ScriptedDirectRepairFastPath {
         turn: AtomicUsize,
-        saw_instruction: AtomicBool,
+        saw_review_surface: AtomicBool,
     }
 
     #[async_trait::async_trait]
-    impl Provider for ScriptedInvestigationConvergence {
+    impl Provider for ScriptedDirectRepairFastPath {
         async fn turn(
             &self,
             req: &TurnRequest,
             on_item: &mut (dyn FnMut(StreamItem) + Send),
         ) -> Result<TurnResult, ProviderError> {
             let turn = self.turn.fetch_add(1, Ordering::SeqCst);
-            let saw_instruction = req.messages.iter().any(|message| {
+            let tool_names = req
+                .tools
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<std::collections::BTreeSet<_>>();
+            let saw_graph_instruction = req.messages.iter().any(|message| {
                 message.content.iter().any(|block| {
-                    matches!(block, Block::Text { text } if text.contains("[Iteron strategy checkpoint]"))
+                    matches!(block, Block::Text { text } if text.starts_with("[Iteron graph"))
                 })
             });
-            if turn
-                < usize::try_from(
-                    investigation_convergence::INVESTIGATION_CONVERGENCE_ROUNDS,
-                )
-                .unwrap()
-            {
+            if turn == 0 {
+                assert!(!saw_graph_instruction);
+                assert!(tool_names.contains("edit"), "{tool_names:?}");
                 assert!(
-                    !saw_instruction,
-                    "the controller must not interrupt a bounded initial investigation"
+                    !tool_names.contains(iteron_tools::SUBMIT_REPAIR_EVIDENCE),
+                    "ordinary coding must not advertise graph receipts: {tool_names:?}"
                 );
                 let tool = ToolUse {
-                    id: format!("investigation-{turn}"),
-                    name: "read_file".into(),
-                    input: serde_json::json!({"path":"fixture.txt"}),
+                    id: "direct-candidate-edit".into(),
+                    name: "edit".into(),
+                    input: serde_json::json!({
+                        "path":"fixture.txt",
+                        "old":"stable evidence",
+                        "new":"fixed evidence"
+                    }),
                 };
                 on_item(StreamItem::ToolUseComplete(tool.clone()));
                 return Ok(TurnResult {
@@ -1003,11 +1009,31 @@ mod gate_integration_tests {
                     usage: UsageReport::complete(Usage::default()),
                 });
             }
-            self.saw_instruction
-                .store(saw_instruction, Ordering::SeqCst);
+            assert!(!saw_graph_instruction);
+            for retained in [
+                "read_file",
+                "edit",
+                "apply_patch",
+                "write_file",
+                "git_diff",
+                "bash",
+            ] {
+                assert!(tool_names.contains(retained), "{retained}: {tool_names:?}");
+            }
+            for hidden in [
+                "grep",
+                "glob",
+                "list_dir",
+                "repo_map",
+                "tool_search",
+                "dispatch_agent",
+            ] {
+                assert!(!tool_names.contains(hidden), "{hidden}: {tool_names:?}");
+            }
+            self.saw_review_surface.store(true, Ordering::SeqCst);
             Ok(TurnResult {
                 blocks: vec![Block::Text {
-                    text: "synthesized answer".into(),
+                    text: "candidate ready for independent verification".into(),
                 }],
                 stop_reason: StopReason::EndTurn,
                 usage: UsageReport::complete(Usage::default()),
@@ -1015,18 +1041,88 @@ mod gate_integration_tests {
         }
     }
 
-    #[derive(Default)]
-    struct ScriptedForcedCandidateAction {
+    struct ScriptedFailureRepairAutoVerify {
         turn: AtomicUsize,
-        saw_action_checkpoint: AtomicBool,
-        saw_gate_refusal: AtomicBool,
-        saw_restored_surface: AtomicBool,
+        verifier_calls: std::sync::Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for ScriptedFailureRepairAutoVerify {
+        async fn turn(
+            &self,
+            req: &TurnRequest,
+            on_item: &mut (dyn FnMut(StreamItem) + Send),
+        ) -> Result<TurnResult, ProviderError> {
+            let turn = self.turn.fetch_add(1, Ordering::SeqCst);
+            let tool = match turn {
+                0 => {
+                    assert_eq!(self.verifier_calls.load(Ordering::SeqCst), 0);
+                    Some(ToolUse {
+                        id: "initial-failing-candidate".into(),
+                        name: "edit".into(),
+                        input: serde_json::json!({
+                            "path":"fixture.txt",
+                            "old":"stable candidate",
+                            "new":"broken candidate"
+                        }),
+                    })
+                }
+                1 => {
+                    assert_eq!(
+                        self.verifier_calls.load(Ordering::SeqCst),
+                        1,
+                        "the repair turn must follow one live TestFailure"
+                    );
+                    assert!(req.messages.iter().any(|message| {
+                        message.content.iter().any(|block| {
+                            matches!(block, Block::Text { text }
+                                if text.contains("Verification found a test failure"))
+                        })
+                    }));
+                    Some(ToolUse {
+                        id: "candidate-fix-after-verifier".into(),
+                        name: "edit".into(),
+                        input: serde_json::json!({
+                            "path":"fixture.txt",
+                            "old":"broken candidate",
+                            "new":"fixed candidate"
+                        }),
+                    })
+                }
+                _ => {
+                    panic!("automatic strong verification must finish before provider turn {turn}")
+                }
+            };
+            if let Some(tool) = tool {
+                on_item(StreamItem::ToolUseComplete(tool.clone()));
+                Ok(TurnResult {
+                    blocks: vec![Block::ToolUse(tool)],
+                    stop_reason: StopReason::ToolUse,
+                    usage: UsageReport::complete(Usage::default()),
+                })
+            } else {
+                Ok(TurnResult {
+                    blocks: vec![Block::Text {
+                        text: "candidate requires independent verification".into(),
+                    }],
+                    stop_reason: StopReason::EndTurn,
+                    usage: UsageReport::complete(Usage::default()),
+                })
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct ScriptedAdaptivePivot {
+        turn: AtomicUsize,
+        saw_no_graph_checkpoint: AtomicBool,
+        saw_broad_observation: AtomicBool,
         schema_json: std::sync::Mutex<Vec<std::sync::Arc<str>>>,
         schema_tokens: std::sync::Mutex<Vec<usize>>,
     }
 
     #[async_trait::async_trait]
-    impl Provider for ScriptedForcedCandidateAction {
+    impl Provider for ScriptedAdaptivePivot {
         async fn turn(
             &self,
             req: &TurnRequest,
@@ -1046,15 +1142,12 @@ mod gate_integration_tests {
                 .lock()
                 .unwrap()
                 .push(req.tools.estimated_tokens());
-            if turn
-                < usize::try_from(investigation_convergence::DEFAULT_IMPLEMENTATION_ROUNDS)
-                    .unwrap()
-            {
+            if turn == 0 {
                 assert!(tool_names.contains("read_file"), "{tool_names:?}");
                 let tool = ToolUse {
-                    id: format!("forced-investigation-{turn}"),
+                    id: "targeted-location".into(),
                     name: "read_file".into(),
-                    input: serde_json::json!({"path":"fixture.txt"}),
+                    input: serde_json::json!({"path":"fixture.txt","offset":1,"limit":1}),
                 };
                 on_item(StreamItem::ToolUseComplete(tool.clone()));
                 return Ok(TurnResult {
@@ -1063,23 +1156,16 @@ mod gate_integration_tests {
                     usage: UsageReport::complete(Usage::default()),
                 });
             }
-            if turn
-                == usize::try_from(investigation_convergence::DEFAULT_IMPLEMENTATION_ROUNDS)
-                    .unwrap()
-            {
-                assert!(req.messages.iter().any(|message| {
+            if turn == 1 {
+                assert!(!req.messages.iter().any(|message| {
                     message.content.iter().any(|block| {
-                        matches!(block, Block::Text { text } if text.contains("[Iteron action checkpoint]"))
+                        matches!(block, Block::Text { text } if text.starts_with("[Iteron graph"))
                     })
                 }));
-                for stable in ["edit", "read_file"] {
-                    assert!(tool_names.contains(stable), "{stable}: {tool_names:?}");
-                }
-                self.saw_action_checkpoint.store(true, Ordering::SeqCst);
                 let tool = ToolUse {
-                    id: "refused-after-action-checkpoint".into(),
-                    name: "read_file".into(),
-                    input: serde_json::json!({"path":"fixture.txt"}),
+                    id: "broad-after-location".into(),
+                    name: "grep".into(),
+                    input: serde_json::json!({"path":".","pattern":"stable evidence"}),
                 };
                 on_item(StreamItem::ToolUseComplete(tool.clone()));
                 return Ok(TurnResult {
@@ -1088,23 +1174,24 @@ mod gate_integration_tests {
                     usage: UsageReport::complete(Usage::default()),
                 });
             }
-            if turn
-                == usize::try_from(investigation_convergence::DEFAULT_IMPLEMENTATION_ROUNDS)
-                    .unwrap()
-                    + 1
-            {
-                let refused = req.messages.iter().any(|message| {
+            if turn == 2 {
+                let broad_completed = req.messages.iter().any(|message| {
                     message.content.iter().any(|block| {
                         matches!(block, Block::ToolResult(result)
-                            if result.tool_use_id == "refused-after-action-checkpoint"
-                                && result.is_error
-                                && result.content.contains("bounded-investigation gate"))
+                            if result.tool_use_id == "broad-after-location"
+                                && !result.is_error)
                     })
                 });
-                assert!(refused, "the broad read must be refused before dispatch");
-                self.saw_gate_refusal.store(true, Ordering::SeqCst);
+                assert!(broad_completed, "broad observations remain admitted");
+                self.saw_broad_observation.store(true, Ordering::SeqCst);
+                assert!(!req.messages.iter().any(|message| {
+                    message.content.iter().any(|block| {
+                        matches!(block, Block::Text { text } if text.starts_with("[Iteron graph"))
+                    })
+                }));
+                self.saw_no_graph_checkpoint.store(true, Ordering::SeqCst);
                 let tool = ToolUse {
-                    id: "forced-candidate-change".into(),
+                    id: "adaptive-candidate-change".into(),
                     name: "edit".into(),
                     input: serde_json::json!({
                         "path":"fixture.txt",
@@ -1119,14 +1206,231 @@ mod gate_integration_tests {
                     usage: UsageReport::complete(Usage::default()),
                 });
             }
-            assert!(tool_names.contains("read_file"), "{tool_names:?}");
-            self.saw_restored_surface.store(true, Ordering::SeqCst);
+            for review_tool in [
+                "read_file",
+                "edit",
+                "apply_patch",
+                "write_file",
+                "git_diff",
+                "bash",
+            ] {
+                assert!(
+                    tool_names.contains(review_tool),
+                    "{review_tool}: {tool_names:?}"
+                );
+            }
+            for reopened_discovery in [
+                "grep",
+                "glob",
+                "list_dir",
+                "repo_map",
+                "tool_search",
+                "dispatch_agent",
+            ] {
+                assert!(
+                    !tool_names.contains(reopened_discovery),
+                    "{reopened_discovery}: {tool_names:?}"
+                );
+            }
             Ok(TurnResult {
                 blocks: vec![Block::Text {
                     text: "implemented and verified".into(),
                 }],
                 stop_reason: StopReason::EndTurn,
                 usage: UsageReport::complete(Usage::default()),
+            })
+        }
+    }
+
+    struct ToolSearchSchemaCacheProbe {
+        turn: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for ToolSearchSchemaCacheProbe {
+        async fn turn(
+            &self,
+            req: &TurnRequest,
+            on_item: &mut (dyn FnMut(StreamItem) + Send),
+        ) -> Result<TurnResult, ProviderError> {
+            let turn = self.turn.fetch_add(1, Ordering::SeqCst);
+            let visible = req
+                .tools
+                .iter()
+                .map(|spec| spec.name.as_str())
+                .collect::<std::collections::BTreeSet<_>>();
+            if turn == 0 {
+                assert!(!visible.contains("submit_repair_evidence"), "{visible:?}");
+                assert!(!visible.contains("repo_map"), "{visible:?}");
+                let tool = ToolUse {
+                    id: "discover-repo-map".into(),
+                    name: "tool_search".into(),
+                    input: serde_json::json!({
+                        "query": "repo map overview",
+                        "limit": 10
+                    }),
+                };
+                on_item(StreamItem::ToolUseComplete(tool.clone()));
+                return Ok(TurnResult {
+                    blocks: vec![Block::ToolUse(tool)],
+                    stop_reason: StopReason::ToolUse,
+                    usage: UsageReport::complete(Usage::default()),
+                });
+            }
+            assert!(visible.contains("repo_map"), "{visible:?}");
+            Ok(TurnResult {
+                blocks: vec![Block::Text {
+                    text: "catalog exposure observed".into(),
+                }],
+                stop_reason: StopReason::EndTurn,
+                usage: UsageReport::complete(Usage::default()),
+            })
+        }
+    }
+
+    struct ScriptedRepairEvidencePathGate {
+        turn: AtomicUsize,
+    }
+
+    impl Default for ScriptedRepairEvidencePathGate {
+        fn default() -> Self {
+            Self {
+                turn: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for ScriptedRepairEvidencePathGate {
+        async fn turn(
+            &self,
+            req: &TurnRequest,
+            on_item: &mut (dyn FnMut(StreamItem) + Send),
+        ) -> Result<TurnResult, ProviderError> {
+            let turn = self.turn.fetch_add(1, Ordering::SeqCst);
+            let tool_names = req
+                .tools
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<std::collections::BTreeSet<_>>();
+            let tools = match turn {
+                0 => {
+                    // Advertisement and admission are different things, and this test is about the
+                    // second. A repair receipt is a recovery-only strategy surface, so the ordinary
+                    // coding turn no longer serializes its schema -- but the gate still admits the
+                    // call, which is what the confinement below actually exercises.
+                    assert!(
+                        !tool_names.contains(iteron_tools::SUBMIT_REPAIR_EVIDENCE),
+                        "ordinary coding must not advertise graph receipts: {tool_names:?}"
+                    );
+                    vec![
+                        ToolUse {
+                            id: "evidence-graph".into(),
+                            name: iteron_tools::SUBMIT_REPAIR_EVIDENCE.into(),
+                            input: serde_json::json!({
+                                "hypotheses":[{
+                                    "id":"boundary-loss",
+                                    "claim":"the boundary drops the producer value before the consumer",
+                                    "anchors":[
+                                        {"path":"producer.txt","start_line":1,"end_line":1,"role":"producer","polarity":"support"},
+                                        {"path":"selected.txt","start_line":1,"end_line":1,"role":"boundary","polarity":"support"},
+                                        {"path":"consumer.txt","start_line":1,"end_line":1,"role":"consumer","polarity":"support"}
+                                    ]
+                                }],
+                                "open_slots":[],
+                                "selected_hypothesis":"boundary-loss",
+                                "repair_intent":{
+                                    "violated_edge":{"from":"producer","to":"boundary"},
+                                    "target_paths":["selected.txt"],
+                                    "expected_behavior":"the consumer receives the producer value",
+                                    "preservation_constraints":["preserve the existing fallback"],
+                                    "verifier_plan":{"kind":"test","target":"focused boundary regression"}
+                                }
+                            }),
+                        },
+                        // Even though the receipt is in this provider turn, no mutation may borrow
+                        // authority from a result that has not yet completed and advanced state.
+                        ToolUse {
+                            id: "same-round-unauthorized".into(),
+                            name: "edit".into(),
+                            input: serde_json::json!({
+                                "path":"blocked.txt",
+                                "old":"blocked original",
+                                "new":"same-round write"
+                            }),
+                        },
+                    ]
+                }
+                1 => {
+                    let evidence_result = req.messages.iter().find_map(|message| {
+                        message.content.iter().find_map(|block| match block {
+                            Block::ToolResult(result) if result.tool_use_id == "evidence-graph" => {
+                                Some(result)
+                            }
+                            _ => None,
+                        })
+                    });
+                    assert!(
+                        evidence_result.is_some_and(|result| !result.is_error),
+                        "evidence submission failed: {evidence_result:?}"
+                    );
+                    assert_eq!(
+                        tool_names,
+                        ["apply_patch", "edit", "write_file"].into_iter().collect(),
+                        "a valid receipt must expose only structured candidate-change tools"
+                    );
+                    let receipt = req.messages.iter().find_map(|message| {
+                        message.content.iter().find_map(|block| match block {
+                            Block::ToolResult(result) if result.tool_use_id == "evidence-graph" => {
+                                iteron_tools::tool_result_repair_evidence(result)
+                            }
+                            _ => None,
+                        })
+                    });
+                    assert_eq!(
+                        receipt.expect("tool-owned typed receipt").repair_paths,
+                        vec![std::path::PathBuf::from("selected.txt")]
+                    );
+                    vec![
+                        ToolUse {
+                            id: "subsequent-unauthorized".into(),
+                            name: "edit".into(),
+                            input: serde_json::json!({
+                                "path":"blocked.txt",
+                                "old":"blocked original",
+                                "new":"subsequent write"
+                            }),
+                        },
+                        ToolUse {
+                            id: "authorized-edit".into(),
+                            name: "edit".into(),
+                            input: serde_json::json!({
+                                "path":"selected.txt",
+                                "old":"boundary original",
+                                "new":"boundary repaired"
+                            }),
+                        },
+                    ]
+                }
+                _ => panic!("unexpected provider turn {turn}"),
+            };
+            for tool in &tools {
+                on_item(StreamItem::ToolUseComplete(tool.clone()));
+            }
+            Ok(if tools.is_empty() {
+                TurnResult {
+                    blocks: vec![Block::Text {
+                        text: "candidate ready for authoritative verification".into(),
+                    }],
+                    stop_reason: StopReason::EndTurn,
+                    usage: UsageReport::complete(Usage::default()),
+                }
+            } else {
+                TurnResult {
+                    blocks: tools.into_iter().map(Block::ToolUse).collect(),
+                    stop_reason: StopReason::ToolUse,
+                    usage: UsageReport::complete(Usage::default()),
+                }
             })
         }
     }
@@ -4587,9 +4891,11 @@ mod gate_integration_tests {
         .expect("the read must start while the provider is still streaming")
         .unwrap();
         assert_eq!(outcome, Outcome::Done);
-        assert!(recorded_tool_contents(&ws, &run)
-            .iter()
-            .any(|content| content == "started-before-stream-terminal"));
+        assert!(
+            recorded_tool_contents(&ws, &run)
+                .iter()
+                .any(|content| content == "started-before-stream-terminal")
+        );
         std::fs::remove_dir_all(ws).ok();
     }
 
@@ -5588,8 +5894,7 @@ mod gate_integration_tests {
                 && event.payload.reason_code.as_deref() == Some("image_input_unsupported")
         }));
         assert!(lifecycle.events.iter().all(|event| {
-            event.payload.reason_code.as_deref()
-                != Some("multimodal_decode_envelope_rejected")
+            event.payload.reason_code.as_deref() != Some("multimodal_decode_envelope_rejected")
         }));
 
         let events = iteron_record::replay(agent.rollout.path()).unwrap();
@@ -7412,13 +7717,13 @@ ant-api03-SuperSecretModelToken12345"
     }
 
     #[tokio::test]
-    async fn repeated_investigation_receives_one_bounded_convergence_instruction() {
-        let ws = temp_ws("investigation-convergence");
+    async fn initial_edit_auto_verifies_and_finishes_without_provider_review_turn() {
+        let ws = temp_ws("direct-repair-fast-path");
         std::fs::write(ws.join("fixture.txt"), "stable evidence\n").unwrap();
-        let provider = std::sync::Arc::new(ScriptedInvestigationConvergence::default());
+        let provider = std::sync::Arc::new(ScriptedDirectRepairFastPath::default());
         let rollout = Rollout::open(
             &ws.join(".iteron/runs"),
-            &iteron_protocol::RunId("investigation-convergence".into()),
+            &iteron_protocol::RunId("direct-repair-fast-path".into()),
             iteron_protocol::TenantId::default(),
         )
         .unwrap();
@@ -7440,40 +7745,77 @@ ant-api03-SuperSecretModelToken12345"
             },
         );
         agent.workspace = ws.clone();
+        agent.permission_mode = PermissionMode::Yolo;
+        agent.verify_command = Some("authoritative-workspace-verifier".into());
+        let verifier_calls = std::sync::Arc::new(AtomicUsize::new(0));
+        agent.verify_oracle = Some(std::sync::Arc::new(SequencedVerificationOracle {
+            outcomes: std::sync::Arc::new(std::sync::Mutex::new(
+                [iteron_verify::Verdict::new(
+                    iteron_verify::OracleStrength::Strong,
+                    iteron_verify::VerificationOutcome::Pass,
+                    "authoritative verifier passed",
+                )]
+                .into_iter()
+                .collect(),
+            )),
+            calls: verifier_calls.clone(),
+        }));
+        agent.verification_policy.checkpoint.before_verification = false;
+        agent.verification_policy.flaky.repeat_count = 1;
         record_test_genesis(&mut agent, &ws);
 
         assert_eq!(
-            agent.run("find and fix the defect").await.unwrap(),
+            agent
+                .run("edit fixture.txt to replace stable evidence with fixed evidence")
+                .await
+                .unwrap(),
             Outcome::Done
         );
-        assert!(provider.saw_instruction.load(Ordering::SeqCst));
+        assert!(!provider.saw_review_surface.load(Ordering::SeqCst));
+        assert_eq!(provider.turn.load(Ordering::SeqCst), 1);
+        assert_eq!(verifier_calls.load(Ordering::SeqCst), 1);
         assert_eq!(
-            provider.turn.load(Ordering::SeqCst),
-            usize::try_from(investigation_convergence::INVESTIGATION_CONVERGENCE_ROUNDS).unwrap()
-                + 1
+            std::fs::read_to_string(ws.join("fixture.txt")).unwrap(),
+            "fixed evidence\n"
         );
-        let convergence = agent
+        let graph_instructions = agent
             .working_set
             .as_ref()
             .expect("the completed run retains its working set")
             .iter()
             .flat_map(|message| message.content.iter())
-            .filter(|block| {
-                matches!(block, Block::Text { text } if text.contains("[Iteron strategy checkpoint]"))
-            })
+            .filter(
+                |block| matches!(block, Block::Text { text } if text.starts_with("[Iteron graph")),
+            )
             .count();
-        assert_eq!(convergence, 1, "the strategy checkpoint is one-shot");
+        assert_eq!(
+            graph_instructions, 0,
+            "default repair must not enter graph mode"
+        );
+        let events = iteron_record::replay(agent.rollout.path()).unwrap();
+        assert!(events.iter().any(|event| {
+            matches!(
+                &event.kind,
+                EventKind::ToolDone { result, effect_id: Some(_), .. }
+                    if result.tool_use_id == "direct-candidate-edit" && !result.is_error
+            )
+        }));
         let _ = std::fs::remove_dir_all(&ws);
     }
 
     #[tokio::test]
-    async fn prolonged_investigation_refuses_more_reads_without_changing_tool_schemas() {
-        let ws = temp_ws("forced-candidate-action");
-        std::fs::write(ws.join("fixture.txt"), "stable evidence\n").unwrap();
-        let provider = std::sync::Arc::new(ScriptedForcedCandidateAction::default());
+    async fn verifier_feedback_guides_one_repair_and_auto_finishes_without_extra_turn() {
+        let ws = temp_ws("post-failure-edit-auto-verify");
+        init_git_workspace(&ws);
+        std::fs::write(ws.join("fixture.txt"), "stable candidate\n").unwrap();
+        let verifier_calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let provider = std::sync::Arc::new(ScriptedFailureRepairAutoVerify {
+            turn: AtomicUsize::new(0),
+            verifier_calls: verifier_calls.clone(),
+        });
         let rollout = Rollout::open(
             &ws.join(".iteron/runs"),
-            &iteron_protocol::RunId("forced-candidate-action".into()),
+            &iteron_protocol::RunId("post-failure-edit-auto-verify".into()),
             iteron_protocol::TenantId::default(),
         )
         .unwrap();
@@ -7484,7 +7826,203 @@ ant-api03-SuperSecretModelToken12345"
             "m".into(),
             "sys".into(),
             Budget {
-                max_turns: investigation_convergence::DEFAULT_IMPLEMENTATION_ROUNDS + 4,
+                max_turns: 4,
+                max_usd: None,
+                max_tokens: None,
+                max_wall_secs: 300,
+                max_consecutive_tool_errors: 3,
+            },
+        );
+        agent.workspace = ws.clone();
+        agent.permission_mode = PermissionMode::Yolo;
+        agent.verify_command = Some("authoritative-workspace-verifier".into());
+        agent.verify_oracle = Some(std::sync::Arc::new(SequencedVerificationOracle {
+            outcomes: std::sync::Arc::new(std::sync::Mutex::new(
+                [
+                    iteron_verify::Verdict::new(
+                        iteron_verify::OracleStrength::Strong,
+                        iteron_verify::VerificationOutcome::TestFailure,
+                        "candidate remains broken",
+                    ),
+                    iteron_verify::Verdict::new(
+                        iteron_verify::OracleStrength::Strong,
+                        iteron_verify::VerificationOutcome::Pass,
+                        "candidate repair accepted",
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            )),
+            calls: verifier_calls.clone(),
+        }));
+        agent.verification_policy.checkpoint.before_verification = false;
+        agent.verification_policy.flaky.repeat_count = 1;
+        record_test_genesis(&mut agent, &ws);
+
+        assert_eq!(
+            agent
+                .run("repair fixture.txt until the independent verifier accepts it")
+                .await
+                .unwrap(),
+            Outcome::Done
+        );
+        assert_eq!(
+            provider.turn.load(Ordering::SeqCst),
+            2,
+            "each completed edit batch must be followed by the gate, not a review-only provider turn"
+        );
+        assert_eq!(verifier_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            agent.verify_attempts, 1,
+            "only TestFailure consumes the bounded candidate-fix allowance"
+        );
+        assert_eq!(
+            std::fs::read_to_string(ws.join("fixture.txt")).unwrap(),
+            "fixed candidate\n"
+        );
+        let events = iteron_record::replay(agent.rollout.path()).unwrap();
+        assert!(
+            events
+                .iter()
+                .any(|event| { matches!(&event.kind, EventKind::Checkpoint { .. }) })
+        );
+        assert!(events.iter().any(|event| {
+            matches!(&event.kind, EventKind::Done { outcome } if outcome == "Done")
+        }));
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[tokio::test]
+    async fn repair_receipt_confines_edits_before_effect_and_strong_verification_auto_completes() {
+        let ws = temp_ws("repair-evidence-path-gate");
+        std::fs::write(ws.join("producer.txt"), "producer value").unwrap();
+        std::fs::write(ws.join("selected.txt"), "boundary original").unwrap();
+        std::fs::write(ws.join("consumer.txt"), "consumer value").unwrap();
+        std::fs::write(ws.join("blocked.txt"), "blocked original").unwrap();
+        let provider = std::sync::Arc::new(ScriptedRepairEvidencePathGate::default());
+        let rollout = Rollout::open(
+            &ws.join(".iteron/runs"),
+            &iteron_protocol::RunId("repair-evidence-path-gate".into()),
+            iteron_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let mut agent = Agent::new(
+            provider.clone(),
+            Registry::coding_agent(&ws).unwrap(),
+            rollout,
+            "m".into(),
+            "sys".into(),
+            Budget {
+                max_turns: 6,
+                max_usd: None,
+                max_tokens: None,
+                max_wall_secs: 300,
+                max_consecutive_tool_errors: 5,
+            },
+        );
+        agent.workspace = ws.clone();
+        agent.permission_mode = PermissionMode::Yolo;
+        agent.verify_command = Some("authoritative-workspace-verifier".into());
+        let verifier_calls = std::sync::Arc::new(AtomicUsize::new(0));
+        agent.verify_oracle = Some(std::sync::Arc::new(SequencedVerificationOracle {
+            outcomes: std::sync::Arc::new(std::sync::Mutex::new(
+                [iteron_verify::Verdict::new(
+                    iteron_verify::OracleStrength::Strong,
+                    iteron_verify::VerificationOutcome::Pass,
+                    "authoritative verifier passed",
+                )]
+                .into_iter()
+                .collect(),
+            )),
+            calls: verifier_calls.clone(),
+        }));
+        agent.verification_policy.checkpoint.before_verification = false;
+        agent.verification_policy.flaky.repeat_count = 1;
+        record_test_genesis(&mut agent, &ws);
+
+        assert_eq!(
+            agent
+                .run("repair only the selected graph edge")
+                .await
+                .unwrap(),
+            Outcome::Done
+        );
+        assert_eq!(
+            provider.turn.load(Ordering::SeqCst),
+            2,
+            "a Strong pass after the authorized edit must avoid review and done turns"
+        );
+        assert_eq!(
+            verifier_calls.load(Ordering::SeqCst),
+            1,
+            "completion requires one physical runtime-owned Strong verifier"
+        );
+        assert_eq!(
+            std::fs::read_to_string(ws.join("selected.txt")).unwrap(),
+            "boundary repaired"
+        );
+        assert_eq!(
+            std::fs::read_to_string(ws.join("blocked.txt")).unwrap(),
+            "blocked original",
+            "same-round and subsequent unauthorized edits must leave bytes unchanged"
+        );
+
+        let events = iteron_record::replay(agent.rollout.path()).unwrap();
+        for refused_id in ["same-round-unauthorized", "subsequent-unauthorized"] {
+            assert!(events.iter().any(|event| {
+                matches!(
+                    &event.kind,
+                    EventKind::ToolDone { result, effect_id: None, .. }
+                        if result.tool_use_id == refused_id
+                            && result.is_error
+                            && result.content.contains("outside the exact path authorized")
+                )
+            }));
+            assert!(
+                !events.iter().any(|event| {
+                    matches!(&event.kind, EventKind::EffectIntent { tool_use_id, .. }
+                        if tool_use_id == refused_id)
+                }),
+                "{refused_id} must be rejected before effect admission"
+            );
+        }
+        assert!(events.iter().any(|event| {
+            matches!(
+                &event.kind,
+                EventKind::ToolDone { result, .. }
+                    if result.tool_use_id == "authorized-edit" && !result.is_error
+            )
+        }));
+        assert!(events.iter().any(|event| {
+            matches!(
+                &event.kind,
+                EventKind::Notice { text }
+                    if text.contains("authoritative-workspace-verifier")
+                        && text.contains("passed")
+            )
+        }));
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[tokio::test]
+    async fn ordinary_observations_keep_the_direct_surface_until_candidate_review() {
+        let ws = temp_ws("adaptive-investigation-pivot");
+        std::fs::write(ws.join("fixture.txt"), "stable evidence\n").unwrap();
+        let provider = std::sync::Arc::new(ScriptedAdaptivePivot::default());
+        let rollout = Rollout::open(
+            &ws.join(".iteron/runs"),
+            &iteron_protocol::RunId("adaptive-investigation-pivot".into()),
+            iteron_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let mut agent = Agent::new(
+            provider.clone(),
+            Registry::coding_agent(&ws).unwrap(),
+            rollout,
+            "m".into(),
+            "sys".into(),
+            Budget {
+                max_turns: 6,
                 max_usd: None,
                 max_tokens: None,
                 // Keep the behavior bounded without coupling it to workspace-suite starvation.
@@ -7500,27 +8038,24 @@ ant-api03-SuperSecretModelToken12345"
             agent.run("find and fix the defect").await.unwrap(),
             Outcome::Done
         );
-        assert!(provider.saw_action_checkpoint.load(Ordering::SeqCst));
-        assert!(provider.saw_gate_refusal.load(Ordering::SeqCst));
-        assert!(provider.saw_restored_surface.load(Ordering::SeqCst));
+        assert!(provider.saw_no_graph_checkpoint.load(Ordering::SeqCst));
+        assert!(provider.saw_broad_observation.load(Ordering::SeqCst));
         let schema_json = provider.schema_json.lock().unwrap();
         let first_schema = schema_json.first().expect("at least one provider request");
-        assert_eq!(
-            schema_json.len(),
-            usize::try_from(investigation_convergence::DEFAULT_IMPLEMENTATION_ROUNDS).unwrap() + 3
-        );
-        assert!(
-            schema_json.iter().all(|schema| schema == first_schema),
-            "convergence must not invalidate the provider's tool-schema cache prefix"
+        assert_eq!(schema_json.len(), 4);
+        assert_eq!(schema_json[1], *first_schema);
+        assert_eq!(schema_json[2], *first_schema);
+        assert_ne!(
+            schema_json[3], schema_json[1],
+            "candidate review narrows discovery only after a real mutation"
         );
         let schema_tokens = provider.schema_tokens.lock().unwrap();
         let first_tokens = *schema_tokens.first().expect("schema token estimate");
         assert!(first_tokens > 0);
-        assert!(schema_tokens.iter().all(|tokens| *tokens == first_tokens));
-        assert_eq!(
-            provider.turn.load(Ordering::SeqCst),
-            usize::try_from(investigation_convergence::DEFAULT_IMPLEMENTATION_ROUNDS).unwrap() + 3
-        );
+        assert!(schema_tokens[3] < first_tokens);
+        assert_eq!(schema_tokens[1], first_tokens);
+        assert_eq!(schema_tokens[2], first_tokens);
+        assert_eq!(provider.turn.load(Ordering::SeqCst), 4);
         assert_eq!(
             std::fs::read_to_string(ws.join("fixture.txt")).unwrap(),
             "fixed evidence\n"
@@ -7536,35 +8071,12 @@ ant-api03-SuperSecretModelToken12345"
                 _ => None,
             })
             .collect::<Vec<_>>();
-        assert_eq!(checkpoints.len(), 2, "{checkpoints:?}");
+        assert_eq!(checkpoints.len(), 1, "{checkpoints:?}");
         assert!(
             checkpoints
                 .iter()
-                .any(|text| text.contains("strategy checkpoint"))
+                .any(|text| text.contains("candidate review"))
         );
-        assert!(
-            checkpoints
-                .iter()
-                .any(|text| text.contains("action checkpoint"))
-        );
-        let events = iteron_record::replay(agent.rollout.path()).unwrap();
-        let refusals = events
-            .iter()
-            .filter(|event| {
-                matches!(
-                    &event.kind,
-                    EventKind::ToolDone {
-                        result,
-                        effect_id: None,
-                        tool: Some(tool),
-                    } if tool == "read_file"
-                        && result.tool_use_id == "refused-after-action-checkpoint"
-                        && result.is_error
-                        && result.content.contains("bounded-investigation gate")
-                )
-            })
-            .count();
-        assert_eq!(refusals, 1, "the denied read must have one durable terminal");
         let _ = std::fs::remove_dir_all(&ws);
     }
 
@@ -7614,8 +8126,110 @@ ant-api03-SuperSecretModelToken12345"
             "unchanged turns must reuse canonical and all provider-wire schema projections"
         );
 
-        // The default posture can admit every registered capability, so it hides nothing.
-        assert_eq!(agent.advertised_tool_specs().len(), all.len());
+        // The authority ceiling admits every registered capability, but graph receipts remain a
+        // recovery-only strategy surface and are not serialized into ordinary coding turns.
+        assert_eq!(agent.advertised_tool_specs().len(), all.len() - 1);
+        assert!(
+            !prepared_first
+                .iter()
+                .any(|spec| spec.name == iteron_tools::SUBMIT_REPAIR_EVIDENCE)
+        );
+
+        let patch_trial = agent.advertised_tool_specs_for_task_with_patch_trial(
+            "inspect the localized contract",
+            true,
+            false,
+            false,
+            false,
+        );
+        let patch_trial_names = patch_trial
+            .iter()
+            .map(|spec| spec.name.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        for retained in [
+            "read_file",
+            "grep",
+            "list_dir",
+            "glob",
+            "repo_map",
+            "submit_repair_evidence",
+        ] {
+            assert!(
+                patch_trial_names.contains(retained),
+                "{patch_trial_names:?}"
+            );
+        }
+        for deferred_exploration in ["edit", "apply_patch", "write_file", "bash"] {
+            assert!(
+                !patch_trial_names.contains(deferred_exploration),
+                "{patch_trial_names:?}"
+            );
+        }
+        let candidate_change = agent.advertised_tool_specs_for_task_with_patch_trial(
+            "change the localized contract",
+            true,
+            true,
+            false,
+            false,
+        );
+        let candidate_change_names = candidate_change
+            .iter()
+            .map(|spec| spec.name.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            candidate_change_names,
+            ["apply_patch", "edit", "write_file"].into_iter().collect()
+        );
+
+        let candidate_review = agent.advertised_tool_specs_for_task_with_patch_trial(
+            "review and verify the candidate",
+            false,
+            false,
+            true,
+            false,
+        );
+        let candidate_review_names = candidate_review
+            .iter()
+            .map(|spec| spec.name.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        for retained in [
+            "read_file",
+            "edit",
+            "apply_patch",
+            "write_file",
+            "git_diff",
+            "bash",
+        ] {
+            assert!(
+                candidate_review_names.contains(retained),
+                "{retained}: {candidate_review_names:?}"
+            );
+        }
+        for reopened_discovery in [
+            "grep",
+            "glob",
+            "list_dir",
+            "repo_map",
+            "tool_search",
+            "dispatch_agent",
+        ] {
+            assert!(
+                !candidate_review_names.contains(reopened_discovery),
+                "{reopened_discovery}: {candidate_review_names:?}"
+            );
+        }
+
+        let evidence_insufficient = agent.advertised_tool_specs_for_task_with_patch_trial(
+            "report that the candidate was withdrawn",
+            false,
+            false,
+            false,
+            true,
+        );
+        assert!(
+            evidence_insufficient.is_empty(),
+            "a reverted candidate is terminal and must not restore any tool surface"
+        );
 
         agent.permission_mode = PermissionMode::Plan;
         let planned = agent.advertised_tool_specs();
@@ -7628,6 +8242,14 @@ ant-api03-SuperSecretModelToken12345"
                 .iter()
                 .any(|advertised| advertised.name == spec.name);
             if spec.capability == Capability::ReadOnly {
+                // The one exception, and it is a strategy decision rather than a gate one: a
+                // repair receipt is a verifier-counterexample recovery mechanism, so the ordinary
+                // path withholds it and the recovery paths restore it. The gate would still admit
+                // it, which is why this invariant -- written when every admissible tool was also
+                // an advertised one -- cannot simply read the capability any more.
+                if spec.name == iteron_tools::SUBMIT_REPAIR_EVIDENCE {
+                    continue;
+                }
                 assert!(
                     kept,
                     "a tool plan CAN admit must never be hidden: {}",
@@ -7718,6 +8340,42 @@ ant-api03-SuperSecretModelToken12345"
             "registry revision/narrowing must invalidate every prepared wire projection"
         );
         let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[tokio::test]
+    async fn tool_search_exposure_invalidates_the_runtime_schema_cache() {
+        let ws = temp_ws("tool-search-schema-cache");
+        let rollout = Rollout::open(
+            &ws.join(".iteron/runs"),
+            &iteron_protocol::RunId("tool-search-schema-cache".into()),
+            iteron_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let mut agent = Agent::new(
+            std::sync::Arc::new(ToolSearchSchemaCacheProbe {
+                turn: AtomicUsize::new(0),
+            }),
+            Registry::coding_agent(&ws).unwrap(),
+            rollout,
+            "model-a".into(),
+            "sys".into(),
+            Budget {
+                max_turns: 3,
+                max_usd: None,
+                max_tokens: None,
+                max_wall_secs: 30,
+                max_consecutive_tool_errors: 2,
+            },
+        );
+        agent.workspace = ws.clone();
+        pin_test_tunables(&mut agent);
+        agent.set_deferred_tool_eager_limit(Some(1));
+
+        assert_eq!(
+            agent.run("inspect rust source").await.unwrap(),
+            Outcome::Done
+        );
+        std::fs::remove_dir_all(ws).ok();
     }
 
     #[tokio::test]
@@ -12315,7 +12973,8 @@ ant-api03-SuperSecretModelToken12345"
         ));
 
         assert_eq!(
-            agent.run("finish the original task after inspecting six sources")
+            agent
+                .run("finish the original task after inspecting six sources")
                 .await
                 .unwrap(),
             Outcome::Done
@@ -12332,9 +12991,11 @@ ant-api03-SuperSecretModelToken12345"
         );
         let requests = provider.requests.lock().unwrap().clone();
         assert_eq!(requests.len(), TOOL_ROUNDS + 1);
-        assert!(requests[..TOOL_ROUNDS]
-            .iter()
-            .all(|request| !request.tools.is_empty()));
+        assert!(
+            requests[..TOOL_ROUNDS]
+                .iter()
+                .all(|request| !request.tools.is_empty())
+        );
         assert!(
             !requests[TOOL_ROUNDS].tools.is_empty(),
             "the original seventh request is admitted without an intermediate summary"
@@ -12404,8 +13065,7 @@ ant-api03-SuperSecretModelToken12345"
         let lifecycle = lifecycle.snapshot();
         assert!(lifecycle.events.iter().any(|event| {
             event.event_id.as_str() == "context.source.truncated"
-                && event.payload.reason_code.as_deref()
-                    == Some("tool_result_pressure_projection")
+                && event.payload.reason_code.as_deref() == Some("tool_result_pressure_projection")
         }));
         assert!(lifecycle.events.iter().all(|event| !matches!(
             event.event_id.as_str(),

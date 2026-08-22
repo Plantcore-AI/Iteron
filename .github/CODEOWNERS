@@ -267,6 +267,7 @@
 /crates/tools/src/multi_file_patch_error.rs @fr0m-scratch
 /crates/tools/src/multi_file_patch_input.rs @fr0m-scratch
 /crates/tools/src/multi_file_patch_tests.rs @fr0m-scratch
+/crates/tools/src/repair_evidence.rs @fr0m-scratch
 /crates/tools/src/schema.rs @fr0m-scratch
 /crates/tools/src/schema_error.rs @fr0m-scratch
 /crates/tools/src/schema_tests.rs @fr0m-scratch

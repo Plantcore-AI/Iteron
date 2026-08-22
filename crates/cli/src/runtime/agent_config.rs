@@ -175,6 +175,7 @@ impl Agent {
             context_materialization_policy: iteron_ctx::ContextMaterializationPolicy::default(),
             context_source_evidence: Vec::new(),
             input_file_evidence: None,
+            input_image_evidence: None,
             context_ledgers: iteron_ctx::ContextLedgerStore::default(),
             memory_traces: iteron_ctx::MemoryTraceStore::default(),
             session_memory_visibility: std::collections::VecDeque::new(),
@@ -183,6 +184,7 @@ impl Agent {
             lifecycle_hooks: None,
             workspace: std::path::PathBuf::from("."),
             verify_command: None,
+            verify_preconfined: false,
             verification_policy: iteron_verify::VerificationRuntimePolicy::default(),
             execution_policy:
                 crate::runtime_tunables::execution_policy::ExecutionRuntimePolicy::fail_closed(),

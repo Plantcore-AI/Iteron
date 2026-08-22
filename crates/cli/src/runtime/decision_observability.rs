@@ -967,18 +967,31 @@ impl Agent {
             );
         }
         if !images.is_empty() {
-            let image_bytes = images.iter().fold(0u64, |total, image| {
-                total.saturating_add(u64::try_from(image.data.encoded_len()).unwrap_or(u64::MAX))
-            });
-            let image_tokens = images.iter().fold(0u64, |total, image| {
-                total.saturating_add(
-                    u64::try_from(
-                        self.context_estimator
-                            .estimate_image(image.data.encoded_len()),
+            let fallback = || {
+                let encoded_bytes = images.iter().fold(0u64, |total, image| {
+                    total
+                        .saturating_add(u64::try_from(image.data.encoded_len()).unwrap_or(u64::MAX))
+                });
+                let estimated_tokens = images.iter().fold(0u64, |total, image| {
+                    total.saturating_add(
+                        u64::try_from(
+                            self.context_estimator
+                                .estimate_image_with_provenance(image.data.encoded_len())
+                                .tokens,
+                        )
+                        .unwrap_or(u64::MAX),
                     )
-                    .unwrap_or(u64::MAX),
-                )
-            });
+                });
+                context_runtime::InputImageEvidence {
+                    count: u32::try_from(images.len()).unwrap_or(u32::MAX),
+                    encoded_bytes,
+                    raw_bytes: encoded_bytes.saturating_mul(3) / 4,
+                    estimated_tokens,
+                    provenance:
+                        iteron_ctx::ImageTokenEstimateProvenance::EncodedBytesConservativeFallback,
+                }
+            };
+            let image = self.input_image_evidence.unwrap_or_else(fallback);
             ledger.record_segment(ContextSegmentEvidence {
                 segment_id: ContextSegmentId(u64::from(ordinal)),
                 parent_segment_id: None,
@@ -986,9 +999,9 @@ impl Agent {
                 source_digest_sha256: image_attachment_digest(images),
                 trust: Trust::Trusted,
                 ordinal,
-                bytes_before: image_bytes,
-                bytes_after: image_bytes,
-                estimated_tokens: image_tokens,
+                bytes_before: image.encoded_bytes,
+                bytes_after: image.encoded_bytes,
+                estimated_tokens: image.estimated_tokens,
                 actual_tokens: None,
                 token_range: None,
                 cache_class: CacheClass::Unknown,
@@ -996,14 +1009,27 @@ impl Agent {
                 reason: ContextDecisionReason::Required,
                 elapsed_us: 0,
             });
-            ledger.totals.attachment_tokens =
-                ledger.totals.attachment_tokens.saturating_add(image_tokens);
+            ledger.totals.attachment_tokens = ledger
+                .totals
+                .attachment_tokens
+                .saturating_add(image.estimated_tokens);
+            ledger.record_transform(ContextTransformEvidence {
+                kind: ContextTransformKind::Tokenize,
+                policy_id: image.provenance.policy_id().into(),
+                input_segments: image.count,
+                output_segments: image.count,
+                input_bytes: image.raw_bytes,
+                output_bytes: image.raw_bytes,
+                input_tokens: 0,
+                output_tokens: image.estimated_tokens,
+                elapsed_us: 0,
+            });
             self.lifecycle_event(
                 "context.source.classified",
                 Some(turn),
                 LifecyclePayload {
-                    count: Some(u64::try_from(images.len()).unwrap_or(u64::MAX)),
-                    magnitude: Some(image_bytes),
+                    count: Some(u64::from(image.count)),
+                    magnitude: Some(image.encoded_bytes),
                     reason_code: Some("image_attachment".into()),
                     ..LifecyclePayload::default()
                 },
@@ -1029,18 +1055,7 @@ impl Agent {
         // The request estimator is the single accounting pass used for admission. Segment-level
         // classification may overlap (a file is also serialized inside a transcript message), so
         // the aggregate must remain that authoritative request estimate rather than their sum.
-        let multimodal_tokens = images.iter().fold(0u64, |total, image| {
-            total.saturating_add(
-                u64::try_from(
-                    self.context_estimator
-                        .estimate_image(image.data.encoded_len()),
-                )
-                .unwrap_or(u64::MAX),
-            )
-        });
-        ledger.totals.estimated_tokens = u64::try_from(estimate.total_tokens)
-            .unwrap_or(u64::MAX)
-            .saturating_add(multimodal_tokens);
+        ledger.totals.estimated_tokens = u64::try_from(estimate.total_tokens).unwrap_or(u64::MAX);
         let segment_count = u64::try_from(ledger.segments.len()).unwrap_or(u64::MAX);
         let stable_prefix_tokens = ledger.cache.stable_prefix_tokens;
         let headroom = ledger.headroom_tokens();

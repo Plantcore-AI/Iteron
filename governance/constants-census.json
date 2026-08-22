@@ -12,13 +12,13 @@
     },
     "cli": {
       "bounded": 212,
-      "searchable": 249,
+      "searchable": 253,
       "structural": 181
     },
     "ctx": {
-      "bounded": 48,
-      "searchable": 30,
-      "structural": 13
+      "bounded": 53,
+      "searchable": 35,
+      "structural": 15
     },
     "eval": {
       "bounded": 41,
@@ -91,9 +91,9 @@
       "structural": 1
     },
     "tools": {
-      "bounded": 103,
-      "searchable": 63,
-      "structural": 15
+      "bounded": 125,
+      "searchable": 65,
+      "structural": 20
     },
     "tunables": {
       "bounded": 18,
@@ -112,7 +112,7 @@
     }
   },
   "schema_version": 1,
-  "settable": 1393,
-  "structural": 770,
-  "total": 2163
+  "settable": 1431,
+  "structural": 777,
+  "total": 2208
 }

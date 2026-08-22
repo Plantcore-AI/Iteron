@@ -330,8 +330,8 @@ pub enum Op {
 #[serde(rename_all = "snake_case")]
 pub enum Effort {
     /// No extended thinking; fastest, cheapest.
-    Low,
     #[default]
+    Low,
     Medium,
     High,
     XHigh,
@@ -389,8 +389,8 @@ impl Effort {
     /// A one-line description of what each level does (shown as the picker row hint).
     pub fn hint(self) -> &'static str {
         match self {
-            Effort::Low => "fastest, minimal thinking",
-            Effort::Medium => "balanced (default)",
+            Effort::Low => "fastest, minimal thinking (default)",
+            Effort::Medium => "balanced",
             Effort::High => "more thinking budget",
             Effort::XHigh => "deep thinking",
             Effort::Max => "maximum thinking budget",
@@ -670,6 +670,7 @@ mod effort_tests {
     use super::{Budget, Effort, ReasoningEffort};
     #[test]
     fn effort_parse_and_budget() {
+        assert_eq!(Effort::default(), Effort::Low);
         assert_eq!(Effort::parse("ultracode"), Some(Effort::Ultracode));
         assert_eq!(Effort::parse("HIGH"), Some(Effort::High));
         assert_eq!(Effort::parse("bogus"), None);

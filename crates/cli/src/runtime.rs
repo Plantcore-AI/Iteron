@@ -2235,9 +2235,10 @@ pub struct Agent {
     /// leaves the compiled [`CompactionPolicy::summary_prompt`] in force, so the no-profile
     /// transcript is byte-identical to the one before this seam existed.
     pub compaction_summary_prompt: Option<String>,
-    /// One compaction per top-level submission. Set by whichever path took it — the emergency
-    /// valve inside the turn loop, or the end-of-turn settle — and cleared when the next
-    /// submission is admitted, so the two can never both fire on one run.
+    /// Whether this top-level submission has already compacted. Routine threshold compaction uses
+    /// this to avoid buying a second end-of-turn summary. A later component-budget overflow may
+    /// still compact adaptively after a successful recovery; that bridge has its own fail-closed
+    /// progress guard and remains bounded by the run's turn, wall, and cost ceilings.
     compacted_in_run: bool,
     /// Last durable compaction turn. Routine compaction consults this session state so the
     /// resolved cooldown survives across submissions; emergency overflow handling remains a
@@ -2268,6 +2269,9 @@ pub struct Agent {
     /// Invocation-local file provenance. `None` for text/image-only submissions and cleared when
     /// emergency compaction replaces the source message with a summary.
     input_file_evidence: Option<file_submission::InputFileEvidence>,
+    /// Invocation-local image estimate captured by the bounded decoder exactly once. Images remain
+    /// provider-visible across model rounds, unlike file bytes embedded in compactable text.
+    input_image_evidence: Option<context_runtime::InputImageEvidence>,
     /// Bounded request-level context decision evidence shared with diagnostic clients.
     pub context_ledgers: iteron_ctx::ContextLedgerStore,
     /// Bounded memory retrieval/mutation decision evidence shared with diagnostic clients.
@@ -2287,6 +2291,10 @@ pub struct Agent {
     /// claims done, and refuses to accept "done" if it fails (ADR-005: ground truth in the loop,
     /// don't trust the self-report). None disables the gate.
     pub verify_command: Option<String>,
+    /// Explicit operator attestation that the entire Iteron process already runs inside an outer
+    /// sandbox. When true, the verification child keeps runtime bounds and credential scrubbing
+    /// but does not create a nested platform sandbox. Never inferred; default false.
+    pub verify_preconfined: bool,
     /// Immutable verification selection/quorum/quarantine/recovery policy decoded from the same
     /// run-genesis tunables checkpoint as `verify_command`.
     verification_policy: iteron_verify::VerificationRuntimePolicy,
@@ -2724,8 +2732,9 @@ impl Agent {
         {
             return Err(KernelError::UnpricedUsdCeiling);
         }
-        // One compaction per top-level submission: an emergency valve taken inside the turn must
-        // not be followed by a second summary at the end of it.
+        // Reset the routine-compaction marker for this top-level submission. A successful
+        // component-budget recovery may rearm independently if later evidence grows past a
+        // recoverable ceiling again.
         self.compacted_in_run = false;
         let owns_deadline = self.run_deadline.is_none();
         if owns_deadline {
@@ -3022,6 +3031,8 @@ impl Agent {
         let mut consecutive_errors: u32 = 0;
         let mut investigation_convergence =
             investigation_convergence::InvestigationConvergence::default();
+        let mut candidate_workspace_baseline =
+            investigation_convergence::CandidateWorkspaceBaseline::default();
 
         // REC-INJECT: resolve + record the memory segment once, before the first request build,
         // using the task for relevance recall. effective_system() reads the cached result.
@@ -3035,9 +3046,9 @@ impl Agent {
         // and the terminal checkpoint happens in a later one, so clearing this inside the loop
         // would discard exactly the writes the checkpoint exists to capture.
         self.turn_mutated_workspace = false;
-        // A component-budget overflow may bridge into transcript compaction once for this admitted
-        // submission. If the rebuilt projection still does not fit, the next admission fails
-        // closed instead of recursively buying summaries.
+        // A component-budget overflow may bridge into transcript compaction. Each successful
+        // recovery rearms only for a later projection; a denied, failed, or ineffective attempt
+        // closes the bridge so the same overflow cannot recursively buy summaries.
         let mut context_budget_recovery = context_runtime::ContextBudgetRecoveryGuard::default();
 
         loop {
@@ -3061,8 +3072,13 @@ impl Agent {
                 return Ok(outcome);
             }
             let effective_system = self.effective_system();
-            let investigation_execution_gate = investigation_convergence.execution_gate();
-            let tool_specs = self.advertised_tool_specs_for_task(relevance_task);
+            let tool_specs = self.advertised_tool_specs_for_task_with_patch_trial(
+                relevance_task,
+                investigation_convergence.patch_trial_active(),
+                investigation_convergence.candidate_change_required(),
+                investigation_convergence.candidate_review_active(),
+                investigation_convergence.evidence_insufficient_terminal(),
+            );
             // This is the checkpointed coding-request reservation. The provider's documented
             // maximum is an external ceiling applied during composition, not the amount every
             // ordinary tool turn should reserve by default.
@@ -3084,8 +3100,10 @@ impl Agent {
                 tool_specs.estimated_tokens(),
                 tool_specs.cache_identity(),
             );
-            let mut uncalibrated_context_total = estimated.total_tokens;
-            let mut context_estimate = self.calibrated_context_estimate(estimated);
+            let mut uncalibrated_context_total =
+                self.include_input_image_tokens(estimated).total_tokens;
+            let mut context_estimate =
+                self.include_input_image_tokens(self.calibrated_context_estimate(estimated));
             let mut context_budget_inspection =
                 self.inspect_context_budget(messages, &context_estimate);
             let initial_context_budget_violation = context_budget_inspection.violation();
@@ -3123,10 +3141,10 @@ impl Agent {
                             .effective_trigger_tokens(None, request_max_tokens)
                 }
             };
-            let compaction_eligible = self.compaction.enabled
-                && !self.compacted_in_run
+            let has_compactable_history = self.compaction.enabled
                 && messages.len() > self.compaction.keep_recent.saturating_add(2);
-            let component_budget_recovery = if compaction_eligible {
+            let routine_compaction_eligible = has_compactable_history && !self.compacted_in_run;
+            let component_budget_recovery = if has_compactable_history {
                 initial_context_budget_violation
                     .filter(|violation| context_budget_recovery.claim(violation))
             } else {
@@ -3135,8 +3153,8 @@ impl Agent {
             let component_budget_before = component_budget_recovery
                 .map(|violation| context_budget_inspection.component_tokens(violation.class));
             let mut component_budget_after = None;
-            let compaction_needed = compaction_eligible
-                && (context_window_overflow || component_budget_recovery.is_some());
+            let compaction_needed = (routine_compaction_eligible && context_window_overflow)
+                || component_budget_recovery.is_some();
             let compaction_allowed = if compaction_needed {
                 let payload = component_budget_recovery.map_or_else(
                     || LifecyclePayload {
@@ -3212,8 +3230,11 @@ impl Agent {
                             &rebuilt,
                             tool_specs.as_ref(),
                         );
-                        let candidate_uncalibrated_total = candidate.total_tokens;
-                        let candidate_estimate = self.calibrated_context_estimate(candidate);
+                        let candidate_uncalibrated_total =
+                            self.include_input_image_tokens(candidate).total_tokens;
+                        let candidate_estimate = self.include_input_image_tokens(
+                            self.calibrated_context_estimate(candidate),
+                        );
                         let candidate_inspection =
                             self.inspect_context_budget(&rebuilt, &candidate_estimate);
                         if let Some(violation) = component_budget_recovery {
@@ -3296,17 +3317,19 @@ impl Agent {
                 }
             }
 
-            if let Some(violation) = component_budget_recovery
-                && context_budget_inspection.violation().is_some()
-            {
-                self.emit_context_budget_recovery_event(
-                    TurnId(self.seq_turn.saturating_sub(1).max(turn_id.0)),
-                    context_runtime::ContextBudgetRecoveryStage::Failed,
-                    &violation,
-                    component_budget_after
-                        .or(component_budget_before)
-                        .unwrap_or(violation.used),
-                );
+            if let Some(violation) = component_budget_recovery {
+                let recovered = context_budget_inspection.violation().is_none();
+                if !recovered {
+                    self.emit_context_budget_recovery_event(
+                        TurnId(self.seq_turn.saturating_sub(1).max(turn_id.0)),
+                        context_runtime::ContextBudgetRecoveryStage::Failed,
+                        &violation,
+                        component_budget_after
+                            .or(component_budget_before)
+                            .unwrap_or(violation.used),
+                    );
+                }
+                context_budget_recovery.settle(recovered);
             }
 
             // Summarization is itself an admitted provider turn. Once it quiesces, observe control
@@ -3325,7 +3348,12 @@ impl Agent {
                 agent_loop = agent_loop::AgentLoopGuard::begin(turn_id);
                 self.observe_session_memory_activation(turn_id, relevance_task);
             }
-            self.remember_token_estimate_baseline(turn_id, uncalibrated_context_total);
+            // Provider usage is aggregate and cannot isolate image tokens. Let image turns inform
+            // their own conservative admission, but never train a multiplier later applied to a
+            // text-only request.
+            if self.input_image_evidence.is_none() {
+                self.remember_token_estimate_baseline(turn_id, uncalibrated_context_total);
+            }
 
             // ---- turn-atomic budget check (ADR-008): checked at turn admission, no mid-turn
             // preempt; a breach stops cleanly at this safe point, never mid-effect. ----
@@ -3641,11 +3669,6 @@ impl Agent {
                 ToolUse,
                 Result<iteron_tools::ToolPolicyProposal, iteron_tools::ToolPolicyError>,
             )> = Vec::new();
-            // Keep the provider-visible schema byte-stable across convergence checkpoints. Calls
-            // outside the action surface are tagged here, before a pure read can enter the
-            // mid-stream dispatcher, and materialized as refused ToolResults after decode.
-            let mut convergence_refused: std::collections::BTreeSet<usize> =
-                std::collections::BTreeSet::new();
             // The provider transport below owns cloned, read-only dispatch state instead of a
             // borrow of the Agent. That lets this callback synchronously fsync each policy
             // selection through the Agent-owned rollout before constructing an early pure-tool
@@ -3938,14 +3961,6 @@ impl Agent {
                                 });
                                 if let Err(error) = recorded {
                                     tool_policy_record_error = Some(error);
-                                    return;
-                                }
-                                if investigation_execution_gate
-                                    == investigation_convergence::InvestigationExecutionGate::CandidateChangeOnly
-                                    && !self.registry.is_candidate_change_tool(&tu.name)
-                                {
-                                    convergence_refused.insert(idx);
-                                    deferred.push((idx, tu, proposal));
                                     return;
                                 }
                                 let is_pure = proposal
@@ -4622,9 +4637,65 @@ impl Agent {
                 },
             );
             let total_tools = pure.len() + deferred.len();
-            let attempted_candidate_change = deferred
+            let mut workspace_candidate_changes = std::collections::BTreeSet::new();
+            let mut workspace_candidate_paths = std::collections::BTreeSet::new();
+            let mut unauthorized_candidate_changes = std::collections::BTreeSet::new();
+            let repair_evidence_submissions = returned_tools
                 .iter()
-                .any(|(_, tool, _)| self.registry.is_candidate_change_tool(&tool.name));
+                .enumerate()
+                .filter_map(|(index, tool)| {
+                    self.registry
+                        .is_repair_evidence_submission(tool, &self.workspace)
+                        .then_some(index)
+                })
+                .collect::<std::collections::BTreeSet<_>>();
+            // A repair receipt submitted in this same turn has not yet produced typed authority.
+            // Treat that as an explicit opt-in to the confined path and wait for its result; an
+            // ordinary turn with no receipt stays on the direct workspace-confined fast path.
+            let candidate_mutation_authorized = investigation_convergence
+                .candidate_change_allowed()
+                && repair_evidence_submissions.is_empty();
+            let receipt_path_restricted = !investigation_convergence
+                .authorized_repair_paths()
+                .is_empty();
+            let authorized_candidate_paths = investigation_convergence
+                .authorized_repair_paths()
+                .iter()
+                .filter_map(|path| self.workspace.join(path).canonicalize().ok())
+                .collect::<std::collections::BTreeSet<_>>();
+            for (index, tool, _) in &deferred {
+                if !self.registry.is_candidate_change_tool(&tool.name) {
+                    continue;
+                }
+                let Some(paths) = self
+                    .registry
+                    .workspace_candidate_paths(tool, &self.workspace)
+                else {
+                    unauthorized_candidate_changes.insert(*index);
+                    continue;
+                };
+                if paths.is_empty()
+                    || !candidate_mutation_authorized
+                    || (receipt_path_restricted
+                        && !paths
+                            .iter()
+                            .all(|path| authorized_candidate_paths.contains(path)))
+                {
+                    unauthorized_candidate_changes.insert(*index);
+                } else {
+                    workspace_candidate_changes.insert(*index);
+                    workspace_candidate_paths.extend(paths);
+                }
+            }
+            let workspace_targeted_observations = returned_tools
+                .iter()
+                .enumerate()
+                .filter_map(|(index, tool)| {
+                    self.registry
+                        .is_workspace_targeted_observation(tool, &self.workspace)
+                        .then_some(index)
+                })
+                .collect::<std::collections::BTreeSet<_>>();
             let result_projection_budget =
                 self.turn_result_projection_budget(context_budget_inspection, &returned_tools);
             if total_tools > 0 {
@@ -4758,321 +4829,46 @@ impl Agent {
                         // is configured, run it (strong oracle) ourselves; on failure, refuse the
                         // claim and feed the failure back. Bounded so a wrong gate can't loop. ----
                         if let Some(cmd) = self.verify_command.clone() {
-                            // The strong oracle runs repo-controlled code (build, test, install).
-                            // It is not a tool effect, but it is a write path, so the turn that
-                            // ran it is never treated as read-only for checkpoint purposes.
-                            self.turn_mutated_workspace = true;
                             agent_loop.transition(AgentLoopState::Verifying)?;
-                            let max_verify_attempts = self.verification_policy.retry.max_attempts;
-                            // Defensive guard for re-entry with an already-exhausted Agent. A
-                            // configured strong oracle that has not passed must never be bypassed
-                            // merely because its attempt counter reached the ceiling.
-                            if self.verify_attempts >= max_verify_attempts {
-                                self.verification_repair_exhausted(turn_id);
-                                let notice = format!(
-                                    "verify gate: `{cmd}` did not pass within {max_verify_attempts} attempts; stopping"
-                                );
-                                self.emit(
+                            match self
+                                .run_strong_verification_gate(
                                     turn_id,
-                                    EventKind::Notice {
-                                        text: notice.clone(),
-                                    },
-                                );
-                                self.ui(UiEvent::Notice(notice));
-                                return self
-                                    .finish(turn_id, Outcome::BudgetExhausted("verify_attempts"))
-                                    .await;
-                            }
-
-                            self.checkpoint_before_verification(turn_id)?;
-
-                            self.emit(
-                                turn_id,
-                                EventKind::Phase {
-                                    phase: Phase::Verify,
-                                },
-                            );
-                            let verifier_observation =
-                                iteron_verify::VerifierSlotObservation::gating(true);
-                            let verifier_opportunity = self.begin_policy_decision(
-                                policy_evidence::VERIFIER_SLOT,
-                                Some(turn_id),
-                            )?;
-                            let verify_plan = match iteron_verify::VerifierStrategy::plan_with(
-                                self.verifier.as_ref(),
-                                &verifier_observation,
-                                CapabilitySet::only(Capability::CodeExecuting)
-                                    .intersect(self.authority_ceiling),
-                            ) {
-                                Ok(proposal) => {
-                                    self.append_policy_decision(
-                                        verifier_opportunity,
-                                        policy_evidence::PolicyDecisionDraft::selected(
-                                            policy_evidence::VERIFIER_SLOT,
-                                            &[iteron_protocol::PolicyActionV1::VerifierStrongWorkspacePlan],
-                                            iteron_protocol::PolicyActionV1::VerifierStrongWorkspacePlan,
-                                            "iteron:verifier-features-v1",
-                                            &(&verifier_observation, proposal.plan),
-                                            &"verification_may_only_strengthen_caller_floors",
-                                        )?,
-                                    )?;
-                                    proposal.plan
-                                }
-                                Err(error) => {
-                                    self.append_policy_decision(
-                                        verifier_opportunity,
-                                        policy_evidence::PolicyDecisionDraft::abstained(
-                                            policy_evidence::VERIFIER_SLOT,
-                                            &[iteron_protocol::PolicyActionV1::VerifierStrongWorkspacePlan],
-                                            "iteron:verifier-features-v1",
-                                            &verifier_observation,
-                                            &"invalid_verifier_plans_fail_closed",
-                                        )?,
-                                    )?;
-                                    return Err(KernelError::ContextResolution(format!(
-                                        "verifier strategy refused: {error}"
-                                    )));
-                                }
-                            };
-                            if verify_plan.attempts
-                                > self.verification_policy.verifier_strategy_max_attempts
+                                    &cmd,
+                                    &mut investigation_convergence,
+                                )
+                                .await?
                             {
-                                return Err(KernelError::ContextResolution(
-                                    "verifier strategy exceeded the pinned verifier_attempts ceiling"
-                                        .into(),
-                                ));
-                            }
-                            let verify_span = PhaseSpan::enter(Phase::Verify);
-                            let verdict = self.run_verification_policy(&cmd, verify_plan).await?;
-                            self.policy_verifier_outcome = match verdict.outcome {
-                                iteron_verify::VerificationOutcome::Pass => {
-                                    iteron_protocol::PolicyVerifierOutcome::Passed
-                                }
-                                iteron_verify::VerificationOutcome::TestFailure => {
-                                    iteron_protocol::PolicyVerifierOutcome::TestFailure
-                                }
-                                iteron_verify::VerificationOutcome::TimedOut => {
-                                    iteron_protocol::PolicyVerifierOutcome::TimedOut
-                                }
-                                iteron_verify::VerificationOutcome::InfrastructureFailure => {
-                                    iteron_protocol::PolicyVerifierOutcome::InfrastructureFailure
-                                }
-                                iteron_verify::VerificationOutcome::Cancelled => {
-                                    iteron_protocol::PolicyVerifierOutcome::Cancelled
-                                }
-                            };
-                            self.ledger.phase_verify(verify_span.elapsed_ms());
-                            // Drain deliberately lets the already-admitted oracle reach a verdict,
-                            // then checkpoints before any failure/timeout branch can substitute a
-                            // different terminal outcome. Interrupt keeps the existing Cancelled
-                            // path so its resumable guidance is durably appended first.
-                            if self.requested_control() == InboundControl::Drain {
-                                return self.finish_drained(turn_id).await;
-                            }
-                            let detail = truncate_tail(&verdict.detail, 3000);
-                            let failure_classification =
-                                iteron_verify::classify_verification_failure(verdict.outcome);
-                            match verdict.outcome {
-                                iteron_verify::VerificationOutcome::Pass => {
-                                    self.verification_repair_completed(turn_id);
-                                    self.emit(
+                                verification::VerificationGateDisposition::Passed => {}
+                                verification::VerificationGateDisposition::Retry(guidance) => {
+                                    self.commit_message(
                                         turn_id,
-                                        EventKind::Notice {
-                                            text: format!("verify gate: `{cmd}` passed"),
-                                        },
-                                    );
-                                    self.ui(UiEvent::Notice(format!(
-                                        "verify gate: `{cmd}` passed"
-                                    )));
-                                }
-                                iteron_verify::VerificationOutcome::TestFailure => {
-                                    let failure_class = failure_classification
-                                        .expect(
-                                            "every non-pass oracle outcome has a taxonomy entry",
-                                        )
-                                        .class();
-                                    let recovery =
-                                        self.verification_policy.recovery_escalation.decide(
-                                            &self.verification_policy.retry,
-                                            failure_class,
-                                            self.verify_attempts,
-                                        );
-                                    if recovery
-                                        == iteron_verify::VerificationRecoveryAction::StopOperator
-                                    {
-                                        self.emit(
-                                            turn_id,
-                                            EventKind::Notice {
-                                                text: format!(
-                                                    "verify gate: `{cmd}` failed; recovery policy returned control to the operator"
-                                                ),
-                                            },
-                                        );
-                                        return self.finish(turn_id, Outcome::HarnessError).await;
-                                    }
-                                    if recovery
-                                        == iteron_verify::VerificationRecoveryAction::StopIneligible
-                                    {
-                                        self.emit(
-                                            turn_id,
-                                            EventKind::Notice {
-                                                text: format!(
-                                                    "verify gate: `{cmd}` test failure is not retry-eligible under the immutable policy; stopping"
-                                                ),
-                                            },
-                                        );
-                                        return self.finish(turn_id, Outcome::HarnessError).await;
-                                    }
-                                    let rolled_back =
-                                        self.rollback_after_verification_failure().await?;
-                                    // Only a real candidate/test failure consumes the bounded
-                                    // model-fix allowance. Harness faults must never masquerade as
-                                    // three bad candidate attempts.
-                                    self.verify_attempts = self.verify_attempts.saturating_add(1);
-                                    if recovery
-                                        == iteron_verify::VerificationRecoveryAction::StopExhausted
-                                    {
-                                        self.verification_repair_exhausted(turn_id);
-                                        let notice = format!(
-                                            "verify gate: `{cmd}` test failure on attempt {} of {max_verify_attempts}; ceiling reached, stopping",
-                                            self.verify_attempts
-                                        );
-                                        self.emit(
-                                            turn_id,
-                                            EventKind::Notice {
-                                                text: notice.clone(),
-                                            },
-                                        );
-                                        self.ui(UiEvent::Notice(notice));
-                                        return self
-                                            .finish(
-                                                turn_id,
-                                                Outcome::BudgetExhausted("verify_attempts"),
-                                            )
-                                            .await;
-                                    }
-
-                                    debug_assert!(matches!(
-                                        recovery,
-                                        iteron_verify::VerificationRecoveryAction::RetryReplan
-                                            | iteron_verify::VerificationRecoveryAction::RetryRepair
-                                    ));
-
-                                    self.verification_repair_started(turn_id);
-
-                                    let recovery_instruction = if recovery
-                                        == iteron_verify::VerificationRecoveryAction::RetryReplan
-                                    {
-                                        "Replan as needed, fix the remaining issues, and continue."
-                                    } else {
-                                        "Keep the current plan, fix the failing candidate, and retry."
-                                    };
-                                    let msg = Message::user_text(format!(
-                                        "Verification found a test failure: the harness ran `{cmd}` \
-                                         successfully, but the candidate did not pass. Do not claim \
-                                         the task is done. {recovery_instruction}{}\n\n{detail}",
-                                        if rolled_back {
-                                            " The operator-authorised workspace rollback was applied before this repair turn."
-                                        } else {
-                                            ""
-                                        }
-                                    ));
-                                    self.emit(
-                                        turn_id,
-                                        EventKind::Notice {
-                                            text: format!(
-                                                "verify gate: `{cmd}` test failure, continuing (attempt {})",
-                                                self.verify_attempts
-                                            ),
-                                        },
-                                    );
-                                    self.ui(UiEvent::Notice(format!(
-                                        "verify gate: `{cmd}` test failure, continuing"
-                                    )));
-                                    self.commit_message(turn_id, messages, msg)?;
+                                        messages,
+                                        Message::user_text(guidance),
+                                    )?;
                                     self.advance_turn().await?;
                                     continue;
                                 }
-                                iteron_verify::VerificationOutcome::TimedOut => {
-                                    let deadline_exhausted = self.run_deadline_exhausted();
-                                    let notice = if deadline_exhausted {
-                                        format!(
-                                            "verify gate: `{cmd}` timed out at the absolute run deadline; stopping"
-                                        )
-                                    } else {
-                                        format!(
-                                            "verify gate: `{cmd}` timed out before producing a verdict; stopping without consuming a test-failure retry"
-                                        )
-                                    };
-                                    self.emit(
-                                        turn_id,
-                                        EventKind::Notice {
-                                            text: notice.clone(),
-                                        },
-                                    );
-                                    self.ui(UiEvent::Notice(notice));
-                                    // Leave a valid user-role tail so an empty crash-recovery
-                                    // resume can ask the model to re-declare completion and rerun
-                                    // the independent gate instead of sending an assistant-ended
-                                    // transcript to the provider.
-                                    self.commit_message(
-                                        turn_id,
-                                        messages,
-                                        Message::user_text(format!(
-                                            "Verification timed out while running `{cmd}`. This was \
-                                             not classified as a test failure and consumed no \
-                                             candidate-fix retry. On resume, re-check completion.\n\n{detail}"
-                                        )),
-                                    )?;
-                                    let outcome = if deadline_exhausted {
-                                        Outcome::BudgetExhausted("max_wall_secs")
-                                    } else {
-                                        Outcome::HarnessError
-                                    };
+                                verification::VerificationGateDisposition::Finish {
+                                    outcome,
+                                    guidance,
+                                } => {
+                                    if let Some(guidance) = guidance {
+                                        self.commit_message(
+                                            turn_id,
+                                            messages,
+                                            Message::user_text(guidance),
+                                        )?;
+                                    }
                                     return self.finish(turn_id, outcome).await;
                                 }
-                                iteron_verify::VerificationOutcome::InfrastructureFailure => {
-                                    let notice = format!(
-                                        "verify gate: `{cmd}` infrastructure failure; stopping without consuming a test-failure retry"
-                                    );
-                                    self.emit(
-                                        turn_id,
-                                        EventKind::Notice {
-                                            text: notice.clone(),
-                                        },
-                                    );
-                                    self.ui(UiEvent::Notice(notice));
-                                    self.commit_message(
-                                        turn_id,
-                                        messages,
-                                        Message::user_text(format!(
-                                            "Verification infrastructure could not run `{cmd}`. \
-                                             This was not a candidate test failure and consumed no \
-                                             candidate-fix retry. Fix the verification environment \
-                                             before resuming.\n\n{detail}"
-                                        )),
-                                    )?;
-                                    return self.finish(turn_id, Outcome::HarnessError).await;
+                                verification::VerificationGateDisposition::Drained => {
+                                    return self.finish_drained(turn_id).await;
                                 }
-                                iteron_verify::VerificationOutcome::Cancelled => {
-                                    let notice = format!(
-                                        "verify gate: `{cmd}` cancelled; stopping at a resumable safe point without consuming a test-failure retry"
-                                    );
-                                    self.emit(
-                                        turn_id,
-                                        EventKind::Notice {
-                                            text: notice.clone(),
-                                        },
-                                    );
-                                    self.ui(UiEvent::Notice(notice));
+                                verification::VerificationGateDisposition::Cancelled(guidance) => {
                                     self.commit_message(
                                         turn_id,
                                         messages,
-                                        Message::user_text(format!(
-                                            "Verification of `{cmd}` was cancelled before a verdict. \
-                                             It consumed no candidate-fix retry. On resume, re-check \
-                                             completion.\n\n{detail}"
-                                        )),
+                                        Message::user_text(guidance),
                                     )?;
                                     if let Some(outcome) =
                                         self.finish_requested_control(turn_id).await?
@@ -5269,11 +5065,18 @@ impl Agent {
             // gate auto-approves, with no declared write path in common, executes concurrently
             // under the same governor the pure path uses; the loop below then owns every call that
             // group did not take, in the order it always ran them.
+            candidate_workspace_baseline
+                .capture_before(
+                    workspace_candidate_paths
+                        .iter()
+                        .map(std::path::PathBuf::as_path),
+                )
+                .await;
             let batch = self.select_concurrent_deferred_batch(
                 &deferred,
-                &convergence_refused,
                 argument_trust,
                 messages,
+                &unauthorized_candidate_changes,
             )?;
             if batch.len() > 1 {
                 let effecting_governor = iteron_sched::Governor::new(
@@ -5306,25 +5109,17 @@ impl Agent {
                 if results[idx].is_some() {
                     continue;
                 }
-                if convergence_refused.contains(&idx) {
-                    let result = ToolResult {
+                if unauthorized_candidate_changes.contains(&idx) {
+                    let r = ToolResult {
                         tool_use_id: tu.id.clone(),
-                        content: format!(
-                            "refused by Iteron's bounded-investigation gate: `{}` would continue broad observation or orchestration after the action checkpoint. Use a registered candidate-change tool, finish the read-only answer, or state the exact blocker.",
-                            tu.name
-                        ),
+                        content: "refused: candidate mutation is outside the exact path authorized by the typed RepairIntent receipt".into(),
                         is_error: true,
-                        trust: Trust::Trusted,
+                        trust: Trust::Workspace,
                         latency_ms: 0,
                     };
-                    self.commit_refused_tool_result_with_reason(
-                        turn_id,
-                        &tu.name,
-                        &result,
-                        "strategy_candidate_action_required",
-                    )?;
-                    self.ui(tool_end_ui(&tu, &result));
-                    results[idx] = Some(result);
+                    self.commit_refused_tool_result(turn_id, &tu.name, &r)?;
+                    self.ui(tool_end_ui(&tu, &r));
+                    results[idx] = Some(r);
                     any_error = true;
                     continue;
                 }
@@ -5979,32 +5774,152 @@ impl Agent {
 
             consecutive_errors = if any_error { consecutive_errors + 1 } else { 0 };
 
+            let completed_workspace_candidate_change =
+                workspace_candidate_changes.iter().any(|index| {
+                    results
+                        .get(*index)
+                        .and_then(Option::as_ref)
+                        .is_some_and(|result| !result.is_error)
+                });
+            let candidate_change_outstanding = if completed_workspace_candidate_change
+                || (investigation_convergence.candidate_review_active() && total_tools > 0)
+            {
+                Some(candidate_workspace_baseline.outstanding().await)
+            } else {
+                None
+            };
+            // Targeted observations mark localization but do not consume a fixed round allowance;
+            // legitimate dependent evidence can remain multi-hop. Only a successful, tool-owned
+            // comparison result closes the evidence phase below.
+            let completed_targeted_observation =
+                workspace_targeted_observations.iter().any(|index| {
+                    results
+                        .get(*index)
+                        .and_then(Option::as_ref)
+                        .is_some_and(|result| !result.is_error)
+                });
+            // `next_back`, not `last`: the source is a `DoubleEndedIterator`, so taking the final
+            // element by walking the whole chain is work with no result to show for it.
+            let completed_repair_evidence = repair_evidence_submissions
+                .iter()
+                .filter_map(|index| results.get(*index).and_then(Option::as_ref))
+                .filter_map(iteron_tools::tool_result_repair_evidence)
+                .next_back();
+            // `tool_search` mutates the session-local visible schema set. Do not reuse the
+            // pre-search projection on the next model turn, or the tool it just exposed remains
+            // impossible to call despite the successful discovery receipt.
+            if returned_tools.iter().enumerate().any(|(index, tool)| {
+                tool.name == "tool_search"
+                    && results
+                        .get(index)
+                        .and_then(Option::as_ref)
+                        .is_some_and(|result| !result.is_error)
+            }) {
+                self.advertised_tool_specs_cache = None;
+            }
             let mut blocks: Vec<Block> = results
                 .into_iter()
                 .flatten()
                 .map(Block::ToolResult)
                 .collect();
-            if let Some(request) =
-                investigation_convergence.observe_round(attempted_candidate_change)
-            {
+            if let Some(request) = investigation_convergence.observe_round(
+                candidate_change_outstanding,
+                completed_targeted_observation,
+                completed_repair_evidence,
+                total_tools > 0,
+            ) {
                 blocks.push(Block::Text {
-                    text: request.instruction.into(),
+                    text: format!(
+                        "{} [budget: {} provider turn(s) remain]",
+                        request.instruction,
+                        self.remaining_inference_turns()
+                    ),
                 });
                 self.lifecycle_event(
                     "context.segment.updated",
                     Some(turn_id),
                     LifecyclePayload {
-                        count: Some(u64::from(request.rounds)),
+                        count: Some(u64::from(request.observations)),
                         reason_code: Some(request.stage.reason_code().into()),
                         ..LifecyclePayload::default()
                     },
                 );
+            }
+            // A completed candidate-edit batch gives the configured independent gate strictly
+            // newer workspace evidence. Run it now: a cheap failure is better repair evidence than
+            // another provider review turn, while a pass can finish without a "done" round trip.
+            let automatic_verification = if completed_workspace_candidate_change {
+                if let Some(command) = self.verify_command.clone() {
+                    Some(
+                        self.run_strong_verification_gate(
+                            turn_id,
+                            &command,
+                            &mut investigation_convergence,
+                        )
+                        .await?,
+                    )
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            match &automatic_verification {
+                Some(verification::VerificationGateDisposition::Retry(guidance))
+                | Some(verification::VerificationGateDisposition::Cancelled(guidance)) => {
+                    blocks.push(Block::Text {
+                        text: guidance.clone(),
+                    });
+                }
+                Some(verification::VerificationGateDisposition::Finish {
+                    guidance: Some(guidance),
+                    ..
+                }) => {
+                    blocks.push(Block::Text {
+                        text: guidance.clone(),
+                    });
+                }
+                _ => {}
             }
             let tool_msg = Message {
                 role: Role::User,
                 content: blocks,
             };
             self.commit_message(turn_id, messages, tool_msg)?;
+
+            if let Some(disposition) = automatic_verification {
+                match disposition {
+                    verification::VerificationGateDisposition::Passed => {
+                        // Match the ordinary EndTurn gate: controls and steering admitted while
+                        // verification ran still win before success becomes durable.
+                        let steered = self.admit_pending_steers(turn_id, messages)?;
+                        if let Some(outcome) = self.finish_requested_control(turn_id).await? {
+                            return Ok(outcome);
+                        }
+                        if steered > 0 {
+                            self.advance_turn().await?;
+                            continue;
+                        }
+                        return self.finish(turn_id, Outcome::Done).await;
+                    }
+                    verification::VerificationGateDisposition::Retry(_) => {
+                        self.advance_turn().await?;
+                        continue;
+                    }
+                    verification::VerificationGateDisposition::Finish { outcome, .. } => {
+                        return self.finish(turn_id, outcome).await;
+                    }
+                    verification::VerificationGateDisposition::Drained => {
+                        return self.finish_drained(turn_id).await;
+                    }
+                    verification::VerificationGateDisposition::Cancelled(_) => {
+                        if let Some(outcome) = self.finish_requested_control(turn_id).await? {
+                            return Ok(outcome);
+                        }
+                        return self.finish(turn_id, Outcome::Interrupted).await;
+                    }
+                }
+            }
 
             if let Some(outcome) = self.collect_and_finish_requested_control(turn_id).await? {
                 return Ok(outcome);
@@ -6036,9 +5951,9 @@ impl Agent {
             ToolUse,
             Result<iteron_tools::ToolPolicyProposal, iteron_tools::ToolPolicyError>,
         )],
-        convergence_refused: &std::collections::BTreeSet<usize>,
         _argument_trust: Trust,
         messages: &[Message],
+        excluded_indices: &std::collections::BTreeSet<usize>,
     ) -> Result<Vec<AutoApprovedCall>, KernelError> {
         // Tool hooks are per-call boundaries, not a global serialization switch. The executor
         // below runs every admitted call's pre-gates concurrently (under the shared hook
@@ -6049,7 +5964,7 @@ impl Agent {
         let mut claimed: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         let mut signatures: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for (index, call, proposal) in deferred {
-            if convergence_refused.contains(index) {
+            if excluded_indices.contains(index) {
                 break;
             }
             // Both fan out real children and spend provider budget through their own effect

@@ -20,8 +20,8 @@ const MAX_AGENT_TOOL_NAME_BYTES: usize = 256;
 
 /// The read-only tool set an agent may use — the base every fan-out worker gets, which `ToolFilter`
 /// can only narrow. Mirrors `iteron_tools::Registry::read_only` (`crates/tools/src/lib.rs`), which
-/// registers the five filesystem discovery tools plus confined Git observations,
-/// progressive-disclosure memory recall, and on-demand skill loading. Hard-coded here because this
+/// registers the five filesystem discovery tools plus source-anchored repair evidence, confined
+/// Git observations, progressive-disclosure memory recall, and on-demand skill loading. Hard-coded here because this
 /// pure policy crate must not depend on the executor's `tools` crate; the build-plane conformance
 /// check constructs the real registry and compares its names with this contract.
 pub const READ_ONLY_TOOLS: &[&str] = &[
@@ -30,6 +30,7 @@ pub const READ_ONLY_TOOLS: &[&str] = &[
     "glob",
     "grep",
     "repo_map",
+    "submit_repair_evidence",
     "git_diff",
     "git_status",
     "git_log",
@@ -82,9 +83,9 @@ const WRITE_EXEC_DISPATCH: &[&str] = &[
 /// `READ_ONLY_TOOLS` capability contract; executors should resolve this `AgentDef` instead of
 /// maintaining a second prompt with a smaller, drifting tool inventory.
 pub(crate) const SUBAGENT_SYSTEM: &str = "You are a read-only investigation subagent. Explore the \
-    repository with read_file, list_dir, glob, grep, repo_map, git_diff, git_status, git_log, \
-    read_memory, use_skill, and tool_search to answer the question. You cannot edit files or run \
-    code. When \
+    repository with read_file, list_dir, glob, grep, repo_map, submit_repair_evidence, git_diff, \
+    git_status, git_log, read_memory, use_skill, and tool_search to answer the question. You cannot \
+    edit files or run code. When \
     done, reply with a concise summary (aim for under ~1500 tokens): the direct answer, with \
     file:line references for anything you claim.";
 
@@ -881,6 +882,7 @@ mod tests {
                 "glob",
                 "grep",
                 "repo_map",
+                "submit_repair_evidence",
                 "git_diff",
                 "git_status",
                 "git_log",

@@ -19,12 +19,14 @@ pub const DEFAULT_DEFERRED_TOOL_EAGER_LIMIT: usize = 4;
 const DEFAULT_SEARCH_RESULTS: usize = 4;
 const MAX_QUERY_BYTES: usize = 256;
 const MAX_SEARCH_RESULTS: usize = 32;
+/// Schemas that are useful as bounded fallbacks but too broad for automatic task projection.
+/// They remain authority-admitted and searchable through [`TOOL_SEARCH`].
+const ON_DEMAND_ONLY_TOOLS: &[&str] = &["repo_map"];
 /// The stable ordinary coding surface. Specialised schemas remain one `tool_search` away, while
 /// these authority-admitted primitives never disappear between tasks and invalidate prompt-cache
 /// identity merely because task-ranking changed.
 const CORE_EAGER_TOOLS: &[&str] = &[
     "read_file",
-    "write_file",
     "edit",
     "apply_patch",
     "bash",
@@ -39,7 +41,7 @@ const CORE_EAGER_TOOLS: &[&str] = &[
     // The base prompt requires a final diff review. Hiding that exact tool behind discovery made
     // the prompt manufacture an avoidable provider round on ordinary coding tasks.
     "git_diff",
-    "git_status",
+    "submit_repair_evidence",
 ];
 
 /// Resolve the stable coding surface through the same immutable profile table as every other
@@ -114,7 +116,11 @@ impl DeferredToolCatalog {
             }
         }
         let ranked = ranked_names(&state, admitted, task);
-        for name in ranked.into_iter().take(eager_limit) {
+        for name in ranked
+            .into_iter()
+            .filter(|name| !ON_DEMAND_ONLY_TOOLS.contains(&name.as_str()))
+            .take(eager_limit)
+        {
             // Keep already-visible/core matches inside the bounded ranking prefix. Inserting them
             // is idempotent, and—critically—does not let a repeated task reveal the next page or
             // let a compiled fallback widen an installed exposure profile.
@@ -332,37 +338,61 @@ mod tests {
     use iteron_protocol::ToolUse;
 
     #[tokio::test]
-    async fn hidden_admitted_schema_becomes_visible_after_search() {
+    async fn repo_map_stays_lazy_until_explicitly_discovered() {
         let registry = Registry::coding_agent(std::env::temp_dir()).unwrap();
         let admitted = registry
             .specs()
             .into_iter()
             .map(|spec| spec.name)
             .collect::<BTreeSet<_>>();
-        let initial = registry.specs_for_task(&admitted, "inspect rust source", Some(1));
+        let task = "fix the parser bug in crates/parser/src/lib.rs and its failing unit test";
+        let initial = registry.specs_for_task_snapshot(
+            &admitted,
+            task,
+            Some(DEFAULT_DEFERRED_TOOL_EAGER_LIMIT),
+        );
         assert!(initial.iter().any(|spec| spec.name == TOOL_SEARCH));
-        let hidden = admitted
-            .iter()
-            .find(|name| {
-                name.as_str() != TOOL_SEARCH
-                    && !core_eager_tools().contains(&name.as_str())
-                    && !initial.iter().any(|spec| spec.name == **name)
-            })
-            .cloned()
-            .expect("coding registry has a deferred schema");
+        assert!(!initial.iter().any(|spec| spec.name == "repo_map"));
+
+        let mapping_task = "map repository declarations without reading bodies";
+        let before_discovery = registry.specs_for_task_snapshot(
+            &admitted,
+            mapping_task,
+            Some(DEFAULT_DEFERRED_TOOL_EAGER_LIMIT),
+        );
+        assert!(
+            !before_discovery.iter().any(|spec| spec.name == "repo_map"),
+            "even direct relevance must not bypass explicit lazy discovery"
+        );
 
         let result = registry
             .run(ToolUse {
                 id: "search-1".into(),
                 name: TOOL_SEARCH.into(),
-                input: serde_json::json!({"query": hidden, "limit": 4}),
+                input: serde_json::json!({
+                    "query": "coverage incomplete repository declarations navigation",
+                    "limit": 1
+                }),
             })
             .await;
         assert!(!result.is_error, "{}", result.content);
-        assert!(result.content.contains(&format!("\"{hidden}\"")));
+        assert!(result.content.contains("\"repo_map\""));
 
-        let next = registry.specs_for_task(&admitted, "inspect rust source", Some(1));
-        assert!(next.iter().any(|spec| spec.name == hidden));
+        let next = registry.specs_for_task_snapshot(
+            &admitted,
+            mapping_task,
+            Some(DEFAULT_DEFERRED_TOOL_EAGER_LIMIT),
+        );
+        assert!(next.iter().any(|spec| spec.name == "repo_map"));
+        eprintln!(
+            "repo_map lazy schema impact: default_visible={} default_tokens={} discovered_visible={} discovered_tokens={} delta_tokens={}",
+            before_discovery.iter().len(),
+            before_discovery.estimated_tokens(),
+            next.iter().len(),
+            next.estimated_tokens(),
+            next.estimated_tokens()
+                .saturating_sub(before_discovery.estimated_tokens())
+        );
     }
 
     #[tokio::test]
@@ -439,11 +469,16 @@ mod tests {
             "process_poll",
             "process_stop",
             "git_diff",
-            "git_status",
         ] {
             assert!(
                 visible.iter().any(|spec| spec.name == required),
                 "{required}"
+            );
+        }
+        for deferred in ["write_file", "git_status"] {
+            assert!(
+                !visible.iter().any(|spec| spec.name == deferred),
+                "specialized schema should stay lazy on the repair hot path: {deferred}"
             );
         }
         let schema_bytes = visible.iter().fold(0usize, |total, spec| {
@@ -533,10 +568,6 @@ mod tests {
             (
                 "query a definition, references, or hover from the language server",
                 "lsp_query",
-            ),
-            (
-                "map repository declarations without reading bodies",
-                "repo_map",
             ),
             ("search the web for current facts", "web_search"),
         ] {

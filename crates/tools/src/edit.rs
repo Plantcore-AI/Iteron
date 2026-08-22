@@ -21,6 +21,7 @@ const MAX_EDIT_PATH_BYTES: usize = 4_096;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum UniqueEditError {
     EmptyAnchor,
+    NoChange,
     SuspiciousUnicode(u32),
     AnchorNotFound { nearest_line: Option<usize> },
     AmbiguousAnchor { count: usize, normalized: bool },
@@ -33,6 +34,9 @@ impl std::fmt::Display for UniqueEditError {
             Self::EmptyAnchor => {
                 formatter.write_str("`old` is empty; refuse to anchor an edit on nothing")
             }
+            Self::NoChange => formatter.write_str(
+                "edit refused: `old` and `new` are identical and would not change target bytes",
+            ),
             Self::SuspiciousUnicode(codepoint) => write!(
                 formatter,
                 "edit refused: suspicious Unicode (U+{codepoint:04X}) in the anchor or replacement"
@@ -107,6 +111,9 @@ pub(crate) fn plan_unique_edit(
 ) -> Result<UniqueEditPlan, UniqueEditError> {
     if old.is_empty() {
         return Err(UniqueEditError::EmptyAnchor);
+    }
+    if old == new {
+        return Err(UniqueEditError::NoChange);
     }
     if let Some(codepoint) = suspicious_unicode(old).or_else(|| suspicious_unicode(new)) {
         return Err(UniqueEditError::SuspiciousUnicode(codepoint));
@@ -430,6 +437,11 @@ where
     let updated = apply_unique_edit(text.content(), old, &replacement)
         .map_err(|error| format!("edit {path}: {error}"))?;
     let encoded = text.encode(updated);
+    if encoded == snapshot.bytes {
+        return Err(format!(
+            "edit {path}: replacement would not change target bytes"
+        ));
+    }
     let staged = StagedWrite::prepare(&target, &encoded)
         .await
         .map_err(|error| format!("stage {path}: {error}"))?;
@@ -498,6 +510,13 @@ mod tests {
         let out =
             apply_unique_edit("let x = 1;\nlet y = 2;\n", "let y = 2;", "let y = 3;").unwrap();
         assert!(out.contains("let y = 3;"));
+    }
+
+    #[test]
+    fn byte_identical_replacement_is_not_a_candidate_change() {
+        let result = apply_unique_edit("let x = 1;\n", "let x = 1;", "let x = 1;");
+
+        assert!(result.unwrap_err().contains("would not change"));
     }
 
     #[test]

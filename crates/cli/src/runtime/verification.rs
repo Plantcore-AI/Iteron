@@ -4,6 +4,17 @@ use super::*;
 /// surfaces `Interrupt`/`Drain` during a long verification command.
 const VERIFY_CANCEL_POLL: Duration = Duration::from_millis(25);
 
+pub(super) enum VerificationGateDisposition {
+    Passed,
+    Retry(String),
+    Finish {
+        outcome: Outcome,
+        guidance: Option<String>,
+    },
+    Drained,
+    Cancelled(String),
+}
+
 impl Agent {
     pub fn set_verification_policy(
         &mut self,
@@ -148,6 +159,296 @@ impl Agent {
                 ..LifecyclePayload::default()
             },
         );
+    }
+
+    /// Run and reduce the configured strong gate without owning transcript placement or the final
+    /// run terminal. End-turn verification and post-repair verification share this path so retry
+    /// ceilings, rollback, control, policy evidence, and effect settlement cannot drift apart.
+    pub(super) async fn run_strong_verification_gate(
+        &mut self,
+        turn: TurnId,
+        command: &str,
+        convergence: &mut investigation_convergence::InvestigationConvergence,
+    ) -> Result<VerificationGateDisposition, KernelError> {
+        self.turn_mutated_workspace = true;
+        let max_verify_attempts = self.verification_policy.retry.max_attempts;
+        if self.verify_attempts >= max_verify_attempts {
+            self.verification_repair_exhausted(turn);
+            let notice = format!(
+                "verify gate: `{command}` did not pass within {max_verify_attempts} attempts; stopping"
+            );
+            self.emit(
+                turn,
+                EventKind::Notice {
+                    text: notice.clone(),
+                },
+            );
+            self.ui(UiEvent::Notice(notice));
+            return Ok(VerificationGateDisposition::Finish {
+                outcome: Outcome::BudgetExhausted("verify_attempts"),
+                guidance: None,
+            });
+        }
+
+        self.checkpoint_before_verification(turn)?;
+        self.emit(
+            turn,
+            EventKind::Phase {
+                phase: Phase::Verify,
+            },
+        );
+        let verifier_observation = iteron_verify::VerifierSlotObservation::gating(true);
+        let verifier_opportunity =
+            self.begin_policy_decision(policy_evidence::VERIFIER_SLOT, Some(turn))?;
+        let verify_plan = match iteron_verify::VerifierStrategy::plan_with(
+            self.verifier.as_ref(),
+            &verifier_observation,
+            CapabilitySet::only(Capability::CodeExecuting).intersect(self.authority_ceiling),
+        ) {
+            Ok(proposal) => {
+                self.append_policy_decision(
+                    verifier_opportunity,
+                    policy_evidence::PolicyDecisionDraft::selected(
+                        policy_evidence::VERIFIER_SLOT,
+                        &[iteron_protocol::PolicyActionV1::VerifierStrongWorkspacePlan],
+                        iteron_protocol::PolicyActionV1::VerifierStrongWorkspacePlan,
+                        "iteron:verifier-features-v1",
+                        &(&verifier_observation, proposal.plan),
+                        &"verification_may_only_strengthen_caller_floors",
+                    )?,
+                )?;
+                proposal.plan
+            }
+            Err(error) => {
+                self.append_policy_decision(
+                    verifier_opportunity,
+                    policy_evidence::PolicyDecisionDraft::abstained(
+                        policy_evidence::VERIFIER_SLOT,
+                        &[iteron_protocol::PolicyActionV1::VerifierStrongWorkspacePlan],
+                        "iteron:verifier-features-v1",
+                        &verifier_observation,
+                        &"invalid_verifier_plans_fail_closed",
+                    )?,
+                )?;
+                return Err(KernelError::ContextResolution(format!(
+                    "verifier strategy refused: {error}"
+                )));
+            }
+        };
+        if verify_plan.attempts > self.verification_policy.verifier_strategy_max_attempts {
+            return Err(KernelError::ContextResolution(
+                "verifier strategy exceeded the pinned verifier_attempts ceiling".into(),
+            ));
+        }
+        let verify_span = PhaseSpan::enter(Phase::Verify);
+        let verdict = self.run_verification_policy(command, verify_plan).await?;
+        self.policy_verifier_outcome = match verdict.outcome {
+            iteron_verify::VerificationOutcome::Pass => {
+                iteron_protocol::PolicyVerifierOutcome::Passed
+            }
+            iteron_verify::VerificationOutcome::TestFailure => {
+                iteron_protocol::PolicyVerifierOutcome::TestFailure
+            }
+            iteron_verify::VerificationOutcome::TimedOut => {
+                iteron_protocol::PolicyVerifierOutcome::TimedOut
+            }
+            iteron_verify::VerificationOutcome::InfrastructureFailure => {
+                iteron_protocol::PolicyVerifierOutcome::InfrastructureFailure
+            }
+            iteron_verify::VerificationOutcome::Cancelled => {
+                iteron_protocol::PolicyVerifierOutcome::Cancelled
+            }
+        };
+        self.ledger.phase_verify(verify_span.elapsed_ms());
+
+        // Drain deliberately lets the already-admitted oracle reach a verdict, then checkpoints
+        // before any failure/timeout branch can substitute a different terminal outcome.
+        if self.requested_control() == InboundControl::Drain {
+            return Ok(VerificationGateDisposition::Drained);
+        }
+
+        let detail = truncate_tail(&verdict.detail, 3000);
+        let failure_classification = iteron_verify::classify_verification_failure(verdict.outcome);
+        match verdict.outcome {
+            iteron_verify::VerificationOutcome::Pass => {
+                convergence.verification_passed();
+                self.verification_repair_completed(turn);
+                self.emit(
+                    turn,
+                    EventKind::Notice {
+                        text: format!("verify gate: `{command}` passed"),
+                    },
+                );
+                self.ui(UiEvent::Notice(format!("verify gate: `{command}` passed")));
+                Ok(VerificationGateDisposition::Passed)
+            }
+            iteron_verify::VerificationOutcome::TestFailure => {
+                let failure_class = failure_classification
+                    .expect("every non-pass oracle outcome has a taxonomy entry")
+                    .class();
+                let recovery = self.verification_policy.recovery_escalation.decide(
+                    &self.verification_policy.retry,
+                    failure_class,
+                    self.verify_attempts,
+                );
+                if recovery == iteron_verify::VerificationRecoveryAction::StopOperator {
+                    self.emit(
+                        turn,
+                        EventKind::Notice {
+                            text: format!(
+                                "verify gate: `{command}` failed; recovery policy returned control to the operator"
+                            ),
+                        },
+                    );
+                    return Ok(VerificationGateDisposition::Finish {
+                        outcome: Outcome::HarnessError,
+                        guidance: None,
+                    });
+                }
+                if recovery == iteron_verify::VerificationRecoveryAction::StopIneligible {
+                    self.emit(
+                        turn,
+                        EventKind::Notice {
+                            text: format!(
+                                "verify gate: `{command}` test failure is not retry-eligible under the immutable policy; stopping"
+                            ),
+                        },
+                    );
+                    return Ok(VerificationGateDisposition::Finish {
+                        outcome: Outcome::HarnessError,
+                        guidance: None,
+                    });
+                }
+                let rolled_back = self.rollback_after_verification_failure().await?;
+                let convergence_request = convergence.verification_failed(rolled_back);
+                // Only a real candidate/test failure consumes the bounded model-fix allowance.
+                self.verify_attempts = self.verify_attempts.saturating_add(1);
+                if recovery == iteron_verify::VerificationRecoveryAction::StopExhausted {
+                    self.verification_repair_exhausted(turn);
+                    let notice = format!(
+                        "verify gate: `{command}` test failure on attempt {} of {max_verify_attempts}; ceiling reached, stopping",
+                        self.verify_attempts
+                    );
+                    self.emit(
+                        turn,
+                        EventKind::Notice {
+                            text: notice.clone(),
+                        },
+                    );
+                    self.ui(UiEvent::Notice(notice));
+                    return Ok(VerificationGateDisposition::Finish {
+                        outcome: Outcome::BudgetExhausted("verify_attempts"),
+                        guidance: None,
+                    });
+                }
+
+                debug_assert!(matches!(
+                    recovery,
+                    iteron_verify::VerificationRecoveryAction::RetryReplan
+                        | iteron_verify::VerificationRecoveryAction::RetryRepair
+                ));
+                self.verification_repair_started(turn);
+                let recovery_instruction =
+                    if recovery == iteron_verify::VerificationRecoveryAction::RetryReplan {
+                        "Replan as needed, fix the remaining issues, and continue."
+                    } else {
+                        "Keep the current plan, fix the failing candidate, and retry."
+                    };
+                let guidance = format!(
+                    "Verification found a test failure: the harness ran `{command}` successfully, \
+                     but the candidate did not pass. Do not claim the task is done. \
+                     {recovery_instruction}{}{}\n\n{detail}",
+                    if rolled_back {
+                        " The operator-authorised workspace rollback was applied before this repair turn."
+                    } else {
+                        ""
+                    },
+                    convergence_request
+                        .map(|request| format!("\n\n{}", request.instruction))
+                        .unwrap_or_default()
+                );
+                self.emit(
+                    turn,
+                    EventKind::Notice {
+                        text: format!(
+                            "verify gate: `{command}` test failure, continuing (attempt {})",
+                            self.verify_attempts
+                        ),
+                    },
+                );
+                self.ui(UiEvent::Notice(format!(
+                    "verify gate: `{command}` test failure, continuing"
+                )));
+                Ok(VerificationGateDisposition::Retry(guidance))
+            }
+            iteron_verify::VerificationOutcome::TimedOut => {
+                let deadline_exhausted = self.run_deadline_exhausted();
+                let notice = if deadline_exhausted {
+                    format!(
+                        "verify gate: `{command}` timed out at the absolute run deadline; stopping"
+                    )
+                } else {
+                    format!(
+                        "verify gate: `{command}` timed out before producing a verdict; stopping without consuming a test-failure retry"
+                    )
+                };
+                self.emit(
+                    turn,
+                    EventKind::Notice {
+                        text: notice.clone(),
+                    },
+                );
+                self.ui(UiEvent::Notice(notice));
+                Ok(VerificationGateDisposition::Finish {
+                    outcome: if deadline_exhausted {
+                        Outcome::BudgetExhausted("max_wall_secs")
+                    } else {
+                        Outcome::HarnessError
+                    },
+                    guidance: Some(format!(
+                        "Verification timed out while running `{command}`. This was not classified \
+                         as a test failure and consumed no candidate-fix retry. On resume, re-check \
+                         completion.\n\n{detail}"
+                    )),
+                })
+            }
+            iteron_verify::VerificationOutcome::InfrastructureFailure => {
+                let notice = format!(
+                    "verify gate: `{command}` infrastructure failure; stopping without consuming a test-failure retry"
+                );
+                self.emit(
+                    turn,
+                    EventKind::Notice {
+                        text: notice.clone(),
+                    },
+                );
+                self.ui(UiEvent::Notice(notice));
+                Ok(VerificationGateDisposition::Finish {
+                    outcome: Outcome::HarnessError,
+                    guidance: Some(format!(
+                        "Verification infrastructure could not run `{command}`. This was not a \
+                         candidate test failure and consumed no candidate-fix retry. Fix the \
+                         verification environment before resuming.\n\n{detail}"
+                    )),
+                })
+            }
+            iteron_verify::VerificationOutcome::Cancelled => {
+                let notice = format!(
+                    "verify gate: `{command}` cancelled; stopping at a resumable safe point without consuming a test-failure retry"
+                );
+                self.emit(
+                    turn,
+                    EventKind::Notice {
+                        text: notice.clone(),
+                    },
+                );
+                self.ui(UiEvent::Notice(notice));
+                Ok(VerificationGateDisposition::Cancelled(format!(
+                    "Verification of `{command}` was cancelled before a verdict. It consumed no \
+                     candidate-fix retry. On resume, re-check completion.\n\n{detail}"
+                )))
+            }
+        }
     }
 
     /// Execute the immutable command-selection, flake, and quorum policy around the strategy's
@@ -615,8 +916,9 @@ impl Agent {
         Ok(true)
     }
 
-    /// Run the strong verification oracle: the configured test command, in the egress-off
-    /// sandbox. The harness's own ground-truth check on the model's "done".
+    /// Run the strong verification oracle: the configured test command, normally in the
+    /// egress-off sandbox. An explicit operator attestation may instead reuse an already-confined
+    /// outer process boundary. The harness's own ground-truth check on the model's "done".
     ///
     /// The oracle runs repository-controlled code in a sandbox, so it is an effect and crosses the
     /// boundary (#16). Its verdict vocabulary maps onto the terminal vocabulary exactly:
@@ -750,6 +1052,9 @@ impl Agent {
         .with_output_tail_bytes(self.verification_policy.feedback.oracle_output_bytes)
         .with_timeout_secs(self.verification_policy.verifier_timeout_secs)
         .with_output_observer(output_observer.clone());
+        if self.verify_preconfined {
+            oracle = oracle.with_preconfined_outer_sandbox();
+        }
         if let Some(remaining) = self.run_time_remaining() {
             // The sandbox API uses whole seconds. Round its cleanup-aware process timeout up,
             // then enforce the exact (possibly sub-second) deadline in `run_bounded_verify`.

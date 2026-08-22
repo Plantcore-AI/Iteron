@@ -252,6 +252,18 @@ impl RequestEstimator {
         self.profile.estimate_image(encoded_base64_bytes)
     }
 
+    pub fn estimate_image_with_provenance(
+        &self,
+        encoded_base64_bytes: usize,
+    ) -> crate::ImageTokenEstimate {
+        self.profile
+            .estimate_image_with_provenance(encoded_base64_bytes)
+    }
+
+    pub fn estimate_decoded_image(&self, total_pixels: u64) -> crate::ImageTokenEstimate {
+        self.profile.estimate_decoded_image(total_pixels)
+    }
+
     pub fn estimate_uncached(
         &self,
         system: &str,

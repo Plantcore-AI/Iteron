@@ -190,7 +190,7 @@ pub(crate) fn apply_core_facts(
     literal_with_override(
         builder,
         "effort",
-        en("medium"),
+        en("low"),
         input.effort.origin,
         en(input.effort.value.label()),
     )?;

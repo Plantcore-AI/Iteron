@@ -229,6 +229,15 @@ async fn plan_patch(
                 format!("updated file exceeds {MAX_FILE_BYTES} bytes"),
             )
         })?;
+        if updated.as_bytes() == snapshot.bytes {
+            return Err(PatchFailure::file(
+                "no_change",
+                "validate",
+                file_index,
+                &request.path,
+                "patch would not change target bytes",
+            ));
+        }
         plans.push(PlannedFile {
             file_index,
             path: request.path,
@@ -254,6 +263,9 @@ fn unique_edit_failure(
         }
         UniqueEditError::EmptyAnchor => {
             PatchFailure::hunk("empty_anchor", file_index, hunk_index, path, message)
+        }
+        UniqueEditError::NoChange => {
+            PatchFailure::hunk("no_change", file_index, hunk_index, path, message)
         }
         UniqueEditError::SuspiciousUnicode(_) => {
             PatchFailure::hunk("suspicious_unicode", file_index, hunk_index, path, message)

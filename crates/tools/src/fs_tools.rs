@@ -325,7 +325,8 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
     register_outline(r)?;
     crate::grep_tool::register(r)?;
     let read_policy = r.observation_tool_policy_handle();
-    r.push_tool(
+    let read_focus = r.observation_focus_handle();
+    r.push_targeted_observation_tool(
         ToolSpec {
             name: "read_file".into(),
             description: format!(
@@ -363,6 +364,7 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
         },
         move |call, root| {
             let policy = read_policy.get().copied();
+            let focus = read_focus.clone();
             boxfut::box_it(async move {
                 let id = call.id.clone();
                 let Some(policy) = policy else {
@@ -380,7 +382,10 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
                 match resolve_in_root(&root, path) {
                     Err(e) => err_result(id, e),
                     Ok(p) => match read_numbered_file(&p, window, policy.read_file).await {
-                        Ok(content) => ok_result(id, content),
+                        Ok(content) => {
+                            focus.observe(p, &content);
+                            ok_result(id, content)
+                        }
                         Err(e) => err_result(id, format!("read {path}: {e}")),
                     },
                 }
@@ -652,19 +657,18 @@ fn wild_seg(pat: &str, s: &str) -> bool {
     )
 }
 
-/// The localization-ladder tool: a repo skeleton (declarations only), fit to a token budget.
-/// Agentless: the skeleton beats whole-file localization by +5.3pp at 7.5x less cost. This is
-/// the map the agent should read FIRST on an unfamiliar repo, before materializing any file.
+/// An on-demand localization fallback: a repo skeleton (declarations only), fit to a token budget.
+/// It remains available when targeted reads and searches leave repository coverage incomplete.
 pub(crate) fn register_outline(r: &mut Registry) -> Result<(), ToolError> {
     let repo_map_policy = r.observation_tool_policy_handle();
     r.push_tool(
         ToolSpec {
             name: "repo_map".into(),
-            description: "Get a skeleton of the repository: every code file and its top-level \
-                          declarations (functions, classes, types), no bodies. Read this FIRST \
-                          on an unfamiliar repo to localize, then read_file only the files you \
-                          actually need. Optional `query` task text or identifiers boost files \
-                          that declare those identifiers above unrelated declaration-heavy files."
+            description: "Get a bounded skeleton of repository code files and their top-level \
+                          declarations (functions, classes, types), no bodies. Use this fallback \
+                          on demand when targeted reads or searches leave repository coverage \
+                          incomplete. Optional `query` task text or identifiers boost files that \
+                          declare those identifiers above unrelated declaration-heavy files."
                 .into(),
             input_schema: serde_json::json!({
                 "type":"object",
@@ -709,6 +713,130 @@ pub(crate) fn register_outline(r: &mut Registry) -> Result<(), ToolError> {
             })
         },
     )
+}
+
+/// Bounded lexical fallback shared by native file observations when semantic indexes are absent.
+pub(crate) mod structural_context {
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Delimiter {
+        Curly,
+        Square,
+    }
+
+    #[derive(Clone, Copy, Default)]
+    enum State {
+        #[default]
+        Code,
+        Single,
+        Double,
+        Template,
+        Comment,
+    }
+
+    pub(crate) fn enclosing_span(
+        lines: &[&str],
+        match_line: usize,
+        max_lines: usize,
+    ) -> Option<(usize, usize)> {
+        if lines.is_empty() || match_line >= lines.len() || max_lines < 2 {
+            return None;
+        }
+        let mut state = State::default();
+        let mut escaped = false;
+        let mut stack = Vec::new();
+        let mut candidates = Vec::new();
+        for (line_index, line) in lines.iter().enumerate() {
+            let bytes = line.as_bytes();
+            let mut index = 0;
+            while index < bytes.len() {
+                let byte = bytes[index];
+                let next = bytes.get(index + 1).copied();
+                match state {
+                    State::Code => match (byte, next) {
+                        (b'/', Some(b'/')) => break,
+                        (b'/', Some(b'*')) => {
+                            state = State::Comment;
+                            index += 1;
+                        }
+                        (b'\'', _) => state = State::Single,
+                        (b'"', _) => state = State::Double,
+                        (b'`', _) => state = State::Template,
+                        (b'{', _) => stack.push((Delimiter::Curly, line_index)),
+                        (b'[', _) => stack.push((Delimiter::Square, line_index)),
+                        (b'}', _) => close(
+                            Delimiter::Curly,
+                            line_index,
+                            match_line,
+                            &mut stack,
+                            &mut candidates,
+                        ),
+                        (b']', _) => close(
+                            Delimiter::Square,
+                            line_index,
+                            match_line,
+                            &mut stack,
+                            &mut candidates,
+                        ),
+                        _ => {}
+                    },
+                    State::Comment if byte == b'*' && next == Some(b'/') => {
+                        state = State::Code;
+                        index += 1;
+                    }
+                    State::Single | State::Double | State::Template => {
+                        if escaped {
+                            escaped = false;
+                        } else if byte == b'\\' {
+                            escaped = true;
+                        } else if matches!(
+                            (state, byte),
+                            (State::Single, b'\'')
+                                | (State::Double, b'"')
+                                | (State::Template, b'`')
+                        ) {
+                            state = State::Code;
+                        }
+                    }
+                    State::Comment => {}
+                }
+                index += 1;
+            }
+            if matches!(state, State::Single | State::Double) {
+                state = State::Code;
+                escaped = false;
+            }
+        }
+        let (start, end) = candidates
+            .into_iter()
+            .min_by_key(|(start, end)| end.saturating_sub(*start))?;
+        if end.saturating_sub(start) <= max_lines {
+            return Some((start, end));
+        }
+        let mut clipped_start = match_line.saturating_sub(max_lines / 2).max(start);
+        let clipped_end = clipped_start.saturating_add(max_lines).min(end);
+        clipped_start = clipped_end.saturating_sub(max_lines).max(start);
+        Some((
+            clipped_start,
+            clipped_start.saturating_add(max_lines).min(end),
+        ))
+    }
+
+    fn close(
+        kind: Delimiter,
+        line: usize,
+        target: usize,
+        stack: &mut Vec<(Delimiter, usize)>,
+        candidates: &mut Vec<(usize, usize)>,
+    ) {
+        let Some((open, start)) = stack.pop() else {
+            return;
+        };
+        if open != kind {
+            stack.clear();
+        } else if start <= target && target <= line && start < line {
+            candidates.push((start, line + 1));
+        }
+    }
 }
 
 #[cfg(test)]

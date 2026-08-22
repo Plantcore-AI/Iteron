@@ -237,18 +237,17 @@ fn chat_reasoning_effort_with_metadata(
     requested: ReasoningEffort,
     thinking_budget: u32,
 ) -> Option<ReasoningEffort> {
-    let glm_semantic_effort = api_root.is_some_and(|root| {
-        root.as_str() == static_metadata.glm_api_root()
-            && static_metadata
-                .glm_model_capabilities(model_id)
-                .is_some_and(|capability| capability.semantic_effort == Some(true))
+    let route_semantic_effort = api_root.is_some_and(|root| {
+        static_metadata
+            .route_model_capabilities(root.as_str(), model_id)
+            .is_some_and(|capability| capability.semantic_effort == Some(true))
     });
     chat_reasoning_effort_proven(
         error_profile,
         model_id,
         requested,
         thinking_budget,
-        glm_semantic_effort,
+        route_semantic_effort,
     )
 }
 
@@ -257,7 +256,7 @@ fn chat_reasoning_effort_proven(
     model_id: &str,
     requested: ReasoningEffort,
     thinking_budget: u32,
-    glm_semantic_effort: bool,
+    route_semantic_effort: bool,
 ) -> Option<ReasoningEffort> {
     match error_profile {
         // The portable OpenAI reasoning surface proven by this adapter ends at `high`. Core's
@@ -273,7 +272,7 @@ fn chat_reasoning_effort_proven(
         // value that actually reaches inference rather than merely echoing an accepted alias.
         // A zero thinking budget uses the separate `thinking: disabled` control and deliberately
         // omits this field because reasoning_effort is effective only while thinking is enabled.
-        ErrorProfile::Glm if glm_semantic_effort => {
+        ErrorProfile::Glm if route_semantic_effort => {
             if thinking_budget == 0 {
                 None
             } else {
@@ -299,6 +298,11 @@ fn chat_reasoning_effort_proven(
                 }
             }
         }
+        // A route/model pair explicitly attested by refreshable metadata may expose the ordinary
+        // Chat Completions `reasoning_effort` field even when its error vocabulary is merely
+        // OpenAI-compatible. Preserve the requested label here; any provider-specific reduction
+        // belongs in metadata or one of the proven mappings above, never in a hostname guess.
+        _ if route_semantic_effort => Some(requested),
         _ => None,
     }
 }
@@ -1981,6 +1985,36 @@ mod tests {
                 "the reported semantic effort must equal the serialized wire value"
             );
         }
+    }
+
+    #[test]
+    fn attested_compatible_route_emits_requested_semantic_effort() {
+        let provider = OpenAiCompat::with_root(
+            "test-credential".into(),
+            ApiRoot::parse("https://api.kimi.com/coding/v1/").unwrap(),
+        )
+        .unwrap();
+        let request = TurnRequest {
+            model: "k3-256k".into(),
+            system: "stable system".into(),
+            messages: Vec::new(),
+            input_images: Vec::new(),
+            tools: Vec::new().into(),
+            max_tokens: 8_192,
+            cache_system: false,
+            thinking_budget: 16_384,
+            reasoning_effort: ReasoningEffort::XHigh,
+            controls: Default::default(),
+        };
+
+        let body = provider.body(&request).unwrap();
+        assert_eq!(body["reasoning_effort"], "xhigh");
+        assert_eq!(
+            provider.effort_application(&request),
+            EffortApplication::Exact {
+                requested: ReasoningEffort::XHigh
+            }
+        );
     }
 
     #[test]

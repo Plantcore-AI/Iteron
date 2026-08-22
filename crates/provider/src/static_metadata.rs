@@ -27,6 +27,10 @@ const GLM_STANDARD_ROOT: &str = "https://open.bigmodel.cn/api/paas/v4";
 const ANTHROPIC_ROOT: &str = "https://api.anthropic.com/v1";
 const EMBEDDED: &str = include_str!("../static-provider-metadata-v1.json");
 
+fn same_api_root(left: &str, right: &str) -> bool {
+    left.trim_end_matches('/') == right.trim_end_matches('/')
+}
+
 #[path = "static_metadata/support.rs"]
 mod support;
 use support::*;
@@ -359,14 +363,14 @@ impl StaticProviderMetadata {
         api_root: &str,
         model: &str,
     ) -> Option<&StaticModelCapabilities> {
-        if api_root == self.glm_standard_chat.api_root
+        if same_api_root(api_root, &self.glm_standard_chat.api_root)
             && let Some(capability) = self.glm_model_capabilities(model)
         {
             return Some(capability);
         }
         self.model_capabilities
             .values()
-            .find(|route| route.api_root == api_root)
+            .find(|route| same_api_root(&route.api_root, api_root))
             .and_then(|route| {
                 route
                     .families
@@ -778,8 +782,8 @@ mod tests {
         assert_eq!(kimi_256k.max_output_tokens, None);
         assert_eq!(kimi_256k.image_input, Some(true));
         let tiered_kimi = embedded
-            .route_model_capabilities("https://api.kimi.com/coding/", "k3")
-            .expect("the official Kimi Anthropic route carries stable modalities");
+            .route_model_capabilities("https://api.kimi.com/coding", "k3")
+            .expect("canonical root normalization retains Kimi route capabilities");
         assert_eq!(
             tiered_kimi.context_window_tokens, None,
             "K3 capacity remains operator-attested because it varies by membership tier"

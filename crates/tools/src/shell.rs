@@ -138,7 +138,8 @@ pub(crate) fn register(
         ToolSpec {
             name: "bash".into(),
             description: "Run a bash command, cwd = the workspace root. Use for building, \
-                          running tests, git, and network access; the command runs with your own \
+                          running tests, git, and network access; use grep/read_file/glob/list_dir \
+                          instead for repository discovery and file reads. The command runs with your own \
                           user authority unless the operator passed --confine. Stdout/stderr are \
                           independently length-framed by the pinned runtime stdout/stderr \
                           ceilings and an explicit isIncomplete flag. Directory changes do not \

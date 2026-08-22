@@ -71,6 +71,7 @@ pub(super) fn inspect_as(
         decode::MAX_IMAGE_DIMENSION,
         decode::max_animation_frames(),
     )
+    .map(|_| ())
 }
 
 pub(super) fn inspect_as_with_limits(
@@ -78,7 +79,7 @@ pub(super) fn inspect_as_with_limits(
     media_type: ImageMediaType,
     max_dimension: u32,
     max_frames: u32,
-) -> Result<(), ImageInputErrorKind> {
+) -> Result<decode::DecodedImageEvidence, ImageInputErrorKind> {
     match media_type {
         ImageMediaType::Png => validate_png(bytes)?,
         ImageMediaType::Jpeg => validate_jpeg(bytes)?,

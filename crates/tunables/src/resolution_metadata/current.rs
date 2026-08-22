@@ -4,7 +4,7 @@ pub(super) const DEFAULTS: [DefaultSpec; 85] = [
     literal_default!(enum_value!("glm")), // 1 provider
     model_default_with_value!("default_model", enum_value!("glm-5.2")), // 2 model
     derived_default!("base_url"),         // 3 base_url
-    literal_default!(enum_value!("medium")), // 4 effort
+    literal_default!(enum_value!("low")), // 4 effort
     literal_default!(integer_value!(64)), // 5 max_turns
     operator_default!("max_usd"),         // 6 max_usd
     operator_default!("max_tokens"),      // 7 max_tokens

@@ -1,12 +1,12 @@
 {
   "digest": {
     "algorithm": "sha256",
-    "value": "d38ed6b9f5d07a87f69b878b03a3855e0ff525946c24e0a627d81d9a78e19cf8"
+    "value": "a8439500a335e0086a326dbfd88222fc1501373d333aa7bb2315779f220bd663"
   },
   "payload": {
     "schema_version": 4,
     "registry_id": "iteron-tunables",
-    "registry_revision": 23,
+    "registry_revision": 24,
     "canonicalization": "iteron-tunables-json-v4",
     "family_count": 160,
     "scalar_catalogs": [
@@ -453,7 +453,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "574c2633e537519adfe2ae9605a5ac0c7a4ad959302ab866fe2d207eca12cfa9"
+          "value": "f812a8afd428a44cf6466851166526bf3d9e66ca9c1767d2a10b6fceca35ffd2"
         },
         "schema_version": 3,
         "ordinal": 4,
@@ -488,7 +488,7 @@
           "requirement": "optional",
           "value": {
             "type": "enum",
-            "value": "medium"
+            "value": "low"
           }
         },
         "source": {

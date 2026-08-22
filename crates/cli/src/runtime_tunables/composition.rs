@@ -702,7 +702,11 @@ mod tests {
                 origin: ConfigOrigin::UserConfig,
             },
             effort: Sourced {
-                value: Effort::Medium,
+                // `Builtin` means no operator override, so this value is compared against the
+                // frozen literal for family 4 -- which moved to `low` with the performance-first
+                // default. A fixture left at `Medium` is not a weaker assertion, it is a fresh
+                // composition that cannot seal.
+                value: Effort::Low,
                 origin: ConfigOrigin::Builtin,
             },
             budget: &budget,

@@ -267,11 +267,14 @@ fn anthropic_request_capabilities(
         .into_iter()
         .any(|family| crate::model_matches_family(model_id, family));
     let sonnet_37 = crate::model_matches_family(model_id, "claude-3-7-sonnet");
-    // The refreshable metadata keeps this narrower than the thinking allowlist: Messages wire
-    // compatibility is not evidence that a model accepts `output_config.effort` or its beta header.
-    let semantic_effort = first_party
-        && api_root == static_metadata.anthropic_effort_api_root()
-        && static_metadata.anthropic_effort_header(model_id).is_some();
+    // Effort is attested by exact route plus model family. This keeps arbitrary compatible
+    // gateways conservative while allowing a documented Messages-compatible route to support
+    // `output_config.effort` without pretending it is Anthropic first-party. The beta header is
+    // still attached separately only on the official Anthropic route.
+    let semantic_effort = static_metadata
+        .route_model_capabilities(api_root, model_id)
+        .and_then(|capability| capability.semantic_effort)
+        .unwrap_or(false);
     AnthropicRequestCapabilities {
         prompt_cache: !predates_prompt_caching(model_id),
         extended_thinking: first_party && (claude_4 || sonnet_37),
@@ -1134,8 +1137,8 @@ mod tests {
                 "{model}"
             );
         }
-        // A gateway inherits neither thinking nor effort — wire compatibility is not an
-        // entitlement — but it does speak the wire, so it keeps its cache breakpoints.
+        // An unregistered gateway inherits neither thinking nor effort — wire compatibility is
+        // not an entitlement — but it does speak the wire, so it keeps cache breakpoints.
         for (profile, api_root, model) in [
             (ErrorProfile::Glm, DEFAULT_API_ROOT, "claude-sonnet-4-5"),
             (
@@ -1159,6 +1162,16 @@ mod tests {
                 "{model}"
             );
         }
+
+        let kimi = anthropic_request_capabilities(
+            ErrorProfile::CustomConservative,
+            "https://api.kimi.com/coding/",
+            &metadata,
+            "k3",
+        );
+        assert!(kimi.prompt_cache);
+        assert!(!kimi.extended_thinking);
+        assert!(kimi.semantic_effort);
     }
 
     #[test]
@@ -1172,6 +1185,9 @@ mod tests {
             serde_json::json!("effort-test-v2");
         document["anthropic_messages"]["effort"]["models"] =
             serde_json::json!(["claude-test-effort"]);
+        document["model_capabilities"]["anthropic_messages"]["families"]["claude-test-effort"] =
+            document["model_capabilities"]["anthropic_messages"]["families"]["claude-opus-4-7"]
+                .clone();
         crate::StaticProviderMetadata::stamp_content_versions(&mut document).unwrap();
         let metadata = std::sync::Arc::new(
             crate::StaticProviderMetadata::from_slice(&serde_json::to_vec(&document).unwrap())
@@ -1193,9 +1209,8 @@ mod tests {
         );
         assert_eq!(
             provider.effort_application(&request("claude-opus-4-7")),
-            EffortApplication::BudgetBased {
+            EffortApplication::Exact {
                 requested: iteron_protocol::ReasoningEffort::Medium,
-                budget_tokens: 9_000,
             }
         );
     }
@@ -1235,6 +1250,21 @@ mod tests {
             EffortApplication::BudgetBased {
                 requested: iteron_protocol::ReasoningEffort::Medium,
                 budget_tokens: 9_000
+            }
+        );
+
+        let kimi = Anthropic::with_root(
+            "key".into(),
+            ApiRoot::parse("https://api.kimi.com/coding/").unwrap(),
+        )
+        .unwrap();
+        let kimi_body = kimi.body(&request("k3")).unwrap();
+        assert_eq!(kimi_body["output_config"]["effort"], "medium");
+        assert!(kimi_body.get("thinking").is_none());
+        assert_eq!(
+            kimi.effort_application(&request("k3")),
+            EffortApplication::Exact {
+                requested: iteron_protocol::ReasoningEffort::Medium
             }
         );
     }

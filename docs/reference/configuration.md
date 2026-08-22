@@ -73,7 +73,7 @@ errors remain visible, then ignored for authority.
   "max_usd": 5.0,
   "max_wall_secs": 1800,
   "allow_code": false,
-  "effort": "medium",
+  "effort": "low",
   "completion_notifications": false,
   "prompt_history": "project",
   "tui_keymap": {

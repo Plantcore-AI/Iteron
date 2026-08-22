@@ -1633,6 +1633,10 @@ fn row_for(
             "crates/cli/src/output.rs",
             "MAX_PENDING_STREAM_TOKEN_BYTES"
         ) | (
+            "tools",
+            "crates/tools/src/repair_evidence.rs",
+            "SUBMIT_REPAIR_EVIDENCE"
+        ) | (
             "protocol",
             "crates/protocol/src/message.rs",
             "ANTHROPIC_MESSAGES_CONTENT_BLOCKS_V1"

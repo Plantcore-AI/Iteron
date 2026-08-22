@@ -783,9 +783,14 @@ impl SkillCatalog {
             })
             .collect::<Vec<_>>();
         let candidate_count = candidates.len();
+        let direct_single_term_query = query_terms.len() == 1;
         let mut visible = candidates
             .into_iter()
             .filter_map(|(path_match, name_terms, searchable, definition)| {
+                let mut name_matches = 0usize;
+                let mut substantive_name_match = false;
+                let mut text_matches = 0usize;
+                let mut substantive_exact_text_match = false;
                 let relevance = query_terms
                     .iter()
                     .zip(document_frequency.iter().copied())
@@ -804,11 +809,29 @@ impl SkillCatalog {
                         {
                             return None;
                         }
+                        if name_match {
+                            name_matches = name_matches.saturating_add(1);
+                            substantive_name_match |= term.chars().count() >= 4;
+                        } else {
+                            text_matches = text_matches.saturating_add(1);
+                            substantive_exact_text_match |= term.chars().count() >= 4
+                                && searchable.iter().any(|candidate| candidate == term);
+                        }
                         let rarity = candidate_count.saturating_div(frequency).clamp(1, 8);
                         Some(if name_match { rarity * 8 } else { rarity })
                     })
                     .sum::<usize>();
-                (!task_is_present || path_match || relevance > 0)
+                // A lone short word or adjacent Unicode pair inside a longer task is weak
+                // evidence. Require two independent description anchors unless the task itself is
+                // a direct one-term lookup or the shared term is an exact substantive token. This
+                // is language- and domain-independent and avoids substring-driven catalog noise.
+                let text_is_relevant = text_matches >= 2
+                    || substantive_exact_text_match
+                    || (direct_single_term_query && text_matches > 0);
+                let name_is_relevant = name_matches >= 2
+                    || substantive_name_match
+                    || (direct_single_term_query && name_matches > 0);
+                (!task_is_present || path_match || name_is_relevant || text_is_relevant)
                     .then_some((path_match, relevance, definition))
             })
             .collect::<Vec<_>>();
@@ -1281,6 +1304,47 @@ mod tests {
         let catalog = SkillCatalog::discover(Path::new("/nonexistent"), &repo);
         let listing = catalog.listing_for_task(4_000, "请帮我写提交信息", &[]);
         assert!(listing.contains("release-helper"), "{listing}");
+        assert!(!listing.contains("photo-helper"), "{listing}");
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn long_task_does_not_advertise_skill_from_one_generic_cjk_bigram() {
+        let repo = tmp("task-single-generic-cjk-match");
+        write_skill(
+            &repo,
+            "market-screen",
+            "---\nname: market-screen\ndescription: 在当前真实数据中筛选股票\n---\nbody\n",
+        );
+        write_skill(
+            &repo,
+            "photo-helper",
+            "---\nname: photo-helper\ndescription: 处理照片尺寸和颜色\n---\nbody\n",
+        );
+        let catalog = SkillCatalog::discover(Path::new("/nonexistent"), &repo);
+        let listing =
+            catalog.listing_for_task(4_000, "请处理真实用户提交的软件错误并验证修复结果", &[]);
+        assert!(!listing.contains("market-screen"), "{listing}");
+        assert!(!listing.contains("photo-helper"), "{listing}");
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn direct_short_cjk_task_keeps_an_exact_matching_skill() {
+        let repo = tmp("task-direct-short-cjk-match");
+        write_skill(
+            &repo,
+            "market-screen",
+            "---\nname: market-screen\ndescription: 筛选股票\n---\nbody\n",
+        );
+        write_skill(
+            &repo,
+            "photo-helper",
+            "---\nname: photo-helper\ndescription: 处理照片\n---\nbody\n",
+        );
+        let catalog = SkillCatalog::discover(Path::new("/nonexistent"), &repo);
+        let listing = catalog.listing_for_task(4_000, "股票", &[]);
+        assert!(listing.contains("market-screen"), "{listing}");
         assert!(!listing.contains("photo-helper"), "{listing}");
         let _ = std::fs::remove_dir_all(&repo);
     }

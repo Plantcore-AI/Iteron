@@ -1375,7 +1375,7 @@ fn offline_builtin_literal_candidates_cannot_override_registry_bytes() {
         (
             "effort",
             ResolutionValue::Enum {
-                value: "medium".to_owned(),
+                value: "low".to_owned(),
             },
         ),
         (

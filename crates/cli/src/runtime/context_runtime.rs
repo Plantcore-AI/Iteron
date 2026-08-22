@@ -49,21 +49,43 @@ const NO_ACTIVE_TASK_TOKENS: usize = 0;
 /// Attachment token count charged when the turn carries no input-file evidence.
 const NO_ATTACHMENT_TOKENS: usize = 0;
 
-/// Per-submission guard for the component-budget recovery bridge. Component admission runs again
-/// after compaction, but a later refusal in the same agent loop must fail closed instead of
-/// recursively compacting.
+fn classify_active_task_attachments(
+    active_task_with_embedded_file: usize,
+    file_tokens: usize,
+    image_tokens: usize,
+) -> (usize, usize) {
+    let embedded_file_tokens = file_tokens.min(active_task_with_embedded_file);
+    (
+        active_task_with_embedded_file.saturating_sub(embedded_file_tokens),
+        embedded_file_tokens.saturating_add(image_tokens),
+    )
+}
+
+/// Per-submission guard for the component-budget recovery bridge. A successful recovery rearms
+/// the bridge for a later, newly-grown transcript; a denied, failed, or ineffective recovery
+/// closes it for the rest of the submission. This permits long tasks to compact when evidence
+/// actually crosses a component ceiling again without recursively retrying the same projection.
 #[derive(Debug, Default)]
 pub(super) struct ContextBudgetRecoveryGuard {
-    attempted: bool,
+    in_flight: bool,
+    closed: bool,
 }
 
 impl ContextBudgetRecoveryGuard {
     pub(super) fn claim(&mut self, violation: &iteron_ctx::ContextBudgetViolation) -> bool {
-        if self.attempted || !violation.is_transcript_compaction_recoverable() {
+        if self.closed || self.in_flight || !violation.is_transcript_compaction_recoverable() {
             return false;
         }
-        self.attempted = true;
+        self.in_flight = true;
         true
+    }
+
+    pub(super) fn settle(&mut self, recovered: bool) {
+        if !self.in_flight {
+            return;
+        }
+        self.in_flight = false;
+        self.closed = !recovered;
     }
 }
 
@@ -72,6 +94,17 @@ impl ContextBudgetRecoveryGuard {
 pub(super) struct ContextBudgetInspection {
     usage: iteron_ctx::ContextComponentUsage,
     violation: Option<iteron_ctx::ContextBudgetViolation>,
+}
+
+/// Invocation-local, content-free evidence from the one bounded image decode performed at
+/// admission. Every downstream budget and telemetry projection consumes this same estimate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct InputImageEvidence {
+    pub(super) count: u32,
+    pub(super) encoded_bytes: u64,
+    pub(super) raw_bytes: u64,
+    pub(super) estimated_tokens: u64,
+    pub(super) provenance: iteron_ctx::ImageTokenEstimateProvenance,
 }
 
 /// Per-turn model-visible result caps derived from the remaining component partitions. Physical
@@ -193,6 +226,20 @@ impl Agent {
             .saturating_add(estimate.tool_tokens)
             .saturating_add(estimate.transcript_tokens)
             .saturating_add(estimate.framing_tokens);
+        estimate
+    }
+
+    /// Add the provider-visible image reserve after text calibration. Image-bearing turns do not
+    /// train the text calibration below because provider usage does not separate modalities.
+    pub(super) fn include_input_image_tokens(
+        &self,
+        mut estimate: ContextEstimate,
+    ) -> ContextEstimate {
+        if let Some(images) = self.input_image_evidence {
+            estimate.total_tokens = estimate
+                .total_tokens
+                .saturating_add(usize::try_from(images.estimated_tokens).unwrap_or(usize::MAX));
+        }
         estimate
     }
 
@@ -349,7 +396,7 @@ impl Agent {
                 "cli.runtime.context_runtime.no_active_task_tokens",
                 NO_ACTIVE_TASK_TOKENS,
             ));
-        let attachment_tokens = self
+        let file_attachment_tokens = self
             .input_file_evidence
             .map(|evidence| usize::try_from(evidence.estimated_tokens).unwrap_or(usize::MAX))
             .unwrap_or(iteron_tunables::param_integer(
@@ -357,7 +404,15 @@ impl Agent {
                 NO_ATTACHMENT_TOKENS,
             ))
             .min(active_task_with_attachments);
-        let active_task_tokens = active_task_with_attachments.saturating_sub(attachment_tokens);
+        let image_attachment_tokens = self
+            .input_image_evidence
+            .map(|evidence| usize::try_from(evidence.estimated_tokens).unwrap_or(usize::MAX))
+            .unwrap_or(NO_ATTACHMENT_TOKENS);
+        let (active_task_tokens, attachment_tokens) = classify_active_task_attachments(
+            active_task_with_attachments,
+            file_attachment_tokens,
+            image_attachment_tokens,
+        );
         let classified_system = instruction_tokens
             .saturating_add(memory_tokens)
             .saturating_add(injected_task_tokens);
@@ -479,9 +534,10 @@ impl Agent {
     /// support refuses the whole submission before its text is recorded; silently stripping the
     /// binary payload would make the model answer placeholders as if it saw the image.
     pub(super) fn admit_input_images<'a>(
-        &self,
+        &mut self,
         input_images: &'a [iteron_protocol::ImageContent],
     ) -> Result<&'a [iteron_protocol::ImageContent], KernelError> {
+        self.input_image_evidence = None;
         if input_images.is_empty() {
             return Ok(input_images);
         }
@@ -524,25 +580,46 @@ impl Agent {
             return Err(reject());
         }
         let mut aggregate_raw_bytes = 0usize;
+        let mut aggregate_encoded_bytes = 0usize;
+        let mut estimated_tokens = 0usize;
+        let mut provenance = iteron_ctx::ImageTokenEstimateProvenance::DecodedPixelsConservative;
         for image in input_images {
-            let raw_bytes = self
+            let inspected = self
                 .binary_media_policy
-                .inspect_content_with_envelope(image, self.multimodal_decode_envelope)
+                .inspect_content_evidence_with_envelope(image, self.multimodal_decode_envelope)
                 .map_err(|_| reject())?;
             aggregate_raw_bytes = aggregate_raw_bytes
-                .checked_add(raw_bytes)
+                .checked_add(inspected.raw_bytes)
                 .filter(|total| *total <= self.multimodal_decode_envelope.aggregate_raw_bytes)
                 .ok_or_else(&reject)?;
-        }
-        let estimated_tokens = input_images.iter().fold(0usize, |total, image| {
-            total.saturating_add(
+            aggregate_encoded_bytes = aggregate_encoded_bytes
+                .checked_add(image.data.encoded_len())
+                .ok_or_else(&reject)?;
+            let estimate = if inspected.total_pixels > 0 {
                 self.context_estimator
-                    .estimate_image(image.data.encoded_len()),
-            )
-        });
+                    .estimate_decoded_image(inspected.total_pixels)
+            } else {
+                self.context_estimator
+                    .estimate_image_with_provenance(image.data.encoded_len())
+            };
+            if matches!(
+                estimate.provenance,
+                iteron_ctx::ImageTokenEstimateProvenance::EncodedBytesConservativeFallback
+            ) {
+                provenance = estimate.provenance;
+            }
+            estimated_tokens = estimated_tokens.saturating_add(estimate.tokens);
+        }
         self.context_budget_policy
             .admit_multimodal(estimated_tokens)
             .map_err(|error| KernelError::ContextBudget(error.to_string()))?;
+        self.input_image_evidence = Some(InputImageEvidence {
+            count: u32::try_from(input_images.len()).unwrap_or(u32::MAX),
+            encoded_bytes: u64::try_from(aggregate_encoded_bytes).unwrap_or(u64::MAX),
+            raw_bytes: u64::try_from(aggregate_raw_bytes).unwrap_or(u64::MAX),
+            estimated_tokens: u64::try_from(estimated_tokens).unwrap_or(u64::MAX),
+            provenance,
+        });
         Ok(input_images)
     }
 
@@ -583,6 +660,17 @@ impl Agent {
     }
 
     pub(super) fn advertised_tool_specs_for_task(&mut self, task: &str) -> PreparedToolSchemas {
+        self.advertised_tool_specs_for_task_with_patch_trial(task, false, false, false, false)
+    }
+
+    pub(super) fn advertised_tool_specs_for_task_with_patch_trial(
+        &mut self,
+        task: &str,
+        patch_trial: bool,
+        candidate_change_required: bool,
+        candidate_review_active: bool,
+        evidence_insufficient_terminal: bool,
+    ) -> PreparedToolSchemas {
         let admitted = self.authority_ceiling.intersect(self.policy_capabilities);
         let base = self.registry.spec_snapshot();
         let total = base.specs().len();
@@ -594,7 +682,7 @@ impl Agent {
                 ..LifecyclePayload::default()
             },
         );
-        let admitted_names = base
+        let mut admitted_names = base
             .specs()
             .iter()
             .filter(|spec| {
@@ -608,6 +696,22 @@ impl Agent {
             .map(|spec| spec.name.clone())
             .collect::<std::collections::BTreeSet<_>>();
         let authority_visible = admitted_names.len();
+        let mut recovery_only_filtered = false;
+        if evidence_insufficient_terminal {
+            admitted_names.clear();
+        } else if candidate_change_required {
+            admitted_names.retain(|name| self.registry.is_candidate_change_tool(name));
+        } else if candidate_review_active {
+            admitted_names.retain(|name| self.registry.is_candidate_review_tool(name));
+        } else if patch_trial {
+            admitted_names.retain(|name| self.registry.is_patch_trial_tool(name));
+        } else {
+            // A repair receipt is a verifier-counterexample recovery mechanism, not part of the
+            // ordinary coding hot path. Advertising it in Discover made the provider serialize a
+            // graph before attempting a small workspace-confined edit.
+            recovery_only_filtered = admitted_names.remove(iteron_tools::SUBMIT_REPAIR_EVIDENCE);
+        }
+        let strategy_filtered = authority_visible.saturating_sub(admitted_names.len());
         let cached = self.advertised_tool_specs_cache.as_ref().filter(|cached| {
             cached.revision == base.revision()
                 && cached.task == task
@@ -627,12 +731,14 @@ impl Agent {
                 task,
                 self.deferred_tool_eager_limit,
             );
-            let specs: std::sync::Arc<[iteron_protocol::ToolSpec]> =
-                snapshot.iter().cloned().collect::<Vec<_>>().into();
-            let schema_tokens = snapshot.estimated_tokens();
+            let (specs, serialized_json, schema_tokens) = (
+                snapshot.iter().cloned().collect::<Vec<_>>().into(),
+                std::sync::Arc::clone(snapshot.serialized_json()),
+                snapshot.estimated_tokens(),
+            );
             let prepared = PreparedToolSchemas::new(
                 specs,
-                std::sync::Arc::clone(snapshot.serialized_json()),
+                serialized_json,
                 schema_tokens,
                 snapshot.revision(),
             );
@@ -647,12 +753,42 @@ impl Agent {
             (prepared, schema_tokens)
         };
         let authority_filtered = total.saturating_sub(authority_visible);
-        let relevance_deferred = authority_visible.saturating_sub(visible.len());
+        let relevance_deferred = admitted_names.len().saturating_sub(visible.len());
         let filtered = authority_filtered;
         if filtered > 0 {
             let payload = LifecyclePayload {
                 count: Some(u64::try_from(filtered).unwrap_or(u64::MAX)),
                 reason_code: Some("authority_or_permission".into()),
+                ..LifecyclePayload::default()
+            };
+            self.lifecycle_event(
+                "context.tool_catalog.filtered",
+                Some(TurnId(self.seq_turn)),
+                payload.clone(),
+            );
+            self.lifecycle_event(
+                "context.tool_schema.rejected",
+                Some(TurnId(self.seq_turn)),
+                payload,
+            );
+        }
+        if strategy_filtered > 0 {
+            let payload = LifecyclePayload {
+                count: Some(u64::try_from(strategy_filtered).unwrap_or(u64::MAX)),
+                reason_code: Some(
+                    if evidence_insufficient_terminal {
+                        "strategy_evidence_insufficient"
+                    } else if candidate_change_required {
+                        "strategy_candidate_change"
+                    } else if candidate_review_active {
+                        "strategy_candidate_review"
+                    } else if recovery_only_filtered {
+                        "strategy_repair_evidence_recovery_only"
+                    } else {
+                        "strategy_patch_trial"
+                    }
+                    .into(),
+                ),
                 ..LifecyclePayload::default()
             };
             self.lifecycle_event(
@@ -1040,11 +1176,23 @@ mod context_budget_recovery_tests {
     }
 
     #[test]
-    fn recovery_guard_claims_a_recoverable_violation_only_once() {
+    fn recovery_guard_rearms_only_after_a_successful_recovery() {
         let violation = violation(iteron_ctx::ContextBudgetClass::ToolResults);
         let mut guard = ContextBudgetRecoveryGuard::default();
 
         assert!(guard.claim(&violation));
+        assert!(!guard.claim(&violation));
+        guard.settle(true);
+        assert!(guard.claim(&violation));
+    }
+
+    #[test]
+    fn recovery_guard_closes_after_an_ineffective_attempt() {
+        let violation = violation(iteron_ctx::ContextBudgetClass::ToolResults);
+        let mut guard = ContextBudgetRecoveryGuard::default();
+
+        assert!(guard.claim(&violation));
+        guard.settle(false);
         assert!(!guard.claim(&violation));
     }
 
@@ -1072,6 +1220,12 @@ mod context_budget_recovery_tests {
             inspection.component_tokens(iteron_ctx::ContextBudgetClass::ToolResults),
             25_666
         );
+    }
+
+    #[test]
+    fn image_tokens_are_attachments_even_when_the_task_has_no_text_tokens() {
+        assert_eq!(classify_active_task_attachments(0, 0, 640), (0, 640));
+        assert_eq!(classify_active_task_attachments(100, 30, 640), (70, 670));
     }
 
     #[test]

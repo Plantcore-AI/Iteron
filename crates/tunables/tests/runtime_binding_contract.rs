@@ -134,7 +134,7 @@ fn builtin_literal_declarations_cannot_override_the_canonical_value() {
             "effort",
             SourceKind::Builtin,
             ResolutionValue::Enum {
-                value: "medium".to_owned(),
+                value: "low".to_owned(),
             },
         )
         .expect("the exact embedded effort literal remains admissible");
