@@ -500,7 +500,7 @@ jobs:
             # audited substitution rather than a stale one: #364 fixed the three
             # gates this release needed and touched those sources last. The base
             # contract is unchanged -- the check below still runs against v0.0.9.
-            test "$GITHUB_REF_NAME" = v0.0.15
+            test "$GITHUB_REF_NAME" = v0.0.16
             compatibility_commit=216253708d4e7502f15a35996db949f64ee67417
             compatibility_schema_blob=d291aa5ac3f0a9f11353722edb4485eb9acb93ca
             test "$(git cat-file -t "$compatibility_commit")" = commit
@@ -985,7 +985,7 @@ jobs:
           "$binary" --help >/dev/null
           "$binary" --machine-contract > "$RUNNER_TEMP/MACHINE-CONTRACT.json"
           jq -e '
-            .schema_version == 1
+            .schema_version == 2
             and .type == "machine_contract"
             and (.cli_stream_versions | index(4)) != null
             and (.default_cli_stream_version | type) == "number"
