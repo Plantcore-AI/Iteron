@@ -11,6 +11,7 @@ from pathlib import Path
 from common import (
     ReleaseToolError,
     SUPPORTED_TARGETS,
+    WINDOWS_TARGET,
     archive_filename,
     atomic_write_text,
     canonical_json,
@@ -165,13 +166,16 @@ def create_release(arguments: argparse.Namespace) -> None:
         raise ReleaseToolError("manifest and receipt outputs must be distinct")
 
     # Keep the v3 top-level `installer` key because the strict release verifier
-    # treats that field set as the wire contract. Its value is now the complete,
-    # platform-keyed installer set; the schema still accepts historical v3
-    # manifests whose value was the single install.sh asset.
-    installer = {
-        "posix": digest_entry(arguments.dist / "install.sh"),
-        "windows": digest_entry(arguments.dist / "install.ps1"),
-    }
+    # treats that field set as the wire contract. POSIX-only releases bind the
+    # single installer asset; a release that includes Windows must bind both
+    # platform installers.
+    if WINDOWS_TARGET in targets:
+        installer = {
+            "posix": digest_entry(arguments.dist / "install.sh"),
+            "windows": digest_entry(arguments.dist / "install.ps1"),
+        }
+    else:
+        installer = digest_entry(arguments.dist / "install.sh")
     legal = {
         "licenses": digest_entry(arguments.dist / "THIRD_PARTY_LICENSES.html"),
         "notices": digest_entry(arguments.dist / "THIRD_PARTY_NOTICES.txt"),

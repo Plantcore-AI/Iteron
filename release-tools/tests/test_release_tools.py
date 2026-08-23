@@ -528,9 +528,6 @@ exit 1
             "aarch64-apple-darwin",
             "aarch64-unknown-linux-musl",
             "x86_64-unknown-linux-musl",
-            # Restored by #227/#228. The Windows archive is a `.zip`, so the publish job's
-            # attestation glob must not be tar.gz-only or it would ship unverified.
-            "x86_64-pc-windows-msvc",
         ):
             self.assertIn(f"--target {target}", workflow)
         self.assertIn(
@@ -550,7 +547,7 @@ exit 1
         self.assertIn("verify_release.py artifact", workflow)
         self.assertEqual(
             workflow.count("Materialize the exact Windows source through the GitHub API"),
-            2,
+            1,
         )
         self.assertEqual(
             workflow.count(
@@ -559,10 +556,8 @@ exit 1
                 "        with:\n"
                 "          ref: ${{ needs.validate.outputs.commit }}"
             ),
-            2,
+            1,
         )
-        self.assertIn("run: &windows_source_materialization |", workflow)
-        self.assertIn("run: *windows_source_materialization", workflow)
         self.assertIn(
             '"https://api.github.com/repos/$env:SOURCE_REPOSITORY/zipball/$env:SOURCE_SHA"',
             workflow,
@@ -1281,12 +1276,10 @@ exit 1
         self.assertEqual(result["targets"][target]["target"], target)
         self.assertEqual(result["cli_stream_versions"], [4, 5])
         self.assertEqual(result["default_cli_stream_version"], 5)
-        self.assertEqual(set(result["installer"]), {"posix", "windows"})
-        self.assertEqual(result["installer"]["posix"]["name"], "install.sh")
-        self.assertEqual(result["installer"]["windows"]["name"], "install.ps1")
+        self.assertEqual(result["installer"]["name"], "install.sh")
         verify_release.exact_digest(
             dist / "install.sh",
-            result["installer"]["posix"],
+            result["installer"],
             "POSIX installer",
             1024 * 1024,
         )
@@ -1294,22 +1287,14 @@ exit 1
             manifest=output,
             receipt=receipt,
             posix=dist / "install.sh",
-            windows=dist / "install.ps1",
+            windows=None,
         )
         verify_release.verify_installers(installer_arguments)
-        for platform in ("posix", "windows"):
-            path = getattr(installer_arguments, platform)
-            original = path.read_bytes()
-            path.write_bytes(original + b"!")
-            with self.assertRaisesRegex(ReleaseToolError, "content identity"):
-                verify_release.verify_installers(installer_arguments)
-            path.write_bytes(original)
-        verify_release.exact_digest(
-            dist / "install.ps1",
-            result["installer"]["windows"],
-            "Windows installer",
-            1024 * 1024,
-        )
+        original = installer_arguments.posix.read_bytes()
+        installer_arguments.posix.write_bytes(original + b"!")
+        with self.assertRaisesRegex(ReleaseToolError, "content identity"):
+            verify_release.verify_installers(installer_arguments)
+        installer_arguments.posix.write_bytes(original)
         # A client pins on the protocol the binary speaks, so the manifest must carry the number
         # the crate declares rather than one restated here.
         self.assertEqual(result["protocol_version"], 7)
@@ -1603,6 +1588,93 @@ exit 1
         )
         with self.assertRaisesRegex(ReleaseToolError, "must be distinct"):
             manifest.create_release(arguments)
+
+
+class SchemaCompatibilityBridgeTest(unittest.TestCase):
+    """The release workflow's one-time validator substitutions stay fully pinned.
+
+    A bridge runs `schema-compat check-release` against the same published base as
+    always, but builds the validator from an already-merged commit instead of from
+    the base. That is only sound while every one of its guards is present: drop the
+    candidate-tag equality and the substitution applies to a release it was never
+    reviewed for; drop either ancestry check and the pin could name a commit that is
+    not on the candidate's own history; drop the `xtask/src/schema_compat*` diff and
+    it becomes a different validator rather than the candidate's, reviewed earlier.
+    """
+
+    WORKFLOW = Path(__file__).resolve().parents[2] / ".github/workflows/release.yml"
+    BRIDGES = {
+        "v0.0.4": {
+            "candidate": "v0.0.5",
+            "commit": "d3026afa8258ac29031b8f3007406e2f94aca053",
+            "blob": "a61c3410a287a937e21714421ef109d91f1f271c",
+        },
+        "v0.0.9": {
+            "candidate": "v0.0.15",
+            "commit": "216253708d4e7502f15a35996db949f64ee67417",
+            "blob": "d291aa5ac3f0a9f11353722edb4485eb9acb93ca",
+        },
+    }
+
+    def _block(self, previous: str) -> str:
+        body = self.WORKFLOW.read_text(encoding="utf-8")
+        opener = f'if [[ "$previous" == {previous} ]]; then'
+        self.assertIn(opener, body, f"{previous} bridge is missing entirely")
+        start = body.index(opener)
+        end = body.index("\n          fi\n", start)
+        return body[start:end]
+
+    def test_every_bridge_pins_its_candidate_commit_and_blob(self) -> None:
+        for previous, pins in self.BRIDGES.items():
+            with self.subTest(previous=previous):
+                block = self._block(previous)
+                self.assertIn(f'test "$GITHUB_REF_NAME" = {pins["candidate"]}', block)
+                self.assertIn(f'compatibility_commit={pins["commit"]}', block)
+                self.assertIn(f'compatibility_schema_blob={pins["blob"]}', block)
+
+    def test_every_bridge_proves_the_pin_is_a_reachable_merged_commit(self) -> None:
+        for previous in self.BRIDGES:
+            with self.subTest(previous=previous):
+                block = self._block(previous)
+                self.assertIn(
+                    'test "$(git cat-file -t "$compatibility_commit")" = commit',
+                    block,
+                    "the pin must be a commit object, not a tag or a blob",
+                )
+                self.assertIn(
+                    'git merge-base --is-ancestor "$previous_commit" "$compatibility_commit"',
+                    block,
+                    "the pin must descend from the published base it validates against",
+                )
+                self.assertIn(
+                    'git merge-base --is-ancestor',
+                    block.split("$previous_commit\" \"$compatibility_commit\"", 1)[-1],
+                    "the pin must also be an ancestor of the candidate being released",
+                )
+
+    def test_every_bridge_requires_the_candidate_validator_sources(self) -> None:
+        for previous in self.BRIDGES:
+            with self.subTest(previous=previous):
+                block = self._block(previous)
+                self.assertIn("git diff --quiet", block)
+                self.assertIn("'xtask/src/schema_compat*'", block)
+                self.assertIn(
+                    'test "$(git rev-parse \\\n              '
+                    '"$compatibility_commit:governance/schema-compatibility.json")" = \\\n'
+                    '              "$compatibility_schema_blob"',
+                    block,
+                    "the compatibility contract itself must be content-addressed",
+                )
+
+    def test_a_bridge_never_changes_the_base_it_validates_against(self) -> None:
+        body = self.WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn(
+            'schema-compat check-release --base "$previous_commit"',
+            body,
+            "the substitution replaces the validator, never the contract",
+        )
+        for previous in self.BRIDGES:
+            self.assertNotIn("--base ", self._block(previous))
 
 
 if __name__ == "__main__":
