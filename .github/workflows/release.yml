@@ -609,7 +609,7 @@ jobs:
       max-parallel: 3
       matrix:
         include:
-          - runner: '["self-hosted","macOS","ARM64","macos-15"]'
+          - runner: ${{ vars.MACOS_RUNNER_LABELS || '["macos-15"]' }}
             host: darwin-arm64
             target: aarch64-apple-darwin
             python: python3
@@ -1494,7 +1494,7 @@ jobs:
       max-parallel: 3
       matrix:
         include:
-          - runner: '["self-hosted","macOS","ARM64","macos-15"]'
+          - runner: ${{ vars.MACOS_RUNNER_LABELS || '["macos-15"]' }}
             target: aarch64-apple-darwin
             archive-suffix: tar.gz
             python: python3
@@ -1656,7 +1656,7 @@ jobs:
       max-parallel: 3
       matrix:
         include:
-          - runner: '["self-hosted","macOS","ARM64","macos-15"]'
+          - runner: ${{ vars.MACOS_RUNNER_LABELS || '["macos-15"]' }}
             target: aarch64-apple-darwin
           - runner: '["self-hosted","Linux","ARM64","dgx-release-arm64"]'
             target: aarch64-unknown-linux-musl
