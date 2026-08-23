@@ -500,7 +500,7 @@ jobs:
             # audited substitution rather than a stale one: #364 fixed the three
             # gates this release needed and touched those sources last. The base
             # contract is unchanged -- the check below still runs against v0.0.9.
-            test "$GITHUB_REF_NAME" = v0.0.17
+            test "$GITHUB_REF_NAME" = v0.0.18
             compatibility_commit=216253708d4e7502f15a35996db949f64ee67417
             compatibility_schema_blob=d291aa5ac3f0a9f11353722edb4485eb9acb93ca
             test "$(git cat-file -t "$compatibility_commit")" = commit

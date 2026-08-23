@@ -56,6 +56,8 @@ PROTOCOL_VERSION_PATTERN = re.compile(
     r"^pub const PROTOCOL_VERSION: u32 = (?P<value>\d{1,9});$", re.MULTILINE
 )
 MAX_CAPABILITY_REPORT_BYTES = 64 * 1024
+CLI_MACHINE_CONTRACT_SCHEMA_VERSION = 2
+
 CAPABILITY_REPORT_KEYS = {
     "cli_stream_versions",
     "default_cli_stream_version",
@@ -115,8 +117,13 @@ def read_capability_report(path: Path) -> dict[str, object]:
     versions = document["cli_stream_versions"]
     default = document["default_cli_stream_version"]
     resident = document["resident_protocol_version"]
+    # The envelope version the CLI emits around this list, not this file's own format
+    # version. It advanced to 2 when `--machine-contract` began advertising CLI stream
+    # v6; asserting the old value here refused a perfectly valid report and failed the
+    # release after every target had already built. Tied to the source by
+    # `MachineContractSmokeTest`, so the next bump moves both or fails at review.
     if (
-        document["schema_version"] != 1
+        document["schema_version"] != CLI_MACHINE_CONTRACT_SCHEMA_VERSION
         or document["type"] != "machine_contract"
         or not isinstance(versions, list)
         or not 0 < len(versions) <= 16
