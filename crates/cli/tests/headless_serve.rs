@@ -1,5 +1,7 @@
 use iteron_protocol::wire::PROTOCOL_VERSION;
 use serde_json::{Value, json};
+#[cfg(unix)]
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -119,6 +121,17 @@ impl Scratch {
     fn runs(&self) -> PathBuf {
         self.root.join("runs")
     }
+
+    #[cfg(unix)]
+    fn configure_hooks(&self, hooks: Value) {
+        let path = self.home().join(".iteron/config.json");
+        let mut config: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        config
+            .as_object_mut()
+            .expect("headless fixture config is an object")
+            .insert("hooks".to_owned(), hooks);
+        fs::write(path, serde_json::to_vec(&config).unwrap()).unwrap();
+    }
 }
 
 impl Drop for Scratch {
@@ -131,6 +144,7 @@ struct PausedProvider {
     api_root: String,
     request_seen: Receiver<()>,
     release: SyncSender<()>,
+    completed: Receiver<()>,
     thread: Option<thread::JoinHandle<()>>,
 }
 
@@ -140,10 +154,20 @@ impl PausedProvider {
     }
 
     fn spawn_with_chunks(chunks: usize) -> Self {
+        Self::spawn_inner(chunks, true)
+    }
+
+    #[cfg(unix)]
+    fn spawn_without_response() -> Self {
+        Self::spawn_inner(1, false)
+    }
+
+    fn spawn_inner(chunks: usize, respond: bool) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let (seen_tx, request_seen) = sync_channel(1);
         let (release, release_rx) = sync_channel(1);
+        let (completed_tx, completed) = sync_channel(1);
         // The replay-fallback fixture must exceed the ring's aggregate byte bound even though
         // production now coalesces adjacent deltas. Single-response parity keeps its exact text;
         // the flood uses bounded 4 KiB chunks for a ~17 MiB logical answer, below the 32 MiB
@@ -161,17 +185,24 @@ impl PausedProvider {
             release_rx
                 .recv_timeout(timeout())
                 .expect("test releases the provider response");
-            write_success(&mut stream, chunks, &content);
+            if respond {
+                write_success(&mut stream, chunks, &content);
+            }
+            completed_tx.send(()).unwrap();
         });
         Self {
             api_root: format!("http://{address}/v1"),
             request_seen,
             release,
+            completed,
             thread: Some(thread),
         }
     }
 
     fn finish(mut self) {
+        self.completed
+            .recv_timeout(timeout())
+            .expect("provider fixture reaches its terminal");
         self.thread
             .take()
             .unwrap()
@@ -403,6 +434,29 @@ fn receive(reader: &mut BufReader<TcpStream>) -> Value {
     assert!(!line.is_empty(), "server closed before the expected frame");
     assert!(line.len() <= 1024 * 1024 + 1);
     serde_json::from_str(&line).expect("server frame is JSON")
+}
+
+#[cfg(unix)]
+fn receive_result_within_timeout(reader: &mut BufReader<TcpStream>) -> Value {
+    let deadline = Instant::now() + timeout();
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "headless server did not publish a terminal result within {:?}",
+            timeout()
+        );
+        reader.get_mut().set_read_timeout(Some(remaining)).unwrap();
+        let frame = receive(reader);
+        if frame["type"] == "result" {
+            return frame;
+        }
+    }
+}
+
+#[cfg(unix)]
+fn shell_quote(path: &Path) -> String {
+    format!("'{}'", path.to_string_lossy().replace('\'', "'\"'\"'"))
 }
 
 fn hello(token: &str, protocol_version: u32, resume_from: u64) -> Value {
@@ -674,6 +728,152 @@ fn background_job_inventory_and_attach_control_survive_client_restart() {
 
     let stderr = String::from_utf8(stop(child)).unwrap();
     assert!(!stderr.contains(&token));
+}
+
+#[cfg(unix)]
+#[test]
+fn drain_preserves_canonical_observers_through_real_headless_session_shutdown() {
+    const TARGET_EVENTS: [&str; 2] = ["drain.settled", "session.stopped"];
+
+    let provider = PausedProvider::spawn_without_response();
+    let scratch = Scratch::new(&provider.api_root);
+    let git = Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(scratch.repo())
+        .status()
+        .expect("git must be available for the mandatory Drain checkpoint");
+    assert!(
+        git.success(),
+        "initialize the real Drain checkpoint workspace"
+    );
+    let marker_path = scratch.root.join("canonical-drain-hooks.jsonl");
+    let quoted_marker = shell_quote(&marker_path);
+    let probe = format!(
+        "while IFS= read -r line || [ -n \"$line\" ]; do printf '%s\\n' \"$line\"; done >> {quoted_marker}"
+    );
+    scratch.configure_hooks(json!({
+        "drain.settled": [probe.clone()],
+        "session.stopped": [probe],
+    }));
+    let (child, token, address) = spawn_core(&scratch);
+
+    let mut client = connect(address);
+    send(&mut client, hello(&token, PROTOCOL_VERSION, 0));
+    let mut reader = BufReader::new(client.try_clone().unwrap());
+    reader.get_mut().set_read_timeout(Some(timeout())).unwrap();
+    assert_eq!(receive(&mut reader)["type"], "hello");
+    send(
+        &mut client,
+        json!({
+            "type":"submit",
+            "protocol_version":PROTOCOL_VERSION,
+            "op":{"op":"user_input","text":"hold this turn until Drain arrives"}
+        }),
+    );
+    provider
+        .request_seen
+        .recv_timeout(timeout())
+        .expect("the real provider request is in flight before Drain");
+
+    send(
+        &mut client,
+        json!({
+            "type":"submit",
+            "protocol_version":PROTOCOL_VERSION,
+            "op":{"op":"drain"}
+        }),
+    );
+    let result = receive_result_within_timeout(&mut reader);
+    assert_eq!(result["result"]["outcome"], "drained", "{result}");
+    assert_eq!(result["result"]["success"], true, "{result}");
+
+    // Drain settles the active turn; the resident headless listener still owns the AppServer.
+    // Its normal interrupt shutdown drops those owners and synchronously reaches session.stopped.
+    drop(reader);
+    drop(client);
+    let stderr = String::from_utf8(stop(child)).unwrap();
+    assert!(stderr.contains("\"event\":\"stopping\""));
+    assert!(!stderr.contains("canonical lifecycle hook cleanup exceeded"));
+    assert!(!stderr.contains(&token));
+    provider.release.send(()).unwrap();
+    provider.finish();
+
+    let marker = fs::read_to_string(&marker_path).expect("canonical hook probe marker exists");
+    assert_eq!(marker.lines().count(), TARGET_EVENTS.len());
+    let marker_events = marker
+        .lines()
+        .map(|line| {
+            let event: Value = serde_json::from_str(line).expect("probe marker is lifecycle JSON");
+            event["event_id"]
+                .as_str()
+                .expect("probe marker names its lifecycle event")
+                .to_owned()
+        })
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        marker_events,
+        TARGET_EVENTS
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<BTreeSet<_>>(),
+        "both canonical observers execute their real shell probe"
+    );
+
+    let mut journal_paths = fs::read_dir(scratch.runs())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with(".hooks.jsonl"))
+        })
+        .collect::<Vec<_>>();
+    journal_paths.sort();
+    assert_eq!(journal_paths.len(), 1, "one real hook journal is created");
+    let journal = fs::read_to_string(&journal_paths[0]).unwrap();
+    let mut intents = BTreeMap::<u64, String>::new();
+    let mut completed = BTreeMap::<String, usize>::new();
+    for (index, line) in journal.lines().enumerate() {
+        let entry: Value = serde_json::from_str(line)
+            .unwrap_or_else(|error| panic!("invalid hook journal line {}: {error}", index + 1));
+        let invocation = entry["invocation"]
+            .as_u64()
+            .unwrap_or_else(|| panic!("hook journal line {} has no invocation", index + 1));
+        let event = entry["event_id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("hook journal line {} has no event_id", index + 1));
+        assert!(
+            TARGET_EVENTS.contains(&event),
+            "unexpected hook event {event}"
+        );
+        match entry["phase"].as_str() {
+            Some("intent") => {
+                assert!(entry["outcome"].is_null());
+                assert!(intents.insert(invocation, event.to_owned()).is_none());
+            }
+            Some("terminal") => {
+                assert_eq!(entry["outcome"], "completed");
+                assert_eq!(intents.remove(&invocation).as_deref(), Some(event));
+                *completed.entry(event.to_owned()).or_default() += 1;
+            }
+            phase => panic!(
+                "hook journal line {} has unknown phase {phase:?}",
+                index + 1
+            ),
+        }
+    }
+    assert!(
+        intents.is_empty(),
+        "hook journal has unmatched intents: {intents:?}"
+    );
+    for event in TARGET_EVENTS {
+        assert_eq!(
+            completed.get(event),
+            Some(&1),
+            "{event} must own one completed intent/terminal pair"
+        );
+    }
+    assert!(!journal.contains("\"outcome\":\"cancelled\""));
 }
 
 #[test]
