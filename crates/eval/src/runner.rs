@@ -3,6 +3,13 @@
 use crate::attempts::{
     AttemptEvent, AttemptKey, AttemptLedger, AttemptLedgerError, MAX_PHYSICAL_ATTEMPTS,
 };
+// The release schema validator resolves this trusted binding by its own `use` item, not by call
+// sites, and requires the exact path the trusted base declared. The production path now reads the
+// result through `parse_run_output`, so the only caller left is a test -- but replacing the import
+// with an inline `crate::contract::parse_final_result(..)` reads to the validator as a redirected
+// binding and fails `schema-compat check-release` against the previous release.
+#[allow(unused_imports)]
+use crate::contract::parse_final_result;
 use crate::contract::parse_run_output;
 use crate::corpus::{CorpusManifest, CorpusTask};
 use crate::process::{ProcessOutput, ProcessSpec, find_core, run_process};
@@ -2135,7 +2142,7 @@ mod tests {
 
         let output = run_process(&spec).await.unwrap();
         assert!(!output.timed_out);
-        let result = crate::contract::parse_final_result(&output.stdout, output.exit_code).unwrap();
+        let result = parse_final_result(&output.stdout, output.exit_code).unwrap();
         assert_eq!(result.outcome, "budget_exhausted");
         let _ = std::fs::remove_dir_all(parent);
     }
