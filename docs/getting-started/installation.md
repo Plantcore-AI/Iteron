@@ -28,11 +28,44 @@ command -v iteron
 iteron --version
 ```
 
-`command -v` must print the intended executable path. If it prints nothing, add
-the chosen install directory to `PATH` in the shell's startup file and start a
-new shell. If it prints a different path, invoke the intended path directly or
-fix `PATH` ordering before diagnosing providers. Neither check reads a provider
-credential.
+`command -v` must print the intended executable path. If it prints nothing, the
+binary may be installed but not on `PATH`. If it prints a different path, invoke
+the intended path directly or fix `PATH` ordering before diagnosing providers.
+Neither check reads a provider credential.
+
+### Confirm the install directory is on PATH
+
+The default destination is `~/.local/bin` (unless you overrode it with
+`--bin-dir`, `$ITERON_INSTALL_DIR`, `$ITERON_CODE_INSTALL_DIR`, or
+`$XDG_BIN_HOME`). The installer never edits shell startup files; add the
+directory yourself if needed.
+
+**1. Is the binary present (installed)?**
+
+```sh
+test -x "$HOME/.local/bin/iteron" && echo "installed: $HOME/.local/bin/iteron" || echo "not installed at default path"
+```
+
+**2. Is that directory already on PATH?**
+
+POSIX `sh` / bash / zsh (same one-liner):
+
+```sh
+case ":$PATH:" in *":$HOME/.local/bin:"*) echo "on PATH";; *) echo "NOT on PATH";; esac
+```
+
+**3. If installed but NOT on PATH**, add it for the current session, then
+re-check with `command -v iteron`:
+
+```sh
+export PATH="$HOME/.local/bin:$PATH"
+command -v iteron
+```
+
+To persist across new shells, append the same `export` line to the startup file
+you actually use (`~/.profile` for login `sh`, `~/.bashrc` for interactive bash,
+`~/.zshrc` for zsh), then open a new terminal. Do not run an automated profile
+editor; choose the file for your shell deliberately.
 
 The installer:
 
