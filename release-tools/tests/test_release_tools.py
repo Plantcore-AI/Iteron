@@ -1247,7 +1247,7 @@ exit 1
                             "cli_stream_versions": [4, 5],
                             "default_cli_stream_version": 5,
                             "resident_protocol_version": 7,
-                            "schema_version": 1,
+                            "schema_version": 2,
                             "type": "machine_contract",
                         }
                     ),
@@ -1311,7 +1311,7 @@ exit 1
                     "cli_stream_versions": [4, 5],
                     "default_cli_stream_version": 5,
                     "resident_protocol_version": 1,
-                    "schema_version": 1,
+                    "schema_version": 2,
                     "type": "machine_contract",
                 }
             ),
@@ -1351,7 +1351,7 @@ exit 1
                         "cli_stream_versions": [4, 5] if index == 0 else [5],
                         "default_cli_stream_version": 5,
                         "resident_protocol_version": 1,
-                        "schema_version": 1,
+                        "schema_version": 2,
                         "type": "machine_contract",
                     }
                 ),
@@ -1438,7 +1438,7 @@ exit 1
                     "cli_stream_versions": [4, 5],
                     "default_cli_stream_version": 5,
                     "resident_protocol_version": 1,
-                    "schema_version": 1,
+                    "schema_version": 2,
                     "type": "machine_contract",
                 }
             ),
