@@ -1,18 +1,18 @@
 {
   "schema_version": 4,
-  "total": 2965,
-  "runtime_settable": 2080,
+  "total": 2969,
+  "runtime_settable": 2084,
   "invariant_read_only": 885,
   "binding_required": 0,
-  "advertised_runtime_settable": 2080,
-  "runtime_applied": 2080,
-  "externally_addressed_runtime_settable": 2080,
+  "advertised_runtime_settable": 2084,
+  "runtime_applied": 2084,
+  "externally_addressed_runtime_settable": 2084,
   "unaddressed_runtime_settable": 0,
   "mechanical_invariant_dispositions": 885,
   "owning_human_review_required": 885,
   "explicit_invariant_overrides": 228,
   "address_kind_counts": {
-    "unified_profile": 1431,
+    "unified_profile": 1435,
     "direct_config": 323,
     "caller_input": 326
   },
@@ -31,21 +31,21 @@
     "completeness_claim": "complete_for_declared_production_source_forms_not_mathematical_universe",
     "production_rust_files_scanned": 677,
     "source_form_counts": {
-      "const": 2110,
+      "const": 2114,
       "static": 56,
       "associated_const": 42,
       "serde_default": 300,
       "clap_default": 22,
-      "policy_default_constructor": 548,
+      "policy_default_constructor": 549,
       "policy_fallback_call": 11,
-      "builder_quality_default": 2760,
+      "builder_quality_default": 2765,
       "include_str_asset": 3,
       "include_bytes_asset": 1,
       "dynamic_implementation_manifest": 2,
       "dynamic_plugin_manifest": 0
     },
     "candidate_row_counts": {
-      "const": 2110,
+      "const": 2114,
       "static": 56,
       "associated_const": 42,
       "serde_default": 300,
@@ -2199,7 +2199,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 1849,
+          "line": 1917,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -2229,7 +2229,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 290,
+          "line": 311,
           "evidence": "Rust path reference"
         },
         {
@@ -2240,7 +2240,7 @@
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "non_value_structural",
-      "review_evidence": "closed Tier-2 disposition rule: `ENVELOPE` at crates/cli/src/app_server.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/cli/src/app_server.rs:290 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "closed Tier-2 disposition rule: `ENVELOPE` at crates/cli/src/app_server.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/cli/src/app_server.rs:311 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": false,
       "applied": false,
@@ -2259,7 +2259,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 1362,
+          "line": 1417,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -2319,7 +2319,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 1987,
+          "line": 2051,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -2337,36 +2337,6 @@
       "tier2_id": "cli.app_server.kernel_inbound_capacity"
     },
     {
-      "id": "cli.app_server.lifecycle_hook_drain_grace",
-      "candidate_kind": "const",
-      "rust_type": "std::time::Duration",
-      "value": "std::time::Duration::from_secs(2)",
-      "owner": {
-        "krate": "cli",
-        "path": "crates/cli/src/app_server.rs",
-        "symbol": "LIFECYCLE_HOOK_DRAIN_GRACE"
-      },
-      "use_sites": [
-        {
-          "path": "crates/cli/src/app_server.rs",
-          "line": 3423,
-          "evidence": "param_duration runtime resolution"
-        }
-      ],
-      "disposition": "runtime_settable",
-      "external_address": {
-        "kind": "unified_profile",
-        "selector_kind": "key",
-        "selector": "cli.app_server.lifecycle_hook_drain_grace",
-        "owner_kind": "schema",
-        "owner": "iteron_tunables::Param/ResolutionValue"
-      },
-      "explicit_invariant_override": false,
-      "applied": true,
-      "behavior_oracle": "installed profile id cli.app_server.lifecycle_hook_drain_grace is resolved at every listed production helper call",
-      "tier2_id": "cli.app_server.lifecycle_hook_drain_grace"
-    },
-    {
       "id": "cli.app_server.max_pending_cosmetic_bytes",
       "candidate_kind": "const",
       "rust_type": "usize",
@@ -2379,7 +2349,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 1397,
+          "line": 1452,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -2409,7 +2379,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 1435,
+          "line": 1490,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -2439,7 +2409,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 1597,
+          "line": 1665,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -2469,13 +2439,13 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 640,
+          "line": 661,
           "evidence": "Rust path reference"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "non_value_structural",
-      "review_evidence": "closed Tier-2 disposition rule: `NEXT_EQ_TERMINAL_TEXT_SPILL` at crates/cli/src/app_server.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/cli/src/app_server.rs:640 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "closed Tier-2 disposition rule: `NEXT_EQ_TERMINAL_TEXT_SPILL` at crates/cli/src/app_server.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/cli/src/app_server.rs:661 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": false,
       "applied": false,
@@ -2524,7 +2494,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 2051,
+          "line": 2191,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -2554,7 +2524,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 129,
+          "line": 155,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -2614,7 +2584,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 104,
+          "line": 130,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -2644,12 +2614,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 122,
+          "line": 148,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 1172,
+          "line": 1222,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -2719,7 +2689,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 841,
+          "line": 865,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -2749,7 +2719,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 2069,
+          "line": 2209,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -2779,7 +2749,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 2086,
+          "line": 2226,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -12543,7 +12513,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 3219,
+          "line": 3220,
           "evidence": "param_bool runtime resolution"
         }
       ],
@@ -13375,7 +13345,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 1160,
+          "line": 1161,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -13600,7 +13570,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 290,
+          "line": 311,
           "evidence": "Rust path reference"
         },
         {
@@ -13611,7 +13581,7 @@
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "non_value_structural",
-      "review_evidence": "closed Tier-2 disposition rule: `ENVELOPE` at crates/cli/src/runtime/frontend.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/cli/src/app_server.rs:290 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "closed Tier-2 disposition rule: `ENVELOPE` at crates/cli/src/runtime/frontend.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/cli/src/app_server.rs:311 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": false,
       "applied": false,
@@ -13695,7 +13665,7 @@
         },
         {
           "path": "crates/cli/src/runtime/hooks.rs",
-          "line": 431,
+          "line": 458,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -13725,7 +13695,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/hooks.rs",
-          "line": 1531,
+          "line": 1521,
           "evidence": "param_duration runtime resolution in macro"
         }
       ],
@@ -13755,7 +13725,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/hooks.rs",
-          "line": 1283,
+          "line": 1273,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -13785,17 +13755,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/hooks.rs",
-          "line": 1292,
+          "line": 1282,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/runtime/hooks.rs",
-          "line": 1300,
+          "line": 1290,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/runtime/hooks.rs",
-          "line": 1312,
+          "line": 1302,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -13825,7 +13795,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/hooks.rs",
-          "line": 1367,
+          "line": 1357,
           "evidence": "param_integer runtime resolution in macro"
         }
       ],
@@ -13954,7 +13924,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/hooks.rs",
-          "line": 815,
+          "line": 842,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -13984,7 +13954,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/hooks.rs",
-          "line": 820,
+          "line": 847,
+          "evidence": "param_duration runtime resolution"
+        },
+        {
+          "path": "crates/cli/src/runtime/lifecycle_hooks.rs",
+          "line": 402,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -14014,17 +13989,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/hooks.rs",
-          "line": 476,
+          "line": 503,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/runtime/hooks.rs",
-          "line": 1140,
+          "line": 1130,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/runtime/hooks.rs",
-          "line": 1156,
+          "line": 1146,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -14054,7 +14029,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/hooks.rs",
-          "line": 1181,
+          "line": 1171,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -14084,12 +14059,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/hooks.rs",
-          "line": 485,
+          "line": 512,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/runtime/hooks.rs",
-          "line": 1151,
+          "line": 1141,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -14119,7 +14094,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/hooks.rs",
-          "line": 921,
+          "line": 948,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -14151,6 +14126,11 @@
           "path": "crates/cli/src/runtime/hooks.rs",
           "line": 61,
           "evidence": "param_integer runtime resolution"
+        },
+        {
+          "path": "crates/cli/src/runtime/lifecycle_hooks.rs",
+          "line": 386,
+          "evidence": "param_integer runtime resolution"
         }
       ],
       "disposition": "runtime_settable",
@@ -14179,13 +14159,13 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/hooks.rs",
-          "line": 1512,
+          "line": 1502,
           "evidence": "Rust path reference"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "non_value_structural",
-      "review_evidence": "closed Tier-2 disposition rule: `SIGNAL_TERMINATED_EXIT_CODE` at crates/cli/src/runtime/hooks.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/cli/src/runtime/hooks.rs:1512 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "closed Tier-2 disposition rule: `SIGNAL_TERMINATED_EXIT_CODE` at crates/cli/src/runtime/hooks.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/cli/src/runtime/hooks.rs:1502 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": false,
       "applied": false,
@@ -14375,7 +14355,7 @@
       "id": "cli.runtime.image_input_unsupported_reason",
       "candidate_kind": "const",
       "rust_type": "&str",
-      "value": "\"the selected model has no verified image-input capability; attachments were not submitted\"",
+      "value": "\"the selected model has no verified image-input capability, so attachments were not submitted; \\\nif this route does accept images, declare it with `image_input: true` under that model in \\\n`model_capabilities` in your config\"",
       "owner": {
         "krate": "cli",
         "path": "crates/cli/src/runtime.rs",
@@ -14414,7 +14394,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 7510,
+          "line": 7503,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -14444,7 +14424,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 4615,
+          "line": 4608,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -14474,7 +14454,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 1105,
+          "line": 1106,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -14792,6 +14772,36 @@
       "tier2_id": "cli.runtime.investigation_convergence.verification_revision_instruction"
     },
     {
+      "id": "cli.runtime.lifecycle_hooks.abort_join_grace",
+      "candidate_kind": "const",
+      "rust_type": "Duration",
+      "value": "Duration::from_millis(250)",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/runtime/lifecycle_hooks.rs",
+        "symbol": "ABORT_JOIN_GRACE"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/runtime/lifecycle_hooks.rs",
+          "line": 431,
+          "evidence": "param_duration runtime resolution"
+        }
+      ],
+      "disposition": "runtime_settable",
+      "external_address": {
+        "kind": "unified_profile",
+        "selector_kind": "key",
+        "selector": "cli.runtime.lifecycle_hooks.abort_join_grace",
+        "owner_kind": "schema",
+        "owner": "iteron_tunables::Param/ResolutionValue"
+      },
+      "explicit_invariant_override": false,
+      "applied": true,
+      "behavior_oracle": "installed profile id cli.runtime.lifecycle_hooks.abort_join_grace is resolved at every listed production helper call",
+      "tier2_id": "cli.runtime.lifecycle_hooks.abort_join_grace"
+    },
+    {
       "id": "cli.runtime.lifecycle_hooks.circuit_failure_threshold",
       "candidate_kind": "const",
       "rust_type": "u8",
@@ -14804,7 +14814,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/lifecycle_hooks.rs",
-          "line": 335,
+          "line": 738,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -14834,12 +14844,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/lifecycle_hooks.rs",
-          "line": 345,
+          "line": 748,
           "evidence": "param_duration runtime resolution"
         },
         {
           "path": "crates/cli/src/runtime/lifecycle_hooks.rs",
-          "line": 358,
+          "line": 754,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -14857,6 +14867,36 @@
       "tier2_id": "cli.runtime.lifecycle_hooks.circuit_open_for"
     },
     {
+      "id": "cli.runtime.lifecycle_hooks.cleanup_settlement_slack",
+      "candidate_kind": "const",
+      "rust_type": "Duration",
+      "value": "Duration::from_secs(1)",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/runtime/lifecycle_hooks.rs",
+        "symbol": "CLEANUP_SETTLEMENT_SLACK"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/runtime/lifecycle_hooks.rs",
+          "line": 422,
+          "evidence": "param_duration runtime resolution"
+        }
+      ],
+      "disposition": "runtime_settable",
+      "external_address": {
+        "kind": "unified_profile",
+        "selector_kind": "key",
+        "selector": "cli.runtime.lifecycle_hooks.cleanup_settlement_slack",
+        "owner_kind": "schema",
+        "owner": "iteron_tunables::Param/ResolutionValue"
+      },
+      "explicit_invariant_override": false,
+      "applied": true,
+      "behavior_oracle": "installed profile id cli.runtime.lifecycle_hooks.cleanup_settlement_slack is resolved at every listed production helper call",
+      "tier2_id": "cli.runtime.lifecycle_hooks.cleanup_settlement_slack"
+    },
+    {
       "id": "cli.runtime.lifecycle_hooks.hook_dispatch_concurrency",
       "candidate_kind": "const",
       "rust_type": "usize",
@@ -14869,7 +14909,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/lifecycle_hooks.rs",
-          "line": 190,
+          "line": 371,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -14899,7 +14939,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/lifecycle_hooks.rs",
-          "line": 107,
+          "line": 177,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -14915,6 +14955,96 @@
       "applied": true,
       "behavior_oracle": "installed profile id cli.runtime.lifecycle_hooks.hook_dispatch_queue is resolved at every listed production helper call",
       "tier2_id": "cli.runtime.lifecycle_hooks.hook_dispatch_queue"
+    },
+    {
+      "id": "cli.runtime.lifecycle_hooks.hook_execution_concurrency",
+      "candidate_kind": "const",
+      "rust_type": "usize",
+      "value": "4",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/runtime/lifecycle_hooks.rs",
+        "symbol": "HOOK_EXECUTION_CONCURRENCY"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/runtime/lifecycle_hooks.rs",
+          "line": 391,
+          "evidence": "param_integer runtime resolution"
+        }
+      ],
+      "disposition": "runtime_settable",
+      "external_address": {
+        "kind": "unified_profile",
+        "selector_kind": "key",
+        "selector": "cli.runtime.lifecycle_hooks.hook_execution_concurrency",
+        "owner_kind": "schema",
+        "owner": "iteron_tunables::Param/ResolutionValue"
+      },
+      "explicit_invariant_override": false,
+      "applied": true,
+      "behavior_oracle": "installed profile id cli.runtime.lifecycle_hooks.hook_execution_concurrency is resolved at every listed production helper call",
+      "tier2_id": "cli.runtime.lifecycle_hooks.hook_execution_concurrency"
+    },
+    {
+      "id": "cli.runtime.lifecycle_hooks.lifecycle_observer_timeout",
+      "candidate_kind": "const",
+      "rust_type": "Duration",
+      "value": "Duration::from_secs(10)",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/runtime/lifecycle_hooks.rs",
+        "symbol": "LIFECYCLE_OBSERVER_TIMEOUT"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/runtime/lifecycle_hooks.rs",
+          "line": 406,
+          "evidence": "param_duration runtime resolution"
+        }
+      ],
+      "disposition": "runtime_settable",
+      "external_address": {
+        "kind": "unified_profile",
+        "selector_kind": "key",
+        "selector": "cli.runtime.lifecycle_hooks.lifecycle_observer_timeout",
+        "owner_kind": "schema",
+        "owner": "iteron_tunables::Param/ResolutionValue"
+      },
+      "explicit_invariant_override": false,
+      "applied": true,
+      "behavior_oracle": "installed profile id cli.runtime.lifecycle_hooks.lifecycle_observer_timeout is resolved at every listed production helper call",
+      "tier2_id": "cli.runtime.lifecycle_hooks.lifecycle_observer_timeout"
+    },
+    {
+      "id": "cli.runtime.lifecycle_hooks.worker_close_slack",
+      "candidate_kind": "const",
+      "rust_type": "Duration",
+      "value": "Duration::from_millis(250)",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/runtime/lifecycle_hooks.rs",
+        "symbol": "WORKER_CLOSE_SLACK"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/runtime/lifecycle_hooks.rs",
+          "line": 414,
+          "evidence": "param_duration runtime resolution"
+        }
+      ],
+      "disposition": "runtime_settable",
+      "external_address": {
+        "kind": "unified_profile",
+        "selector_kind": "key",
+        "selector": "cli.runtime.lifecycle_hooks.worker_close_slack",
+        "owner_kind": "schema",
+        "owner": "iteron_tunables::Param/ResolutionValue"
+      },
+      "explicit_invariant_override": false,
+      "applied": true,
+      "behavior_oracle": "installed profile id cli.runtime.lifecycle_hooks.worker_close_slack is resolved at every listed production helper call",
+      "tier2_id": "cli.runtime.lifecycle_hooks.worker_close_slack"
     },
     {
       "id": "cli.runtime.max_committed_provider_run_notices",
@@ -15089,7 +15219,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 1723,
+          "line": 1724,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -15394,17 +15524,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 3925,
+          "line": 3918,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 3945,
+          "line": 3938,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 3957,
+          "line": 3950,
           "evidence": "Rust path reference"
         },
         {
@@ -15415,7 +15545,7 @@
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "non_value_structural",
-      "review_evidence": "explicit census disposition override: `TOOL_POLICY_SLOT` at crates/cli/src/runtime/policy_evidence.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/cli/src/runtime.rs:3925 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "explicit census disposition override: `TOOL_POLICY_SLOT` at crates/cli/src/runtime/policy_evidence.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/cli/src/runtime.rs:3918 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": true,
       "applied": false,
@@ -16139,12 +16269,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 3128,
+          "line": 3204,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 4148,
+          "line": 4233,
           "evidence": "macro token reference"
         },
         {
@@ -16155,7 +16285,7 @@
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "identity",
-      "review_evidence": "closed Tier-2 disposition rule: `RUNTIME_NOTIFICATION_PREFIX` at crates/cli/src/runtime.rs — the value participates in stable identity/canonical naming; observed at crates/cli/src/app_server.rs:3128 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "closed Tier-2 disposition rule: `RUNTIME_NOTIFICATION_PREFIX` at crates/cli/src/runtime.rs — the value participates in stable identity/canonical naming; observed at crates/cli/src/app_server.rs:3204 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": false,
       "applied": false,
@@ -17717,7 +17847,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 5333,
+          "line": 5326,
           "evidence": "param_bool runtime resolution"
         }
       ],
@@ -17782,7 +17912,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 7601,
+          "line": 7594,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -17877,7 +18007,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 7526,
+          "line": 7519,
           "evidence": "Rust path reference"
         },
         {
@@ -17893,7 +18023,7 @@
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "identity",
-      "review_evidence": "closed Tier-2 disposition rule: `VERSION_MISMATCH_SUBMISSION_NOTICE` at crates/cli/src/runtime.rs — the value participates in stable identity/canonical naming; observed at crates/cli/src/runtime.rs:7526 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "closed Tier-2 disposition rule: `VERSION_MISMATCH_SUBMISSION_NOTICE` at crates/cli/src/runtime.rs — the value participates in stable identity/canonical naming; observed at crates/cli/src/runtime.rs:7519 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": false,
       "applied": false,
@@ -27809,7 +27939,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 3352,
+          "line": 3428,
           "evidence": "param_duration runtime resolution"
         },
         {
@@ -32670,7 +32800,7 @@
         },
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 1413,
+          "line": 1420,
           "evidence": "macro token reference"
         }
       ],
@@ -35308,7 +35438,7 @@
         },
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 28,
+          "line": 35,
           "evidence": "Rust path reference"
         },
         {
@@ -35653,13 +35783,13 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 52,
+          "line": 59,
           "evidence": "Rust path reference"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "non_value_structural",
-      "review_evidence": "closed Tier-2 disposition rule: `BUILTIN_CREDENTIAL_ENVS` at crates/eval/src/runner.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/eval/src/runner.rs:52 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "closed Tier-2 disposition rule: `BUILTIN_CREDENTIAL_ENVS` at crates/eval/src/runner.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/eval/src/runner.rs:59 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": false,
       "applied": false,
@@ -35678,18 +35808,18 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 356,
+          "line": 363,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 378,
+          "line": 385,
           "evidence": "Rust path reference"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "non_value_structural",
-      "review_evidence": "closed Tier-2 disposition rule: `CONFIGS` at crates/eval/src/runner.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/eval/src/runner.rs:356 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "closed Tier-2 disposition rule: `CONFIGS` at crates/eval/src/runner.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/eval/src/runner.rs:363 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": false,
       "applied": false,
@@ -35708,12 +35838,12 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 148,
+          "line": 155,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 150,
+          "line": 157,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -35868,7 +35998,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 750,
+          "line": 757,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -35898,7 +36028,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 759,
+          "line": 766,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -35928,7 +36058,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 755,
+          "line": 762,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -35958,17 +36088,17 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 797,
+          "line": 804,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 807,
+          "line": 814,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 816,
+          "line": 823,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -35998,12 +36128,12 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 1255,
+          "line": 1262,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 1691,
+          "line": 1698,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -36033,7 +36163,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 667,
+          "line": 674,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -36063,7 +36193,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 359,
+          "line": 366,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -36093,12 +36223,12 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 659,
+          "line": 666,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 742,
+          "line": 749,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -36128,7 +36258,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 675,
+          "line": 682,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -36158,7 +36288,7 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 1620,
+          "line": 1627,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -36188,13 +36318,13 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 1489,
+          "line": 1496,
           "evidence": "Rust path reference"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "non_value_structural",
-      "review_evidence": "explicit census disposition override: `PROCESS_OUTPUT_LIMIT` at crates/eval/src/runner.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/eval/src/runner.rs:1489 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "explicit census disposition override: `PROCESS_OUTPUT_LIMIT` at crates/eval/src/runner.rs — the declaration is structural state/type/alias evidence, not an independent runtime value; observed at crates/eval/src/runner.rs:1496 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": true,
       "applied": false,
@@ -36213,13 +36343,13 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 171,
+          "line": 178,
           "evidence": "inline production quality/default struct field value"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "identity",
-      "review_evidence": "closed source-form invariant rule: `runner` at crates/eval/src/runner.rs — the literal identifies one fixed evaluation arm and does not control production behavior; observed at crates/eval/src/runner.rs:171; mechanical source evidence only, not a claim of human review",
+      "review_evidence": "closed source-form invariant rule: `runner` at crates/eval/src/runner.rs — the literal identifies one fixed evaluation arm and does not control production behavior; observed at crates/eval/src/runner.rs:178; mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": false,
       "applied": false
@@ -36237,13 +36367,13 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 175,
+          "line": 182,
           "evidence": "inline production quality/default struct field value"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "identity",
-      "review_evidence": "closed source-form invariant rule: `runner` at crates/eval/src/runner.rs — the literal identifies one fixed evaluation arm and does not control production behavior; observed at crates/eval/src/runner.rs:175; mechanical source evidence only, not a claim of human review",
+      "review_evidence": "closed source-form invariant rule: `runner` at crates/eval/src/runner.rs — the literal identifies one fixed evaluation arm and does not control production behavior; observed at crates/eval/src/runner.rs:182; mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": false,
       "applied": false
@@ -36261,13 +36391,13 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 172,
+          "line": 179,
           "evidence": "inline production quality/default struct field value"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "identity",
-      "review_evidence": "closed source-form invariant rule: `runner` at crates/eval/src/runner.rs — the literal identifies one fixed evaluation arm and does not control production behavior; observed at crates/eval/src/runner.rs:172; mechanical source evidence only, not a claim of human review",
+      "review_evidence": "closed source-form invariant rule: `runner` at crates/eval/src/runner.rs — the literal identifies one fixed evaluation arm and does not control production behavior; observed at crates/eval/src/runner.rs:179; mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": false,
       "applied": false
@@ -36285,13 +36415,13 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 176,
+          "line": 183,
           "evidence": "inline production quality/default struct field value"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "identity",
-      "review_evidence": "closed source-form invariant rule: `runner` at crates/eval/src/runner.rs — the literal identifies one fixed evaluation arm and does not control production behavior; observed at crates/eval/src/runner.rs:176; mechanical source evidence only, not a claim of human review",
+      "review_evidence": "closed source-form invariant rule: `runner` at crates/eval/src/runner.rs — the literal identifies one fixed evaluation arm and does not control production behavior; observed at crates/eval/src/runner.rs:183; mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": false,
       "applied": false
@@ -36613,7 +36743,7 @@
         },
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 28,
+          "line": 35,
           "evidence": "Rust path reference"
         },
         {
@@ -38918,13 +39048,13 @@
       "use_sites": [
         {
           "path": "crates/eval/src/runner.rs",
-          "line": 535,
+          "line": 542,
           "evidence": "Rust path reference"
         }
       ],
       "disposition": "invariant_read_only",
       "invariant_kind": "identity",
-      "review_evidence": "closed Tier-2 disposition rule: `EVAL_SCHEMA_VERSION` at crates/eval/src/types.rs — the value participates in stable identity/canonical naming; observed at crates/eval/src/runner.rs:535 (Rust path reference); mechanical source evidence only, not a claim of human review",
+      "review_evidence": "closed Tier-2 disposition rule: `EVAL_SCHEMA_VERSION` at crates/eval/src/types.rs — the value participates in stable identity/canonical naming; observed at crates/eval/src/runner.rs:542 (Rust path reference); mechanical source evidence only, not a claim of human review",
       "owning_human_review": "required_not_source_proven",
       "explicit_invariant_override": false,
       "applied": false,
