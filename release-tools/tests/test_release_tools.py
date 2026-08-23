@@ -1610,7 +1610,7 @@ class SchemaCompatibilityBridgeTest(unittest.TestCase):
             "blob": "a61c3410a287a937e21714421ef109d91f1f271c",
         },
         "v0.0.9": {
-            "candidate": "v0.0.18",
+            "candidate": "v0.0.19",
             "commit": "216253708d4e7502f15a35996db949f64ee67417",
             "blob": "d291aa5ac3f0a9f11353722edb4485eb9acb93ca",
         },
@@ -1802,6 +1802,37 @@ class VersionIndependenceProofTest(unittest.TestCase):
             'test "$summaries" -eq 1',
             workflow,
             "without this a renamed or filtered-out test would pass silently",
+        )
+
+
+class PosixOnlyInstallerTest(unittest.TestCase):
+    """A POSIX-only release prints only the installer it has.
+
+    Scoping the release to POSIX left `--windows` unset, and `verify_installers`
+    already branches on the manifest for exactly that. `main` did not: it printed
+    both paths unconditionally and raised
+    `AttributeError: 'NoneType' object has no attribute 'as_posix'` -- after all
+    three targets had built and the release environment had been approved.
+    """
+
+    ROOT = Path(__file__).resolve().parents[2]
+
+    def test_the_windows_installer_path_is_printed_only_when_present(self) -> None:
+        body = (self.ROOT / "release-tools/verify_release.py").read_text(encoding="utf-8")
+        self.assertIn(
+            "if arguments.windows is not None:",
+            body,
+            "verify_release prints the Windows installer unconditionally; a POSIX-only "
+            "release passes no --windows and this raises after every target has built",
+        )
+
+    def test_the_workflow_passes_only_the_installers_it_builds(self) -> None:
+        workflow = (self.ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+        targets = re.findall(r"^\s+--target ([a-z0-9_-]+)\s*\\?$", workflow, re.M)
+        self.assertNotIn(
+            "x86_64-pc-windows-msvc",
+            targets,
+            "the release ships a Windows target again; --windows must be passed with it",
         )
 
 
