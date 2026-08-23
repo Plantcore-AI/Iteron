@@ -27,6 +27,9 @@ const UTF8_BOM: &[u8; 3] = b"\xef\xbb\xbf";
 /// First line of a `read_file` window when the caller omits `offset`. Line numbering is 1-based,
 /// so an absent offset has to mean the start of the file, not line zero.
 const DEFAULT_READ_OFFSET_LINE: u64 = 1;
+/// Shallow orientation is the cheapest useful default. The value remains a searchable runtime
+/// parameter so tuning can change it without introducing a model/provider branch.
+const DEFAULT_LIST_DIR_DEPTH: usize = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LineEnding {
@@ -322,7 +325,8 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
     register_outline(r)?;
     crate::grep_tool::register(r)?;
     let read_policy = r.observation_tool_policy_handle();
-    r.push_tool(
+    let read_focus = r.observation_focus_handle();
+    r.push_targeted_observation_tool(
         ToolSpec {
             name: "read_file".into(),
             description: format!(
@@ -360,6 +364,7 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
         },
         move |call, root| {
             let policy = read_policy.get().copied();
+            let focus = read_focus.clone();
             boxfut::box_it(async move {
                 let id = call.id.clone();
                 let Some(policy) = policy else {
@@ -377,7 +382,10 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
                 match resolve_in_root(&root, path) {
                     Err(e) => err_result(id, e),
                     Ok(p) => match read_numbered_file(&p, window, policy.read_file).await {
-                        Ok(content) => ok_result(id, content),
+                        Ok(content) => {
+                            focus.observe(p, &content);
+                            ok_result(id, content)
+                        }
                         Err(e) => err_result(id, format!("read {path}: {e}")),
                     },
                 }
@@ -389,14 +397,18 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
     r.push_tool(
         ToolSpec {
             name: "list_dir".into(),
-            description: "List files under a directory, skipping .git and common build/vendor \
-                          dirs. `path` may be relative to the repo root or an absolute host path. \
-                          Returns one path per line: relative when the file is under the repo \
-                          root, absolute when it is not."
+            description: "List one directory level for fast repository orientation, skipping .git \
+                          and common build/vendor dirs. Directories end in `/`; files are returned \
+                          one path per line. `path` may be relative to the repo root or an absolute \
+                          host path. Set optional `depth` only when a bounded recursive listing is \
+                          genuinely useful; prefer `glob` for targeted recursive discovery."
                 .into(),
             input_schema: serde_json::json!({
                 "type":"object",
-                "properties":{"path":{"type":"string","description":"dir relative to the repo root, or an absolute host path; default '.'"}},
+                "properties":{
+                    "path":{"type":"string","description":"dir relative to the repo root, or an absolute host path; default '.'"},
+                    "depth":{"type":"integer","minimum":1,"description":"optional traversal depth; defaults to 1 and cannot exceed the pinned runtime ceiling"}
+                },
             }),
             purity: Purity::Pure,
             capability: Capability::ReadOnly,
@@ -414,7 +426,11 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
                     .and_then(|x| x.as_str())
                     .unwrap_or(".")
                     .to_owned();
-                match tokio::task::spawn_blocking(move || list_directory(&root, &rel, policy.list_dir)).await {
+                let depth = match list_depth(&call.input, policy.list_dir.max_depth) {
+                    Ok(depth) => depth,
+                    Err(error) => return err_result(id, error),
+                };
+                match tokio::task::spawn_blocking(move || list_directory(&root, &rel, depth, policy.list_dir)).await {
                     Ok(Ok(output)) => ok_result(id, output),
                     Ok(Err(error)) => err_result(id, error),
                     Err(error) => err_result(id, format!("list_dir worker failed: {error}")),
@@ -474,6 +490,7 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
 fn list_directory(
     root: &Path,
     relative: &str,
+    depth: usize,
     policy: crate::DirectoryListPolicy,
 ) -> Result<String, String> {
     let base = resolve_in_root(root, relative)?;
@@ -481,12 +498,14 @@ fn list_directory(
     let mut output_bytes = 0usize;
     let mut emitted_entries = 0usize;
     for entry in WalkDir::new(&base)
-        .max_depth(policy.max_depth)
+        .min_depth(1)
+        .max_depth(depth)
+        .sort_by_file_name()
         .into_iter()
         .filter_entry(|entry| !is_ignored(entry.file_name().to_str().unwrap_or("")))
         .flatten()
     {
-        if !entry.file_type().is_file() {
+        if !entry.file_type().is_file() && !entry.file_type().is_dir() {
             continue;
         }
         if emitted_entries >= policy.max_entries {
@@ -500,7 +519,10 @@ fn list_directory(
             );
             break;
         }
-        let line = crate::display_path(root, entry.path());
+        let mut line = crate::display_path(root, entry.path());
+        if entry.file_type().is_dir() {
+            line.push('/');
+        }
         let framed = line.len().saturating_add(usize::from(!out.is_empty()));
         if output_bytes.saturating_add(framed) > policy.output_max_bytes {
             append_bounded_marker(
@@ -515,6 +537,31 @@ fn list_directory(
         emitted_entries = emitted_entries.saturating_add(1);
     }
     Ok(out.join("\n"))
+}
+
+fn list_depth(input: &serde_json::Value, max_depth: usize) -> Result<usize, String> {
+    let Some(value) = input.get("depth") else {
+        return Ok(iteron_tunables::param_usize(
+            "tools.fs_tools.default_list_dir_depth",
+            iteron_tunables::param_integer(
+                "tools.fs_tools.default_list_dir_depth",
+                DEFAULT_LIST_DIR_DEPTH,
+            ),
+        )
+        .min(max_depth));
+    };
+    let Some(value) = value.as_u64().and_then(|value| usize::try_from(value).ok()) else {
+        return Err("list_dir: `depth` must be a positive integer (minimum 1)".into());
+    };
+    if value == 0 {
+        return Err("list_dir: `depth` must be a positive integer (minimum 1)".into());
+    }
+    if value > max_depth {
+        return Err(format!(
+            "list_dir: requested depth {value} exceeds the pinned runtime ceiling {max_depth}; narrow the request or use glob"
+        ));
+    }
+    Ok(value)
 }
 
 fn glob_files(
@@ -610,19 +657,18 @@ fn wild_seg(pat: &str, s: &str) -> bool {
     )
 }
 
-/// The localization-ladder tool: a repo skeleton (declarations only), fit to a token budget.
-/// Agentless: the skeleton beats whole-file localization by +5.3pp at 7.5x less cost. This is
-/// the map the agent should read FIRST on an unfamiliar repo, before materializing any file.
+/// An on-demand localization fallback: a repo skeleton (declarations only), fit to a token budget.
+/// It remains available when targeted reads and searches leave repository coverage incomplete.
 pub(crate) fn register_outline(r: &mut Registry) -> Result<(), ToolError> {
     let repo_map_policy = r.observation_tool_policy_handle();
     r.push_tool(
         ToolSpec {
             name: "repo_map".into(),
-            description: "Get a skeleton of the repository: every code file and its top-level \
-                          declarations (functions, classes, types), no bodies. Read this FIRST \
-                          on an unfamiliar repo to localize, then read_file only the files you \
-                          actually need. Optional `query` task text or identifiers boost files \
-                          that declare those identifiers above unrelated declaration-heavy files."
+            description: "Get a bounded skeleton of repository code files and their top-level \
+                          declarations (functions, classes, types), no bodies. Use this fallback \
+                          on demand when targeted reads or searches leave repository coverage \
+                          incomplete. Optional `query` task text or identifiers boost files that \
+                          declare those identifiers above unrelated declaration-heavy files."
                 .into(),
             input_schema: serde_json::json!({
                 "type":"object",
@@ -667,6 +713,130 @@ pub(crate) fn register_outline(r: &mut Registry) -> Result<(), ToolError> {
             })
         },
     )
+}
+
+/// Bounded lexical fallback shared by native file observations when semantic indexes are absent.
+pub(crate) mod structural_context {
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Delimiter {
+        Curly,
+        Square,
+    }
+
+    #[derive(Clone, Copy, Default)]
+    enum State {
+        #[default]
+        Code,
+        Single,
+        Double,
+        Template,
+        Comment,
+    }
+
+    pub(crate) fn enclosing_span(
+        lines: &[&str],
+        match_line: usize,
+        max_lines: usize,
+    ) -> Option<(usize, usize)> {
+        if lines.is_empty() || match_line >= lines.len() || max_lines < 2 {
+            return None;
+        }
+        let mut state = State::default();
+        let mut escaped = false;
+        let mut stack = Vec::new();
+        let mut candidates = Vec::new();
+        for (line_index, line) in lines.iter().enumerate() {
+            let bytes = line.as_bytes();
+            let mut index = 0;
+            while index < bytes.len() {
+                let byte = bytes[index];
+                let next = bytes.get(index + 1).copied();
+                match state {
+                    State::Code => match (byte, next) {
+                        (b'/', Some(b'/')) => break,
+                        (b'/', Some(b'*')) => {
+                            state = State::Comment;
+                            index += 1;
+                        }
+                        (b'\'', _) => state = State::Single,
+                        (b'"', _) => state = State::Double,
+                        (b'`', _) => state = State::Template,
+                        (b'{', _) => stack.push((Delimiter::Curly, line_index)),
+                        (b'[', _) => stack.push((Delimiter::Square, line_index)),
+                        (b'}', _) => close(
+                            Delimiter::Curly,
+                            line_index,
+                            match_line,
+                            &mut stack,
+                            &mut candidates,
+                        ),
+                        (b']', _) => close(
+                            Delimiter::Square,
+                            line_index,
+                            match_line,
+                            &mut stack,
+                            &mut candidates,
+                        ),
+                        _ => {}
+                    },
+                    State::Comment if byte == b'*' && next == Some(b'/') => {
+                        state = State::Code;
+                        index += 1;
+                    }
+                    State::Single | State::Double | State::Template => {
+                        if escaped {
+                            escaped = false;
+                        } else if byte == b'\\' {
+                            escaped = true;
+                        } else if matches!(
+                            (state, byte),
+                            (State::Single, b'\'')
+                                | (State::Double, b'"')
+                                | (State::Template, b'`')
+                        ) {
+                            state = State::Code;
+                        }
+                    }
+                    State::Comment => {}
+                }
+                index += 1;
+            }
+            if matches!(state, State::Single | State::Double) {
+                state = State::Code;
+                escaped = false;
+            }
+        }
+        let (start, end) = candidates
+            .into_iter()
+            .min_by_key(|(start, end)| end.saturating_sub(*start))?;
+        if end.saturating_sub(start) <= max_lines {
+            return Some((start, end));
+        }
+        let mut clipped_start = match_line.saturating_sub(max_lines / 2).max(start);
+        let clipped_end = clipped_start.saturating_add(max_lines).min(end);
+        clipped_start = clipped_end.saturating_sub(max_lines).max(start);
+        Some((
+            clipped_start,
+            clipped_start.saturating_add(max_lines).min(end),
+        ))
+    }
+
+    fn close(
+        kind: Delimiter,
+        line: usize,
+        target: usize,
+        stack: &mut Vec<(Delimiter, usize)>,
+        candidates: &mut Vec<(usize, usize)>,
+    ) {
+        let Some((open, start)) = stack.pop() else {
+            return;
+        };
+        if open != kind {
+            stack.clear();
+        } else if start <= target && target <= line && start < line {
+            candidates.push((start, line + 1));
+        }
+    }
 }
 
 #[cfg(test)]

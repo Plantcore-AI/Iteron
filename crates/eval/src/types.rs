@@ -1,7 +1,141 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-pub const EVAL_SCHEMA_VERSION: u32 = 3;
+pub const EVAL_SCHEMA_VERSION: u32 = 6;
+
+/// One provider-independent, non-overlapping context-source vector.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContextComponentTokens {
+    pub stable_prefix: u64,
+    pub instructions: u64,
+    pub task_context: u64,
+    pub memory: u64,
+    pub transcript: u64,
+    pub attachments: u64,
+    pub tool_schemas: u64,
+    pub tool_results: u64,
+    pub lsp_results: u64,
+}
+
+impl ContextComponentTokens {
+    pub(crate) fn checked_add(self, other: Self) -> Option<Self> {
+        Some(Self {
+            stable_prefix: self.stable_prefix.checked_add(other.stable_prefix)?,
+            instructions: self.instructions.checked_add(other.instructions)?,
+            task_context: self.task_context.checked_add(other.task_context)?,
+            memory: self.memory.checked_add(other.memory)?,
+            transcript: self.transcript.checked_add(other.transcript)?,
+            attachments: self.attachments.checked_add(other.attachments)?,
+            tool_schemas: self.tool_schemas.checked_add(other.tool_schemas)?,
+            tool_results: self.tool_results.checked_add(other.tool_results)?,
+            lsp_results: self.lsp_results.checked_add(other.lsp_results)?,
+        })
+    }
+
+    pub(crate) fn component_max(self, other: Self) -> Self {
+        Self {
+            stable_prefix: self.stable_prefix.max(other.stable_prefix),
+            instructions: self.instructions.max(other.instructions),
+            task_context: self.task_context.max(other.task_context),
+            memory: self.memory.max(other.memory),
+            transcript: self.transcript.max(other.transcript),
+            attachments: self.attachments.max(other.attachments),
+            tool_schemas: self.tool_schemas.max(other.tool_schemas),
+            tool_results: self.tool_results.max(other.tool_results),
+            lsp_results: self.lsp_results.max(other.lsp_results),
+        }
+    }
+}
+
+/// Complete source-separated evidence across all sampled turns of one run.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContextComponentMetrics {
+    pub cumulative: ContextComponentTokens,
+    pub peak: ContextComponentTokens,
+    pub final_turn: ContextComponentTokens,
+}
+
+/// Content-free runtime behavior observed from the stable CLI event stream.
+///
+/// These are diagnostic optimization signals, not task-success substitutes. Ground-truth still
+/// decides whether a candidate resolved the task; this record explains where equal-quality
+/// candidates spent tool and context work. Every counter is derived from typed machine events,
+/// never from model text, notices, provider identity, or a harness-specific log parser.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OptimizationMetrics {
+    pub tool_calls_started: u64,
+    pub tool_calls_completed: u64,
+    pub tool_errors: u64,
+    pub peak_tool_concurrency: u64,
+    pub context_samples: u64,
+    /// Sum of per-turn request-context estimates. This is an area-under-context signal: repeatedly
+    /// replaying a large prefix costs more than reaching the same peak once.
+    pub cumulative_context_tokens: u64,
+    pub peak_context_tokens: u64,
+    pub final_context_tokens: Option<u64>,
+    pub peak_system_tokens: u64,
+    pub peak_tool_schema_tokens: u64,
+    pub peak_transcript_tokens: u64,
+    /// Typed transcript decreases between consecutive turn-end estimates. A decrease is evidence
+    /// of reclaimed transcript, without claiming which runtime mechanism caused it.
+    pub transcript_shrink_events: u64,
+    pub transcript_tokens_reclaimed: u64,
+    /// Present only when every observed turn carried the source-separated v6 context vector.
+    /// Older stream versions remain readable and leave this absent rather than inventing zeros.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_components: Option<ContextComponentMetrics>,
+}
+
+/// Provider-independent work performed by the agent process itself.
+///
+/// `elapsed_ms` stops before repository diff collection and external oracle execution. Token
+/// classes are disjoint except that `thinking` is an attribution subset of `output`, so it is
+/// never added a second time by [`AgentMetrics::total_tokens`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentMetrics {
+    pub elapsed_ms: u64,
+    pub usage: Option<iteron_protocol::Usage>,
+    /// Present when the selected machine-output surface carried typed tool/context events. Legacy
+    /// v4 manifests and final-result-only harnesses leave this absent rather than synthesizing
+    /// zero behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub optimization: Option<OptimizationMetrics>,
+}
+
+impl AgentMetrics {
+    pub fn total_tokens(self) -> Option<u64> {
+        let usage = self.usage?;
+        if usage.thinking > usage.output {
+            return None;
+        }
+        usage
+            .input
+            .checked_add(usage.cache_creation)?
+            .checked_add(usage.cache_read)?
+            .checked_add(usage.output)
+    }
+}
+
+#[cfg(test)]
+mod agent_metrics_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_v4_agent_metrics_do_not_invent_optimization_evidence() {
+        let metrics: AgentMetrics = serde_json::from_str(
+            r#"{"elapsed_ms":17,"usage":{"input":3,"output":2,"cache_creation":0,"cache_read":0,"thinking":0}}"#,
+        )
+        .expect("the additive v5 field must preserve v4 manifest readability");
+
+        assert_eq!(metrics.elapsed_ms, 17);
+        assert_eq!(metrics.optimization, None);
+        assert_eq!(metrics.total_tokens(), Some(5));
+    }
+}
 
 /// Stable process exit codes for the `iteron-eval` binary.
 ///
@@ -196,6 +330,10 @@ pub struct CellResult {
     pub oracle_status: OracleStatus,
     pub oracle_detail: Option<String>,
     pub sampling: SamplingControl,
+    /// Exact agent-process measurements. Legacy v3 manifests deserialize this as unavailable;
+    /// missing measurements can be inspected but cannot support a speed/token superiority claim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_metrics: Option<AgentMetrics>,
     pub elapsed_ms: u64,
     pub error: Option<String>,
     pub candidate_diff: Option<String>,
@@ -228,6 +366,7 @@ impl CellResult {
                 enforcement: "uncontrolled".into(),
                 reason: Some("route exposes no sampling-seed contract".into()),
             },
+            agent_metrics: None,
             elapsed_ms: 0,
             error: Some(error.into()),
             candidate_diff: None,

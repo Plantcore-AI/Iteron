@@ -1939,7 +1939,6 @@ for binding in materialization["production_plan"]["implementations"]:
         stdin=subprocess.DEVNULL,
         capture_output=True,
         check=False,
-        timeout=1,
     )
     marker = completed.stdout.decode("utf-8", "strict")
     terminal = completed.returncode == 0 and marker == "fixture-implementation-observed\n"

@@ -29,7 +29,6 @@ struct SnapshotEntryState {
 #[derive(Debug, Clone)]
 pub(crate) struct EffectiveTunablesView {
     effective_digest_sha256: String,
-    profile_digest_sha256: Option<String>,
     values: BTreeMap<String, ResolutionValue>,
     entry_states: BTreeMap<String, SnapshotEntryState>,
     snapshot_families: BTreeSet<String>,
@@ -128,7 +127,6 @@ impl EffectiveTunablesView {
     pub(crate) fn from_test_values(values: BTreeMap<String, ResolutionValue>) -> Self {
         Self {
             effective_digest_sha256: "0".repeat(64),
-            profile_digest_sha256: None,
             values,
             entry_states: BTreeMap::new(),
             snapshot_families: BTreeSet::new(),
@@ -196,7 +194,6 @@ impl EffectiveTunablesView {
         }
         Ok(Self {
             effective_digest_sha256: snapshot.effective_digest_sha256.clone(),
-            profile_digest_sha256: snapshot.profile_digest_sha256.clone(),
             values,
             entry_states,
             snapshot_families: snapshot
@@ -448,18 +445,8 @@ impl EffectiveTunablesView {
     pub(crate) fn runtime_profile(
         &self,
     ) -> Result<iteron_tunables::RuntimeProfile, EffectiveViewError> {
-        let digest = self
-            .profile_digest_sha256
-            .as_deref()
-            .ok_or(EffectiveViewError::UnknownProfile)?;
-        for profile in iteron_tunables::RuntimeProfile::ALL {
-            let candidate = iteron_tunables::runtime_profile_digest(profile)
-                .map_err(|_| EffectiveViewError::Decode("runtime_profile".into()))?;
-            if candidate == digest {
-                return Ok(profile);
-            }
-        }
-        Err(EffectiveViewError::UnknownProfile)
+        runtime_profile_from_isolation_label(self.enumeration("session_isolation_profile")?)
+            .ok_or(EffectiveViewError::UnknownProfile)
     }
 
     pub(crate) fn value(&self, family: &str) -> Result<&ResolutionValue, EffectiveViewError> {
@@ -527,6 +514,28 @@ impl EffectiveTunablesView {
             ResolutionValue::Map { entries } => Ok(entries),
             _ => Err(wrong_type(family, "map")),
         }
+    }
+}
+
+/// Recover the physical runtime-profile identity from the immutable family that owns session
+/// isolation. The profile document digest is deliberately not consulted here: it fingerprints the
+/// complete value-bearing document and therefore changes whenever a valid override is added.
+pub(crate) fn checkpoint_runtime_profile(
+    checkpoint: &TunablesCheckpoint,
+) -> Option<iteron_tunables::RuntimeProfile> {
+    let view = EffectiveTunablesView::from_checkpoint(checkpoint).ok()?;
+    let ResolutionValue::Enum { value } = view.values.get("session_isolation_profile")? else {
+        return None;
+    };
+    runtime_profile_from_isolation_label(value)
+}
+
+fn runtime_profile_from_isolation_label(label: &str) -> Option<iteron_tunables::RuntimeProfile> {
+    match label {
+        "interactive" => Some(iteron_tunables::RuntimeProfile::Interactive),
+        "hermetic" => Some(iteron_tunables::RuntimeProfile::Benchmark),
+        "durable" => Some(iteron_tunables::RuntimeProfile::Research),
+        _ => None,
     }
 }
 
@@ -665,6 +674,7 @@ fn protocol_fixed_authority(authority: FixedAuthorityId) -> RunGenesisFixedAutho
 mod tests {
     use super::*;
     use iteron_protocol::{RunGenesisTunablesSnapshot, RunGenesisTunablesVersion};
+    use iteron_tunables::{ProfileValue, RuntimeProfile, SourceKind};
 
     #[test]
     fn v1_identity_is_never_misrepresented_as_runtime_values() {
@@ -751,5 +761,100 @@ mod tests {
         let mut forged = valid;
         forged["source"]["declared_locator"] = serde_json::json!("crates/forged.rs");
         assert!(!canonical_provenance_matches(family, &forged));
+    }
+
+    #[test]
+    fn session_isolation_labels_are_a_total_runtime_profile_bijection() {
+        for (label, expected) in [
+            ("interactive", RuntimeProfile::Interactive),
+            ("hermetic", RuntimeProfile::Benchmark),
+            ("durable", RuntimeProfile::Research),
+        ] {
+            let view = EffectiveTunablesView::from_test_values(BTreeMap::from([(
+                "session_isolation_profile".into(),
+                ResolutionValue::Enum {
+                    value: label.into(),
+                },
+            )]));
+            let decoded = view.runtime_profile().expect("known label decodes");
+            assert_eq!(decoded, expected);
+            crate::session_isolation::SessionIsolationPolicy::from_label(label)
+                .expect("known label installs a physical policy")
+                .validate_profile(decoded)
+                .expect("label, runtime profile, and installed policy agree");
+        }
+
+        let invalid = EffectiveTunablesView::from_test_values(BTreeMap::from([(
+            "session_isolation_profile".into(),
+            ResolutionValue::Enum {
+                value: "unknown".into(),
+            },
+        )]));
+        assert_eq!(
+            invalid.runtime_profile().unwrap_err(),
+            EffectiveViewError::UnknownProfile
+        );
+    }
+
+    #[test]
+    fn value_bearing_profile_keeps_its_content_digest_and_decodes_physical_identity() {
+        let mut input = iteron_record::resolved_fixture::input();
+        input
+            .profile
+            .as_mut()
+            .expect("fixture has a named interactive profile")
+            .values
+            .push(ProfileValue {
+                family: "max_turns".into(),
+                as_declared_source: SourceKind::UserConfig,
+                value: ResolutionValue::Integer { value: 10 },
+            });
+        let resolved = iteron_tunables::resolve(input).expect("value-bearing profile resolves");
+        let resolved =
+            iteron_tunables::with_synthetic_fixed_authority_attestations_for_test(resolved)
+                .expect("fixture fixed authorities remain valid");
+        let checkpoint = TunablesCheckpoint::V2(
+            iteron_record::snapshot_v2_from_resolved(&resolved).expect("resolved set projects"),
+        );
+        let snapshot = checkpoint.as_v2().expect("V2 checkpoint");
+        let content_digest = snapshot
+            .profile_digest_sha256
+            .as_deref()
+            .expect("value-bearing profile keeps immutable content provenance");
+        let empty_profile_digest =
+            iteron_tunables::runtime_profile_digest(RuntimeProfile::Interactive).unwrap();
+        assert_ne!(
+            content_digest,
+            empty_profile_digest.as_str(),
+            "an override must change the content digest instead of impersonating the empty base profile"
+        );
+
+        let view = EffectiveTunablesView::from_checkpoint(&checkpoint).unwrap();
+        let decoded = view
+            .with_getter(RuntimeGetterId::EffectiveCore, || view.runtime_profile())
+            .expect("session-isolation identity decodes independently of content digest");
+        assert_eq!(decoded, RuntimeProfile::Interactive);
+        assert_eq!(checkpoint_runtime_profile(&checkpoint), Some(decoded));
+
+        let mut tampered = checkpoint;
+        let TunablesCheckpoint::V2(snapshot) = &mut tampered else {
+            unreachable!("test checkpoint is V2")
+        };
+        let entry = snapshot
+            .entries
+            .iter_mut()
+            .find(|entry| entry.family_id == "session_isolation_profile")
+            .expect("session-isolation family is present");
+        entry.effective_value = Some(
+            serde_json::to_value(ResolutionValue::Enum {
+                value: "durable".into(),
+            })
+            .unwrap(),
+        );
+        assert_eq!(
+            checkpoint_runtime_profile(&tampered),
+            None,
+            "an invalid checkpoint must not acquire a display identity"
+        );
     }
 }

@@ -14,6 +14,11 @@ const MAX_SCHEMA_DEPTH: usize = 16;
 const MAX_SCHEMA_NODES: usize = 1_024;
 const MAX_OBJECT_FIELDS: usize = 256;
 const MAX_ARRAY_ITEMS: usize = 4_096;
+const MAX_ENUM_VALUES: usize = 64;
+
+fn max_enum_values() -> usize {
+    iteron_tunables::param_usize("tools.schema.max_enum_values", MAX_ENUM_VALUES)
+}
 
 /// A malformed or unsupported schema. These errors are registration failures, so an external
 /// tool cannot advertise constraints that this registry does not actually enforce.
@@ -69,12 +74,8 @@ fn validate_schema_at(
         .ok_or_else(|| SchemaError::new(path, "schema must be an object"))?;
 
     // This allowlist and `validate_arguments_at` are two halves of one contract: every keyword
-    // admitted here is enforced there, and each of the eight below appears in both. Do not add a
-    // keyword to this list alone. `enum` in particular looks harmless because it only narrows what
-    // is valid, so it cannot widen what a server may ask for; but nothing checks it at call time,
-    // so admitting it would make it the first keyword advertised to the model and not enforced.
-    // A constraint that is announced and unchecked is worse than one that is refused. If `enum`
-    // is wanted, add the check to `validate_arguments_at` in the same change.
+    // admitted here is enforced there. Do not add a keyword to this list alone: a constraint that
+    // is announced to the model and unchecked at dispatch is worse than one that is refused.
     for keyword in object.keys() {
         if !matches!(
             keyword.as_str(),
@@ -86,6 +87,7 @@ fn validate_schema_at(
                 | "maxItems"
                 | "description"
                 | "minimum"
+                | "enum"
         ) {
             return Err(SchemaError::new(
                 format!("{path}.{keyword}").as_str(),
@@ -121,6 +123,41 @@ fn validate_schema_at(
         }
         None => None,
     };
+
+    if let Some(values) = object.get("enum") {
+        let values = values.as_array().ok_or_else(|| {
+            SchemaError::new(&format!("{path}.enum"), "`enum` must be a non-empty array")
+        })?;
+        if values.is_empty() || values.len() > max_enum_values() {
+            return Err(SchemaError::new(
+                &format!("{path}.enum"),
+                format!(
+                    "`enum` must contain between 1 and {} values",
+                    max_enum_values()
+                ),
+            ));
+        }
+        let expected = declared_type.ok_or_else(|| {
+            SchemaError::new(
+                &format!("{path}.enum"),
+                "`enum` requires an explicit supported `type`",
+            )
+        })?;
+        for (index, value) in values.iter().enumerate() {
+            if !has_type(value, expected) {
+                return Err(SchemaError::new(
+                    &format!("{path}.enum[{index}]"),
+                    format!("enum value must have declared type `{expected}`"),
+                ));
+            }
+            if values[..index].contains(value) {
+                return Err(SchemaError::new(
+                    &format!("{path}.enum[{index}]"),
+                    "duplicate enum value",
+                ));
+            }
+        }
+    }
 
     if object.contains_key("properties") || object.contains_key("required") {
         if declared_type != Some("object") {
@@ -293,6 +330,16 @@ fn validate_arguments_at(schema: &Value, input: &Value, path: &str) -> Result<()
             field: display_path(path),
             expected: supported_type(expected),
             actual: value_type(input),
+        });
+    }
+
+    if let Some(values) = schema.get("enum").and_then(Value::as_array)
+        && !values.contains(input)
+    {
+        return Err(ArgumentError::NotInEnum {
+            field: display_path(path),
+            actual: input.clone(),
+            allowed_count: values.len(),
         });
     }
 

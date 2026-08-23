@@ -78,12 +78,12 @@ const MAX_REQUEST_ID_CHARS: usize = 256;
 const TRANSPORT_CONNECT_TLS_SECS: u64 = 10;
 /// Physical deadline for one provider request, long-running generations included. This is the
 /// outer bound the agent can never exceed, not an expected duration.
-const TRANSPORT_REQUEST_TOTAL_SECS: u64 = 15 * 60;
+const TRANSPORT_REQUEST_TOTAL_SECS: u64 = 5 * 60;
 /// Interactive retries longer than this are refused visibly instead of making the UI appear hung.
-pub const MAX_INTERACTIVE_RETRY_AFTER: Duration = Duration::from_secs(60);
+pub const MAX_INTERACTIVE_RETRY_AFTER: Duration = Duration::from_secs(20);
 
 /// Effective interactive retry wait ceiling. Profiles may make the UI fail faster, but cannot
-/// relax the audited one-minute upper bound and make an interactive run appear hung.
+/// relax the audited twenty-second upper bound and make an interactive run appear hung.
 pub fn max_interactive_retry_after() -> Duration {
     iteron_tunables::param_duration(
         "provider.lib.max_interactive_retry_after",
@@ -93,7 +93,7 @@ pub fn max_interactive_retry_after() -> Duration {
 }
 /// Stream-idle watchdog: a stream that emits nothing for this long is treated as dead rather
 /// than held open until the total deadline.
-const TRANSPORT_STREAM_IDLE_SECS: u64 = 120;
+const TRANSPORT_STREAM_IDLE_SECS: u64 = 60;
 /// How long an idle pooled connection is kept for reuse before the pool drops it.
 const TRANSPORT_POOL_IDLE_SECS: u64 = 300;
 /// TCP keepalive interval, kept well under common NAT/idle-connection reaping windows.
@@ -1861,9 +1861,12 @@ mod guard_tests {
     }
 
     #[test]
-    fn second_round_defaults_stream_idle_allows_long_reasoning_gaps() {
+    fn interactive_transport_defaults_bound_request_and_idle_tails() {
         let policy = provider_transport_timeout_policy();
-        assert_eq!(policy.stream_idle, Duration::from_secs(120));
+        assert_eq!(policy.request_total, Duration::from_secs(300));
+        assert_eq!(policy.stream_idle, Duration::from_secs(60));
+        assert_eq!(max_interactive_retry_after(), Duration::from_secs(20));
+        assert_eq!(MAX_INTERACTIVE_RETRY_AFTER, Duration::from_secs(20));
         assert!(policy.validate().is_ok());
     }
 

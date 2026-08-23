@@ -138,7 +138,8 @@ pub(crate) fn register(
         ToolSpec {
             name: "bash".into(),
             description: "Run a bash command, cwd = the workspace root. Use for building, \
-                          running tests, git, and network access; the command runs with your own \
+                          running tests, git, and network access; use grep/read_file/glob/list_dir \
+                          instead for repository discovery and file reads. The command runs with your own \
                           user authority unless the operator passed --confine. Stdout/stderr are \
                           independently length-framed by the pinned runtime stdout/stderr \
                           ceilings and an explicit isIncomplete flag. Directory changes do not \
@@ -712,10 +713,7 @@ mod tests {
     fn d4_14_g2_one_typed_budget_controls_capture_and_rendering() {
         let owner = crate::ObservationToolPolicy::default().shell;
         let default = ShellOutputBudget::from_policy(owner, &serde_json::json!({})).unwrap();
-        assert_eq!(
-            default.stdout_bytes,
-            Confinement::UNCONFINED_MAX_OUTPUT_BYTES
-        );
+        assert_eq!(default.stdout_bytes, owner.stdout_max_bytes);
         assert_eq!(default.stderr_bytes, owner.stderr_max_bytes);
         assert_eq!(default.timeout_seconds, owner.timeout_seconds);
 

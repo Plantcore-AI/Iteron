@@ -14,6 +14,12 @@ pub struct ParetoPoint {
     pub average_cost_usd: f64,
     /// Lower is better.
     pub average_latency_ms: f64,
+    /// Agent-only latency for v4 evidence. Legacy points omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub average_agent_latency_ms: Option<f64>,
+    /// Provider-accounted token use for v4 evidence. Legacy points omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub average_tokens: Option<f64>,
     /// Lower is better.
     pub failed_runs: u64,
 }
@@ -36,6 +42,8 @@ pub enum ParetoError {
     Unpriced(String),
     #[error("candidate `{0}` has a non-finite or out-of-range metric")]
     InvalidMetric(String),
+    #[error("candidate `{0}` has incomplete v4 agent metrics")]
+    MissingPerformanceMetrics(String),
 }
 
 impl ParetoPoint {
@@ -57,6 +65,8 @@ impl ParetoPoint {
         let mut completed = 0_u64;
         let mut cost = 0.0;
         let mut latency = 0.0;
+        let mut agent_latency = 0.0;
+        let mut tokens = 0.0;
         let mut failed = 0_u64;
         for cell in &cells {
             if cell.cost_status != CostStatus::Known {
@@ -68,6 +78,16 @@ impl ParetoPoint {
                 .ok_or_else(|| ParetoError::InvalidMetric(candidate_id.clone()))?;
             cost += cell_cost;
             latency += cell.elapsed_ms as f64;
+            if manifest.schema_version >= 4 {
+                let metrics = cell
+                    .agent_metrics
+                    .ok_or_else(|| ParetoError::MissingPerformanceMetrics(candidate_id.clone()))?;
+                let cell_tokens = metrics
+                    .total_tokens()
+                    .ok_or_else(|| ParetoError::MissingPerformanceMetrics(candidate_id.clone()))?;
+                agent_latency += metrics.elapsed_ms as f64;
+                tokens += cell_tokens as f64;
+            }
             if cell.run_status == RunStatus::Completed {
                 completed += 1;
                 resolved += u64::from(cell.resolved == Some(true));
@@ -84,6 +104,9 @@ impl ParetoPoint {
             },
             average_cost_usd: cost / cells.len() as f64,
             average_latency_ms: latency / cells.len() as f64,
+            average_agent_latency_ms: (manifest.schema_version >= 4)
+                .then_some(agent_latency / cells.len() as f64),
+            average_tokens: (manifest.schema_version >= 4).then_some(tokens / cells.len() as f64),
             failed_runs: failed,
         };
         point.validate()?;
@@ -98,6 +121,12 @@ impl ParetoPoint {
             || self.average_cost_usd < 0.0
             || !self.average_latency_ms.is_finite()
             || self.average_latency_ms < 0.0
+            || self
+                .average_agent_latency_ms
+                .is_some_and(|value| !value.is_finite() || value < 0.0)
+            || self
+                .average_tokens
+                .is_some_and(|value| !value.is_finite() || value < 0.0)
         {
             return Err(ParetoError::InvalidMetric(self.candidate_id.clone()));
         }
@@ -134,12 +163,38 @@ fn dominates(left: &ParetoPoint, right: &ParetoPoint) -> bool {
     let no_worse = left.resolved_rate >= right.resolved_rate
         && left.average_cost_usd <= right.average_cost_usd
         && left.average_latency_ms <= right.average_latency_ms
+        && optional_no_worse(
+            left.average_agent_latency_ms,
+            right.average_agent_latency_ms,
+        )
+        && optional_no_worse(left.average_tokens, right.average_tokens)
         && left.failed_runs <= right.failed_runs;
     let strictly_better = left.resolved_rate > right.resolved_rate
         || left.average_cost_usd < right.average_cost_usd
         || left.average_latency_ms < right.average_latency_ms
+        || optional_strictly_better(
+            left.average_agent_latency_ms,
+            right.average_agent_latency_ms,
+        )
+        || optional_strictly_better(left.average_tokens, right.average_tokens)
         || left.failed_runs < right.failed_runs;
     no_worse && strictly_better
+}
+
+fn optional_no_worse(left: Option<f64>, right: Option<f64>) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => left <= right,
+        (Some(_), None) | (None, None) => true,
+        (None, Some(_)) => false,
+    }
+}
+
+fn optional_strictly_better(left: Option<f64>, right: Option<f64>) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => left < right,
+        (Some(_), None) => true,
+        (None, Some(_)) | (None, None) => false,
+    }
 }
 
 #[cfg(test)]
@@ -152,6 +207,8 @@ mod tests {
             resolved_rate: quality,
             average_cost_usd: cost,
             average_latency_ms: latency,
+            average_agent_latency_ms: None,
+            average_tokens: None,
             failed_runs: 0,
         }
     }
@@ -178,5 +235,15 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    #[test]
+    fn complete_agent_metrics_dominate_an_otherwise_equal_legacy_point() {
+        let legacy = point("legacy", 0.8, 1.0, 10.0);
+        let mut complete = point("complete", 0.8, 1.0, 10.0);
+        complete.average_agent_latency_ms = Some(8.0);
+        complete.average_tokens = Some(100.0);
+        let report = pareto_frontier(vec![legacy, complete]).unwrap();
+        assert_eq!(report.frontier, ["complete"]);
     }
 }

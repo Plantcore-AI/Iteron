@@ -126,6 +126,55 @@ pub(crate) fn paired_bootstrap_interval(pairs: &[(bool, bool)]) -> [f64; 2] {
     [samples[lower], samples[upper]]
 }
 
+/// Deterministic paired bootstrap for a mean `treatment - baseline` delta.
+///
+/// Invalid, negative, or missing measurements are rejected by the caller rather than being
+/// silently coerced. Pair order does not influence either the seed or the resulting interval.
+pub(crate) fn paired_mean_delta_interval(pairs: &[(f64, f64)]) -> Option<[f64; 2]> {
+    if pairs.is_empty()
+        || pairs.iter().any(|(baseline, treatment)| {
+            !baseline.is_finite() || !treatment.is_finite() || *baseline < 0.0 || *treatment < 0.0
+        })
+    {
+        return None;
+    }
+    let mut deltas = pairs
+        .iter()
+        .map(|(baseline, treatment)| treatment - baseline)
+        .collect::<Vec<_>>();
+    deltas.sort_by(f64::total_cmp);
+    let mut hasher = Sha256::new();
+    hasher.update((deltas.len() as u64).to_le_bytes());
+    for delta in &deltas {
+        hasher.update(delta.to_bits().to_le_bytes());
+    }
+    let digest = hasher.finalize();
+    let mut state = u64::from_le_bytes(
+        digest[..8]
+            .try_into()
+            .expect("a SHA-256 digest always contains eight seed bytes"),
+    );
+    if state == 0 {
+        state = 0x9e37_79b9_7f4a_7c15;
+    }
+    let sample_count = iteron_tunables::param_integer(
+        "eval.statistics.paired_bootstrap_samples",
+        PAIRED_BOOTSTRAP_SAMPLES,
+    );
+    let mut samples = Vec::with_capacity(sample_count);
+    for _ in 0..sample_count {
+        let mut sum = 0.0;
+        for _ in 0..deltas.len() {
+            state = xorshift64_star(state);
+            sum += deltas[(state % deltas.len() as u64) as usize];
+        }
+        samples.push(sum / deltas.len() as f64);
+    }
+    samples.sort_by(f64::total_cmp);
+    let last = samples.len().checked_sub(1)?;
+    Some([samples[last * 25 / 1_000], samples[last * 975 / 1_000]])
+}
+
 fn xorshift64_star(mut state: u64) -> u64 {
     state ^= state >> 12;
     state ^= state << 25;
@@ -183,5 +232,19 @@ mod tests {
         assert_eq!(first.map(f64::to_bits), reversed.map(f64::to_bits));
         assert!(first[0] <= first[1]);
         assert!(first.iter().all(|bound| (-1.0..=1.0).contains(bound)));
+    }
+
+    #[test]
+    fn paired_mean_bootstrap_is_reproducible_order_independent_and_rejects_bad_input() {
+        let pairs = [(10.0, 6.0), (20.0, 10.0), (8.0, 7.0)];
+        let first = paired_mean_delta_interval(&pairs).unwrap();
+        let second = paired_mean_delta_interval(&pairs).unwrap();
+        let reversed =
+            paired_mean_delta_interval(&pairs.into_iter().rev().collect::<Vec<_>>()).unwrap();
+        assert_eq!(first.map(f64::to_bits), second.map(f64::to_bits));
+        assert_eq!(first.map(f64::to_bits), reversed.map(f64::to_bits));
+        assert!(first[1] < 0.0);
+        assert!(paired_mean_delta_interval(&[]).is_none());
+        assert!(paired_mean_delta_interval(&[(1.0, f64::NAN)]).is_none());
     }
 }

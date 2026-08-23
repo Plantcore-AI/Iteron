@@ -27,6 +27,10 @@ const GLM_STANDARD_ROOT: &str = "https://open.bigmodel.cn/api/paas/v4";
 const ANTHROPIC_ROOT: &str = "https://api.anthropic.com/v1";
 const EMBEDDED: &str = include_str!("../static-provider-metadata-v1.json");
 
+fn same_api_root(left: &str, right: &str) -> bool {
+    left.trim_end_matches('/') == right.trim_end_matches('/')
+}
+
 #[path = "static_metadata/support.rs"]
 mod support;
 use support::*;
@@ -359,14 +363,14 @@ impl StaticProviderMetadata {
         api_root: &str,
         model: &str,
     ) -> Option<&StaticModelCapabilities> {
-        if api_root == self.glm_standard_chat.api_root
+        if same_api_root(api_root, &self.glm_standard_chat.api_root)
             && let Some(capability) = self.glm_model_capabilities(model)
         {
             return Some(capability);
         }
         self.model_capabilities
             .values()
-            .find(|route| route.api_root == api_root)
+            .find(|route| same_api_root(&route.api_root, api_root))
             .and_then(|route| {
                 route
                     .families
@@ -743,6 +747,48 @@ mod tests {
             mini.source.contains("gpt-5-mini"),
             "gpt-5-mini resolves to its own snapshot, not the gpt-5 prefix it shares"
         );
+        let gpt_56 = embedded
+            .route_model_capabilities(openai_root, "gpt-5.6-terra")
+            .expect("the current GPT-5.6 family carries exact API bounds");
+        assert_eq!(gpt_56.context_window_tokens, Some(1_050_000));
+        assert_eq!(gpt_56.max_output_tokens, Some(128_000));
+        assert_eq!(gpt_56.image_input, Some(true));
+
+        let claude_5 = embedded
+            .route_model_capabilities(ANTHROPIC_ROOT, "claude-sonnet-5")
+            .expect("the current Claude family carries exact API bounds");
+        assert_eq!(claude_5.context_window_tokens, Some(1_000_000));
+        assert_eq!(claude_5.max_output_tokens, Some(128_000));
+        assert_eq!(claude_5.image_input, Some(true));
+
+        let deepseek = embedded
+            .route_model_capabilities("https://api.deepseek.com", "deepseek-v4-pro")
+            .expect("the built-in DeepSeek route carries its current exact text-only bounds");
+        assert_eq!(deepseek.context_window_tokens, Some(1_000_000));
+        assert_eq!(deepseek.max_output_tokens, Some(384_000));
+        assert_eq!(deepseek.image_input, Some(false));
+        assert_eq!(
+            embedded
+                .route_model_capabilities("https://api.deepseek.com", "deepseek-chat")
+                .and_then(|snapshot| snapshot.context_window_tokens),
+            Some(1_000_000),
+            "the documented compatibility alias inherits V4 Flash capacity"
+        );
+
+        let kimi_256k = embedded
+            .route_model_capabilities("https://api.kimi.com/coding/v1", "k3-256k")
+            .expect("the official Kimi OpenAI route carries its fixed 256K capability");
+        assert_eq!(kimi_256k.context_window_tokens, Some(262_144));
+        assert_eq!(kimi_256k.max_output_tokens, None);
+        assert_eq!(kimi_256k.image_input, Some(true));
+        let tiered_kimi = embedded
+            .route_model_capabilities("https://api.kimi.com/coding", "k3")
+            .expect("canonical root normalization retains Kimi route capabilities");
+        assert_eq!(
+            tiered_kimi.context_window_tokens, None,
+            "K3 capacity remains operator-attested because it varies by membership tier"
+        );
+        assert_eq!(tiered_kimi.image_input, Some(true));
 
         // The route identity is the exact egress destination; a look-alike gateway inherits nothing.
         assert!(

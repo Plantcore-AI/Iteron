@@ -725,6 +725,30 @@ fn object_integer(id: &str, name: &str) -> i64 {
     }
 }
 
+fn object_decimal(id: &str, name: &str) -> (i64, u8) {
+    let value = object_default(id)
+        .iter()
+        .find(|field| field.name == name)
+        .unwrap_or_else(|| panic!("{id} has no default field {name}"))
+        .value;
+    match value {
+        TunableValue::Decimal { value } => (value.coefficient, value.scale),
+        other => panic!("{id}.{name} is not a decimal: {other:?}"),
+    }
+}
+
+fn object_boolean(id: &str, name: &str) -> bool {
+    let value = object_default(id)
+        .iter()
+        .find(|field| field.name == name)
+        .unwrap_or_else(|| panic!("{id} has no default field {name}"))
+        .value;
+    match value {
+        TunableValue::Boolean { value } => value,
+        other => panic!("{id}.{name} is not a boolean: {other:?}"),
+    }
+}
+
 #[test]
 fn exact_160_entry_contract_is_pinned_per_ordinal() {
     validate_registry().unwrap();
@@ -845,9 +869,9 @@ fn defaults_resolvers_and_provenance_match_production_truth() {
         Some(TunableValue::Enum { value: "glm-5.2" })
     );
 
-    assert_eq!(integer_default("max_turns"), 600);
-    assert_eq!(integer_default("max_wall_secs"), 14_400);
-    assert_eq!(integer_default("max_consecutive_tool_errors"), 25);
+    assert_eq!(integer_default("max_turns"), 64);
+    assert_eq!(integer_default("max_wall_secs"), 3_600);
+    assert_eq!(integer_default("max_consecutive_tool_errors"), 5);
     assert_eq!(integer_default("deferred_discovery_threshold"), 4);
     assert_eq!(
         family("allow_code").default.value,
@@ -865,11 +889,15 @@ fn defaults_resolvers_and_provenance_match_production_truth() {
         object_integer("compaction_trigger", "fallback_trigger_tokens"),
         120_000
     );
+    assert_eq!(
+        object_decimal("compaction_trigger", "usable_window_ratio"),
+        (82, 2)
+    );
     assert_eq!(integer_default("compaction_keep_recent"), 0);
     for (id, expected, environment) in [
         ("retry_backoff_base", 500, "ITERON_RETRY_BASE_MS"),
         ("retry_backoff_cap", 30_000, "ITERON_RETRY_CAP_MS"),
-        ("retry_max_attempts", 6, "ITERON_RETRY_MAX_ATTEMPTS"),
+        ("retry_max_attempts", 3, "ITERON_RETRY_MAX_ATTEMPTS"),
     ] {
         let family = family(id);
         assert_eq!(family.default.kind, DefaultKind::Literal);
@@ -891,7 +919,25 @@ fn defaults_resolvers_and_provenance_match_production_truth() {
     }
 
     assert_eq!(integer_default("provider_connect_tls_timeout"), 10);
-    assert_eq!(integer_default("stream_idle_watchdog"), 120_000);
+    assert_eq!(integer_default("provider_request_total_deadline"), 300_000);
+    assert_eq!(integer_default("stream_idle_watchdog"), 60_000);
+    assert_eq!(integer_default("verifier_timeout"), 180);
+    assert_eq!(
+        object_integer("flaky_test_detection_quarantine", "repeat_count"),
+        2
+    );
+    assert_eq!(
+        object_integer("flaky_test_detection_quarantine", "quarantine_seconds"),
+        300
+    );
+    assert_eq!(
+        family("incremental_versus_full_verification").default.value,
+        Some(TunableValue::Enum { value: "impacted" })
+    );
+    assert!(object_boolean(
+        "workspace_checkpoint_cadence",
+        "before_verification"
+    ));
     assert_eq!(
         object_integer("http_pool_keepalive_idle_policy", "pool_idle_seconds"),
         300
@@ -1495,8 +1541,8 @@ fn external_constraint_policy_ledger_is_exact_unique_and_executable() {
     assert_eq!(keys.len(), 197);
     assert_eq!(whole_value_count, 181);
     assert_eq!(whole_catalog.len(), 16);
-    assert_eq!(relation_counts, [100, 91, 6]);
-    assert_eq!(action_counts, [100, 18, 79]);
+    assert_eq!(relation_counts, [101, 90, 6]);
+    assert_eq!(action_counts, [101, 18, 78]);
     assert_eq!(
         whole_catalog,
         BTreeSet::from([
@@ -1597,7 +1643,7 @@ fn external_constraint_policy_ledger_is_exact_unique_and_executable() {
         counts,
         BTreeMap::from([
             (ExternalCeiling::BenchmarkProtocol, 6),
-            (ExternalCeiling::ContextWindow, 22),
+            (ExternalCeiling::ContextWindow, 23),
             (ExternalCeiling::OperatorAuthority, 36),
             (ExternalCeiling::ParentCost, 6),
             (ExternalCeiling::ParentTokens, 10),
@@ -1606,7 +1652,7 @@ fn external_constraint_policy_ledger_is_exact_unique_and_executable() {
             (ExternalCeiling::ProcessBudget, 6),
             (ExternalCeiling::ProviderCapability, 18),
             (ExternalCeiling::RunBudget, 19),
-            (ExternalCeiling::TenantScope, 8),
+            (ExternalCeiling::TenantScope, 7),
             (ExternalCeiling::ToolBudget, 16),
             (ExternalCeiling::VerificationFloor, 11),
         ])

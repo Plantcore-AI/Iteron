@@ -333,12 +333,12 @@ impl Agent {
             .pricing
             .as_ref()
             .ok_or(KernelError::UnpricedUsdCeiling)?;
-        let input_bound = self
-            .model_context_window
-            .ok_or(KernelError::InvalidRouteMetadata {
-                field: "model_context_window",
-                reason: "positive USD admission requires a bounded model context window",
-            })?;
+        let input_bound =
+            self.execution_context_window()
+                .ok_or(KernelError::InvalidRouteMetadata {
+                    field: "model_context_window",
+                    reason: "positive USD admission requires a bounded model context window",
+                })?;
         let output_bound = u64::from(request.max_tokens);
         let rates = signed.rate_card.rates;
         let thinking = if rates.thinking_microusd_per_million > rates.output_microusd_per_million {

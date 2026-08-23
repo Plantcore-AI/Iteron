@@ -27,7 +27,7 @@
 //! as an explicit signed remainder rather than silently absorbed. A reader that presented these as
 //! slices of a pie would be lying about the concurrency the harness was built to have.
 
-use iteron_protocol::{Event, EventKind};
+use iteron_protocol::{Event, EventKind, Phase};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -102,6 +102,15 @@ pub struct Coverage {
     /// did what it was designed to do and overlapped tool execution with decode. A negative
     /// residual is a health signal, not an error.
     pub residual_ms: Option<i64>,
+    /// Sum of the non-overlapping controller phase intervals below. Unlike effect attribution,
+    /// phases form a wall-clock partition: provider/tool overlap cannot double-count them.
+    #[serde(default)]
+    pub phase_attributed_ms: u64,
+    /// `wall_ms - phase_attributed_ms`. A large positive value is time before the first declared
+    /// phase or otherwise outside the controller state machine; unlike `residual_ms`, it is not
+    /// inflated by ordinary provider/tool overlap.
+    #[serde(default)]
+    pub phase_residual_ms: Option<i64>,
 }
 
 /// The full report.
@@ -116,7 +125,14 @@ pub struct Timeline {
     /// rather than at the effect boundary, because that is the number the record actually holds
     /// for them and two scopes for one call would disagree.
     pub tools: BTreeMap<String, Distribution>,
+    /// Non-overlapping wall time between durable phase transitions. In particular, `idle` makes
+    /// operator/TUI think time visible instead of mixing it into effect residual.
+    #[serde(default)]
+    pub phases: BTreeMap<String, Distribution>,
     pub turns: Turns,
+    /// Content-free token and model-visible tool-result amplification for the complete run.
+    #[serde(default)]
+    pub token_economy: TokenEconomy,
     pub coverage: Coverage,
 }
 
@@ -129,6 +145,28 @@ pub struct Turns {
     /// Total stream items across all measured turns. Kept raw so inter-token time is derived by
     /// whoever needs it rather than pre-averaged here into a number nobody can decompose.
     pub stream_items: u64,
+}
+
+/// Inputs that explain why a coding run gets slower over time without inspecting transcript
+/// content. `prompt_tokens` includes every input cache class because all of them still consume the
+/// route's context window even when cached tokens are cheaper to serve.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TokenEconomy {
+    pub turns_with_usage: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub thinking_tokens: u64,
+    pub cache_creation_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub prompt_tokens: u64,
+    pub first_turn_prompt_tokens: Option<u64>,
+    pub last_turn_prompt_tokens: Option<u64>,
+    pub max_turn_prompt_tokens: Option<u64>,
+    pub prompt_growth_tokens: Option<i64>,
+    pub cache_hit_ratio_ppm: u32,
+    pub model_visible_tool_result_bytes: u64,
+    pub max_tool_result_bytes: u64,
+    pub compactions: u64,
 }
 
 /// Fold a replayed, chain-verified stream into the report.
@@ -145,6 +183,8 @@ where
 
     let mut effect_samples: BTreeMap<String, (Vec<u64>, u64)> = BTreeMap::new();
     let mut tool_samples: BTreeMap<String, (Vec<u64>, u64)> = BTreeMap::new();
+    let mut phase_samples: BTreeMap<String, (Vec<u64>, u64)> = BTreeMap::new();
+    let mut active_phase: Option<OpenPhase> = None;
     let mut ttft: Vec<u64> = Vec::new();
     let mut decode: Vec<u64> = Vec::new();
     let mut unmeasured_turns = 0u64;
@@ -163,6 +203,9 @@ where
             (None, Some(_)) => previous_ts.is_none() && segment.is_none(),
             _ => false,
         };
+        if starts_segment {
+            close_phase(&mut phase_samples, active_phase.take(), previous_ts);
+        }
         let seq = event.seq.0;
         match segment.as_mut() {
             Some(open) if !starts_segment => {
@@ -202,18 +245,32 @@ where
             // No terminal was observed, so there is no duration and never will be. It is counted
             // as an observation so the class's `count` stays truthful.
             EventKind::EffectUnknown { tool, .. } => record_sample(&mut effect_samples, tool, None),
-            EventKind::ToolDone { result, .. } => {
+            EventKind::ToolDone { result, tool, .. } => {
                 record_sample(
                     &mut tool_samples,
-                    &result.tool_use_id,
+                    tool.as_deref().unwrap_or("unknown_registry_tool"),
                     Some(result.latency_ms),
                 );
+                let bytes = u64::try_from(result.content.len()).unwrap_or(u64::MAX);
+                timeline.token_economy.model_visible_tool_result_bytes = timeline
+                    .token_economy
+                    .model_visible_tool_result_bytes
+                    .saturating_add(bytes);
+                timeline.token_economy.max_tool_result_bytes =
+                    timeline.token_economy.max_tool_result_bytes.max(bytes);
+            }
+            EventKind::Phase { phase } => {
+                close_phase(&mut phase_samples, active_phase.take(), ts_us);
+                active_phase = Some(OpenPhase {
+                    phase: *phase,
+                    start_us: ts_us,
+                });
             }
             EventKind::TurnEnd {
+                usage,
                 ttft_ms,
                 decode_ms,
                 stream_items,
-                ..
             } => {
                 timeline.turns.count = timeline.turns.count.saturating_add(1);
                 match (ttft_ms, decode_ms) {
@@ -227,10 +284,34 @@ where
                     .turns
                     .stream_items
                     .saturating_add(u64::from(stream_items.unwrap_or(0)));
+                let prompt = usage
+                    .input
+                    .saturating_add(usage.cache_creation)
+                    .saturating_add(usage.cache_read);
+                let economy = &mut timeline.token_economy;
+                economy.turns_with_usage = economy.turns_with_usage.saturating_add(1);
+                economy.input_tokens = economy.input_tokens.saturating_add(usage.input);
+                economy.output_tokens = economy.output_tokens.saturating_add(usage.output);
+                economy.thinking_tokens = economy.thinking_tokens.saturating_add(usage.thinking);
+                economy.cache_creation_tokens = economy
+                    .cache_creation_tokens
+                    .saturating_add(usage.cache_creation);
+                economy.cache_read_tokens =
+                    economy.cache_read_tokens.saturating_add(usage.cache_read);
+                economy.prompt_tokens = economy.prompt_tokens.saturating_add(prompt);
+                economy.first_turn_prompt_tokens.get_or_insert(prompt);
+                economy.last_turn_prompt_tokens = Some(prompt);
+                economy.max_turn_prompt_tokens =
+                    Some(economy.max_turn_prompt_tokens.unwrap_or(0).max(prompt));
+            }
+            EventKind::Compaction { .. } => {
+                timeline.token_economy.compactions =
+                    timeline.token_economy.compactions.saturating_add(1);
             }
             _ => {}
         }
     }
+    close_phase(&mut phase_samples, active_phase.take(), previous_ts);
     if let Some(open) = segment.take() {
         timeline.segments.push(close_segment(open));
     }
@@ -243,8 +324,38 @@ where
         .into_iter()
         .map(|(key, (samples, unmeasured))| (key, Distribution::from_samples(samples, unmeasured)))
         .collect();
+    timeline.phases = phase_samples
+        .into_iter()
+        .map(|(key, (samples, unmeasured))| (key, Distribution::from_samples(samples, unmeasured)))
+        .collect();
     timeline.turns.ttft = Distribution::from_samples(ttft, unmeasured_turns);
     timeline.turns.decode = Distribution::from_samples(decode, unmeasured_turns);
+    timeline.token_economy.prompt_growth_tokens = match (
+        timeline.token_economy.first_turn_prompt_tokens,
+        timeline.token_economy.last_turn_prompt_tokens,
+    ) {
+        (Some(first), Some(last)) => {
+            Some(i64::try_from(last).unwrap_or(i64::MAX) - i64::try_from(first).unwrap_or(i64::MAX))
+        }
+        _ => None,
+    };
+    let cache_denominator = timeline
+        .token_economy
+        .input_tokens
+        .saturating_add(timeline.token_economy.cache_creation_tokens)
+        .saturating_add(timeline.token_economy.cache_read_tokens);
+    timeline.token_economy.cache_hit_ratio_ppm = if cache_denominator == 0 {
+        0
+    } else {
+        u32::try_from(
+            timeline
+                .token_economy
+                .cache_read_tokens
+                .saturating_mul(1_000_000)
+                / cache_denominator,
+        )
+        .unwrap_or(1_000_000)
+    };
 
     // Wall time is the sum of the segments only. The gap BETWEEN segments is a process that was
     // not running, or was running unobserved; either way it is unknown, and adding it would be
@@ -263,7 +374,45 @@ where
         i64::try_from(wall).unwrap_or(i64::MAX)
             - i64::try_from(timeline.coverage.attributed_ms).unwrap_or(i64::MAX)
     });
+    timeline.coverage.phase_attributed_ms =
+        timeline.phases.values().fold(0u64, |total, distribution| {
+            total.saturating_add(distribution.total_ms)
+        });
+    timeline.coverage.phase_residual_ms = timeline.coverage.wall_ms.map(|wall| {
+        i64::try_from(wall).unwrap_or(i64::MAX)
+            - i64::try_from(timeline.coverage.phase_attributed_ms).unwrap_or(i64::MAX)
+    });
     timeline
+}
+
+struct OpenPhase {
+    phase: Phase,
+    start_us: Option<u64>,
+}
+
+fn close_phase(
+    samples: &mut BTreeMap<String, (Vec<u64>, u64)>,
+    open: Option<OpenPhase>,
+    end_us: Option<u64>,
+) {
+    let Some(open) = open else {
+        return;
+    };
+    let sample = match (open.start_us, end_us) {
+        (Some(start), Some(end)) if end >= start => Some(end.saturating_sub(start).div_ceil(1_000)),
+        _ => None,
+    };
+    record_sample(samples, phase_key(open.phase), sample);
+}
+
+const fn phase_key(phase: Phase) -> &'static str {
+    match phase {
+        Phase::Context => "context",
+        Phase::Model => "model",
+        Phase::Tools => "tools",
+        Phase::Verify => "verify",
+        Phase::Idle => "idle",
+    }
 }
 
 /// A segment still being accumulated. Named rather than a tuple because `start`/`end` are both

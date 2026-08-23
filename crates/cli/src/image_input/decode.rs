@@ -29,12 +29,20 @@ const STILL_IMAGE_FRAME_COUNT: u32 = 1;
 /// Caller-owned output plus each decoder's internal workspace remain independently bounded.
 const MAX_DECODE_BUFFER_BYTES: usize = 64 * 1024 * 1024;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct DecodedImageEvidence {
+    pub width: u32,
+    pub height: u32,
+    pub frames: u32,
+    pub total_pixels: u64,
+}
+
 pub(super) fn validate_decodable_with_limits(
     bytes: &[u8],
     media_type: ImageMediaType,
     max_dimension: u32,
     max_frames: u32,
-) -> Result<(), ImageInputErrorKind> {
+) -> Result<DecodedImageEvidence, ImageInputErrorKind> {
     match media_type {
         ImageMediaType::Png => validate_png(bytes, max_dimension, max_frames),
         ImageMediaType::Jpeg => validate_jpeg(bytes, max_dimension),
@@ -47,7 +55,7 @@ fn validate_png(
     bytes: &[u8],
     max_dimension: u32,
     max_frames: u32,
-) -> Result<(), ImageInputErrorKind> {
+) -> Result<DecodedImageEvidence, ImageInputErrorKind> {
     let decoder = png::Decoder::new_with_limits(
         BufReader::new(Cursor::new(bytes)),
         png::Limits {
@@ -78,10 +86,13 @@ fn validate_png(
     for _ in 0..frames {
         reader.next_frame(&mut output).map_err(|_| invalid())?;
     }
-    Ok(())
+    decoded_evidence(width, height, frames)
 }
 
-fn validate_jpeg(bytes: &[u8], max_dimension: u32) -> Result<(), ImageInputErrorKind> {
+fn validate_jpeg(
+    bytes: &[u8],
+    max_dimension: u32,
+) -> Result<DecodedImageEvidence, ImageInputErrorKind> {
     let options = DecoderOptions::new_safe()
         .set_strict_mode(true)
         .set_max_width(max_dimension as usize)
@@ -89,23 +100,22 @@ fn validate_jpeg(bytes: &[u8], max_dimension: u32) -> Result<(), ImageInputError
     let mut decoder = JpegDecoder::new_with_options(ZCursor::new(bytes), options);
     decoder.decode_headers().map_err(|_| invalid())?;
     let (width, height) = decoder.dimensions().ok_or_else(invalid)?;
-    validate_static_bounds_with_limit(
-        u32::try_from(width).map_err(|_| ImageInputErrorKind::DecodeLimitExceeded)?,
-        u32::try_from(height).map_err(|_| ImageInputErrorKind::DecodeLimitExceeded)?,
-        max_dimension,
-    )?;
+    let width = u32::try_from(width).map_err(|_| ImageInputErrorKind::DecodeLimitExceeded)?;
+    let height = u32::try_from(height).map_err(|_| ImageInputErrorKind::DecodeLimitExceeded)?;
+    validate_static_bounds_with_limit(width, height, max_dimension)?;
     let buffer_size = decoder
         .output_buffer_size()
         .ok_or(ImageInputErrorKind::DecodeLimitExceeded)?;
     let mut output = bounded_buffer(buffer_size)?;
-    decoder.decode_into(&mut output).map_err(|_| invalid())
+    decoder.decode_into(&mut output).map_err(|_| invalid())?;
+    decoded_evidence(width, height, STILL_IMAGE_FRAME_COUNT)
 }
 
 fn validate_gif(
     bytes: &[u8],
     max_dimension: u32,
     max_frames: u32,
-) -> Result<(), ImageInputErrorKind> {
+) -> Result<DecodedImageEvidence, ImageInputErrorKind> {
     let mut options = DecodeOptions::new();
     options.set_color_output(ColorOutput::Indexed);
     options.set_memory_limit(MemoryLimit::Bytes(
@@ -120,11 +130,9 @@ fn validate_gif(
     let mut reader = options
         .read_info(Cursor::new(bytes))
         .map_err(|_| invalid())?;
-    validate_static_bounds_with_limit(
-        u32::from(reader.width()),
-        u32::from(reader.height()),
-        max_dimension,
-    )?;
+    let width = u32::from(reader.width());
+    let height = u32::from(reader.height());
+    validate_static_bounds_with_limit(width, height, max_dimension)?;
 
     let mut frame_count = 0u32;
     let mut total_pixels = 0u64;
@@ -151,14 +159,19 @@ fn validate_gif(
     if frame_count == 0 {
         return Err(invalid());
     }
-    Ok(())
+    let mut evidence = decoded_evidence(width, height, frame_count)?;
+    // A provider may rasterize every animation frame onto the full logical canvas even when the
+    // file encodes small delta rectangles. Charge the larger view while the estimator's own cap
+    // keeps the token reserve bounded.
+    evidence.total_pixels = evidence.total_pixels.max(total_pixels);
+    Ok(evidence)
 }
 
 fn validate_webp(
     bytes: &[u8],
     max_dimension: u32,
     max_frames: u32,
-) -> Result<(), ImageInputErrorKind> {
+) -> Result<DecodedImageEvidence, ImageInputErrorKind> {
     let mut decoder =
         WebPDecoder::new(BufReader::new(Cursor::new(bytes))).map_err(|_| invalid())?;
     decoder.set_memory_limit(iteron_tunables::param_integer(
@@ -180,10 +193,27 @@ fn validate_webp(
         for _ in 0..frames {
             decoder.read_frame(&mut output).map_err(|_| invalid())?;
         }
-        Ok(())
     } else {
-        decoder.read_image(&mut output).map_err(|_| invalid())
+        decoder.read_image(&mut output).map_err(|_| invalid())?;
     }
+    decoded_evidence(width, height, frames)
+}
+
+fn decoded_evidence(
+    width: u32,
+    height: u32,
+    frames: u32,
+) -> Result<DecodedImageEvidence, ImageInputErrorKind> {
+    let total_pixels = u64::from(width)
+        .checked_mul(u64::from(height))
+        .and_then(|pixels| pixels.checked_mul(u64::from(frames)))
+        .ok_or(ImageInputErrorKind::DecodeLimitExceeded)?;
+    Ok(DecodedImageEvidence {
+        width,
+        height,
+        frames,
+        total_pixels,
+    })
 }
 
 #[cfg(test)]
@@ -298,6 +328,7 @@ const fn invalid() -> ImageInputErrorKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine as _;
 
     #[test]
     fn animation_count_and_dimensions_use_the_exported_owner_envelope() {
@@ -325,5 +356,24 @@ mod tests {
             validate_static_bounds(MAX_IMAGE_DIMENSION + 1, 1),
             Err(ImageInputErrorKind::DecodeLimitExceeded)
         );
+    }
+
+    #[test]
+    fn decoder_returns_dimension_and_pixel_evidence() {
+        let png = base64::engine::general_purpose::STANDARD
+            .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
+            .expect("fixture base64");
+        let evidence = validate_decodable_with_limits(
+            &png,
+            ImageMediaType::Png,
+            MAX_IMAGE_DIMENSION,
+            MAX_ANIMATION_FRAMES,
+        )
+        .expect("valid one-pixel PNG");
+
+        assert_eq!(evidence.width, 1);
+        assert_eq!(evidence.height, 1);
+        assert_eq!(evidence.frames, 1);
+        assert_eq!(evidence.total_pixels, 1);
     }
 }

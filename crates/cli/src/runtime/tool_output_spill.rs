@@ -159,6 +159,58 @@ impl ManagedToolResult {
     pub(crate) fn into_parts(self) -> (ToolResult, Option<ToolOutputSpillLease>, bool) {
         (self.result, self.lease, self.spilled)
     }
+
+    /// Narrow only the model/durable projection after the turn's fair-share budget is known.
+    /// Private spill retention, when present, continues to own the exact raw value. Head and tail
+    /// are both kept so compiler summaries and terminal failure lines survive without allowing one
+    /// result to consume the entire transcript-owned partition.
+    pub(crate) fn project_visible(&mut self, maximum_bytes: usize) -> bool {
+        let original_bytes = self.result.content.len();
+        if original_bytes <= maximum_bytes {
+            return false;
+        }
+        if maximum_bytes == 0 {
+            self.result.content.clear();
+            return true;
+        }
+        let marker = format!(
+            "\n[tool output context projection original_bytes={original_bytes} visible_budget={maximum_bytes}; narrow or page the query for more]\n"
+        );
+        if marker.len() >= maximum_bytes {
+            self.result.content = utf8_prefix(&marker, maximum_bytes).to_owned();
+            return true;
+        }
+        let payload_bytes = maximum_bytes - marker.len();
+        let head_budget = payload_bytes.saturating_mul(2) / 3;
+        let tail_budget = payload_bytes.saturating_sub(head_budget);
+        let head = utf8_prefix(&self.result.content, head_budget);
+        let tail = utf8_suffix(&self.result.content[head.len()..], tail_budget);
+        self.result.content = format!("{head}{marker}{tail}");
+        debug_assert!(self.result.content.len() <= maximum_bytes);
+        true
+    }
+}
+
+fn utf8_prefix(value: &str, maximum_bytes: usize) -> &str {
+    if value.len() <= maximum_bytes {
+        return value;
+    }
+    let mut end = maximum_bytes;
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    &value[..end]
+}
+
+fn utf8_suffix(value: &str, maximum_bytes: usize) -> &str {
+    if value.len() <= maximum_bytes {
+        return value;
+    }
+    let mut start = value.len().saturating_sub(maximum_bytes);
+    while start < value.len() && !value.is_char_boundary(start) {
+        start += 1;
+    }
+    &value[start..]
 }
 
 pub(super) fn manage_result(

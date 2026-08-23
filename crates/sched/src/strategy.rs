@@ -283,7 +283,7 @@ mod tests {
             .unwrap();
         assert_eq!(proposal.plan.retry_base_ms, 500);
         assert_eq!(proposal.plan.retry_cap_ms, 30_000);
-        assert_eq!(proposal.plan.max_attempts, 6);
+        assert_eq!(proposal.plan.max_attempts, 3);
         assert_eq!(proposal.plan.concurrency_permits, 8);
         assert!(proposal.eligible.contains(Capability::ReadOnly));
     }
@@ -437,7 +437,7 @@ mod tests {
             SchedulerStrategy::plan_with(&slot, &input, CapabilitySet::only(Capability::ReadOnly))
                 .unwrap();
         assert_eq!(first, second);
-        assert_eq!(first.plan.max_attempts, 5);
+        assert_eq!(first.plan.max_attempts, 2);
         assert_eq!(first.plan.concurrency_permits, 4);
     }
 

@@ -2,11 +2,13 @@
 
 Machine output is available for one-shot runs and the bounded session operations below.
 
-The current default is schema v5. A client that pins the retained v4 contract passes
-`--output-schema-version 4` together with `--output-format json` or `stream-json`. On one-shot
-task, continue, and resume operations this projects every stdout record onto the frozen v4 shape;
-in particular, the v5-only `kernel_tax` terminal field and `input_attachment` stream record are
-not emitted. Unsupported selectors fail before a rollout is opened.
+The current default is schema v6. A client can pin a retained contract with
+`--output-schema-version 4` or `--output-schema-version 5`, together with `--output-format json`
+or `stream-json`. On one-shot task, continue, and resume operations, v4 projects every stdout
+record onto the frozen v4 shape; in particular, the v5 `kernel_tax` terminal field and
+`input_attachment` stream record are not emitted. V5 keeps those fields but projects out v6
+source-separated context components.
+Unsupported selectors fail before a rollout is opened.
 
 `iteron --machine-contract` is a provider-free capability query. Its JSON reports
 `cli_stream_versions`, `default_cli_stream_version`, and `resident_protocol_version` as distinct
@@ -38,7 +40,7 @@ Both `json` and `stream-json` end with an authoritative result object:
 
 ```json
 {
-  "schema_version": 5,
+  "schema_version": 6,
   "type": "result",
   "outcome": "done",
   "reason": null,
@@ -62,12 +64,12 @@ Both `json` and `stream-json` end with an authoritative result object:
 ```
 
 The example shows shape, not guaranteed values. `cost_usd` can be null or unknown
-when no authoritative price evidence exists. Schema v5 requires the typed
+when no authoritative price evidence exists. Schemas v5 and v6 require the typed
 `kernel_tax` object; its latency values are measured in microseconds and all five
 fields are non-negative integers.
 
-Schema v4 introduced the terminal `outcome` value `drained`, which schema v5
-retains: it means the runtime stopped cleanly after quiescing admitted work and
+Schema v4 introduced the terminal `outcome` value `drained`, which later schemas
+retain: it means the runtime stopped cleanly after quiescing admitted work and
 durably checkpointing the workspace. It has `success: true` and exit code `0`,
 but remains distinct from ordinary `done`.
 
@@ -89,8 +91,15 @@ Every event carries `schema_version`. Consumers should ignore unknown event type
 they do not need and use the final result as the authoritative terminal outcome.
 `input_attachment` carries only `ordinal`, `media_type`, and `encoded_bytes`; it
 never carries image bytes, a filename, or a path. Historical v4 event fixtures
-and their terminal result remain unchanged; consumers should skip this v5 tag
+and their terminal result remain unchanged; consumers should skip this v5+ tag
 when they do not need attachment metadata.
+
+Schema v6 adds `turn_end.context.components`, a non-overlapping vector of
+`stable_prefix_tokens`, `instruction_tokens`, `task_context_tokens`, `memory_tokens`,
+`transcript_tokens`, `attachment_tokens`, `tool_schema_tokens`, `tool_result_tokens`, and
+`lsp_result_tokens`. These are content-free estimates from the same admission boundary as the
+aggregate context estimate; evaluation uses them to attribute efficiency to general runtime
+modules rather than to provider or model names.
 
 ## Run-declared artifacts
 

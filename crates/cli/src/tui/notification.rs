@@ -1121,6 +1121,7 @@ mod tests {
                 framing_tokens: 0,
                 total_tokens: 0,
                 provenance: iteron_ctx::TokenEstimateProvenance::HeuristicBytesPerToken35,
+                components: None,
             },
             model_context_window: None,
             reserved_output_tokens: 0,

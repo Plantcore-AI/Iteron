@@ -35,16 +35,21 @@ const FREE_FUNCTIONS: &[FreeFunctions] = &[
             "parse_final_result",
         ],
     },
-    FreeFunctions {
-        path: "crates/eval/src/runner.rs",
-        names: &["run_cell"],
-    },
+    // `runner::run_cell` evolves behind the stricter structural authority in
+    // `schema_compat_rust_runtime_eval`: that gate binds the exact trusted import and proves
+    // stdout enters `parse_run_output` exactly once, while the parser and its usage/final-result
+    // helpers are frozen dataflow witnesses. Keeping an empty entry here would still freeze every
+    // import in runner.rs and protect incidental implementation text rather than the contract.
     FreeFunctions {
         path: "crates/eval/src/main.rs",
         names: &["main"],
     },
     FreeFunctions {
         path: "crates/cli/src/output.rs",
+        // `stream_event` is the versioned producer itself, so a full-body fingerprint would make
+        // an additive schema release impossible. It evolves behind the CLI parse/token/exact and
+        // writer authorities, which bind the direct UiEvent match, JSON producers, compatibility
+        // projection, and stdout sink. The surrounding helpers remain frozen here.
         names: &[
             "outcome_exit_code",
             "outcome_name",
@@ -54,7 +59,6 @@ const FREE_FUNCTIONS: &[FreeFunctions] = &[
             "scrub",
             "scrub_json",
             "is_token_boundary",
-            "stream_event",
             "final_result",
             "write_json_line",
         ],

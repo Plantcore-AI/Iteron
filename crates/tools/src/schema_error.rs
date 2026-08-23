@@ -27,6 +27,11 @@ pub(crate) enum ArgumentError {
         maximum: usize,
         actual: usize,
     },
+    NotInEnum {
+        field: String,
+        actual: Value,
+        allowed_count: usize,
+    },
 }
 
 impl ArgumentError {
@@ -104,6 +109,24 @@ impl ArgumentError {
                     "message".into(),
                     Value::String(format!(
                         "field `{field}` allows at most {maximum} items, but received {actual}"
+                    )),
+                );
+            }
+            Self::NotInEnum {
+                field,
+                actual,
+                allowed_count,
+            } => {
+                fields(&mut object, "not_in_enum", field);
+                object.insert("actual".into(), actual.clone());
+                object.insert(
+                    "allowed_count".into(),
+                    Value::Number((*allowed_count).into()),
+                );
+                object.insert(
+                    "message".into(),
+                    Value::String(format!(
+                        "field `{field}` must be one of the {allowed_count} values declared by its tool schema"
                     )),
                 );
             }

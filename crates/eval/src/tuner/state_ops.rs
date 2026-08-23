@@ -74,8 +74,17 @@ pub(super) fn apply_event(
                 || !result.average_latency_ms.is_finite()
                 || result.average_latency_ms < 0.0
                 || result
+                    .average_agent_latency_ms
+                    .is_some_and(|latency| !latency.is_finite() || latency < 0.0)
+                || result
                     .average_cost_usd
                     .is_some_and(|cost| !cost.is_finite() || cost < 0.0)
+                || result
+                    .average_tokens
+                    .is_some_and(|tokens| !tokens.is_finite() || tokens < 0.0)
+                || result
+                    .optimization
+                    .is_some_and(|summary| !summary.is_valid())
                 || !valid_digest(&result.manifest_digest)
             {
                 return Err(invalid("observation does not match its issued trial"));
@@ -83,7 +92,7 @@ pub(super) fn apply_event(
             state.results.push(result.as_ref().clone());
         }
         TunerEvent::RoundAdvanced { round, survivors } => {
-            let ranked = ranked_current(state);
+            let ranked = ranked_current(spec, state);
             let expected = ranked.as_ref().map(|ranked| {
                 ranked
                     .iter()
@@ -103,7 +112,7 @@ pub(super) fn apply_event(
             state.eligible = survivors.clone();
         }
         TunerEvent::Completed { selected_candidate } => {
-            let expected = ranked_current(state)
+            let expected = ranked_current(spec, state)
                 .and_then(|ranked| ranked.first().map(|result| result.candidate_id.as_str()));
             if state.selected.is_some()
                 || !state.inflight.is_empty()
@@ -164,6 +173,11 @@ pub(super) fn validate_spec(spec: &TunerSpec) -> Result<(), TunerError> {
         bridge
             .validate()
             .map_err(|error| TunerError::InvalidSpec(error.to_string()))?;
+        if !crate::optimization::validate_objectives(&bridge.reward.objectives) {
+            return Err(TunerError::InvalidSpec(
+                "the built-in offline tuner does not implement one or more reward metrics".into(),
+            ));
+        }
         if spec.param_registry_digest.as_deref()
             != Some(iteron_tunables::param_registry_digest_sha256().as_str())
             || spec.tool_text_registry_digest.as_deref()
@@ -258,11 +272,11 @@ pub(super) fn validate_spec(spec: &TunerSpec) -> Result<(), TunerError> {
     Ok(())
 }
 
-fn ranked_current(state: &TunerState) -> Option<Vec<&TrialResult>> {
+fn ranked_current<'a>(spec: &TunerSpec, state: &'a TunerState) -> Option<Vec<&'a TrialResult>> {
     if !state.inflight.is_empty() {
         return None;
     }
-    let mut ranked = state
+    let ranked = state
         .results
         .iter()
         .filter(|result| result.round == state.round)
@@ -277,8 +291,48 @@ fn ranked_current(state: &TunerState) -> Option<Vec<&TrialResult>> {
     {
         return None;
     }
-    ranked.sort_by(result_order);
-    Some(ranked)
+    Some(rank_results(spec, ranked))
+}
+
+pub(super) fn rank_results<'a>(
+    spec: &TunerSpec,
+    mut results: Vec<&'a TrialResult>,
+) -> Vec<&'a TrialResult> {
+    let objectives = spec
+        .trainer_bridge
+        .as_ref()
+        .map(|bridge| bridge.reward.objectives.as_slice())
+        .unwrap_or(&[]);
+    // Efficiency evidence is compared only inside an exact functional-quality stratum. A cheap
+    // failed run must neither beat nor perturb the ordering of successful runs. `resolved_rate`
+    // is validated as finite in [0, 1], so its IEEE bits are a stable exact grouping key.
+    let mut strata = BTreeMap::<u64, Vec<&TrialResult>>::new();
+    for result in &results {
+        strata
+            .entry(result.resolved_rate.to_bits())
+            .or_default()
+            .push(*result);
+    }
+    let penalties = strata
+        .into_values()
+        .flat_map(|stratum| crate::optimization::objective_penalties(&stratum, objectives))
+        .collect::<BTreeMap<_, _>>();
+    results.sort_by(|left, right| {
+        // Functional completion is the non-learnable ground-truth gate. Within an equal-quality
+        // group, the declared multi-objective contract combines every available generic runtime
+        // signal by weighted rank, which is scale-free and transitive.
+        right
+            .resolved_rate
+            .partial_cmp(&left.resolved_rate)
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| {
+                penalties
+                    .get(&left.candidate_id)
+                    .cmp(&penalties.get(&right.candidate_id))
+            })
+            .then_with(|| result_order(left, right))
+    });
+    results
 }
 
 pub(super) fn result_order(left: &&TrialResult, right: &&TrialResult) -> Ordering {
@@ -286,16 +340,53 @@ pub(super) fn result_order(left: &&TrialResult, right: &&TrialResult) -> Orderin
         .resolved_rate
         .partial_cmp(&left.resolved_rate)
         .unwrap_or(Ordering::Equal)
-        .then_with(|| match (left.average_cost_usd, right.average_cost_usd) {
+        .then_with(|| match (left.average_tokens, right.average_tokens) {
             (Some(left), Some(right)) => left.partial_cmp(&right).unwrap_or(Ordering::Equal),
             (Some(_), None) => Ordering::Less,
             (None, Some(_)) => Ordering::Greater,
             (None, None) => Ordering::Equal,
         })
         .then_with(|| {
-            left.average_latency_ms
-                .partial_cmp(&right.average_latency_ms)
+            match (
+                left.average_agent_latency_ms,
+                right.average_agent_latency_ms,
+            ) {
+                (Some(left), Some(right)) => left.partial_cmp(&right).unwrap_or(Ordering::Equal),
+                (Some(_), None) => Ordering::Less,
+                (None, Some(_)) => Ordering::Greater,
+                (None, None) => left
+                    .average_latency_ms
+                    .partial_cmp(&right.average_latency_ms)
+                    .unwrap_or(Ordering::Equal),
+            }
+        })
+        .then_with(|| match (left.average_cost_usd, right.average_cost_usd) {
+            (Some(left), Some(right)) => left.partial_cmp(&right).unwrap_or(Ordering::Equal),
+            (Some(_), None) => Ordering::Less,
+            (None, Some(_)) => Ordering::Greater,
+            (None, None) => Ordering::Equal,
+        })
+        .then_with(|| match (left.optimization, right.optimization) {
+            (Some(left), Some(right)) => left
+                .average_tool_error_rate
+                .partial_cmp(&right.average_tool_error_rate)
                 .unwrap_or(Ordering::Equal)
+                .then_with(|| match (left.average_turns, right.average_turns) {
+                    (Some(left), Some(right)) => {
+                        left.partial_cmp(&right).unwrap_or(Ordering::Equal)
+                    }
+                    (Some(_), None) => Ordering::Less,
+                    (None, Some(_)) => Ordering::Greater,
+                    (None, None) => Ordering::Equal,
+                })
+                .then_with(|| {
+                    left.average_context_tokens_per_turn
+                        .partial_cmp(&right.average_context_tokens_per_turn)
+                        .unwrap_or(Ordering::Equal)
+                }),
+            (Some(_), None) => Ordering::Less,
+            (None, Some(_)) => Ordering::Greater,
+            (None, None) => Ordering::Equal,
         })
         .then_with(|| left.candidate_id.cmp(&right.candidate_id))
 }
@@ -419,57 +510,179 @@ pub(super) fn validate_universal_candidate(candidate: &TunerCandidate) -> Result
     Ok(())
 }
 
-fn candidate_features(candidate: &TunerCandidate) -> BTreeMap<String, String> {
-    let mut features = candidate
-        .values
-        .iter()
-        .filter_map(|(id, value)| {
-            serde_json::to_string(value)
-                .ok()
-                .map(|value| (format!("family/{id}"), value))
-        })
-        .collect::<BTreeMap<_, _>>();
+pub(super) fn candidate_features(candidate: &TunerCandidate) -> BTreeMap<String, String> {
+    let mut features = BTreeMap::new();
+    let mut modules = BTreeMap::<iteron_tunables::ModuleId, BTreeMap<String, String>>::new();
+    for (id, value) in &candidate.values {
+        if let Ok(token) = serde_json::to_string(value) {
+            let key = format!("family/{id}");
+            observe_module_feature(&mut modules, family_module(id), key.clone(), token.clone());
+            features.insert(key, token);
+        }
+    }
     if let Some(profile) = &candidate.profile {
         for value in &profile.values {
             if let Ok(token) = serde_json::to_string(&value.value) {
-                features.insert(format!("family/{}", value.family), token);
+                let key = format!("family/{}", value.family);
+                observe_module_feature(
+                    &mut modules,
+                    family_module(&value.family),
+                    key.clone(),
+                    token.clone(),
+                );
+                features.insert(key, token);
             }
         }
         for assignment in &profile.params {
             if let Ok(token) = serde_json::to_string(&assignment.value) {
-                features.insert(format!("param/{}", assignment.param), token);
+                let key = format!("param/{}", assignment.param);
+                observe_module_feature(
+                    &mut modules,
+                    iteron_tunables::param(&assignment.param).map(|param| param.module),
+                    key.clone(),
+                    token.clone(),
+                );
+                features.insert(key, token);
             }
         }
         for artifact in &profile.artifacts {
             if let Ok(token) = serde_json::to_string(&artifact.text) {
-                features.insert(format!("artifact/{}", artifact.artifact), token);
+                let key = format!("artifact/{}", artifact.artifact);
+                observe_module_feature(
+                    &mut modules,
+                    artifact_module(&artifact.artifact),
+                    key.clone(),
+                    token.clone(),
+                );
+                features.insert(key, token);
             }
         }
     }
     for implementation in &candidate.implementations {
         if let Ok(token) = serde_json::to_string(implementation) {
-            features.insert(
-                format!("implementation/{}", implementation.module.as_str()),
-                token,
+            let key = format!("implementation/{}", implementation.module.as_str());
+            observe_module_feature(
+                &mut modules,
+                Some(implementation.module),
+                key.clone(),
+                token.clone(),
             );
+            features.insert(key, token);
         }
     }
     if let Some(graph) = &candidate.graph {
         for dimension in &graph.dimensions {
             if let Ok(token) = serde_json::to_string(dimension) {
-                features.insert(format!("graph/{}", dimension.address().selector), token);
+                // Learn one semantic dimension across candidate wire versions. Prefixing a v3
+                // family/parameter as `graph/...` made the same runtime control look unrelated to
+                // its v1/v2 form and made two native owners with the same selector collide.
+                let key = dimension_feature_key(dimension);
+                observe_module_feature(
+                    &mut modules,
+                    dimension_module(dimension),
+                    key.clone(),
+                    token.clone(),
+                );
+                features.insert(key, token);
             }
         }
         for implementation in &graph.implementations {
             if let Ok(token) = serde_json::to_string(implementation) {
-                features.insert(
-                    format!("implementation/{}", implementation.module.as_str()),
-                    token,
+                let key = format!("implementation/{}", implementation.module.as_str());
+                observe_module_feature(
+                    &mut modules,
+                    Some(implementation.module),
+                    key.clone(),
+                    token.clone(),
                 );
+                features.insert(key, token);
             }
         }
     }
+    for (module, members) in modules {
+        if let Ok(bytes) = serde_json::to_vec(&members) {
+            features.insert(
+                format!("module/{}", module.as_str()),
+                format!("sha256:{}", hex::encode(Sha256::digest(bytes))),
+            );
+        }
+    }
     features
+}
+
+fn dimension_feature_key(dimension: &CandidateDimension) -> String {
+    match dimension {
+        CandidateDimension::Family { family, .. } => format!("family/{family}"),
+        CandidateDimension::Param { param, .. } => format!("param/{param}"),
+        CandidateDimension::Artifact { artifact, .. } => format!("artifact/{artifact}"),
+        CandidateDimension::NativeValue { address, .. } => {
+            let address_bytes = serde_json::to_vec(address).unwrap_or_default();
+            format!(
+                "native/{}/{}/{}@sha256:{}",
+                address_kind_name(address.kind),
+                selector_kind_name(address.selector_kind),
+                address.selector,
+                hex::encode(Sha256::digest(address_bytes))
+            )
+        }
+    }
+}
+
+const fn address_kind_name(kind: CandidateAddressKind) -> &'static str {
+    match kind {
+        CandidateAddressKind::UnifiedProfile => "unified_profile",
+        CandidateAddressKind::DirectConfig => "direct_config",
+        CandidateAddressKind::CallerInput => "caller_input",
+    }
+}
+
+const fn selector_kind_name(kind: CandidateSelectorKind) -> &'static str {
+    match kind {
+        CandidateSelectorKind::Key => "key",
+        CandidateSelectorKind::Path => "path",
+        CandidateSelectorKind::Argument => "argument",
+    }
+}
+
+fn observe_module_feature(
+    modules: &mut BTreeMap<iteron_tunables::ModuleId, BTreeMap<String, String>>,
+    module: Option<iteron_tunables::ModuleId>,
+    address: String,
+    token: String,
+) {
+    if let Some(module) = module {
+        modules.entry(module).or_default().insert(address, token);
+    }
+}
+
+fn family_module(family: &str) -> Option<iteron_tunables::ModuleId> {
+    iteron_tunables::canonical_family(family)
+        .map(|family| iteron_tunables::family_module(family.ordinal))
+}
+
+fn artifact_module(artifact: &str) -> Option<iteron_tunables::ModuleId> {
+    iteron_tunables::PROMPT_ARTIFACTS
+        .iter()
+        .find(|candidate| candidate.id == artifact)
+        .map(|candidate| candidate.module)
+        .or_else(|| {
+            iteron_tunables::tool_text_artifact_by_id(artifact).map(|candidate| candidate.module)
+        })
+}
+
+fn dimension_module(dimension: &CandidateDimension) -> Option<iteron_tunables::ModuleId> {
+    match dimension {
+        CandidateDimension::Family { family, .. } => family_module(family),
+        CandidateDimension::Param { param, .. } => {
+            iteron_tunables::param(param).map(|param| param.module)
+        }
+        CandidateDimension::Artifact { artifact, .. } => artifact_module(artifact),
+        CandidateDimension::NativeValue { address, .. } => {
+            iteron_tunables::param(&address.selector)
+                .map(|param| param.module)
+                .or_else(|| family_module(&address.selector))
+        }
+    }
 }
 
 pub(super) fn validate_implementation_binding(

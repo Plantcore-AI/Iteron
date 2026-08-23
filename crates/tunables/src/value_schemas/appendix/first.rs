@@ -264,7 +264,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
         "retrieval_recency_decay",
         Ratio,
         decimal_domain!(0, 0, 1, 0, 6, "ratio"),
-        [external_rule!("$", TenantScope)]
+        [external_rule!("$", ContextWindow)]
     ),
     scalar_schema!(
         "context_novelty_dedup_threshold",

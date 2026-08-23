@@ -103,8 +103,7 @@ impl Agent {
             Capability::IrreversibleExternal,
         ]);
         let compiled_policy_bundle = crate::bundle_adapter::baseline_compiled_bundle();
-        let context_estimator =
-            iteron_ctx::RequestEstimator::for_route(provider.provider_instance_id(), &model);
+        let context_estimator = iteron_ctx::RequestEstimator::new();
         let token_calibration = super::context_runtime::load_token_calibration(&runtime_state_dir);
         #[cfg(test)]
         let context_budget_policy = {
@@ -176,6 +175,7 @@ impl Agent {
             context_materialization_policy: iteron_ctx::ContextMaterializationPolicy::default(),
             context_source_evidence: Vec::new(),
             input_file_evidence: None,
+            input_image_evidence: None,
             context_ledgers: iteron_ctx::ContextLedgerStore::default(),
             memory_traces: iteron_ctx::MemoryTraceStore::default(),
             session_memory_visibility: std::collections::VecDeque::new(),
@@ -184,6 +184,7 @@ impl Agent {
             lifecycle_hooks: None,
             workspace: std::path::PathBuf::from("."),
             verify_command: None,
+            verify_preconfined: false,
             verification_policy: iteron_verify::VerificationRuntimePolicy::default(),
             execution_policy:
                 crate::runtime_tunables::execution_policy::ExecutionRuntimePolicy::fail_closed(),

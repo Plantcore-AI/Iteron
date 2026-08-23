@@ -27,18 +27,18 @@ use std::collections::BTreeMap;
 
 use super::fixed_artifacts::FixedAuthoritySample;
 
-fn ratio_one() -> DecimalValue {
+fn usable_window_ratio() -> DecimalValue {
     DecimalValue {
-        coefficient: 1,
-        scale: 0,
+        coefficient: 82,
+        scale: 2,
     }
 }
 const SUMMARY_OUTPUT_TOKENS: i64 = 2_048;
 const MEMORY_FACT_BYTES: i64 = 8_000;
 const SKILL_LISTING_BYTES: i64 = 2_000;
-/// Canonical family-19 resolver fallback when selected-route metadata cannot attest an output
-/// ceiling. Every context/compaction fact collector must use this same execution value.
-pub(crate) const UNKNOWN_MODEL_OUTPUT_TOKENS: u32 = 8_192;
+/// Canonical family-19 interactive request default. Provider metadata supplies a physical upper
+/// bound, not a reason to reserve that entire bound on every turn.
+pub(crate) const DEFAULT_REQUEST_OUTPUT_TOKENS: u32 = 8_192;
 /// Stand-in aggregate parent-token budget when the run declares none. An absent budget is
 /// unbounded authority, so the clamp must not shrink the attested output cap below this.
 const ABSENT_PARENT_TOKEN_CEILING: u64 = 1_000_000;
@@ -190,7 +190,7 @@ pub(crate) fn apply_core_facts(
     literal_with_override(
         builder,
         "effort",
-        en("medium"),
+        en("low"),
         input.effort.origin,
         en(input.effort.value.label()),
     )?;
@@ -328,7 +328,7 @@ fn add_budget_values(
     literal_with_override(
         builder,
         "max_turns",
-        int(600),
+        int(64),
         input.budget_origins.max_turns,
         int(b.max_turns.into()),
     )?;
@@ -346,7 +346,7 @@ fn add_budget_values(
     literal_with_override(
         builder,
         "max_wall_secs",
-        int(14_400),
+        int(3_600),
         input.budget_origins.max_wall_secs,
         int(i64v(b.max_wall_secs, "max_wall_secs")?),
     )?;
@@ -400,7 +400,7 @@ fn add_compaction(
                 },
             ),
         ),
-        ("usable_window_ratio", dec(ratio_one())),
+        ("usable_window_ratio", dec(usable_window_ratio())),
         (
             "fallback_trigger_tokens",
             int(i64u(input.compaction.trigger_tokens, "compaction_trigger")?),
@@ -416,7 +416,7 @@ fn add_compaction(
         builder.declare("compaction_trigger", SourceKind::UserConfig, trigger)?;
     }
     let compaction_adaptive = object([
-        ("usable_window_ratio", dec(ratio_one())),
+        ("usable_window_ratio", dec(usable_window_ratio())),
         (
             "keep_recent_messages",
             int(i64u(input.compaction.keep_recent, "keep_recent")?),
@@ -431,7 +431,7 @@ fn add_compaction(
     builder.observe_default(
         "compaction_adaptive",
         object([
-            ("usable_window_ratio", dec(ratio_one())),
+            ("usable_window_ratio", dec(usable_window_ratio())),
             (
                 "keep_recent_messages",
                 int(i64u(input.compaction.keep_recent, "keep_recent")?),
@@ -478,7 +478,7 @@ fn add_retry_and_verify(
     literal_with_override(
         builder,
         "retry_max_attempts",
-        int(6),
+        int(3),
         input.retry_origins.max_attempts,
         int(input.retry.max_attempts.into()),
     )?;
@@ -493,10 +493,10 @@ fn add_internal_defaults(
     input: &CoreFactsInput<'_>,
     report: &mut CoreFactsReport,
 ) -> Result<(), CoreFactError> {
-    // The canonical model-default contract supplies the conservative execution cap when fresh
-    // metadata cannot attest a narrower provider maximum. This value is pinned into the
-    // checkpoint and remains the request value on resume; later provider metadata is only an
-    // upper-ceiling check and never silently replaces it.
+    // The canonical model-default contract supplies the interactive execution cap. Fresh model
+    // metadata can narrow this value but must never replace it with the provider's much larger
+    // physical maximum. The effective value is pinned into the checkpoint and remains the request
+    // value on resume; later provider metadata is only an upper-ceiling check.
     let output_reserve = model_output_reserve(input);
     builder.observe_default(
         "request_output_cap",
@@ -585,10 +585,13 @@ fn add_internal_defaults(
             builder.declare("prompt_cache", SourceKind::RustBuilder, prompt_cache)?;
         }
     }
-    // The checkpoint pins the deterministic route-aware selector policy, not one concrete route's
-    // profile. Each selected profile is still exposed through ContextLedger's tokenizer identity.
+    // The checkpoint pins the neutral estimator plus observed-usage calibration policy. Route
+    // identity partitions observations but never selects an algorithm by provider/model name.
     let token_estimator = object([
-        ("estimator", en(iteron_ctx::ROUTE_AWARE_ESTIMATOR_POLICY_ID)),
+        (
+            "estimator",
+            en(iteron_ctx::OBSERVED_USAGE_ESTIMATOR_POLICY_ID),
+        ),
         (
             "safety_margin",
             dec(DecimalValue {
@@ -670,6 +673,7 @@ fn add_memory_defaults(
             ("total_bytes", int(i64u(mem.total, "memory_total")?)),
         ]),
     )?;
+    let retrieval = iteron_ctx::MemoryRetrievalPolicy::default();
     let bm25 = map([
         (
             "k1",
@@ -688,7 +692,7 @@ fn add_memory_defaults(
         (
             "recall_limit",
             dec(DecimalValue {
-                coefficient: 32,
+                coefficient: i64::from(retrieval.recall_limit),
                 scale: 0,
             }),
         ),
@@ -716,15 +720,28 @@ fn add_memory_defaults(
     Ok(())
 }
 
+pub(crate) fn default_request_output_tokens(provider_max: Option<u32>) -> u32 {
+    let interactive_default = iteron_tunables::param_integer(
+        "cli.runtime_tunables.core_facts.default_request_output_tokens",
+        DEFAULT_REQUEST_OUTPUT_TOKENS,
+    );
+    provider_max.map_or(interactive_default, |ceiling| {
+        ceiling.min(interactive_default)
+    })
+}
+
 pub(super) fn model_output_reserve(input: &CoreFactsInput<'_>) -> u64 {
+    u64::from(default_request_output_tokens(
+        input.model_capabilities.max_output_tokens,
+    ))
+}
+
+pub(super) fn provider_output_ceiling(input: &CoreFactsInput<'_>) -> u64 {
     u64::from(
         input
             .model_capabilities
             .max_output_tokens
-            .unwrap_or(iteron_tunables::param_integer(
-                "cli.runtime_tunables.core_facts.unknown_model_output_tokens",
-                UNKNOWN_MODEL_OUTPUT_TOKENS,
-            )),
+            .unwrap_or_else(|| default_request_output_tokens(None)),
     )
 }
 

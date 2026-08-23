@@ -13,7 +13,7 @@
       "version": "anthropic-effort-beta@2025-11-24+sha256:5e6597a69f9ed3cf5d646deaa4690d9e09b95285f119a3ea73a1ddb788607fb1"
     }
   },
-  "bundle_revision": "iteron-provider-static-metadata@2026-08-03+sha256:7ecb92aa59e8fae1f9e589eacb2c3eac2468ac8d3dfc89b525f39c676f01c36f",
+  "bundle_revision": "iteron-provider-static-metadata@2026-08-21+sha256:98eb0fd70fa47eee357e61ab398e873dffa1a6ae7d07c0aa28f8cdff9a76bf5b",
   "glm_standard_chat": {
     "api_root": "https://open.bigmodel.cn/api/paas/v4",
     "capabilities": {
@@ -52,6 +52,36 @@
     "anthropic_messages": {
       "api_root": "https://api.anthropic.com/v1",
       "families": {
+        "claude-fable-5": {
+          "captured_at_unix_secs": 1787241600,
+          "context_window_tokens": 1000000,
+          "image_input": true,
+          "max_output_tokens": 128000,
+          "semantic_effort": null,
+          "source": "https://platform.claude.com/docs/en/about-claude/models/overview",
+          "tool_calling": true,
+          "version": "anthropic-model-overview@2026-08-21+sha256:793bbd498a0b33028004a305033bffcd3d61f79b8b7264e8dfec633a8ea244bb"
+        },
+        "claude-mythos-5": {
+          "captured_at_unix_secs": 1787241600,
+          "context_window_tokens": 1000000,
+          "image_input": true,
+          "max_output_tokens": 128000,
+          "semantic_effort": null,
+          "source": "https://platform.claude.com/docs/en/about-claude/models/overview",
+          "tool_calling": true,
+          "version": "anthropic-model-overview@2026-08-21+sha256:7cbea39d9b90ab6ebd14c9af21e216a8da7421ef3aec6e27c5b3df3cd9c32976"
+        },
+        "claude-mythos-preview": {
+          "captured_at_unix_secs": 1787241600,
+          "context_window_tokens": 1000000,
+          "image_input": true,
+          "max_output_tokens": 128000,
+          "semantic_effort": null,
+          "source": "https://platform.claude.com/docs/en/about-claude/models/overview",
+          "tool_calling": true,
+          "version": "anthropic-model-overview@2026-08-21+sha256:6c3d586f7c5d517145b9974842af7308c89c143767bc17141579fa632b9fc8db"
+        },
         "claude-3": {
           "captured_at_unix_secs": 1786060800,
           "context_window_tokens": null,
@@ -112,6 +142,16 @@
           "tool_calling": true,
           "version": "anthropic-model-overview@2026-08-01+sha256:6facfe3168f2f3d1a44ca9e443a2d0947f01e9e60dcf9a1679375cd1aae7337a"
         },
+        "claude-opus-5": {
+          "captured_at_unix_secs": 1787241600,
+          "context_window_tokens": 1000000,
+          "image_input": true,
+          "max_output_tokens": 128000,
+          "semantic_effort": true,
+          "source": "https://platform.claude.com/docs/en/about-claude/models/overview",
+          "tool_calling": true,
+          "version": "anthropic-model-overview@2026-08-21+sha256:0356b1ee614d1da8edca559f9fcbca3d8501bc9047ef9e98693799f2b8d9bb22"
+        },
         "claude-sonnet-4": {
           "captured_at_unix_secs": 1786060800,
           "context_window_tokens": null,
@@ -131,6 +171,131 @@
           "source": "https://docs.claude.com/en/docs/about-claude/models/overview",
           "tool_calling": true,
           "version": "anthropic-model-overview@2026-08-01+sha256:879b8f611d0edf33173b61ce91143460a56be2a029ff08df826ca8abe1015065"
+        },
+        "claude-sonnet-5": {
+          "captured_at_unix_secs": 1787241600,
+          "context_window_tokens": 1000000,
+          "image_input": true,
+          "max_output_tokens": 128000,
+          "semantic_effort": true,
+          "source": "https://platform.claude.com/docs/en/about-claude/models/overview",
+          "tool_calling": true,
+          "version": "anthropic-model-overview@2026-08-21+sha256:f114c7fed6faaf349c2775bac043eb6160c3f558f134e24c7c4ba64df88c8ed5"
+        }
+      }
+    },
+    "deepseek_openai": {
+      "api_root": "https://api.deepseek.com",
+      "families": {
+        "deepseek-chat": {
+          "captured_at_unix_secs": 1787241600,
+          "context_window_tokens": 1000000,
+          "image_input": false,
+          "max_output_tokens": 384000,
+          "semantic_effort": true,
+          "source": "https://api-docs.deepseek.com/quick_start/agent_integrations/pi_mono/",
+          "tool_calling": true,
+          "version": "deepseek-v4-pi-integration@2026-08-21+sha256:564bc2b656bb2f82cbbef0c9eeca3c030851388b8980866264b9fcbd93706694"
+        },
+        "deepseek-reasoner": {
+          "captured_at_unix_secs": 1787241600,
+          "context_window_tokens": 1000000,
+          "image_input": false,
+          "max_output_tokens": 384000,
+          "semantic_effort": true,
+          "source": "https://api-docs.deepseek.com/quick_start/agent_integrations/pi_mono/",
+          "tool_calling": true,
+          "version": "deepseek-v4-pi-integration@2026-08-21+sha256:f540796eed9470cf0bb2d35b8a19e06075033083e8c7627f43e3b0f09387f478"
+        },
+        "deepseek-v4-flash": {
+          "captured_at_unix_secs": 1787241600,
+          "context_window_tokens": 1000000,
+          "image_input": false,
+          "max_output_tokens": 384000,
+          "semantic_effort": true,
+          "source": "https://api-docs.deepseek.com/quick_start/agent_integrations/pi_mono/",
+          "tool_calling": true,
+          "version": "deepseek-v4-pi-integration@2026-08-21+sha256:88135dea88b5b2f72c7efbf0e6c8f4a849f96c23bab2ae0c12cbe953fd78838e"
+        },
+        "deepseek-v4-pro": {
+          "captured_at_unix_secs": 1787241600,
+          "context_window_tokens": 1000000,
+          "image_input": false,
+          "max_output_tokens": 384000,
+          "semantic_effort": true,
+          "source": "https://api-docs.deepseek.com/quick_start/agent_integrations/pi_mono/",
+          "tool_calling": true,
+          "version": "deepseek-v4-pi-integration@2026-08-21+sha256:df56a61f9df67f93d0ac8409d50240e0648d76ce84d3677cae99466e11a4c124"
+        }
+      }
+    },
+    "kimi_code_anthropic": {
+      "api_root": "https://api.kimi.com/coding/",
+      "families": {
+        "k3": {
+          "captured_at_unix_secs": 1787241600,
+          "context_window_tokens": null,
+          "image_input": true,
+          "max_output_tokens": null,
+          "semantic_effort": true,
+          "source": "https://www.kimi.com/code/docs/en/kimi-code/models.html",
+          "tool_calling": true,
+          "version": "kimi-code-models@2026-08-21+sha256:424e395d2f26aaacbab13b363bb0bc08119221baa6249910e6e936abc9a98bad"
+        },
+        "k3-256k": {
+          "captured_at_unix_secs": 1787241600,
+          "context_window_tokens": 262144,
+          "image_input": true,
+          "max_output_tokens": null,
+          "semantic_effort": true,
+          "source": "https://www.kimi.com/code/docs/en/kimi-code/models.html",
+          "tool_calling": true,
+          "version": "kimi-code-models@2026-08-21+sha256:67df59ae971803821a66d15548f2537e2fb5ac3acad931aef298ee3c1d94938e"
+        },
+        "kimi-for-coding": {
+          "captured_at_unix_secs": 1787241600,
+          "context_window_tokens": 262144,
+          "image_input": true,
+          "max_output_tokens": null,
+          "semantic_effort": true,
+          "source": "https://www.kimi.com/code/docs/en/kimi-code/models.html",
+          "tool_calling": true,
+          "version": "kimi-code-models@2026-08-21+sha256:0a44d543130e1759ba9497bf33c8279ad21e13ff09cdb2c9450bc53861d39325"
+        }
+      }
+    },
+    "kimi_code_openai": {
+      "api_root": "https://api.kimi.com/coding/v1",
+      "families": {
+        "k3": {
+          "captured_at_unix_secs": 1787241600,
+          "context_window_tokens": null,
+          "image_input": true,
+          "max_output_tokens": null,
+          "semantic_effort": true,
+          "source": "https://www.kimi.com/code/docs/en/kimi-code/models.html",
+          "tool_calling": true,
+          "version": "kimi-code-models@2026-08-21+sha256:f163e0e1ca7899e2189d4decb498a831a203331497a468409b34ef086591f851"
+        },
+        "k3-256k": {
+          "captured_at_unix_secs": 1787241600,
+          "context_window_tokens": 262144,
+          "image_input": true,
+          "max_output_tokens": null,
+          "semantic_effort": true,
+          "source": "https://www.kimi.com/code/docs/en/kimi-code/models.html",
+          "tool_calling": true,
+          "version": "kimi-code-models@2026-08-21+sha256:b391763bbdc368b0782109d78d82672bfc397d6aacbfd544ca1f72b2ac77c2e2"
+        },
+        "kimi-for-coding": {
+          "captured_at_unix_secs": 1787241600,
+          "context_window_tokens": 262144,
+          "image_input": true,
+          "max_output_tokens": null,
+          "semantic_effort": true,
+          "source": "https://www.kimi.com/code/docs/en/kimi-code/models.html",
+          "tool_calling": true,
+          "version": "kimi-code-models@2026-08-21+sha256:8bb982e3da0d7ae6b714c9a948207290459b88d5188d03baa08c08d74e6fd014"
         }
       }
     },
@@ -156,6 +321,16 @@
           "source": "https://platform.openai.com/docs/models/gpt-5-mini",
           "tool_calling": true,
           "version": "openai-model-page@2026-08-01+sha256:2d806ca791cc624ad173e0518bb6a3280387e2b03fce17c03eeca54d4e76ea1c"
+        },
+        "gpt-5.6": {
+          "captured_at_unix_secs": 1787241600,
+          "context_window_tokens": 1050000,
+          "image_input": true,
+          "max_output_tokens": 128000,
+          "semantic_effort": true,
+          "source": "https://developers.openai.com/api/docs/models/compare",
+          "tool_calling": true,
+          "version": "openai-model-compare@2026-08-21+sha256:31201b19a56de2bc2a1e35f48bb619502c8a3a478d1de37bec7d69092f51f997"
         }
       }
     }

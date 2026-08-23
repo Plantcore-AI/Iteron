@@ -189,12 +189,14 @@ pub trait Oracle: Send + Sync {
     async fn evaluate(&self) -> Verdict;
 }
 
-/// The strong oracle: run the repo's real test command in the egress-off sandbox. This is the
+/// The strong oracle: run the repo's real test command in the egress-off sandbox, unless the
+/// caller explicitly attests that the whole process already has an outer sandbox. This is the
 /// verification gate the harness runs instead of trusting the model's "done".
 pub struct TestOracle {
     sandbox: Box<dyn Sandbox>,
     workspace: PathBuf,
     command: String,
+    preconfined: bool,
     timeout_secs: u64,
     sensitive_env_names: Vec<String>,
     output_tail_bytes: usize,
@@ -207,11 +209,21 @@ impl TestOracle {
             sandbox,
             workspace,
             command,
+            preconfined: false,
             timeout_secs: 300,
             sensitive_env_names: Vec::new(),
             output_tail_bytes: crate::VerificationFeedbackTailPolicy::default().oracle_output_bytes,
             output_observer: None,
         }
+    }
+
+    /// Trust a caller-attested outer sandbox and avoid creating a nested platform sandbox for
+    /// this command. This does not itself confine the child: timeout, output ceilings/observation,
+    /// and exact-name credential scrubbing remain active, while filesystem and network authority
+    /// come entirely from the already-confined parent process.
+    pub fn with_preconfined_outer_sandbox(mut self) -> Self {
+        self.preconfined = true;
+        self
     }
 
     /// Tighten the oracle's own process-group timeout to the caller's remaining run budget.
@@ -252,7 +264,11 @@ impl Oracle for TestOracle {
     }
 
     async fn evaluate(&self) -> Verdict {
-        let mut conf = Confinement::egress_off(&self.workspace);
+        let mut conf = if self.preconfined {
+            Confinement::unconfined(&self.workspace)
+        } else {
+            Confinement::egress_off(&self.workspace)
+        };
         conf.timeout_secs = self.timeout_secs;
         conf.sensitive_env_names = self.sensitive_env_names.clone();
         if let Some(observer) = &self.output_observer {
@@ -366,6 +382,89 @@ mod tests {
         assert_eq!(
             *observed.lock().unwrap(),
             vec!["ANOTHER_CREDENTIAL", "GATEWAY_KEY"]
+        );
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct RecordedConfinement {
+        unconfined: bool,
+        allow_egress: bool,
+        timeout_secs: u64,
+        max_output_bytes: usize,
+        sensitive_env_names: Vec<String>,
+        output_observer_installed: bool,
+    }
+
+    struct FullRecordingSandbox {
+        observed: std::sync::Arc<std::sync::Mutex<Option<RecordedConfinement>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Sandbox for FullRecordingSandbox {
+        async fn run(
+            &self,
+            _command: &str,
+            conf: &Confinement,
+        ) -> Result<iteron_sandbox::RunOutput, iteron_sandbox::SandboxError> {
+            *self.observed.lock().unwrap() = Some(RecordedConfinement {
+                unconfined: conf.unconfined,
+                allow_egress: conf.allow_egress,
+                timeout_secs: conf.timeout_secs,
+                max_output_bytes: conf.max_output_bytes,
+                sensitive_env_names: conf.sensitive_env_names.clone(),
+                output_observer_installed: format!("{conf:?}").contains("output_observer: Some"),
+            });
+            Ok(iteron_sandbox::RunOutput {
+                exit_code: 0,
+                stdout: String::new(),
+                stderr: String::new(),
+                stdout_truncated: false,
+                stderr_truncated: false,
+                timed_out: false,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn preconfined_oracle_skips_nested_sandbox_but_keeps_process_bounds() {
+        let observed = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let (output_observer, _output_receiver) = iteron_sandbox::OutputObserver::bounded(
+            "preconfined-verifier",
+            1,
+            iteron_sandbox::OutputObserver::DEFAULT_QUEUE_CAPACITY,
+        );
+        let oracle = TestOracle::new(
+            Box::new(FullRecordingSandbox {
+                observed: observed.clone(),
+            }),
+            std::env::temp_dir(),
+            "true".into(),
+        )
+        .with_preconfined_outer_sandbox()
+        .with_timeout_secs(17)
+        .with_sensitive_env_names(vec!["VERIFIER_SECRET".into()])
+        .with_output_observer(output_observer);
+
+        assert!(oracle.evaluate().await.passed());
+        let observed = observed
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("the oracle dispatched exactly one confinement");
+        assert!(observed.unconfined, "no nested sandbox may be created");
+        assert!(
+            observed.allow_egress,
+            "the outer sandbox owns egress policy"
+        );
+        assert_eq!(observed.timeout_secs, 17);
+        assert!(observed.max_output_bytes > 0, "output remains bounded");
+        assert_eq!(
+            observed.sensitive_env_names,
+            vec!["VERIFIER_SECRET".to_string()]
+        );
+        assert!(
+            observed.output_observer_installed,
+            "bounded progress observation remains attached"
         );
     }
 

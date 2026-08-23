@@ -32,10 +32,10 @@
   "provider": {
     "connect_timeout_ms": 10000,
     "response_header_timeout_ms": 60000,
-    "stream_idle_timeout_ms": 120000,
+    "stream_idle_timeout_ms": 60000,
     "first_token_slow_after_ms": 3000,
     "first_token_stall_after_ms": 12000,
-    "interactive_retry_wait_ceiling_ms": 60000,
+    "interactive_retry_wait_ceiling_ms": 20000,
     "default_max_in_flight_per_route": 4,
     "http2_required": true,
     "accepted_before_token_required": true

@@ -1,5 +1,5 @@
 use super::*;
-use iteron_protocol::{EffectId, Event, EventKind, Seq, ToolResult, Trust, TurnId, Usage};
+use iteron_protocol::{EffectId, Event, EventKind, Phase, Seq, ToolResult, Trust, TurnId, Usage};
 
 fn event(seq: u64, kind: EventKind) -> Event {
     Event {
@@ -31,6 +31,10 @@ fn turn_end(seq: u64, ttft_ms: Option<u64>, decode_ms: Option<u64>, items: Optio
             stream_items: items,
         },
     )
+}
+
+fn phase(seq: u64, phase: Phase) -> Event {
+    event(seq, EventKind::Phase { phase })
 }
 
 /// The reader is a pure function: the same event stream built in memory yields the identical
@@ -218,6 +222,93 @@ fn overlapping_work_reports_a_negative_residual_instead_of_hiding_it() {
         Some(-800),
         "overlap must surface as a negative residual, never be clamped to zero"
     );
+}
+
+#[test]
+fn tool_breakdown_uses_the_tool_name_not_the_provider_call_id() {
+    let done = event(
+        0,
+        EventKind::ToolDone {
+            result: ToolResult {
+                tool_use_id: "call-provider-opaque-123".into(),
+                content: String::new(),
+                is_error: false,
+                latency_ms: 25,
+                trust: Trust::Workspace,
+            },
+            effect_id: None,
+            tool: Some("read_file".into()),
+        },
+    );
+    let timeline = fold(vec![(Some(0), &done)]);
+    assert!(timeline.tools.contains_key("read_file"));
+    assert!(!timeline.tools.contains_key("call-provider-opaque-123"));
+}
+
+#[test]
+fn token_economy_exposes_prompt_replay_growth_without_reading_content() {
+    let turns = [
+        event(
+            0,
+            EventKind::TurnEnd {
+                usage: Usage {
+                    input: 1_000,
+                    output: 100,
+                    cache_creation: 0,
+                    cache_read: 0,
+                    thinking: 10,
+                },
+                ttft_ms: Some(1),
+                decode_ms: Some(2),
+                stream_items: Some(3),
+            },
+        ),
+        event(
+            1,
+            EventKind::TurnEnd {
+                usage: Usage {
+                    input: 500,
+                    output: 200,
+                    cache_creation: 0,
+                    cache_read: 3_500,
+                    thinking: 20,
+                },
+                ttft_ms: Some(1),
+                decode_ms: Some(2),
+                stream_items: Some(3),
+            },
+        ),
+    ];
+    let timeline = fold(turns.iter().map(|event| (Some(event.seq.0), event)));
+    let economy = timeline.token_economy;
+    assert_eq!(economy.prompt_tokens, 5_000);
+    assert_eq!(economy.first_turn_prompt_tokens, Some(1_000));
+    assert_eq!(economy.last_turn_prompt_tokens, Some(4_000));
+    assert_eq!(economy.prompt_growth_tokens, Some(3_000));
+    assert_eq!(economy.output_tokens, 300);
+    assert_eq!(economy.cache_hit_ratio_ppm, 700_000);
+}
+
+#[test]
+fn phase_partition_separates_idle_time_from_active_harness_work() {
+    let events = [
+        phase(0, Phase::Context),
+        phase(1, Phase::Model),
+        phase(2, Phase::Tools),
+        phase(3, Phase::Idle),
+        phase(4, Phase::Context),
+        phase(5, Phase::Model),
+        effect_done(6, "provider", Some(40)),
+    ];
+    let offsets = [0, 10_000, 40_000, 50_000, 250_000, 260_000, 300_000];
+    let timeline = fold(offsets.into_iter().map(Some).zip(events.iter()));
+
+    assert_eq!(timeline.phases["context"].total_ms, 20);
+    assert_eq!(timeline.phases["model"].total_ms, 70);
+    assert_eq!(timeline.phases["tools"].total_ms, 10);
+    assert_eq!(timeline.phases["idle"].total_ms, 200);
+    assert_eq!(timeline.coverage.phase_attributed_ms, 300);
+    assert_eq!(timeline.coverage.phase_residual_ms, Some(0));
 }
 
 /// Turn timing rides through, and a turn with no measurement is counted without inventing one.

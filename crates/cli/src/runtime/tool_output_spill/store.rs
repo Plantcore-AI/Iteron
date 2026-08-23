@@ -96,6 +96,10 @@ pub(crate) struct ToolOutputSpillStore {
 }
 
 impl ToolOutputSpillStore {
+    pub(crate) const fn visible_threshold_bytes(&self) -> usize {
+        self.policy.memory_threshold_bytes()
+    }
+
     /// Open the spill owner on the same tenant/run content graph as the durable record.
     ///
     /// Raw oversized output is one bounded primary private artifact behind the record CAS, and

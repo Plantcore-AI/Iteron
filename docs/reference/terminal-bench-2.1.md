@@ -17,7 +17,7 @@ The request binds:
 `TerminalBenchRequest::command()` deterministically builds this normal Iteron invocation:
 
 ```text
-iteron --print --output-format json --output-schema-version 5 \
+iteron --print --output-format json --output-schema-version 6 \
   --repo WORKSPACE \
   --tunables-profile PROFILE --tunables-profile-digest PROFILE_SHA256 \
   --emit-tunables-profile EFFECTIVE_PROFILE --runs-dir RUNS \

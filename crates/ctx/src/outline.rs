@@ -15,6 +15,306 @@ use walkdir::WalkDir;
 use crate::instructions::suspicious_unicode;
 use crate::source::{SourceScope, read_bounded_utf8};
 
+mod outline_relevance {
+    //! Deterministic task-aware ranking for the repository outline.
+    //!
+    //! This is deliberately a bounded lexical fallback, not a language parser. It retains the two
+    //! semantic relations that transfer across languages without an index: declarations define
+    //! names, and other files mentioning those names reference them. Query evidence personalizes
+    //! a short, fixed graph walk so a map includes the likely definition and nearby callers/tests.
+
+    use std::collections::{BTreeMap, BTreeSet};
+
+    const MAX_TERMS_PER_FILE: usize = 512;
+    const MAX_DEFINERS_PER_SYMBOL: usize = 8;
+    const MAX_RELATION_EDGES: usize = 8_192;
+    const PROPAGATION_ROUNDS: usize = 2;
+
+    fn max_terms_per_file() -> usize {
+        iteron_tunables::param_usize("ctx.outline.max_terms_per_file", MAX_TERMS_PER_FILE)
+    }
+
+    fn max_definers_per_symbol() -> usize {
+        iteron_tunables::param_usize(
+            "ctx.outline.max_definers_per_symbol",
+            MAX_DEFINERS_PER_SYMBOL,
+        )
+    }
+
+    fn max_relation_edges() -> usize {
+        iteron_tunables::param_usize("ctx.outline.max_relation_edges", MAX_RELATION_EDGES)
+    }
+
+    fn propagation_rounds() -> usize {
+        iteron_tunables::param_usize("ctx.outline.propagation_rounds", PROPAGATION_ROUNDS)
+    }
+
+    #[derive(Debug)]
+    pub(super) struct FileSignals {
+        path_terms: BTreeSet<String>,
+        declaration_terms: BTreeSet<String>,
+        definitions: BTreeSet<String>,
+        references: BTreeSet<String>,
+    }
+
+    impl FileSignals {
+        pub(super) fn extract(path: &str, declarations: &[String], source: &str) -> Self {
+            let mut definitions = BTreeSet::new();
+            for declaration in declarations {
+                if let Some(symbol) = defined_symbol(declaration) {
+                    definitions.insert(symbol.to_lowercase());
+                }
+            }
+            Self {
+                path_terms: terms(path, max_terms_per_file()),
+                declaration_terms: terms(&declarations.join("\n"), max_terms_per_file()),
+                definitions,
+                references: terms(source, max_terms_per_file()),
+            }
+        }
+
+        fn contains(&self, term: &str) -> bool {
+            self.path_terms.contains(term)
+                || self.declaration_terms.contains(term)
+                || self.references.contains(term)
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub(super) struct Relevance {
+        pub(super) direct: u64,
+        pub(super) related: u64,
+        pub(super) centrality: usize,
+    }
+
+    /// Rank already-bounded files. Work is capped by the file count, per-file term count, relation
+    /// edge ceiling, and fixed propagation depth; no model, provider, index daemon, or repository
+    /// history participates.
+    pub(super) fn rank<'a>(
+        files: impl IntoIterator<Item = &'a FileSignals>,
+        query: &str,
+    ) -> Vec<Relevance> {
+        let files = files.into_iter().collect::<Vec<_>>();
+        let query_terms = terms(query, 64);
+        let mut relevance = vec![Relevance::default(); files.len()];
+
+        for term in &query_terms {
+            let document_frequency = files.iter().filter(|file| file.contains(term)).count();
+            if document_frequency == 0 {
+                continue;
+            }
+            // Integer IDF-like weighting keeps rare task anchors stronger than generic issue prose.
+            let rarity = files
+                .len()
+                .saturating_add(1)
+                .saturating_mul(8)
+                .checked_div(document_frequency.saturating_add(1))
+                .unwrap_or(1)
+                .clamp(1, 8) as u64;
+            for (index, file) in files.iter().enumerate() {
+                let field_weight: u64 = if file.definitions.contains(term) {
+                    32
+                } else if file.path_terms.contains(term) {
+                    24
+                } else if file.declaration_terms.contains(term) {
+                    12
+                } else if file.references.contains(term) {
+                    2
+                } else {
+                    0
+                };
+                relevance[index].direct = relevance[index]
+                    .direct
+                    .saturating_add(field_weight.saturating_mul(rarity));
+            }
+        }
+
+        let edges = relation_edges(&files);
+        let mut neighbors = vec![Vec::<usize>::new(); files.len()];
+        for &(caller, definer) in &edges {
+            neighbors[caller].push(definer);
+            neighbors[definer].push(caller);
+            relevance[definer].centrality = relevance[definer].centrality.saturating_add(1);
+        }
+        for adjacent in &mut neighbors {
+            adjacent.sort_unstable();
+            adjacent.dedup();
+        }
+
+        // A tiny personalized graph walk. Definition and reference neighbors receive decaying
+        // task evidence, but direct task matches remain the primary ordering key.
+        let mut frontier = relevance
+            .iter()
+            .map(|score| score.direct)
+            .collect::<Vec<_>>();
+        for _ in 0..propagation_rounds() {
+            let mut next = vec![0u64; files.len()];
+            for (source, adjacent) in neighbors.iter().enumerate() {
+                let degree = u64::try_from(adjacent.len()).unwrap_or(u64::MAX).max(1);
+                let share = frontier[source].checked_div(degree).unwrap_or(0) / 2;
+                for &target in adjacent {
+                    next[target] = next[target].saturating_add(share);
+                }
+            }
+            for (score, propagated) in relevance.iter_mut().zip(&next) {
+                score.related = score.related.saturating_add(*propagated);
+            }
+            frontier = next;
+        }
+        relevance
+    }
+
+    fn relation_edges(files: &[&FileSignals]) -> BTreeSet<(usize, usize)> {
+        let mut definitions = BTreeMap::<&str, Vec<usize>>::new();
+        for (index, file) in files.iter().enumerate() {
+            for symbol in &file.definitions {
+                let definers = definitions.entry(symbol).or_default();
+                if definers.len() < max_definers_per_symbol() {
+                    definers.push(index);
+                }
+            }
+        }
+
+        let mut edges = BTreeSet::new();
+        'files: for (caller, file) in files.iter().enumerate() {
+            for reference in &file.references {
+                let Some(definers) = definitions.get(reference.as_str()) else {
+                    continue;
+                };
+                for &definer in definers {
+                    if caller != definer {
+                        edges.insert((caller, definer));
+                        if edges.len() >= max_relation_edges() {
+                            break 'files;
+                        }
+                    }
+                }
+            }
+        }
+        edges
+    }
+
+    fn defined_symbol(declaration: &str) -> Option<String> {
+        let tokens = raw_tokens(declaration, 64);
+        for (index, token) in tokens.iter().enumerate() {
+            if matches!(
+                token.as_str(),
+                "class"
+                    | "const"
+                    | "def"
+                    | "enum"
+                    | "fn"
+                    | "func"
+                    | "function"
+                    | "impl"
+                    | "interface"
+                    | "macro_rules"
+                    | "mod"
+                    | "module"
+                    | "static"
+                    | "struct"
+                    | "trait"
+                    | "type"
+            ) {
+                return tokens.get(index.saturating_add(1)).cloned();
+            }
+        }
+        None
+    }
+
+    fn terms(text: &str, limit: usize) -> BTreeSet<String> {
+        let mut out = BTreeSet::new();
+        for token in raw_tokens(text, limit) {
+            insert_expanded(&mut out, &token, limit);
+            if out.len() >= limit {
+                break;
+            }
+        }
+        out
+    }
+
+    fn raw_tokens(text: &str, limit: usize) -> Vec<String> {
+        text.split(|character: char| !(character.is_alphanumeric() || character == '_'))
+            .filter(|token| token.chars().count() >= 3)
+            .take(limit)
+            .map(|token| token.chars().take(128).collect())
+            .collect()
+    }
+
+    fn insert_expanded(out: &mut BTreeSet<String>, token: &str, limit: usize) {
+        let mut segment = String::new();
+        let mut previous: Option<char> = None;
+        for character in token.chars().chain(std::iter::once('_')) {
+            let boundary = character == '_'
+                || previous.is_some_and(|prior| {
+                    (prior.is_lowercase() && character.is_uppercase())
+                        || (prior.is_alphabetic() != character.is_alphabetic())
+                });
+            if boundary {
+                if segment.chars().count() >= 3 && out.len() < limit {
+                    out.insert(segment.to_lowercase());
+                }
+                segment.clear();
+            }
+            if character != '_' {
+                segment.push(character);
+            }
+            previous = Some(character);
+        }
+        if token.chars().count() >= 3 && out.len() < limit {
+            out.insert(token.to_lowercase());
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn camel_snake_and_path_terms_share_task_vocabulary() {
+            let files = [
+                FileSignals::extract(
+                    "src/cache/token_store.ts",
+                    &["export function invalidateTokenCache()".into()],
+                    "export function invalidateTokenCache() {}",
+                ),
+                FileSignals::extract(
+                    "src/unrelated.ts",
+                    &["export function calculateReport()".into()],
+                    "export function calculateReport() {}",
+                ),
+            ];
+            let scores = rank(files.iter(), "repair token cache invalidation");
+            assert!(scores[0].direct > scores[1].direct);
+        }
+
+        #[test]
+        fn task_evidence_propagates_across_a_definition_reference_edge() {
+            let files = [
+                FileSignals::extract(
+                    "src/service.rs",
+                    &["pub struct PaymentGateway;".into()],
+                    "pub struct PaymentGateway;",
+                ),
+                FileSignals::extract(
+                    "tests/service_test.rs",
+                    &["fn rejects_expired_card() {}".into()],
+                    "fn rejects_expired_card() { let _ = PaymentGateway; }",
+                ),
+                FileSignals::extract(
+                    "src/report.rs",
+                    &["pub fn report() {}".into()],
+                    "pub fn report() {}",
+                ),
+            ];
+            let scores = rank(files.iter(), "PaymentGateway timeout");
+            assert!(scores[0].direct > 0);
+            assert!(scores[1].related > scores[2].related);
+            assert!(scores[0].centrality > scores[2].centrality);
+        }
+    }
+}
+
 /// A skeleton needs declaration headers, never an entire large source file. Keep this ceiling
 /// comfortably above ordinary code files while bounding allocation for model-invokable repo_map.
 const MAX_OUTLINE_SOURCE_BYTES: usize = 256 * 1024;
@@ -82,11 +382,11 @@ fn is_decl_with_keywords(line: &str, keywords: &[&str]) -> bool {
 struct OutlineFile {
     path: String,
     declarations: Vec<String>,
-    query_matches: usize,
+    signals: outline_relevance::FileSignals,
+    relevance: outline_relevance::Relevance,
 }
 
-/// Extract a small deterministic identifier set from caller context. This is a relevance hint,
-/// not a parser: candidates are bounded and later matched against declaration identifier tokens.
+/// Preserve the tunable query envelope before the private ranker expands compound identifiers.
 fn query_identifiers(query: &str) -> Vec<String> {
     const MAX_IDENTIFIERS: usize = 64;
     const MAX_IDENTIFIER_CHARS: usize = 128;
@@ -100,29 +400,12 @@ fn query_identifiers(query: &str) -> Vec<String> {
         .filter(|token| token.chars().count() >= 3)
         .take(max_identifiers)
     {
-        let identifier: String = token
-            .chars()
-            .take(max_identifier_chars)
-            .flat_map(char::to_lowercase)
-            .collect();
+        let identifier: String = token.chars().take(max_identifier_chars).collect();
         if !identifiers.contains(&identifier) {
             identifiers.push(identifier);
         }
     }
     identifiers
-}
-
-fn declaration_query_matches(declarations: &[String], identifiers: &[String]) -> usize {
-    identifiers
-        .iter()
-        .filter(|identifier| {
-            declarations.iter().any(|declaration| {
-                declaration
-                    .split(|character: char| !(character.is_alphanumeric() || character == '_'))
-                    .any(|token| token.to_lowercase() == identifier.as_str())
-            })
-        })
-        .count()
 }
 
 fn is_code_file(name: &str) -> bool {
@@ -229,7 +512,6 @@ fn repo_outline_for_task_at_limits(
             MAX_OUTLINE_QUERY_BYTES,
         ),
     );
-    let identifiers = query_identifiers(&bounded_query);
     let declaration_keywords =
         iteron_tunables::param_str_list("ctx.outline.declaration_keywords", DECLARATION_KEYWORDS);
     let mut files: Vec<OutlineFile> = Vec::new();
@@ -300,27 +582,47 @@ fn repo_outline_for_task_at_limits(
             continue;
         }
         total_source_bytes += content.len();
-        let decls: Vec<String> = content
+        let declaration_lines: Vec<(usize, String)> = content
             .lines()
             .enumerate()
             .filter(|(_, line)| is_decl_with_keywords(line, declaration_keywords))
-            .map(|(i, l)| format!("  {}: {}", i + 1, l.trim()))
+            .map(|(index, line)| (index.saturating_add(1), line.trim().to_owned()))
             .take(40) // cap per file so one large in-bound file can't dominate
             .collect();
-        let query_matches = declaration_query_matches(&decls, &identifiers);
+        let raw_declarations = declaration_lines
+            .iter()
+            .map(|(_, declaration)| declaration.clone())
+            .collect::<Vec<_>>();
+        let signals = outline_relevance::FileSignals::extract(&rel, &raw_declarations, &content);
+        let declarations = declaration_lines
+            .into_iter()
+            .map(|(line, declaration)| format!("  {line}: {declaration}"))
+            .collect();
         files.push(OutlineFile {
             path: rel,
-            declarations: decls,
-            query_matches,
+            declarations,
+            signals,
+            relevance: outline_relevance::Relevance::default(),
         });
     }
-    // Rank: exact declaration/query overlap first, then declaration density and shallow paths.
-    // The path tie-break makes the order independent of filesystem enumeration order.
+    // Canonicalize before the bounded graph is built so capped relation selection and final output
+    // are independent of filesystem enumeration order.
+    files.sort_by(|left, right| left.path.cmp(&right.path));
+    let task_query = query_identifiers(&bounded_query).join(" ");
+    let relevance = outline_relevance::rank(files.iter().map(|file| &file.signals), &task_query);
+    for (file, score) in files.iter_mut().zip(relevance) {
+        file.relevance = score;
+    }
+    // Rank direct task evidence first, then task-neighbor relations and global definition
+    // centrality. Declaration density and path depth remain deterministic fallback signals.
     files.sort_by(|a, b| {
         let depth_a = a.path.matches('/').count();
         let depth_b = b.path.matches('/').count();
-        b.query_matches
-            .cmp(&a.query_matches)
+        b.relevance
+            .direct
+            .cmp(&a.relevance.direct)
+            .then(b.relevance.related.cmp(&a.relevance.related))
+            .then(b.relevance.centrality.cmp(&a.relevance.centrality))
             .then(b.declarations.len().cmp(&a.declarations.len()))
             .then(depth_a.cmp(&depth_b))
             .then(a.path.cmp(&b.path))
@@ -443,6 +745,44 @@ mod tests {
         assert!(
             first.find("z_target.rs").unwrap() < first.find("a_many.rs").unwrap(),
             "the defining file must outrank a larger unrelated file:\n{first}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn task_path_and_cross_file_reference_outrank_unrelated_declaration_volume() {
+        let dir = std::env::temp_dir().join(format!(
+            "iteron-ctx-task-graph-{}-{:?}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(dir.join("payments")).unwrap();
+        let unrelated = (0..30)
+            .map(|index| format!("pub fn unrelated_{index}() {{}}\n"))
+            .collect::<String>();
+        std::fs::write(dir.join("a_many.rs"), unrelated).unwrap();
+        std::fs::write(
+            dir.join("payments/gateway.rs"),
+            "pub struct GatewayClient;\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("payments/gateway_test.rs"),
+            "fn rejects_timeout() { let _ = GatewayClient; }\n",
+        )
+        .unwrap();
+
+        let map = repo_outline_for_task(&dir, 10_000, "repair payment gateway timeout handling");
+        let gateway = map.find("payments/gateway.rs").unwrap();
+        let gateway_test = map.find("payments/gateway_test.rs").unwrap();
+        let unrelated = map.find("a_many.rs").unwrap();
+        assert!(gateway < unrelated, "task path must outrank volume:\n{map}");
+        assert!(
+            gateway_test < unrelated,
+            "a task-neighbor reference must outrank unrelated volume:\n{map}"
         );
         std::fs::remove_dir_all(&dir).ok();
     }

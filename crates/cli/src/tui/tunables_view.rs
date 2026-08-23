@@ -68,14 +68,7 @@ pub(super) fn checkpoint_catalog(
         .iter()
         .map(|entry| checkpoint_detail(entry, runtime_policy))
         .collect::<Result<Vec<_>, _>>()?;
-    let profile = iteron_tunables::RuntimeProfile::ALL
-        .into_iter()
-        .find(|profile| {
-            iteron_tunables::runtime_profile_digest(*profile)
-                .ok()
-                .as_deref()
-                == snapshot.profile_digest_sha256.as_deref()
-        })
+    let profile = crate::runtime_tunables::effective_view::checkpoint_runtime_profile(checkpoint)
         .map(iteron_tunables::RuntimeProfile::id)
         .unwrap_or("unrecognized");
     Ok(Catalog::new(
@@ -782,6 +775,38 @@ fn adjustment_summary(value: Option<&Value>) -> Result<String, LoadError> {
         output.truncate();
     }
     Ok(output.finish())
+}
+
+#[cfg(test)]
+mod runtime_profile_tests {
+    use super::*;
+    use iteron_tunables::{ProfileValue, ResolutionValue, SourceKind};
+
+    #[test]
+    fn runtime_catalog_names_value_bearing_profile_from_session_isolation() {
+        let mut input = iteron_record::resolved_fixture::input();
+        input
+            .profile
+            .as_mut()
+            .expect("fixture has an interactive profile")
+            .values
+            .push(ProfileValue {
+                family: "max_turns".into(),
+                as_declared_source: SourceKind::UserConfig,
+                value: ResolutionValue::Integer { value: 10 },
+            });
+        let resolved = iteron_tunables::resolve(input).expect("value-bearing profile resolves");
+        let resolved =
+            iteron_tunables::with_synthetic_fixed_authority_attestations_for_test(resolved)
+                .expect("fixture fixed authorities remain valid");
+        let checkpoint = iteron_record::TunablesCheckpoint::V2(
+            iteron_record::snapshot_v2_from_resolved(&resolved).expect("resolved set projects"),
+        );
+
+        let (title, _) = checkpoint_catalog(&checkpoint, None).unwrap().into_parts();
+        assert!(title.contains("profile=iteron:interactive"));
+        assert!(!title.contains("profile=unrecognized"));
+    }
 }
 
 #[cfg(test)]

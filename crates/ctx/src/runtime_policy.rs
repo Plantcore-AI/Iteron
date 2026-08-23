@@ -3,6 +3,14 @@
 use crate::MemBudget;
 use serde::{Deserialize, Serialize};
 
+/// Fixed-point scale used by context-pressure decisions. Keeping the controller integer-only
+/// makes a replay derive the same result from the same immutable budgets.
+const CONTEXT_PRESSURE_SCALE: u32 = 1_000_000;
+/// Smallest useful model-visible result slice. This is a structural diagnostic envelope, not a
+/// target: spare component budget widens it, while a saturated transcript still preserves enough
+/// head/tail evidence for the model to choose a narrower follow-up query.
+const MIN_TOOL_RESULT_VISIBLE_BYTES: usize = 1_024;
+
 /// Model window assumed by the default budget split when no route has been selected yet.
 const DEFAULT_MODEL_WINDOW_TOKENS: usize = 120_000;
 /// Output space held back from input budgeting so a full answer always fits.
@@ -208,6 +216,104 @@ impl ContextBudgetPolicy {
         }
         Ok(())
     }
+
+    /// Find the first transcript-owned component at or above a caller-selected pressure ratio.
+    ///
+    /// This is deliberately provider-free: route metadata determines the component ceilings once,
+    /// and every later strategy decision consumes only the measured request projection. It lets
+    /// end-of-turn compaction react to a hot tool-result or LSP partition even when the aggregate
+    /// context window is still mostly empty.
+    pub fn recoverable_pressure(
+        &self,
+        usage: &ContextComponentUsage,
+        threshold_ppm: u32,
+    ) -> Option<ContextBudgetPressure> {
+        let threshold_ppm = threshold_ppm.min(context_pressure_scale());
+        [
+            (
+                ContextBudgetClass::Transcript,
+                usage.transcript_tokens,
+                self.transcript_tokens,
+            ),
+            (
+                ContextBudgetClass::ToolResults,
+                usage.tool_result_tokens,
+                self.tool_result_tokens,
+            ),
+            (
+                ContextBudgetClass::LspResults,
+                usage.lsp_result_tokens,
+                self.lsp_result_tokens,
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(class, used, ceiling)| {
+            let pressure_ppm = component_pressure_ppm(used, ceiling);
+            (pressure_ppm >= threshold_ppm).then_some(ContextBudgetPressure {
+                class,
+                used,
+                ceiling,
+                pressure_ppm,
+            })
+        })
+        .max_by_key(|pressure| pressure.pressure_ppm)
+    }
+
+    /// Derive one result's visible byte allowance from the remaining independently-owned result
+    /// partition and the number of same-class calls the model emitted this turn.
+    ///
+    /// A UTF-8 byte is a conservative upper bound for the token estimators used by the request
+    /// path, so treating remaining tokens as remaining visible bytes cannot widen admission. The
+    /// structural minimum keeps a saturated history recoverable: the next admission compacts the
+    /// old transcript, while this turn still returns enough evidence to make progress.
+    pub fn fair_result_visible_bytes(
+        &self,
+        class: ContextBudgetClass,
+        already_used_tokens: usize,
+        pending_results: usize,
+        configured_max_bytes: usize,
+    ) -> usize {
+        if pending_results == 0 || configured_max_bytes == 0 {
+            return 0;
+        }
+        let ceiling = match class {
+            ContextBudgetClass::ToolResults => self.tool_result_tokens,
+            ContextBudgetClass::LspResults => self.lsp_result_tokens,
+            _ => return configured_max_bytes,
+        };
+        let framing = pending_results.saturating_mul(8);
+        let remaining = ceiling
+            .saturating_sub(already_used_tokens)
+            .saturating_sub(framing);
+        let fair_share = remaining / pending_results;
+        let minimum = iteron_tunables::param_usize(
+            "ctx.runtime_policy.min_tool_result_visible_bytes",
+            MIN_TOOL_RESULT_VISIBLE_BYTES,
+        )
+        .min(configured_max_bytes);
+        fair_share.clamp(minimum, configured_max_bytes)
+    }
+}
+
+fn component_pressure_ppm(used: usize, ceiling: usize) -> u32 {
+    let scale = context_pressure_scale();
+    if ceiling == 0 {
+        return if used == 0 { 0 } else { scale };
+    }
+    let scaled = used
+        .saturating_mul(scale as usize)
+        .checked_div(ceiling)
+        .unwrap_or(usize::MAX)
+        .min(scale as usize);
+    u32::try_from(scaled).unwrap_or(scale)
+}
+
+fn context_pressure_scale() -> u32 {
+    iteron_tunables::param_integer(
+        "ctx.runtime_policy.context_pressure_scale",
+        CONTEXT_PRESSURE_SCALE,
+    )
+    .max(1)
 }
 
 /// Source-separated request usage. Every field is estimated with the same explicitly identified
@@ -273,6 +379,16 @@ pub struct ContextBudgetViolation {
     pub class: ContextBudgetClass,
     pub used: usize,
     pub ceiling: usize,
+}
+
+/// A non-terminal high-watermark. Unlike [`ContextBudgetViolation`], this may describe a
+/// component that still fits and is used only to schedule work off the operator's critical path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContextBudgetPressure {
+    pub class: ContextBudgetClass,
+    pub used: usize,
+    pub ceiling: usize,
+    pub pressure_ppm: u32,
 }
 
 impl ContextBudgetViolation {
@@ -457,5 +573,39 @@ mod tests {
                     || matches!(byte, b'_' | b'.' | b'-')
             }));
         }
+    }
+
+    #[test]
+    fn recoverable_pressure_uses_the_hottest_transcript_owned_component() {
+        let policy = ContextBudgetPolicy::for_usable_window(100_000, 8_000, 2_000);
+        let usage = ContextComponentUsage {
+            transcript_tokens: policy.transcript_tokens * 3 / 4,
+            tool_result_tokens: policy.tool_result_tokens * 9 / 10,
+            memory_tokens: policy.memory_tokens,
+            ..ContextComponentUsage::default()
+        };
+        let pressure = policy.recoverable_pressure(&usage, 750_000).unwrap();
+        assert_eq!(pressure.class, ContextBudgetClass::ToolResults);
+        assert_eq!(pressure.pressure_ppm, 900_000);
+        assert!(policy.recoverable_pressure(&usage, 950_000).is_none());
+    }
+
+    #[test]
+    fn fair_result_projection_shares_only_the_remaining_component_budget() {
+        let mut policy = ContextBudgetPolicy::for_usable_window(100_000, 8_000, 2_000);
+        policy.tool_result_tokens = 10_000;
+        assert_eq!(
+            policy.fair_result_visible_bytes(ContextBudgetClass::ToolResults, 2_000, 2, 64 * 1024,),
+            3_992
+        );
+        assert_eq!(
+            policy
+                .fair_result_visible_bytes(ContextBudgetClass::ToolResults, 10_000, 2, 64 * 1024,),
+            MIN_TOOL_RESULT_VISIBLE_BYTES
+        );
+        assert_eq!(
+            policy.fair_result_visible_bytes(ContextBudgetClass::Memory, 0, 2, 64 * 1024),
+            64 * 1024
+        );
     }
 }

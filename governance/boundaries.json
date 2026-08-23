@@ -1034,6 +1034,10 @@
         },
         {
           "kind": "file",
+          "path": "crates/ctx/tests/memory_render_profile.rs"
+        },
+        {
+          "kind": "file",
           "path": "crates/ctx/tests/skill_frontmatter.rs"
         }
       ],
@@ -1271,6 +1275,10 @@
         },
         {
           "kind": "file",
+          "path": "crates/tools/src/repair_evidence.rs"
+        },
+        {
+          "kind": "file",
           "path": "crates/tools/src/schema.rs"
         },
         {
@@ -1284,6 +1292,10 @@
         {
           "kind": "file",
           "path": "crates/tools/src/tool_policy.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/tools/src/tool_purpose.rs"
         },
         {
           "kind": "file",
@@ -1304,6 +1316,10 @@
         {
           "kind": "file",
           "path": "crates/tools/tests/bounded_minimum_does_not_abort.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/tools/tests/tool_exposure_profile.rs"
         }
       ],
       "contracts": [
@@ -1669,6 +1685,10 @@
         {
           "kind": "file",
           "path": "crates/cli/src/runtime/inbound_control.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/investigation_convergence.rs"
         },
         {
           "kind": "file",

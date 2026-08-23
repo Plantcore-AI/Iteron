@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "release_ordinal": 5,
+  "release_ordinal": 6,
   "minimum_deprecation_releases": 1,
   "surfaces": [
     {
@@ -444,7 +444,7 @@
     },
     {
       "id": "cli.machine-result",
-      "current_version": 5,
+      "current_version": 6,
       "version_field": "schema_version",
       "selector": { "field": "type", "value": "result" },
       "fixtures": [
@@ -464,6 +464,11 @@
           "schema_version": 5
         },
         {
+          "path": "crates/cli/tests/golden/one_shot_json_success_v6.json",
+          "format": "json",
+          "schema_version": 6
+        },
+        {
           "path": "crates/cli/tests/golden/one_shot_json_drained_v4.json",
           "format": "json",
           "schema_version": 4
@@ -472,6 +477,11 @@
           "path": "crates/cli/tests/golden/one_shot_json_drained_v5.json",
           "format": "json",
           "schema_version": 5
+        },
+        {
+          "path": "crates/cli/tests/golden/one_shot_json_drained_v6.json",
+          "format": "json",
+          "schema_version": 6
         },
         {
           "path": "crates/cli/tests/golden/one_shot_stream_json_success.jsonl",
@@ -489,6 +499,11 @@
           "schema_version": 5
         },
         {
+          "path": "crates/cli/tests/golden/one_shot_stream_json_success_v6.jsonl",
+          "format": "jsonl",
+          "schema_version": 6
+        },
+        {
           "path": "crates/cli/tests/golden/machine_stream_all_v4.jsonl",
           "format": "jsonl",
           "schema_version": 4
@@ -497,6 +512,11 @@
           "path": "crates/cli/tests/golden/machine_stream_all_v5.jsonl",
           "format": "jsonl",
           "schema_version": 5
+        },
+        {
+          "path": "crates/cli/tests/golden/machine_stream_all_v6.jsonl",
+          "format": "jsonl",
+          "schema_version": 6
         }
       ],
       "fields": [
@@ -519,7 +539,7 @@
     },
     {
       "id": "cli.machine-stream.assistant-text",
-      "current_version": 5,
+      "current_version": 6,
       "version_field": "schema_version",
       "selector": { "field": "type", "value": "assistant_text" },
       "fixtures": [
@@ -539,6 +559,11 @@
           "schema_version": 5
         },
         {
+          "path": "crates/cli/tests/golden/one_shot_stream_json_success_v6.jsonl",
+          "format": "jsonl",
+          "schema_version": 6
+        },
+        {
           "path": "crates/cli/tests/golden/machine_stream_all_v4.jsonl",
           "format": "jsonl",
           "schema_version": 4
@@ -547,6 +572,11 @@
           "path": "crates/cli/tests/golden/machine_stream_all_v5.jsonl",
           "format": "jsonl",
           "schema_version": 5
+        },
+        {
+          "path": "crates/cli/tests/golden/machine_stream_all_v6.jsonl",
+          "format": "jsonl",
+          "schema_version": 6
         }
       ],
       "fields": [
@@ -558,7 +588,7 @@
     },
     {
       "id": "cli.machine-stream.input-attachment",
-      "current_version": 5,
+      "current_version": 6,
       "version_field": "schema_version",
       "selector": { "field": "type", "value": "input_attachment" },
       "fixtures": [
@@ -566,6 +596,11 @@
           "path": "crates/cli/tests/golden/input_attachment_stream_v5.jsonl",
           "format": "jsonl",
           "schema_version": 5
+        },
+        {
+          "path": "crates/cli/tests/golden/input_attachment_stream_v6.jsonl",
+          "format": "jsonl",
+          "schema_version": 6
         }
       ],
       "fields": [
@@ -579,7 +614,7 @@
     },
     {
       "id": "cli.machine-stream.thinking",
-      "current_version": 5,
+      "current_version": 6,
       "version_field": "schema_version",
       "selector": { "field": "type", "value": "thinking" },
       "fixtures": [
@@ -592,6 +627,11 @@
           "path": "crates/cli/tests/golden/machine_stream_all_v5.jsonl",
           "format": "jsonl",
           "schema_version": 5
+        },
+        {
+          "path": "crates/cli/tests/golden/machine_stream_all_v6.jsonl",
+          "format": "jsonl",
+          "schema_version": 6
         }
       ],
       "fields": [
@@ -603,7 +643,7 @@
     },
     {
       "id": "cli.machine-stream.tool-start",
-      "current_version": 5,
+      "current_version": 6,
       "version_field": "schema_version",
       "selector": { "field": "type", "value": "tool_start" },
       "fixtures": [
@@ -616,6 +656,11 @@
           "path": "crates/cli/tests/golden/machine_stream_all_v5.jsonl",
           "format": "jsonl",
           "schema_version": 5
+        },
+        {
+          "path": "crates/cli/tests/golden/machine_stream_all_v6.jsonl",
+          "format": "jsonl",
+          "schema_version": 6
         }
       ],
       "fields": [
@@ -629,7 +674,7 @@
     },
     {
       "id": "cli.machine-stream.tool-end",
-      "current_version": 5,
+      "current_version": 6,
       "version_field": "schema_version",
       "selector": { "field": "type", "value": "tool_end" },
       "fixtures": [
@@ -642,6 +687,11 @@
           "path": "crates/cli/tests/golden/machine_stream_all_v5.jsonl",
           "format": "jsonl",
           "schema_version": 5
+        },
+        {
+          "path": "crates/cli/tests/golden/machine_stream_all_v6.jsonl",
+          "format": "jsonl",
+          "schema_version": 6
         }
       ],
       "fields": [
@@ -657,7 +707,7 @@
     },
     {
       "id": "cli.machine-stream.phase",
-      "current_version": 5,
+      "current_version": 6,
       "version_field": "schema_version",
       "selector": { "field": "type", "value": "phase" },
       "fixtures": [
@@ -677,6 +727,11 @@
           "schema_version": 5
         },
         {
+          "path": "crates/cli/tests/golden/one_shot_stream_json_success_v6.jsonl",
+          "format": "jsonl",
+          "schema_version": 6
+        },
+        {
           "path": "crates/cli/tests/golden/machine_stream_all_v4.jsonl",
           "format": "jsonl",
           "schema_version": 4
@@ -685,6 +740,11 @@
           "path": "crates/cli/tests/golden/machine_stream_all_v5.jsonl",
           "format": "jsonl",
           "schema_version": 5
+        },
+        {
+          "path": "crates/cli/tests/golden/machine_stream_all_v6.jsonl",
+          "format": "jsonl",
+          "schema_version": 6
         }
       ],
       "fields": [
@@ -696,7 +756,7 @@
     },
     {
       "id": "cli.machine-stream.turn-end",
-      "current_version": 5,
+      "current_version": 6,
       "version_field": "schema_version",
       "selector": { "field": "type", "value": "turn_end" },
       "fixtures": [
@@ -716,6 +776,11 @@
           "schema_version": 5
         },
         {
+          "path": "crates/cli/tests/golden/one_shot_stream_json_success_v6.jsonl",
+          "format": "jsonl",
+          "schema_version": 6
+        },
+        {
           "path": "crates/cli/tests/golden/machine_stream_all_v4.jsonl",
           "format": "jsonl",
           "schema_version": 4
@@ -724,6 +789,11 @@
           "path": "crates/cli/tests/golden/machine_stream_all_v5.jsonl",
           "format": "jsonl",
           "schema_version": 5
+        },
+        {
+          "path": "crates/cli/tests/golden/machine_stream_all_v6.jsonl",
+          "format": "jsonl",
+          "schema_version": 6
         }
       ],
       "fields": [
@@ -743,7 +813,7 @@
     },
     {
       "id": "cli.machine-stream.workflow-start",
-      "current_version": 5,
+      "current_version": 6,
       "version_field": "schema_version",
       "selector": { "field": "type", "value": "workflow_start" },
       "fixtures": [
@@ -756,6 +826,11 @@
           "path": "crates/cli/tests/golden/machine_stream_all_v5.jsonl",
           "format": "jsonl",
           "schema_version": 5
+        },
+        {
+          "path": "crates/cli/tests/golden/machine_stream_all_v6.jsonl",
+          "format": "jsonl",
+          "schema_version": 6
         }
       ],
       "fields": [
@@ -769,7 +844,7 @@
     },
     {
       "id": "cli.machine-stream.workflow-plan",
-      "current_version": 5,
+      "current_version": 6,
       "version_field": "schema_version",
       "selector": { "field": "type", "value": "workflow_plan" },
       "fixtures": [
@@ -782,6 +857,11 @@
           "path": "crates/cli/tests/golden/machine_stream_all_v5.jsonl",
           "format": "jsonl",
           "schema_version": 5
+        },
+        {
+          "path": "crates/cli/tests/golden/machine_stream_all_v6.jsonl",
+          "format": "jsonl",
+          "schema_version": 6
         }
       ],
       "fields": [
@@ -799,7 +879,7 @@
     },
     {
       "id": "cli.machine-stream.workflow-phase",
-      "current_version": 5,
+      "current_version": 6,
       "version_field": "schema_version",
       "selector": { "field": "type", "value": "workflow_phase" },
       "fixtures": [
@@ -812,6 +892,11 @@
           "path": "crates/cli/tests/golden/machine_stream_all_v5.jsonl",
           "format": "jsonl",
           "schema_version": 5
+        },
+        {
+          "path": "crates/cli/tests/golden/machine_stream_all_v6.jsonl",
+          "format": "jsonl",
+          "schema_version": 6
         }
       ],
       "fields": [
@@ -824,7 +909,7 @@
     },
     {
       "id": "cli.machine-stream.workflow-agent-start",
-      "current_version": 5,
+      "current_version": 6,
       "version_field": "schema_version",
       "selector": { "field": "type", "value": "workflow_agent_start" },
       "fixtures": [
@@ -837,6 +922,11 @@
           "path": "crates/cli/tests/golden/machine_stream_all_v5.jsonl",
           "format": "jsonl",
           "schema_version": 5
+        },
+        {
+          "path": "crates/cli/tests/golden/machine_stream_all_v6.jsonl",
+          "format": "jsonl",
+          "schema_version": 6
         }
       ],
       "fields": [
@@ -851,7 +941,7 @@
     },
     {
       "id": "cli.machine-stream.workflow-agent-activity",
-      "current_version": 5,
+      "current_version": 6,
       "version_field": "schema_version",
       "selector": { "field": "type", "value": "workflow_agent_activity" },
       "fixtures": [
@@ -864,6 +954,11 @@
           "path": "crates/cli/tests/golden/machine_stream_all_v5.jsonl",
           "format": "jsonl",
           "schema_version": 5
+        },
+        {
+          "path": "crates/cli/tests/golden/machine_stream_all_v6.jsonl",
+          "format": "jsonl",
+          "schema_version": 6
         }
       ],
       "fields": [
@@ -877,7 +972,7 @@
     },
     {
       "id": "cli.machine-stream.workflow-agent-end",
-      "current_version": 5,
+      "current_version": 6,
       "version_field": "schema_version",
       "selector": { "field": "type", "value": "workflow_agent_end" },
       "fixtures": [
@@ -890,6 +985,11 @@
           "path": "crates/cli/tests/golden/machine_stream_all_v5.jsonl",
           "format": "jsonl",
           "schema_version": 5
+        },
+        {
+          "path": "crates/cli/tests/golden/machine_stream_all_v6.jsonl",
+          "format": "jsonl",
+          "schema_version": 6
         }
       ],
       "fields": [
@@ -909,7 +1009,7 @@
     },
     {
       "id": "cli.machine-stream.workflow-end",
-      "current_version": 5,
+      "current_version": 6,
       "version_field": "schema_version",
       "selector": { "field": "type", "value": "workflow_end" },
       "fixtures": [
@@ -922,6 +1022,11 @@
           "path": "crates/cli/tests/golden/machine_stream_all_v5.jsonl",
           "format": "jsonl",
           "schema_version": 5
+        },
+        {
+          "path": "crates/cli/tests/golden/machine_stream_all_v6.jsonl",
+          "format": "jsonl",
+          "schema_version": 6
         }
       ],
       "fields": [
@@ -942,7 +1047,7 @@
     },
     {
       "id": "cli.machine-stream.steer-applied",
-      "current_version": 5,
+      "current_version": 6,
       "version_field": "schema_version",
       "selector": { "field": "type", "value": "steer_applied" },
       "fixtures": [
@@ -955,6 +1060,11 @@
           "path": "crates/cli/tests/golden/machine_stream_all_v5.jsonl",
           "format": "jsonl",
           "schema_version": 5
+        },
+        {
+          "path": "crates/cli/tests/golden/machine_stream_all_v6.jsonl",
+          "format": "jsonl",
+          "schema_version": 6
         }
       ],
       "fields": [
@@ -966,7 +1076,7 @@
     },
     {
       "id": "cli.machine-stream.notice",
-      "current_version": 5,
+      "current_version": 6,
       "version_field": "schema_version",
       "selector": { "field": "type", "value": "notice" },
       "fixtures": [
@@ -979,6 +1089,11 @@
           "path": "crates/cli/tests/golden/machine_stream_all_v5.jsonl",
           "format": "jsonl",
           "schema_version": 5
+        },
+        {
+          "path": "crates/cli/tests/golden/machine_stream_all_v6.jsonl",
+          "format": "jsonl",
+          "schema_version": 6
         }
       ],
       "fields": [
@@ -990,7 +1105,7 @@
     },
     {
       "id": "cli.machine-stream.approval-request",
-      "current_version": 5,
+      "current_version": 6,
       "version_field": "schema_version",
       "selector": { "field": "type", "value": "approval_request" },
       "fixtures": [
@@ -1003,6 +1118,11 @@
           "path": "crates/cli/tests/golden/machine_stream_all_v5.jsonl",
           "format": "jsonl",
           "schema_version": 5
+        },
+        {
+          "path": "crates/cli/tests/golden/machine_stream_all_v6.jsonl",
+          "format": "jsonl",
+          "schema_version": 6
         }
       ],
       "fields": [
@@ -1019,7 +1139,7 @@
     },
     {
       "id": "cli.machine-stream.run-done",
-      "current_version": 5,
+      "current_version": 6,
       "version_field": "schema_version",
       "selector": { "field": "type", "value": "run_done" },
       "fixtures": [
@@ -1039,6 +1159,11 @@
           "schema_version": 5
         },
         {
+          "path": "crates/cli/tests/golden/one_shot_stream_json_success_v6.jsonl",
+          "format": "jsonl",
+          "schema_version": 6
+        },
+        {
           "path": "crates/cli/tests/golden/machine_stream_all_v4.jsonl",
           "format": "jsonl",
           "schema_version": 4
@@ -1047,6 +1172,11 @@
           "path": "crates/cli/tests/golden/machine_stream_all_v5.jsonl",
           "format": "jsonl",
           "schema_version": 5
+        },
+        {
+          "path": "crates/cli/tests/golden/machine_stream_all_v6.jsonl",
+          "format": "jsonl",
+          "schema_version": 6
         }
       ],
       "fields": [
@@ -1057,7 +1187,7 @@
     },
     {
       "id": "cli.machine-contract",
-      "current_version": 1,
+      "current_version": 2,
       "version_field": "schema_version",
       "selector": { "field": "type", "value": "machine_contract" },
       "fixtures": [
@@ -1065,6 +1195,11 @@
           "path": "governance/schema-compat/fixtures/cli/machine-contract-v1.json",
           "format": "json",
           "schema_version": 1
+        },
+        {
+          "path": "governance/schema-compat/fixtures/cli/machine-contract-v2.json",
+          "format": "json",
+          "schema_version": 2
         }
       ],
       "fields": [

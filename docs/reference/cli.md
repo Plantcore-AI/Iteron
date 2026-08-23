@@ -24,15 +24,15 @@ This page is generated from the argument parser, so every shipped flag and subco
 | `-p`, `--print` | One-shot / non-interactive: run the task, stream text, exit (like `claude -p`). Requires a task. Without -p, iteron opens the interactive TUI (the default). |
 | `--image <PATH>` | Attach a local PNG, JPEG, GIF, or WebP to a one-shot task. On macOS, HEIC/HEIF is locally normalized to bounded JPEG. Repeat up to the attachment limit; bytes are sniffed before SQ. Repeatable. |
 | `--output-format <OUTPUT_FORMAT>` | One-shot stdout contract: text \| json \| stream-json. Machine formats keep stdout as valid JSON/JSONL; diagnostics continue on stderr. Only valid in one-shot mode. Default `text`. |
-| `--output-schema-version <VERSION>` | Pin a published machine stdout schema. Supported versions are reported by `--machine-contract`; omission keeps the current v5 default. |
+| `--output-schema-version <VERSION>` | Pin a published machine stdout schema. Supported versions are reported by `--machine-contract`; omission keeps the current v6 default. |
 | `--machine-contract` | Print the bounded, provider-free CLI capability report as JSON and exit. |
 | `-C`, `--repo <REPO>` | The repository to work in (defaults to the current directory). Default `.`. |
 | `--model <MODEL>` | Model id (overrides config / default). |
-| `--max-turns <MAX_TURNS>` | Max turns (bounded invariant; overrides config / default). |
+| `--max-turns <MAX_TURNS>` | Max turns (bounded invariant; overrides config / default of 64). |
 | `--max-usd <MAX_USD>` | Max spend in USD (bounded invariant; overrides config / default). |
 | `--max-tokens <MAX_TOKENS>` | Aggregate provider-token ceiling across this run and all descendants. |
-| `--max-consecutive-tool-errors <MAX_CONSECUTIVE_TOOL_ERRORS>` | Consecutive failing tool calls before the run stops as stuck (stability floor; overrides the default of 25). Raised from 3 on 2026-08-05: three was reachable by a model correcting its own mistake, so the floor fired on runs that were making progress. |
-| `--max-wall-secs <MAX_WALL_SECS>` | Wall-clock ceiling for ONE submission, in seconds (bounded invariant; overrides config / default). The default is 14400s (4h), raised from 1800s on 2026-08-05 because one long refactor turn reached the old ceiling and ended reporting a budget instead of a result. |
+| `--max-consecutive-tool-errors <MAX_CONSECUTIVE_TOOL_ERRORS>` | Consecutive failing tool calls before the run stops as stuck (stability floor; overrides the default of 5). |
+| `--max-wall-secs <MAX_WALL_SECS>` | Wall-clock ceiling for ONE submission, in seconds (bounded invariant; overrides config / default). The default is 3600s (1h). |
 | `--allow-code` | Enable code execution (bash/build/test). ON by default; a trusted `~/.iteron/config.json` "allow_code": false, a project `.iteron/config.json` "allow_code": false, or `--mode plan` tightens it back off. The command runs with your own user authority unless `--confine`. |
 | `--confine` | Put code execution back inside the platform sandbox: network denied, writes confined to the workspace, ambient HOME credential paths denied (ADR-007). Off by default — bash otherwise runs with your own user authority, which is what makes `git push`, `gh`, `curl` and package installs work. Filesystem tools address the host either way; this flag governs executed code only. |
 | `--dangerously-bypass-permissions` | Auto-approve EVERY tool so the agent never prompts. ON by default since 2026-08-05, so this flag is now an explicit statement of the default rather than a change to it; pass `--ask-permissions` for the opposite. Plan mode still hard-denies and an explicit `/permissions deny` is still honored either way. |
@@ -66,6 +66,7 @@ This page is generated from the argument parser, so every shipped flag and subco
 | `--timeline <RUN_ID>` | Read one session's latency timeline and exit: the per-class effect breakdown, the distribution behind it, and what could not be accounted for. Pair with `--output-format json` for the machine document. Purely offline -- it reads the hash-verified record and measures nothing itself. |
 | `--fork <FORK>` | Fork a prior run at its tail into a new branch (shared past, divergent future) and print the new run id. The fork is tamper-evident: its genesis pins the parent chain's hash at the fork point (ADR-008 §4), so a later edit to the parent prefix is detected on resume. |
 | `--verify <VERIFY>` | Verification gate: a test command the harness runs itself when the agent claims done. If it fails, "done" is refused and the failure is fed back (don't trust the self-report). e.g. --verify "python3 -m pytest -q". Code execution must remain enabled (the default). |
+| `--verify-preconfined` | Trust an already-attested outer sandbox for --verify and skip Iteron's nested sandbox. DANGEROUS without that outer boundary: this flag does not itself confine filesystem or network access. Timeout, output limits, and credential-environment scrubbing still apply. |
 | `--effort <EFFORT>` | Effort level: low \| medium \| high \| xhigh \| max \| ultracode. Higher = more model reasoning budget; ultracode additionally exposes model-directed bounded workflows. |
 | `--provider <PROVIDER>` | Provider instance id. Built-ins: anthropic, openai, deepseek, glm, minimax, fireworks. |
 | `--base-url <BASE_URL>` | Trusted one-run OpenAI-compatible API root, including its full path/version prefix. Prefer a named provider in ~/.iteron/config.json for persistent configuration. Requires --key-env. |

@@ -343,4 +343,27 @@ mod tests {
             "p95 relative error was {p95} ppm (15% plus one-token integer rounding)"
         );
     }
+
+    #[test]
+    fn opaque_route_names_only_partition_observations() {
+        let store = TokenCalibrationStore::default();
+        for _ in 0..3 {
+            store
+                .observe_actual_input("gateway-a", "release/2026-08", 100, 70)
+                .unwrap();
+            store
+                .observe_actual_input("gateway-b", "release/2026-08", 100, 120)
+                .unwrap();
+        }
+
+        assert_eq!(
+            store.calibrated_estimate("gateway-a", "release/2026-08", 100),
+            81
+        );
+        assert_eq!(
+            store.calibrated_estimate("gateway-b", "release/2026-08", 100),
+            138
+        );
+        assert_eq!(store.calibrated_estimate("new-route", "unknown", 100), 100);
+    }
 }
