@@ -1,12 +1,10 @@
 # Supported platforms
 
 Iteron is developed and tested primarily on macOS and Linux. Those remain the
-only platforms where the whole product is supported. Windows is an installable
-build and distribution target, and the table's sandbox column says why. The source
-workspace is `v0.0.7`; verify the selected release's asset list for actual host
-availability. Historical `v0.0.4` assets cover macOS arm64 only;
-the remaining release rows are the release workflow's required matrix, not a
-claim that every historical tag contains every archive.
+only platforms where the whole product is supported. The v0.0.15 release ships
+macOS arm64, Linux arm64, and Linux x86-64 assets. Windows remains a source-build
+and non-required CI target; it has no code-execution sandbox and v0.0.15 does not
+publish a Windows archive or installer.
 
 | Platform | Build | Interactive TUI | Code-execution sandbox |
 | --- | --- | --- | --- |
@@ -14,31 +12,19 @@ claim that every historical tag contains every archive.
 | macOS x86-64 | source/internal CI only | supported from source | system Seatbelt interface |
 | Linux x86-64 on `dgx` | release target and CI | supported | usable bubblewrap/user-namespace boundary required |
 | Linux arm64 on `dgx` | native release and CI | supported | usable bubblewrap/user-namespace boundary required |
-| Windows x86-64 | release target and non-required CI | not claimed | **none — no backend** |
+| Windows x86-64 | source build and non-required CI; no v0.0.15 asset | not claimed | **none — no backend** |
 
 ## Windows
 
-Windows has a build, an archive, and an installer. It does not have a sandbox,
-and that is the whole distinction this section exists to make.
-
-One-click trial on Windows x86-64:
-
-```powershell
-[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; Invoke-RestMethod -Uri 'https://github.com/Plantcore-AI/Iteron/releases/latest/download/install.ps1' | Invoke-Expression
-```
+Windows can be built from source and has a non-required CI lane. It does not
+have a sandbox, and v0.0.15 does not publish a Windows archive or installer.
 
 What exists:
 
-- `x86_64-pc-windows-msvc` is in the release matrix. A tagged release produces a
-  `.zip` containing `iteron.exe`, verified as a real PE image, digested into the
-  release manifest, and covered by the same attestation checks as every other
-  archive.
-- `install.ps1` at the repository root is the Windows counterpart to
-  `install.sh`. It pins TLS 1.2+, verifies the archive's SHA-256 before opening
-  it, validates every ZIP entry against an exact expected member set before
-  extracting a byte, and installs per-user without elevation.
 - `.github/workflows/windows.yml` compiles the workspace for
   `x86_64-pc-windows-msvc` and runs the native ConPTY oracle.
+- `install.ps1` remains source-controlled for future Windows release work, but
+  it is not a v0.0.15 release asset.
 
 What does not exist, and is not implied by any of the above:
 
@@ -61,12 +47,11 @@ $ gh variable set WINDOWS_RUNNER_LABELS --repo Plantcore-AI/Iteron \
     --body '["self-hosted","Windows","X64","iteron-win"]'
 ```
 
-While that variable is unset, `windows.yml` is skipped outright and the release
-leg falls back to a hosted `windows-2025` runner. See
+While that variable is unset, `windows.yml` is skipped outright. See
 `ops/windows-runner/README.md` for the machine's provisioning runbook.
 
-Read a closed Windows tracking issue as closed, not as shipped: until a tag is
-cut with the release leg above, no published tag contains a Windows artifact.
+Read a closed Windows tracking issue as closed, not as shipped: v0.0.15 contains
+no Windows artifact.
 
 ## Linux requirements
 

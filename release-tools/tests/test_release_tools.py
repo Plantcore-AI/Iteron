@@ -528,9 +528,6 @@ exit 1
             "aarch64-apple-darwin",
             "aarch64-unknown-linux-musl",
             "x86_64-unknown-linux-musl",
-            # Restored by #227/#228. The Windows archive is a `.zip`, so the publish job's
-            # attestation glob must not be tar.gz-only or it would ship unverified.
-            "x86_64-pc-windows-msvc",
         ):
             self.assertIn(f"--target {target}", workflow)
         self.assertIn(
@@ -550,7 +547,7 @@ exit 1
         self.assertIn("verify_release.py artifact", workflow)
         self.assertEqual(
             workflow.count("Materialize the exact Windows source through the GitHub API"),
-            2,
+            1,
         )
         self.assertEqual(
             workflow.count(
@@ -559,10 +556,8 @@ exit 1
                 "        with:\n"
                 "          ref: ${{ needs.validate.outputs.commit }}"
             ),
-            2,
+            1,
         )
-        self.assertIn("run: &windows_source_materialization |", workflow)
-        self.assertIn("run: *windows_source_materialization", workflow)
         self.assertIn(
             '"https://api.github.com/repos/$env:SOURCE_REPOSITORY/zipball/$env:SOURCE_SHA"',
             workflow,
@@ -1281,12 +1276,10 @@ exit 1
         self.assertEqual(result["targets"][target]["target"], target)
         self.assertEqual(result["cli_stream_versions"], [4, 5])
         self.assertEqual(result["default_cli_stream_version"], 5)
-        self.assertEqual(set(result["installer"]), {"posix", "windows"})
-        self.assertEqual(result["installer"]["posix"]["name"], "install.sh")
-        self.assertEqual(result["installer"]["windows"]["name"], "install.ps1")
+        self.assertEqual(result["installer"]["name"], "install.sh")
         verify_release.exact_digest(
             dist / "install.sh",
-            result["installer"]["posix"],
+            result["installer"],
             "POSIX installer",
             1024 * 1024,
         )
@@ -1294,22 +1287,14 @@ exit 1
             manifest=output,
             receipt=receipt,
             posix=dist / "install.sh",
-            windows=dist / "install.ps1",
+            windows=None,
         )
         verify_release.verify_installers(installer_arguments)
-        for platform in ("posix", "windows"):
-            path = getattr(installer_arguments, platform)
-            original = path.read_bytes()
-            path.write_bytes(original + b"!")
-            with self.assertRaisesRegex(ReleaseToolError, "content identity"):
-                verify_release.verify_installers(installer_arguments)
-            path.write_bytes(original)
-        verify_release.exact_digest(
-            dist / "install.ps1",
-            result["installer"]["windows"],
-            "Windows installer",
-            1024 * 1024,
-        )
+        original = installer_arguments.posix.read_bytes()
+        installer_arguments.posix.write_bytes(original + b"!")
+        with self.assertRaisesRegex(ReleaseToolError, "content identity"):
+            verify_release.verify_installers(installer_arguments)
+        installer_arguments.posix.write_bytes(original)
         # A client pins on the protocol the binary speaks, so the manifest must carry the number
         # the crate declares rather than one restated here.
         self.assertEqual(result["protocol_version"], 7)

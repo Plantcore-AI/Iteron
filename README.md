@@ -46,21 +46,15 @@ machine-readable output. The workspace and current release are **0.0.15**.
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/Plantcore-AI/Iteron/releases/latest/download/install.sh | sh
 ```
 
-On Windows, use the PowerShell installer from the same release:
-
-```powershell
-[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; Invoke-RestMethod -Uri 'https://github.com/Plantcore-AI/Iteron/releases/latest/download/install.ps1' | Invoke-Expression
-```
-
-The installers verify the selected release archive and install per-user without
-elevation. Release targets are macOS arm64, Linux arm64, Linux x86-64, and
-Windows x86-64. See the [installation and verification
+The installer verifies the selected release archive and installs per-user without
+elevation. The v0.0.15 release targets are macOS arm64, Linux arm64, and Linux
+x86-64. See the [installation and verification
 guide](docs/getting-started/installation.md) for version pinning, checksums,
 attestations, and source builds.
 
-Windows gets a binary and an installer, and nothing more: there is no Windows
-code-execution sandbox, so confinement is unavailable there. See
-[supported platforms](docs/reference/platforms.md) before relying on it.
+Windows remains available as a source build and non-required CI target, but
+v0.0.15 does not publish a Windows archive or installer. See [supported
+platforms](docs/reference/platforms.md) for the current boundary.
 
 Verify that the installed directory is on the shell's executable search path:
 
