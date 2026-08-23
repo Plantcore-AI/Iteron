@@ -500,7 +500,7 @@ jobs:
             # audited substitution rather than a stale one: #364 fixed the three
             # gates this release needed and touched those sources last. The base
             # contract is unchanged -- the check below still runs against v0.0.9.
-            test "$GITHUB_REF_NAME" = v0.0.16
+            test "$GITHUB_REF_NAME" = v0.0.17
             compatibility_commit=216253708d4e7502f15a35996db949f64ee67417
             compatibility_schema_blob=d291aa5ac3f0a9f11353722edb4485eb9acb93ca
             test "$(git cat-file -t "$compatibility_commit")" = commit
@@ -1126,7 +1126,7 @@ jobs:
           run_exact headless \
             cargo +"$RUST_VERSION" test --locked -p iteron-cli \
               --test headless_serve --target "$target" \
-              no_tty_skew_reconnect_and_result_v5_share_one_headless_server \
+              no_tty_skew_reconnect_and_current_result_share_one_headless_server \
               -- --exact
           # ConPTY is the one terminal takeover path with no POSIX equivalent, so the skew refusal
           # has to be proven on its own console stack rather than inferred from the musl leg.

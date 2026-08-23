@@ -1610,7 +1610,7 @@ class SchemaCompatibilityBridgeTest(unittest.TestCase):
             "blob": "a61c3410a287a937e21714421ef109d91f1f271c",
         },
         "v0.0.9": {
-            "candidate": "v0.0.16",
+            "candidate": "v0.0.17",
             "commit": "216253708d4e7502f15a35996db949f64ee67417",
             "blob": "d291aa5ac3f0a9f11353722edb4485eb9acb93ca",
         },
@@ -1723,6 +1723,56 @@ class MachineContractSmokeTest(unittest.TestCase):
             "(.cli_stream_versions | index(4)) != null",
             workflow,
             "dropping this lets a release ship that no longer speaks to v4 clients",
+        )
+
+
+class VersionIndependenceProofTest(unittest.TestCase):
+    """Every test the release names by hand still exists under that name.
+
+    `Run native version-independence proof` runs four tests by exact name and then
+    asserts each produced exactly one `1 passed` summary. A renamed test does not
+    error there -- it matches nothing, prints `0 passed`, and fails the count with
+    no indication of which name went stale.
+
+    #362 renamed `..._result_v5_...` to `..._current_result_...` when it stopped
+    pinning schema v5 in the name. The workflow kept the old spelling, and because
+    this step exists only on a release build, nothing ran it until the tag. That is
+    the second failure of this shape in one release: a literal in `release.yml`
+    describing code that had moved on, discovered only after a tag was cut.
+    """
+
+    ROOT = Path(__file__).resolve().parents[2]
+    NAMED_TESTS = (
+        "version_skew_is_refused_up_front",
+        "one_shot_refuses_app_server_version_skew_before_provider_dispatch",
+        "no_tty_skew_reconnect_and_current_result_share_one_headless_server",
+        "native_conpty_rejects_version_skew_before_terminal_takeover",
+    )
+
+    def test_the_workflow_names_only_tests_that_exist(self) -> None:
+        workflow = (self.ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+        sources = list((self.ROOT / "crates/cli/tests").rglob("*.rs"))
+        sources += list((self.ROOT / "crates/cli/src").rglob("*.rs"))
+        bodies = [path.read_text(encoding="utf-8", errors="replace") for path in sources]
+        for name in self.NAMED_TESTS:
+            with self.subTest(test=name):
+                self.assertIn(
+                    name,
+                    workflow,
+                    "release.yml no longer runs this version-independence proof",
+                )
+                self.assertTrue(
+                    any(f"fn {name}(" in body for body in bodies),
+                    f"release.yml runs `{name}` by exact name, but no test declares it; "
+                    "the proof would match nothing and fail on its summary count",
+                )
+
+    def test_the_proof_still_requires_exactly_one_passing_summary(self) -> None:
+        workflow = (self.ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+        self.assertIn(
+            'test "$summaries" -eq 1',
+            workflow,
+            "without this a renamed or filtered-out test would pass silently",
         )
 
 
