@@ -487,6 +487,37 @@ jobs:
             validator_root=$RUNNER_TEMP/core-schema-compatibility-policy
             git worktree add --detach "$validator_root" "$compatibility_commit"
           fi
+          if [[ "$previous" == v0.0.9 ]]; then
+            # Same substitution as the v0.0.4 bridge above, for the same class of
+            # reason: the v0.0.9 validator freezes `project_schema` against a
+            # token-for-token witness compiled into its own binary, so it reads the
+            # CLI machine schema v5 -> v6 upgrade as a wire change even though v4
+            # and v5 consumers still receive their exact frozen bytes through the
+            # projection at the stdout seam.
+            #
+            # The pin is the newest already-merged commit carrying the candidate's
+            # exact `xtask/src/schema_compat*` sources, which is what makes this an
+            # audited substitution rather than a stale one: #364 fixed the three
+            # gates this release needed and touched those sources last. The base
+            # contract is unchanged -- the check below still runs against v0.0.9.
+            test "$GITHUB_REF_NAME" = v0.0.15
+            compatibility_commit=216253708d4e7502f15a35996db949f64ee67417
+            compatibility_schema_blob=d291aa5ac3f0a9f11353722edb4485eb9acb93ca
+            test "$(git cat-file -t "$compatibility_commit")" = commit
+            git merge-base --is-ancestor "$previous_commit" "$compatibility_commit"
+            git merge-base --is-ancestor \
+              "$compatibility_commit" \
+              "${{ steps.metadata.outputs.commit }}"
+            test "$(git rev-parse \
+              "$compatibility_commit:governance/schema-compatibility.json")" = \
+              "$compatibility_schema_blob"
+            git diff --quiet \
+              "$compatibility_commit" \
+              "${{ steps.metadata.outputs.commit }}" \
+              -- 'xtask/src/schema_compat*'
+            validator_root=$RUNNER_TEMP/core-schema-compatibility-policy
+            git worktree add --detach "$validator_root" "$compatibility_commit"
+          fi
           validator_target=$RUNNER_TEMP/core-schema-validator-target
           (
             cd "$validator_root"
