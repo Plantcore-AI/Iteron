@@ -1610,7 +1610,7 @@ class SchemaCompatibilityBridgeTest(unittest.TestCase):
             "blob": "a61c3410a287a937e21714421ef109d91f1f271c",
         },
         "v0.0.9": {
-            "candidate": "v0.0.17",
+            "candidate": "v0.0.18",
             "commit": "216253708d4e7502f15a35996db949f64ee67417",
             "blob": "d291aa5ac3f0a9f11353722edb4485eb9acb93ca",
         },
@@ -1715,6 +1715,35 @@ class MachineContractSmokeTest(unittest.TestCase):
             "release.yml asserts machine-contract schema_version "
             f"{asserted.group(1)} but the CLI emits {emitted.group(1)}; "
             "a release built from this tree would fail its own smoke test",
+        )
+
+    def test_the_manifest_validator_accepts_the_version_the_cli_emits(self) -> None:
+        """`manifest.py` gates the same envelope, and had the same stale literal.
+
+        `release / publish` renders the capability report through
+        `validate_capability_report`, which refused `schema_version` 2 as invalid
+        metadata -- after all three targets had built and the environment had been
+        approved. Fixing only `release.yml` left this one, so v0.0.17 failed one step
+        past where v0.0.15 did.
+        """
+        emitted = re.search(
+            r'"schema_version":\s*(\d+),\s*\n\s*"type":\s*"machine_contract"',
+            (self.ROOT / "crates/cli/src/main.rs").read_text(encoding="utf-8"),
+        )
+        self.assertIsNotNone(emitted)
+        declared = re.search(
+            r"^CLI_MACHINE_CONTRACT_SCHEMA_VERSION = (\d+)$",
+            (self.ROOT / "release-tools/manifest.py").read_text(encoding="utf-8"),
+            re.M,
+        )
+        self.assertIsNotNone(
+            declared, "manifest.py no longer names the CLI machine-contract version"
+        )
+        self.assertEqual(
+            declared.group(1),
+            emitted.group(1),
+            f"manifest.py accepts machine-contract schema_version {declared.group(1)} "
+            f"but the CLI emits {emitted.group(1)}; publish would reject a valid report",
         )
 
     def test_the_workflow_still_requires_the_oldest_supported_stream(self) -> None:
