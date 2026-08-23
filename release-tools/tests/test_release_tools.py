@@ -1610,7 +1610,7 @@ class SchemaCompatibilityBridgeTest(unittest.TestCase):
             "blob": "a61c3410a287a937e21714421ef109d91f1f271c",
         },
         "v0.0.9": {
-            "candidate": "v0.0.15",
+            "candidate": "v0.0.16",
             "commit": "216253708d4e7502f15a35996db949f64ee67417",
             "blob": "d291aa5ac3f0a9f11353722edb4485eb9acb93ca",
         },
@@ -1675,6 +1675,55 @@ class SchemaCompatibilityBridgeTest(unittest.TestCase):
         )
         for previous in self.BRIDGES:
             self.assertNotIn("--base ", self._block(previous))
+
+
+class MachineContractSmokeTest(unittest.TestCase):
+    """The release smoke assertion tracks the contract the CLI actually emits.
+
+    `release / <target>` asserts the `--machine-contract` envelope with a literal
+    version. Nothing else in CI runs that step -- it exists only on a release build
+    -- so when #362 advanced the envelope from 1 to 2 to advertise stream v6, the
+    workflow kept asserting 1 and every target failed the smoke test after a clean
+    build. The tag was already pushed by then, and a tag's workflow is frozen with
+    it, so v0.0.15 could not produce artifacts at all.
+
+    Reading the literal out of `main.rs` rather than restating it here is the point:
+    a future bump has to move both or fail in this test, at PR time, instead of on
+    a tag that cannot be re-cut.
+    """
+
+    ROOT = Path(__file__).resolve().parents[2]
+
+    def test_the_workflow_asserts_the_version_the_cli_emits(self) -> None:
+        emitted = re.search(
+            r'"schema_version":\s*(\d+),\s*\n\s*"type":\s*"machine_contract"',
+            (self.ROOT / "crates/cli/src/main.rs").read_text(encoding="utf-8"),
+        )
+        self.assertIsNotNone(
+            emitted, "could not find the machine-contract envelope in crates/cli/src/main.rs"
+        )
+        asserted = re.search(
+            r"\.schema_version == (\d+)",
+            (self.ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8"),
+        )
+        self.assertIsNotNone(
+            asserted, "the release smoke step no longer pins the machine-contract version"
+        )
+        self.assertEqual(
+            asserted.group(1),
+            emitted.group(1),
+            "release.yml asserts machine-contract schema_version "
+            f"{asserted.group(1)} but the CLI emits {emitted.group(1)}; "
+            "a release built from this tree would fail its own smoke test",
+        )
+
+    def test_the_workflow_still_requires_the_oldest_supported_stream(self) -> None:
+        workflow = (self.ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+        self.assertIn(
+            "(.cli_stream_versions | index(4)) != null",
+            workflow,
+            "dropping this lets a release ship that no longer speaks to v4 clients",
+        )
 
 
 if __name__ == "__main__":
