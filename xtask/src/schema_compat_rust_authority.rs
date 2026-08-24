@@ -41,10 +41,15 @@ pub(super) fn validate(root: &Path) -> Result<()> {
 }
 
 fn validate_repository_cargo_config(root: &Path) -> Result<()> {
-    if std::fs::symlink_metadata(root.join(".cargo/config")).is_ok() {
-        bail!(
+    match std::fs::symlink_metadata(root.join(".cargo/config")) {
+        Ok(_) => bail!(
             "schema dependency authority does not admit repository-local Cargo config '.cargo/config'"
-        );
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error)
+                .with_context(|| "cannot inspect repository Cargo config '.cargo/config'");
+        }
     }
     let path = root.join(".cargo/config.toml");
     match std::fs::symlink_metadata(&path) {

@@ -38,7 +38,7 @@ else
 fi
 
 if [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-  fail "invalid semantic version: $version_input"
+  fail "invalid semantic version: $version"
 fi
 
 tag="v$version"

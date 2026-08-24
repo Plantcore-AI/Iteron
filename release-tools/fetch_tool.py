@@ -41,6 +41,7 @@ CACHE_DIRECTORY_NAME = "iteron-tool-v1"
 _CACHE_FILE_RE = re.compile(
     r"^iteron-tool-[a-z0-9][a-z0-9._-]*-[0-9a-f]{64}\.(?:tar\.gz|tar\.xz|zip)$"
 )
+_CACHE_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 
 
 class TruncatedDownload(ReleaseToolError):
@@ -75,6 +76,11 @@ def _cache_dir() -> Path | None:
 
 
 def _cache_path(cache_dir: Path, tool: str, host: str, archive: str, sha256: str) -> Path:
+    for name, value in (("tool", tool), ("host", host)):
+        if not _CACHE_KEY_RE.match(value):
+            raise ReleaseToolError(
+                f"{name} must be a non-empty lowercase alphanumeric/._- identifier: {value!r}"
+            )
     return cache_dir / f"iteron-tool-{tool}-{host}-{sha256}.{archive}"
 
 
