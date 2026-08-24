@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "release_ordinal": 5,
+  "release_ordinal": 6,
   "minimum_deprecation_releases": 1,
   "surfaces": [
     {

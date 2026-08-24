@@ -36,6 +36,34 @@ const SERVER_TIMEOUT_BASE_SECS: u64 = 10;
 ///
 /// `ITERON_TEST_TIMEOUT_SCALE` is the variable `tui_pty.rs` and the release workflow already use
 /// to let a loaded runner say how slow it is.
+/// The process's own `--max-wall-secs`, scaled by the same variable as `server_timeout`.
+///
+/// `server_timeout` already lets a loaded machine say how slow it is, but the wall bound
+/// handed to the child was a bare `"30"`. Under `--workspace --all-targets` that bound
+/// expired before the semantic floor the test is actually about, and
+/// `consecutive_real_tool_failures_exit_stuck_with_terminal_result` failed on
+/// "the semantic stuck floor must win before the outer wall bound" while passing 18/18
+/// when its own file ran alone.
+///
+/// Only the liveness bound moves. Every assertion -- exit code, terminal result kind,
+/// the floor itself -- is unchanged, so a genuine regression still fails here.
+///
+/// Like `server_timeout`, the base is widened before the scale is applied. Scaling alone
+/// is inert where it matters most: a developer machine running the full sweep does not set
+/// the variable, so `scale` is 1 and the bound would stay exactly the 30s that already
+/// expired. That is the mistake this comment exists to stop repeating.
+fn wall_secs(base: u64) -> String {
+    static SCALE: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    let scale = *SCALE.get_or_init(|| {
+        std::env::var("ITERON_TEST_TIMEOUT_SCALE")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<u64>().ok())
+            .filter(|scale| (1..=60).contains(scale))
+            .unwrap_or(1)
+    });
+    base.saturating_mul(3).saturating_mul(scale).to_string()
+}
+
 fn server_timeout() -> Duration {
     static SCALE: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     let scale = *SCALE.get_or_init(|| {
@@ -77,6 +105,35 @@ struct Scratch {
 impl Scratch {
     fn new(label: &str, api_root: &str) -> Self {
         Self::new_with_image_input(label, api_root, false)
+    }
+
+    /// The same isolated home, with no `effort` in the config.
+    ///
+    /// `new` writes `"effort": "low"`, so even a command line that omits `--effort`
+    /// still resolves it from UserConfig and never reaches the builtin fallback.
+    /// That is the second of the two overrides that hid #372; stripping only the
+    /// flag is not enough to take the path a stock install takes.
+    fn new_without_effort(label: &str, api_root: &str) -> Self {
+        let scratch = Self::new(label, api_root);
+        let path = scratch.home().join(".iteron/config.json");
+        let mut config: Value =
+            serde_json::from_slice(&fs::read(&path).expect("read isolated test config"))
+                .expect("decode isolated test config");
+        let removed = config
+            .as_object_mut()
+            .expect("the isolated test config is an object")
+            .remove("effort");
+        assert!(
+            removed.is_some(),
+            "the isolated config no longer sets effort; this helper is now a no-op \
+             and the builtin fallback would go untested again"
+        );
+        fs::write(
+            &path,
+            serde_json::to_vec(&config).expect("encode test config"),
+        )
+        .expect("rewrite isolated test config without effort");
+        scratch
     }
 
     fn new_with_image_input(label: &str, api_root: &str, image_input: bool) -> Self {
@@ -762,6 +819,23 @@ fn core_command_with_task(
     extra_args: &[&str],
     task: &str,
 ) -> Command {
+    core_command_with_effort(scratch, format, max_turns, extra_args, task, Some("low"))
+}
+
+/// Every one-shot process gate passed `--effort low`, so none of them ever exercised the
+/// builtin fallback -- the path a stock install takes. That is how #372 shipped: the
+/// fallback resolved `medium` from `Effort::default()` while the registry literal was
+/// `low`, and genesis rejected the disagreeing Builtin declaration before any provider
+/// contact. Threading the effort through as an Option is what lets one test leave it
+/// unset and take that path for real.
+fn core_command_with_effort(
+    scratch: &Scratch,
+    format: &str,
+    max_turns: u32,
+    extra_args: &[&str],
+    task: &str,
+    effort: Option<&str>,
+) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_iteron"));
     // Never inherit a developer credential, proxy, user config, or launcher. The only credential
     // visible to the child is the inert placeholder consumed by the loopback-only provider.
@@ -786,14 +860,15 @@ fn core_command_with_task(
         .arg(PROVIDER_ID)
         .arg("--model")
         .arg(MODEL_ID)
-        .arg("--effort")
-        .arg("low")
         .arg("--max-turns")
         .arg(max_turns.to_string())
         .args(extra_args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if let Some(effort) = effort {
+        command.arg("--effort").arg(effort);
+    }
     preserve_windows_process_environment(&mut command);
 
     #[cfg(unix)]
@@ -1161,6 +1236,42 @@ fn assert_machine_failure(
 }
 
 #[test]
+fn d9_02_a_default_effort_run_resolves_genesis_tunables() {
+    // I-372. A stock install could not start a run at all. `main` resolved the builtin
+    // effort from `Effort::default()`, which is `Medium`, while the registry literal for
+    // the family is `low`; `RuntimeResolutionBuilder::declare` rejects a Builtin
+    // declaration that differs from the literal, so genesis aborted with
+    // `production owner value for literal family `effort` differs from the canonical
+    // value` before any provider contact. Both entry points built that fallback the same
+    // way, so both were dead.
+    //
+    // Nothing caught it because every process gate here passed `--effort low`, which
+    // routes around the fallback entirely. This one leaves effort unset on purpose: it
+    // fails on the shipped v0.0.19 binary and passes once the fallback and the
+    // declaration read one constant.
+    let server = MockProvider::spawn_script(vec![Reply::Success]);
+    let scratch = Scratch::new_without_effort("d9-02-default-effort", &server.api_root);
+
+    let output = collect_core(
+        core_command_with_effort(&scratch, "json", 1, &[], DEFAULT_TASK, None)
+            .spawn()
+            .unwrap(),
+    );
+    server.finish();
+
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(
+        !stderr.contains("literal family `effort`"),
+        "a run with no effort override still fails genesis tunables resolution:\n{stderr}"
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "a default-config run must complete; stderr:\n{stderr}"
+    );
+}
+
+#[test]
 fn d9_01_g1_g2_real_cli_sessions_and_continue_use_the_runtime_cache() {
     // A real credential-free `--sessions` process runs between the two provider turns. Under the
     // all-target pre-push load it can consume the ordinary 10s mock accept bound before the
@@ -1407,9 +1518,15 @@ printf '%s\n' "$timestamp" > "$marker_dir/$event"
         scratch.repo().display()
     );
     let output = collect_core(
-        core_command_with_task(&scratch, "json", 2, &["--max-wall-secs", "30"], &task)
-            .spawn()
-            .expect("spawn the real one-shot Legacy-hook client"),
+        core_command_with_task(
+            &scratch,
+            "json",
+            2,
+            &["--max-wall-secs", &wall_secs(30)],
+            &task,
+        )
+        .spawn()
+        .expect("spawn the real one-shot Legacy-hook client"),
     );
     let first_request = requests
         .recv_timeout(server_timeout())
@@ -1644,9 +1761,15 @@ printf '%s\n' "$timestamp" > "$marker_dir/$event_id"
         scratch.repo().display()
     );
     let output = collect_core(
-        core_command_with_task(&scratch, "json", 2, &["--max-wall-secs", "30"], &task)
-            .spawn()
-            .expect("spawn the real one-shot canonical-shutdown client"),
+        core_command_with_task(
+            &scratch,
+            "json",
+            2,
+            &["--max-wall-secs", &wall_secs(30)],
+            &task,
+        )
+        .spawn()
+        .expect("spawn the real one-shot canonical-shutdown client"),
     );
     let _first_request = requests
         .recv_timeout(server_timeout())
@@ -2369,7 +2492,7 @@ fn consecutive_real_tool_failures_exit_stuck_with_terminal_result() {
             // Three provider intents, tool executions, and fsync-backed settlements remain
             // bounded but need room under all-target parallel I/O load.
             "--max-wall-secs",
-            "30",
+            &wall_secs(30),
         ],
     ));
     server.finish();

@@ -1489,17 +1489,19 @@ jobs:
             --target aarch64-apple-darwin \
             --target aarch64-unknown-linux-musl \
             --target x86_64-unknown-linux-musl \
+            --target x86_64-pc-windows-msvc \
             --protocol-source crates/protocol/src/wire.rs \
             --output dist/release-manifest.json \
             --receipt dist/release-manifest.receipt.json
           python3 release-tools/checksums.py \
             --dist dist \
             --output dist/SHA256SUMS
-          # Verify the exact POSIX installer before signing or mutating the release.
+          # Verify both shipped installers before signing or mutating the release.
           python3 release-tools/verify_release.py installers \
             --manifest dist/release-manifest.json \
             --receipt dist/release-manifest.receipt.json \
-            --posix dist/install.sh
+            --posix dist/install.sh \
+            --windows dist/install.ps1
       - name: Sign release metadata
         id: metadata-attestation
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2

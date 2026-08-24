@@ -12,6 +12,21 @@ mod value;
 use constraints::add_constraints;
 use value::*;
 
+/// The registry's literal for the `effort` family, and the value the CLI must fall back
+/// to when nothing overrides it.
+///
+/// These were two literals in two files: this declaration said `low` while
+/// `main.rs` derived its builtin fallback from `Effort::default()`, which is
+/// `Medium`. `RuntimeResolutionBuilder::declare` rejects a Builtin declaration that
+/// differs from the literal, so a stock install aborted in genesis resolution before
+/// any provider contact -- on every entry point, since both the one-shot and the
+/// workflow path built that fallback the same way (#372).
+///
+/// Keeping the fallback and the declaration on one constant is what stops them from
+/// drifting apart again. The protocol enum's own `Default` is deliberately untouched:
+/// it is a wire-reachable type, and moving its `#[default]` is a schema change.
+pub(crate) const EFFORT_CANONICAL: &str = "low";
+
 use crate::config::ConfigOrigin;
 use crate::providers::{ModelCapabilities, ModelSelection};
 use iteron_ctx::{CompactionPolicy, MemBudget};
@@ -190,7 +205,7 @@ pub(crate) fn apply_core_facts(
     literal_with_override(
         builder,
         "effort",
-        en("low"),
+        en(EFFORT_CANONICAL),
         input.effort.origin,
         en(input.effort.value.label()),
     )?;

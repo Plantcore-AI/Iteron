@@ -14040,7 +14040,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime_tunables/core_facts.rs",
-          "line": 515,
+          "line": 530,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -14096,11 +14096,47 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime_tunables/core_facts.rs",
-          "line": 724,
+          "line": 739,
           "evidence": "param_integer runtime resolution"
         }
       ],
       "behavior_oracle": "installed profile id cli.runtime_tunables.core_facts.default_request_output_tokens is resolved at every listed production helper call"
+    },
+    {
+      "id": "cli.runtime_tunables.core_facts.effort_canonical",
+      "module": "context_assembly",
+      "class": "structural",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"low\"",
+      "krate": "cli",
+      "decl": "crates/cli/src/runtime_tunables/core_facts.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "runtime_state_not_a_value",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/runtime_tunables/core_facts.rs",
+        "symbol": "EFFORT_CANONICAL"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/main.rs",
+          "line": 2071,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/cli/src/main.rs",
+          "line": 4282,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/cli/src/runtime_tunables/core_facts.rs",
+          "line": 208,
+          "evidence": "Rust path reference"
+        }
+      ]
     },
     {
       "id": "cli.runtime_tunables.core_facts.memory_fact_bytes",
@@ -14122,7 +14158,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime_tunables/core_facts.rs",
-          "line": 668,
+          "line": 683,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -14148,12 +14184,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime_tunables/core_facts.rs",
-          "line": 704,
+          "line": 719,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/runtime_tunables/core_facts.rs",
-          "line": 712,
+          "line": 727,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -14179,7 +14215,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime_tunables/core_facts.rs",
-          "line": 614,
+          "line": 629,
           "evidence": "param_integer runtime resolution"
         }
       ],

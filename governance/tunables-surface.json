@@ -4,7 +4,7 @@
   "registry_revision": 24,
   "registry_digest": "a8439500a335e0086a326dbfd88222fc1501373d333aa7bb2315779f220bd663",
   "param_registry_id": "iteron-params",
-  "param_registry_digest": "0c526a41977c4149f6c4fc1bdd6fd49c21ae6fc67672c21b1b139f99e4c807fe",
+  "param_registry_digest": "9bc319e8b3fc58f806fa2df58dcdfd9d747eee0724e5d0ddf851078287fd7484",
   "tool_text_registry_id": "iteron-builtin-tool-descriptions",
   "tool_text_registry_digest": "7da44a496e668c86c4456291e0e8178955ae7b99f473e69e1804d7742ae9738d",
   "counts": {
@@ -12,10 +12,10 @@
     "families_full": 137,
     "families_fixed_hidden": 23,
     "families_profile_addressable": 119,
-    "params": 2214,
+    "params": 2215,
     "params_searchable": 568,
     "params_bounded": 867,
-    "params_structural": 779,
+    "params_structural": 780,
     "params_applied": 1435,
     "modules": 28,
     "prompt_artifacts": 10,
@@ -101,7 +101,7 @@
       "id": "context.assembly",
       "kind": "structured",
       "families": 12,
-      "params": 102,
+      "params": 103,
       "artifacts": 0
     },
     {
@@ -19061,7 +19061,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime_tunables/core_facts.rs",
-          "line": 515,
+          "line": 530,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -19118,11 +19118,48 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime_tunables/core_facts.rs",
-          "line": 724,
+          "line": 739,
           "evidence": "param_integer runtime resolution"
         }
       ],
       "behavior_oracle": "installed profile id cli.runtime_tunables.core_facts.default_request_output_tokens is resolved at every listed production helper call"
+    },
+    {
+      "id": "cli.runtime_tunables.core_facts.effort_canonical",
+      "module": "context_assembly",
+      "class": "structural",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"low\"",
+      "domain": {},
+      "krate": "cli",
+      "decl": "crates/cli/src/runtime_tunables/core_facts.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "runtime_state_not_a_value",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/runtime_tunables/core_facts.rs",
+        "symbol": "EFFORT_CANONICAL"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/main.rs",
+          "line": 2071,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/cli/src/main.rs",
+          "line": 4282,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/cli/src/runtime_tunables/core_facts.rs",
+          "line": 208,
+          "evidence": "Rust path reference"
+        }
+      ]
     },
     {
       "id": "cli.runtime_tunables.core_facts.memory_fact_bytes",
@@ -19145,7 +19182,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime_tunables/core_facts.rs",
-          "line": 668,
+          "line": 683,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -19172,12 +19209,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime_tunables/core_facts.rs",
-          "line": 704,
+          "line": 719,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/runtime_tunables/core_facts.rs",
-          "line": 712,
+          "line": 727,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -19204,7 +19241,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime_tunables/core_facts.rs",
-          "line": 614,
+          "line": 629,
           "evidence": "param_integer runtime resolution"
         }
       ],
