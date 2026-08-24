@@ -255,6 +255,7 @@ fn apply_to_buffer_with_chunk_width(
                 column = column.saturating_add(1);
                 continue;
             }
+
             // Two OSC 8 delimiters wrap the target and the visible chunk.
             let encoded_len = target.len().saturating_add(chunk.len()).saturating_add(
                 iteron_tunables::param_integer(

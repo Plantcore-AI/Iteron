@@ -625,6 +625,7 @@ impl CatalogCache {
         let Ok(file) = File::open(path) else {
             return Self::default();
         };
+        #[cfg(unix)]
         let Ok(opened_metadata) = file.metadata() else {
             return Self::default();
         };
@@ -982,6 +983,7 @@ impl ProbeCache {
         let Ok(file) = File::open(path) else {
             return Self::default();
         };
+        #[cfg(unix)]
         let Ok(opened_metadata) = file.metadata() else {
             return Self::default();
         };

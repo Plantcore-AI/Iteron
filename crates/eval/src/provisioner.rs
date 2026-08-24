@@ -565,6 +565,9 @@ fn normalize_pytest_elapsed(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    use crate::corpus::Provenance;
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     use crate::corpus::{Provenance, digest_tasks};
     use crate::types::Partition;
     use std::collections::BTreeMap;

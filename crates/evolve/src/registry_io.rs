@@ -4,7 +4,6 @@ use super::{
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::fs::File;
 use std::io::{self, BufRead, Read, Write};
 use std::path::{Path, PathBuf};
 
@@ -74,6 +73,7 @@ pub(super) fn file_identity(metadata: &std::fs::Metadata) -> FileIdentity {
 
 #[cfg(unix)]
 pub(super) fn sync_directory(directory: &Path) -> io::Result<()> {
+    use std::fs::File;
     File::open(directory)?.sync_all()
 }
 

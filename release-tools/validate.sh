@@ -35,6 +35,8 @@ shellcheck -s sh install.sh
 shellcheck -s bash \
   release-tools/audit_dependencies.sh \
   release-tools/check_docs.sh \
+  release-tools/create_release_tag.sh \
+  release-tools/githooks/pre-push \
   release-tools/validate.sh \
   release-tools/tests/test_install.sh
 release-tools/check_docs.sh

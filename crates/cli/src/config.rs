@@ -423,7 +423,7 @@ impl McpServerOrigin {
         })
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn plugin_fixture(plugin_id: &str, version: &str) -> Self {
         Self(McpServerOriginKind::Plugin {
             plugin_id: plugin_id.to_owned(),

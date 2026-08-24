@@ -515,7 +515,7 @@ pub(crate) async fn run_command_bounded(
 /// the executed image is a file nobody is writing, so the race cannot arise (#54, #55, #97).
 ///
 /// Production never writes a program and then executes it, which is why this is test-only.
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) fn shell_script_command(path: &Path) -> OsString {
     let path = path
         .to_str()

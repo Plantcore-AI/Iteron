@@ -50,8 +50,8 @@ $ gh variable set WINDOWS_RUNNER_LABELS --repo Plantcore-AI/Iteron \
 While that variable is unset, `windows.yml` is skipped outright. See
 `ops/windows-runner/README.md` for the machine's provisioning runbook.
 
-Read a closed Windows tracking issue as closed, not as shipped: v0.0.15 contains
-no Windows artifact.
+Windows artifacts are published once issue #344 is closed; verify the
+selected release's asset list for availability.
 
 ## Linux requirements
 

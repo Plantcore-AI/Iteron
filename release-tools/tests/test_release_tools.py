@@ -485,14 +485,17 @@ exit 1
             "python3 release-tools/schema_release.py", workflow
         )
         self.assertIn(
-            'previous=$(jq -er --arg candidate "$GITHUB_REF_NAME"', workflow
+            'previous=$(jq -er --arg candidate "$candidate_tag"', workflow
         )
         self.assertIn('group_by(.version) | any(length > 1)', workflow)
         self.assertIn('any($stable[]; .version >= $candidate_version)', workflow)
         self.assertIn(
             '"$policy_root/release-tools/schema_release.py"', workflow
         )
-        self.assertIn('test "$trusted_previous" = "$previous"', workflow)
+        self.assertIn(
+            'require_eq "schema_release.py selected previous release must match policy-computed previous"',
+            workflow,
+        )
         anchor = workflow.index(
             "- name: Validate against the previous immutable schema release"
         )
@@ -567,8 +570,14 @@ exit 1
         self.assertIn(
             'CARGO_TARGET_DIR="$RUNNER_TEMP/core-schema-bootstrap-target"', workflow
         )
-        self.assertIn('test "$GITHUB_REF_NAME" = v0.0.1', workflow)
-        self.assertIn('steps.metadata.outputs.version }}" = 0.0.1', workflow)
+        self.assertIn(
+            'require_eq "bootstrap release tag must be v0.0.1" "v0.0.1" "$candidate_tag"',
+            workflow,
+        )
+        self.assertIn(
+            'require_eq "bootstrap release version must be 0.0.1" "0.0.1"',
+            workflow,
+        )
         self.assertGreaterEqual(
             workflow.count("ref: ${{ needs.validate.outputs.commit }}"), 3
         )
@@ -646,11 +655,17 @@ exit 1
         )[1].split(
             "- name: Validate against the previous immutable schema release", 1
         )[0]
-        self.assertIn('test "$GITHUB_EVENT_NAME" = workflow_dispatch', metadata)
+        self.assertIn(
+            'require_eq "release must be triggered by a v* tag or workflow_dispatch" "workflow_dispatch" "$GITHUB_EVENT_NAME"',
+            metadata,
+        )
         self.assertIn("tag_commit=$event_commit", metadata)
         self.assertNotIn('test "$GITHUB_REF" = refs/heads/main', metadata)
         self.assertIn('tested_tree=$(git rev-parse "$tag_commit^{tree}")', metadata)
-        self.assertIn('[[ "$tested_tree" =~ ^[0-9a-f]{40}$ ]]', metadata)
+        self.assertIn(
+            '''require_match "source tree must be a 40-character hex SHA" '^[0-9a-f]{40}$' "$tested_tree"''',
+            metadata,
+        )
         self.assertIn('echo "tree=$tested_tree"', metadata)
         self.assertIn("tree: ${{ steps.metadata.outputs.tree }}", release)
 
@@ -1628,7 +1643,13 @@ class SchemaCompatibilityBridgeTest(unittest.TestCase):
         for previous, pins in self.BRIDGES.items():
             with self.subTest(previous=previous):
                 block = self._block(previous)
-                self.assertIn(f'test "$GITHUB_REF_NAME" = {pins["candidate"]}', block)
+                candidate = pins["candidate"]
+                self.assertTrue(
+                    f'test "$GITHUB_REF_NAME" = {candidate}' in block
+                    or f'require_eq "{previous} bridge release tag must be {candidate}" '
+                    f'"{candidate}" "$candidate_tag"' in block,
+                    f"candidate tag {candidate} must be pinned",
+                )
                 self.assertIn(f'compatibility_commit={pins["commit"]}', block)
                 self.assertIn(f'compatibility_schema_blob={pins["blob"]}', block)
 
@@ -1636,9 +1657,9 @@ class SchemaCompatibilityBridgeTest(unittest.TestCase):
         for previous in self.BRIDGES:
             with self.subTest(previous=previous):
                 block = self._block(previous)
-                self.assertIn(
-                    'test "$(git cat-file -t "$compatibility_commit")" = commit',
-                    block,
+                self.assertTrue(
+                    'test "$(git cat-file -t "$compatibility_commit")" = commit' in block
+                    or 'require_eq "compatibility bridge commit must be a commit object"' in block,
                     "the pin must be a commit object, not a tag or a blob",
                 )
                 self.assertIn(
@@ -1658,11 +1679,14 @@ class SchemaCompatibilityBridgeTest(unittest.TestCase):
                 block = self._block(previous)
                 self.assertIn("git diff --quiet", block)
                 self.assertIn("'xtask/src/schema_compat*'", block)
-                self.assertIn(
+                old_blob_check = (
                     'test "$(git rev-parse \\\n              '
                     '"$compatibility_commit:governance/schema-compatibility.json")" = \\\n'
-                    '              "$compatibility_schema_blob"',
-                    block,
+                    '              "$compatibility_schema_blob"'
+                )
+                self.assertTrue(
+                    old_blob_check in block
+                    or 'require_eq "compatibility bridge governance/schema-compatibility.json blob must match the pinned value"' in block,
                     "the compatibility contract itself must be content-addressed",
                 )
 

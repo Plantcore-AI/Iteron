@@ -64,7 +64,10 @@ pub(super) fn write_keyboard_query(deadline: Instant) -> std::io::Result<()> {
                 return;
             };
             let result = if request.should_abort(Instant::now()) {
-                Err(query_cancelled())
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "keyboard capability query write timed out",
+                ))
             } else {
                 write_keyboard_query_once(&request)
             };
@@ -83,7 +86,10 @@ pub(super) fn write_keyboard_query(deadline: Instant) -> std::io::Result<()> {
     }
     if request_sender.send(request.clone()).is_err() {
         finish_confirmed_worker();
-        return Err(worker_disconnected());
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "keyboard capability query worker stopped without a result",
+        ));
     }
 
     await_worker_result(result_receiver, &request)
@@ -108,7 +114,10 @@ fn await_worker_result(
         }
         Err(RecvTimeoutError::Disconnected) => {
             finish_confirmed_worker();
-            Err(worker_disconnected())
+            Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "keyboard capability query worker stopped without a result",
+            ))
         }
         Err(RecvTimeoutError::Timeout) => {
             request.cancel();
@@ -119,7 +128,10 @@ fn await_worker_result(
                 // worker and its CONOUT$ handle remain tracked, and no second worker can start.
                 QUERY_GATE.poison();
             }
-            Err(query_cancelled())
+            Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "keyboard capability query write timed out",
+            ))
         }
     }
 }
@@ -209,7 +221,10 @@ fn finish_confirmed_worker() {
 
 fn write_keyboard_query_once(request: &KeyboardQueryRequest) -> std::io::Result<usize> {
     if request.should_abort(Instant::now()) {
-        return Err(query_cancelled());
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "keyboard capability query write timed out",
+        ));
     }
     let output = std::fs::OpenOptions::new()
         .read(true)
@@ -217,7 +232,10 @@ fn write_keyboard_query_once(request: &KeyboardQueryRequest) -> std::io::Result<
         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
         .open("CONOUT$")?;
     if request.should_abort(Instant::now()) {
-        return Err(query_cancelled());
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "keyboard capability query write timed out",
+        ));
     }
     let mut written = 0_u32;
     // SAFETY: output is a live worker-owned console handle, the query is a live static byte slice,
@@ -238,18 +256,4 @@ fn write_keyboard_query_once(request: &KeyboardQueryRequest) -> std::io::Result<
     } else {
         Ok(written as usize)
     }
-}
-
-fn query_cancelled() -> std::io::Error {
-    std::io::Error::new(
-        std::io::ErrorKind::TimedOut,
-        "keyboard capability query write timed out",
-    )
-}
-
-fn worker_disconnected() -> std::io::Error {
-    std::io::Error::new(
-        std::io::ErrorKind::BrokenPipe,
-        "keyboard capability query worker stopped without a result",
-    )
 }

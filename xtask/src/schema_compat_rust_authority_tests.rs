@@ -207,3 +207,39 @@ required-features = ["alternate"]
         );
     }
 }
+
+#[test]
+fn repository_cargo_config_admits_only_windows_stack_size_rustflags() {
+    let valid: toml::Value = toml::from_str(
+        r#"[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "link-arg=/STACK:8388608"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "link-arg=/STACK:8388608"]
+"#,
+    )
+    .unwrap();
+    validate_cargo_config_contents(&valid).unwrap();
+
+    for invalid in [
+        r#"[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "link-arg=/STACK:4194304"]
+"#,
+        r#"[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=/STACK:8388608"]
+"#,
+        r#"[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "link-arg=/STACK:8388608"]
+build = "custom.rs"
+"#,
+        r#"[target.x86_64-pc-windows-msvc]
+linker = "lld"
+"#,
+    ] {
+        let value: toml::Value = toml::from_str(invalid).unwrap();
+        assert!(
+            validate_cargo_config_contents(&value).is_err(),
+            "accepted non-canonical Cargo config:\n{invalid}"
+        );
+    }
+}
