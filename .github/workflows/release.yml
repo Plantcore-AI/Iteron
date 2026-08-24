@@ -1726,15 +1726,24 @@ jobs:
           gh release download "$GITHUB_REF_NAME" \
             --repo "$GITHUB_REPOSITORY" \
             --pattern install.sh \
+            --pattern install.ps1 \
             --pattern release-manifest.json \
             --pattern release-manifest.receipt.json \
             --pattern "$archive" \
             --pattern "$report" \
             --dir "$canary/download"
+          # Both installers, because the manifest declares both. `verify_installers`
+          # branches on the manifest, not on what the caller happens to pass, so a
+          # release that ships install.ps1 and a canary that omits `--windows` fails
+          # with "windows installer path is required" -- after publication. That is
+          # exactly how v0.0.20 published green and then reddened all three content
+          # canaries: the publish step was updated to pass `--windows` and this,
+          # the second call site, was not.
           "${{ matrix.python }}" release-tools/verify_release.py installers \
             --manifest "$canary/download/release-manifest.json" \
             --receipt "$canary/download/release-manifest.receipt.json" \
-            --posix "$canary/download/install.sh"
+            --posix "$canary/download/install.sh" \
+            --windows "$canary/download/install.ps1"
           binary=$("${{ matrix.python }}" release-tools/verify_release.py artifact \
             --manifest "$canary/download/release-manifest.json" \
             --receipt "$canary/download/release-manifest.receipt.json" \
