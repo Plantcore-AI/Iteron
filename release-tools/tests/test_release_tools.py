@@ -1871,6 +1871,48 @@ class PosixOnlyInstallerTest(unittest.TestCase):
             "verify_release (or the reverse); both or neither",
         )
 
+    def test_every_installer_check_agrees_with_the_manifest(self) -> None:
+        """EVERY `verify_release installers` call passes `--windows`, or none does.
+
+        The earlier test pinned the release's `--target` list against one call site
+        and let the other drift. There are two: `publish` verifies `dist`, and the
+        content canary re-verifies what was actually published. v0.0.20 updated the
+        first and not the second, so the release published green and then failed all
+        three content canaries on `windows installer path is required` -- after the
+        release had been created, which is the point where nothing can be taken back.
+
+        `verify_installers` branches on the manifest, so agreement has to hold at
+        every call site, not at the one that happens to get edited.
+        """
+        workflow = (self.ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+        calls = workflow.count("verify_release.py installers")
+        self.assertGreaterEqual(calls, 2, "the installer-check call sites moved; this regex is stale")
+        windows_flags = workflow.count("--windows ")
+        ships_windows = "x86_64-pc-windows-msvc" in re.findall(
+            r"^\s+--target ([a-z0-9_-]+)\s*\\?$", workflow, re.M
+        )
+        self.assertEqual(
+            windows_flags if ships_windows else 0,
+            calls if ships_windows else 0,
+            f"{calls} installer checks but {windows_flags} pass --windows; a release that "
+            "ships install.ps1 must verify it at every site, or the canary fails post-publish",
+        )
+
+    def test_the_canary_downloads_what_it_verifies(self) -> None:
+        """The canary cannot verify an installer it never downloaded.
+
+        Passing `--windows` without adding `install.ps1` to the `gh release download`
+        patterns swaps one post-publish failure for another.
+        """
+        workflow = (self.ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+        if "--windows " not in workflow:
+            return
+        self.assertIn(
+            "--pattern install.ps1",
+            workflow,
+            "the canary verifies the Windows installer but never downloads it",
+        )
+
     def test_every_built_target_is_a_published_target(self) -> None:
         """A target the build matrix produces must appear in the manifest.
 
