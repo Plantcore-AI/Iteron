@@ -120,8 +120,6 @@ impl Agent {
         // byte re-selection. Replay applies the same rule, so live state cannot retain a card that
         // the durable history says must be rebound.
         self.pricing = None;
-        self.context_estimator
-            .set_route(Some(&selected.route.provider_id), &selected.route.model_id);
         self.selected_route = Some(selected);
         self.selected_provider = Some(self.provider.clone());
         Ok(())
@@ -333,8 +331,6 @@ impl Agent {
         self.provider = provider.clone();
         self.model = selected.route.model_id.clone();
         self.pricing = None;
-        self.context_estimator
-            .set_route(Some(&selected.route.provider_id), &selected.route.model_id);
         self.selected_route = Some(selected);
         self.selected_provider = Some(provider);
         Ok(())

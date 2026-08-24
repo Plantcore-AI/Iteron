@@ -103,10 +103,13 @@ pub(crate) struct EffectiveCoreSettings {
     pub memory_enabled: bool,
     pub session_spawn_cap: usize,
     pub deferred_tool_eager_limit: Option<usize>,
-    /// Exact effective context authority captured in family 96. Unknown provider metadata uses the
-    /// pinned conservative local ceiling; resume must not widen it from a newly discovered value.
+    /// Exact provider-attested physical context authority captured in family 96. Unknown provider
+    /// metadata uses the pinned conservative local ceiling; resume must not widen it from a newly
+    /// discovered value. Runtime admission derives its separately bounded execution window from
+    /// this value plus `request_output_cap`.
     pub model_context_window: Option<u64>,
-    /// Exact provider response cap captured in family 19 after all parent ceilings were applied.
+    /// Exact governed per-request response cap captured in family 19 after provider and parent
+    /// ceilings were applied. This is deliberately distinct from the provider's physical maximum.
     pub request_output_cap: Option<u32>,
     pub context_budget: iteron_ctx::ContextBudgetPolicy,
     pub context_materialization: iteron_ctx::ContextMaterializationPolicy,
@@ -524,7 +527,8 @@ fn decode_verification(
     let selection = match optional_enum(view, "incremental_versus_full_verification")? {
         Some("incremental") => VerificationSelectionMode::Incremental,
         Some("impacted") => VerificationSelectionMode::Impacted,
-        Some("full") | None => VerificationSelectionMode::Full,
+        Some("full") => VerificationSelectionMode::Full,
+        None => VerificationSelectionMode::Impacted,
         Some(other) => return Err(unknown("incremental_versus_full_verification", other)),
     };
     let (required_commands, max_commands) =
@@ -793,7 +797,6 @@ fn decode_context_policies(
                     "context_window_override_reserve",
                     "model_window_tokens",
                 )?;
-                let window = usizev(window_value, "context_window_override_reserve")?;
                 let model_context_window = u64v(window_value, "context_window_override_reserve")?;
                 let output = u32v(
                     integer_field(
@@ -811,6 +814,11 @@ fn decode_context_policies(
                     )?,
                     "context_window_override_reserve",
                 )?;
+                let window = usize::try_from(model_context_window).map_err(|_| {
+                    EffectiveCoreError::Range {
+                        family: "context_window_override_reserve",
+                    }
+                })?;
                 (
                     window,
                     Some(model_context_window),
@@ -869,7 +877,7 @@ fn decode_context_policies(
 
     let memory = view.object("memory_budgets")?;
     let instruction_discovery = decode_instruction_discovery(view)?;
-    let materialization = iteron_ctx::ContextMaterializationPolicy {
+    let mut materialization = iteron_ctx::ContextMaterializationPolicy {
         max_bytes: iteron_protocol::context::MAX_CONTEXT_GRANT_BYTES,
         memory: iteron_ctx::MemBudget {
             recall_bytes: usizev(
@@ -895,9 +903,7 @@ fn decode_context_policies(
             "skill_listing_budget",
         )?,
         instruction_discovery,
-    }
-    .validate()
-    .map_err(|reason| EffectiveCoreError::InvalidBudget(reason.into()))?;
+    };
     let component_override = |field| {
         component_overrides
             .map(|fields| optional_integer_field(fields, "context_window_override_reserve", field))
@@ -923,6 +929,18 @@ fn decode_context_policies(
                     .saturating_add(materialization.memory.recall_bytes),
             )
         });
+    // The memory store is byte-bounded while provider admission is token-bounded. Fit the index
+    // and recalled bodies to their independently-owned token partition using the conservative
+    // cross-route invariant `estimated tokens <= visible UTF-8 bytes`. This is a general pressure
+    // bridge, not a provider/model exception: a small execution window now scales memory down
+    // instead of failing its first request, while a larger explicit budget preserves the authored
+    // byte limits unchanged.
+    materialization.memory = materialization
+        .memory
+        .fit_content_bytes(budget.memory_tokens);
+    materialization = materialization
+        .validate()
+        .map_err(|reason| EffectiveCoreError::InvalidBudget(reason.into()))?;
     budget.attachment_tokens = component_override("attachment_budget_tokens")?
         .map(|value| usizev(value, "context_window_override_reserve"))
         .transpose()?
@@ -1071,8 +1089,8 @@ fn decode_token_estimator(
         ));
     }
     match enum_field(fields, family, "estimator")? {
-        iteron_ctx::ROUTE_AWARE_ESTIMATOR_POLICY_ID => {
-            Ok(iteron_ctx::TokenEstimatorPolicy::RouteAwareV2)
+        iteron_ctx::OBSERVED_USAGE_ESTIMATOR_POLICY_ID => {
+            Ok(iteron_ctx::TokenEstimatorPolicy::ObservedUsageV3)
         }
         other => Err(unknown(family, other)),
     }
@@ -1084,6 +1102,10 @@ fn decode_compaction(
     let family = "compaction_trigger";
     let trigger = view.object(family)?;
     let mode = enum_field(trigger, family, "mode")?;
+    let trigger_ratio = decimal_ppm(
+        decimal_field(trigger, family, "usable_window_ratio")?,
+        family,
+    )?;
     let fallback = usizev(
         integer_field(trigger, family, "fallback_trigger_tokens")?,
         family,
@@ -1110,7 +1132,8 @@ fn decode_compaction(
         integer_field(trigger, family, "output_reserve_tokens")?,
         family,
     )?;
-    if adaptive_ratio != 1_000_000
+    if trigger_ratio != 820_000
+        || adaptive_ratio != trigger_ratio
         || adaptive_keep_recent != keep_recent
         || adaptive_output_reserve != trigger_output_reserve
     {
@@ -1554,7 +1577,7 @@ mod memory_schema_agreement_tests {
     }
 
     #[test]
-    fn checkpoint_model_limits_are_execution_values_and_live_capabilities_only_narrow_admission() {
+    fn checkpoint_model_limits_preserve_attested_truth_and_live_capabilities_only_narrow() {
         assert!(
             verify_model_capability_ceiling(
                 Some(120_000),
@@ -1572,7 +1595,7 @@ mod memory_schema_agreement_tests {
                 Some(16_384),
             )
             .is_ok(),
-            "a larger live capability must not replace or reject the pinned lower execution value"
+            "a larger live capability must not replace or reject the pinned attested value"
         );
         assert!(matches!(
             verify_model_capability_ceiling(Some(120_000), Some(8_192), Some(64_000), Some(8_192),),
@@ -1583,12 +1606,12 @@ mod memory_schema_agreement_tests {
         ));
         assert!(
             verify_model_capability_ceiling(Some(120_000), Some(8_192), None, Some(8_192)).is_ok(),
-            "missing context metadata is not evidence that the pinned effective ceiling shrank"
+            "missing context metadata is not evidence that the pinned capability shrank"
         );
         assert!(
             verify_model_capability_ceiling(Some(120_000), Some(8_192), Some(120_000), None,)
                 .is_ok(),
-            "unknown output metadata preserves the checkpoint's conservative execution cap"
+            "unknown output metadata preserves the checkpoint's pinned output cap"
         );
         assert!(matches!(
             verify_model_capability_ceiling(Some(120_000), Some(8_192), Some(120_000), Some(4_096),),

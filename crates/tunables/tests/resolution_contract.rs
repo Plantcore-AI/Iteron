@@ -1375,7 +1375,7 @@ fn offline_builtin_literal_candidates_cannot_override_registry_bytes() {
         (
             "effort",
             ResolutionValue::Enum {
-                value: "medium".to_owned(),
+                value: "low".to_owned(),
             },
         ),
         (
@@ -2672,7 +2672,7 @@ fn project_numeric_sources_only_lower_operator_or_canonical_ceilings() {
     let entry = &report.entries[4];
     assert_eq!(
         entry.requested,
-        Some(ResolutionValue::Integer { value: 600 })
+        Some(ResolutionValue::Integer { value: 64 })
     );
     assert!(matches!(
         entry

@@ -253,10 +253,6 @@ impl Agent {
                 });
                 self.selected_provider =
                     self.selected_route.as_ref().map(|_| self.provider.clone());
-                if let Some(selected) = &self.selected_route {
-                    self.context_estimator
-                        .set_route(Some(&selected.route.provider_id), &selected.route.model_id);
-                }
                 // A newly constructed Agent has an empty in-memory ledger. Rebuild completed
                 // usage/cost and admitted provider attempts from the verified logical record so
                 // resume cannot reset max_turns/max_usd. A live TUI follow-up already owns a
@@ -927,10 +923,6 @@ impl Agent {
         // and opened with its own writer descriptor, so the halt does not carry over.
         self.record_failed = false;
         self.resumed = Some(staged.messages);
-        if let Some(selected) = &self.selected_route {
-            self.context_estimator
-                .set_route(Some(&selected.route.provider_id), &selected.route.model_id);
-        }
         if staged.redacted_tool_results > 0 {
             self.diagnostics
                 .emit(KernelDiagnostic::ResumeRedactionDegraded {

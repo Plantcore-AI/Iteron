@@ -50,6 +50,7 @@ fn patch_only_registry(root: &Path) -> Registry {
         confine_execution: Default::default(),
         egress_allow_policy: Default::default(),
         observation_tool_policy: Default::default(),
+        observation_focus: Default::default(),
         process_launch_policy: Default::default(),
         workspace_boundary: false,
         process_control: None,
@@ -328,6 +329,26 @@ async fn d3_03_g2_missing_anchor_leaves_single_file_byte_identical() {
         stats.file_writes, 0,
         "invalid proposal must perform no write"
     );
+    assert_snapshots(&root, &["single.txt"], &before);
+}
+
+#[tokio::test]
+async fn byte_identical_patch_is_not_a_candidate_change() {
+    let root = TestRoot::new("snapshot-no-change");
+    root.write("single.txt", "alpha\nbeta\n");
+    let before = snapshots(&root, &["single.txt"]);
+    let input = json!({
+        "files": [file_patch("single.txt", "alpha", "alpha")]
+    });
+    let mut stats = PatchIoStats::default();
+
+    let failure = execute_patch(&root.0, &input, &mut stats)
+        .await
+        .unwrap_err();
+
+    let error: Value = serde_json::from_str(&failure.model_json()).unwrap();
+    assert_eq!(error["kind"], "no_change");
+    assert_eq!(stats.file_writes, 0);
     assert_snapshots(&root, &["single.txt"], &before);
 }
 

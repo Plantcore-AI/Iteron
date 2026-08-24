@@ -933,8 +933,8 @@ impl MemorySegment {
     }
 }
 
-/// Bounds on the injected memory segment (invariant #1). Defaults mirror Claude Code's ~25 KB /
-/// 200-line index, with room for recalled bodies and instructions under a total ceiling.
+/// Bounds on the injected memory segment (invariant #1). Coding defaults reserve a bounded 16 KB
+/// index, with smaller budgets for recalled bodies and instructions under a total ceiling.
 #[derive(Debug, Clone, Copy)]
 pub struct MemBudget {
     pub index_bytes: usize,
@@ -978,14 +978,49 @@ impl Default for MemBudget {
     }
 }
 
-/// Index segment ceiling, mirroring Claude Code's ~25 KB / 200-line memory index.
-const DEFAULT_MEM_INDEX_BYTES: usize = 25_000;
-/// Recalled fact bodies admitted on top of the index.
-const DEFAULT_MEM_RECALL_BYTES: usize = 16_000;
+impl MemBudget {
+    /// Fit indexed and recalled memory into an independently-owned model-visible byte ceiling
+    /// while preserving their configured ratio. Instruction bytes keep their separate budget.
+    ///
+    /// This is the bridge from the token-side context controller to byte-bounded materialization:
+    /// one admitted UTF-8 byte cannot cost more than one token under the request estimators, so a
+    /// byte ceiling no larger than the memory-token partition is conservative for every route.
+    pub fn fit_content_bytes(self, content_ceiling: usize) -> Self {
+        let content = self.index_bytes.saturating_add(self.recall_bytes);
+        if content <= content_ceiling {
+            return self;
+        }
+        if content_ceiling == 0 || content == 0 {
+            return Self {
+                index_bytes: 0,
+                recall_bytes: 0,
+                total: self.total.min(self.instr_bytes),
+                ..self
+            };
+        }
+
+        let index_bytes = content_ceiling.saturating_mul(self.index_bytes) / content;
+        let recall_bytes = content_ceiling.saturating_sub(index_bytes);
+        let component_sum = index_bytes
+            .saturating_add(recall_bytes)
+            .saturating_add(self.instr_bytes);
+        Self {
+            index_bytes,
+            recall_bytes,
+            instr_bytes: self.instr_bytes,
+            total: self.total.min(component_sum),
+        }
+    }
+}
+
+/// Bounded coding index ceiling; recalled bodies have their own independently governed budget.
+const DEFAULT_MEM_INDEX_BYTES: usize = 16_000;
+/// Recalled fact bodies admitted on top of the index with a tighter materialization ceiling.
+const DEFAULT_MEM_RECALL_BYTES: usize = 12_000;
 /// Discovered instruction text carried alongside memory.
 const DEFAULT_MEM_INSTR_BYTES: usize = 8_000;
 /// Total memory-segment ceiling: below the sum of the parts, so the classes compete.
-const DEFAULT_MEM_TOTAL_BYTES: usize = 49_000;
+const DEFAULT_MEM_TOTAL_BYTES: usize = 36_000;
 
 /// Errors from the memory strategy. Zero-dependency: `Display` + `std::error::Error` by hand.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2304,16 +2339,18 @@ impl FileMemory {
             const HEADER: &str =
                 "\n\n--- Memory index (progressive disclosure; read a fact with read_memory) ---\n";
             const FOOTER: &str = "--- end memory index ---";
+            let header = iteron_tunables::param_str("ctx.memory.header", HEADER);
+            let footer = iteron_tunables::param_str("ctx.memory.footer", FOOTER);
             let index_ceiling = budget.index_bytes.min(budget.total);
-            if HEADER.len().saturating_add(FOOTER.len()) <= index_ceiling {
-                index_block.push_str(HEADER);
+            if header.len().saturating_add(footer.len()) <= index_ceiling {
+                index_block.push_str(header);
                 for (index, candidate) in merged.iter().enumerate() {
                     let line = candidate.fact_ref.line();
                     let remaining = merged.len().saturating_sub(index + 1);
                     let disclosure = (remaining > 0).then(|| {
                         format!("[{remaining} more index entries omitted to fit the budget]\n")
                     });
-                    let reserve = FOOTER
+                    let reserve = footer
                         .len()
                         .saturating_add(disclosure.as_ref().map_or(0, String::len));
                     if index_block
@@ -2336,13 +2373,13 @@ impl FileMemory {
                     if index_block
                         .len()
                         .saturating_add(disclosure.len())
-                        .saturating_add(FOOTER.len())
+                        .saturating_add(footer.len())
                         <= index_ceiling
                     {
                         index_block.push_str(&disclosure);
                     }
                 }
-                index_block.push_str(FOOTER);
+                index_block.push_str(footer);
             }
         }
 
@@ -2937,6 +2974,31 @@ pub fn merged_index(stores: &[MemStore]) -> MemIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn coding_defaults_bound_materialized_memory() {
+        let budget = MemBudget::default();
+        assert_eq!(budget.index_bytes, 16_000);
+        assert_eq!(budget.recall_bytes, 12_000);
+        assert_eq!(budget.instr_bytes, 8_000);
+        assert_eq!(budget.total, 36_000);
+    }
+
+    #[test]
+    fn memory_content_budget_scales_index_and_recall_without_widening_total() {
+        let budget = MemBudget {
+            index_bytes: 25_000,
+            recall_bytes: 15_000,
+            instr_bytes: 8_000,
+            total: 48_000,
+        };
+        let fitted = budget.fit_content_bytes(20_000);
+        assert_eq!(fitted.index_bytes, 12_500);
+        assert_eq!(fitted.recall_bytes, 7_500);
+        assert_eq!(fitted.instr_bytes, 8_000);
+        assert_eq!(fitted.total, 28_000);
+        assert_eq!(budget.fit_content_bytes(40_000).total, 48_000);
+    }
 
     fn tmp(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(

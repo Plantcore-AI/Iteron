@@ -178,6 +178,7 @@ mod tests {
                 framing_tokens: 0,
                 total_tokens: total,
                 provenance: iteron_ctx::TokenEstimateProvenance::HeuristicBytesPerToken35,
+                components: None,
             },
             model_context_window: None,
             reserved_output_tokens: 8_192,
@@ -476,6 +477,35 @@ mod tests {
         let mut input_b = iteron_record::resolved_fixture::input();
         input_b.profile.as_mut().unwrap().profile_id =
             iteron_tunables::RuntimeProfile::Research.id().to_owned();
+        input_b
+            .declared_values
+            .iter_mut()
+            .find(|value| value.family == "session_isolation_profile")
+            .expect("the fixture carries the immutable profile identity")
+            .value = iteron_tunables::ResolutionValue::Enum {
+            value: "durable".into(),
+        };
+        let mut isolation_constraints = 0;
+        for constraint in input_b
+            .constraint_evidence
+            .iter_mut()
+            .filter(|value| value.family == "session_isolation_profile")
+        {
+            let iteron_tunables::ConstraintValue::Domain {
+                allowed_values: Some(values),
+                ..
+            } = &mut constraint.value
+            else {
+                panic!("session isolation must be constrained by attested domains")
+            };
+            *values = std::collections::BTreeSet::from([
+                iteron_tunables::ResolutionValue::Enum {
+                    value: "durable".into(),
+                },
+            ]);
+            isolation_constraints += 1;
+        }
+        assert!(isolation_constraints > 0);
         let resolved_b = iteron_tunables::resolve(input_b).unwrap();
         let resolved_b =
             iteron_tunables::with_synthetic_fixed_authority_attestations_for_test(resolved_b)
@@ -3293,7 +3323,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
     fn one_shot_terminal_result(summary: &app_server::TerminalSummary) -> serde_json::Value {
         // This is the exact constructor used by the one-shot client after it receives RunEnded.
-        // Do not route this leg through TerminalSummary::result_v5: an accidental sibling-client
+        // Do not route this leg through TerminalSummary::current_result: an accidental sibling-client
         // normalizer must remain observable to this parity proof.
         crate::output::final_result(
             &summary.outcome,
@@ -3357,7 +3387,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     fn capture_client_parity(summary: &app_server::TerminalSummary) -> ClientParityCapture {
         let one_shot = one_shot_terminal_result(summary);
         // Destructuring the versioned transport frame is the sole normalization in this proof.
-        // Every result-v5 field remains untouched and participates in raw Value equality.
+        // Every current-result field remains untouched and participates in raw Value equality.
         let (protocol_version, seq, headless) =
             headless::capture_terminal_result_frame(41, summary);
         assert_eq!(protocol_version, iteron_protocol::PROTOCOL_VERSION);
@@ -3428,7 +3458,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             assert_eq!(
                 pairwise_result_equality(&divergent),
                 [false, false, true],
-                "raw pairwise equality must expose a one-client result-v5 mutation"
+                "raw pairwise equality must expose a one-client result mutation"
             );
 
             // Source-mutation canary: changing the shared authority must move all three production
@@ -3448,7 +3478,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     }
 
     #[test]
-    fn run_terminal_chrome_is_derived_from_the_canonical_result_v5_object() {
+    fn run_terminal_chrome_is_derived_from_the_canonical_current_result_object() {
         let mut app = App::new();
         app.running = true;
         let (sq, _rx) = tokio::sync::mpsc::channel(1);
@@ -6421,6 +6451,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             framing_tokens: 4,
             total_tokens: 10,
             provenance: iteron_ctx::TokenEstimateProvenance::HeuristicBytesPerToken35,
+            components: None,
         });
         app.model_context_window = Some(200_000);
         app.effort_application = Some(EffortApplication::Unsupported {

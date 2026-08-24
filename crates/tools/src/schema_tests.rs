@@ -219,3 +219,58 @@ async fn supported_minimum_is_enforced_before_builtin_read() {
     assert_eq!(registry.memo_stats(), (0, 0));
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[tokio::test]
+async fn supported_enum_is_enforced_before_external_dispatch() {
+    let root = temp_root("enum");
+    let mut registry = Registry::read_only(&root).unwrap();
+    let executions = Arc::new(AtomicUsize::new(0));
+    let executor_count = Arc::clone(&executions);
+    registry
+        .register_external(
+            ToolSpec {
+                name: "enum_probe".into(),
+                description: "enum validation probe".into(),
+                input_schema: serde_json::json!({
+                    "type":"object",
+                    "properties":{"role":{"type":"string","enum":["producer","consumer"]}},
+                    "required":["role"]
+                }),
+                purity: Purity::Pure,
+                capability: Capability::ReadOnly,
+            },
+            move |call, _| {
+                let executor_count = Arc::clone(&executor_count);
+                boxfut::box_it(async move {
+                    executor_count.fetch_add(1, Ordering::SeqCst);
+                    ok_result(call.id, "accepted".into())
+                })
+            },
+        )
+        .unwrap();
+
+    let refused = registry
+        .dispatch(ToolUse {
+            id: "bad-enum".into(),
+            name: "enum_probe".into(),
+            input: serde_json::json!({"role":"boundary"}),
+        })
+        .await;
+    assert!(refused.is_error);
+    let error: serde_json::Value = serde_json::from_str(&refused.content).unwrap();
+    assert_eq!(error["kind"], "not_in_enum");
+    assert_eq!(error["field"], "role");
+    assert_eq!(error["allowed_count"], 2);
+    assert_eq!(executions.load(Ordering::SeqCst), 0);
+
+    let accepted = registry
+        .dispatch(ToolUse {
+            id: "good-enum".into(),
+            name: "enum_probe".into(),
+            input: serde_json::json!({"role":"producer"}),
+        })
+        .await;
+    assert!(!accepted.is_error, "{}", accepted.content);
+    assert_eq!(executions.load(Ordering::SeqCst), 1);
+    let _ = std::fs::remove_dir_all(root);
+}

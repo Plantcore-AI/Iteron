@@ -54,6 +54,22 @@ fn oversized_output_is_private_content_addressed_and_visibly_bounded() {
 }
 
 #[test]
+fn pressure_projection_keeps_head_and_tail_inside_the_fair_share() {
+    let raw = format!("HEAD:{}:TAIL", "界".repeat(4_000));
+    let mut managed = ManagedToolResult::unspilled(result(&raw));
+    assert!(managed.project_visible(1_024));
+    assert!(managed.result.content.len() <= 1_024);
+    assert!(managed.result.content.starts_with("HEAD:"));
+    assert!(managed.result.content.ends_with(":TAIL"));
+    assert!(
+        managed
+            .result
+            .content
+            .contains("tool output context projection")
+    );
+}
+
+#[test]
 fn aggregate_capacity_never_writes_a_partial_or_leaks_the_rejected_tail() {
     let policy = ToolOutputSpillPolicy::new(128, 256, ToolOutputSpillCleanup::RunEnd).unwrap();
     let store = ToolOutputSpillStore::create(policy).unwrap();

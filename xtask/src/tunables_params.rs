@@ -1633,6 +1633,10 @@ fn row_for(
             "crates/cli/src/output.rs",
             "MAX_PENDING_STREAM_TOKEN_BYTES"
         ) | (
+            "tools",
+            "crates/tools/src/repair_evidence.rs",
+            "SUBMIT_REPAIR_EVIDENCE"
+        ) | (
             "protocol",
             "crates/protocol/src/message.rs",
             "ANTHROPIC_MESSAGES_CONTENT_BLOCKS_V1"
@@ -1671,6 +1675,7 @@ fn row_for(
             (krate, relative),
             ("cli", "crates/cli/src/plugin_runtime/candidate.rs")
                 | ("eval", "crates/eval/src/adapter_registry.rs")
+                | ("eval", "crates/eval/src/iteron_harness_main.rs")
                 | ("eval", "crates/eval/src/lib.rs")
                 | (
                     "eval",
@@ -1724,6 +1729,10 @@ fn row_for(
             | "INTERNATIONAL_MULTI_MARKERS",
         )
         | ("cli", "crates/cli/src/block/links.rs", "PATH_ARG_KEYS" | "URL_ARG_KEYS") => {
+            Some(ParamClass::Searchable)
+        }
+        ("ctx", "crates/ctx/src/memory.rs", "HEADER" | "FOOTER") => Some(ParamClass::Searchable),
+        ("tools", "crates/tools/src/tool_search.rs", "CORE_EAGER_TOOLS") => {
             Some(ParamClass::Searchable)
         }
         ("tools", "crates/tools/src/tool_search.rs", "DEFAULT_DEFERRED_TOOL_EAGER_LIMIT")
@@ -1820,7 +1829,7 @@ fn row_for(
     };
     ParamRow {
         id: format!("{krate}.{}.{}", module_path(relative), name.to_lowercase()),
-        module: module_for(krate, relative),
+        module: module_for(krate, relative, name),
         class,
         ty,
         rust_type: ty_text.to_owned(),
@@ -2326,7 +2335,7 @@ fn parse_integer_literal(value: &syn::LitInt) -> Option<i128> {
 }
 
 /// Map a declaration site to its optimization module.
-fn module_for(krate: &str, relative: &str) -> ModuleId {
+fn module_for(krate: &str, relative: &str, name: &str) -> ModuleId {
     let file = relative
         .rsplit_once("/src/")
         .map(|(_, t)| t)
@@ -2344,7 +2353,13 @@ fn module_for(krate: &str, relative: &str) -> ModuleId {
             }
         }
         "tools" => {
-            if file.contains("grep")
+            let is_discovery_policy = ["LIST_DIR", "GLOB", "GREP", "REPO_MAP"]
+                .into_iter()
+                .any(|token| name.contains(token));
+            if file == "tool_search.rs" && name == "CORE_EAGER_TOOLS" {
+                ModuleId::ToolExposure
+            } else if is_discovery_policy
+                || file.contains("grep")
                 || file.contains("glob")
                 || file.contains("outline")
                 || file.contains("repo")
@@ -2376,7 +2391,9 @@ fn module_for(krate: &str, relative: &str) -> ModuleId {
         "protocol" | "tunables" => ModuleId::BudgetAllocation,
         "statusline" => ModuleId::SessionStop,
         "cli" => {
-            if file.starts_with("tui") {
+            if name == "SYSTEM_PROMPT" {
+                ModuleId::PromptSystem
+            } else if file.starts_with("tui") {
                 ModuleId::SessionStop
             } else if file.contains("runtime_tunables") || file.contains("context") {
                 ModuleId::ContextAssembly
@@ -2656,6 +2673,50 @@ mod tests {
             param_type("std::collections::HashMap<String, bool>", "HashMap::new()"),
             ParamType::Map
         ));
+    }
+
+    #[test]
+    fn discovery_policy_parameters_share_the_search_module_across_source_files() {
+        assert_eq!(
+            module_for(
+                "tools",
+                "crates/tools/src/fs_tools.rs",
+                "DEFAULT_LIST_DIR_DEPTH"
+            ),
+            ModuleId::ToolSearchStrategy
+        );
+        assert_eq!(
+            module_for(
+                "tools",
+                "crates/tools/src/execution_policy.rs",
+                "DEFAULT_GREP_MAX_MATCHES"
+            ),
+            ModuleId::ToolSearchStrategy
+        );
+        assert_eq!(
+            module_for(
+                "tools",
+                "crates/tools/src/execution_policy.rs",
+                "DEFAULT_READ_FILE_MAX_LINES"
+            ),
+            ModuleId::ToolArguments
+        );
+    }
+
+    #[test]
+    fn the_cli_base_prompt_is_not_misclassified_as_scheduler_policy() {
+        assert_eq!(
+            module_for("cli", "crates/cli/src/main.rs", "SYSTEM_PROMPT"),
+            ModuleId::PromptSystem
+        );
+        assert_eq!(
+            module_for(
+                "cli",
+                "crates/cli/src/runtime.rs",
+                "DEFAULT_MAX_TOOL_CONCURRENCY"
+            ),
+            ModuleId::SchedulerParallelism
+        );
     }
 
     #[test]

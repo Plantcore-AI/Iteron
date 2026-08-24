@@ -273,7 +273,7 @@ fn add_compaction_constraints(
     builder: &mut RuntimeResolutionBuilder,
     input: &CoreFactsInput<'_>,
 ) -> Result<(), CoreFactError> {
-    let output_reserve = super::model_output_reserve(input);
+    let provider_output_ceiling = super::provider_output_ceiling(input);
     // With no provider window, the executable context decoder uses exactly the fixed compaction
     // fallback plus family-19's output reserve as its synthetic usable window. Bind every fixed
     // context policy to that same owner value instead of leaving an active family unresolved.
@@ -300,22 +300,22 @@ fn add_compaction_constraints(
         ExternalCeiling::ContextWindow,
         context_ceiling_value,
     )?;
-    // With unknown metadata, the canonical family-19 fallback is the conservative request
-    // envelope. With attested metadata, that live value may only narrow the envelope. Both
-    // compaction reserve and the actual request cap consume the same pinned value.
+    // The provider maximum is only an external ceiling. The separately resolved interactive
+    // default remains the actual compaction reserve/request cap unless a governed profile chooses
+    // a larger value.
     domain_max(
         builder,
         "compaction_trigger",
         "output_reserve_tokens",
         ExternalCeiling::ProviderCapability,
-        int(i64v(output_reserve, "request_output_cap")?),
+        int(i64v(provider_output_ceiling, "request_output_cap")?),
     )?;
     domain_max(
         builder,
         "request_output_cap",
         "$",
         ExternalCeiling::ProviderCapability,
-        int(i64v(output_reserve, "request_output_cap")?),
+        int(i64v(provider_output_ceiling, "request_output_cap")?),
     )?;
     let materialization = iteron_ctx::ContextMaterializationPolicy::default();
     let materialization_ceiling = int(i64::from(materialization.max_bytes));

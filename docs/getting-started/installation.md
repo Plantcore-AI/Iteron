@@ -1,10 +1,10 @@
 # Installation
 
-Iteron's distribution matrix covers macOS, Linux, and Windows x86-64. Windows
-ships as a build and distribution target, but is not a fully supported runtime
-because it has no code-execution sandbox. The source workspace is version
-`v0.0.7`. Consult the selected release's asset list before installing; source
-versioning alone does not prove that an archive exists for a host.
+The v0.0.15 distribution matrix covers macOS arm64, Linux arm64, and Linux
+x86-64. Windows remains a source-build and non-required CI target, but this
+release does not publish a Windows archive or installer. Consult the selected
+release's asset list before installing; source versioning alone does not prove
+that an archive exists for a host.
 
 !!! warning "Pre-alpha release"
     A downloadable release is not a compatibility or unattended-safety promise.
@@ -34,17 +34,6 @@ new shell. If it prints a different path, invoke the intended path directly or
 fix `PATH` ordering before diagnosing providers. Neither check reads a provider
 credential.
 
-On Windows x86-64, paste this single command into Windows PowerShell 5.1 or
-PowerShell 7+:
-
-```powershell
-[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; Invoke-RestMethod -Uri 'https://github.com/Plantcore-AI/Iteron/releases/latest/download/install.ps1' | Invoke-Expression
-```
-
-Then open a new terminal and verify `Get-Command iteron` and `iteron --version`.
-The PowerShell installer adds its per-user destination to `PATH` unless asked
-not to, and never changes the machine execution policy.
-
 The installer:
 
 - accepts only a version-bound release from `Plantcore-AI/Iteron`;
@@ -66,8 +55,6 @@ store a provider credential outside the repository.
 For `install.sh`, an explicit `--bin-dir` wins. Otherwise the destination is
 `$ITERON_INSTALL_DIR`, the legacy `$ITERON_CODE_INSTALL_DIR`, `$XDG_BIN_HOME`, or
 `$HOME/.local/bin`, in that order. Ensure that directory is already on `PATH`.
-For `install.ps1`, `-BinDir` wins, then the same two environment variables, then
-`%LOCALAPPDATA%\Iteron\bin`.
 
 ## Pin a version or destination
 
@@ -79,16 +66,6 @@ curl --proto '=https' --tlsv1.2 -LsSf \
 
 The only mutating options are `--version vX.Y.Z` and `--bin-dir PATH`. Run the
 downloaded release asset with `--help` to inspect the complete interface.
-
-The corresponding Windows form pins both the immutable installer URL and the
-archive version, selects the destination, and leaves archive digest and member
-verification enabled:
-
-```powershell
-[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-$installer = Invoke-RestMethod -Uri 'https://github.com/Plantcore-AI/Iteron/releases/download/v0.0.7/install.ps1'
-& ([scriptblock]::Create([string]$installer)) -Version v0.0.7 -BinDir "$env:LOCALAPPDATA\Iteron\bin"
-```
 
 Do not use Windows for untrusted code execution: it has no code-execution
 sandbox, `--confine` refuses to execute commands, and the default
@@ -102,12 +79,11 @@ operator-authority mode runs commands unconfined. See
 | macOS, Apple Silicon | `aarch64-apple-darwin` | `macos-15` | verify on the release page |
 | Linux, arm64 | `aarch64-unknown-linux-musl` | `dgx` | verify on the release page |
 | Linux, x86-64 | `x86_64-unknown-linux-musl` | `dgx` | verify on the release page |
-| Windows, x86-64 | `x86_64-pc-windows-msvc` | `iteron-win` or hosted fallback | verify on the release page |
+| Windows, x86-64 | `x86_64-pc-windows-msvc` | non-required CI | not published in v0.0.15 |
 
-The release workflow requires all four targets to be built, tested, packaged,
-and smoke-tested before a release counts as accepted
-multi-target evidence. Release notes remain authoritative for the archives a
-particular tag actually contains.
+The v0.0.15 release workflow requires the three macOS/Linux targets to be built,
+tested, packaged, and smoke-tested before release publication. Release notes
+remain authoritative for the archives a particular tag actually contains.
 
 ## Linux prerequisite for confined code execution
 
@@ -133,9 +109,9 @@ artifacts, not accepted workflow release evidence.
 
 An accepted workflow release is expected to publish:
 
-- deterministic archives for all four macOS/Linux/Windows targets;
-- version-bound `install.sh` and `install.ps1` assets recorded by digest and
-  size in the release manifest;
+- deterministic archives for all three macOS/Linux targets;
+- a version-bound `install.sh` asset recorded by digest and size in the release
+  manifest;
 - `SHA256SUMS`, `release-manifest.json`, and
   `release-manifest.receipt.json`;
 - the Apache-2.0 license and audited third-party notices;

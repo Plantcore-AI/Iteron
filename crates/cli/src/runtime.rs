@@ -20,12 +20,148 @@ pub use iteron_kernel::{diagnostics, effect_admission, effect_class, effect_jour
 type PureToolInFlight = (
     usize,
     ToolUse,
-    tokio::task::JoinHandle<(
-        tool_output_spill::ManagedToolResult,
-        Option<std::sync::Arc<tool_output_spill::ToolOutputSpillStore>>,
-    )>,
+    tokio::task::JoinHandle<EarlyPureToolOutcome>,
     Instant,
+    EarlyHookEffectTickets,
 );
+
+enum EarlyPureToolOutcome {
+    Completed {
+        managed: tool_output_spill::ManagedToolResult,
+        spill_store: Option<std::sync::Arc<tool_output_spill::ToolOutputSpillStore>>,
+        hook: Option<EarlyHookSummary>,
+    },
+    Refused {
+        reason: String,
+        hook: EarlyHookSummary,
+    },
+}
+
+#[derive(Debug, Clone, Copy)]
+struct EarlyHookSummary {
+    completed: u32,
+    failed: u32,
+    timed_out: u32,
+    lifecycle_dispatch_failed: bool,
+}
+
+#[derive(Default)]
+struct EarlyHookEffectTickets {
+    compatibility: Option<(usize, effects::EffectTicket)>,
+    lifecycle: Option<(usize, effects::EffectTicket)>,
+}
+
+struct EarlyHookRefusal {
+    reason: String,
+    summary: EarlyHookSummary,
+}
+
+struct EarlyHookGateContext<'a> {
+    journal: Option<&'a hooks::journal::HookEffectJournal>,
+    compatibility_enabled: bool,
+    lifecycle_enabled: bool,
+    compatibility_json: &'a str,
+    lifecycle_json: &'a str,
+    interrupt: Option<&'a std::sync::atomic::AtomicBool>,
+    drain: &'a std::sync::atomic::AtomicBool,
+}
+
+/// Execute an early read's blocking tool gates only after the caller has fsynced the matching
+/// kernel effect intents. This has the same role as the app-server gate of the same name: the
+/// caller owns the universal effect tickets, while this helper owns the bounded journaled process
+/// dispatch. Keeping it separate lets the provider callback start the future without lending the
+/// spawned task mutable access to the rollout.
+async fn run_lifecycle_gate(
+    hooks: &Hooks,
+    context: EarlyHookGateContext<'_>,
+) -> Result<Option<EarlyHookSummary>, EarlyHookRefusal> {
+    if !context.compatibility_enabled && !context.lifecycle_enabled {
+        return Ok(None);
+    }
+    let Some(journal) = context.journal else {
+        return Err(EarlyHookRefusal {
+            reason: "tool gate hook journal is unavailable; the read was not started".into(),
+            summary: EarlyHookSummary {
+                completed: 0,
+                failed: 1,
+                timed_out: 0,
+                lifecycle_dispatch_failed: context.lifecycle_enabled,
+            },
+        });
+    };
+    let compatibility = if context.compatibility_enabled {
+        Some(
+            hooks
+                .run_cancellable_journaled_report(
+                    HookEvent::PreToolUse,
+                    context.compatibility_json,
+                    context.interrupt,
+                    Some(context.drain),
+                    journal,
+                )
+                .await,
+        )
+    } else {
+        None
+    };
+    let lifecycle = if context.lifecycle_enabled {
+        Some(
+            hooks
+                .run_lifecycle_cancellable_journaled(
+                    "tool.call_proposed",
+                    context.lifecycle_json,
+                    context.interrupt,
+                    Some(context.drain),
+                    journal,
+                )
+                .await,
+        )
+    } else {
+        None
+    };
+    let lifecycle_report = lifecycle.as_ref().and_then(|value| value.as_ref().ok());
+    let summary = EarlyHookSummary {
+        completed: compatibility
+            .as_ref()
+            .map_or(0, |report| report.completed)
+            .saturating_add(lifecycle_report.map_or(0, |report| report.completed)),
+        failed: compatibility
+            .as_ref()
+            .map_or(0, |report| report.failed)
+            .saturating_add(lifecycle_report.map_or(0, |report| report.failed))
+            .saturating_add(u32::from(lifecycle.as_ref().is_some_and(Result::is_err))),
+        timed_out: compatibility
+            .as_ref()
+            .map_or(0, |report| report.timed_out)
+            .saturating_add(lifecycle_report.map_or(0, |report| report.timed_out)),
+        lifecycle_dispatch_failed: lifecycle.as_ref().is_some_and(Result::is_err),
+    };
+    let denial = compatibility
+        .as_ref()
+        .and_then(|report| match &report.decision {
+            HookDecision::Allow => None,
+            HookDecision::Deny(reason) => Some(reason.clone()),
+        })
+        .or_else(|| {
+            lifecycle_report.and_then(|report| match &report.decision {
+                HookDecision::Allow => None,
+                HookDecision::Deny(reason) => Some(reason.clone()),
+            })
+        })
+        .or_else(|| {
+            lifecycle
+                .as_ref()
+                .and_then(|result| result.as_ref().err().map(|reason| (*reason).to_owned()))
+        })
+        .or_else(|| {
+            (summary.failed > 0 || summary.timed_out > 0)
+                .then(|| "tool gate hook did not produce a complete allow decision".to_owned())
+        });
+    match denial {
+        Some(reason) => Err(EarlyHookRefusal { reason, summary }),
+        None => Ok(Some(summary)),
+    }
+}
 
 mod agent_config;
 mod agent_loop;
@@ -46,6 +182,7 @@ pub(crate) mod force_cancel;
 mod frontend;
 pub mod hooks;
 mod inbound_control;
+mod investigation_convergence;
 mod kernel_error;
 pub(crate) mod lifecycle_hooks;
 mod mcp_control;
@@ -84,7 +221,7 @@ use iteron_ctx::{CompactionPolicy, ContextEstimate};
 pub(crate) use deferred_tools::EffectingToolAdmissionPolicy;
 #[cfg(test)]
 use deferred_tools::declared_write_paths;
-use deferred_tools::{AutoApprovedCall, scheduling_write_paths};
+use deferred_tools::{AutoApprovedCall, scheduling_write_paths, write_paths_conflict};
 use diagnostics::{DiagnosticEmitter, KernelDiagnostic};
 use hooks::{HookDecision, HookEvent, Hooks};
 #[cfg(test)]
@@ -2065,8 +2202,9 @@ pub struct Agent {
     /// Child-terminal identity authenticated into every local cost projection. Top-level runs have
     /// no attribution; direct and workflow children set this before their first provider attempt.
     projection_attribution: Option<CostAttribution>,
-    /// Proven, exact-route context limit. `None` means unknown and is never replaced with the
-    /// compaction threshold.
+    /// Proven, exact-route physical context limit. `None` means unknown and is never replaced with
+    /// the compaction threshold. Admission derives a separately bounded execution window so
+    /// truthful provider capability and local context policy cannot overwrite one another.
     pub model_context_window: Option<u64>,
     /// Proven, exact-route maximum output. The harness still applies its smaller per-turn policy.
     pub model_max_output_tokens: Option<u32>,
@@ -2098,9 +2236,10 @@ pub struct Agent {
     /// leaves the compiled [`CompactionPolicy::summary_prompt`] in force, so the no-profile
     /// transcript is byte-identical to the one before this seam existed.
     pub compaction_summary_prompt: Option<String>,
-    /// One compaction per top-level submission. Set by whichever path took it — the emergency
-    /// valve inside the turn loop, or the end-of-turn settle — and cleared when the next
-    /// submission is admitted, so the two can never both fire on one run.
+    /// Whether this top-level submission has already compacted. Routine threshold compaction uses
+    /// this to avoid buying a second end-of-turn summary. A later component-budget overflow may
+    /// still compact adaptively after a successful recovery; that bridge has its own fail-closed
+    /// progress guard and remains bounded by the run's turn, wall, and cost ceilings.
     compacted_in_run: bool,
     /// Last durable compaction turn. Routine compaction consults this session state so the
     /// resolved cooldown survives across submissions; emergency overflow handling remains a
@@ -2131,6 +2270,9 @@ pub struct Agent {
     /// Invocation-local file provenance. `None` for text/image-only submissions and cleared when
     /// emergency compaction replaces the source message with a summary.
     input_file_evidence: Option<file_submission::InputFileEvidence>,
+    /// Invocation-local image estimate captured by the bounded decoder exactly once. Images remain
+    /// provider-visible across model rounds, unlike file bytes embedded in compactable text.
+    input_image_evidence: Option<context_runtime::InputImageEvidence>,
     /// Bounded request-level context decision evidence shared with diagnostic clients.
     pub context_ledgers: iteron_ctx::ContextLedgerStore,
     /// Bounded memory retrieval/mutation decision evidence shared with diagnostic clients.
@@ -2150,6 +2292,10 @@ pub struct Agent {
     /// claims done, and refuses to accept "done" if it fails (ADR-005: ground truth in the loop,
     /// don't trust the self-report). None disables the gate.
     pub verify_command: Option<String>,
+    /// Explicit operator attestation that the entire Iteron process already runs inside an outer
+    /// sandbox. When true, the verification child keeps runtime bounds and credential scrubbing
+    /// but does not create a nested platform sandbox. Never inferred; default false.
+    pub verify_preconfined: bool,
     /// Immutable verification selection/quorum/quarantine/recovery policy decoded from the same
     /// run-genesis tunables checkpoint as `verify_command`.
     verification_policy: iteron_verify::VerificationRuntimePolicy,
@@ -2460,6 +2606,13 @@ pub struct Agent {
 }
 
 impl Agent {
+    /// Selected total context ceiling used for prompt admission and compaction. Fresh composition
+    /// defaults it from provider capability; a validated generic profile may narrow it without a
+    /// provider-specific branch.
+    pub(crate) fn execution_context_window(&self) -> Option<u64> {
+        self.model_context_window.filter(|window| *window > 0)
+    }
+
     /// Continue an already-run agent with one validated text-plus-image operator submission.
     ///
     /// Attachments remain invocation-local: the durable transcript records the text, while the
@@ -2580,8 +2733,9 @@ impl Agent {
         {
             return Err(KernelError::UnpricedUsdCeiling);
         }
-        // One compaction per top-level submission: an emergency valve taken inside the turn must
-        // not be followed by a second summary at the end of it.
+        // Reset the routine-compaction marker for this top-level submission. A successful
+        // component-budget recovery may rearm independently if later evidence grows past a
+        // recoverable ceiling again.
         self.compacted_in_run = false;
         let owns_deadline = self.run_deadline.is_none();
         if owns_deadline {
@@ -2876,6 +3030,10 @@ impl Agent {
         input_images: &[iteron_protocol::ImageContent],
     ) -> Result<Outcome, KernelError> {
         let mut consecutive_errors: u32 = 0;
+        let mut investigation_convergence =
+            investigation_convergence::InvestigationConvergence::default();
+        let mut candidate_workspace_baseline =
+            investigation_convergence::CandidateWorkspaceBaseline::default();
 
         // REC-INJECT: resolve + record the memory segment once, before the first request build,
         // using the task for relevance recall. effective_system() reads the cached result.
@@ -2889,9 +3047,9 @@ impl Agent {
         // and the terminal checkpoint happens in a later one, so clearing this inside the loop
         // would discard exactly the writes the checkpoint exists to capture.
         self.turn_mutated_workspace = false;
-        // A component-budget overflow may bridge into transcript compaction once for this admitted
-        // submission. If the rebuilt projection still does not fit, the next admission fails
-        // closed instead of recursively buying summaries.
+        // A component-budget overflow may bridge into transcript compaction. Each successful
+        // recovery rearms only for a later projection; a denied, failed, or ineffective attempt
+        // closes the bridge so the same overflow cannot recursively buy summaries.
         let mut context_budget_recovery = context_runtime::ContextBudgetRecoveryGuard::default();
 
         loop {
@@ -2915,13 +3073,19 @@ impl Agent {
                 return Ok(outcome);
             }
             let effective_system = self.effective_system();
-            let tool_specs = self.advertised_tool_specs_for_task(relevance_task);
-            // A declared capability is the route's own documented ceiling, so it is used as
-            // declared. 8192 remains the conservative default for an UNKNOWN capability only —
-            // clamping the declared value froze every provider at that default (I-02).
+            let tool_specs = self.advertised_tool_specs_for_task_with_patch_trial(
+                relevance_task,
+                investigation_convergence.patch_trial_active(),
+                investigation_convergence.candidate_change_required(),
+                investigation_convergence.candidate_review_active(),
+                investigation_convergence.evidence_insufficient_terminal(),
+            );
+            // This is the checkpointed coding-request reservation. The provider's documented
+            // maximum is an external ceiling applied during composition, not the amount every
+            // ordinary tool turn should reserve by default.
             let request_max_tokens = self
                 .model_max_output_tokens
-                .unwrap_or(crate::runtime_tunables::core_facts::UNKNOWN_MODEL_OUTPUT_TOKENS);
+                .unwrap_or(crate::runtime_tunables::core_facts::DEFAULT_REQUEST_OUTPUT_TOKENS);
             // One context accounting pass per turn, shared by the kernel token ledger and the
             // context-window admission check below (I-60). Recomputed only when compaction
             // actually rewrote the transcript underneath it.
@@ -2937,8 +3101,10 @@ impl Agent {
                 tool_specs.estimated_tokens(),
                 tool_specs.cache_identity(),
             );
-            let mut uncalibrated_context_total = estimated.total_tokens;
-            let mut context_estimate = self.calibrated_context_estimate(estimated);
+            let mut uncalibrated_context_total =
+                self.include_input_image_tokens(estimated).total_tokens;
+            let mut context_estimate =
+                self.include_input_image_tokens(self.calibrated_context_estimate(estimated));
             let mut context_budget_inspection =
                 self.inspect_context_budget(messages, &context_estimate);
             let initial_context_budget_violation = context_budget_inspection.violation();
@@ -2962,25 +3128,24 @@ impl Agent {
             // serialize every tool schema a second time just to answer the same threshold test.
             // Also avoid running a `context.compaction.considered` hook on every ordinary turn:
             // only a request that actually crossed the overflow precheck reaches that effect. ----
-            let context_window_overflow =
-                match self.model_context_window.filter(|window| *window > 0) {
-                    Some(window) => {
-                        u64::try_from(context_estimate.total_tokens)
-                            .unwrap_or(u64::MAX)
-                            .saturating_add(u64::from(request_max_tokens))
-                            > window
-                    }
-                    None => {
-                        context_estimate.total_tokens
-                            > self
-                                .compaction
-                                .effective_trigger_tokens(None, request_max_tokens)
-                    }
-                };
-            let compaction_eligible = self.compaction.enabled
-                && !self.compacted_in_run
+            let context_window_overflow = match self.execution_context_window() {
+                Some(window) => {
+                    u64::try_from(context_estimate.total_tokens)
+                        .unwrap_or(u64::MAX)
+                        .saturating_add(u64::from(request_max_tokens))
+                        > window
+                }
+                None => {
+                    context_estimate.total_tokens
+                        > self
+                            .compaction
+                            .effective_trigger_tokens(None, request_max_tokens)
+                }
+            };
+            let has_compactable_history = self.compaction.enabled
                 && messages.len() > self.compaction.keep_recent.saturating_add(2);
-            let component_budget_recovery = if compaction_eligible {
+            let routine_compaction_eligible = has_compactable_history && !self.compacted_in_run;
+            let component_budget_recovery = if has_compactable_history {
                 initial_context_budget_violation
                     .filter(|violation| context_budget_recovery.claim(violation))
             } else {
@@ -2989,8 +3154,8 @@ impl Agent {
             let component_budget_before = component_budget_recovery
                 .map(|violation| context_budget_inspection.component_tokens(violation.class));
             let mut component_budget_after = None;
-            let compaction_needed = compaction_eligible
-                && (context_window_overflow || component_budget_recovery.is_some());
+            let compaction_needed = (routine_compaction_eligible && context_window_overflow)
+                || component_budget_recovery.is_some();
             let compaction_allowed = if compaction_needed {
                 let payload = component_budget_recovery.map_or_else(
                     || LifecyclePayload {
@@ -3066,8 +3231,11 @@ impl Agent {
                             &rebuilt,
                             tool_specs.as_ref(),
                         );
-                        let candidate_uncalibrated_total = candidate.total_tokens;
-                        let candidate_estimate = self.calibrated_context_estimate(candidate);
+                        let candidate_uncalibrated_total =
+                            self.include_input_image_tokens(candidate).total_tokens;
+                        let candidate_estimate = self.include_input_image_tokens(
+                            self.calibrated_context_estimate(candidate),
+                        );
                         let candidate_inspection =
                             self.inspect_context_budget(&rebuilt, &candidate_estimate);
                         if let Some(violation) = component_budget_recovery {
@@ -3076,7 +3244,7 @@ impl Agent {
                         }
                         let exit_threshold = self.compaction.hysteresis.exit_threshold(
                             self.compaction.effective_trigger_tokens(
-                                self.model_context_window,
+                                self.execution_context_window(),
                                 request_max_tokens,
                             ),
                         );
@@ -3150,17 +3318,19 @@ impl Agent {
                 }
             }
 
-            if let Some(violation) = component_budget_recovery
-                && context_budget_inspection.violation().is_some()
-            {
-                self.emit_context_budget_recovery_event(
-                    TurnId(self.seq_turn.saturating_sub(1).max(turn_id.0)),
-                    context_runtime::ContextBudgetRecoveryStage::Failed,
-                    &violation,
-                    component_budget_after
-                        .or(component_budget_before)
-                        .unwrap_or(violation.used),
-                );
+            if let Some(violation) = component_budget_recovery {
+                let recovered = context_budget_inspection.violation().is_none();
+                if !recovered {
+                    self.emit_context_budget_recovery_event(
+                        TurnId(self.seq_turn.saturating_sub(1).max(turn_id.0)),
+                        context_runtime::ContextBudgetRecoveryStage::Failed,
+                        &violation,
+                        component_budget_after
+                            .or(component_budget_before)
+                            .unwrap_or(violation.used),
+                    );
+                }
+                context_budget_recovery.settle(recovered);
             }
 
             // Summarization is itself an admitted provider turn. Once it quiesces, observe control
@@ -3179,7 +3349,12 @@ impl Agent {
                 agent_loop = agent_loop::AgentLoopGuard::begin(turn_id);
                 self.observe_session_memory_activation(turn_id, relevance_task);
             }
-            self.remember_token_estimate_baseline(turn_id, uncalibrated_context_total);
+            // Provider usage is aggregate and cannot isolate image tokens. Let image turns inform
+            // their own conservative admission, but never train a multiplier later applied to a
+            // text-only request.
+            if self.input_image_evidence.is_none() {
+                self.remember_token_estimate_baseline(turn_id, uncalibrated_context_total);
+            }
 
             // ---- turn-atomic budget check (ADR-008): checked at turn admission, no mid-turn
             // preempt; a breach stops cleanly at this safe point, never mid-effect. ----
@@ -3209,9 +3384,7 @@ impl Agent {
                 )
                 .unwrap_or(u64::MAX),
             );
-            if let Some(context_window_tokens) =
-                self.model_context_window.filter(|window| *window > 0)
-            {
+            if let Some(context_window_tokens) = self.execution_context_window() {
                 let estimated_input_tokens =
                     u64::try_from(context_estimate.total_tokens).unwrap_or(u64::MAX);
                 if estimated_input_tokens.saturating_add(u64::from(request_max_tokens))
@@ -3460,15 +3633,22 @@ impl Agent {
             let tool_interrupt = self.interrupt.clone();
             let tool_force_cancel = self.force_cancel.clone();
             let tool_drain = self.drain.clone();
-            // If a PreToolUse hook is configured, pure tools must NOT early-dispatch — the read
-            // would be in flight before the hook could block it (security review MEDIUM #2: an
-            // operator hook meant to block reading ~/.ssh would silently no-op). Route them through
-            // the deferred path (gate=Auto for ReadOnly, then the hook) instead. This trades the
-            // overlap for hook coverage, and ONLY for the event that can actually block a read:
-            // asking `is_empty()` let one `Stop` cleanup hook — which never sees a tool, let alone
-            // vetoes one — silently cost the whole session its concurrent read dispatch.
-            let hook_gates_reads = !self.hooks.commands(HookEvent::PreToolUse).is_empty()
-                || !self.hooks.is_empty_for_lifecycle("tool.call_proposed");
+            // A PreToolUse/tool.call_proposed hook must gate the read, but it is a per-call gate,
+            // not a session-wide reason to give up mid-stream dispatch. The early task below runs
+            // the hook first and does not poll the registry future until the hook allows it. An
+            // unrelated Stop observer is intentionally absent from this predicate.
+            let compatibility_pre_tool_hook =
+                !self.hooks.commands(HookEvent::PreToolUse).is_empty();
+            let lifecycle_pre_tool_hook = !self.hooks.is_empty_for_lifecycle("tool.call_proposed");
+            let hook_gates_reads = compatibility_pre_tool_hook || lifecycle_pre_tool_hook;
+            // A gate hook is executable operator code even when the admitted tool itself is a
+            // pure read. Mark the turn before provider decode starts; the hook may now run in the
+            // early-dispatch task below and must never let checkpoint policy call the turn pure.
+            if hook_gates_reads {
+                self.turn_mutated_workspace = true;
+            }
+            let early_hooks = self.hooks.clone();
+            let early_hook_journal = self.hook_effect_journal.clone();
             let pure_overlap_enabled = self.pure_overlap_enabled;
             // Bounded concurrency (invariant #1): pure tools dispatched early are capped by a
             // governor. Past the cap a call QUEUES for a permit instead of being pushed onto an
@@ -3779,12 +3959,85 @@ impl Agent {
                                 let is_pure = proposal
                                     .as_ref()
                                     .is_ok_and(|proposal| proposal.intent.purity == Purity::Pure);
-                                if is_pure && pure_overlap_enabled && !hook_gates_reads {
+                                if is_pure && pure_overlap_enabled {
                                     let proposal =
                                         proposal.expect("checked pure tool-policy proposal");
                                     let tu_ui = proposal.intent.call.clone();
+                                    if hook_gates_reads {
+                                        self.lifecycle_event(
+                                            "hook.started",
+                                            Some(turn_id),
+                                            LifecyclePayload {
+                                                count: Some(1),
+                                                ..LifecyclePayload::default()
+                                            },
+                                        );
+                                    }
                                     let intent =
                                         proposal.admit(CapabilitySet::only(Capability::ReadOnly));
+                                    let compatibility_context = serde_json::json!({
+                                        "event": "PreToolUse",
+                                        "tool": tu_ui.name,
+                                        "input": tu_ui.input,
+                                    })
+                                    .to_string();
+                                    let lifecycle_context = serde_json::json!({
+                                        "catalog_version": iteron_protocol::lifecycle::LIFECYCLE_CATALOG_VERSION.0,
+                                        "event_id": "tool.call_proposed",
+                                        "turn_id": turn_id.0,
+                                    })
+                                    .to_string();
+                                    // Hook commands are effects even when the protected operation is
+                                    // a pure read. Open their universal-boundary intents synchronously
+                                    // before the spawned future can poll either journaled command.
+                                    let mut hook_effect_tickets = EarlyHookEffectTickets::default();
+                                    if early_hook_journal.is_some() {
+                                        let class = effect_class::EffectClass::Hook;
+                                        if compatibility_pre_tool_hook {
+                                            let ordinal = self.next_effect_ordinal(turn_id, class);
+                                            match self.open_kernel_effect(
+                                                turn_id,
+                                                class,
+                                                ordinal,
+                                                Capability::CodeExecuting,
+                                                serde_json::json!({
+                                                    "event": HookEvent::PreToolUse.key(),
+                                                    "tool_index": idx,
+                                                }),
+                                            ) {
+                                                Ok(ticket) => {
+                                                    hook_effect_tickets.compatibility =
+                                                        Some((ordinal, ticket));
+                                                }
+                                                Err(error) => {
+                                                    tool_policy_record_error = Some(error);
+                                                    return;
+                                                }
+                                            }
+                                        }
+                                        if lifecycle_pre_tool_hook {
+                                            let ordinal = self.next_effect_ordinal(turn_id, class);
+                                            match self.open_kernel_effect(
+                                                turn_id,
+                                                class,
+                                                ordinal,
+                                                Capability::CodeExecuting,
+                                                serde_json::json!({
+                                                    "event": "tool.call_proposed",
+                                                    "tool_index": idx,
+                                                }),
+                                            ) {
+                                                Ok(ticket) => {
+                                                    hook_effect_tickets.lifecycle =
+                                                        Some((ordinal, ticket));
+                                                }
+                                                Err(error) => {
+                                                    tool_policy_record_error = Some(error);
+                                                    return;
+                                                }
+                                            }
+                                        }
+                                    }
                                     // Spawn now — I/O overlaps the remaining decode. The permit is held for
                                     // the task's lifetime and released on completion (bounded). At the cap
                                     // the task still spawns and awaits a permit inside itself: the future
@@ -3803,10 +4056,34 @@ impl Agent {
                                         queued_pure += 1;
                                     }
                                     let gov = gov.clone();
+                                    let hooks = early_hooks.clone();
+                                    let hook_journal = early_hook_journal.clone();
                                     let handle = tokio::spawn(async move {
                                         let _permit = match permit {
                                             Some(permit) => permit,
                                             None => gov.acquire().await,
+                                        };
+                                        let hook = match run_lifecycle_gate(
+                                            &hooks,
+                                            EarlyHookGateContext {
+                                                journal: hook_journal.as_ref(),
+                                                compatibility_enabled: compatibility_pre_tool_hook,
+                                                lifecycle_enabled: lifecycle_pre_tool_hook,
+                                                compatibility_json: &compatibility_context,
+                                                lifecycle_json: &lifecycle_context,
+                                                interrupt: interrupt.as_deref(),
+                                                drain: drain.as_ref(),
+                                            },
+                                        )
+                                        .await
+                                        {
+                                            Ok(summary) => summary,
+                                            Err(refusal) => {
+                                                return EarlyPureToolOutcome::Refused {
+                                                    reason: refusal.reason,
+                                                    hook: refusal.summary,
+                                                };
+                                            }
                                         };
                                         let result = match await_tool_or_interrupt(
                                             fut,
@@ -3837,9 +4114,19 @@ impl Agent {
                                             spill_store.as_deref(),
                                             result,
                                         );
-                                        (managed, spill_store)
+                                        EarlyPureToolOutcome::Completed {
+                                            managed,
+                                            spill_store,
+                                            hook,
+                                        }
                                     });
-                                    pure.push((idx, tu_ui, handle, Instant::now()));
+                                    pure.push((
+                                        idx,
+                                        tu_ui,
+                                        handle,
+                                        Instant::now(),
+                                        hook_effect_tickets,
+                                    ));
                                 } else {
                                     deferred.push((idx, tu, proposal));
                                 }
@@ -4183,10 +4470,7 @@ impl Agent {
                     // A streaming adapter can fail after emitting a complete pure tool call.
                     // Dropping JoinHandles would detach those reads and let work outlive the
                     // failed turn. Abort *and await* them before crossing the turn boundary.
-                    for (_, _, handle, _) in pure.drain(..) {
-                        handle.abort();
-                        let _ = handle.await;
-                    }
+                    self.abort_early_pure_tools(turn_id, &mut pure).await?;
                     // Before the error leaves: keep what the model already said (I-39).
                     self.preserve_interrupted_stream(
                         turn_id,
@@ -4214,10 +4498,7 @@ impl Agent {
                 // The provider route terminal already committed its exact physical charge. A
                 // malformed tool projection invalidates the semantic turn, not the billing
                 // receipt, so preserve the known monetary state while failing the turn.
-                for (_, _, handle, _) in pure.drain(..) {
-                    handle.abort();
-                    let _ = handle.await;
-                }
+                self.abort_early_pure_tools(turn_id, &mut pure).await?;
                 if let Some(outcome) = self.collect_and_finish_requested_control(turn_id).await? {
                     return Ok(outcome);
                 }
@@ -4228,7 +4509,7 @@ impl Agent {
             // provider adapter could execute one projection and durably commit another.
             let mut streamed_tools: Vec<(usize, ToolUse)> = pure
                 .iter()
-                .map(|(index, tool, _, _)| (*index, tool.clone()))
+                .map(|(index, tool, _, _, _)| (*index, tool.clone()))
                 .chain(
                     deferred
                         .iter()
@@ -4251,10 +4532,7 @@ impl Agent {
             {
                 // Stream/transcript disagreement is a provider contract failure after an exact
                 // physical terminal. It cannot erase or weaken that already-verified charge.
-                for (_, _, handle, _) in pure.drain(..) {
-                    handle.abort();
-                    let _ = handle.await;
-                }
+                self.abort_early_pure_tools(turn_id, &mut pure).await?;
                 if let Some(outcome) = self.collect_and_finish_requested_control(turn_id).await? {
                     return Ok(outcome);
                 }
@@ -4311,15 +4589,18 @@ impl Agent {
                         ..LifecyclePayload::default()
                     },
                 );
+                let mut observed_context = context_estimate;
+                observed_context.components = Some(context_budget_inspection.usage());
                 self.ui(UiEvent::TurnEnd {
                     cost: self.ledger.cost_state(),
                     usage,
-                    context: context_estimate,
+                    context: observed_context,
                     model_context_window: self.model_context_window,
                     reserved_output_tokens: request_max_tokens,
-                    compaction_trigger_tokens: self
-                        .compaction
-                        .effective_trigger_tokens(self.model_context_window, request_max_tokens),
+                    compaction_trigger_tokens: self.compaction.effective_trigger_tokens(
+                        self.execution_context_window(),
+                        request_max_tokens,
+                    ),
                     effort: effort_application,
                 });
             } else {
@@ -4349,6 +4630,67 @@ impl Agent {
                 },
             );
             let total_tools = pure.len() + deferred.len();
+            let mut workspace_candidate_changes = std::collections::BTreeSet::new();
+            let mut workspace_candidate_paths = std::collections::BTreeSet::new();
+            let mut unauthorized_candidate_changes = std::collections::BTreeSet::new();
+            let repair_evidence_submissions = returned_tools
+                .iter()
+                .enumerate()
+                .filter_map(|(index, tool)| {
+                    self.registry
+                        .is_repair_evidence_submission(tool, &self.workspace)
+                        .then_some(index)
+                })
+                .collect::<std::collections::BTreeSet<_>>();
+            // A repair receipt submitted in this same turn has not yet produced typed authority.
+            // Treat that as an explicit opt-in to the confined path and wait for its result; an
+            // ordinary turn with no receipt stays on the direct workspace-confined fast path.
+            let candidate_mutation_authorized = investigation_convergence
+                .candidate_change_allowed()
+                && repair_evidence_submissions.is_empty();
+            let receipt_path_restricted = !investigation_convergence
+                .authorized_repair_paths()
+                .is_empty();
+            let authorized_candidate_paths = investigation_convergence
+                .authorized_repair_paths()
+                .iter()
+                .filter_map(|path| self.workspace.join(path).canonicalize().ok())
+                .collect::<std::collections::BTreeSet<_>>();
+            for (index, tool, _) in &deferred {
+                if !self.registry.is_candidate_change_tool(&tool.name) {
+                    continue;
+                }
+                let Some(paths) = self
+                    .registry
+                    .workspace_candidate_paths(tool, &self.workspace)
+                else {
+                    unauthorized_candidate_changes.insert(*index);
+                    continue;
+                };
+                if paths.is_empty()
+                    || !candidate_mutation_authorized
+                    || (receipt_path_restricted
+                        && !paths
+                            .iter()
+                            .all(|path| authorized_candidate_paths.contains(path)))
+                {
+                    unauthorized_candidate_changes.insert(*index);
+                } else {
+                    workspace_candidate_changes.insert(*index);
+                    workspace_candidate_paths.extend(paths);
+                }
+            }
+            let workspace_targeted_observations = returned_tools
+                .iter()
+                .enumerate()
+                .filter_map(|(index, tool)| {
+                    self.registry
+                        .is_workspace_targeted_observation(tool, &self.workspace)
+                        .then_some(index)
+                })
+                .collect::<std::collections::BTreeSet<_>>();
+            let result_projection_budget =
+                self.turn_result_projection_budget(context_budget_inspection, &returned_tools);
             if total_tools > 0 {
                 agent_loop.transition(AgentLoopState::AwaitingTool)?;
             }
@@ -4362,10 +4704,7 @@ impl Agent {
                         | StopReason::Unknown(_)
                 )
             {
-                for (_, _, handle, _) in pure.drain(..) {
-                    handle.abort();
-                    let _ = handle.await;
-                }
+                self.abort_early_pure_tools(turn_id, &mut pure).await?;
                 if let Some(outcome) = self.collect_and_finish_requested_control(turn_id).await? {
                     return Ok(outcome);
                 }
@@ -4483,321 +4822,46 @@ impl Agent {
                         // is configured, run it (strong oracle) ourselves; on failure, refuse the
                         // claim and feed the failure back. Bounded so a wrong gate can't loop. ----
                         if let Some(cmd) = self.verify_command.clone() {
-                            // The strong oracle runs repo-controlled code (build, test, install).
-                            // It is not a tool effect, but it is a write path, so the turn that
-                            // ran it is never treated as read-only for checkpoint purposes.
-                            self.turn_mutated_workspace = true;
                             agent_loop.transition(AgentLoopState::Verifying)?;
-                            let max_verify_attempts = self.verification_policy.retry.max_attempts;
-                            // Defensive guard for re-entry with an already-exhausted Agent. A
-                            // configured strong oracle that has not passed must never be bypassed
-                            // merely because its attempt counter reached the ceiling.
-                            if self.verify_attempts >= max_verify_attempts {
-                                self.verification_repair_exhausted(turn_id);
-                                let notice = format!(
-                                    "verify gate: `{cmd}` did not pass within {max_verify_attempts} attempts; stopping"
-                                );
-                                self.emit(
+                            match self
+                                .run_strong_verification_gate(
                                     turn_id,
-                                    EventKind::Notice {
-                                        text: notice.clone(),
-                                    },
-                                );
-                                self.ui(UiEvent::Notice(notice));
-                                return self
-                                    .finish(turn_id, Outcome::BudgetExhausted("verify_attempts"))
-                                    .await;
-                            }
-
-                            self.checkpoint_before_verification(turn_id)?;
-
-                            self.emit(
-                                turn_id,
-                                EventKind::Phase {
-                                    phase: Phase::Verify,
-                                },
-                            );
-                            let verifier_observation =
-                                iteron_verify::VerifierSlotObservation::gating(true);
-                            let verifier_opportunity = self.begin_policy_decision(
-                                policy_evidence::VERIFIER_SLOT,
-                                Some(turn_id),
-                            )?;
-                            let verify_plan = match iteron_verify::VerifierStrategy::plan_with(
-                                self.verifier.as_ref(),
-                                &verifier_observation,
-                                CapabilitySet::only(Capability::CodeExecuting)
-                                    .intersect(self.authority_ceiling),
-                            ) {
-                                Ok(proposal) => {
-                                    self.append_policy_decision(
-                                        verifier_opportunity,
-                                        policy_evidence::PolicyDecisionDraft::selected(
-                                            policy_evidence::VERIFIER_SLOT,
-                                            &[iteron_protocol::PolicyActionV1::VerifierStrongWorkspacePlan],
-                                            iteron_protocol::PolicyActionV1::VerifierStrongWorkspacePlan,
-                                            "iteron:verifier-features-v1",
-                                            &(&verifier_observation, proposal.plan),
-                                            &"verification_may_only_strengthen_caller_floors",
-                                        )?,
-                                    )?;
-                                    proposal.plan
-                                }
-                                Err(error) => {
-                                    self.append_policy_decision(
-                                        verifier_opportunity,
-                                        policy_evidence::PolicyDecisionDraft::abstained(
-                                            policy_evidence::VERIFIER_SLOT,
-                                            &[iteron_protocol::PolicyActionV1::VerifierStrongWorkspacePlan],
-                                            "iteron:verifier-features-v1",
-                                            &verifier_observation,
-                                            &"invalid_verifier_plans_fail_closed",
-                                        )?,
-                                    )?;
-                                    return Err(KernelError::ContextResolution(format!(
-                                        "verifier strategy refused: {error}"
-                                    )));
-                                }
-                            };
-                            if verify_plan.attempts
-                                > self.verification_policy.verifier_strategy_max_attempts
+                                    &cmd,
+                                    &mut investigation_convergence,
+                                )
+                                .await?
                             {
-                                return Err(KernelError::ContextResolution(
-                                    "verifier strategy exceeded the pinned verifier_attempts ceiling"
-                                        .into(),
-                                ));
-                            }
-                            let verify_span = PhaseSpan::enter(Phase::Verify);
-                            let verdict = self.run_verification_policy(&cmd, verify_plan).await?;
-                            self.policy_verifier_outcome = match verdict.outcome {
-                                iteron_verify::VerificationOutcome::Pass => {
-                                    iteron_protocol::PolicyVerifierOutcome::Passed
-                                }
-                                iteron_verify::VerificationOutcome::TestFailure => {
-                                    iteron_protocol::PolicyVerifierOutcome::TestFailure
-                                }
-                                iteron_verify::VerificationOutcome::TimedOut => {
-                                    iteron_protocol::PolicyVerifierOutcome::TimedOut
-                                }
-                                iteron_verify::VerificationOutcome::InfrastructureFailure => {
-                                    iteron_protocol::PolicyVerifierOutcome::InfrastructureFailure
-                                }
-                                iteron_verify::VerificationOutcome::Cancelled => {
-                                    iteron_protocol::PolicyVerifierOutcome::Cancelled
-                                }
-                            };
-                            self.ledger.phase_verify(verify_span.elapsed_ms());
-                            // Drain deliberately lets the already-admitted oracle reach a verdict,
-                            // then checkpoints before any failure/timeout branch can substitute a
-                            // different terminal outcome. Interrupt keeps the existing Cancelled
-                            // path so its resumable guidance is durably appended first.
-                            if self.requested_control() == InboundControl::Drain {
-                                return self.finish_drained(turn_id).await;
-                            }
-                            let detail = truncate_tail(&verdict.detail, 3000);
-                            let failure_classification =
-                                iteron_verify::classify_verification_failure(verdict.outcome);
-                            match verdict.outcome {
-                                iteron_verify::VerificationOutcome::Pass => {
-                                    self.verification_repair_completed(turn_id);
-                                    self.emit(
+                                verification::VerificationGateDisposition::Passed => {}
+                                verification::VerificationGateDisposition::Retry(guidance) => {
+                                    self.commit_message(
                                         turn_id,
-                                        EventKind::Notice {
-                                            text: format!("verify gate: `{cmd}` passed"),
-                                        },
-                                    );
-                                    self.ui(UiEvent::Notice(format!(
-                                        "verify gate: `{cmd}` passed"
-                                    )));
-                                }
-                                iteron_verify::VerificationOutcome::TestFailure => {
-                                    let failure_class = failure_classification
-                                        .expect(
-                                            "every non-pass oracle outcome has a taxonomy entry",
-                                        )
-                                        .class();
-                                    let recovery =
-                                        self.verification_policy.recovery_escalation.decide(
-                                            &self.verification_policy.retry,
-                                            failure_class,
-                                            self.verify_attempts,
-                                        );
-                                    if recovery
-                                        == iteron_verify::VerificationRecoveryAction::StopOperator
-                                    {
-                                        self.emit(
-                                            turn_id,
-                                            EventKind::Notice {
-                                                text: format!(
-                                                    "verify gate: `{cmd}` failed; recovery policy returned control to the operator"
-                                                ),
-                                            },
-                                        );
-                                        return self.finish(turn_id, Outcome::HarnessError).await;
-                                    }
-                                    if recovery
-                                        == iteron_verify::VerificationRecoveryAction::StopIneligible
-                                    {
-                                        self.emit(
-                                            turn_id,
-                                            EventKind::Notice {
-                                                text: format!(
-                                                    "verify gate: `{cmd}` test failure is not retry-eligible under the immutable policy; stopping"
-                                                ),
-                                            },
-                                        );
-                                        return self.finish(turn_id, Outcome::HarnessError).await;
-                                    }
-                                    let rolled_back =
-                                        self.rollback_after_verification_failure().await?;
-                                    // Only a real candidate/test failure consumes the bounded
-                                    // model-fix allowance. Harness faults must never masquerade as
-                                    // three bad candidate attempts.
-                                    self.verify_attempts = self.verify_attempts.saturating_add(1);
-                                    if recovery
-                                        == iteron_verify::VerificationRecoveryAction::StopExhausted
-                                    {
-                                        self.verification_repair_exhausted(turn_id);
-                                        let notice = format!(
-                                            "verify gate: `{cmd}` test failure on attempt {} of {max_verify_attempts}; ceiling reached, stopping",
-                                            self.verify_attempts
-                                        );
-                                        self.emit(
-                                            turn_id,
-                                            EventKind::Notice {
-                                                text: notice.clone(),
-                                            },
-                                        );
-                                        self.ui(UiEvent::Notice(notice));
-                                        return self
-                                            .finish(
-                                                turn_id,
-                                                Outcome::BudgetExhausted("verify_attempts"),
-                                            )
-                                            .await;
-                                    }
-
-                                    debug_assert!(matches!(
-                                        recovery,
-                                        iteron_verify::VerificationRecoveryAction::RetryReplan
-                                            | iteron_verify::VerificationRecoveryAction::RetryRepair
-                                    ));
-
-                                    self.verification_repair_started(turn_id);
-
-                                    let recovery_instruction = if recovery
-                                        == iteron_verify::VerificationRecoveryAction::RetryReplan
-                                    {
-                                        "Replan as needed, fix the remaining issues, and continue."
-                                    } else {
-                                        "Keep the current plan, fix the failing candidate, and retry."
-                                    };
-                                    let msg = Message::user_text(format!(
-                                        "Verification found a test failure: the harness ran `{cmd}` \
-                                         successfully, but the candidate did not pass. Do not claim \
-                                         the task is done. {recovery_instruction}{}\n\n{detail}",
-                                        if rolled_back {
-                                            " The operator-authorised workspace rollback was applied before this repair turn."
-                                        } else {
-                                            ""
-                                        }
-                                    ));
-                                    self.emit(
-                                        turn_id,
-                                        EventKind::Notice {
-                                            text: format!(
-                                                "verify gate: `{cmd}` test failure, continuing (attempt {})",
-                                                self.verify_attempts
-                                            ),
-                                        },
-                                    );
-                                    self.ui(UiEvent::Notice(format!(
-                                        "verify gate: `{cmd}` test failure, continuing"
-                                    )));
-                                    self.commit_message(turn_id, messages, msg)?;
+                                        messages,
+                                        Message::user_text(guidance),
+                                    )?;
                                     self.advance_turn().await?;
                                     continue;
                                 }
-                                iteron_verify::VerificationOutcome::TimedOut => {
-                                    let deadline_exhausted = self.run_deadline_exhausted();
-                                    let notice = if deadline_exhausted {
-                                        format!(
-                                            "verify gate: `{cmd}` timed out at the absolute run deadline; stopping"
-                                        )
-                                    } else {
-                                        format!(
-                                            "verify gate: `{cmd}` timed out before producing a verdict; stopping without consuming a test-failure retry"
-                                        )
-                                    };
-                                    self.emit(
-                                        turn_id,
-                                        EventKind::Notice {
-                                            text: notice.clone(),
-                                        },
-                                    );
-                                    self.ui(UiEvent::Notice(notice));
-                                    // Leave a valid user-role tail so an empty crash-recovery
-                                    // resume can ask the model to re-declare completion and rerun
-                                    // the independent gate instead of sending an assistant-ended
-                                    // transcript to the provider.
-                                    self.commit_message(
-                                        turn_id,
-                                        messages,
-                                        Message::user_text(format!(
-                                            "Verification timed out while running `{cmd}`. This was \
-                                             not classified as a test failure and consumed no \
-                                             candidate-fix retry. On resume, re-check completion.\n\n{detail}"
-                                        )),
-                                    )?;
-                                    let outcome = if deadline_exhausted {
-                                        Outcome::BudgetExhausted("max_wall_secs")
-                                    } else {
-                                        Outcome::HarnessError
-                                    };
+                                verification::VerificationGateDisposition::Finish {
+                                    outcome,
+                                    guidance,
+                                } => {
+                                    if let Some(guidance) = guidance {
+                                        self.commit_message(
+                                            turn_id,
+                                            messages,
+                                            Message::user_text(guidance),
+                                        )?;
+                                    }
                                     return self.finish(turn_id, outcome).await;
                                 }
-                                iteron_verify::VerificationOutcome::InfrastructureFailure => {
-                                    let notice = format!(
-                                        "verify gate: `{cmd}` infrastructure failure; stopping without consuming a test-failure retry"
-                                    );
-                                    self.emit(
-                                        turn_id,
-                                        EventKind::Notice {
-                                            text: notice.clone(),
-                                        },
-                                    );
-                                    self.ui(UiEvent::Notice(notice));
-                                    self.commit_message(
-                                        turn_id,
-                                        messages,
-                                        Message::user_text(format!(
-                                            "Verification infrastructure could not run `{cmd}`. \
-                                             This was not a candidate test failure and consumed no \
-                                             candidate-fix retry. Fix the verification environment \
-                                             before resuming.\n\n{detail}"
-                                        )),
-                                    )?;
-                                    return self.finish(turn_id, Outcome::HarnessError).await;
+                                verification::VerificationGateDisposition::Drained => {
+                                    return self.finish_drained(turn_id).await;
                                 }
-                                iteron_verify::VerificationOutcome::Cancelled => {
-                                    let notice = format!(
-                                        "verify gate: `{cmd}` cancelled; stopping at a resumable safe point without consuming a test-failure retry"
-                                    );
-                                    self.emit(
-                                        turn_id,
-                                        EventKind::Notice {
-                                            text: notice.clone(),
-                                        },
-                                    );
-                                    self.ui(UiEvent::Notice(notice));
+                                verification::VerificationGateDisposition::Cancelled(guidance) => {
                                     self.commit_message(
                                         turn_id,
                                         messages,
-                                        Message::user_text(format!(
-                                            "Verification of `{cmd}` was cancelled before a verdict. \
-                                             It consumed no candidate-fix retry. On resume, re-check \
-                                             completion.\n\n{detail}"
-                                        )),
+                                        Message::user_text(guidance),
                                     )?;
                                     if let Some(outcome) =
                                         self.finish_requested_control(turn_id).await?
@@ -4848,23 +4912,13 @@ impl Agent {
 
             let mut results: Vec<Option<ToolResult>> = (0..total_tools).map(|_| None).collect();
             let mut any_error = false;
+            let mut completed_pure = Vec::new();
 
             // Pure tools: await their already-running handles. Time from dispatch to stream end
             // is the overlap we won (they ran during the decode tail).
-            for (idx, tu, mut handle, dispatched_at) in pure {
+            for (idx, tu, mut handle, dispatched_at, hook_effect_tickets) in pure {
                 let since_dispatch = dispatched_at.duration_since(stream_start);
                 let overlap_ms = stream_elapsed.saturating_sub(since_dispatch).as_millis() as u64;
-                // ADR-004 dispatched this read from inside the provider stream callback, which
-                // holds no mutable borrow of the journal and cannot fsync, so its admission is
-                // written here: at the collection boundary, before the outcome is observed and
-                // before anything is committed. Earlier is structurally impossible without giving
-                // up the decode overlap the ADR exists for, and this is the one class where the
-                // ordering costs nothing — a `Pure` tool has no observable effect (ADR-007 §5
-                // makes that true by construction: a no-egress read-only cell), so the
-                // at-most-once guarantee write-ahead order buys is vacuous for it. What the record
-                // gains is what I-42 found missing: an admission event and an identity for a
-                // completion that had neither.
-                let ticket = self.open_tool_call_effect(turn_id, idx, &tu, Capability::ReadOnly)?;
                 let joined = match self.run_time_remaining() {
                     Some(remaining) if remaining.is_zero() => {
                         handle.abort();
@@ -4881,8 +4935,35 @@ impl Agent {
                     },
                     None => Some(handle.await),
                 };
+                let hook_summary = match joined.as_ref() {
+                    Some(Ok(EarlyPureToolOutcome::Completed { hook, .. })) => *hook,
+                    Some(Ok(EarlyPureToolOutcome::Refused { hook, .. })) => Some(*hook),
+                    Some(Err(_)) | None => None,
+                };
+                self.settle_early_pure_hook_effects(turn_id, hook_effect_tickets, hook_summary)?;
                 match joined {
-                    Some(Ok((mut managed, spill_store))) => {
+                    Some(Ok(EarlyPureToolOutcome::Completed {
+                        mut managed,
+                        spill_store,
+                        hook,
+                    })) => {
+                        if let Some(hook) = hook {
+                            self.observe_early_pure_hook(turn_id, hook, false);
+                        }
+                        // ADR-004 dispatched this read from inside the provider stream callback,
+                        // which holds no mutable borrow of the rollout. Pure reads have no
+                        // externally visible effect by construction, so their durable admission
+                        // may be written here after overlap but before the outcome is committed.
+                        if managed
+                            .project_visible(result_projection_budget.visible_bytes_for(&tu.name))
+                        {
+                            self.observe_tool_result_projection(
+                                turn_id,
+                                managed.result.content.len(),
+                            );
+                        }
+                        let ticket =
+                            self.open_tool_call_effect(turn_id, idx, &tu, Capability::ReadOnly)?;
                         let r = &managed.result;
                         self.commit_admitted_tool_result(
                             ticket,
@@ -4897,19 +4978,29 @@ impl Agent {
                             // alive after the private spill boundary replaces it.
                             self.registry.invalidate_pure_cache();
                         }
-                        tool_output_spill::cleanup_managed_result(
-                            spill_store.as_deref(),
-                            &mut managed,
-                        )?;
-                        self.ui(tool_end_ui(&tu, &managed.result));
-                        results[idx] = Some(managed.result);
+                        completed_pure.push((idx, tu, managed, spill_store));
+                    }
+                    Some(Ok(EarlyPureToolOutcome::Refused { reason, hook })) => {
+                        self.observe_early_pure_hook(turn_id, hook, true);
+                        let result = ToolResult {
+                            tool_use_id: tu.id.clone(),
+                            content: format!(
+                                "tool `{}` blocked by a tool gate hook: {reason}",
+                                tu.name
+                            ),
+                            is_error: true,
+                            trust: Trust::Workspace,
+                            latency_ms: 0,
+                        };
+                        self.commit_refused_tool_result(turn_id, &tu.name, &result)?;
+                        self.ui(tool_end_ui(&tu, &result));
+                        results[idx] = Some(result);
+                        any_error = true;
                     }
                     Some(Err(_)) | None => {
-                        // The spawned pure-tool task panicked or was cancelled. Answer its
-                        // tool_use with an error result so the transcript has no dangling
-                        // tool_use (which the model API would reject next turn). The admission is
-                        // already durable, so this settles it as a proven failure rather than
-                        // leaving recovery a dangling intent.
+                        // The spawned pure-tool task panicked or was cancelled before it returned
+                        // an authoritative gate/tool outcome. A pure read has no external effect,
+                        // so refuse it rather than minting an admission after an unknown gate.
                         let r = ToolResult {
                             tool_use_id: tu.id.clone(),
                             content: "tool task failed, was cancelled, or exceeded the run wall deadline before producing a result".into(),
@@ -4917,13 +5008,44 @@ impl Agent {
                             trust: Trust::Workspace,
                             latency_ms: 0,
                         };
-                        self.commit_admitted_tool_result(ticket, &tu.name, &r, 0)?;
+                        self.commit_refused_tool_result(turn_id, &tu.name, &r)?;
+                        if hook_gates_reads {
+                            self.lifecycle_event(
+                                "hook.failed",
+                                Some(turn_id),
+                                LifecyclePayload {
+                                    count: Some(0),
+                                    reason_code: Some("early_tool_task_lost".into()),
+                                    ..LifecyclePayload::default()
+                                },
+                            );
+                        }
                         any_error = true;
                         self.ui(tool_end_ui(&tu, &r));
                         results[idx] = Some(r);
                     }
                 }
             }
+
+            // A read may finish while the provider is still streaming, but its observational
+            // PostToolUse hook remains ordered after the durable tool terminal. Run independent
+            // observers together, then publish ToolEnd in model-declared order. Keeping managed
+            // spill leases alive through the observer also preserves the same result visibility
+            // as the deferred-tool path.
+            let pure_post_inputs = completed_pure
+                .iter()
+                .map(|(_, call, managed, _)| (call.clone(), managed.result.clone()))
+                .collect::<Vec<_>>();
+            let pure_post_result = self
+                .observe_concurrent_post_tool_hooks(turn_id, &pure_post_inputs)
+                .await;
+            for (idx, call, mut managed, spill_store) in completed_pure {
+                let terminal_ui = tool_end_ui(&call, &managed.result);
+                tool_output_spill::cleanup_managed_result(spill_store.as_deref(), &mut managed)?;
+                self.ui(terminal_ui);
+                results[idx] = Some(managed.result);
+            }
+            pure_post_result?;
 
             // Effecting tools: gated by capability, run in order, AFTER message_stop.
             //
@@ -4936,8 +5058,19 @@ impl Agent {
             // gate auto-approves, with no declared write path in common, executes concurrently
             // under the same governor the pure path uses; the loop below then owns every call that
             // group did not take, in the order it always ran them.
-            let batch =
-                self.select_concurrent_deferred_batch(&deferred, argument_trust, messages)?;
+            candidate_workspace_baseline
+                .capture_before(
+                    workspace_candidate_paths
+                        .iter()
+                        .map(std::path::PathBuf::as_path),
+                )
+                .await;
+            let batch = self.select_concurrent_deferred_batch(
+                &deferred,
+                argument_trust,
+                messages,
+                &unauthorized_candidate_changes,
+            )?;
             if batch.len() > 1 {
                 let effecting_governor = iteron_sched::Governor::new(
                     self.execution_policy
@@ -4949,6 +5082,7 @@ impl Agent {
                         turn_id,
                         batch,
                         &effecting_governor,
+                        result_projection_budget,
                         &mut results,
                         &mut any_error,
                     )
@@ -4966,6 +5100,20 @@ impl Agent {
             for (idx, tu, proposal) in deferred {
                 // Already settled by the concurrent group above, terminal and all.
                 if results[idx].is_some() {
+                    continue;
+                }
+                if unauthorized_candidate_changes.contains(&idx) {
+                    let r = ToolResult {
+                        tool_use_id: tu.id.clone(),
+                        content: "refused: candidate mutation is outside the exact path authorized by the typed RepairIntent receipt".into(),
+                        is_error: true,
+                        trust: Trust::Workspace,
+                        latency_ms: 0,
+                    };
+                    self.commit_refused_tool_result(turn_id, &tu.name, &r)?;
+                    self.ui(tool_end_ui(&tu, &r));
+                    results[idx] = Some(r);
+                    any_error = true;
                     continue;
                 }
                 // Every effect has its own admission boundary. Once Drain/Interrupt is observed,
@@ -5298,6 +5446,10 @@ impl Agent {
                     };
                     let spill_store = self.ordinary_tool_spill_store(&tu.name);
                     let mut managed = tool_output_spill::manage_result(spill_store.as_deref(), r);
+                    if managed.project_visible(result_projection_budget.visible_bytes_for(&tu.name))
+                    {
+                        self.observe_tool_result_projection(turn_id, managed.result.content.len());
+                    }
                     self.commit_admitted_tool_result(ticket, &tu.name, &managed.result, 0)?;
                     any_error |= managed.result.is_error;
                     tool_output_spill::cleanup_managed_result(
@@ -5377,6 +5529,10 @@ impl Agent {
                     };
                     let spill_store = self.ordinary_tool_spill_store(&tu.name);
                     let mut managed = tool_output_spill::manage_result(spill_store.as_deref(), r);
+                    if managed.project_visible(result_projection_budget.visible_bytes_for(&tu.name))
+                    {
+                        self.observe_tool_result_projection(turn_id, managed.result.content.len());
+                    }
                     self.commit_admitted_tool_result(call_ticket, &tu.name, &managed.result, 0)?;
                     any_error |= managed.result.is_error;
                     tool_output_spill::cleanup_managed_result(
@@ -5475,8 +5631,23 @@ impl Agent {
                     turn_activity::ActivityStage::ToolPostProcessing,
                     Some(turn_id),
                 );
-                let managed =
+                let mut managed =
                     tool_output_spill::manage_execution(spill_store.as_deref(), execution);
+                let projected = match &mut managed {
+                    tool_output_spill::ManagedToolExecution::Definite(result)
+                    | tool_output_spill::ManagedToolExecution::Unknown(result) => {
+                        result.project_visible(result_projection_budget.visible_bytes_for(&tu.name))
+                    }
+                };
+                if projected {
+                    let visible = match &managed {
+                        tool_output_spill::ManagedToolExecution::Definite(result)
+                        | tool_output_spill::ManagedToolExecution::Unknown(result) => {
+                            result.result.content.len()
+                        }
+                    };
+                    self.observe_tool_result_projection(turn_id, visible);
+                }
                 let (mut execution, mut result_spill_lease) =
                     tool_output_spill::into_execution_parts(managed);
                 let result = match &mut execution {
@@ -5596,16 +5767,152 @@ impl Agent {
 
             consecutive_errors = if any_error { consecutive_errors + 1 } else { 0 };
 
-            let blocks: Vec<Block> = results
+            let completed_workspace_candidate_change =
+                workspace_candidate_changes.iter().any(|index| {
+                    results
+                        .get(*index)
+                        .and_then(Option::as_ref)
+                        .is_some_and(|result| !result.is_error)
+                });
+            let candidate_change_outstanding = if completed_workspace_candidate_change
+                || (investigation_convergence.candidate_review_active() && total_tools > 0)
+            {
+                Some(candidate_workspace_baseline.outstanding().await)
+            } else {
+                None
+            };
+            // Targeted observations mark localization but do not consume a fixed round allowance;
+            // legitimate dependent evidence can remain multi-hop. Only a successful, tool-owned
+            // comparison result closes the evidence phase below.
+            let completed_targeted_observation =
+                workspace_targeted_observations.iter().any(|index| {
+                    results
+                        .get(*index)
+                        .and_then(Option::as_ref)
+                        .is_some_and(|result| !result.is_error)
+                });
+            // `next_back`, not `last`: the source is a `DoubleEndedIterator`, so taking the final
+            // element by walking the whole chain is work with no result to show for it.
+            let completed_repair_evidence = repair_evidence_submissions
+                .iter()
+                .filter_map(|index| results.get(*index).and_then(Option::as_ref))
+                .filter_map(iteron_tools::tool_result_repair_evidence)
+                .next_back();
+            // `tool_search` mutates the session-local visible schema set. Do not reuse the
+            // pre-search projection on the next model turn, or the tool it just exposed remains
+            // impossible to call despite the successful discovery receipt.
+            if returned_tools.iter().enumerate().any(|(index, tool)| {
+                tool.name == "tool_search"
+                    && results
+                        .get(index)
+                        .and_then(Option::as_ref)
+                        .is_some_and(|result| !result.is_error)
+            }) {
+                self.advertised_tool_specs_cache = None;
+            }
+            let mut blocks: Vec<Block> = results
                 .into_iter()
                 .flatten()
                 .map(Block::ToolResult)
                 .collect();
+            if let Some(request) = investigation_convergence.observe_round(
+                candidate_change_outstanding,
+                completed_targeted_observation,
+                completed_repair_evidence,
+                total_tools > 0,
+            ) {
+                blocks.push(Block::Text {
+                    text: format!(
+                        "{} [budget: {} provider turn(s) remain]",
+                        request.instruction,
+                        self.remaining_inference_turns()
+                    ),
+                });
+                self.lifecycle_event(
+                    "context.segment.updated",
+                    Some(turn_id),
+                    LifecyclePayload {
+                        count: Some(u64::from(request.observations)),
+                        reason_code: Some(request.stage.reason_code().into()),
+                        ..LifecyclePayload::default()
+                    },
+                );
+            }
+            // A completed candidate-edit batch gives the configured independent gate strictly
+            // newer workspace evidence. Run it now: a cheap failure is better repair evidence than
+            // another provider review turn, while a pass can finish without a "done" round trip.
+            let automatic_verification = if completed_workspace_candidate_change {
+                if let Some(command) = self.verify_command.clone() {
+                    Some(
+                        self.run_strong_verification_gate(
+                            turn_id,
+                            &command,
+                            &mut investigation_convergence,
+                        )
+                        .await?,
+                    )
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            match &automatic_verification {
+                Some(verification::VerificationGateDisposition::Retry(guidance))
+                | Some(verification::VerificationGateDisposition::Cancelled(guidance)) => {
+                    blocks.push(Block::Text {
+                        text: guidance.clone(),
+                    });
+                }
+                Some(verification::VerificationGateDisposition::Finish {
+                    guidance: Some(guidance),
+                    ..
+                }) => {
+                    blocks.push(Block::Text {
+                        text: guidance.clone(),
+                    });
+                }
+                _ => {}
+            }
             let tool_msg = Message {
                 role: Role::User,
                 content: blocks,
             };
             self.commit_message(turn_id, messages, tool_msg)?;
+
+            if let Some(disposition) = automatic_verification {
+                match disposition {
+                    verification::VerificationGateDisposition::Passed => {
+                        // Match the ordinary EndTurn gate: controls and steering admitted while
+                        // verification ran still win before success becomes durable.
+                        let steered = self.admit_pending_steers(turn_id, messages)?;
+                        if let Some(outcome) = self.finish_requested_control(turn_id).await? {
+                            return Ok(outcome);
+                        }
+                        if steered > 0 {
+                            self.advance_turn().await?;
+                            continue;
+                        }
+                        return self.finish(turn_id, Outcome::Done).await;
+                    }
+                    verification::VerificationGateDisposition::Retry(_) => {
+                        self.advance_turn().await?;
+                        continue;
+                    }
+                    verification::VerificationGateDisposition::Finish { outcome, .. } => {
+                        return self.finish(turn_id, outcome).await;
+                    }
+                    verification::VerificationGateDisposition::Drained => {
+                        return self.finish_drained(turn_id).await;
+                    }
+                    verification::VerificationGateDisposition::Cancelled(_) => {
+                        if let Some(outcome) = self.finish_requested_control(turn_id).await? {
+                            return Ok(outcome);
+                        }
+                        return self.finish(turn_id, Outcome::Interrupted).await;
+                    }
+                }
+            }
 
             if let Some(outcome) = self.collect_and_finish_requested_control(turn_id).await? {
                 return Ok(outcome);
@@ -5639,6 +5946,7 @@ impl Agent {
         )],
         _argument_trust: Trust,
         messages: &[Message],
+        excluded_indices: &std::collections::BTreeSet<usize>,
     ) -> Result<Vec<AutoApprovedCall>, KernelError> {
         // Tool hooks are per-call boundaries, not a global serialization switch. The executor
         // below runs every admitted call's pre-gates concurrently (under the shared hook
@@ -5649,6 +5957,9 @@ impl Agent {
         let mut claimed: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         let mut signatures: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for (index, call, proposal) in deferred {
+            if excluded_indices.contains(index) {
+                break;
+            }
             // Both fan out real children and spend provider budget through their own effect
             // classes; neither is a registry dispatch, so neither can join a registry group.
             if call.name == iteron_tools::DISPATCH_AGENT || call.name == iteron_tools::WORKFLOW_TOOL
@@ -5720,7 +6031,11 @@ impl Agent {
             {
                 break;
             }
-            if declared.iter().any(|path| claimed.contains(path)) {
+            if declared.iter().any(|path| {
+                claimed
+                    .iter()
+                    .any(|existing| write_paths_conflict(path, existing))
+            }) {
                 break;
             }
             claimed.extend(declared);
@@ -5741,6 +6056,83 @@ impl Agent {
     /// any hook process starts; handler execution is concurrent but globally capped by the
     /// semaphore shared by all `Hooks` clones; terminals and denials are then projected in model
     /// order. A denied call is settled as a refused tool result and removed from the executor set.
+    fn observe_early_pure_hook(&self, turn: TurnId, report: EarlyHookSummary, blocked: bool) {
+        let event_id = if blocked {
+            "hook.blocked"
+        } else if report.timed_out > 0 {
+            "hook.timed_out"
+        } else if report.failed > 0 {
+            "hook.failed"
+        } else {
+            "hook.completed"
+        };
+        self.lifecycle_event(
+            event_id,
+            Some(turn),
+            LifecyclePayload {
+                count: Some(u64::from(report.completed)),
+                magnitude: Some(u64::from(report.timed_out)),
+                ..LifecyclePayload::default()
+            },
+        );
+    }
+
+    /// Close the universal effect tickets opened before an early hook task was spawned. A joined
+    /// task proves the hook process lifecycle ended; a lost task is explicitly unknown and is
+    /// never rewritten into a clean terminal merely because the protected tool was a pure read.
+    fn settle_early_pure_hook_effects(
+        &mut self,
+        turn: TurnId,
+        tickets: EarlyHookEffectTickets,
+        summary: Option<EarlyHookSummary>,
+    ) -> Result<(), KernelError> {
+        let class = effect_class::EffectClass::Hook;
+        if let Some((ordinal, ticket)) = tickets.compatibility {
+            let settlement = summary.map_or_else(
+                || {
+                    effects::Settlement::Unknown(
+                        "early compatibility hook task ended without an observable terminal".into(),
+                    )
+                },
+                |_| effects::Settlement::Definite(effect_done_terminal(turn, class, ordinal)),
+            );
+            self.settle_kernel_effect(ticket, settlement)?;
+        }
+        if let Some((ordinal, ticket)) = tickets.lifecycle {
+            let settlement = match summary {
+                None => effects::Settlement::Unknown(
+                    "early lifecycle hook task ended without an observable terminal".into(),
+                ),
+                Some(summary) if summary.lifecycle_dispatch_failed => {
+                    effects::Settlement::Definite(effect_failed_terminal(
+                        turn,
+                        class,
+                        ordinal,
+                        "lifecycle hook dispatch failed before a valid report",
+                    ))
+                }
+                Some(_) => {
+                    effects::Settlement::Definite(effect_done_terminal(turn, class, ordinal))
+                }
+            };
+            self.settle_kernel_effect(ticket, settlement)?;
+        }
+        Ok(())
+    }
+
+    async fn abort_early_pure_tools(
+        &mut self,
+        turn: TurnId,
+        pure: &mut Vec<PureToolInFlight>,
+    ) -> Result<(), KernelError> {
+        for (_, _, handle, _, hook_effect_tickets) in pure.drain(..) {
+            handle.abort();
+            let _ = handle.await;
+            self.settle_early_pure_hook_effects(turn, hook_effect_tickets, None)?;
+        }
+        Ok(())
+    }
+
     async fn gate_concurrent_deferred_batch(
         &mut self,
         turn: TurnId,
@@ -6051,6 +6443,7 @@ impl Agent {
         turn_id: TurnId,
         batch: Vec<AutoApprovedCall>,
         governor: &iteron_sched::Governor,
+        result_projection_budget: context_runtime::TurnResultProjectionBudget,
         results: &mut [Option<ToolResult>],
         any_error: &mut bool,
     ) -> Result<(), KernelError> {
@@ -6168,6 +6561,7 @@ impl Agent {
             };
             async move {
                 let provider_tool_use_id = intent.call.id.clone();
+                let tool_name = intent.call.name.clone();
                 let _permit = governor.acquire().await;
                 let started = Instant::now();
                 let mut execution = match await_tool_or_interrupt(
@@ -6195,7 +6589,19 @@ impl Agent {
                 }
                 let managed =
                     tool_output_spill::manage_execution(spill_store.as_deref(), execution);
-                (managed, spill_store)
+                let mut managed = managed;
+                let projected = match &mut managed {
+                    tool_output_spill::ManagedToolExecution::Definite(result)
+                    | tool_output_spill::ManagedToolExecution::Unknown(result) => result
+                        .project_visible(result_projection_budget.visible_bytes_for(&tool_name)),
+                };
+                let visible = projected.then_some(match &managed {
+                    tool_output_spill::ManagedToolExecution::Definite(result)
+                    | tool_output_spill::ManagedToolExecution::Unknown(result) => {
+                        result.result.content.len()
+                    }
+                });
+                (managed, spill_store, visible)
             }
         }))
         .await;
@@ -6203,9 +6609,14 @@ impl Agent {
         // Phase three: exactly one terminal per opened intent, in tool order.
         let mut unknown: usize = 0;
         let mut completed = Vec::new();
-        for ((index, call, action_signature, ticket), (execution, spill_store)) in
-            pending.into_iter().zip(executions)
+        for (
+            (index, call, action_signature, ticket),
+            (execution, spill_store, projected_visible),
+        ) in pending.into_iter().zip(executions)
         {
+            if let Some(visible) = projected_visible {
+                self.observe_tool_result_projection(turn_id, visible);
+            }
             let effect_id = ticket.effect_id().clone();
             let (settlement, mut managed, definite) = match execution {
                 tool_output_spill::ManagedToolExecution::Definite(managed) => (
@@ -6365,6 +6776,16 @@ impl Agent {
         tool: &str,
         result: &ToolResult,
     ) -> Result<(), KernelError> {
+        self.commit_refused_tool_result_with_reason(turn, tool, result, "refused_before_dispatch")
+    }
+
+    fn commit_refused_tool_result_with_reason(
+        &mut self,
+        turn: TurnId,
+        tool: &str,
+        result: &ToolResult,
+        reason_code: &'static str,
+    ) -> Result<(), KernelError> {
         debug_assert!(
             result.is_error,
             "a refused tool result is an error result; a success has an admission to name"
@@ -6397,7 +6818,7 @@ impl Agent {
             turn,
             None,
             LifecyclePayload {
-                reason_code: Some("refused_before_dispatch".into()),
+                reason_code: Some(reason_code.into()),
                 duration_us: Some(result.latency_ms.saturating_mul(1_000)),
                 ..LifecyclePayload::default()
             },

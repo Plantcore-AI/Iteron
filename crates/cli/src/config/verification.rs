@@ -118,10 +118,10 @@ impl VerificationConfig {
         verify_command: Option<&str>,
         verifier_plan: Option<&VerifierPlan>,
     ) -> Result<VerificationRuntimePolicy, String> {
-        // Absence is deliberately conservative: a lane-capable verifier is permission to run a
-        // narrower loop, not evidence that the operator selected one. Only trusted user config
-        // may move the effective mode away from full verification.
-        let derived_selection = VerificationSelectionMode::Full;
+        // Start with impacted verification: it is the fastest scope that still follows the
+        // workspace dependency surface. If no trusted impacted command exists below, resolution
+        // still upgrades to the full gate rather than pretending a narrow check ran.
+        let derived_selection = VerificationSelectionMode::Impacted;
         let selection = self
             .selection
             .map_or(derived_selection, |selection| match selection {
@@ -181,17 +181,16 @@ impl VerificationConfig {
                 });
         let restore = resolve_restore(workspace, self.rollback.as_ref())?;
         let flaky = verifier_plan.map_or_else(FlakyQuarantinePolicy::default, |plan| {
+            let defaults = FlakyQuarantinePolicy::default();
             FlakyQuarantinePolicy {
-                repeat_count: u8::try_from(plan.attempts).unwrap_or(u8::MAX),
-                minimum_disagreements: iteron_tunables::param_integer(
-                    "cli.config.verification.default_flaky_minimum_disagreements",
-                    1,
-                ),
-                quarantine_seconds: iteron_tunables::param_integer(
-                    "cli.config.verification.default_flaky_quarantine_seconds",
-                    0,
-                ),
-                report_disagreement: plan.report_flake,
+                // A strategy may strengthen the repeat ceiling, but a one-attempt plan must not
+                // silently disable the runtime's failure-confirmation default.
+                repeat_count: defaults
+                    .repeat_count
+                    .max(u8::try_from(plan.attempts).unwrap_or(u8::MAX)),
+                minimum_disagreements: defaults.minimum_disagreements,
+                quarantine_seconds: defaults.quarantine_seconds,
+                report_disagreement: defaults.report_disagreement || plan.report_flake,
             }
         });
         let mut required_commands = if selection == VerificationSelectionMode::Full {
@@ -487,5 +486,43 @@ mod tests {
         assert_eq!(policy.selection, VerificationSelectionMode::Full);
         assert_eq!(policy.required_commands, ["trusted-full"]);
         assert!(configured.resolve(&workspace, None, None).is_err());
+    }
+
+    #[test]
+    fn default_selection_prefers_an_available_impacted_command() {
+        let workspace = std::env::temp_dir();
+        let configured: VerificationConfig = serde_json::from_value(serde_json::json!({
+            "commands": [
+                {"scope": "incremental", "command": "trusted-incremental"},
+                {"scope": "impacted", "command": "trusted-impacted"}
+            ]
+        }))
+        .unwrap();
+        let policy = configured
+            .resolve(&workspace, Some("trusted-full"), None)
+            .unwrap();
+        assert_eq!(policy.selection, VerificationSelectionMode::Impacted);
+        assert_eq!(
+            policy.required_commands,
+            ["trusted-impacted", "trusted-full"]
+        );
+    }
+
+    #[test]
+    fn one_attempt_strategy_does_not_disable_failure_confirmation_defaults() {
+        let workspace = std::env::temp_dir();
+        let plan = VerifierPlan {
+            strength: iteron_verify::OracleStrength::Strong,
+            scope: iteron_verify::VerifierScope::Workspace,
+            attempts: 1,
+            report_flake: false,
+        };
+        let policy = VerificationConfig::default()
+            .resolve(&workspace, Some("trusted-full"), Some(&plan))
+            .unwrap();
+        let defaults = FlakyQuarantinePolicy::default();
+        assert_eq!(policy.flaky.repeat_count, defaults.repeat_count);
+        assert_eq!(policy.flaky.quarantine_seconds, defaults.quarantine_seconds);
+        assert!(policy.flaky.report_disagreement);
     }
 }

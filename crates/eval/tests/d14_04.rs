@@ -67,6 +67,7 @@ fn cell(config: &str, seed: u64, cost_status: CostStatus, cost_usd: Option<f64>)
             enforcement: "fixed".into(),
             reason: None,
         },
+        agent_metrics: None,
         elapsed_ms: 1,
         error: None,
         candidate_diff: None,

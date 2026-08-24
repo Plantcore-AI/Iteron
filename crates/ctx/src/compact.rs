@@ -19,6 +19,17 @@
 
 use iteron_protocol::{Block, Message, Role, ToolSpec};
 
+/// Attribute a tool's eventual result to the same independently-owned context partition used by
+/// request estimation. Keeping this classification here prevents the runtime projection policy
+/// and estimator from drifting into different answers.
+pub fn result_budget_class(tool_name: &str) -> crate::ContextBudgetClass {
+    if tool_name == "lsp_query" {
+        crate::ContextBudgetClass::LspResults
+    } else {
+        crate::ContextBudgetClass::ToolResults
+    }
+}
+
 /// Last-resort admission trigger, used ONLY when no model context window is proven and no
 /// window-relative threshold can be derived.
 ///
@@ -33,7 +44,7 @@ const DEFAULT_TRIGGER_TOKENS: usize = 120_000;
 
 /// Fraction of the usable window at which admission-side compaction becomes mandatory.
 ///
-/// 80%: the remaining fifth absorbs both this estimator's error against the provider's real
+/// 82%: the remaining margin absorbs both this estimator's error against the provider's real
 /// tokenizer and the growth of one more assistant answer plus its tool results before the next
 /// admission check. 85% leaves too little for a single large tool result to land without
 /// overshooting into a hard refusal; 75% is already what the end-of-turn hysteresis applies ON TOP
@@ -41,7 +52,7 @@ const DEFAULT_TRIGGER_TOKENS: usize = 120_000;
 /// its window warrants. The percentage is optimizable; that it is strictly below 100 is not — a
 /// trigger at the full usable window fires only once the request has already been refused.
 fn trigger_usable_ratio_percent() -> u64 {
-    iteron_tunables::param_integer("ctx.compact.trigger_usable_ratio_percent", 80_u64).clamp(1, 100)
+    iteron_tunables::param_integer("ctx.compact.trigger_usable_ratio_percent", 82_u64).clamp(1, 100)
 }
 
 /// Hard context-retention bounds. They are structural memory/admission ceilings rather than
@@ -51,7 +62,7 @@ fn min_recent_retention_tokens() -> usize {
 }
 
 fn max_recent_retention_tokens() -> usize {
-    15_000
+    12_000
 }
 
 /// Provenance for the request-size number. This is never labelled as provider tokenization: it is
@@ -60,14 +71,14 @@ fn max_recent_retention_tokens() -> usize {
 pub enum TokenEstimateProvenance {
     /// Legacy pre-v2 estimate retained so historical UI/test events remain representable.
     HeuristicBytesPerToken35,
-    /// One token per UTF-8 byte: an explicitly identified upper-bound fallback for an unknown
-    /// provider/model route. Provider-reported usage remains authoritative after the request.
+    /// Provider-independent byte/scalar baseline. Provider-reported usage remains authoritative
+    /// after the request and calibrates subsequent estimates for that observed route.
     ConservativeByteUpperBound,
-    /// Route-selected, content-aware approximation for OpenAI-compatible BPE tokenizers.
+    /// Historical route-selected approximation retained so old UI/test events are representable.
     OpenAiBpeApproximation,
-    /// Route-selected, content-aware approximation for Anthropic tokenizers.
+    /// Historical route-selected approximation retained so old UI/test events are representable.
     AnthropicBpeApproximation,
-    /// Route-selected, content-aware approximation for SentencePiece-like provider families.
+    /// Historical route-selected approximation retained so old UI/test events are representable.
     SentencePieceApproximation,
 }
 
@@ -88,6 +99,9 @@ pub struct ContextEstimate {
     pub framing_tokens: usize,
     pub total_tokens: usize,
     pub provenance: TokenEstimateProvenance,
+    /// Optional non-overlapping source attribution attached by the host at the final admission
+    /// boundary. Core estimation leaves it absent because source ownership is host context.
+    pub components: Option<crate::ContextComponentUsage>,
 }
 
 /// Estimate the complete provider input projection. The model's actual context window is a
@@ -164,6 +178,7 @@ fn assemble_estimate(
         framing_tokens,
         total_tokens,
         provenance,
+        components: None,
     }
 }
 
@@ -209,29 +224,18 @@ impl RequestEstimator {
         Self::default()
     }
 
-    pub fn for_route(provider_id: Option<&str>, model_id: &str) -> Self {
-        Self {
-            profile: crate::TokenEstimatorProfile::for_route(provider_id, model_id),
-            ..Self::default()
-        }
+    /// Compatibility constructor for callers that still carry a route pair. Route strings are
+    /// deliberately ignored: actual usage calibration, not naming, adapts the neutral baseline.
+    pub fn for_route(_provider_id: Option<&str>, _model_id: &str) -> Self {
+        Self::new()
     }
 
-    pub fn set_route(&mut self, provider_id: Option<&str>, model_id: &str) {
-        let profile = match self.policy {
-            crate::TokenEstimatorPolicy::RouteAwareV2 => {
-                crate::TokenEstimatorProfile::for_route(provider_id, model_id)
-            }
-        };
-        if self.profile != profile {
-            self.profile = profile;
-            self.invalidate_transcript();
-            self.tools = None;
-            self.prepared_tools = None;
-        }
-    }
+    /// Compatibility hook for route-switching callers. A switch changes the host's calibration
+    /// partition but never this estimator's algorithm or cached content accounting.
+    pub fn set_route(&mut self, _provider_id: Option<&str>, _model_id: &str) {}
 
-    /// Pin the exact selector policy recovered from the immutable tunables checkpoint. Concrete
-    /// profiles remain route-aware and every selected identity is exposed to ContextLedger.
+    /// Pin the exact estimator policy recovered from the immutable tunables checkpoint. Route
+    /// observations are applied by the host without changing this neutral baseline identity.
     pub fn pin_policy(&mut self, policy: crate::TokenEstimatorPolicy) {
         self.policy = policy;
     }
@@ -246,6 +250,18 @@ impl RequestEstimator {
 
     pub fn estimate_image(&self, encoded_base64_bytes: usize) -> usize {
         self.profile.estimate_image(encoded_base64_bytes)
+    }
+
+    pub fn estimate_image_with_provenance(
+        &self,
+        encoded_base64_bytes: usize,
+    ) -> crate::ImageTokenEstimate {
+        self.profile
+            .estimate_image_with_provenance(encoded_base64_bytes)
+    }
+
+    pub fn estimate_decoded_image(&self, total_pixels: u64) -> crate::ImageTokenEstimate {
+        self.profile.estimate_decoded_image(total_pixels)
     }
 
     pub fn estimate_uncached(
@@ -472,7 +488,7 @@ impl CompactionPolicy {
     }
 
     /// Verbatim recent-tail budget derived from the same replayed model-window and output-reserve
-    /// facts as admission. The percentage is optimizable; the 2k..15k clamp is a host ceiling.
+    /// facts as admission. The percentage is optimizable; the 2k..12k clamp is a host ceiling.
     pub fn recent_retention_tokens(
         &self,
         model_context_window: Option<u64>,
@@ -483,7 +499,7 @@ impl CompactionPolicy {
             .map(|window| window.saturating_sub(u64::from(reserved_output_tokens)))
             .unwrap_or_else(|| u64::try_from(self.trigger_tokens).unwrap_or(u64::MAX));
         let ratio =
-            iteron_tunables::param_integer("ctx.compact.recent_retention_ratio_percent", 25_usize)
+            iteron_tunables::param_integer("ctx.compact.recent_retention_ratio_percent", 20_usize)
                 .clamp(1, 100);
         usize::try_from(usable.saturating_mul(u64::try_from(ratio).unwrap_or(100)) / 100)
             .unwrap_or(usize::MAX)
@@ -849,7 +865,7 @@ fn message_components(
                     .saturating_add(profile.estimate(&state.payload.to_string()) + 8);
             }
             Block::ToolUse(tool) => {
-                if tool.name == "lsp_query" {
+                if result_budget_class(&tool.name) == crate::ContextBudgetClass::LspResults {
                     lsp_tool_ids.insert(tool.id.clone());
                 }
                 estimate.conversation = estimate
@@ -973,22 +989,23 @@ mod tests {
     }
 
     #[test]
-    fn route_aware_checkpointed_selector_tracks_cross_provider_changes() {
-        let mut estimator = RequestEstimator::for_route(Some("openai"), "gpt-5");
-        estimator.pin_policy(crate::TokenEstimatorPolicy::RouteAwareV2);
+    fn checkpointed_selector_is_route_name_independent() {
+        let mut estimator = RequestEstimator::new();
+        estimator.pin_policy(crate::TokenEstimatorPolicy::ObservedUsageV3);
         assert_eq!(
             estimator.tokenizer_identity().catalog_id,
-            "iteron.openai-bpe-approx"
+            "iteron.generic-bpt4-reserve15"
+        );
+        assert_eq!(
+            crate::TokenEstimatorPolicy::ObservedUsageV3.id(),
+            crate::OBSERVED_USAGE_ESTIMATOR_POLICY_ID
         );
 
-        estimator.set_route(Some("anthropic"), "claude-opus");
+        let mut arbitrary = RequestEstimator::for_route(Some("opaque-gateway"), "release/42");
+        arbitrary.set_route(Some("renamed-gateway"), "custom@next");
         assert_eq!(
-            estimator.tokenizer_identity().catalog_id,
-            "iteron.anthropic-bpe-approx"
-        );
-        assert_eq!(
-            crate::TokenEstimatorPolicy::RouteAwareV2.id(),
-            crate::ROUTE_AWARE_ESTIMATOR_POLICY_ID
+            arbitrary.tokenizer_identity(),
+            estimator.tokenizer_identity()
         );
     }
 
@@ -1123,23 +1140,23 @@ mod tests {
     #[test]
     fn adaptive_trigger_is_a_pure_function_of_window_and_output_reservation() {
         let policy = CompactionPolicy::default();
-        assert_eq!(policy.effective_trigger_tokens(Some(32_768), 8_192), 19_660);
+        assert_eq!(policy.effective_trigger_tokens(Some(32_768), 8_192), 20_152);
         assert_eq!(
             policy.effective_trigger_tokens(Some(1_000_000), 8_192),
-            793_446
+            813_282
         );
         assert_eq!(policy.effective_trigger_tokens(None, 8_192), 120_000);
-        assert_eq!(policy.effective_trigger_tokens(Some(32_768), 8_192), 19_660);
+        assert_eq!(policy.effective_trigger_tokens(Some(32_768), 8_192), 20_152);
     }
 
     #[test]
-    fn recent_retention_is_one_quarter_of_usable_context_with_hard_clamps() {
+    fn recent_retention_is_one_fifth_of_usable_context_with_hard_clamps() {
         let policy = CompactionPolicy::default();
         assert_eq!(policy.recent_retention_tokens(Some(4_096), 2_048), 2_000);
-        assert_eq!(policy.recent_retention_tokens(Some(32_768), 8_192), 6_144);
+        assert_eq!(policy.recent_retention_tokens(Some(32_768), 8_192), 4_915);
         assert_eq!(
             policy.recent_retention_tokens(Some(1_000_000), 8_192),
-            15_000
+            12_000
         );
     }
 
@@ -1247,7 +1264,7 @@ mod tests {
         let policy = CompactionPolicy::default();
         assert_eq!(
             policy.approaching_trigger_tokens(Some(32_768), 8_192),
-            14_745
+            15_114
         );
         assert_eq!(policy.approaching_trigger_tokens(None, 8_192), 90_000);
         let mut fixed = CompactionPolicy::default();

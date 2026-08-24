@@ -143,6 +143,214 @@ fn manifest(
     }
 }
 
+fn with_usage(mut manifest: EvaluationManifest, input_tokens: u64) -> EvaluationManifest {
+    manifest.cells[0].agent_metrics = Some(crate::types::AgentMetrics {
+        elapsed_ms: 10,
+        usage: Some(iteron_protocol::Usage {
+            input: input_tokens,
+            output: 0,
+            cache_creation: 0,
+            cache_read: 0,
+            thinking: 0,
+        }),
+        optimization: None,
+    });
+    manifest
+}
+
+fn with_optimization(
+    manifest: EvaluationManifest,
+    tool_errors: u64,
+    context_tokens: u64,
+) -> EvaluationManifest {
+    let mut manifest = with_usage(manifest, 50);
+    manifest.cells[0]
+        .agent_metrics
+        .as_mut()
+        .unwrap()
+        .optimization = Some(crate::types::OptimizationMetrics {
+        tool_calls_started: 2,
+        tool_calls_completed: 2,
+        tool_errors,
+        peak_tool_concurrency: 2,
+        context_samples: 2,
+        cumulative_context_tokens: context_tokens.saturating_mul(2),
+        peak_context_tokens: context_tokens.saturating_add(100),
+        final_context_tokens: Some(context_tokens),
+        peak_system_tokens: 100,
+        peak_tool_schema_tokens: 200,
+        peak_transcript_tokens: context_tokens,
+        transcript_shrink_events: 1,
+        transcript_tokens_reclaimed: 300,
+        context_components: Some(crate::types::ContextComponentMetrics {
+            cumulative: crate::types::ContextComponentTokens {
+                stable_prefix: 20,
+                instructions: 40,
+                task_context: 60,
+                memory: 80,
+                transcript: context_tokens.saturating_mul(2),
+                attachments: 100,
+                tool_schemas: 120,
+                tool_results: 140,
+                lsp_results: 160,
+            },
+            peak: crate::types::ContextComponentTokens::default(),
+            final_turn: crate::types::ContextComponentTokens::default(),
+        }),
+    });
+    manifest
+}
+
+fn observed_result(
+    candidate_id: &str,
+    resolved_rate: f64,
+    tokens: f64,
+    latency_ms: f64,
+) -> TrialResult {
+    TrialResult {
+        trial_id: format!("trial-{candidate_id}"),
+        candidate_id: candidate_id.into(),
+        round: 0,
+        resolved_rate,
+        average_cost_usd: Some(1.0),
+        average_latency_ms: latency_ms,
+        average_agent_latency_ms: Some(latency_ms),
+        average_tokens: Some(tokens),
+        optimization: Some(TrialOptimizationSummary {
+            average_turns: Some(2.0),
+            average_tool_calls: 2.0,
+            average_tool_error_rate: 0.0,
+            average_peak_tool_concurrency: 2.0,
+            average_context_tokens_per_turn: tokens,
+            average_peak_context_tokens: tokens,
+            average_transcript_tokens_reclaimed: 0.0,
+            average_transcript_shrink_events: Some(0.0),
+            average_context_components_per_turn: None,
+        }),
+        manifest_digest: prefixed_digest('f'),
+    }
+}
+
+#[test]
+fn complete_token_measurements_break_equal_quality_ties_without_treating_missing_as_zero() {
+    let root = TempRoot::new("token-ranking");
+    let mut tuner = OfflineTuner::create(
+        spec(
+            vec![
+                candidate("a", "x"),
+                candidate("b", "y"),
+                candidate("c", "z"),
+            ],
+            3,
+            vec![1],
+        ),
+        &root.join("tuner.jsonl"),
+    )
+    .unwrap();
+    let trials = tuner.issue_trials().unwrap();
+    let expensive = tuner
+        .record_manifest(
+            &trials[0].trial_id,
+            &with_usage(manifest(&trials[0], true, EvaluationPurpose::Tune), 100),
+            "arm",
+        )
+        .unwrap();
+    let efficient = tuner
+        .record_manifest(
+            &trials[1].trial_id,
+            &with_usage(manifest(&trials[1], true, EvaluationPurpose::Tune), 50),
+            "arm",
+        )
+        .unwrap();
+    let missing = tuner
+        .record_manifest(
+            &trials[2].trial_id,
+            &manifest(&trials[2], true, EvaluationPurpose::Tune),
+            "arm",
+        )
+        .unwrap();
+    assert_eq!(expensive.average_tokens, Some(100.0));
+    assert_eq!(efficient.average_tokens, Some(50.0));
+    assert_eq!(efficient.average_agent_latency_ms, Some(10.0));
+    assert_eq!(missing.average_tokens, None);
+    assert_eq!(missing.average_agent_latency_ms, None);
+    assert_eq!(tuner.advance_round().unwrap().as_deref(), Some("b"));
+}
+
+#[test]
+fn typed_optimization_trace_survives_the_tuner_and_breaks_only_primary_metric_ties() {
+    let root = TempRoot::new("optimization-trace-ranking");
+    let mut tuner = OfflineTuner::create(
+        spec(
+            vec![
+                candidate("a", "x"),
+                candidate("b", "y"),
+                candidate("c", "z"),
+            ],
+            3,
+            vec![1],
+        ),
+        &root.join("tuner.jsonl"),
+    )
+    .unwrap();
+    let trials = tuner.issue_trials().unwrap();
+    let noisy = tuner
+        .record_manifest(
+            &trials[0].trial_id,
+            &with_optimization(manifest(&trials[0], true, EvaluationPurpose::Tune), 1, 500),
+            "arm",
+        )
+        .unwrap();
+    let clean = tuner
+        .record_manifest(
+            &trials[1].trial_id,
+            &with_optimization(manifest(&trials[1], true, EvaluationPurpose::Tune), 0, 900),
+            "arm",
+        )
+        .unwrap();
+    let mut incomplete = with_usage(manifest(&trials[2], true, EvaluationPurpose::Tune), 50);
+    incomplete.cells[0]
+        .agent_metrics
+        .as_mut()
+        .unwrap()
+        .optimization = Some(crate::types::OptimizationMetrics {
+        tool_calls_started: 1,
+        ..crate::types::OptimizationMetrics::default()
+    });
+    let missing = tuner
+        .record_manifest(&trials[2].trial_id, &incomplete, "arm")
+        .unwrap();
+
+    assert_eq!(noisy.optimization.unwrap().average_tool_error_rate, 0.5);
+    assert_eq!(clean.optimization.unwrap().average_turns, Some(2.0));
+    assert_eq!(
+        clean.optimization.unwrap().average_transcript_shrink_events,
+        Some(1.0)
+    );
+    assert_eq!(
+        clean.optimization.unwrap().average_context_tokens_per_turn,
+        900.0
+    );
+    assert_eq!(
+        clean
+            .optimization
+            .unwrap()
+            .average_context_components_per_turn
+            .unwrap()
+            .memory,
+        40.0
+    );
+    assert_eq!(
+        missing.optimization, None,
+        "a partial stream without a turn sample is not measured zero context"
+    );
+    assert_eq!(
+        tuner.advance_round().unwrap().as_deref(),
+        Some("b"),
+        "after exact quality/token/latency/cost ties, fewer tool errors wins"
+    );
+}
+
 #[test]
 fn successive_halving_replays_exactly_and_selects_the_best_candidate() {
     let root = TempRoot::new("halving");
@@ -503,6 +711,229 @@ fn universal_candidate_covers_params_text_and_implementations() {
 }
 
 #[test]
+fn tuner_features_reuse_generic_strategy_modules_across_atomic_parameters() {
+    let mut candidate = universal_candidate("module-features");
+    let profile = candidate.profile.as_mut().unwrap();
+    profile.params.extend([
+        iteron_tunables::ParamAssignment {
+            param: "ctx.compact.default_trigger_tokens".into(),
+            value: iteron_tunables::ResolutionValue::Integer { value: 80_000 },
+        },
+        iteron_tunables::ParamAssignment {
+            param: "ctx.memory.header".into(),
+            value: iteron_tunables::ResolutionValue::Text {
+                value: "compact memory header".into(),
+            },
+        },
+        iteron_tunables::ParamAssignment {
+            param: "tools.tool_search.core_eager_tools".into(),
+            value: iteron_tunables::ResolutionValue::List {
+                items: vec![iteron_tunables::ResolutionValue::Text {
+                    value: "tool_search".into(),
+                }],
+            },
+        },
+        iteron_tunables::ParamAssignment {
+            param: "tools.grep_tool.default_grep_parallelism".into(),
+            value: iteron_tunables::ResolutionValue::Integer { value: 4 },
+        },
+    ]);
+    profile
+        .params
+        .sort_by(|left, right| left.param.cmp(&right.param));
+    candidate.validate_universal().unwrap();
+
+    let features = super::state_ops::candidate_features(&candidate);
+    for module in [
+        iteron_tunables::ModuleId::MemoryRecall,
+        iteron_tunables::ModuleId::ContextCompaction,
+        iteron_tunables::ModuleId::ToolExposure,
+        iteron_tunables::ModuleId::ToolSearchStrategy,
+        iteron_tunables::ModuleId::PromptSystem,
+        iteron_tunables::ModuleId::VerificationQuorum,
+    ] {
+        assert!(
+            features.contains_key(&format!("module/{}", module.as_str())),
+            "missing generic strategy feature for {}",
+            module.as_str()
+        );
+    }
+    assert!(
+        features.keys().all(|key| !key.contains("provider_id")),
+        "module learning must not depend on a provider-specific branch"
+    );
+
+    let before = features["module/memory.recall"].clone();
+    let memory = candidate
+        .profile
+        .as_mut()
+        .unwrap()
+        .params
+        .iter_mut()
+        .find(|assignment| assignment.param == "ctx.memory.header")
+        .unwrap();
+    memory.value = iteron_tunables::ResolutionValue::Text {
+        value: "different memory header".into(),
+    };
+    let after = super::state_ops::candidate_features(&candidate);
+    assert_ne!(before, after["module/memory.recall"]);
+    assert_eq!(
+        features["module/tool.exposure"], after["module/tool.exposure"],
+        "changing memory must not perturb the tool-policy feature"
+    );
+}
+
+#[test]
+fn candidate_pool_coverage_distinguishes_presence_from_real_module_contrast() {
+    let mut first = universal_candidate("coverage-a");
+    first
+        .profile
+        .as_mut()
+        .unwrap()
+        .params
+        .push(iteron_tunables::ParamAssignment {
+            param: "ctx.memory.header".into(),
+            value: iteron_tunables::ResolutionValue::Text {
+                value: "memory-a".into(),
+            },
+        });
+    first
+        .profile
+        .as_mut()
+        .unwrap()
+        .params
+        .sort_by(|left, right| left.param.cmp(&right.param));
+    let mut second = first.clone();
+    second.id = "coverage-b".into();
+    second.profile.as_mut().unwrap().profile_id = second.id.clone();
+    let memory = second
+        .profile
+        .as_mut()
+        .unwrap()
+        .params
+        .iter_mut()
+        .find(|assignment| assignment.param == "ctx.memory.header")
+        .unwrap();
+    memory.value = iteron_tunables::ResolutionValue::Text {
+        value: "memory-b".into(),
+    };
+    first.validate_universal().unwrap();
+    second.validate_universal().unwrap();
+
+    let coverage = crate::optimization::candidate_pool_coverage(&[first, second]);
+    let memory = coverage
+        .modules
+        .iter()
+        .find(|module| module.module == iteron_tunables::ModuleId::MemoryRecall)
+        .unwrap();
+    assert!(memory.represented_dimensions > 0);
+    assert!(memory.varying_dimensions > 0);
+
+    let verification = coverage
+        .modules
+        .iter()
+        .find(|module| module.module == iteron_tunables::ModuleId::VerificationQuorum)
+        .unwrap();
+    assert!(verification.implementation_slot_represented);
+    assert!(!verification.implementation_slot_varies);
+    assert!(coverage.modules_varying < coverage.modules_total);
+}
+
+#[test]
+fn weighted_generic_objectives_rank_equal_quality_candidates_but_never_a_failure_first() {
+    use crate::trainer_bridge::{RewardContract, RewardDirection, RewardObjective};
+
+    let candidates = vec![
+        universal_candidate("fast"),
+        universal_candidate("lean"),
+        universal_candidate("failed"),
+    ];
+    let mut bridge = trainer_bridge("objective-ranking", 3);
+    bridge.reward = RewardContract {
+        schema_id: "reward/performance@v1".into(),
+        objectives: vec![
+            RewardObjective {
+                metric: "total_tokens".into(),
+                direction: RewardDirection::Minimize,
+                weight_micros: 200_000,
+            },
+            RewardObjective {
+                metric: "agent_latency_ms".into(),
+                direction: RewardDirection::Minimize,
+                weight_micros: 500_000,
+            },
+            RewardObjective {
+                metric: "turns_per_run".into(),
+                direction: RewardDirection::Minimize,
+                weight_micros: 300_000,
+            },
+        ],
+    };
+    let spec = TunerSpec {
+        schema_version: 2,
+        experiment_id: bridge.experiment_id.clone(),
+        train_dataset_digest: bridge.train.digest.clone(),
+        tunables_registry_digest: iteron_tunables::REGISTRY_DIGEST_SHA256.into(),
+        param_registry_digest: Some(iteron_tunables::param_registry_digest_sha256()),
+        tool_text_registry_digest: Some(iteron_tunables::tool_text_registry_digest_sha256()),
+        trainer_bridge: Some(bridge),
+        max_trials: 3,
+        max_concurrency: 1,
+        reduction_factor: 2,
+        round_budgets: vec![1],
+        candidates,
+    };
+    validate_spec(&spec).unwrap();
+    let mut fast = observed_result("fast", 1.0, 200.0, 10.0);
+    fast.optimization.as_mut().unwrap().average_turns = Some(1.0);
+    let mut lean = observed_result("lean", 1.0, 100.0, 100.0);
+    lean.optimization.as_mut().unwrap().average_turns = Some(4.0);
+    let failed = observed_result("failed", 0.0, 1.0, 1.0);
+    let ranked = super::state_ops::rank_results(&spec, vec![&lean, &failed, &fast]);
+    assert_eq!(
+        ranked
+            .iter()
+            .map(|result| result.candidate_id.as_str())
+            .collect::<Vec<_>>(),
+        ["fast", "lean", "failed"]
+    );
+}
+
+#[test]
+fn built_in_tuner_rejects_provider_or_model_identity_as_a_reward_metric() {
+    use crate::trainer_bridge::{RewardContract, RewardDirection, RewardObjective};
+
+    let mut bridge = trainer_bridge("identity-metric-refusal", 1);
+    bridge.reward = RewardContract {
+        schema_id: "reward/invalid@v1".into(),
+        objectives: vec![RewardObjective {
+            metric: "provider_id".into(),
+            direction: RewardDirection::Maximize,
+            weight_micros: 1_000_000,
+        }],
+    };
+    let spec = TunerSpec {
+        schema_version: 2,
+        experiment_id: bridge.experiment_id.clone(),
+        train_dataset_digest: bridge.train.digest.clone(),
+        tunables_registry_digest: iteron_tunables::REGISTRY_DIGEST_SHA256.into(),
+        param_registry_digest: Some(iteron_tunables::param_registry_digest_sha256()),
+        tool_text_registry_digest: Some(iteron_tunables::tool_text_registry_digest_sha256()),
+        trainer_bridge: Some(bridge),
+        max_trials: 1,
+        max_concurrency: 1,
+        reduction_factor: 2,
+        round_budgets: vec![1],
+        candidates: vec![universal_candidate("identity-refusal")],
+    };
+    assert!(matches!(
+        validate_spec(&spec),
+        Err(TunerError::InvalidSpec(reason))
+            if reason.contains("does not implement one or more reward metrics")
+    ));
+}
+
+#[test]
 fn universal_candidate_rejects_a_second_address_space() {
     let root = TempRoot::new("universal-legacy-mix");
     let bridge = trainer_bridge("mixed-fixture", 1);
@@ -670,6 +1101,20 @@ fn candidate_graph_v3_materializes_every_address_and_binds_identity() {
         candidate.rendered_profile().unwrap(),
         candidate.rendered_profile().unwrap()
     );
+    let features = super::state_ops::candidate_features(&candidate);
+    assert!(features.contains_key("param/eval.tuner.max_candidates"));
+    assert_eq!(
+        features
+            .keys()
+            .filter(|feature| feature.starts_with("native/direct_config/path/"))
+            .count(),
+        1
+    );
+    assert!(
+        features
+            .keys()
+            .all(|feature| !feature.starts_with("graph/"))
+    );
 }
 
 #[test]
@@ -700,4 +1145,13 @@ fn optimization_census_runtime_addresses_are_unique_and_roundtrip() {
         document["runtime_settable"].as_u64().unwrap() as usize
     );
     assert_eq!(addresses.len(), runtime_rows);
+    for surface in ["strategy", "tool", "compaction", "memory"] {
+        assert!(
+            rows.iter().any(|row| {
+                row["disposition"] == "runtime_settable"
+                    && row["id"].as_str().is_some_and(|id| id.contains(surface))
+            }),
+            "the universal candidate space must include a runtime-settable {surface} surface"
+        );
+    }
 }

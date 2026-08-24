@@ -93,6 +93,17 @@ pub(crate) async fn capture_target_snapshot(
     Ok(capture_target(target).await?.state)
 }
 
+pub(crate) async fn capture_target_content_identity(
+    target: &Path,
+) -> Result<crate::WorkspaceCandidatePathIdentity, SnapshotError> {
+    Ok(match capture_target(target).await?.state {
+        TargetSnapshot::Missing => crate::WorkspaceCandidatePathIdentity::Missing,
+        TargetSnapshot::Existing(existing) => {
+            crate::WorkspaceCandidatePathIdentity::File(existing.digest)
+        }
+    })
+}
+
 async fn capture_target(target: &Path) -> Result<CapturedTarget, SnapshotError> {
     let path_before = match tokio::fs::symlink_metadata(target).await {
         Ok(metadata) => metadata,
@@ -317,7 +328,7 @@ impl StagedWrite {
 }
 
 pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
-    registry.push_tool(
+    registry.push_candidate_change_tool(
         ToolSpec {
             name: "write_file".into(),
             description: "Create or replace one UTF-8 text file inside the workspace. Missing \
@@ -398,9 +409,16 @@ where
     {
         return Err(format!("write_file target is a directory: {path}"));
     }
-    let expected = capture_target_snapshot(&target)
+    let captured = capture_target(&target)
         .await
         .map_err(|error| format!("snapshot {path}: {error}"))?;
+    if matches!(captured.state, TargetSnapshot::Existing(_)) && captured.bytes == content.as_bytes()
+    {
+        return Err(format!(
+            "write_file refused: content would not change target bytes: {path}"
+        ));
+    }
+    let expected = captured.state;
     let staged = StagedWrite::prepare(&target, content.as_bytes())
         .await
         .map_err(|error| format!("stage {path}: {error}"))?;

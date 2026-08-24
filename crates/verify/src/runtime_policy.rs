@@ -13,18 +13,18 @@ pub const MAX_VERIFICATION_PATHS: usize = 100_000;
 pub const MAX_VERIFICATION_COMMAND_BYTES: usize = 4_096;
 pub const MAX_PHYSICAL_VERIFIER_RUNS: usize = 64;
 pub const MAX_VERIFICATION_FEEDBACK_BYTES: usize = 2 * 1024 * 1024;
-pub const DEFAULT_VERIFIER_TIMEOUT_SECS: u64 = 300;
+pub const DEFAULT_VERIFIER_TIMEOUT_SECS: u64 = 180;
 pub const DEFAULT_VERIFICATION_REPAIR_ATTEMPTS: u32 = 3;
 const DEFAULT_VERIFICATION_FEEDBACK_COMMAND_OUTPUT_BYTES: usize = 1_000;
 const DEFAULT_VERIFICATION_FEEDBACK_ORACLE_OUTPUT_BYTES: usize = 4_000;
 const DEFAULT_VERIFICATION_FEEDBACK_TOTAL_BYTES: usize = 3_000;
-const DEFAULT_VERIFICATION_SELECTION: &str = "full";
+const DEFAULT_VERIFICATION_SELECTION: &str = "impacted";
 const DEFAULT_VERIFICATION_CHECKPOINT_TURN_BOUNDARY: bool = true;
-const DEFAULT_VERIFICATION_CHECKPOINT_BEFORE_VERIFICATION: bool = false;
+const DEFAULT_VERIFICATION_CHECKPOINT_BEFORE_VERIFICATION: bool = true;
 const DEFAULT_VERIFICATION_CHECKPOINT_MINIMUM_TURN_INTERVAL: u32 = 1;
-const DEFAULT_FLAKY_REPEAT_COUNT: u8 = 1;
+const DEFAULT_FLAKY_REPEAT_COUNT: u8 = 2;
 const DEFAULT_FLAKY_MINIMUM_DISAGREEMENTS: u8 = 1;
-const DEFAULT_FLAKY_QUARANTINE_SECONDS: u32 = 0;
+const DEFAULT_FLAKY_QUARANTINE_SECONDS: u32 = 300;
 const DEFAULT_FLAKY_REPORT_DISAGREEMENT: bool = true;
 const DEFAULT_VERIFICATION_QUORUM_VERIFIERS: u8 = 1;
 const DEFAULT_VERIFICATION_QUORUM_REQUIRED_AGREEMENT: u8 = 1;
@@ -691,6 +691,20 @@ mod tests {
         policy
             .validate()
             .expect("one second is the minimum admitted timeout");
+    }
+
+    #[test]
+    fn verification_defaults_are_fast_safe_and_flake_aware() {
+        let policy = VerificationRuntimePolicy::default();
+        assert_eq!(policy.verifier_timeout_secs, 180);
+        assert_eq!(policy.selection, VerificationSelectionMode::Impacted);
+        assert!(policy.checkpoint.before_verification);
+        assert_eq!(policy.flaky.repeat_count, 2);
+        assert_eq!(policy.flaky.minimum_disagreements, 1);
+        assert_eq!(policy.flaky.quarantine_seconds, 300);
+        assert_eq!(policy.restore.mode, VerificationRollbackMode::Off);
+        assert!(policy.restore.require_operator_confirmation);
+        policy.validate().expect("default policy remains valid");
     }
 
     #[test]

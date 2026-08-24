@@ -37,6 +37,7 @@ fn editing_only_registry(root: &Path) -> Registry {
         confine_execution: Default::default(),
         egress_allow_policy: Default::default(),
         observation_tool_policy: Default::default(),
+        observation_focus: Default::default(),
         process_launch_policy: Default::default(),
         workspace_boundary: false,
         process_control: None,
@@ -360,6 +361,23 @@ async fn d3_05_g3_write_refuses_change_during_staging_window() {
     assert_eq!(structured["kind"], "file_changed");
     assert_eq!(structured["phase"], "precommit");
     assert_eq!(std::fs::read(&target).unwrap(), b"operator replacement\n");
+    assert!(transaction_files(&root.0).is_empty());
+}
+
+#[tokio::test]
+async fn byte_identical_write_is_not_a_candidate_change() {
+    let root = TestRoot::new("write-no-change");
+    let target = root.0.join("note.txt");
+    std::fs::write(&target, b"unchanged\n").unwrap();
+
+    let error = write_workspace_file_with_hook(&root.0, "note.txt", "unchanged\n", |_| {
+        panic!("a no-op write must be refused before staging")
+    })
+    .await
+    .unwrap_err();
+
+    assert!(error.contains("would not change"));
+    assert_eq!(std::fs::read(&target).unwrap(), b"unchanged\n");
     assert!(transaction_files(&root.0).is_empty());
 }
 

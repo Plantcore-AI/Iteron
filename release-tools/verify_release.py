@@ -56,7 +56,7 @@ def parser() -> argparse.ArgumentParser:
     installers.add_argument("--manifest", required=True, type=Path)
     installers.add_argument("--receipt", required=True, type=Path)
     installers.add_argument("--posix", required=True, type=Path)
-    installers.add_argument("--windows", required=True, type=Path)
+    installers.add_argument("--windows", type=Path)
     contract = commands.add_parser("contract")
     contract.add_argument("--manifest", required=True, type=Path)
     contract.add_argument("--report", required=True, type=Path)
@@ -112,11 +112,11 @@ def exact_digest(path: Path, evidence: object, label: str, max_bytes: int) -> No
 
 
 def validate_installer_metadata(document: dict[str, object]) -> bool:
-    """Validate v3 installer metadata; return whether it is the complete new shape."""
+    """Validate that installer evidence covers every selected release platform."""
     value = document["installer"]
     if isinstance(value, dict) and set(value) == {"name", "sha256", "size"}:
-        validate_digest_evidence(value, "legacy installer", "install.sh")
-        return False
+        validate_digest_evidence(value, "POSIX installer", "install.sh")
+        return WINDOWS_TARGET not in document["targets"]
     if not isinstance(value, dict) or set(value) != set(INSTALLER_NAMES):
         raise ReleaseToolError("release manifest installer metadata has the wrong shape")
     for platform, expected_name in INSTALLER_NAMES.items():
@@ -181,11 +181,22 @@ def verify_installers(arguments: argparse.Namespace) -> None:
     document = load_manifest(arguments.manifest)
     verify_manifest_receipt(arguments.manifest, arguments.receipt, document)
     if not validate_installer_metadata(document):
-        raise ReleaseToolError("release manifest has only the historical single installer")
+        raise ReleaseToolError("release manifest does not bind every selected installer")
     installers = document["installer"]
-    for platform in INSTALLER_NAMES:
+    if set(installers) == {"name", "sha256", "size"}:
         exact_digest(
-            getattr(arguments, platform),
+            arguments.posix,
+            installers,
+            "POSIX installer",
+            MAX_INSTALLER_BYTES,
+        )
+        return
+    for platform in INSTALLER_NAMES:
+        path = getattr(arguments, platform)
+        if path is None:
+            raise ReleaseToolError(f"{platform} installer path is required")
+        exact_digest(
+            path,
             installers[platform],
             f"{platform} installer",
             MAX_INSTALLER_BYTES,
@@ -340,8 +351,15 @@ def main() -> None:
         print(verify_artifact(arguments).as_posix())
     elif arguments.command == "installers":
         verify_installers(arguments)
+        # Print what was actually verified. A POSIX-only manifest carries one installer
+        # and the caller passes no `--windows`, so printing it unconditionally raised
+        # `AttributeError: 'NoneType' object has no attribute 'as_posix'` -- after every
+        # target had built and the release environment had been approved.
+        # `verify_installers` already branches on the manifest for exactly this reason;
+        # this is the same branch, one function later.
         print(arguments.posix.as_posix())
-        print(arguments.windows.as_posix())
+        if arguments.windows is not None:
+            print(arguments.windows.as_posix())
     else:
         verify_contract(load_manifest(arguments.manifest), arguments.report)
 

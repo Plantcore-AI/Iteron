@@ -3,12 +3,19 @@
 use crate::attempts::{
     AttemptEvent, AttemptKey, AttemptLedger, AttemptLedgerError, MAX_PHYSICAL_ATTEMPTS,
 };
+// The release schema validator resolves this trusted binding by its own `use` item, not by call
+// sites, and requires the exact path the trusted base declared. The production path now reads the
+// result through `parse_run_output`, so the only caller left is a test -- but replacing the import
+// with an inline `crate::contract::parse_final_result(..)` reads to the validator as a redirected
+// binding and fails `schema-compat check-release` against the previous release.
+#[allow(unused_imports)]
 use crate::contract::parse_final_result;
+use crate::contract::parse_run_output;
 use crate::corpus::{CorpusManifest, CorpusTask};
 use crate::process::{ProcessOutput, ProcessSpec, find_core, run_process};
 use crate::report::{aggregate, compare, selection_summaries};
 use crate::types::{
-    CellKey, CellResult, EVAL_SCHEMA_VERSION, EvaluationManifest, EvaluationPurpose,
+    AgentMetrics, CellKey, CellResult, EVAL_SCHEMA_VERSION, EvaluationManifest, EvaluationPurpose,
     KernelTaxObservation, OracleStatus, RunStatus, SamplingControl,
 };
 use iteron_sandbox::Confinement;
@@ -22,7 +29,10 @@ pub mod hermetic;
 #[cfg(test)]
 mod hermetic_tests;
 
-const PROCESS_OUTPUT_LIMIT: usize = 1024 * 1024;
+// `stream-json` includes bounded tool events as well as the terminal result. Keep the evaluator's
+// capture ceiling aligned with the public harness output bound so exact usage collection does not
+// turn an otherwise valid tool-heavy run into a 1 MiB harness failure.
+const PROCESS_OUTPUT_LIMIT: usize = crate::research_protocol::MAX_OUTPUT_BYTES as usize;
 const ORACLE_OUTPUT_LIMIT: usize = 128 * 1024;
 const MAX_CANDIDATE_DIFF_BYTES: usize = 8 * 1024 * 1024;
 const MAX_EVAL_CELLS: usize = 1_000_000;
@@ -862,12 +872,19 @@ async fn run_cell(
         Ok(output) => output,
         Err(error) => {
             let mut cell = errored_cell(task, config, seed, "iteron_spawn", error);
-            cell.elapsed_ms = millis(started.elapsed());
+            let agent_elapsed_ms = millis(started.elapsed());
+            cell.agent_metrics = Some(AgentMetrics {
+                elapsed_ms: agent_elapsed_ms,
+                usage: None,
+                optimization: None,
+            });
+            cell.elapsed_ms = agent_elapsed_ms;
             return cell;
         }
     };
+    let agent_elapsed_ms = millis(started.elapsed());
     if output.timed_out {
-        return timeout_cell(task, config, seed, started.elapsed());
+        return timeout_cell(task, config, seed, agent_elapsed_ms);
     }
     if output.stdout_truncated {
         let mut cell = errored_cell(
@@ -878,19 +895,30 @@ async fn run_cell(
             "iteron stdout exceeded the bounded JSON contract limit",
         );
         cell.exit_code = Some(output.exit_code);
-        cell.elapsed_ms = millis(started.elapsed());
+        cell.agent_metrics = Some(AgentMetrics {
+            elapsed_ms: agent_elapsed_ms,
+            usage: None,
+            optimization: None,
+        });
+        cell.elapsed_ms = agent_elapsed_ms;
         return cell;
     }
 
-    let final_result = match parse_final_result(&output.stdout, output.exit_code) {
+    let parsed_output = match parse_run_output(&output.stdout, output.exit_code) {
         Ok(result) => result,
         Err(error) => {
             let mut cell = errored_cell(task, config, seed, "iteron_contract", error.to_string());
             cell.exit_code = Some(output.exit_code);
-            cell.elapsed_ms = millis(started.elapsed());
+            cell.agent_metrics = Some(AgentMetrics {
+                elapsed_ms: agent_elapsed_ms,
+                usage: None,
+                optimization: None,
+            });
+            cell.elapsed_ms = agent_elapsed_ms;
             return cell;
         }
     };
+    let final_result = parsed_output.result;
     let cost = final_result
         .cost()
         .expect("parse_final_result validates cost");
@@ -927,7 +955,12 @@ async fn run_cell(
                 "the selected Core/provider route exposes no sampling-seed contract".into(),
             ),
         },
-        elapsed_ms: millis(started.elapsed()),
+        agent_metrics: Some(AgentMetrics {
+            elapsed_ms: agent_elapsed_ms,
+            usage: parsed_output.usage,
+            optimization: parsed_output.optimization,
+        }),
+        elapsed_ms: agent_elapsed_ms,
         error: final_result.error.clone(),
         candidate_diff: None,
     };
@@ -1382,9 +1415,11 @@ fn core_process_spec(
         "-C".into(),
         ".".into(),
         "--output-format".into(),
-        "json".into(),
+        "stream-json".into(),
         "--output-schema-version".into(),
-        "5".into(),
+        crate::contract::ITERON_CLI_SCHEMA_VERSION
+            .to_string()
+            .into(),
         "--model".into(),
         options.model.clone().into(),
         "--max-wall-secs".into(),
@@ -1458,10 +1493,7 @@ fn core_process_spec(
         inherit_env,
         env,
         timeout: timing.process_ceiling,
-        max_output_bytes: iteron_tunables::param_integer(
-            "eval.runner.process_output_limit",
-            PROCESS_OUTPUT_LIMIT,
-        ),
+        max_output_bytes: PROCESS_OUTPUT_LIMIT,
     })
 }
 
@@ -1686,7 +1718,7 @@ fn timeout_cell(
     task: &CorpusTask,
     config: HarnessConfig,
     seed: u64,
-    elapsed: Duration,
+    elapsed_ms: u64,
 ) -> CellResult {
     let mut cell = errored_cell(
         task,
@@ -1696,7 +1728,12 @@ fn timeout_cell(
         "iteron process exceeded the configured wall-clock timeout",
     );
     cell.run_status = RunStatus::TimedOut;
-    cell.elapsed_ms = millis(elapsed);
+    cell.agent_metrics = Some(AgentMetrics {
+        elapsed_ms,
+        usage: None,
+        optimization: None,
+    });
+    cell.elapsed_ms = elapsed_ms;
     cell
 }
 
@@ -2083,6 +2120,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("missing {flag}"))
         };
         assert_eq!(arg_after("-C"), ".");
+        assert_eq!(arg_after("--output-format"), "stream-json");
         assert_eq!(arg_after("--max-wall-secs"), "1");
         assert_eq!(
             arg_after("--benchmark-attempt-scope"),

@@ -38,7 +38,7 @@ mod token_estimator;
 pub use compact::{
     CompactionPlan, CompactionPolicy, ContextEstimate, RequestEstimator, TokenEstimateProvenance,
     compaction_seed, compaction_summary_message, compaction_summary_range,
-    estimate_request_context, replay_compaction,
+    estimate_request_context, replay_compaction, result_budget_class,
 };
 pub use compaction_runtime::{CompactionHysteresis, SummaryProfile, SummaryTopology};
 pub use context_assembly::{assemble_recorded_context, assemble_system_prompt};
@@ -85,20 +85,22 @@ pub use memory_trace::{
 };
 pub use outline::{repo_outline, repo_outline_for_task, repo_outline_for_task_with_limits};
 pub use runtime_policy::{
-    ContextBudgetClass, ContextBudgetPolicy, ContextBudgetViolation, ContextComponentUsage,
-    ContextMaterializationPolicy,
+    ContextBudgetClass, ContextBudgetPolicy, ContextBudgetPressure, ContextBudgetViolation,
+    ContextComponentUsage, ContextMaterializationPolicy,
 };
 pub use token_calibration::{
     CalibrationObservation, RouteTokenCalibration, TOKEN_CALIBRATION_SCHEMA_VERSION,
     TokenCalibrationError, TokenCalibrationSnapshot, TokenCalibrationStore,
 };
 pub use token_estimator::{
-    ROUTE_AWARE_ESTIMATOR_POLICY_ID, TokenEstimatorPolicy, TokenEstimatorProfile,
+    DECODED_PIXEL_IMAGE_ESTIMATOR_POLICY_ID, ENCODED_BYTES_IMAGE_ESTIMATOR_POLICY_ID,
+    ImageTokenEstimate, ImageTokenEstimateProvenance, OBSERVED_USAGE_ESTIMATOR_POLICY_ID,
+    TokenEstimatorPolicy, TokenEstimatorProfile,
 };
 
-/// A fast, provider-agnostic token upper bound. Real tokenization is the provider's; until a route
-/// is known this uses four bytes/token with a 15% admission reserve and a multilingual scalar
-/// floor. It remains explicitly inexact and can be reconciled with actual provider usage.
+/// A fast, provider-agnostic token upper bound. Real tokenization is the provider's; this uses four
+/// bytes/token with a 15% admission reserve and a multilingual scalar floor. It remains explicitly
+/// inexact and is reconciled with actual provider usage by the session-scoped calibration store.
 pub fn estimate_tokens(text: &str) -> usize {
     TokenEstimatorProfile::GenericBytesPerToken35.estimate(text)
 }

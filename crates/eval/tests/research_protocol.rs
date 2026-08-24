@@ -830,7 +830,7 @@ impl Drop for ExecuteHarness {
         self.input.take();
         // The production wall clock is ten seconds. Poll beyond that bound so a stuck adapter is
         // observed as its typed timeout instead of turning workspace scheduling into a test race.
-        let deadline = Instant::now() + Duration::from_secs(15);
+        let deadline = Instant::now() + liveness(15);
         loop {
             match self.child.try_wait() {
                 Ok(Some(_)) => break,
@@ -897,7 +897,7 @@ fn wait_for_result(
     profile_sha256: &str,
     run_id: &str,
 ) -> ResearchResponseEnvelope {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + liveness(15);
     let mut ordinal = 0_u32;
     loop {
         ordinal += 1;
@@ -931,8 +931,33 @@ fn wait_for_result(
 }
 
 #[cfg(unix)]
+/// Liveness bounds for this file, scaled by the machine rather than fixed.
+///
+/// Each of these waits for a state that will arrive -- a fixture file the child writes, a process
+/// that will exit -- so nothing weakens when the bound grows; it exists so a genuine hang fails as
+/// a test instead of hanging the suite.
+///
+/// Three fixed seconds was enough for this file alone and not enough under
+/// `cargo test --workspace --all-targets`, where the child competes with the rest of the suite for
+/// cores: `execute_cancel_and_server_drop_kill_and_reap_the_child` failed there on
+/// "fixture file was not created" while passing 3/3 alone and 2/2 for the whole file.
+///
+/// `ITERON_TEST_TIMEOUT_SCALE` is the same variable `tui_pty.rs` and the release workflow already
+/// use to let a loaded runner say how slow it is.
+fn liveness(base_secs: u64) -> Duration {
+    static SCALE: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    let scale = *SCALE.get_or_init(|| {
+        std::env::var("ITERON_TEST_TIMEOUT_SCALE")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<u64>().ok())
+            .filter(|scale| (1..=60).contains(scale))
+            .unwrap_or(1)
+    });
+    Duration::from_secs(base_secs.saturating_mul(scale))
+}
+
 fn wait_for_file(path: &Path) {
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = Instant::now() + liveness(12);
     while !path.exists() {
         assert!(Instant::now() < deadline, "fixture file was not created");
         thread::sleep(Duration::from_millis(10));
@@ -1939,7 +1964,6 @@ for binding in materialization["production_plan"]["implementations"]:
         stdin=subprocess.DEVNULL,
         capture_output=True,
         check=False,
-        timeout=1,
     )
     marker = completed.stdout.decode("utf-8", "strict")
     terminal = completed.returncode == 0 and marker == "fixture-implementation-observed\n"
@@ -2169,7 +2193,7 @@ PY"#,
             },
         ));
         assert!(matches!(planned.payload, ResearchResponse::Run { .. }));
-        let deadline = Instant::now() + Duration::from_secs(3);
+        let deadline = Instant::now() + liveness(12);
         loop {
             let result = session.handle(envelope(
                 &format!("poll-{suffix}"),

@@ -23,12 +23,12 @@ pub struct BackoffPolicy {
 
 impl Default for BackoffPolicy {
     fn default() -> Self {
-        // Conservative: a handful of retries over ~30s, enough to ride out a rate-limit window
-        // without hammering. Real values belong in config (R10).
+        // Three bounded attempts absorb a short transient without turning one interactive action
+        // into a long retry tail. Real values belong in config (R10).
         BackoffPolicy {
             base_ms: iteron_tunables::param_integer("sched.backoff.default_base_ms", 500),
             cap_ms: iteron_tunables::param_integer("sched.backoff.default_cap_ms", 30_000),
-            max_attempts: iteron_tunables::param_integer("sched.backoff.default_max_attempts", 6),
+            max_attempts: iteron_tunables::param_integer("sched.backoff.default_max_attempts", 3),
         }
     }
 }
@@ -193,6 +193,14 @@ mod tests {
         assert_eq!(full_jitter(&p, 2, 0.0).as_millis(), 0);
         let hi = full_jitter(&p, 2, 0.999).as_millis() as u64;
         assert!(hi <= ceiling_ms(&p, 2), "jitter never exceeds the ceiling");
+    }
+
+    #[test]
+    fn interactive_backoff_defaults_to_three_attempts() {
+        let policy = BackoffPolicy::default();
+        assert_eq!(policy.base_ms, 500);
+        assert_eq!(policy.cap_ms, 30_000);
+        assert_eq!(policy.max_attempts, 3);
     }
 
     #[test]

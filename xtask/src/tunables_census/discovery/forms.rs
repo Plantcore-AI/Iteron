@@ -220,6 +220,16 @@ pub(super) fn source_invariant_disposition(
             "the session-delta hard envelope bounds crash recovery and index compaction",
         ));
     }
+    if identity.contains("crates/ctx/src/memory.rs")
+        && identity.contains("membudget::fit_content_bytes")
+        && (identity.contains("index_bytes") || identity.contains("recall_bytes"))
+        && value == "0"
+    {
+        return Some(invariant(
+            InvariantKind::HardBudget,
+            "a zero admitted memory-content ceiling must materialize zero index and recall bytes; configurable memory budgets remain separate runtime-settable inputs",
+        ));
+    }
     if ((identity.contains("crates/tools/src/process/supervisor.rs")
         && identity.contains("supervisor::exec_yield"))
         || identity.contains("tools.process.supervisor.supervisor.exec.yield"))

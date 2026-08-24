@@ -117,9 +117,9 @@ impl Agent {
         );
         let estimate = self.calibrated_context_estimate(estimate);
         let trigger = self.compaction.effective_trigger_tokens(
-            self.model_context_window,
+            self.execution_context_window(),
             self.model_max_output_tokens
-                .unwrap_or(crate::runtime_tunables::core_facts::UNKNOWN_MODEL_OUTPUT_TOKENS),
+                .unwrap_or(crate::runtime_tunables::core_facts::DEFAULT_REQUEST_OUTPUT_TOKENS),
         );
         estimate.total_tokens <= self.compaction.hysteresis.exit_threshold(trigger)
     }

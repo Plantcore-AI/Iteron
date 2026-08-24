@@ -107,6 +107,7 @@ fn ui_variants() -> Vec<UiEvent> {
                 framing_tokens: 4,
                 total_tokens: 10,
                 provenance: iteron_ctx::TokenEstimateProvenance::HeuristicBytesPerToken35,
+                components: None,
             },
             model_context_window: Some(200_000),
             reserved_output_tokens: 8_192,

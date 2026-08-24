@@ -40,8 +40,10 @@ use owner::OwnerSnapshot;
 use std::path::Path;
 
 /// Exact context owner projection shared by value and constraint collection. `actual_window` is
-/// provider-attested; `execution_window` is the conservative local ceiling used when metadata is
-/// unknown and matches `EffectiveCore`'s compaction-trigger + family-19 fallback byte-for-byte.
+/// provider-attested; `execution_window` is the selected generic policy value. The default uses
+/// the complete attested window rather than a model- or provider-specific local cap. A profile or
+/// tuner candidate can still narrow family 96 under the independently attested capability
+/// constraint. Unknown metadata retains `EffectiveCore`'s compaction-trigger + family-19 fallback.
 pub(super) fn context_owner_window(
     input: &ProviderProcessFactsInput<'_>,
 ) -> Result<(Option<usize>, usize, u32), ProviderProcessFactError> {
@@ -50,20 +52,32 @@ pub(super) fn context_owner_window(
         .context_window_tokens
         .filter(|window| *window > 0)
         .and_then(|window| usize::try_from(window.min(10_000_000)).ok());
-    let output_reserve = input
-        .model_capabilities
-        .max_output_tokens
-        .unwrap_or(super::core_facts::UNKNOWN_MODEL_OUTPUT_TOKENS);
+    let output_reserve = super::core_facts::default_request_output_tokens(
+        input.model_capabilities.max_output_tokens,
+    );
     let output_reserve_usize = usize::try_from(output_reserve)
         .map_err(|_| ProviderProcessFactError::IntegerOverflow("max_output_tokens"))?;
-    let execution_window = actual_window.unwrap_or_else(|| {
+    let attested_or_fallback_window = actual_window.unwrap_or_else(|| {
         input
             .compaction
             .trigger_tokens
             .saturating_add(output_reserve_usize)
             .min(10_000_000)
     });
+    let execution_window = attested_or_fallback_window;
     Ok((actual_window, execution_window, output_reserve))
+}
+
+#[cfg(test)]
+mod context_window_tests {
+    use crate::runtime_tunables::core_facts::default_request_output_tokens;
+
+    #[test]
+    fn provider_maximum_only_narrows_the_interactive_request_default() {
+        assert_eq!(default_request_output_tokens(Some(384_000)), 8_192);
+        assert_eq!(default_request_output_tokens(Some(4_096)), 4_096);
+        assert_eq!(default_request_output_tokens(None), 8_192);
+    }
 }
 
 /// Verification facts already chosen by the verifier owner. Absence and inability to query the
@@ -252,12 +266,18 @@ fn validate_input(input: &ProviderProcessFactsInput<'_>) -> Result<(), ProviderP
             }
         }
     }
+    let verification_dispatches = matches!(
+        input.verification,
+        VerificationOwnerFacts::Configured { .. }
+    );
     if !input
         .verification_policy
         .restore
         .require_operator_confirmation
-        || u32::from(input.verification_policy.quorum.verifiers) > input.budget.max_turns
-        || u32::from(input.verification_policy.flaky.repeat_count) > input.budget.max_turns
+        || (verification_dispatches
+            && (u32::from(input.verification_policy.quorum.verifiers) > input.budget.max_turns
+                || u32::from(input.verification_policy.flaky.repeat_count)
+                    > input.budget.max_turns))
     {
         return Err(ProviderProcessFactError::InvalidVerificationPolicy);
     }

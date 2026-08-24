@@ -12,56 +12,61 @@
 /// Largest file `read_file` will open at all; above this the read is refused rather than truncated.
 const DEFAULT_READ_FILE_SOURCE_MAX_BYTES: usize = 8 * 1024 * 1024;
 /// Bytes of one `read_file` window kept in context — the truncation point, not the file limit.
-const DEFAULT_READ_FILE_OUTPUT_MAX_BYTES: usize = 400_000;
-/// Line ceiling for one `read_file` window; the byte cap is normally what binds first.
-const DEFAULT_READ_FILE_MAX_LINES: usize = 1_000_000;
+///
+/// Coding traces showed an omitted `limit` admitting 60 KiB from one read and then replaying that
+/// result through every later provider request. 32 KiB is still a useful source window (and is
+/// explicitly pageable) without letting one observation dominate the transcript.
+const DEFAULT_READ_FILE_OUTPUT_MAX_BYTES: usize = 32 * 1024;
+/// Line ceiling for one `read_file` window. Callers can continue from the exact offset named by
+/// the truncation marker, so a bounded default loses no reachability.
+const DEFAULT_READ_FILE_MAX_LINES: usize = 400;
 
 /// Directory levels `list_dir` descends. Shallow, because a deep listing answers no question a
 /// targeted glob would not answer more cheaply.
-const DEFAULT_LIST_DIR_MAX_DEPTH: usize = 6;
+const DEFAULT_LIST_DIR_MAX_DEPTH: usize = 3;
 /// Entries returned by one `list_dir` before the listing is cut.
-const DEFAULT_LIST_DIR_MAX_ENTRIES: usize = 400;
+const DEFAULT_LIST_DIR_MAX_ENTRIES: usize = 200;
 /// Byte ceiling on rendered `list_dir` output.
-const DEFAULT_LIST_DIR_OUTPUT_MAX_BYTES: usize = 1_000_000;
+const DEFAULT_LIST_DIR_OUTPUT_MAX_BYTES: usize = 32 * 1024;
 
 /// Directory levels `glob` walks; deeper than `list_dir` because a pattern is already selective.
 const DEFAULT_GLOB_MAX_DEPTH: usize = 20;
 /// Paths returned by one `glob` before the result set is cut.
-const DEFAULT_GLOB_MAX_RESULTS: usize = 400;
+const DEFAULT_GLOB_MAX_RESULTS: usize = 200;
 /// Byte ceiling on rendered `glob` output.
-const DEFAULT_GLOB_OUTPUT_MAX_BYTES: usize = 1_000_000;
+const DEFAULT_GLOB_OUTPUT_MAX_BYTES: usize = 32 * 1024;
 
 /// Files a repository map may summarize.
 const DEFAULT_REPO_MAP_MAX_FILES: usize = 1_024;
 /// Directory levels a repository map descends.
 const DEFAULT_REPO_MAP_MAX_DEPTH: u8 = 8;
 /// Token budget a repository map is allowed to occupy in context.
-const DEFAULT_REPO_MAP_MAX_TOKENS: usize = 6_000;
+const DEFAULT_REPO_MAP_MAX_TOKENS: usize = 4_000;
 
 /// Response body `web_fetch` will read before truncating.
-const DEFAULT_WEB_FETCH_BODY_MAX_BYTES: usize = 1_000_000;
+const DEFAULT_WEB_FETCH_BODY_MAX_BYTES: usize = 128 * 1024;
 /// Same-host redirects followed on one fetch; cross-host hops are returned, never followed.
-const DEFAULT_WEB_FETCH_MAX_REDIRECTS: usize = 5;
+const DEFAULT_WEB_FETCH_MAX_REDIRECTS: usize = 3;
 /// Overall deadline for one fetch, connect phase included.
-const DEFAULT_WEB_FETCH_TIMEOUT_SECS: u64 = 60;
+const DEFAULT_WEB_FETCH_TIMEOUT_SECS: u64 = 30;
 /// Line ceiling on extracted page text.
-const DEFAULT_WEB_FETCH_MAX_LINES: usize = 15_000;
+const DEFAULT_WEB_FETCH_MAX_LINES: usize = 3_000;
 
 /// Matches `grep` reports before the search is declared incomplete.
-const DEFAULT_GREP_MAX_MATCHES: usize = 1_000;
+const DEFAULT_GREP_MAX_MATCHES: usize = 200;
 /// Bytes retained per reported match.
-const DEFAULT_GREP_SNIPPET_MAX_BYTES: usize = 1_024;
+const DEFAULT_GREP_SNIPPET_MAX_BYTES: usize = 512;
 /// Byte ceiling on rendered `grep` output across all matches.
-const DEFAULT_GREP_OUTPUT_MAX_BYTES: usize = 512 * 1024;
+const DEFAULT_GREP_OUTPUT_MAX_BYTES: usize = 64 * 1024;
 
 /// Deadline for one Git invocation, after which the child process group is torn down.
-const DEFAULT_GIT_TIMEOUT_SECS: u64 = 30;
+const DEFAULT_GIT_TIMEOUT_SECS: u64 = 20;
 /// Byte ceiling on captured Git output.
 const DEFAULT_GIT_OUTPUT_MAX_BYTES: usize = 64 * 1024;
 /// Entries reported by `git_status` before the listing is cut.
-const DEFAULT_GIT_STATUS_MAX_ENTRIES: usize = 2_048;
+const DEFAULT_GIT_STATUS_MAX_ENTRIES: usize = 512;
 /// Commits reported by `git_log` before the listing is cut.
-const DEFAULT_GIT_LOG_MAX_ENTRIES: usize = 100;
+const DEFAULT_GIT_LOG_MAX_ENTRIES: usize = 50;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReadFilePolicy {
@@ -107,6 +112,9 @@ pub struct ShellPolicy {
 }
 
 const DEFAULT_SHELL_TIMEOUT_SECONDS: u64 = 120;
+/// Capture enough head/tail evidence for compiler and test diagnostics without retaining an
+/// eight-megabyte stream that the model-facing process boundary will reduce to 30 KiB anyway.
+const DEFAULT_SHELL_OUTPUT_BYTES_PER_STREAM: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GrepPolicy {
@@ -274,8 +282,20 @@ impl Default for ObservationToolPolicy {
                     "tools.execution_policy.default_shell_timeout_seconds",
                     DEFAULT_SHELL_TIMEOUT_SECONDS,
                 ),
-                stdout_max_bytes: iteron_sandbox::Confinement::UNCONFINED_MAX_OUTPUT_BYTES,
-                stderr_max_bytes: iteron_sandbox::Confinement::UNCONFINED_MAX_OUTPUT_BYTES,
+                stdout_max_bytes: iteron_tunables::param_usize(
+                    "tools.execution_policy.default_shell_output_bytes_per_stream",
+                    iteron_tunables::param_integer(
+                        "tools.execution_policy.default_shell_output_bytes_per_stream",
+                        DEFAULT_SHELL_OUTPUT_BYTES_PER_STREAM,
+                    ),
+                ),
+                stderr_max_bytes: iteron_tunables::param_usize(
+                    "tools.execution_policy.default_shell_output_bytes_per_stream",
+                    iteron_tunables::param_integer(
+                        "tools.execution_policy.default_shell_output_bytes_per_stream",
+                        DEFAULT_SHELL_OUTPUT_BYTES_PER_STREAM,
+                    ),
+                ),
             },
             grep: GrepPolicy {
                 max_matches: iteron_tunables::param_usize(
@@ -423,4 +443,26 @@ pub enum ObservationToolPolicyError {
     Invalid(&'static str),
     #[error("observation-tool runtime policy was already installed")]
     AlreadyInstalled,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn coding_defaults_bound_model_visible_observation_amplification() {
+        let policy = ObservationToolPolicy::default();
+        assert_eq!(policy.read_file.output_max_bytes, 32 * 1024);
+        assert_eq!(policy.read_file.max_lines, 400);
+        assert_eq!(policy.list_dir.max_entries, 200);
+        assert_eq!(policy.list_dir.output_max_bytes, 32 * 1024);
+        assert_eq!(policy.glob.max_results, 200);
+        assert_eq!(policy.glob.output_max_bytes, 32 * 1024);
+        assert_eq!(policy.grep.max_matches, 200);
+        assert_eq!(policy.grep.output_max_bytes, 64 * 1024);
+        assert_eq!(policy.web_fetch.body_max_bytes, 128 * 1024);
+        assert_eq!(policy.shell.stdout_max_bytes, 64 * 1024);
+        assert_eq!(policy.shell.stderr_max_bytes, 64 * 1024);
+        assert!(policy.validate().is_ok());
+    }
 }

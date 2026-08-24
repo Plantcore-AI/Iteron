@@ -10,6 +10,12 @@ use iteron_protocol::{ImageContent, ImageMediaType};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct InspectedImageEvidence {
+    pub raw_bytes: usize,
+    pub total_pixels: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub(crate) enum BinaryInspector {
     Png,
@@ -144,13 +150,26 @@ impl BinaryMediaInspectionPolicy {
 
     /// Decode and inspect one protocol image under both independently pinned envelopes.
     ///
-    /// Returning the decoded byte count lets the caller enforce the aggregate family-68 ceiling
+    /// Returning the bounded decoder's dimension evidence lets context accounting use pixels
     /// without decoding attacker-controlled base64 a second time.
+    #[allow(
+        dead_code,
+        reason = "kept for source-included compatibility tests; production consumes typed evidence"
+    )]
     pub(crate) fn inspect_content_with_envelope(
         &self,
         image: &ImageContent,
         envelope: MultimodalDecodeEnvelope,
     ) -> Result<usize, ImageInputErrorKind> {
+        self.inspect_content_evidence_with_envelope(image, envelope)
+            .map(|evidence| evidence.raw_bytes)
+    }
+
+    pub(crate) fn inspect_content_evidence_with_envelope(
+        &self,
+        image: &ImageContent,
+        envelope: MultimodalDecodeEnvelope,
+    ) -> Result<InspectedImageEvidence, ImageInputErrorKind> {
         let per_image_limit = self.max_input_bytes.min(envelope.per_image_raw_bytes);
         let max_encoded = per_image_limit
             .checked_add(2)
@@ -166,8 +185,14 @@ impl BinaryMediaInspectionPolicy {
         if bytes.len() > per_image_limit {
             return Err(ImageInputErrorKind::FileTooLarge);
         }
-        self.inspect_as_with_envelope(image.media_type, &bytes, envelope)?;
-        Ok(bytes.len())
+        let decoded = self.inspect_as_with_envelope(image.media_type, &bytes, envelope)?;
+        if decoded.width == 0 || decoded.height == 0 || decoded.frames == 0 {
+            return Err(ImageInputErrorKind::InvalidImage);
+        }
+        Ok(InspectedImageEvidence {
+            raw_bytes: bytes.len(),
+            total_pixels: decoded.total_pixels,
+        })
     }
 
     fn inspect_as(
@@ -191,7 +216,7 @@ impl BinaryMediaInspectionPolicy {
         media_type: ImageMediaType,
         bytes: &[u8],
         envelope: MultimodalDecodeEnvelope,
-    ) -> Result<(), ImageInputErrorKind> {
+    ) -> Result<super::decode::DecodedImageEvidence, ImageInputErrorKind> {
         let inspector = self
             .routes
             .get(media_type.as_str())

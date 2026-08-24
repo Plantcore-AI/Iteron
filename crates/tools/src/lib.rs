@@ -28,11 +28,13 @@ mod multi_file_patch;
 mod multi_file_patch_error;
 mod multi_file_patch_input;
 mod process;
+mod repair_evidence;
 mod schema;
 mod schema_error;
 mod shell;
 mod skill;
 mod tool_policy;
+mod tool_purpose;
 mod tool_search;
 mod web;
 mod workflow_tool;
@@ -63,15 +65,128 @@ pub use process::{
     ProcessCwdPolicy, ProcessCwdScope, ProcessHealth, ProcessLaunchPolicy, ProcessLifecycleKind,
     ProcessLifecycleNotice, ProcessLifecycleObserver, ProcessPolicyError, ProcessRuntimePolicy,
 };
+pub use repair_evidence::{
+    RepairEvidenceReceipt, SUBMIT_REPAIR_EVIDENCE, tool_result_repair_evidence,
+};
 pub use tool_policy::{
     RegisteredToolPolicy, TOOL_POLICY_SLOT_VERSION, ToolPolicy, ToolPolicyDecision,
     ToolPolicyError, ToolPolicyObservation, ToolPolicyProposal,
+};
+use tool_purpose::ToolPurpose;
+pub use tool_purpose::{
+    WORKSPACE_EVIDENCE_COMPARED_MARKER, WORKSPACE_EVIDENCE_INSUFFICIENT_MARKER, WorkspaceEvidence,
+    WorkspaceEvidenceInsufficiencyReason, WorkspaceEvidenceOutcome, tool_result_workspace_evidence,
+    workspace_evidence, workspace_evidence_outcome,
 };
 
 /// Dispatch->terminal interval reported when the clock never observed a dispatch: a typed
 /// pre-dispatch rejection spent no time in the MCP transport, so the interval is empty rather
 /// than absent.
 const MCP_PRE_DISPATCH_TERMINAL_MS: u64 = 0;
+const MAX_OBSERVATION_FOCUS_FILES: usize = 4;
+const MAX_OBSERVATION_FOCUS_IDENTIFIERS: usize = 512;
+
+fn max_observation_focus_files() -> usize {
+    iteron_tunables::param_usize(
+        "tools.lib.max_observation_focus_files",
+        MAX_OBSERVATION_FOCUS_FILES,
+    )
+}
+
+fn max_observation_focus_identifiers() -> usize {
+    iteron_tunables::param_usize(
+        "tools.lib.max_observation_focus_identifiers",
+        MAX_OBSERVATION_FOCUS_IDENTIFIERS,
+    )
+}
+
+#[derive(Clone)]
+struct ObservationFocusEntry {
+    path: PathBuf,
+    identifiers: Vec<String>,
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct ObservationFocusSnapshot {
+    paths: Vec<PathBuf>,
+    identifiers: std::collections::BTreeSet<String>,
+}
+
+impl ObservationFocusSnapshot {
+    pub(crate) fn exact_path_recency(&self, path: &Path) -> Option<usize> {
+        self.paths.iter().position(|focused| focused == path)
+    }
+
+    pub(crate) fn relevance(&self, text: &str) -> u64 {
+        focus_identifiers(text)
+            .into_iter()
+            .filter(|identifier| self.identifiers.contains(identifier))
+            .map(|identifier| {
+                let length = u64::try_from(identifier.len()).unwrap_or(u64::MAX).min(32);
+                length.saturating_mul(length)
+            })
+            .sum()
+    }
+}
+
+/// A tiny session-local working-set prior shared only by native observation tools. It contains no
+/// model or provider rule: exact reads contribute bounded identifiers, and later broad searches
+/// can retain locally coherent hits instead of spending their result budget in path order.
+#[derive(Default)]
+pub(crate) struct ObservationFocus {
+    entries: std::sync::Mutex<std::collections::VecDeque<ObservationFocusEntry>>,
+    revision: std::sync::atomic::AtomicU64,
+}
+
+impl ObservationFocus {
+    pub(crate) fn observe(&self, path: PathBuf, content: &str) {
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        entries.retain(|entry| entry.path != path);
+        entries.push_front(ObservationFocusEntry {
+            path,
+            identifiers: focus_identifiers(content),
+        });
+        entries.truncate(max_observation_focus_files());
+        self.revision
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    }
+
+    pub(crate) fn snapshot(&self) -> ObservationFocusSnapshot {
+        let entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        ObservationFocusSnapshot {
+            paths: entries.iter().map(|entry| entry.path.clone()).collect(),
+            identifiers: entries
+                .iter()
+                .flat_map(|entry| entry.identifiers.iter().cloned())
+                .collect(),
+        }
+    }
+
+    pub(crate) fn revision(&self) -> u64 {
+        self.revision.load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
+fn focus_identifiers(text: &str) -> Vec<String> {
+    let mut identifiers = text
+        .split(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
+        .filter(|identifier| {
+            identifier.len() >= 4 && identifier.bytes().any(|byte| byte.is_ascii_alphabetic())
+        })
+        .map(str::to_ascii_lowercase)
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    identifiers.sort_by(|left, right| right.len().cmp(&left.len()).then_with(|| left.cmp(right)));
+    identifiers.truncate(max_observation_focus_identifiers());
+    identifiers
+}
 
 /// Shared hardened Git observation used by the registry tool and the operator `/diff` surface.
 /// It remains an observable process effect; callers outside the registry must provide their own
@@ -105,6 +220,24 @@ pub async fn git_environment_observation(root: &Path) -> Result<String, String> 
 /// partial record or mistakes a bounded prefix for the complete workspace.
 pub async fn git_status_porcelain_observation(root: &Path) -> Result<Vec<u8>, String> {
     git_changes::run_git_status_porcelain(root).await
+}
+
+/// Exact, bounded content identity for one structured candidate-change target. This reuses the
+/// same no-follow, change-during-read, and file-size guard as the write transaction itself, so a
+/// controller can distinguish an outstanding candidate from a byte-for-byte revert without
+/// reading unrelated workspace state or mistaking pre-existing dirty work for agent progress.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspaceCandidatePathIdentity {
+    Missing,
+    File([u8; 32]),
+}
+
+pub async fn workspace_candidate_path_identity(
+    path: &Path,
+) -> Result<WorkspaceCandidatePathIdentity, String> {
+    write_file::capture_target_content_identity(path)
+        .await
+        .map_err(|error| format!("candidate target identity: {error}"))
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -193,6 +326,7 @@ pub struct Tool {
     pub spec: ToolSpec,
     run: Box<dyn Fn(ToolUse, PathBuf) -> registeredfut::BoxFut + Send + Sync>,
     output_owner: ToolOutputOwner,
+    purpose: ToolPurpose,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -226,6 +360,7 @@ pub struct Registry {
     confine_execution: std::sync::Arc<std::sync::atomic::AtomicBool>,
     egress_allow_policy: std::sync::Arc<std::sync::OnceLock<Option<EgressAllowPolicy>>>,
     observation_tool_policy: std::sync::Arc<std::sync::OnceLock<ObservationToolPolicy>>,
+    observation_focus: std::sync::Arc<ObservationFocus>,
     process_launch_policy:
         std::sync::Arc<std::sync::OnceLock<process::InstalledProcessLaunchPolicy>>,
     /// Fail-closed path scope used only by a host-provisioned isolated writer. Ordinary operator
@@ -331,6 +466,7 @@ impl Registry {
             confine_execution: Default::default(),
             egress_allow_policy: Default::default(),
             observation_tool_policy: Default::default(),
+            observation_focus: Default::default(),
             process_launch_policy: Default::default(),
             workspace_boundary: false,
             process_control: None,
@@ -338,6 +474,7 @@ impl Registry {
             deferred_tool_catalog: None,
         };
         fs_tools::register(&mut r)?;
+        repair_evidence::register(&mut r)?;
         git::register(&mut r)?;
         mem::register(&mut r)?;
         skill::register(&mut r)?;
@@ -385,6 +522,7 @@ impl Registry {
             confine_execution: Default::default(),
             egress_allow_policy: Default::default(),
             observation_tool_policy: Default::default(),
+            observation_focus: Default::default(),
             process_launch_policy: Default::default(),
             workspace_boundary: true,
             process_control: None,
@@ -418,6 +556,7 @@ impl Registry {
             confine_execution: Default::default(),
             egress_allow_policy: Default::default(),
             observation_tool_policy: Default::default(),
+            observation_focus: Default::default(),
             process_launch_policy: Default::default(),
             workspace_boundary: false,
             process_control: None,
@@ -425,6 +564,7 @@ impl Registry {
             deferred_tool_catalog: None,
         };
         fs_tools::register(&mut r)?; // read_file, list_dir, grep, repo_map only
+        repair_evidence::register(&mut r)?; // source-anchored, read-only evidence receipts
         git::register(&mut r)?; // confined Git observations (Effecting/ReadOnly)
         mem::register(&mut r)?; // read_memory (Pure/ReadOnly) — progressive-disclosure recall
         skill::register(&mut r)?; // use_skill (Pure/ReadOnly) — on-demand skill load
@@ -859,6 +999,10 @@ impl Registry {
         self.observation_tool_policy.clone()
     }
 
+    pub(crate) fn observation_focus_handle(&self) -> std::sync::Arc<ObservationFocus> {
+        self.observation_focus.clone()
+    }
+
     pub fn installed_observation_tool_policy(&self) -> Option<ObservationToolPolicy> {
         self.observation_tool_policy.get().copied()
     }
@@ -999,9 +1143,33 @@ impl Registry {
         // during exploration is served from cache instead of hitting the filesystem again.
         // Every registry-mediated effect bumps the generation; ambient changes are not inferred.
         if is_pure {
-            let pending = match self.memo.key(&call.name, &call.input) {
+            // Broad grep rendering is relevance-ranked against the bounded recent exact-read
+            // working set. Bind that revision into its logical memo identity without exposing a
+            // private controller field through the public tool schema.
+            let memo_input = (call.name == "grep").then(|| {
+                let mut input = call.input.clone();
+                if let Some(object) = input.as_object_mut() {
+                    object.insert(
+                        "__iteron_observation_focus_revision".into(),
+                        self.observation_focus.revision().into(),
+                    );
+                }
+                input
+            });
+            let pending = match self
+                .memo
+                .key(&call.name, memo_input.as_ref().unwrap_or(&call.input))
+            {
                 Some(key) => match self.memo.lookup(key) {
                     Lookup::Hit(mut hit) => {
+                        if call.name == "read_file"
+                            && !hit.is_error
+                            && let Some(path) =
+                                call.input.get("path").and_then(serde_json::Value::as_str)
+                            && let Ok(path) = resolve_in_root(&root, path)
+                        {
+                            self.observation_focus.observe(path, &hit.content);
+                        }
                         hit.tool_use_id = call.id.clone(); // this call's id, cached content
                         hit.latency_ms = 0;
                         return boxfut::box_it(async move { hit });
@@ -1052,7 +1220,7 @@ impl Registry {
         spec: ToolSpec,
         run: impl Fn(ToolUse, PathBuf) -> boxfut::BoxFut + Send + Sync + 'static,
     ) -> Result<(), ToolError> {
-        self.push_tool_with_origin(spec, run, ToolOrigin::BuiltIn)
+        self.push_tool_with_origin_and_purpose(spec, run, ToolOrigin::BuiltIn, ToolPurpose::General)
     }
 
     fn push_external_tool(
@@ -1060,14 +1228,20 @@ impl Registry {
         spec: ToolSpec,
         run: impl Fn(ToolUse, PathBuf) -> boxfut::BoxFut + Send + Sync + 'static,
     ) -> Result<(), ToolError> {
-        self.push_tool_with_origin(spec, run, ToolOrigin::External)
+        self.push_tool_with_origin_and_purpose(
+            spec,
+            run,
+            ToolOrigin::External,
+            ToolPurpose::General,
+        )
     }
 
-    fn push_tool_with_origin(
+    fn push_tool_with_origin_and_purpose(
         &mut self,
         spec: ToolSpec,
         run: impl Fn(ToolUse, PathBuf) -> boxfut::BoxFut + Send + Sync + 'static,
         origin: ToolOrigin,
+        purpose: ToolPurpose,
     ) -> Result<(), ToolError> {
         let adapted = move |call, root| {
             let future = run(call, root);
@@ -1083,6 +1257,7 @@ impl Registry {
                 spec,
                 run: Box::new(adapted),
                 output_owner: ToolOutputOwner::Runtime,
+                purpose,
             },
             origin,
         )
@@ -1126,6 +1301,7 @@ impl Registry {
             spec,
             run: Box::new(adapted),
             output_owner: ToolOutputOwner::Runtime,
+            purpose: ToolPurpose::General,
         })
     }
 
@@ -1170,6 +1346,7 @@ impl Registry {
             spec,
             run: Box::new(adapted),
             output_owner: ToolOutputOwner::Mcp,
+            purpose: ToolPurpose::General,
         })
     }
 }
@@ -1335,6 +1512,89 @@ mod tests {
     use super::*;
 
     #[test]
+    fn workspace_evidence_parser_is_typed_prefix_bound_and_fail_closed() {
+        let insufficient = |reason: &str| {
+            ok_result(
+                "evidence".into(),
+                format!(
+                    "{WORKSPACE_EVIDENCE_INSUFFICIENT_MARKER} reason={reason}; remediation=next; contexts=2]"
+                ),
+            )
+        };
+        for (reason, expected) in [
+            (
+                "causal_contrast_unproven",
+                WorkspaceEvidenceInsufficiencyReason::CausalContrastUnproven,
+            ),
+            (
+                "coverage_incomplete",
+                WorkspaceEvidenceInsufficiencyReason::CoverageIncomplete,
+            ),
+            (
+                "no_focused_context",
+                WorkspaceEvidenceInsufficiencyReason::NoFocusedContext,
+            ),
+            (
+                "source_anchors_required",
+                WorkspaceEvidenceInsufficiencyReason::SourceAnchorsRequired,
+            ),
+            (
+                "single_context",
+                WorkspaceEvidenceInsufficiencyReason::SingleContext,
+            ),
+            (
+                "undifferentiated_contexts",
+                WorkspaceEvidenceInsufficiencyReason::UndifferentiatedContexts,
+            ),
+        ] {
+            let result = insufficient(reason);
+            assert_eq!(
+                tool_result_workspace_evidence(&result),
+                Some(WorkspaceEvidence::Insufficient(expected))
+            );
+            assert_eq!(
+                workspace_evidence_outcome(&result.content),
+                Some(WorkspaceEvidenceOutcome::Insufficient)
+            );
+        }
+
+        let compared = ok_result(
+            "compared".into(),
+            format!("{WORKSPACE_EVIDENCE_COMPARED_MARKER} contexts=2]"),
+        );
+        assert_eq!(
+            tool_result_workspace_evidence(&compared),
+            None,
+            "legacy comparison markers must not authorize current repair strategy"
+        );
+        assert_eq!(
+            tool_result_workspace_evidence(&insufficient("future_reason")),
+            Some(WorkspaceEvidence::Insufficient(
+                WorkspaceEvidenceInsufficiencyReason::Unknown
+            ))
+        );
+
+        let embedded = ok_result(
+            "embedded".into(),
+            format!("source text\n{WORKSPACE_EVIDENCE_COMPARED_MARKER} contexts=2]"),
+        );
+        assert_eq!(tool_result_workspace_evidence(&embedded), None);
+        let overlong = ok_result(
+            "overlong".into(),
+            format!(
+                "{WORKSPACE_EVIDENCE_INSUFFICIENT_MARKER} reason=single_context; {}",
+                "x".repeat(MAX_OBSERVATION_FOCUS_IDENTIFIERS)
+            ),
+        );
+        assert_eq!(tool_result_workspace_evidence(&overlong), None);
+        let failed = err_result(
+            "failed".into(),
+            format!("{WORKSPACE_EVIDENCE_COMPARED_MARKER} contexts=2]"),
+        );
+        assert_eq!(tool_result_workspace_evidence(&failed), None);
+    }
+
+    #[test]
     fn pure_plus_egress_is_a_registration_error() {
         let mut r = Registry {
             tools: Vec::new(),
@@ -1347,6 +1607,7 @@ mod tests {
             confine_execution: Default::default(),
             egress_allow_policy: Default::default(),
             observation_tool_policy: Default::default(),
+            observation_focus: Default::default(),
             process_launch_policy: Default::default(),
             process_control: None,
             lsp_control: None,
@@ -1377,6 +1638,261 @@ mod tests {
             registry.specs().into_iter().map(|spec| spec.name).collect();
         assert!(after.is_subset(&before));
         assert!(!after.contains("invented_writer"));
+    }
+
+    #[test]
+    fn candidate_change_semantics_are_registered_not_inferred_from_authority() {
+        let registry = Registry::coding_agent(".").unwrap();
+        for tool in ["edit", "apply_patch", "write_file"] {
+            assert!(registry.is_candidate_change_tool(tool), "{tool}");
+        }
+        for broader_authority_without_a_candidate_change in ["bash", "dispatch_agent", "Workflow"] {
+            assert!(
+                !registry.is_candidate_change_tool(broader_authority_without_a_candidate_change),
+                "{broader_authority_without_a_candidate_change}"
+            );
+        }
+        for patch_trial_tool in [
+            "read_file",
+            "grep",
+            "list_dir",
+            "glob",
+            "repo_map",
+            SUBMIT_REPAIR_EVIDENCE,
+        ] {
+            assert!(
+                registry.is_patch_trial_tool(patch_trial_tool),
+                "{patch_trial_tool}"
+            );
+        }
+        for pre_mutation_excluded_tool in [
+            "edit",
+            "apply_patch",
+            "write_file",
+            "bash",
+            "dispatch_agent",
+            "Workflow",
+        ] {
+            assert!(
+                !registry.is_patch_trial_tool(pre_mutation_excluded_tool),
+                "{pre_mutation_excluded_tool}"
+            );
+        }
+        for candidate_review_tool in [
+            "read_file",
+            "edit",
+            "apply_patch",
+            "write_file",
+            "git_diff",
+            "bash",
+        ] {
+            assert!(
+                registry.is_candidate_review_tool(candidate_review_tool),
+                "{candidate_review_tool}"
+            );
+        }
+        for reopened_discovery in [
+            "grep",
+            "list_dir",
+            "glob",
+            "repo_map",
+            "tool_search",
+            "dispatch_agent",
+        ] {
+            assert!(
+                !registry.is_candidate_review_tool(reopened_discovery),
+                "{reopened_discovery}"
+            );
+        }
+    }
+
+    #[test]
+    fn candidate_change_progress_is_scoped_to_the_workspace() {
+        let workspace = std::env::current_dir().unwrap();
+        let registry = Registry::coding_agent(&workspace).unwrap();
+        let call = |name: &str, input: serde_json::Value| ToolUse {
+            id: "candidate-scope".into(),
+            name: name.into(),
+            input,
+        };
+
+        assert!(registry.is_workspace_candidate_change(
+            &call("edit", serde_json::json!({"path":"src/lib.rs"})),
+            &workspace,
+        ));
+        assert!(registry.is_workspace_candidate_change(
+            &call(
+                "write_file",
+                serde_json::json!({"path":workspace.join("future.js")})
+            ),
+            &workspace,
+        ));
+        assert!(!registry.is_workspace_candidate_change(
+            &call(
+                "write_file",
+                serde_json::json!({"path":workspace.parent().unwrap().join("outside.js")})
+            ),
+            &workspace,
+        ));
+        assert!(!registry.is_workspace_candidate_change(
+            &call(
+                "apply_patch",
+                serde_json::json!({"files":[
+                    {"path":"src/lib.rs","hunks":[]},
+                    {"path":"../outside.rs","hunks":[]}
+                ]})
+            ),
+            &workspace,
+        ));
+        assert!(!registry.is_workspace_candidate_change(
+            &call("bash", serde_json::json!({"writes":["src/lib.rs"]})),
+            &workspace,
+        ));
+        assert!(registry.is_workspace_targeted_observation(
+            &call(
+                "read_file",
+                serde_json::json!({"path":"src/lib.rs","offset":1,"limit":120})
+            ),
+            &workspace,
+        ));
+        assert!(!registry.is_workspace_targeted_observation(
+            &call(
+                "grep",
+                serde_json::json!({"pattern":"ToolPurpose","path":"src"})
+            ),
+            &workspace,
+        ));
+        assert!(registry.is_workspace_targeted_observation(
+            &call(
+                "grep",
+                serde_json::json!({
+                    "pattern":"ToolPurpose",
+                    "path":"src",
+                    "context_lines":3
+                })
+            ),
+            &workspace,
+        ));
+        assert!(registry.is_workspace_targeted_observation(
+            &call(
+                "grep",
+                serde_json::json!({"pattern":"ToolPurpose","path":"src/lib.rs"})
+            ),
+            &workspace,
+        ));
+        assert!(!registry.is_workspace_targeted_observation(
+            &call("grep", serde_json::json!({"pattern":"ToolPurpose"})),
+            &workspace,
+        ));
+        assert!(registry.is_workspace_targeted_observation(
+            &call(
+                "grep",
+                serde_json::json!({"pattern":"ToolPurpose","context_lines":3})
+            ),
+            &workspace,
+        ));
+        assert!(registry.is_workspace_targeted_observation(
+            &call(
+                "grep",
+                serde_json::json!({
+                    "pattern":"ToolPurpose",
+                    "related_terms":["Registry", "workspace"]
+                })
+            ),
+            &workspace,
+        ));
+        assert!(registry.is_workspace_targeted_observation(
+            &call("read_file", serde_json::json!({"path":"src/lib.rs"})),
+            &workspace,
+        ));
+        assert!(!registry.is_workspace_targeted_observation(
+            &call(
+                "read_file",
+                serde_json::json!({
+                    "path":workspace.parent().unwrap().join("Cargo.toml"),
+                    "offset":1,
+                    "limit":120
+                })
+            ),
+            &workspace,
+        ));
+        assert!(!registry.is_workspace_targeted_observation(
+            &call("bash", serde_json::json!({"command":"rg ToolPurpose"})),
+            &workspace,
+        ));
+        assert!(!registry.is_workspace_targeted_observation(
+            &call("edit", serde_json::json!({"path":"src/lib.rs"})),
+            &workspace,
+        ));
+        assert!(registry.is_workspace_contract_comparison(
+            &call("grep", serde_json::json!({"pattern":"normalize_record"})),
+            &workspace,
+        ));
+        assert!(registry.is_workspace_contract_comparison(
+            &call(
+                "grep",
+                serde_json::json!({"pattern":"Widget::render","context_lines":3})
+            ),
+            &workspace,
+        ));
+        assert!(registry.is_workspace_contract_comparison(
+            &call("grep", serde_json::json!({"pattern":"compile_asset"})),
+            &workspace,
+        ));
+        assert!(!registry.is_workspace_contract_comparison(
+            &call("grep", serde_json::json!({"pattern":"a"})),
+            &workspace,
+        ));
+        assert!(registry.is_workspace_contract_comparison(
+            &call(
+                "grep",
+                serde_json::json!({"pattern":"two words","context_lines":2})
+            ),
+            &workspace,
+        ));
+        assert!(registry.is_workspace_contract_comparison(
+            &call(
+                "grep",
+                serde_json::json!({"pattern":"two words","path":"src"})
+            ),
+            &workspace,
+        ));
+
+        let repair_evidence = call(
+            SUBMIT_REPAIR_EVIDENCE,
+            serde_json::json!({
+                "hypotheses":[{
+                    "id":"h1",
+                    "claim":"bounded contract hypothesis",
+                    "anchors":[{
+                        "path":"Cargo.toml",
+                        "start_line":1,
+                        "end_line":1,
+                        "role":"contract",
+                        "polarity":"support"
+                    }]
+                }]
+            }),
+        );
+        assert!(registry.is_repair_evidence_submission(&repair_evidence, &workspace));
+        assert!(registry.is_workspace_targeted_observation(&repair_evidence, &workspace));
+        let outside_repair_evidence = call(
+            SUBMIT_REPAIR_EVIDENCE,
+            serde_json::json!({
+                "hypotheses":[{
+                    "id":"h1",
+                    "claim":"outside",
+                    "anchors":[{
+                        "path":"../outside.rs",
+                        "start_line":1,
+                        "end_line":1,
+                        "role":"contract",
+                        "polarity":"support"
+                    }]
+                }]
+            }),
+        );
+        assert!(!registry.is_repair_evidence_submission(&outside_repair_evidence, &workspace));
     }
 
     #[test]

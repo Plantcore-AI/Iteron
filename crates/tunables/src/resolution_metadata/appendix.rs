@@ -39,12 +39,12 @@ pub(super) const DEFAULTS: [DefaultSpec; 75] = [
     provider_default!("service_tier"), // 91 provider_service_tier
     model_default!("response_verbosity"), // 92 response_verbosity
     derived_default!("role_specific_model_map"), // 93
-    derived_default_with_value!("provider_request_total_deadline", integer_value!(900_000)), // 94
-    derived_default_with_value!("stream_idle_watchdog", integer_value!(120_000)), // 95 stream_idle_watchdog
-    model_default!("context_window_and_output_reserve"),                          // 96
-    derived_default!("system_prefix_budget"),                                     // 97
-    derived_default!("conversation_history_budget"),                              // 98
-    derived_default!("tool_result_history_budget"),                               // 99
+    derived_default_with_value!("provider_request_total_deadline", integer_value!(300_000)), // 94
+    derived_default_with_value!("stream_idle_watchdog", integer_value!(60_000)), // 95 stream_idle_watchdog
+    model_default!("context_window_and_output_reserve"),                         // 96
+    derived_default!("system_prefix_budget"),                                    // 97
+    derived_default!("conversation_history_budget"),                             // 98
+    derived_default!("tool_result_history_budget"),                              // 99
     // The local ContextMaterializationPolicy owns the executable budget. Provider multimodal
     // capability is an upper clamp (exact zero for text-only routes), not the default resolver.
     derived_default!("multimodal_token_budget"), // 100
@@ -56,8 +56,8 @@ pub(super) const DEFAULTS: [DefaultSpec; 75] = [
         "hybrid_retrieval_fusion_weights",
         map_value!("lexical" => decimal_value!(1, 0))
     ), // 105
-    derived_default_with_value!("retrieval_recency_decay", decimal_value!(1, 0)), // 106
-    derived_default_with_value!("context_novelty_dedup_threshold", decimal_value!(1, 0)), // 107
+    derived_default_with_value!("retrieval_recency_decay", decimal_value!(98, 2)), // 106
+    derived_default_with_value!("context_novelty_dedup_threshold", decimal_value!(85, 2)), // 107
     dynamic_observation_default!("process.backend"), // 108 persistent_pty_backend
     dynamic_observation_default!("process.background_job_cap"), // 109 concurrent_background_job_cap
     dynamic_observation_default!("process.idle_stall_timeout"), // 110
@@ -81,13 +81,16 @@ pub(super) const DEFAULTS: [DefaultSpec; 75] = [
     derived_default!("lsp_result_context_budget"),       // 121
     derived_default!("tool_result_cache_ttl"),           // 122
     derived_default!("test_selection_strategy"),         // 123
-    derived_default!("incremental_versus_full_verification"), // 124
+    derived_default_with_value!(
+        "incremental_versus_full_verification",
+        enum_value!("impacted")
+    ), // 124
     derived_default_with_value!(
         "flaky_test_detection_quarantine",
         object_value!(
-            "repeat_count" => integer_value!(1),
+            "repeat_count" => integer_value!(2),
             "minimum_disagreements" => integer_value!(1),
-            "quarantine_seconds" => integer_value!(0),
+            "quarantine_seconds" => integer_value!(300),
             "report_disagreement" => boolean_value!(true),
         )
     ), // 125 flaky_test_detection_quarantine
@@ -96,7 +99,7 @@ pub(super) const DEFAULTS: [DefaultSpec; 75] = [
     literal_default!(enum_value!("off")),                // 128
     literal_default!(object_value!(
         "turn_boundary" => boolean_value!(true),
-        "before_verification" => boolean_value!(false),
+            "before_verification" => boolean_value!(true),
         "before_drain" => boolean_value!(true),
         "minimum_turn_interval" => integer_value!(1),
     )), // 129 workspace_checkpoint_cadence
@@ -148,7 +151,7 @@ pub(super) const DEFAULTS: [DefaultSpec; 75] = [
     derived_default_with_value!(
         "mcp_result_cap_spill_policy",
         object_value!(
-            "visible_max_bytes" => integer_value!(1_048_576),
+            "visible_max_bytes" => integer_value!(65_536),
             "spill_max_bytes" => integer_value!(4_194_304),
             "cleanup" => enum_value!("session_end"),
             "private_storage" => boolean_value!(true),
