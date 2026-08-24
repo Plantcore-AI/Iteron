@@ -6188,20 +6188,22 @@ mod tests {
 
         complete_one_turn(&dir, &run, &tenant, "another turn");
         assert_eq!(reindex(&dir).unwrap(), 1);
-        #[cfg(unix)]
-        let grown = std::fs::metadata(&sidecar).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt as _;
-            assert_ne!(
-                before.ino(),
-                grown.ino(),
-                "a changed session is still reindexed"
-            );
-        }
+        // Read the sidecar back rather than compare inodes. A rewritten file usually lands on a
+        // new inode, but nothing guarantees it: the allocator may hand back the one the replaced
+        // file just released, and under load on the shared arm64 runner it does. That made
+        // `assert_ne!(before.ino(), grown.ino())` fail with both sides printing the same number --
+        // a true statement about the filesystem read as a false one about the reindex, on a test
+        // that passes 193/193 locally and had done so since #184.
+        //
+        // The claim is that changed content is reindexed, and the turn count states exactly that:
+        // it was 1 when the sidecar was first written and is greater now, so the reindex both ran
+        // and wrote the newer session. That holds whichever inode it reused.
         let refreshed =
             private_cache::read_sidecar(&dir, &std::fs::read(&sidecar).unwrap()).unwrap();
-        assert!(refreshed.turns > 1, "{refreshed:?}");
+        assert!(
+            refreshed.turns > 1,
+            "a changed session is still reindexed: {refreshed:?}"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
