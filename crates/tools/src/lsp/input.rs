@@ -78,8 +78,8 @@ impl SourceDocument {
     ) -> Result<Self, LspToolError> {
         #[cfg(not(unix))]
         {
-            let _ = (root, requested);
-            return Err(LspToolError::SandboxUnavailable);
+            let _ = (root, requested, routes);
+            Err(LspToolError::SandboxUnavailable)
         }
 
         #[cfg(unix)]

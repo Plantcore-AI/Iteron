@@ -245,6 +245,7 @@ impl RunSpec {
         }
     }
 
+    #[cfg(unix)]
     pub(crate) fn max_wall_secs(&self) -> u64 {
         match self {
             Self::IteronCli { spec } => spec.max_wall_secs,
@@ -261,6 +262,7 @@ impl RunSpec {
         }
     }
 
+    #[cfg(unix)]
     pub(crate) fn max_memory_bytes(&self) -> u64 {
         match self {
             Self::IteronCli { spec } => spec.max_memory_bytes,
@@ -277,6 +279,7 @@ impl RunSpec {
         }
     }
 
+    #[cfg(unix)]
     pub(crate) fn effective_profile_path(&self) -> &str {
         match self {
             Self::IteronCli { spec } => &spec.effective_profile_path,

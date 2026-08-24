@@ -1,16 +1,25 @@
 //! Shell-free child ownership, bounded pipe capture, and process-group reaping.
 
-use super::{ExecutionSnapshot, finish_natural_run, terminal_snapshot};
+#[cfg(unix)]
+use super::finish_natural_run;
+use super::{ExecutionSnapshot, terminal_snapshot};
 use crate::adapter_registry::ExecutableIdentity;
 use crate::research_protocol::{ResearchRunState, RunSpec};
 use crate::terminal_bench::AdapterCommand;
+#[cfg(unix)]
 use std::fs::{self, File, OpenOptions};
+#[cfg(unix)]
 use std::io::{Read, Write};
+#[cfg(unix)]
 use std::path::Path;
+#[cfg(unix)]
 use std::process::{Child, Command, Stdio};
+#[cfg(unix)]
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(unix)]
 use std::thread::{self, JoinHandle};
+#[cfg(unix)]
 use std::time::{Duration, Instant};
 
 #[cfg(unix)]
@@ -28,11 +37,11 @@ pub(super) fn execute_command(
     }
     #[cfg(not(unix))]
     {
-        let _ = (adapter, run, sidecar_path);
-        return terminal_snapshot(
+        let _ = (adapter, executable, run, sidecar_path);
+        terminal_snapshot(
             ResearchRunState::Failed,
             "execute mode requires Unix process-group and address-space enforcement",
-        );
+        )
     }
     #[cfg(unix)]
     {
@@ -247,12 +256,14 @@ fn process_group_memory_within_limit(pid: u32, limit: u64) -> Result<bool, ()> {
     Ok(true)
 }
 
+#[cfg(unix)]
 #[derive(Default)]
 pub(super) struct CaptureSummary {
     pub(super) bytes: u64,
     pub(super) io_failed: bool,
 }
 
+#[cfg(unix)]
 fn spawn_capture<R: Read + Send + 'static>(
     reader: R,
     output: Option<File>,
@@ -296,6 +307,7 @@ fn spawn_capture<R: Read + Send + 'static>(
     })
 }
 
+#[cfg(unix)]
 fn join_capture(worker: JoinHandle<CaptureSummary>) -> CaptureSummary {
     worker.join().unwrap_or(CaptureSummary {
         bytes: 0,
@@ -303,6 +315,7 @@ fn join_capture(worker: JoinHandle<CaptureSummary>) -> CaptureSummary {
     })
 }
 
+#[cfg(unix)]
 fn open_output_file(path: &str, create_new: bool) -> std::io::Result<File> {
     let path = Path::new(path);
     if let Ok(metadata) = fs::symlink_metadata(path)
@@ -340,11 +353,8 @@ fn kill_residual_group(pid: u32) {
     signal_process_group(pid, libc::SIGKILL);
 }
 
-#[cfg(not(unix))]
-fn kill_residual_group(_pid: u32) {}
-
+#[cfg(unix)]
 fn terminate_and_reap(child: &mut Child, pid: u32) {
-    #[cfg(unix)]
     signal_process_group(pid, libc::SIGTERM);
     for _ in 0..5 {
         if child.try_wait().ok().flatten().is_some() {
@@ -353,12 +363,12 @@ fn terminate_and_reap(child: &mut Child, pid: u32) {
         }
         thread::sleep(Duration::from_millis(10));
     }
-    #[cfg(unix)]
     signal_process_group(pid, libc::SIGKILL);
     let _ = child.kill();
     let _ = child.wait();
 }
 
+#[cfg(unix)]
 pub(super) fn evidence_usage(
     run: &RunSpec,
     stdout: &str,
@@ -381,6 +391,7 @@ pub(super) fn evidence_usage(
     (total <= limit).then_some(total).ok_or(())
 }
 
+#[cfg(unix)]
 fn directory_size_bounded(path: &Path, exclude: Option<&Path>, limit: u64) -> Result<u64, ()> {
     if exclude.is_some_and(|excluded| excluded == path) {
         return Ok(0);
@@ -420,6 +431,7 @@ fn directory_size_bounded(path: &Path, exclude: Option<&Path>, limit: u64) -> Re
     Ok(total)
 }
 
+#[cfg(unix)]
 fn file_size_if_regular(path: &Path) -> Result<u64, ()> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => Err(()),

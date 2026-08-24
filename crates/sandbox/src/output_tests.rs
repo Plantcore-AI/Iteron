@@ -1,4 +1,5 @@
 use super::*;
+#[cfg(unix)]
 use std::process::Stdio;
 use tokio::io::AsyncWriteExt;
 #[cfg(unix)]

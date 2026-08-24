@@ -289,6 +289,7 @@ impl StagedWrite {
     }
 
     async fn commit_inner(self, inject_before_rename: bool) -> Result<(), CommitFailure> {
+        #[cfg(unix)]
         let parent = self
             .target
             .parent()

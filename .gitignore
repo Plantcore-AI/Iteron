@@ -15,6 +15,7 @@ venv/
 *.log
 .data/
 runs/
+.agents/
 # I-45. Two lines, and the second one is load-bearing. The natural `.iteron/` ignores
 # the same files but also makes `.iteron` an *ignored directory entry*; `git add` treats
 # a pathspec naming one as a fatal error, not a no-op, and the turn-end checkpoint stages

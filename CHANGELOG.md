@@ -7,7 +7,7 @@ interfaces may change between releases.
 
 ## [Unreleased]
 
-## [0.0.17] - 2026-08-23
+## [0.0.19] - 2026-08-24
 
 0.0.13 carries the same contents as this release and was never published. Its tag
 was pushed as a lightweight tag, and `release / validate` opens with

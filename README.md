@@ -38,7 +38,7 @@
 Iteron combines a focused full-screen coding experience with a modular Rust
 runtime. It supports interactive work, bounded one-shot automation, explicit
 permissions, provider routing, durable sessions, verification, and
-machine-readable output. The workspace and current release are **0.0.15**.
+machine-readable output. The workspace and current release are **0.0.19**.
 
 ## Install
 
@@ -47,13 +47,13 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/Plantcore-AI/Iteron/rel
 ```
 
 The installer verifies the selected release archive and installs per-user without
-elevation. The v0.0.15 release targets are macOS arm64, Linux arm64, and Linux
+elevation. The v0.0.19 release targets are macOS arm64, Linux arm64, and Linux
 x86-64. See the [installation and verification
 guide](docs/getting-started/installation.md) for version pinning, checksums,
 attestations, and source builds.
 
 Windows remains available as a source build and non-required CI target, but
-v0.0.15 does not publish a Windows archive or installer. See [supported
+v0.0.19 does not publish a Windows archive or installer. See [supported
 platforms](docs/reference/platforms.md) for the current boundary.
 
 Verify that the installed directory is on the shell's executable search path:

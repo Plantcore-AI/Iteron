@@ -1,6 +1,6 @@
 # Installation
 
-The v0.0.15 distribution matrix covers macOS arm64, Linux arm64, and Linux
+The v0.0.19 distribution matrix covers macOS arm64, Linux arm64, and Linux
 x86-64. Windows remains a source-build and non-required CI target, but this
 release does not publish a Windows archive or installer. Consult the selected
 release's asset list before installing; source versioning alone does not prove
@@ -112,9 +112,9 @@ operator-authority mode runs commands unconfined. See
 | macOS, Apple Silicon | `aarch64-apple-darwin` | `macos-15` | verify on the release page |
 | Linux, arm64 | `aarch64-unknown-linux-musl` | `dgx` | verify on the release page |
 | Linux, x86-64 | `x86_64-unknown-linux-musl` | `dgx` | verify on the release page |
-| Windows, x86-64 | `x86_64-pc-windows-msvc` | non-required CI | not published in v0.0.15 |
+| Windows, x86-64 | `x86_64-pc-windows-msvc` | non-required CI | not published in v0.0.19 |
 
-The v0.0.15 release workflow requires the three macOS/Linux targets to be built,
+The v0.0.19 release workflow requires the three macOS/Linux targets to be built,
 tested, packaged, and smoke-tested before release publication. Release notes
 remain authoritative for the archives a particular tag actually contains.
 

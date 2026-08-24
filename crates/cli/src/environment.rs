@@ -172,14 +172,14 @@ fn civil_from_unix_days(days: i64) -> Option<(i64, i64, i64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::ffi::OsStr;
     use std::path::PathBuf;
+    #[cfg(unix)]
     use std::process::{Command, Output, Stdio};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    #[cfg(windows)]
-    const NULL_DEVICE: &str = "NUL";
-    #[cfg(not(windows))]
+    #[cfg(unix)]
     const NULL_DEVICE: &str = "/dev/null";
 
     struct TestDir(PathBuf);
@@ -205,6 +205,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn git_output(root: &Path, args: &[&OsStr]) -> Output {
         let mut command = Command::new("git");
         let path = std::env::var_os("PATH");
@@ -228,6 +229,7 @@ mod tests {
             .expect("run fixture Git")
     }
 
+    #[cfg(unix)]
     fn git_ok(root: &Path, args: &[&OsStr]) {
         let output = git_output(root, args);
         assert!(
@@ -237,6 +239,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     fn initialize_repo(root: &Path) {
         git_ok(root, &[OsStr::new("init"), OsStr::new("--quiet")]);
         for (key, value) in [

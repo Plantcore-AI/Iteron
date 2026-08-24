@@ -351,8 +351,15 @@ def main() -> None:
         print(verify_artifact(arguments).as_posix())
     elif arguments.command == "installers":
         verify_installers(arguments)
+        # Print what was actually verified. A POSIX-only manifest carries one installer
+        # and the caller passes no `--windows`, so printing it unconditionally raised
+        # `AttributeError: 'NoneType' object has no attribute 'as_posix'` -- after every
+        # target had built and the release environment had been approved.
+        # `verify_installers` already branches on the manifest for exactly this reason;
+        # this is the same branch, one function later.
         print(arguments.posix.as_posix())
-        print(arguments.windows.as_posix())
+        if arguments.windows is not None:
+            print(arguments.windows.as_posix())
     else:
         verify_contract(load_manifest(arguments.manifest), arguments.report)
 

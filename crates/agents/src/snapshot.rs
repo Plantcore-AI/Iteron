@@ -116,7 +116,10 @@ impl AgentCatalogSnapshot {
             file.write_all(&bytes)?;
             file.sync_all()?;
             std::fs::rename(&temporary, path)?;
-            File::open(parent)?.sync_all()?;
+            #[cfg(unix)]
+            {
+                File::open(parent)?.sync_all()?;
+            }
             Ok(())
         })();
         if result.is_err() {

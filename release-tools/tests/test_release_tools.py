@@ -485,14 +485,17 @@ exit 1
             "python3 release-tools/schema_release.py", workflow
         )
         self.assertIn(
-            'previous=$(jq -er --arg candidate "$GITHUB_REF_NAME"', workflow
+            'previous=$(jq -er --arg candidate "$candidate_tag"', workflow
         )
         self.assertIn('group_by(.version) | any(length > 1)', workflow)
         self.assertIn('any($stable[]; .version >= $candidate_version)', workflow)
         self.assertIn(
             '"$policy_root/release-tools/schema_release.py"', workflow
         )
-        self.assertIn('test "$trusted_previous" = "$previous"', workflow)
+        self.assertIn(
+            'require_eq "schema_release.py selected previous release must match policy-computed previous"',
+            workflow,
+        )
         anchor = workflow.index(
             "- name: Validate against the previous immutable schema release"
         )
@@ -567,8 +570,14 @@ exit 1
         self.assertIn(
             'CARGO_TARGET_DIR="$RUNNER_TEMP/core-schema-bootstrap-target"', workflow
         )
-        self.assertIn('test "$GITHUB_REF_NAME" = v0.0.1', workflow)
-        self.assertIn('steps.metadata.outputs.version }}" = 0.0.1', workflow)
+        self.assertIn(
+            'require_eq "bootstrap release tag must be v0.0.1" "v0.0.1" "$candidate_tag"',
+            workflow,
+        )
+        self.assertIn(
+            'require_eq "bootstrap release version must be 0.0.1" "0.0.1"',
+            workflow,
+        )
         self.assertGreaterEqual(
             workflow.count("ref: ${{ needs.validate.outputs.commit }}"), 3
         )
@@ -646,11 +655,17 @@ exit 1
         )[1].split(
             "- name: Validate against the previous immutable schema release", 1
         )[0]
-        self.assertIn('test "$GITHUB_EVENT_NAME" = workflow_dispatch', metadata)
+        self.assertIn(
+            'require_eq "release must be triggered by a v* tag or workflow_dispatch" "workflow_dispatch" "$GITHUB_EVENT_NAME"',
+            metadata,
+        )
         self.assertIn("tag_commit=$event_commit", metadata)
         self.assertNotIn('test "$GITHUB_REF" = refs/heads/main', metadata)
         self.assertIn('tested_tree=$(git rev-parse "$tag_commit^{tree}")', metadata)
-        self.assertIn('[[ "$tested_tree" =~ ^[0-9a-f]{40}$ ]]', metadata)
+        self.assertIn(
+            '''require_match "source tree must be a 40-character hex SHA" '^[0-9a-f]{40}$' "$tested_tree"''',
+            metadata,
+        )
         self.assertIn('echo "tree=$tested_tree"', metadata)
         self.assertIn("tree: ${{ steps.metadata.outputs.tree }}", release)
 
@@ -1247,7 +1262,7 @@ exit 1
                             "cli_stream_versions": [4, 5],
                             "default_cli_stream_version": 5,
                             "resident_protocol_version": 7,
-                            "schema_version": 1,
+                            "schema_version": 2,
                             "type": "machine_contract",
                         }
                     ),
@@ -1311,7 +1326,7 @@ exit 1
                     "cli_stream_versions": [4, 5],
                     "default_cli_stream_version": 5,
                     "resident_protocol_version": 1,
-                    "schema_version": 1,
+                    "schema_version": 2,
                     "type": "machine_contract",
                 }
             ),
@@ -1351,7 +1366,7 @@ exit 1
                         "cli_stream_versions": [4, 5] if index == 0 else [5],
                         "default_cli_stream_version": 5,
                         "resident_protocol_version": 1,
-                        "schema_version": 1,
+                        "schema_version": 2,
                         "type": "machine_contract",
                     }
                 ),
@@ -1438,7 +1453,7 @@ exit 1
                     "cli_stream_versions": [4, 5],
                     "default_cli_stream_version": 5,
                     "resident_protocol_version": 1,
-                    "schema_version": 1,
+                    "schema_version": 2,
                     "type": "machine_contract",
                 }
             ),
@@ -1610,7 +1625,7 @@ class SchemaCompatibilityBridgeTest(unittest.TestCase):
             "blob": "a61c3410a287a937e21714421ef109d91f1f271c",
         },
         "v0.0.9": {
-            "candidate": "v0.0.17",
+            "candidate": "v0.0.19",
             "commit": "216253708d4e7502f15a35996db949f64ee67417",
             "blob": "d291aa5ac3f0a9f11353722edb4485eb9acb93ca",
         },
@@ -1628,7 +1643,13 @@ class SchemaCompatibilityBridgeTest(unittest.TestCase):
         for previous, pins in self.BRIDGES.items():
             with self.subTest(previous=previous):
                 block = self._block(previous)
-                self.assertIn(f'test "$GITHUB_REF_NAME" = {pins["candidate"]}', block)
+                candidate = pins["candidate"]
+                self.assertTrue(
+                    f'test "$GITHUB_REF_NAME" = {candidate}' in block
+                    or f'require_eq "{previous} bridge release tag must be {candidate}" '
+                    f'"{candidate}" "$candidate_tag"' in block,
+                    f"candidate tag {candidate} must be pinned",
+                )
                 self.assertIn(f'compatibility_commit={pins["commit"]}', block)
                 self.assertIn(f'compatibility_schema_blob={pins["blob"]}', block)
 
@@ -1636,9 +1657,9 @@ class SchemaCompatibilityBridgeTest(unittest.TestCase):
         for previous in self.BRIDGES:
             with self.subTest(previous=previous):
                 block = self._block(previous)
-                self.assertIn(
-                    'test "$(git cat-file -t "$compatibility_commit")" = commit',
-                    block,
+                self.assertTrue(
+                    'test "$(git cat-file -t "$compatibility_commit")" = commit' in block
+                    or 'require_eq "compatibility bridge commit must be a commit object"' in block,
                     "the pin must be a commit object, not a tag or a blob",
                 )
                 self.assertIn(
@@ -1658,11 +1679,14 @@ class SchemaCompatibilityBridgeTest(unittest.TestCase):
                 block = self._block(previous)
                 self.assertIn("git diff --quiet", block)
                 self.assertIn("'xtask/src/schema_compat*'", block)
-                self.assertIn(
+                old_blob_check = (
                     'test "$(git rev-parse \\\n              '
                     '"$compatibility_commit:governance/schema-compatibility.json")" = \\\n'
-                    '              "$compatibility_schema_blob"',
-                    block,
+                    '              "$compatibility_schema_blob"'
+                )
+                self.assertTrue(
+                    old_blob_check in block
+                    or 'require_eq "compatibility bridge governance/schema-compatibility.json blob must match the pinned value"' in block,
                     "the compatibility contract itself must be content-addressed",
                 )
 
@@ -1715,6 +1739,35 @@ class MachineContractSmokeTest(unittest.TestCase):
             "release.yml asserts machine-contract schema_version "
             f"{asserted.group(1)} but the CLI emits {emitted.group(1)}; "
             "a release built from this tree would fail its own smoke test",
+        )
+
+    def test_the_manifest_validator_accepts_the_version_the_cli_emits(self) -> None:
+        """`manifest.py` gates the same envelope, and had the same stale literal.
+
+        `release / publish` renders the capability report through
+        `validate_capability_report`, which refused `schema_version` 2 as invalid
+        metadata -- after all three targets had built and the environment had been
+        approved. Fixing only `release.yml` left this one, so v0.0.17 failed one step
+        past where v0.0.15 did.
+        """
+        emitted = re.search(
+            r'"schema_version":\s*(\d+),\s*\n\s*"type":\s*"machine_contract"',
+            (self.ROOT / "crates/cli/src/main.rs").read_text(encoding="utf-8"),
+        )
+        self.assertIsNotNone(emitted)
+        declared = re.search(
+            r"^CLI_MACHINE_CONTRACT_SCHEMA_VERSION = (\d+)$",
+            (self.ROOT / "release-tools/manifest.py").read_text(encoding="utf-8"),
+            re.M,
+        )
+        self.assertIsNotNone(
+            declared, "manifest.py no longer names the CLI machine-contract version"
+        )
+        self.assertEqual(
+            declared.group(1),
+            emitted.group(1),
+            f"manifest.py accepts machine-contract schema_version {declared.group(1)} "
+            f"but the CLI emits {emitted.group(1)}; publish would reject a valid report",
         )
 
     def test_the_workflow_still_requires_the_oldest_supported_stream(self) -> None:
@@ -1773,6 +1826,37 @@ class VersionIndependenceProofTest(unittest.TestCase):
             'test "$summaries" -eq 1',
             workflow,
             "without this a renamed or filtered-out test would pass silently",
+        )
+
+
+class PosixOnlyInstallerTest(unittest.TestCase):
+    """A POSIX-only release prints only the installer it has.
+
+    Scoping the release to POSIX left `--windows` unset, and `verify_installers`
+    already branches on the manifest for exactly that. `main` did not: it printed
+    both paths unconditionally and raised
+    `AttributeError: 'NoneType' object has no attribute 'as_posix'` -- after all
+    three targets had built and the release environment had been approved.
+    """
+
+    ROOT = Path(__file__).resolve().parents[2]
+
+    def test_the_windows_installer_path_is_printed_only_when_present(self) -> None:
+        body = (self.ROOT / "release-tools/verify_release.py").read_text(encoding="utf-8")
+        self.assertIn(
+            "if arguments.windows is not None:",
+            body,
+            "verify_release prints the Windows installer unconditionally; a POSIX-only "
+            "release passes no --windows and this raises after every target has built",
+        )
+
+    def test_the_workflow_passes_only_the_installers_it_builds(self) -> None:
+        workflow = (self.ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+        targets = re.findall(r"^\s+--target ([a-z0-9_-]+)\s*\\?$", workflow, re.M)
+        self.assertNotIn(
+            "x86_64-pc-windows-msvc",
+            targets,
+            "the release ships a Windows target again; --windows must be passed with it",
         )
 
 

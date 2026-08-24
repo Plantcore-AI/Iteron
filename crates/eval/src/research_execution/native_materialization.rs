@@ -1,16 +1,22 @@
 //! Strict v3 native-patch materialization and post-run consumption verification.
 
-use super::{ExecutionSnapshot, read_file_bounded};
+#[cfg(unix)]
+use super::ExecutionSnapshot;
+use super::read_file_bounded;
 use crate::research_protocol::{
-    MAX_NATIVE_MATERIALIZATION_BYTES, MAX_NATIVE_RECEIPT_BYTES, NATIVE_CONSUMPTION_SCHEMA,
-    NATIVE_MATERIALIZATION_SCHEMA, NativeConsumptionReceipt, NativeMaterializationDocument,
+    MAX_NATIVE_MATERIALIZATION_BYTES, NATIVE_MATERIALIZATION_SCHEMA, NativeMaterializationDocument,
+};
+#[cfg(unix)]
+use crate::research_protocol::{
+    MAX_NATIVE_RECEIPT_BYTES, NATIVE_CONSUMPTION_SCHEMA, NativeConsumptionReceipt,
     ResearchRunState, RunSpec,
 };
 use crate::strict_json::parse_json_no_duplicates;
+#[cfg(unix)]
 use crate::terminal_bench::ArtifactReference;
-use crate::tuner::{
-    CandidateExecutionNode, CandidateImplementation, CandidateMaterialization, CandidatePatch,
-};
+use crate::tuner::CandidateMaterialization;
+#[cfg(unix)]
+use crate::tuner::{CandidateExecutionNode, CandidateImplementation, CandidatePatch};
 use sha2::{Digest, Sha256};
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -96,6 +102,7 @@ pub(crate) fn materialize_native_patches(
     })
 }
 
+#[cfg(unix)]
 pub(super) fn require_native_consumption(
     run: &RunSpec,
     mut snapshot: ExecutionSnapshot,
@@ -131,6 +138,7 @@ pub(super) fn require_native_consumption(
     snapshot
 }
 
+#[cfg(unix)]
 fn validate_receipt(
     spec: &crate::research_protocol::ExternalNativeRunSpec,
     snapshot: &ExecutionSnapshot,
@@ -227,6 +235,7 @@ fn validate_receipt(
     })
 }
 
+#[cfg(unix)]
 fn node_consumed(
     expected: &CandidateExecutionNode,
     observed: &crate::research_protocol::NativeNodeConsumption,
@@ -244,6 +253,7 @@ fn node_consumed(
         && observed.observed
 }
 
+#[cfg(unix)]
 fn implementation_consumed(
     expected: &CandidateImplementation,
     observed: &crate::research_protocol::NativeImplementationConsumption,
@@ -261,6 +271,7 @@ fn implementation_consumed(
         && observed.stopped
 }
 
+#[cfg(unix)]
 fn patch_consumed(
     expected: &CandidatePatch,
     observed: &crate::research_protocol::NativePatchConsumption,
@@ -276,12 +287,14 @@ fn patch_consumed(
         && observed.observed
 }
 
+#[cfg(unix)]
 fn canonical_prefixed_digest(value: &impl serde::Serialize) -> Option<String> {
     serde_json::to_vec(value)
         .ok()
         .map(|bytes| format!("sha256:{}", hex::encode(Sha256::digest(bytes))))
 }
 
+#[cfg(unix)]
 fn valid_raw_digest(value: &str) -> bool {
     value.len() == 64
         && value

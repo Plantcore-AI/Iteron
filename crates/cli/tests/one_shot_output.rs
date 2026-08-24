@@ -203,6 +203,7 @@ impl Scratch {
         self.root.join("runs")
     }
 
+    #[cfg(unix)]
     fn append_redacted_tool_result(&self, run_id: &str) {
         let run = iteron_protocol::RunId(run_id.into());
         let mut rollout =
@@ -270,6 +271,7 @@ impl Scratch {
 }
 
 /// Prove secrecy over the complete private-content graph, not only the public JSONL envelope.
+#[cfg(unix)]
 fn assert_tree_excludes(root: &std::path::Path, needle: &str) {
     for entry in fs::read_dir(root).expect("read private-content fixture tree") {
         let path = entry.expect("read private-content fixture entry").path();
@@ -560,6 +562,7 @@ impl MockProvider {
     }
 }
 
+#[cfg(unix)]
 fn accept_connection(listener: &TcpListener) -> TcpStream {
     accept_connection_with_timeout(listener, server_timeout())
 }
@@ -1037,6 +1040,7 @@ fn json_lines(stdout: &[u8]) -> Vec<Value> {
         .collect()
 }
 
+#[cfg(unix)]
 fn structured_kernel_diagnostics(stderr: &[u8]) -> Vec<Value> {
     std::str::from_utf8(stderr)
         .expect("stderr is UTF-8")
