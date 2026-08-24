@@ -47,6 +47,11 @@ const SERVER_TIMEOUT_BASE_SECS: u64 = 10;
 ///
 /// Only the liveness bound moves. Every assertion -- exit code, terminal result kind,
 /// the floor itself -- is unchanged, so a genuine regression still fails here.
+///
+/// Like `server_timeout`, the base is widened before the scale is applied. Scaling alone
+/// is inert where it matters most: a developer machine running the full sweep does not set
+/// the variable, so `scale` is 1 and the bound would stay exactly the 30s that already
+/// expired. That is the mistake this comment exists to stop repeating.
 fn wall_secs(base: u64) -> String {
     static SCALE: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     let scale = *SCALE.get_or_init(|| {
@@ -56,7 +61,7 @@ fn wall_secs(base: u64) -> String {
             .filter(|scale| (1..=60).contains(scale))
             .unwrap_or(1)
     });
-    base.saturating_mul(scale).to_string()
+    base.saturating_mul(3).saturating_mul(scale).to_string()
 }
 
 fn server_timeout() -> Duration {
@@ -1513,9 +1518,15 @@ printf '%s\n' "$timestamp" > "$marker_dir/$event"
         scratch.repo().display()
     );
     let output = collect_core(
-        core_command_with_task(&scratch, "json", 2, &["--max-wall-secs", &wall_secs(30)], &task)
-            .spawn()
-            .expect("spawn the real one-shot Legacy-hook client"),
+        core_command_with_task(
+            &scratch,
+            "json",
+            2,
+            &["--max-wall-secs", &wall_secs(30)],
+            &task,
+        )
+        .spawn()
+        .expect("spawn the real one-shot Legacy-hook client"),
     );
     let first_request = requests
         .recv_timeout(server_timeout())
@@ -1750,9 +1761,15 @@ printf '%s\n' "$timestamp" > "$marker_dir/$event_id"
         scratch.repo().display()
     );
     let output = collect_core(
-        core_command_with_task(&scratch, "json", 2, &["--max-wall-secs", &wall_secs(30)], &task)
-            .spawn()
-            .expect("spawn the real one-shot canonical-shutdown client"),
+        core_command_with_task(
+            &scratch,
+            "json",
+            2,
+            &["--max-wall-secs", &wall_secs(30)],
+            &task,
+        )
+        .spawn()
+        .expect("spawn the real one-shot canonical-shutdown client"),
     );
     let _first_request = requests
         .recv_timeout(server_timeout())
