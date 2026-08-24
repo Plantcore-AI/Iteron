@@ -1850,13 +1850,48 @@ class PosixOnlyInstallerTest(unittest.TestCase):
             "release passes no --windows and this raises after every target has built",
         )
 
-    def test_the_workflow_passes_only_the_installers_it_builds(self) -> None:
+    def test_the_workflow_passes_the_installers_it_ships(self) -> None:
+        """Whichever installers the release lists, it must also verify.
+
+        This began as `assertNotIn("x86_64-pc-windows-msvc", targets)` while the
+        release was POSIX-only, and it fired the moment that stopped being true.
+        The durable claim is not "no Windows" but "the two agree", so state that
+        instead: a Windows target without `--windows` publishes an installer no
+        step ever checked, and `--windows` without the target passes a path that
+        `manifest.py` never recorded a digest for.
+        """
         workflow = (self.ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
         targets = re.findall(r"^\s+--target ([a-z0-9_-]+)\s*\\?$", workflow, re.M)
-        self.assertNotIn(
-            "x86_64-pc-windows-msvc",
-            targets,
-            "the release ships a Windows target again; --windows must be passed with it",
+        ships_windows = "x86_64-pc-windows-msvc" in targets
+        verifies_windows = "--windows dist/install.ps1" in workflow
+        self.assertEqual(
+            ships_windows,
+            verifies_windows,
+            "the release ships a Windows target but does not pass --windows to "
+            "verify_release (or the reverse); both or neither",
+        )
+
+    def test_every_built_target_is_a_published_target(self) -> None:
+        """A target the build matrix produces must appear in the manifest.
+
+        `publish` downloads every `core-release-*` artifact into one `dist`, and the
+        attestation loop counts `dist/iteron-v*.{tar.gz,zip}` against
+        `jq '.targets | length' release-manifest.json`. So a target that builds and
+        packages but is missing from the `--target` list does not go unnoticed: it
+        makes the archive count exceed the manifest count and fails the release
+        AFTER publication has already mutated it. That is exactly the shape of the
+        tag-only failure that burned v0.0.15 through v0.0.18, so pin it here, where
+        it costs a test run rather than a version number.
+        """
+        workflow = (self.ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+        built = set(re.findall(r"^\s+target: ([a-z0-9_-]+)\s*$", workflow, re.M))
+        published = set(re.findall(r"^\s+--target ([a-z0-9_-]+)\s*\\?$", workflow, re.M))
+        self.assertTrue(built, "no build-matrix targets were found; the regex went stale")
+        self.assertEqual(
+            built - published,
+            set(),
+            "these targets are built and packaged but absent from the release manifest, "
+            "so the attestation archive count will exceed the manifest target count",
         )
 
 
