@@ -79,6 +79,32 @@ impl Scratch {
         Self::new_with_image_input(label, api_root, false)
     }
 
+    /// The same isolated home, with no `effort` in the config.
+    ///
+    /// `new` writes `"effort": "low"`, so even a command line that omits `--effort`
+    /// still resolves it from UserConfig and never reaches the builtin fallback.
+    /// That is the second of the two overrides that hid #372; stripping only the
+    /// flag is not enough to take the path a stock install takes.
+    fn new_without_effort(label: &str, api_root: &str) -> Self {
+        let scratch = Self::new(label, api_root);
+        let path = scratch.home().join(".iteron/config.json");
+        let mut config: Value =
+            serde_json::from_slice(&fs::read(&path).expect("read isolated test config"))
+                .expect("decode isolated test config");
+        let removed = config
+            .as_object_mut()
+            .expect("the isolated test config is an object")
+            .remove("effort");
+        assert!(
+            removed.is_some(),
+            "the isolated config no longer sets effort; this helper is now a no-op \
+             and the builtin fallback would go untested again"
+        );
+        fs::write(&path, serde_json::to_vec(&config).expect("encode test config"))
+            .expect("rewrite isolated test config without effort");
+        scratch
+    }
+
     fn new_with_image_input(label: &str, api_root: &str, image_input: bool) -> Self {
         let id = NEXT_SCRATCH_ID.fetch_add(1, Ordering::Relaxed);
         let root = std::env::temp_dir().join(format!(
@@ -762,6 +788,23 @@ fn core_command_with_task(
     extra_args: &[&str],
     task: &str,
 ) -> Command {
+    core_command_with_effort(scratch, format, max_turns, extra_args, task, Some("low"))
+}
+
+/// Every one-shot process gate passed `--effort low`, so none of them ever exercised the
+/// builtin fallback -- the path a stock install takes. That is how #372 shipped: the
+/// fallback resolved `medium` from `Effort::default()` while the registry literal was
+/// `low`, and genesis rejected the disagreeing Builtin declaration before any provider
+/// contact. Threading the effort through as an Option is what lets one test leave it
+/// unset and take that path for real.
+fn core_command_with_effort(
+    scratch: &Scratch,
+    format: &str,
+    max_turns: u32,
+    extra_args: &[&str],
+    task: &str,
+    effort: Option<&str>,
+) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_iteron"));
     // Never inherit a developer credential, proxy, user config, or launcher. The only credential
     // visible to the child is the inert placeholder consumed by the loopback-only provider.
@@ -786,14 +829,15 @@ fn core_command_with_task(
         .arg(PROVIDER_ID)
         .arg("--model")
         .arg(MODEL_ID)
-        .arg("--effort")
-        .arg("low")
         .arg("--max-turns")
         .arg(max_turns.to_string())
         .args(extra_args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if let Some(effort) = effort {
+        command.arg("--effort").arg(effort);
+    }
     preserve_windows_process_environment(&mut command);
 
     #[cfg(unix)]
@@ -1157,6 +1201,42 @@ fn assert_machine_failure(
     assert_eq!(
         value["cost_reason"],
         expected_cost_reason.map_or(Value::Null, |reason| json!(reason))
+    );
+}
+
+#[test]
+fn d9_02_a_default_effort_run_resolves_genesis_tunables() {
+    // I-372. A stock install could not start a run at all. `main` resolved the builtin
+    // effort from `Effort::default()`, which is `Medium`, while the registry literal for
+    // the family is `low`; `RuntimeResolutionBuilder::declare` rejects a Builtin
+    // declaration that differs from the literal, so genesis aborted with
+    // `production owner value for literal family `effort` differs from the canonical
+    // value` before any provider contact. Both entry points built that fallback the same
+    // way, so both were dead.
+    //
+    // Nothing caught it because every process gate here passed `--effort low`, which
+    // routes around the fallback entirely. This one leaves effort unset on purpose: it
+    // fails on the shipped v0.0.19 binary and passes once the fallback and the
+    // declaration read one constant.
+    let server = MockProvider::spawn_script(vec![Reply::Success]);
+    let scratch = Scratch::new_without_effort("d9-02-default-effort", &server.api_root);
+
+    let output = collect_core(
+        core_command_with_effort(&scratch, "json", 1, &[], DEFAULT_TASK, None)
+            .spawn()
+            .unwrap(),
+    );
+    server.finish();
+
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(
+        !stderr.contains("literal family `effort`"),
+        "a run with no effort override still fails genesis tunables resolution:\n{stderr}"
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "a default-config run must complete; stderr:\n{stderr}"
     );
 }
 

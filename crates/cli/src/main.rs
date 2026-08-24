@@ -2068,7 +2068,7 @@ async fn run_cli() -> anyhow::Result<u8> {
         cli.effort.clone(),
         env_effort,
         user_file.effort.clone(),
-        iteron_protocol::Effort::default().label().to_string(),
+        crate::runtime_tunables::core_facts::EFFORT_CANONICAL.to_string(),
     );
     let resolved_effort = iteron_protocol::Effort::parse(&effort_value).ok_or_else(|| {
         anyhow::anyhow!("unknown effort `{effort_value}` (low|medium|high|xhigh|max|ultracode)")
@@ -4279,7 +4279,7 @@ async fn run_workflow_command(
         cli.effort.clone(),
         config::env_string("ITERON_EFFORT"),
         user_file.effort.clone(),
-        iteron_protocol::Effort::default().label().to_owned(),
+        crate::runtime_tunables::core_facts::EFFORT_CANONICAL.to_owned(),
     );
     let workflow_effort =
         iteron_protocol::Effort::parse(&workflow_effort_text).ok_or_else(|| {
