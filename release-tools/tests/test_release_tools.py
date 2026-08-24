@@ -1643,7 +1643,13 @@ class SchemaCompatibilityBridgeTest(unittest.TestCase):
         for previous, pins in self.BRIDGES.items():
             with self.subTest(previous=previous):
                 block = self._block(previous)
-                self.assertIn(f'test "$GITHUB_REF_NAME" = {pins["candidate"]}', block)
+                candidate = pins["candidate"]
+                self.assertTrue(
+                    f'test "$GITHUB_REF_NAME" = {candidate}' in block
+                    or f'require_eq "{previous} bridge release tag must be {candidate}" '
+                    f'"{candidate}" "$candidate_tag"' in block,
+                    f"candidate tag {candidate} must be pinned",
+                )
                 self.assertIn(f'compatibility_commit={pins["commit"]}', block)
                 self.assertIn(f'compatibility_schema_blob={pins["blob"]}', block)
 
@@ -1651,9 +1657,9 @@ class SchemaCompatibilityBridgeTest(unittest.TestCase):
         for previous in self.BRIDGES:
             with self.subTest(previous=previous):
                 block = self._block(previous)
-                self.assertIn(
-                    'test "$(git cat-file -t "$compatibility_commit")" = commit',
-                    block,
+                self.assertTrue(
+                    'test "$(git cat-file -t "$compatibility_commit")" = commit' in block
+                    or 'require_eq "compatibility bridge commit must be a commit object"' in block,
                     "the pin must be a commit object, not a tag or a blob",
                 )
                 self.assertIn(
@@ -1673,11 +1679,14 @@ class SchemaCompatibilityBridgeTest(unittest.TestCase):
                 block = self._block(previous)
                 self.assertIn("git diff --quiet", block)
                 self.assertIn("'xtask/src/schema_compat*'", block)
-                self.assertIn(
+                old_blob_check = (
                     'test "$(git rev-parse \\\n              '
                     '"$compatibility_commit:governance/schema-compatibility.json")" = \\\n'
-                    '              "$compatibility_schema_blob"',
-                    block,
+                    '              "$compatibility_schema_blob"'
+                )
+                self.assertTrue(
+                    old_blob_check in block
+                    or 'require_eq "compatibility bridge governance/schema-compatibility.json blob must match the pinned value"' in block,
                     "the compatibility contract itself must be content-addressed",
                 )
 

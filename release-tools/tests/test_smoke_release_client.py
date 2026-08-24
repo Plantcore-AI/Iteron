@@ -262,9 +262,9 @@ class ReleaseClientSmokeTest(unittest.TestCase):
         self.assertIn(
             '${{ matrix.target }}/release/${{ matrix.binary }}', smoke_step
         )
-        # v0.0.15 publishes the three native macOS/Linux variants.
-        self.assertEqual(build.count("          - runner:"), 3)
-        self.assertEqual(build.count("            python: python3"), 3)
+        # v0.0.15 publishes the three native macOS/Linux variants plus Windows.
+        self.assertEqual(build.count("          - runner:"), 4)
+        self.assertEqual(build.count("            python: python3"), 4)
         self.assertEqual(build.count("            python: python\n"), 0)
         self.assertNotIn("Verify the latest Windows archive redirect", workflow)
 
