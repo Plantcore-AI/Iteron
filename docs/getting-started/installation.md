@@ -36,7 +36,7 @@ Neither check reads a provider credential.
 ### Confirm the install directory is on PATH
 
 The default destination is `~/.local/bin` (unless you overrode it with
-`--bin-dir`, `$ITERON_INSTALL_DIR`, `$ITERON_CODE_INSTALL_DIR`, or
+`--bin-dir`, `$ITERON_INSTALL_DIR`, the legacy `$ITERON_CODE_INSTALL_DIR`, or
 `$XDG_BIN_HOME`). The installer never edits shell startup files; add the
 directory yourself if needed.
 
