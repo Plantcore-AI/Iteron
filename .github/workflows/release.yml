@@ -1240,7 +1240,7 @@ jobs:
             throw "--machine-contract exited with $($contractRun.ExitCode)"
           }
           $contract = Get-Content -LiteralPath $contractPath -Raw | ConvertFrom-Json
-          if ($contract.schema_version -ne 1 -or $contract.type -ne 'machine_contract') {
+          if ($contract.schema_version -ne 2 -or $contract.type -ne 'machine_contract') {
             throw 'release binary returned the wrong capability schema'
           }
           if (-not ($contract.cli_stream_versions -contains 4)) {
