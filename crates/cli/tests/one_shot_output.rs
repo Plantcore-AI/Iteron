@@ -36,6 +36,29 @@ const SERVER_TIMEOUT_BASE_SECS: u64 = 10;
 ///
 /// `ITERON_TEST_TIMEOUT_SCALE` is the variable `tui_pty.rs` and the release workflow already use
 /// to let a loaded runner say how slow it is.
+/// The process's own `--max-wall-secs`, scaled by the same variable as `server_timeout`.
+///
+/// `server_timeout` already lets a loaded machine say how slow it is, but the wall bound
+/// handed to the child was a bare `"30"`. Under `--workspace --all-targets` that bound
+/// expired before the semantic floor the test is actually about, and
+/// `consecutive_real_tool_failures_exit_stuck_with_terminal_result` failed on
+/// "the semantic stuck floor must win before the outer wall bound" while passing 18/18
+/// when its own file ran alone.
+///
+/// Only the liveness bound moves. Every assertion -- exit code, terminal result kind,
+/// the floor itself -- is unchanged, so a genuine regression still fails here.
+fn wall_secs(base: u64) -> String {
+    static SCALE: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    let scale = *SCALE.get_or_init(|| {
+        std::env::var("ITERON_TEST_TIMEOUT_SCALE")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<u64>().ok())
+            .filter(|scale| (1..=60).contains(scale))
+            .unwrap_or(1)
+    });
+    base.saturating_mul(scale).to_string()
+}
+
 fn server_timeout() -> Duration {
     static SCALE: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     let scale = *SCALE.get_or_init(|| {
@@ -100,8 +123,11 @@ impl Scratch {
             "the isolated config no longer sets effort; this helper is now a no-op \
              and the builtin fallback would go untested again"
         );
-        fs::write(&path, serde_json::to_vec(&config).expect("encode test config"))
-            .expect("rewrite isolated test config without effort");
+        fs::write(
+            &path,
+            serde_json::to_vec(&config).expect("encode test config"),
+        )
+        .expect("rewrite isolated test config without effort");
         scratch
     }
 
@@ -1487,7 +1513,7 @@ printf '%s\n' "$timestamp" > "$marker_dir/$event"
         scratch.repo().display()
     );
     let output = collect_core(
-        core_command_with_task(&scratch, "json", 2, &["--max-wall-secs", "30"], &task)
+        core_command_with_task(&scratch, "json", 2, &["--max-wall-secs", &wall_secs(30)], &task)
             .spawn()
             .expect("spawn the real one-shot Legacy-hook client"),
     );
@@ -1724,7 +1750,7 @@ printf '%s\n' "$timestamp" > "$marker_dir/$event_id"
         scratch.repo().display()
     );
     let output = collect_core(
-        core_command_with_task(&scratch, "json", 2, &["--max-wall-secs", "30"], &task)
+        core_command_with_task(&scratch, "json", 2, &["--max-wall-secs", &wall_secs(30)], &task)
             .spawn()
             .expect("spawn the real one-shot canonical-shutdown client"),
     );
@@ -2449,7 +2475,7 @@ fn consecutive_real_tool_failures_exit_stuck_with_terminal_result() {
             // Three provider intents, tool executions, and fsync-backed settlements remain
             // bounded but need room under all-target parallel I/O load.
             "--max-wall-secs",
-            "30",
+            &wall_secs(30),
         ],
     ));
     server.finish();

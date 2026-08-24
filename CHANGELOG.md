@@ -7,6 +7,8 @@ interfaces may change between releases.
 
 ## [Unreleased]
 
+## [0.0.20] - 2026-08-24
+
 ## [0.0.19] - 2026-08-24
 
 0.0.13 carries the same contents as this release and was never published. Its tag
