@@ -5525,12 +5525,12 @@
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3840,
+          "line": 3851,
           "evidence": "param_str runtime resolution"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 4053,
+          "line": 4064,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -5809,7 +5809,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3959,
+          "line": 3970,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -5840,12 +5840,12 @@
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 4101,
+          "line": 4112,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 4505,
+          "line": 4517,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -6329,17 +6329,17 @@
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3873,
+          "line": 3884,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3903,
+          "line": 3914,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3939,
+          "line": 3950,
           "evidence": "Rust path reference"
         },
         {
@@ -11732,17 +11732,17 @@
         },
         {
           "path": "crates/cli/src/runtime/workflow_spawner.rs",
-          "line": 803,
+          "line": 806,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime/workflow_spawner.rs",
-          "line": 812,
+          "line": 815,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime/workflow_spawner.rs",
-          "line": 826,
+          "line": 829,
           "evidence": "Rust path reference"
         }
       ]
@@ -13374,7 +13374,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/workflow_spawner.rs",
-          "line": 786,
+          "line": 789,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -14128,7 +14128,7 @@
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 4282,
+          "line": 4293,
           "evidence": "Rust path reference"
         },
         {
