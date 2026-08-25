@@ -4,7 +4,7 @@
   "registry_revision": 24,
   "registry_digest": "a8439500a335e0086a326dbfd88222fc1501373d333aa7bb2315779f220bd663",
   "param_registry_id": "iteron-params",
-  "param_registry_digest": "9bc319e8b3fc58f806fa2df58dcdfd9d747eee0724e5d0ddf851078287fd7484",
+  "param_registry_digest": "4c93f737ccc6d1d88d364fa6d89b699c726b8975403dc0953a986c75c6002bd5",
   "tool_text_registry_id": "iteron-builtin-tool-descriptions",
   "tool_text_registry_digest": "7da44a496e668c86c4456291e0e8178955ae7b99f473e69e1804d7742ae9738d",
   "counts": {
@@ -10347,12 +10347,12 @@
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3840,
+          "line": 3851,
           "evidence": "param_str runtime resolution"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 4053,
+          "line": 4064,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -10640,7 +10640,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3959,
+          "line": 3970,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -10672,12 +10672,12 @@
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 4101,
+          "line": 4112,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 4505,
+          "line": 4517,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -11169,17 +11169,17 @@
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3873,
+          "line": 3884,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3903,
+          "line": 3914,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3939,
+          "line": 3950,
           "evidence": "Rust path reference"
         },
         {
@@ -16695,17 +16695,17 @@
         },
         {
           "path": "crates/cli/src/runtime/workflow_spawner.rs",
-          "line": 803,
+          "line": 806,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime/workflow_spawner.rs",
-          "line": 812,
+          "line": 815,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime/workflow_spawner.rs",
-          "line": 826,
+          "line": 829,
           "evidence": "Rust path reference"
         }
       ]
@@ -18379,7 +18379,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/workflow_spawner.rs",
-          "line": 786,
+          "line": 789,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -19151,7 +19151,7 @@
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 4282,
+          "line": 4293,
           "evidence": "Rust path reference"
         },
         {
