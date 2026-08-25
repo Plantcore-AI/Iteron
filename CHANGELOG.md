@@ -7,6 +7,12 @@ interfaces may change between releases.
 
 ## [Unreleased]
 
+### Fixed
+
+- Standalone `iteron workflow` runs now export lifecycle telemetry to the operator-configured
+  OTLP endpoint. Previously their child agents had no telemetry sink, so configured lifecycle
+  observations were collected locally but never exported. (#376)
+
 ## [0.0.20] - 2026-08-24
 
 ## [0.0.19] - 2026-08-24

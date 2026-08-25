@@ -262,9 +262,10 @@ pub struct KernelSpawnerContext {
     pub bypass_permissions: bool,
     /// Parent-owned, bounded lifecycle projections. These carry correlation and operator-owned
     /// observation policy into children without widening the child's tool registry or authority.
-    pub(super) lifecycle_emitter: Option<iteron_obs::lifecycle::LifecycleEmitter>,
-    pub(super) lifecycle_telemetry: Option<iteron_obs::otel::lifecycle::LifecycleTelemetryRuntime>,
+    pub(crate) lifecycle_emitter: Option<iteron_obs::lifecycle::LifecycleEmitter>,
+    pub(crate) lifecycle_telemetry: Option<iteron_obs::otel::lifecycle::LifecycleTelemetryRuntime>,
     pub(super) lifecycle_hooks: Option<super::lifecycle_hooks::LifecycleHookDispatcher>,
+    pub(crate) telemetry: Option<super::telemetry::TelemetrySink>,
     /// Shared content-free live activity projection. Children and host-owned writer settlement use
     /// the same bounded sink as the parent; no workflow status waits on frontend consumption.
     pub(super) activity: super::turn_activity::ActivitySink,
@@ -434,6 +435,7 @@ impl KernelSpawnerContext {
             lifecycle_emitter: None,
             lifecycle_telemetry: None,
             lifecycle_hooks: None,
+            telemetry: None,
             activity: super::turn_activity::ActivitySink::default(),
             hooks: Hooks::default(),
             hook_effect_journal: None,
@@ -691,6 +693,7 @@ impl KernelSpawner {
         sub.lifecycle_emitter = cx.lifecycle_emitter.clone();
         sub.lifecycle_telemetry = cx.lifecycle_telemetry.clone();
         sub.lifecycle_hooks = cx.lifecycle_hooks.clone();
+        sub.telemetry = cx.telemetry.clone();
         sub.activity = cx.activity.clone();
         sub.token_calibration = cx.token_calibration.clone();
         if cx.usd_budget.is_some() {
@@ -1847,6 +1850,27 @@ pub(super) mod tests {
             .expect("a completely pinned workflow child must build");
         assert_eq!(child.model_context_window, expected_window);
         assert_eq!(child.model_max_output_tokens, expected_output);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn workflow_child_inherits_configured_otlp_telemetry_sink() {
+        let root = scratch("workflow-otlp-telemetry");
+        let catalog = discovered_catalog(&root);
+        let mut cx = context(&root, catalog);
+        cx.telemetry =
+            super::super::telemetry::TelemetrySink::from_user_config(Some(&serde_json::json!({
+                "enabled": true,
+                "endpoint": "http://127.0.0.1:4318"
+            })));
+
+        let child = KernelSpawner::new(cx)
+            .build_child(&call(None, None), 0)
+            .expect("a completely pinned workflow child must build");
+        assert!(
+            child.telemetry.is_some(),
+            "workflow children must retain the configured OTLP exporter"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
