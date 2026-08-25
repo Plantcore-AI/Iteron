@@ -3815,16 +3815,7 @@ fn build_workflow_spawner(
         .map(|skill| (skill.root.clone(), skill.directory.clone()))
         .collect();
     cx.install_compiled_policy_bundle(compiled_policy_bundle);
-    let telemetry = runtime::telemetry::TelemetrySink::from_user_config(otel_value);
-    cx.telemetry = telemetry.clone();
-    if telemetry.is_some() {
-        let lifecycle = iteron_obs::lifecycle::LifecycleBus::default();
-        cx.lifecycle_emitter = Some(iteron_obs::lifecycle::LifecycleEmitter::new(
-            lifecycle.clone(),
-        ));
-        cx.lifecycle_telemetry =
-            iteron_obs::otel::lifecycle::LifecycleTelemetryRuntime::attach(&lifecycle).ok();
-    }
+    runtime::attach_workflow_telemetry(&mut cx, otel_value);
     Ok(std::sync::Arc::new(runtime::KernelSpawner::new(cx)))
 }
 
