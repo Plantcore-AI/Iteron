@@ -262,9 +262,10 @@ pub struct KernelSpawnerContext {
     pub bypass_permissions: bool,
     /// Parent-owned, bounded lifecycle projections. These carry correlation and operator-owned
     /// observation policy into children without widening the child's tool registry or authority.
-    pub(super) lifecycle_emitter: Option<iteron_obs::lifecycle::LifecycleEmitter>,
-    pub(super) lifecycle_telemetry: Option<iteron_obs::otel::lifecycle::LifecycleTelemetryRuntime>,
+    pub(crate) lifecycle_emitter: Option<iteron_obs::lifecycle::LifecycleEmitter>,
+    pub(crate) lifecycle_telemetry: Option<iteron_obs::otel::lifecycle::LifecycleTelemetryRuntime>,
     pub(super) lifecycle_hooks: Option<super::lifecycle_hooks::LifecycleHookDispatcher>,
+    pub(crate) telemetry: Option<super::telemetry::TelemetrySink>,
     /// Shared content-free live activity projection. Children and host-owned writer settlement use
     /// the same bounded sink as the parent; no workflow status waits on frontend consumption.
     pub(super) activity: super::turn_activity::ActivitySink,
@@ -434,6 +435,7 @@ impl KernelSpawnerContext {
             lifecycle_emitter: None,
             lifecycle_telemetry: None,
             lifecycle_hooks: None,
+            telemetry: None,
             activity: super::turn_activity::ActivitySink::default(),
             hooks: Hooks::default(),
             hook_effect_journal: None,
@@ -691,6 +693,7 @@ impl KernelSpawner {
         sub.lifecycle_emitter = cx.lifecycle_emitter.clone();
         sub.lifecycle_telemetry = cx.lifecycle_telemetry.clone();
         sub.lifecycle_hooks = cx.lifecycle_hooks.clone();
+        sub.telemetry = cx.telemetry.clone();
         sub.activity = cx.activity.clone();
         sub.token_calibration = cx.token_calibration.clone();
         if cx.usd_budget.is_some() {
@@ -958,6 +961,34 @@ impl AgentSpawner for KernelSpawner {
         activity: AgentActivityReporter,
     ) -> AgentOutcome {
         self.spawn_reporting(call, Some(activity)).await
+    }
+}
+
+/// Install the operator's OTLP sink and lifecycle runtime on a standalone workflow root.
+///
+/// This is the composition root #376 was about. It left `telemetry`,
+/// `lifecycle_emitter` and `lifecycle_telemetry` unset, so a workflow child reached
+/// `brokered_telemetry_export()` and returned without exporting even when the operator
+/// had configured `otel` -- silently, because nothing on that path reports a missing sink.
+///
+/// It lives here, beside the context it mutates, so it can be called directly.
+/// `build_workflow_spawner` takes fifteen arguments including a provider Arc, a compiled
+/// policy bundle and a tunables checkpoint; a test reaching this code through it would be
+/// assembling most of the CLI. Split at the seam and the two claims #376 asks for become
+/// two cheap assertions.
+pub(crate) fn attach_workflow_telemetry(
+    cx: &mut KernelSpawnerContext,
+    otel_value: Option<&serde_json::Value>,
+) {
+    let telemetry = crate::runtime::telemetry::TelemetrySink::from_user_config(otel_value);
+    cx.telemetry = telemetry.clone();
+    if telemetry.is_some() {
+        let lifecycle = iteron_obs::lifecycle::LifecycleBus::default();
+        cx.lifecycle_emitter = Some(iteron_obs::lifecycle::LifecycleEmitter::new(
+            lifecycle.clone(),
+        ));
+        cx.lifecycle_telemetry =
+            iteron_obs::otel::lifecycle::LifecycleTelemetryRuntime::attach(&lifecycle).ok();
     }
 }
 
@@ -1847,6 +1878,83 @@ pub(super) mod tests {
             .expect("a completely pinned workflow child must build");
         assert_eq!(child.model_context_window, expected_window);
         assert_eq!(child.model_max_output_tokens, expected_output);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn configured_otel_installs_the_workflow_telemetry_runtime() {
+        // I-376, the composition-root half. The sibling test below pins that a child
+        // inherits `cx.telemetry`, but it sets that field by hand, so it passes even with
+        // this wiring removed -- verified by removing it. What #376 actually reported is
+        // that the standalone root never filled the field in the first place.
+        let root = scratch("workflow-otel-root-configured");
+        let catalog = discovered_catalog(&root);
+        let mut cx = context(&root, catalog);
+        assert!(
+            cx.telemetry.is_none(),
+            "the fixture must start unconfigured"
+        );
+
+        super::attach_workflow_telemetry(
+            &mut cx,
+            Some(&serde_json::json!({
+                "enabled": true,
+                "endpoint": "http://127.0.0.1:4318"
+            })),
+        );
+
+        assert!(
+            cx.telemetry.is_some(),
+            "a configured otel block must install the operator's sink on the workflow root"
+        );
+        assert!(
+            cx.lifecycle_emitter.is_some(),
+            "without a lifecycle emitter the child produces no lifecycle batch to export"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn absent_otel_leaves_the_workflow_root_telemetry_free() {
+        // The other half of #376's acceptance evidence: "Unconfigured runs remain
+        // telemetry-free." Wiring a lifecycle bus onto an operator who never asked for
+        // one would be its own defect, so state the negative too.
+        let root = scratch("workflow-otel-root-absent");
+        let catalog = discovered_catalog(&root);
+        let mut cx = context(&root, catalog);
+
+        super::attach_workflow_telemetry(&mut cx, None);
+
+        assert!(cx.telemetry.is_none(), "no otel block must install no sink");
+        assert!(
+            cx.lifecycle_emitter.is_none(),
+            "no otel block must not attach a lifecycle emitter"
+        );
+        assert!(
+            cx.lifecycle_telemetry.is_none(),
+            "no otel block must not attach a lifecycle telemetry runtime"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn workflow_child_inherits_configured_otlp_telemetry_sink() {
+        let root = scratch("workflow-otlp-telemetry");
+        let catalog = discovered_catalog(&root);
+        let mut cx = context(&root, catalog);
+        cx.telemetry =
+            super::super::telemetry::TelemetrySink::from_user_config(Some(&serde_json::json!({
+                "enabled": true,
+                "endpoint": "http://127.0.0.1:4318"
+            })));
+
+        let child = KernelSpawner::new(cx)
+            .build_child(&call(None, None), 0)
+            .expect("a completely pinned workflow child must build");
+        assert!(
+            child.telemetry.is_some(),
+            "workflow children must retain the configured OTLP exporter"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 

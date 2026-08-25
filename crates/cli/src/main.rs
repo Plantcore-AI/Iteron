@@ -3745,6 +3745,7 @@ fn build_workflow_spawner(
     provider_governor: config::ResolvedProviderGovernorConfig,
     fallback_provider_routes: Vec<runtime::GovernedProviderRoute>,
     pricing_port: Option<std::sync::Arc<dyn iteron_obs::PricingPort>>,
+    otel_value: Option<&serde_json::Value>,
     repo: &std::path::Path,
     runs_dir: &std::path::Path,
     parent_run_id: &str,
@@ -3814,6 +3815,7 @@ fn build_workflow_spawner(
         .map(|skill| (skill.root.clone(), skill.directory.clone()))
         .collect();
     cx.install_compiled_policy_bundle(compiled_policy_bundle);
+    runtime::attach_workflow_telemetry(&mut cx, otel_value);
     Ok(std::sync::Arc::new(runtime::KernelSpawner::new(cx)))
 }
 
@@ -4473,6 +4475,7 @@ async fn run_workflow_command(
         effective_settings.provider_governor.clone(),
         fallback_provider_routes,
         workflow_pricing_port,
+        user_file.unknown.get("otel"),
         repo,
         &runs_dir,
         &run_id,
