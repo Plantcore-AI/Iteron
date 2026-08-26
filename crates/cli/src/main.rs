@@ -1539,7 +1539,9 @@ async fn run_cli() -> anyhow::Result<u8> {
 
     // Load repository-safe run knobs. Routing-sensitive fields are resolved later from trusted
     // origins only; same schema, different trust-by-origin policy (config.rs).
-    let file = FileConfig::load(&repo)?;
+    let mut config_warnings = Vec::new();
+    let (file, file_warnings) = FileConfig::load_with_warnings(&repo)?;
+    config_warnings.extend(file_warnings);
 
     let tenant = TenantId::default();
 
@@ -1771,7 +1773,8 @@ async fn run_cli() -> anyhow::Result<u8> {
             "warning: ignoring `active_policy_bundle` in the project config (untrusted origin); select promoted policy identities in ~/.iteron/config.json"
         );
     }
-    let user_file = FileConfig::load_user()?;
+    let (user_file, user_warnings) = FileConfig::load_user_with_warnings()?;
+    config_warnings.extend(user_warnings);
     let implementation_candidate = match (
         cli.implementation_candidate.as_deref(),
         cli.implementation_candidate_digest.as_deref(),
@@ -3221,6 +3224,7 @@ async fn run_cli() -> anyhow::Result<u8> {
         // footer, so the startup replay only has to name the posture once. A field is omitted
         // rather than printed as an empty value, so the line stays short enough not to wrap.
         let mut initial_notices = Vec::new();
+        initial_notices.extend(config_warnings);
         let code_posture = match agent
             .permission_rules()
             .cap_rule(iteron_protocol::Capability::CodeExecuting)

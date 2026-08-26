@@ -706,12 +706,32 @@ impl ProviderConfig {
 impl FileConfig {
     /// Parse and migrate a bounded config document into the current strict schema.
     pub(crate) fn parse(text: &str) -> Result<Self, FileConfigSchemaError> {
+        let (config, warnings) = Self::parse_with_warnings(text)?;
+        for warning in warnings {
+            eprintln!("warning: {warning}");
+        }
+        Ok(config)
+    }
+
+    /// Parse and return any warnings about unknown top-level keys without emitting them.
+    pub(crate) fn parse_with_warnings(
+        text: &str,
+    ) -> Result<(Self, Vec<String>), FileConfigSchemaError> {
         schema::parse(text)
     }
 
     /// Load `.iteron/config.json` under `repo`, if present. A malformed file IS an error
     /// (fail loud on a config the operator wrote), but an absent file is fine.
     pub fn load(repo: &Path) -> anyhow::Result<FileConfig> {
+        let (config, warnings) = Self::load_with_warnings(repo)?;
+        for warning in warnings {
+            eprintln!("warning: {warning}");
+        }
+        Ok(config)
+    }
+
+    /// Load the project config and return any warnings without emitting them.
+    pub fn load_with_warnings(repo: &Path) -> anyhow::Result<(FileConfig, Vec<String>)> {
         let path = iteron_protocol::home::path(repo, "config.json");
         // Running `iteron` from the operator's home makes the PROJECT config path resolve to the very
         // file the USER config lives in. Reading it a second time under untrusted-origin rules made
@@ -719,12 +739,12 @@ impl FileConfig {
         // the session warned that it was ignoring them — from the one file that is allowed to
         // declare them. Trust is a property of WHERE a file is, and this is the same `where`.
         if user_config_path().is_some_and(|user| same_file(&user, &path)) {
-            return Ok(FileConfig::default());
+            return Ok((FileConfig::default(), Vec::new()));
         }
         let Some(text) = read_bounded_config(&path, false)? else {
-            return Ok(FileConfig::default());
+            return Ok((FileConfig::default(), Vec::new()));
         };
-        Self::parse(&text).map_err(|error| {
+        Self::parse_with_warnings(&text).map_err(|error| {
             anyhow::Error::new(error).context(format!("failed to load {}", path.display()))
         })
     }
@@ -1018,13 +1038,22 @@ impl FileConfig {
     /// `Hooks::load_user`. Absent operator home/file → default; malformed → error (fail loud on
     /// your own config).
     pub fn load_user() -> anyhow::Result<FileConfig> {
+        let (config, warnings) = Self::load_user_with_warnings()?;
+        for warning in warnings {
+            eprintln!("warning: {warning}");
+        }
+        Ok(config)
+    }
+
+    /// Load the user config and return any warnings without emitting them.
+    pub fn load_user_with_warnings() -> anyhow::Result<(FileConfig, Vec<String>)> {
         let Some(path) = user_config_path() else {
-            return Ok(FileConfig::default());
+            return Ok((FileConfig::default(), Vec::new()));
         };
         let Some(text) = read_bounded_config(&path, true)? else {
-            return Ok(FileConfig::default());
+            return Ok((FileConfig::default(), Vec::new()));
         };
-        Self::parse(&text).map_err(|error| {
+        Self::parse_with_warnings(&text).map_err(|error| {
             anyhow::Error::new(error).context(format!("failed to load {}", path.display()))
         })
     }

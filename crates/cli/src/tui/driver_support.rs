@@ -506,12 +506,12 @@ pub(super) fn reload_operator_keymap(
     vim: &mut keymap::Vim,
     external_editor_command: &mut Option<Vec<String>>,
 ) {
-    match crate::config::FileConfig::load_user().and_then(|config| {
+    match crate::config::FileConfig::load_user_with_warnings().and_then(|(config, warnings)| {
         let keymap =
             keymap::Keymap::from_config(config.tui_keymap.as_ref()).map_err(anyhow::Error::msg)?;
-        Ok((keymap, config.external_editor))
+        Ok((keymap, config.external_editor, warnings))
     }) {
-        Ok((next, editor)) => {
+        Ok((next, editor, warnings)) => {
             *active = next;
             *external_editor_command = editor;
             vim.reset();
@@ -519,6 +519,9 @@ pub(super) fn reload_operator_keymap(
                 block::NoticeLevel::Info,
                 "reloaded operator keymap and external-editor configuration",
             );
+            for warning in warnings {
+                app.note(block::NoticeLevel::Warn, warning);
+            }
         }
         Err(error) => {
             *active = keymap::Keymap::default();
