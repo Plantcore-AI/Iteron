@@ -44,7 +44,7 @@ pub(super) const fn current_version() -> u32 {
 /// v2 adds the optional bounded retry-policy object, exact per-server MCP tool filters, and the
 /// user-owned terminal-notification preference. Both migrations are intentionally lossless and
 /// leave every operator field untouched.
-pub(super) fn parse(text: &str) -> Result<FileConfig, FileConfigSchemaError> {
+pub(super) fn parse(text: &str) -> Result<(FileConfig, Vec<String>), FileConfigSchemaError> {
     let document: serde_json::Value = serde_json::from_str(text)
         .map_err(|error| FileConfigSchemaError::CurrentSchema(error.to_string()))?;
     let source_version = classify(&document)?;
@@ -87,10 +87,11 @@ pub(super) fn parse(text: &str) -> Result<FileConfig, FileConfigSchemaError> {
         .map_err(|error| FileConfigSchemaError::CurrentSchema(error.to_string()))?;
     // A decorative or newer-binary top-level key degrades instead of bricking startup, but it is
     // never silent: a typo'd budget knob must still be visible to the operator who wrote it.
+    let mut warnings = Vec::new();
     for key in config.unknown.keys() {
-        eprintln!(
-            "warning: ignoring unknown top-level config key `{key}` (this Iteron binary does not know it; check for a typo or upgrade Iteron)"
-        );
+        warnings.push(format!(
+            "ignoring unknown top-level config key `{key}` (this Iteron binary does not know it; check for a typo or upgrade Iteron)"
+        ));
     }
     if source_version < FILE_CONFIG_SCHEMA_VERSION {
         config.schema_version = FILE_CONFIG_SCHEMA_VERSION;
@@ -98,7 +99,7 @@ pub(super) fn parse(text: &str) -> Result<FileConfig, FileConfigSchemaError> {
     config
         .validate()
         .map_err(FileConfigSchemaError::CurrentSchema)?;
-    Ok(config)
+    Ok((config, warnings))
 }
 
 fn classify(document: &serde_json::Value) -> Result<u32, FileConfigSchemaError> {
