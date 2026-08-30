@@ -68,5 +68,5 @@ windows-sys = { version = "0.61", features = [
 # Tests pin a registry-driven resolved tunable set rather than inventing a snapshot.
 iteron-record = { path = "../record", features = ["test-fixtures"] }
 portable-pty = "=0.9.0"
-vt100 = "=0.15.2"
+vt100 = "=0.16.2"
 tokio = { workspace = true, features = ["test-util"] }
