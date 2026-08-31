@@ -636,13 +636,17 @@ can run them concurrently. `related_terms` is a nearby-term relevance filter, no
 ranked toward recently read files and report incomplete coverage with a bounded path continuation. \
 Paths use repository-relative names when possible and line numbers are 1-based.";
 
+fn grep_description() -> &'static str {
+    iteron_tunables::param_str("tools.grep_tool.grep_description", GREP_DESCRIPTION)
+}
+
 pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
     let policy_cell = registry.observation_tool_policy_handle();
     let observation_focus = registry.observation_focus_handle();
     registry.push_targeted_observation_tool(
         ToolSpec {
             name: "grep".into(),
-            description: GREP_DESCRIPTION.into(),
+            description: grep_description().into(),
             input_schema: serde_json::json!({
                 "type":"object",
                 "properties":{

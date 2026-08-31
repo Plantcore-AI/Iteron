@@ -134,6 +134,10 @@ unless the operator passed --confine. Stdout/stderr are independently length-fra
 runtime stdout/stderr ceilings and an explicit isIncomplete flag. Directory changes do not persist \
 across calls; chain with `&&`.";
 
+fn bash_description() -> &'static str {
+    iteron_tunables::param_str("tools.shell.bash_description", BASH_DESCRIPTION)
+}
+
 pub(crate) fn register(
     r: &mut Registry,
     supervisor: std::sync::Arc<crate::process::Supervisor>,
@@ -144,7 +148,7 @@ pub(crate) fn register(
     r.register_external_effect(
         ToolSpec {
             name: "bash".into(),
-            description: BASH_DESCRIPTION.into(),
+            description: bash_description().into(),
             input_schema: serde_json::json!({
                 "type":"object",
                 "properties":{

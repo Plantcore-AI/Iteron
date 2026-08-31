@@ -64,6 +64,27 @@ fn candidate_review_instruction() -> &'static str {
     )
 }
 
+fn candidate_owner_evidence_instruction() -> &'static str {
+    iteron_tunables::param_str(
+        "cli.runtime.investigation_convergence.candidate_owner_evidence_instruction",
+        CANDIDATE_OWNER_EVIDENCE_INSTRUCTION,
+    )
+}
+
+fn candidate_owner_evidence_ready_instruction() -> &'static str {
+    iteron_tunables::param_str(
+        "cli.runtime.investigation_convergence.candidate_owner_evidence_ready_instruction",
+        CANDIDATE_OWNER_EVIDENCE_READY_INSTRUCTION,
+    )
+}
+
+fn candidate_owner_block_ready_instruction() -> &'static str {
+    iteron_tunables::param_str(
+        "cli.runtime.investigation_convergence.candidate_owner_block_ready_instruction",
+        CANDIDATE_OWNER_BLOCK_READY_INSTRUCTION,
+    )
+}
+
 fn verification_counterexample_instruction() -> &'static str {
     iteron_tunables::param_str(
         "cli.runtime.investigation_convergence.verification_counterexample_instruction",
@@ -82,6 +103,90 @@ fn candidate_withdrawn_instruction() -> &'static str {
     iteron_tunables::param_str(
         "cli.runtime.investigation_convergence.candidate_withdrawn_instruction",
         CANDIDATE_WITHDRAWN_INSTRUCTION,
+    )
+}
+
+fn unchanged_failed_candidate_instruction() -> &'static str {
+    iteron_tunables::param_str(
+        "cli.runtime.investigation_convergence.unchanged_failed_candidate_instruction",
+        UNCHANGED_FAILED_CANDIDATE_INSTRUCTION,
+    )
+}
+
+fn unchanged_failed_candidate_terminal_instruction() -> &'static str {
+    iteron_tunables::param_str(
+        "cli.runtime.investigation_convergence.unchanged_failed_candidate_terminal_instruction",
+        UNCHANGED_FAILED_CANDIDATE_TERMINAL_INSTRUCTION,
+    )
+}
+
+fn candidate_handoff_instruction() -> &'static str {
+    iteron_tunables::param_str(
+        "cli.runtime.investigation_convergence.candidate_handoff_instruction",
+        CANDIDATE_HANDOFF_INSTRUCTION,
+    )
+}
+
+fn net_zero_recovery_instruction() -> &'static str {
+    iteron_tunables::param_str(
+        "cli.runtime.investigation_convergence.net_zero_recovery_instruction",
+        NET_ZERO_RECOVERY_INSTRUCTION,
+    )
+}
+
+fn rejected_mutation_recovery_instruction() -> &'static str {
+    iteron_tunables::param_str(
+        "cli.runtime.investigation_convergence.rejected_mutation_recovery_instruction",
+        REJECTED_MUTATION_RECOVERY_INSTRUCTION,
+    )
+}
+
+fn localization_plateau_instruction() -> &'static str {
+    iteron_tunables::param_str(
+        "cli.runtime.investigation_convergence.localization_plateau_instruction",
+        LOCALIZATION_PLATEAU_INSTRUCTION,
+    )
+}
+
+fn localization_exhausted_instruction() -> &'static str {
+    iteron_tunables::param_str(
+        "cli.runtime.investigation_convergence.localization_exhausted_instruction",
+        LOCALIZATION_EXHAUSTED_INSTRUCTION,
+    )
+}
+
+fn localized_closure_instruction() -> &'static str {
+    iteron_tunables::param_str(
+        "cli.runtime.investigation_convergence.localized_closure_instruction",
+        LOCALIZED_CLOSURE_INSTRUCTION,
+    )
+}
+
+fn localized_expansion_complete_instruction() -> &'static str {
+    iteron_tunables::param_str(
+        "cli.runtime.investigation_convergence.localized_expansion_complete_instruction",
+        LOCALIZED_EXPANSION_COMPLETE_INSTRUCTION,
+    )
+}
+
+fn structural_regression_refresh_instruction() -> &'static str {
+    iteron_tunables::param_str(
+        "cli.runtime.investigation_convergence.structural_regression_refresh_instruction",
+        STRUCTURAL_REGRESSION_REFRESH_INSTRUCTION,
+    )
+}
+
+fn structural_regression_repair_instruction() -> &'static str {
+    iteron_tunables::param_str(
+        "cli.runtime.investigation_convergence.structural_regression_repair_instruction",
+        STRUCTURAL_REGRESSION_REPAIR_INSTRUCTION,
+    )
+}
+
+fn behavior_counterexample_refresh_instruction() -> &'static str {
+    iteron_tunables::param_str(
+        "cli.runtime.investigation_convergence.behavior_counterexample_refresh_instruction",
+        BEHAVIOR_COUNTEREXAMPLE_REFRESH_INSTRUCTION,
     )
 }
 
@@ -336,14 +441,14 @@ impl InvestigationConvergence {
             self.post_candidate_evidence_available = false;
             self.structural_repair_read_required = false;
             self.behavior_counterexample_read_required = false;
-            VerificationCandidateGuard::RequireTransition(UNCHANGED_FAILED_CANDIDATE_INSTRUCTION)
+            VerificationCandidateGuard::RequireTransition(unchanged_failed_candidate_instruction())
         } else {
             self.state = GraphState::EvidenceInsufficient;
             self.candidate_owner_evidence_required = false;
             self.post_candidate_evidence_available = false;
             self.structural_repair_read_required = false;
             self.behavior_counterexample_read_required = false;
-            VerificationCandidateGuard::Stop(UNCHANGED_FAILED_CANDIDATE_TERMINAL_INSTRUCTION)
+            VerificationCandidateGuard::Stop(unchanged_failed_candidate_terminal_instruction())
         }
     }
 
@@ -423,7 +528,7 @@ impl InvestigationConvergence {
             self.localization_exhausted = true;
             self.state = GraphState::Mutate;
             return Some(self.request(
-                LOCALIZED_EXPANSION_COMPLETE_INSTRUCTION,
+                localized_expansion_complete_instruction(),
                 ConvergenceStage::Mutate,
             ));
         }
@@ -432,14 +537,15 @@ impl InvestigationConvergence {
             && self.initial_exact_read_paths.len() >= 2
         {
             self.localized_closure_active = true;
-            return Some(self.request(LOCALIZED_CLOSURE_INSTRUCTION, ConvergenceStage::Explain));
+            return Some(self.request(localized_closure_instruction(), ConvergenceStage::Explain));
         }
         if novel {
             if self.localization_plateau && exact_read {
                 self.non_novel_localization_batches = 0;
-                return Some(
-                    self.request(LOCALIZATION_PLATEAU_INSTRUCTION, ConvergenceStage::Explain),
-                );
+                return Some(self.request(
+                    localization_plateau_instruction(),
+                    ConvergenceStage::Explain,
+                ));
             }
             // A provider commonly changes query text over the same broad root, then consumes one
             // exact file from those results.  The exact path is useful focus, but it is not a
@@ -449,9 +555,10 @@ impl InvestigationConvergence {
             if exact_read && self.non_novel_localization_batches > 0 {
                 self.localization_plateau = true;
                 self.non_novel_localization_batches = 0;
-                return Some(
-                    self.request(LOCALIZATION_PLATEAU_INSTRUCTION, ConvergenceStage::Explain),
-                );
+                return Some(self.request(
+                    localization_plateau_instruction(),
+                    ConvergenceStage::Explain,
+                ));
             }
             self.non_novel_localization_batches = 0;
             return None;
@@ -460,9 +567,10 @@ impl InvestigationConvergence {
         if self.localization_plateau {
             self.localization_exhausted = true;
             self.state = GraphState::Mutate;
-            return Some(
-                self.request(LOCALIZATION_EXHAUSTED_INSTRUCTION, ConvergenceStage::Mutate),
-            );
+            return Some(self.request(
+                localization_exhausted_instruction(),
+                ConvergenceStage::Mutate,
+            ));
         }
 
         self.non_novel_localization_batches = self.non_novel_localization_batches.saturating_add(1);
@@ -471,7 +579,10 @@ impl InvestigationConvergence {
         }
         self.localization_plateau = true;
         self.non_novel_localization_batches = 0;
-        Some(self.request(LOCALIZATION_PLATEAU_INSTRUCTION, ConvergenceStage::Explain))
+        Some(self.request(
+            localization_plateau_instruction(),
+            ConvergenceStage::Explain,
+        ))
     }
 
     /// Normalize discovery by the workspace root it inspects. Different query text or discovery
@@ -625,13 +736,13 @@ impl InvestigationConvergence {
                 self.structural_repair_read_required = false;
                 self.state = GraphState::Mutate;
                 return Some(self.request(
-                    STRUCTURAL_REGRESSION_REPAIR_INSTRUCTION,
+                    structural_regression_repair_instruction(),
                     ConvergenceStage::Mutate,
                 ));
             }
             self.state = GraphState::Review;
             return Some(self.request(
-                STRUCTURAL_REGRESSION_REFRESH_INSTRUCTION,
+                structural_regression_refresh_instruction(),
                 ConvergenceStage::Review,
             ));
         }
@@ -650,7 +761,7 @@ impl InvestigationConvergence {
             }
             self.state = GraphState::Review;
             return Some(self.request(
-                BEHAVIOR_COUNTEREXAMPLE_REFRESH_INSTRUCTION,
+                behavior_counterexample_refresh_instruction(),
                 ConvergenceStage::Review,
             ));
         }
@@ -665,7 +776,7 @@ impl InvestigationConvergence {
                 {
                     self.state = GraphState::Review;
                     return Some(self.request(
-                        CANDIDATE_OWNER_EVIDENCE_INSTRUCTION,
+                        candidate_owner_evidence_instruction(),
                         ConvergenceStage::Review,
                     ));
                 }
@@ -679,9 +790,9 @@ impl InvestigationConvergence {
                     self.state = GraphState::Review;
                     return Some(self.request(
                         if exact_read {
-                            CANDIDATE_OWNER_BLOCK_READY_INSTRUCTION
+                            candidate_owner_block_ready_instruction()
                         } else {
-                            CANDIDATE_OWNER_EVIDENCE_READY_INSTRUCTION
+                            candidate_owner_evidence_ready_instruction()
                         },
                         ConvergenceStage::Review,
                     ));
@@ -694,14 +805,14 @@ impl InvestigationConvergence {
                     self.post_candidate_evidence_available = false;
                     self.state = GraphState::Review;
                     return Some(self.request(
-                        CANDIDATE_OWNER_BLOCK_READY_INSTRUCTION,
+                        candidate_owner_block_ready_instruction(),
                         ConvergenceStage::Review,
                     ));
                 }
                 if self.last_candidate_diff == Some(fingerprint) || repeated_failure {
                     self.state = GraphState::Handoff;
                     return Some(
-                        self.request(CANDIDATE_HANDOFF_INSTRUCTION, ConvergenceStage::Review),
+                        self.request(candidate_handoff_instruction(), ConvergenceStage::Review),
                     );
                 }
                 let first_candidate = self.last_candidate_diff.is_none();
@@ -717,7 +828,7 @@ impl InvestigationConvergence {
                 }
                 Some(self.request(
                     if self.candidate_owner_evidence_required {
-                        CANDIDATE_OWNER_EVIDENCE_INSTRUCTION
+                        candidate_owner_evidence_instruction()
                     } else {
                         candidate_review_instruction()
                     },
@@ -733,7 +844,7 @@ impl InvestigationConvergence {
                         }
                         self.net_zero_reread_available = false;
                         return Some(self.request(
-                            REJECTED_MUTATION_RECOVERY_INSTRUCTION,
+                            rejected_mutation_recovery_instruction(),
                             ConvergenceStage::Explain,
                         ));
                     }
@@ -743,7 +854,7 @@ impl InvestigationConvergence {
                     self.net_zero_reread_available = true;
                     self.state = GraphState::NetZeroRecovery;
                     return Some(
-                        self.request(NET_ZERO_RECOVERY_INSTRUCTION, ConvergenceStage::Explain),
+                        self.request(net_zero_recovery_instruction(), ConvergenceStage::Explain),
                     );
                 }
                 if matches!(self.state, GraphState::NetZeroRecovery) && exact_read {
@@ -752,7 +863,7 @@ impl InvestigationConvergence {
                     }
                     self.net_zero_reread_available = false;
                     return Some(
-                        self.request(NET_ZERO_RECOVERY_INSTRUCTION, ConvergenceStage::Explain),
+                        self.request(net_zero_recovery_instruction(), ConvergenceStage::Explain),
                     );
                 }
                 if matches!(self.state, GraphState::NetZeroRecovery) {
@@ -816,7 +927,7 @@ impl InvestigationConvergence {
             self.structural_repair_read_required = true;
             self.behavior_counterexample_read_required = false;
             Some(self.request(
-                STRUCTURAL_REGRESSION_REFRESH_INSTRUCTION,
+                structural_regression_refresh_instruction(),
                 ConvergenceStage::Review,
             ))
         } else {
@@ -828,7 +939,7 @@ impl InvestigationConvergence {
             self.structural_repair_read_required = false;
             self.behavior_counterexample_read_required = true;
             Some(self.request(
-                BEHAVIOR_COUNTEREXAMPLE_REFRESH_INSTRUCTION,
+                behavior_counterexample_refresh_instruction(),
                 ConvergenceStage::Review,
             ))
         }

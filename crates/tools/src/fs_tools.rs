@@ -46,6 +46,41 @@ const MAX_PATH_RECOVERY_DEPTH: usize = 4;
 const MAX_EXACT_NAME_RECOVERY_SCAN: usize = 8_192;
 const MAX_EXACT_NAME_RECOVERY_DEPTH: usize = 24;
 
+fn max_path_recovery_results() -> usize {
+    iteron_tunables::param_usize(
+        "tools.fs_tools.max_path_recovery_results",
+        MAX_PATH_RECOVERY_RESULTS,
+    )
+}
+
+fn max_path_recovery_scan() -> usize {
+    iteron_tunables::param_usize(
+        "tools.fs_tools.max_path_recovery_scan",
+        MAX_PATH_RECOVERY_SCAN,
+    )
+}
+
+fn max_path_recovery_depth() -> usize {
+    iteron_tunables::param_usize(
+        "tools.fs_tools.max_path_recovery_depth",
+        MAX_PATH_RECOVERY_DEPTH,
+    )
+}
+
+fn max_exact_name_recovery_scan() -> usize {
+    iteron_tunables::param_usize(
+        "tools.fs_tools.max_exact_name_recovery_scan",
+        MAX_EXACT_NAME_RECOVERY_SCAN,
+    )
+}
+
+fn max_exact_name_recovery_depth() -> usize {
+    iteron_tunables::param_usize(
+        "tools.fs_tools.max_exact_name_recovery_depth",
+        MAX_EXACT_NAME_RECOVERY_DEPTH,
+    )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ReadPathFailure {
     NotFound,
@@ -195,11 +230,11 @@ fn ranked_recovery_candidates(root: &Path, target: &Path, ancestor: &Path) -> Ve
 
     for entry in WalkDir::new(search_root)
         .min_depth(1)
-        .max_depth(MAX_PATH_RECOVERY_DEPTH)
+        .max_depth(max_path_recovery_depth())
         .follow_links(false)
         .into_iter()
         .filter_entry(|entry| !is_ignored(entry.file_name().to_str().unwrap_or("")))
-        .take(MAX_PATH_RECOVERY_SCAN)
+        .take(max_path_recovery_scan())
         .flatten()
     {
         consider(entry, false);
@@ -208,11 +243,11 @@ fn ranked_recovery_candidates(root: &Path, target: &Path, ancestor: &Path) -> Ve
     if !requested_name.is_empty() {
         for entry in WalkDir::new(root)
             .min_depth(1)
-            .max_depth(MAX_EXACT_NAME_RECOVERY_DEPTH)
+            .max_depth(max_exact_name_recovery_depth())
             .follow_links(false)
             .into_iter()
             .filter_entry(|entry| !is_ignored(entry.file_name().to_str().unwrap_or("")))
-            .take(MAX_EXACT_NAME_RECOVERY_SCAN)
+            .take(max_exact_name_recovery_scan())
             .flatten()
         {
             consider(entry, true);
@@ -234,7 +269,7 @@ fn ranked_recovery_candidates(root: &Path, target: &Path, ancestor: &Path) -> Ve
     candidates.dedup_by(|left, right| left.path == right.path);
     candidates
         .into_iter()
-        .take(MAX_PATH_RECOVERY_RESULTS)
+        .take(max_path_recovery_results())
         .map(|candidate| candidate.path)
         .collect()
 }
@@ -244,7 +279,7 @@ fn bounded_directory_children(root: &Path, directory: &Path) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir(directory) else {
         return children;
     };
-    for entry in entries.take(MAX_PATH_RECOVERY_SCAN).flatten() {
+    for entry in entries.take(max_path_recovery_scan()).flatten() {
         let Ok(file_type) = entry.file_type() else {
             continue;
         };
@@ -261,7 +296,7 @@ fn bounded_directory_children(root: &Path, directory: &Path) -> Vec<String> {
     }
     children.sort();
     children.dedup();
-    children.truncate(MAX_PATH_RECOVERY_RESULTS);
+    children.truncate(max_path_recovery_results());
     children
 }
 
@@ -967,12 +1002,16 @@ tool: use it only after bounded exact or structural search cannot identify an ar
 `repo_map` after an evidence packet exists. Optional `query` task text or identifiers boost files \
 that declare those identifiers above unrelated declaration-heavy files.";
 
+fn repo_map_description() -> &'static str {
+    iteron_tunables::param_str("tools.fs_tools.repo_map_description", REPO_MAP_DESCRIPTION)
+}
+
 pub(crate) fn register_outline(r: &mut Registry) -> Result<(), ToolError> {
     let repo_map_policy = r.observation_tool_policy_handle();
     r.push_tool(
         ToolSpec {
             name: "repo_map".into(),
-            description: REPO_MAP_DESCRIPTION.into(),
+            description: repo_map_description().into(),
             input_schema: serde_json::json!({
                 "type":"object",
                 "properties":{
