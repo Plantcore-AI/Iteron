@@ -11026,6 +11026,32 @@
       "behavior_oracle": "installed profile id cli.runtime.investigation_convergence.graph_progress_instruction is resolved at every listed production helper call"
     },
     {
+      "id": "cli.runtime.investigation_convergence.initial_localization_plateau",
+      "module": "scheduler_parallelism",
+      "class": "searchable",
+      "type": "boolean",
+      "rust_type": "bool",
+      "default": "false",
+      "krate": "cli",
+      "decl": "crates/cli/src/runtime/investigation_convergence.rs",
+      "applied": true,
+      "candidate_kind": "const",
+      "disposition": "runtime_settable",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/runtime/investigation_convergence.rs",
+        "symbol": "InvestigationConvergence::for_run"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/runtime/investigation_convergence.rs",
+          "line": 170,
+          "evidence": "param_bool runtime resolution"
+        }
+      ],
+      "behavior_oracle": "installed profile id cli.runtime.investigation_convergence.initial_localization_plateau is resolved at run initialization"
+    },
+    {
       "id": "cli.runtime.investigation_convergence.verification_counterexample_instruction",
       "module": "scheduler_parallelism",
       "class": "searchable",

@@ -626,23 +626,23 @@ struct IgnoreBudget {
     patterns: usize,
 }
 
+const GREP_DESCRIPTION: &str = "Search bounded UTF-8 files while respecting .gitignore. `path` may \
+be relative to the repo root or an absolute host path. Omit `regex` for conservative auto-detection; \
+set false for literal matching or true for Rust regex. Stable symbols automatically include a \
+bounded enclosing code block; use `context_lines` only for a fixed window. Prefer one focused call \
+combining `path`, `context_lines`, and `related_terms` over a series of synonym-only calls. When \
+multiple independent evidence facets are needed, issue their focused calls together so the scheduler \
+can run them concurrently. `related_terms` is a nearby-term relevance filter, not proof. Results are \
+ranked toward recently read files and report incomplete coverage with a bounded path continuation. \
+Paths use repository-relative names when possible and line numbers are 1-based.";
+
 pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
     let policy_cell = registry.observation_tool_policy_handle();
     let observation_focus = registry.observation_focus_handle();
     registry.push_targeted_observation_tool(
         ToolSpec {
             name: "grep".into(),
-            description: "Search bounded UTF-8 files while respecting .gitignore. `path` may be \
-                          relative to the repo root or an absolute host path. Omit `regex` for \
-                          conservative auto-detection; set false for literal matching or true for \
-                          Rust regex. Stable symbols automatically include a bounded enclosing code \
-                          block; use `context_lines` only for a fixed window. `related_terms` is an \
-                          optional nearby-term relevance filter, not a proof requirement. Prefer a \
-                          narrow `path` or `max_results`. Results are ranked toward recently read \
-                          files and report incomplete coverage with a bounded path continuation. \
-                          Paths use repository-relative names when possible and line numbers are \
-                          1-based."
-                .into(),
+            description: GREP_DESCRIPTION.into(),
             input_schema: serde_json::json!({
                 "type":"object",
                 "properties":{
@@ -1436,6 +1436,24 @@ fn load_ignore(
 
 fn is_default_ignored(name: &str) -> bool {
     name == ".iteron" || iteron_ctx::source::is_default_pruned_component(name)
+}
+
+#[cfg(test)]
+mod evidence_contract_tests {
+    use super::GREP_DESCRIPTION;
+
+    #[test]
+    fn description_prefers_focused_and_concurrent_evidence_searches() {
+        for guidance in [
+            "one focused call",
+            "`path`, `context_lines`, and `related_terms`",
+            "synonym-only calls",
+            "calls together",
+            "run them concurrently",
+        ] {
+            assert!(GREP_DESCRIPTION.contains(guidance), "{guidance}");
+        }
+    }
 }
 
 #[cfg(test)]

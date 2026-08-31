@@ -127,6 +127,13 @@ impl Default for ShellOutputBudget {
     }
 }
 
+const BASH_DESCRIPTION: &str = "Run a bash command, cwd = the workspace root. Use for tests, \
+builds, and runtime execution only; never use grep, find, or cat for repository discovery or file \
+reads when grep/read_file/glob/list_dir can answer. The command runs with your own user authority \
+unless the operator passed --confine. Stdout/stderr are independently length-framed by the pinned \
+runtime stdout/stderr ceilings and an explicit isIncomplete flag. Directory changes do not persist \
+across calls; chain with `&&`.";
+
 pub(crate) fn register(
     r: &mut Registry,
     supervisor: std::sync::Arc<crate::process::Supervisor>,
@@ -137,14 +144,7 @@ pub(crate) fn register(
     r.register_external_effect(
         ToolSpec {
             name: "bash".into(),
-            description: "Run a bash command, cwd = the workspace root. Use for building, \
-                          running tests, git, and network access; use grep/read_file/glob/list_dir \
-                          instead for repository discovery and file reads. The command runs with your own \
-                          user authority unless the operator passed --confine. Stdout/stderr are \
-                          independently length-framed by the pinned runtime stdout/stderr \
-                          ceilings and an explicit isIncomplete flag. Directory changes do not \
-                          persist across calls; chain with `&&`."
-                .into(),
+            description: BASH_DESCRIPTION.into(),
             input_schema: serde_json::json!({
                 "type":"object",
                 "properties":{
@@ -515,6 +515,17 @@ fn tool_result(tool_use_id: String, content: String, is_error: bool) -> ToolResu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn description_reserves_bash_for_execution_not_discovery() {
+        for guidance in [
+            "tests, builds, and runtime execution only",
+            "never use grep, find, or cat",
+            "grep/read_file/glob/list_dir can answer",
+        ] {
+            assert!(BASH_DESCRIPTION.contains(guidance), "{guidance}");
+        }
+    }
 
     fn output(timed_out: bool) -> RunOutput {
         RunOutput {

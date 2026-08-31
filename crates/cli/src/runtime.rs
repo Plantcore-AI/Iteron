@@ -3032,9 +3032,10 @@ impl Agent {
     ) -> Result<Outcome, KernelError> {
         let mut consecutive_errors: u32 = 0;
         let mut investigation_convergence =
-            investigation_convergence::InvestigationConvergence::default();
+            investigation_convergence::InvestigationConvergence::for_run();
         let mut candidate_workspace_baseline =
             investigation_convergence::CandidateWorkspaceBaseline::default();
+        let mut immediate_candidate_recovery_used = false;
 
         // REC-INJECT: resolve + record the memory segment once, before the first request build,
         // using the task for relevance recall. effective_system() reads the cached result.
@@ -3076,10 +3077,26 @@ impl Agent {
             let effective_system = self.effective_system();
             let tool_specs = self.advertised_tool_specs_for_task_with_patch_trial(
                 relevance_task,
-                investigation_convergence.patch_trial_active(),
-                investigation_convergence.candidate_change_required(),
-                investigation_convergence.candidate_review_active(),
-                investigation_convergence.evidence_insufficient_terminal(),
+                context_runtime::ToolProjectionPosture {
+                    patch_trial: investigation_convergence.patch_trial_active(),
+                    candidate_change_required: investigation_convergence
+                        .candidate_change_required(),
+                    candidate_revision_required: investigation_convergence
+                        .candidate_revision_required(),
+                    candidate_owner_evidence_required: investigation_convergence
+                        .candidate_owner_evidence_required(),
+                    structural_repair_read_required: investigation_convergence
+                        .structural_repair_read_required(),
+                    behavior_counterexample_read_required: investigation_convergence
+                        .behavior_counterexample_read_required(),
+                    localized_closure_active: investigation_convergence.localized_closure_active(),
+                    candidate_review_active: investigation_convergence.candidate_review_active()
+                        || investigation_convergence.localization_plateau_active(),
+                    evidence_insufficient_terminal: investigation_convergence
+                        .evidence_insufficient_terminal(),
+                    candidate_handoff_terminal: investigation_convergence
+                        .candidate_handoff_terminal(),
+                },
             );
             // This is the checkpointed coding-request reservation. The provider's documented
             // maximum is an external ceiling applied during composition, not the amount every
@@ -4634,6 +4651,7 @@ impl Agent {
             let mut workspace_candidate_changes = std::collections::BTreeSet::new();
             let mut workspace_candidate_paths = std::collections::BTreeSet::new();
             let mut unauthorized_candidate_changes = std::collections::BTreeSet::new();
+            let mut owner_evidence_blocked_changes = std::collections::BTreeSet::new();
             let repair_evidence_submissions = returned_tools
                 .iter()
                 .enumerate()
@@ -4646,8 +4664,11 @@ impl Agent {
             // A repair receipt submitted in this same turn has not yet produced typed authority.
             // Treat that as an explicit opt-in to the confined path and wait for its result; an
             // ordinary turn with no receipt stays on the direct workspace-confined fast path.
+            let candidate_owner_evidence_required =
+                investigation_convergence.candidate_owner_evidence_required();
             let candidate_mutation_authorized = investigation_convergence
                 .candidate_change_allowed()
+                && !candidate_owner_evidence_required
                 && repair_evidence_submissions.is_empty();
             let receipt_path_restricted = !investigation_convergence
                 .authorized_repair_paths()
@@ -4676,6 +4697,9 @@ impl Agent {
                             .all(|path| authorized_candidate_paths.contains(path)))
                 {
                     unauthorized_candidate_changes.insert(*index);
+                    if candidate_owner_evidence_required {
+                        owner_evidence_blocked_changes.insert(*index);
+                    }
                 } else {
                     workspace_candidate_changes.insert(*index);
                     workspace_candidate_paths.extend(paths);
@@ -4687,6 +4711,15 @@ impl Agent {
                 .filter_map(|(index, tool)| {
                     self.registry
                         .is_workspace_targeted_observation(tool, &self.workspace)
+                        .then_some(index)
+                })
+                .collect::<std::collections::BTreeSet<_>>();
+            let workspace_localization_observations = returned_tools
+                .iter()
+                .enumerate()
+                .filter_map(|(index, tool)| {
+                    self.registry
+                        .is_workspace_localization_observation(tool, &self.workspace)
                         .then_some(index)
                 })
                 .collect::<std::collections::BTreeSet<_>>();
@@ -4776,13 +4809,27 @@ impl Agent {
                         if let Some(reason) = self.completed_turn_budget_exhaustion() {
                             return self.finish(turn_id, Outcome::BudgetExhausted(reason)).await;
                         }
-                        if self.last_assistant_text.trim().is_empty() {
-                            let interactive = self.approvals_rx.is_some();
-                            let notice = if interactive {
-                                "provider ended the turn without an answer; completion was not accepted"
-                            } else {
-                                "provider ended the automated turn without an answer; completion requires a configured oracle"
-                            };
+                        let promised_immediate_candidate = self.approvals_rx.is_none()
+                            && completion_semantics::task_requests_candidate_action(relevance_task)
+                            && completion_semantics::commits_to_immediate_candidate_action(
+                                &self.last_assistant_text,
+                            );
+                        if promised_immediate_candidate && immediate_candidate_recovery_used {
+                            let notice = "provider repeated an immediate edit promise after its bounded action continuation without creating a candidate";
+                            self.emit(
+                                turn_id,
+                                EventKind::Notice {
+                                    text: notice.into(),
+                                },
+                            );
+                            self.ui(UiEvent::Notice(notice.into()));
+                            return self.finish(turn_id, Outcome::Stuck).await;
+                        }
+                        if promised_immediate_candidate
+                            && investigation_convergence.reopen_immediate_candidate_action()
+                        {
+                            immediate_candidate_recovery_used = true;
+                            let notice = "provider promised an immediate candidate edit but ended without one; requesting one bounded action continuation";
                             self.emit(
                                 turn_id,
                                 EventKind::Notice {
@@ -4791,20 +4838,81 @@ impl Agent {
                             );
                             self.ui(UiEvent::Notice(notice.into()));
                             self.lifecycle_event(
-                                "session.failed",
+                                "session.idle",
                                 Some(turn_id),
                                 LifecyclePayload {
-                                    reason_code: Some("empty_end_turn".into()),
+                                    reason_code: Some(
+                                        "immediate_candidate_action_continuation".into(),
+                                    ),
                                     ..LifecyclePayload::default()
                                 },
                             );
-                            if matches!(
-                                completion_semantics::empty_end_turn_decision(
-                                    self.verify_command.is_some()
+                            self.commit_message(
+                                turn_id,
+                                messages,
+                                Message::user_text(
+                                    "You committed to an immediate candidate edit but ended the turn without making it. Execute that stated minimal edit now. If the visible evidence does not support it, explicitly conclude evidence-insufficient without promising future action.",
                                 ),
-                                completion_semantics::EmptyEndTurnDecision::Reject
+                            )?;
+                            self.advance_turn().await?;
+                            continue;
+                        }
+                        if self.last_assistant_text.trim().is_empty() {
+                            let decision = completion_semantics::empty_end_turn_decision(
+                                self.verify_command.is_some(),
+                                investigation_convergence.candidate_handoff_terminal(),
+                            );
+                            if matches!(
+                                decision,
+                                completion_semantics::EmptyEndTurnDecision::AcceptCandidateHandoff
                             ) {
-                                return self.finish(turn_id, Outcome::HarnessError).await;
+                                let notice = "provider ended without prose after stable candidate convergence; controller accepted the diff handoff";
+                                self.emit(
+                                    turn_id,
+                                    EventKind::Notice {
+                                        text: notice.into(),
+                                    },
+                                );
+                                self.ui(UiEvent::Notice(notice.into()));
+                                self.lifecycle_event(
+                                    "session.idle",
+                                    Some(turn_id),
+                                    LifecyclePayload {
+                                        reason_code: Some(
+                                            "stable_candidate_empty_end_turn_handoff".into(),
+                                        ),
+                                        outcome_code: Some("accepted".into()),
+                                        ..LifecyclePayload::default()
+                                    },
+                                );
+                            } else {
+                                let interactive = self.approvals_rx.is_some();
+                                let notice = if interactive {
+                                    "provider ended the turn without an answer; completion was not accepted"
+                                } else {
+                                    "provider ended the automated turn without an answer; completion requires a configured oracle"
+                                };
+                                self.emit(
+                                    turn_id,
+                                    EventKind::Notice {
+                                        text: notice.into(),
+                                    },
+                                );
+                                self.ui(UiEvent::Notice(notice.into()));
+                                self.lifecycle_event(
+                                    "session.failed",
+                                    Some(turn_id),
+                                    LifecyclePayload {
+                                        reason_code: Some("empty_end_turn".into()),
+                                        ..LifecyclePayload::default()
+                                    },
+                                );
+                                if matches!(
+                                    decision,
+                                    completion_semantics::EmptyEndTurnDecision::Reject
+                                ) {
+                                    return self.finish(turn_id, Outcome::HarnessError).await;
+                                }
                             }
                         }
                         // A message typed while this turn was decoding wins over the model's claim
@@ -4824,10 +4932,12 @@ impl Agent {
                         // claim and feed the failure back. Bounded so a wrong gate can't loop. ----
                         if let Some(cmd) = self.verify_command.clone() {
                             agent_loop.transition(AgentLoopState::Verifying)?;
+                            let candidate_state = candidate_workspace_baseline.diff_state().await;
                             match self
                                 .run_strong_verification_gate(
                                     turn_id,
                                     &cmd,
+                                    candidate_state,
                                     &mut investigation_convergence,
                                 )
                                 .await?
@@ -5106,7 +5216,11 @@ impl Agent {
                 if unauthorized_candidate_changes.contains(&idx) {
                     let r = ToolResult {
                         tool_use_id: tu.id.clone(),
-                        content: "refused: candidate mutation is outside the exact path authorized by the typed RepairIntent receipt".into(),
+                        content: if owner_evidence_blocked_changes.contains(&idx) {
+                            "refused: candidate revision requires one bounded stable-key owner search before another mutation".into()
+                        } else {
+                            "refused: candidate mutation is outside the exact path authorized by the typed RepairIntent receipt".into()
+                        },
                         is_error: true,
                         trust: Trust::Workspace,
                         latency_ms: 0,
@@ -5768,6 +5882,7 @@ impl Agent {
 
             consecutive_errors = if any_error { consecutive_errors + 1 } else { 0 };
 
+            let attempted_workspace_candidate_change = !workspace_candidate_changes.is_empty();
             let completed_workspace_candidate_change =
                 workspace_candidate_changes.iter().any(|index| {
                     results
@@ -5775,13 +5890,29 @@ impl Agent {
                         .and_then(Option::as_ref)
                         .is_some_and(|result| !result.is_error)
                 });
-            let candidate_change_outstanding = if completed_workspace_candidate_change
+            let candidate_diff_state = if attempted_workspace_candidate_change
                 || (investigation_convergence.candidate_review_active() && total_tools > 0)
             {
-                Some(candidate_workspace_baseline.outstanding().await)
+                Some(candidate_workspace_baseline.diff_state().await)
             } else {
                 None
             };
+            let mutation_failure_signature = workspace_candidate_changes
+                .iter()
+                .filter_map(|index| {
+                    let result = results.get(*index)?.as_ref()?;
+                    if !result.is_error {
+                        return None;
+                    }
+                    let tool = returned_tools.get(*index)?;
+                    Some(
+                        investigation_convergence::InvestigationConvergence::mutation_failure_signature(
+                            &tool.name,
+                            &result.content,
+                        ),
+                    )
+                })
+                .next_back();
             // Targeted observations mark localization but do not consume a fixed round allowance;
             // legitimate dependent evidence can remain multi-hop. Only a successful, tool-owned
             // comparison result closes the evidence phase below.
@@ -5792,6 +5923,22 @@ impl Agent {
                         .and_then(Option::as_ref)
                         .is_some_and(|result| !result.is_error)
                 });
+            let completed_localization_scopes = workspace_localization_observations
+                .iter()
+                .filter(|index| {
+                    results
+                        .get(**index)
+                        .and_then(Option::as_ref)
+                        .is_some_and(|result| !result.is_error)
+                })
+                .filter_map(|index| returned_tools.get(*index))
+                .filter_map(|tool| {
+                    investigation_convergence::InvestigationConvergence::localization_scope(
+                        &tool.name,
+                        &tool.input,
+                    )
+                })
+                .collect::<Vec<_>>();
             // `next_back`, not `last`: the source is a `DoubleEndedIterator`, so taking the final
             // element by walking the whole chain is work with no result to show for it.
             let completed_repair_evidence = repair_evidence_submissions
@@ -5799,6 +5946,37 @@ impl Agent {
                 .filter_map(|index| results.get(*index).and_then(Option::as_ref))
                 .filter_map(iteron_tools::tool_result_repair_evidence)
                 .next_back();
+            let exact_localization_read = completed_localization_scopes
+                .iter()
+                .any(|scope| scope.starts_with("read_file:"));
+            let completed_stable_key_search = workspace_localization_observations
+                .iter()
+                .filter_map(|index| {
+                    let tool = returned_tools.get(*index)?;
+                    let result = results.get(*index)?.as_ref()?;
+                    (!result.is_error).then_some((tool, result))
+                })
+                .any(|(tool, result)| {
+                    tool.name == "grep"
+                        && tool
+                            .input
+                            .get("pattern")
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(|pattern| {
+                                investigation_convergence::InvestigationConvergence::stable_key_search_supports_owner(
+                                    pattern,
+                                    iteron_tools::tool_result_workspace_evidence(result),
+                                )
+                            })
+                });
+            let localization_request = if completed_repair_evidence.is_none() {
+                investigation_convergence.observe_localization_scopes_for_round(
+                    completed_localization_scopes,
+                    !any_error && !attempted_workspace_candidate_change,
+                )
+            } else {
+                None
+            };
             // `tool_search` mutates the session-local visible schema set. Do not reuse the
             // pre-search projection on the next model turn, or the tool it just exposed remains
             // impossible to call despite the successful discovery receipt.
@@ -5816,12 +5994,26 @@ impl Agent {
                 .flatten()
                 .map(Block::ToolResult)
                 .collect();
-            if let Some(request) = investigation_convergence.observe_round(
-                candidate_change_outstanding,
-                completed_targeted_observation,
-                completed_repair_evidence,
-                total_tools > 0,
-            ) {
+            let candidate_request = candidate_diff_state.and_then(|diff| {
+                investigation_convergence.observe_candidate_round(
+                    diff,
+                    attempted_workspace_candidate_change,
+                    mutation_failure_signature,
+                    exact_localization_read,
+                    completed_stable_key_search,
+                )
+            });
+            let convergence_request = candidate_request
+                .or_else(|| {
+                    investigation_convergence.observe_round(
+                        None,
+                        completed_targeted_observation,
+                        completed_repair_evidence,
+                        total_tools > 0,
+                    )
+                })
+                .or(localization_request);
+            if let Some(request) = convergence_request {
                 blocks.push(Block::Text {
                     text: format!(
                         "{} [budget: {} provider turn(s) remain]",
@@ -5842,12 +6034,18 @@ impl Agent {
             // A completed candidate-edit batch gives the configured independent gate strictly
             // newer workspace evidence. Run it now: a cheap failure is better repair evidence than
             // another provider review turn, while a pass can finish without a "done" round trip.
-            let automatic_verification = if completed_workspace_candidate_change {
+            let automatic_verification = if completed_workspace_candidate_change
+                && matches!(
+                    candidate_diff_state,
+                    Some(investigation_convergence::CandidateDiffState::Changed(_))
+                ) {
                 if let Some(command) = self.verify_command.clone() {
+                    let candidate_state = candidate_workspace_baseline.diff_state().await;
                     Some(
                         self.run_strong_verification_gate(
                             turn_id,
                             &command,
+                            candidate_state,
                             &mut investigation_convergence,
                         )
                         .await?,
