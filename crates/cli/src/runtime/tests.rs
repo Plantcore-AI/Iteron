@@ -889,6 +889,108 @@ mod gate_integration_tests {
         }
     }
 
+    #[derive(Default)]
+    struct ScriptedThinkingOnly;
+
+    #[async_trait::async_trait]
+    impl Provider for ScriptedThinkingOnly {
+        async fn turn(
+            &self,
+            _req: &TurnRequest,
+            on_item: &mut (dyn FnMut(StreamItem) + Send),
+        ) -> Result<TurnResult, ProviderError> {
+            on_item(StreamItem::ThinkingDelta("private reasoning only".into()));
+            Ok(TurnResult {
+                blocks: Vec::new(),
+                stop_reason: StopReason::EndTurn,
+                usage: UsageReport::complete(Usage::default()),
+            })
+        }
+    }
+
+    /// Reads one exact owner, produces a non-empty candidate, completes its mandatory stable-key
+    /// owner audit with a pathless grep, observes the stable diff, then models a provider terminal
+    /// seen in A6: thinking bytes followed by EndTurn with no assistant prose.
+    #[derive(Default)]
+    struct ScriptedStableCandidateThinkingOnly {
+        turns: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for ScriptedStableCandidateThinkingOnly {
+        async fn turn(
+            &self,
+            req: &TurnRequest,
+            on_item: &mut (dyn FnMut(StreamItem) + Send),
+        ) -> Result<TurnResult, ProviderError> {
+            let turn = self.turns.fetch_add(1, Ordering::SeqCst);
+            let tool_names = req
+                .tools
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<std::collections::BTreeSet<_>>();
+            if turn == 2 {
+                assert_eq!(
+                    tool_names,
+                    ["git_diff", "grep", "read_file"].into_iter().collect(),
+                    "the pending owner audit exposes one bounded grep surface"
+                );
+            } else if turn == 3 {
+                assert!(tool_names.contains("read_file"), "{tool_names:?}");
+                assert!(tool_names.contains("edit"), "{tool_names:?}");
+                assert!(tool_names.contains("git_diff"), "{tool_names:?}");
+                assert!(
+                    !tool_names.contains("grep"),
+                    "a successful owner audit must switch to candidate review"
+                );
+            } else if turn == 4 {
+                assert!(
+                    tool_names.is_empty(),
+                    "stable handoff must expose no further tools: {tool_names:?}"
+                );
+            }
+            if turn < 4 {
+                let (name, input) = match turn {
+                    0 => (
+                        "read_file",
+                        serde_json::json!({"path":"f.rs"}),
+                    ),
+                    1 => (
+                        "edit",
+                        serde_json::json!({"path":"f.rs","old":"= \"a\";","new":"= \"b\";"}),
+                    ),
+                    2 => (
+                        "grep",
+                        serde_json::json!({
+                            "pattern":"RegistryOwnerKey",
+                            "max_results":10
+                        }),
+                    ),
+                    _ => ("git_diff", serde_json::json!({})),
+                };
+                let tool = ToolUse {
+                    id: format!("handoff-{turn}"),
+                    name: name.into(),
+                    input,
+                };
+                on_item(StreamItem::ToolUseComplete(tool.clone()));
+                return Ok(TurnResult {
+                    blocks: vec![Block::ToolUse(tool)],
+                    stop_reason: StopReason::ToolUse,
+                    usage: UsageReport::complete(Usage::default()),
+                });
+            }
+            on_item(StreamItem::ThinkingDelta(
+                "the stable candidate is ready for handoff".into(),
+            ));
+            Ok(TurnResult {
+                blocks: Vec::new(),
+                stop_reason: StopReason::EndTurn,
+                usage: UsageReport::complete(Usage::default()),
+            })
+        }
+    }
+
     struct CaptureImageInput {
         capable: bool,
         requests: std::sync::Mutex<Vec<TurnRequest>>,
@@ -1147,7 +1249,7 @@ mod gate_integration_tests {
                 let tool = ToolUse {
                     id: "targeted-location".into(),
                     name: "read_file".into(),
-                    input: serde_json::json!({"path":"fixture.txt","offset":1,"limit":1}),
+                    input: serde_json::json!({"path":"fixture.rs","offset":1,"limit":1}),
                 };
                 on_item(StreamItem::ToolUseComplete(tool.clone()));
                 return Ok(TurnResult {
@@ -1165,7 +1267,11 @@ mod gate_integration_tests {
                 let tool = ToolUse {
                     id: "broad-after-location".into(),
                     name: "grep".into(),
-                    input: serde_json::json!({"path":".","pattern":"stable evidence"}),
+                    input: serde_json::json!({
+                        "path":".",
+                        "pattern":"stable evidence",
+                        "max_results":1
+                    }),
                 };
                 on_item(StreamItem::ToolUseComplete(tool.clone()));
                 return Ok(TurnResult {
@@ -1194,7 +1300,7 @@ mod gate_integration_tests {
                     id: "adaptive-candidate-change".into(),
                     name: "edit".into(),
                     input: serde_json::json!({
-                        "path":"fixture.txt",
+                        "path":"fixture.rs",
                         "old":"stable evidence",
                         "new":"fixed evidence"
                     }),
@@ -1206,6 +1312,60 @@ mod gate_integration_tests {
                     usage: UsageReport::complete(Usage::default()),
                 });
             }
+            if turn == 3 {
+                let mutation_result = req
+                    .messages
+                    .iter()
+                    .flat_map(|message| message.content.iter())
+                    .find_map(|block| match block {
+                        Block::ToolResult(result)
+                            if result.tool_use_id == "adaptive-candidate-change" =>
+                        {
+                            Some(result)
+                        }
+                        _ => None,
+                    })
+                    .expect("the candidate mutation must complete before its owner audit");
+                assert!(!mutation_result.is_error, "{mutation_result:?}");
+                assert_eq!(
+                    tool_names,
+                    ["git_diff", "grep", "read_file"].into_iter().collect(),
+                    "the first candidate requires one bounded owner audit"
+                );
+                let tool = ToolUse {
+                    id: "adaptive-owner-audit".into(),
+                    name: "grep".into(),
+                    input: serde_json::json!({
+                        "pattern":"RegistryOwnerKey",
+                        "max_results":10
+                    }),
+                };
+                on_item(StreamItem::ToolUseComplete(tool.clone()));
+                return Ok(TurnResult {
+                    blocks: vec![Block::ToolUse(tool)],
+                    stop_reason: StopReason::ToolUse,
+                    usage: UsageReport::complete(Usage::default()),
+                });
+            }
+            let audit_result = req
+                .messages
+                .iter()
+                .flat_map(|message| message.content.iter())
+                .find_map(|block| match block {
+                    Block::ToolResult(result) if result.tool_use_id == "adaptive-owner-audit" => {
+                        Some(result)
+                    }
+                    _ => None,
+                })
+                .expect("the candidate review must follow its owner audit");
+            let audit_evidence = iteron_tools::tool_result_workspace_evidence(audit_result);
+            assert!(
+                investigation_convergence::InvestigationConvergence::stable_key_search_supports_owner(
+                    "RegistryOwnerKey",
+                    audit_evidence,
+                ),
+                "owner audit evidence={audit_evidence:?}, result={audit_result:?}"
+            );
             for review_tool in [
                 "read_file",
                 "edit",
@@ -1235,6 +1395,83 @@ mod gate_integration_tests {
             Ok(TurnResult {
                 blocks: vec![Block::Text {
                     text: "implemented and verified".into(),
+                }],
+                stop_reason: StopReason::EndTurn,
+                usage: UsageReport::complete(Usage::default()),
+            })
+        }
+    }
+
+    #[derive(Default)]
+    struct ScriptedRootLocalizationPlateau {
+        turn: AtomicUsize,
+        saw_closed_broad_surface: AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for ScriptedRootLocalizationPlateau {
+        async fn turn(
+            &self,
+            req: &TurnRequest,
+            on_item: &mut (dyn FnMut(StreamItem) + Send),
+        ) -> Result<TurnResult, ProviderError> {
+            let turn = self.turn.fetch_add(1, Ordering::SeqCst);
+            let tool_names = req
+                .tools
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<std::collections::BTreeSet<_>>();
+            let tool = match turn {
+                0 => Some(ToolUse {
+                    id: "root-localization-grep".into(),
+                    name: "grep".into(),
+                    input: serde_json::json!({"pattern":"StableOwnerKey"}),
+                }),
+                1 => Some(ToolUse {
+                    id: "root-localization-list".into(),
+                    name: "list_dir".into(),
+                    input: serde_json::json!({}),
+                }),
+                2 => Some(ToolUse {
+                    id: "exact-read-after-repeated-root".into(),
+                    name: "read_file".into(),
+                    input: serde_json::json!({"path":"fixture.rs"}),
+                }),
+                3 => {
+                    for broad in ["grep", "glob", "list_dir", "repo_map"] {
+                        assert!(
+                            !tool_names.contains(broad),
+                            "plateau must close {broad}: {tool_names:?}"
+                        );
+                    }
+                    for exact_or_change in ["read_file", "edit", "git_diff"] {
+                        assert!(
+                            tool_names.contains(exact_or_change),
+                            "plateau must preserve {exact_or_change}: {tool_names:?}"
+                        );
+                    }
+                    assert!(req.messages.iter().any(|message| {
+                        message.content.iter().any(|block| {
+                            matches!(block, Block::Text { text }
+                                if text.contains("Iteron localization plateau"))
+                        })
+                    }));
+                    self.saw_closed_broad_surface.store(true, Ordering::SeqCst);
+                    None
+                }
+                _ => panic!("localization plateau replay exceeded its bounded script"),
+            };
+            if let Some(tool) = tool {
+                on_item(StreamItem::ToolUseComplete(tool.clone()));
+                return Ok(TurnResult {
+                    blocks: vec![Block::ToolUse(tool)],
+                    stop_reason: StopReason::ToolUse,
+                    usage: UsageReport::complete(Usage::default()),
+                });
+            }
+            Ok(TurnResult {
+                blocks: vec![Block::Text {
+                    text: "bounded localization complete".into(),
                 }],
                 stop_reason: StopReason::EndTurn,
                 usage: UsageReport::complete(Usage::default()),
@@ -2831,6 +3068,39 @@ mod gate_integration_tests {
         );
         a.workspace = ws.to_path_buf();
         a
+    }
+
+    fn agent_with_provider(
+        ws: &std::path::Path,
+        run_id: &str,
+        provider: std::sync::Arc<dyn Provider>,
+    ) -> Agent {
+        let rollout = Rollout::open(
+            &ws.join(".iteron/runs"),
+            &iteron_protocol::RunId(run_id.into()),
+            iteron_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let registry = Registry::coding_agent(ws).unwrap();
+        registry
+            .install_observation_tool_policy(iteron_tools::ObservationToolPolicy::default())
+            .unwrap();
+        let mut agent = Agent::new(
+            provider,
+            registry,
+            rollout,
+            "m".into(),
+            "sys".into(),
+            Budget {
+                max_turns: 8,
+                max_usd: None,
+                max_tokens: None,
+                max_wall_secs: 30,
+                max_consecutive_tool_errors: 5,
+            },
+        );
+        agent.workspace = ws.to_path_buf();
+        agent
     }
 
     /// Most unit fixtures instantiate `Agent` below the CLI composition root, which is normally
@@ -8055,7 +8325,11 @@ ant-api03-SuperSecretModelToken12345"
     #[tokio::test]
     async fn ordinary_observations_keep_the_direct_surface_until_candidate_review() {
         let ws = temp_ws("adaptive-investigation-pivot");
-        std::fs::write(ws.join("fixture.txt"), "stable evidence\n").unwrap();
+        std::fs::write(
+            ws.join("fixture.rs"),
+            "const RegistryOwnerKey: &str = \"stable evidence\";\nfn read_evidence() -> &'static str {\n    RegistryOwnerKey\n}\n",
+        )
+        .unwrap();
         let provider = std::sync::Arc::new(ScriptedAdaptivePivot::default());
         let rollout = Rollout::open(
             &ws.join(".iteron/runs"),
@@ -8063,9 +8337,13 @@ ant-api03-SuperSecretModelToken12345"
             iteron_protocol::TenantId::default(),
         )
         .unwrap();
+        let registry = Registry::coding_agent(&ws).unwrap();
+        registry
+            .install_observation_tool_policy(iteron_tools::ObservationToolPolicy::default())
+            .unwrap();
         let mut agent = Agent::new(
             provider.clone(),
-            Registry::coding_agent(&ws).unwrap(),
+            registry,
             rollout,
             "m".into(),
             "sys".into(),
@@ -8080,7 +8358,6 @@ ant-api03-SuperSecretModelToken12345"
         );
         agent.workspace = ws.clone();
         agent.permission_mode = PermissionMode::Yolo;
-        record_test_genesis(&mut agent, &ws);
 
         assert_eq!(
             agent.run("find and fix the defect").await.unwrap(),
@@ -8090,23 +8367,25 @@ ant-api03-SuperSecretModelToken12345"
         assert!(provider.saw_broad_observation.load(Ordering::SeqCst));
         let schema_json = provider.schema_json.lock().unwrap();
         let first_schema = schema_json.first().expect("at least one provider request");
-        assert_eq!(schema_json.len(), 4);
+        assert_eq!(schema_json.len(), 5);
         assert_eq!(schema_json[1], *first_schema);
         assert_eq!(schema_json[2], *first_schema);
         assert_ne!(
             schema_json[3], schema_json[1],
-            "candidate review narrows discovery only after a real mutation"
+            "the owner-audit surface appears only after a real mutation"
         );
+        assert_ne!(schema_json[4], schema_json[3]);
         let schema_tokens = provider.schema_tokens.lock().unwrap();
         let first_tokens = *schema_tokens.first().expect("schema token estimate");
         assert!(first_tokens > 0);
         assert!(schema_tokens[3] < first_tokens);
+        assert!(schema_tokens[4] < first_tokens);
         assert_eq!(schema_tokens[1], first_tokens);
         assert_eq!(schema_tokens[2], first_tokens);
-        assert_eq!(provider.turn.load(Ordering::SeqCst), 4);
+        assert_eq!(provider.turn.load(Ordering::SeqCst), 5);
         assert_eq!(
-            std::fs::read_to_string(ws.join("fixture.txt")).unwrap(),
-            "fixed evidence\n"
+            std::fs::read_to_string(ws.join("fixture.rs")).unwrap(),
+            "const RegistryOwnerKey: &str = \"fixed evidence\";\nfn read_evidence() -> &'static str {\n    RegistryOwnerKey\n}\n"
         );
         let checkpoints = agent
             .working_set
@@ -8119,12 +8398,62 @@ ant-api03-SuperSecretModelToken12345"
                 _ => None,
             })
             .collect::<Vec<_>>();
-        assert_eq!(checkpoints.len(), 1, "{checkpoints:?}");
+        assert_eq!(checkpoints.len(), 2, "{checkpoints:?}");
         assert!(
             checkpoints
                 .iter()
-                .any(|text| text.contains("candidate review"))
+                .any(|text| text.contains("post-candidate reference audit required"))
         );
+        assert!(
+            checkpoints
+                .iter()
+                .any(|text| text.contains("post-candidate reference audit ready"))
+        );
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[tokio::test]
+    async fn root_native_observations_close_broad_localization_without_closing_exact_work() {
+        let ws = temp_ws("root-localization-plateau");
+        std::fs::write(
+            ws.join("fixture.rs"),
+            "const StableOwnerKey: &str = \"owner\";\n",
+        )
+        .unwrap();
+        let provider = std::sync::Arc::new(ScriptedRootLocalizationPlateau::default());
+        let rollout = Rollout::open(
+            &ws.join(".iteron/runs"),
+            &iteron_protocol::RunId("root-localization-plateau".into()),
+            iteron_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let mut agent = Agent::new(
+            provider.clone(),
+            Registry::coding_agent(&ws).unwrap(),
+            rollout,
+            "m".into(),
+            "sys".into(),
+            Budget {
+                max_turns: 6,
+                max_usd: None,
+                max_tokens: None,
+                max_wall_secs: 300,
+                max_consecutive_tool_errors: 3,
+            },
+        );
+        agent.workspace = ws.clone();
+        agent.permission_mode = PermissionMode::Yolo;
+        record_test_genesis(&mut agent, &ws);
+
+        assert_eq!(
+            agent.run("localize the owner without repeating broad discovery").await.unwrap(),
+            Outcome::Done
+        );
+        assert!(
+            provider.saw_closed_broad_surface.load(Ordering::SeqCst),
+            "root grep/list/glob must activate the real runtime plateau"
+        );
+        assert_eq!(provider.turn.load(Ordering::SeqCst), 4);
         let _ = std::fs::remove_dir_all(&ws);
     }
 
@@ -8185,10 +8514,10 @@ ant-api03-SuperSecretModelToken12345"
 
         let patch_trial = agent.advertised_tool_specs_for_task_with_patch_trial(
             "inspect the localized contract",
-            true,
-            false,
-            false,
-            false,
+            context_runtime::ToolProjectionPosture {
+                patch_trial: true,
+                ..Default::default()
+            },
         );
         let patch_trial_names = patch_trial
             .iter()
@@ -8215,10 +8544,11 @@ ant-api03-SuperSecretModelToken12345"
         }
         let candidate_change = agent.advertised_tool_specs_for_task_with_patch_trial(
             "change the localized contract",
-            true,
-            true,
-            false,
-            false,
+            context_runtime::ToolProjectionPosture {
+                patch_trial: true,
+                candidate_change_required: true,
+                ..Default::default()
+            },
         );
         let candidate_change_names = candidate_change
             .iter()
@@ -8229,12 +8559,47 @@ ant-api03-SuperSecretModelToken12345"
             ["apply_patch", "edit", "write_file"].into_iter().collect()
         );
 
+        let candidate_revision = agent.advertised_tool_specs_for_task_with_patch_trial(
+            "revise a verifier-rejected candidate",
+            context_runtime::ToolProjectionPosture {
+                candidate_change_required: true,
+                candidate_revision_required: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            candidate_revision
+                .iter()
+                .map(|spec| spec.name.as_str())
+                .collect::<std::collections::BTreeSet<_>>(),
+            ["apply_patch", "edit"].into_iter().collect(),
+            "repair may revise exact hunks but must not replace a whole existing source file"
+        );
+
+        let owner_evidence = agent.advertised_tool_specs_for_task_with_patch_trial(
+            "establish the selected owner",
+            context_runtime::ToolProjectionPosture {
+                candidate_owner_evidence_required: true,
+                candidate_review_active: true,
+                ..Default::default()
+            },
+        );
+        let owner_evidence_names = owner_evidence
+            .iter()
+            .map(|spec| spec.name.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            owner_evidence_names,
+            ["git_diff", "grep", "read_file"].into_iter().collect(),
+            "one bounded owner-evidence round must hide mutation and broad discovery"
+        );
+
         let candidate_review = agent.advertised_tool_specs_for_task_with_patch_trial(
             "review and verify the candidate",
-            false,
-            false,
-            true,
-            false,
+            context_runtime::ToolProjectionPosture {
+                candidate_review_active: true,
+                ..Default::default()
+            },
         );
         let candidate_review_names = candidate_review
             .iter()
@@ -8267,16 +8632,81 @@ ant-api03-SuperSecretModelToken12345"
             );
         }
 
+        let structural_refresh = agent.advertised_tool_specs_for_task_with_patch_trial(
+            "refresh one structurally broken changed hunk",
+            context_runtime::ToolProjectionPosture {
+                structural_repair_read_required: true,
+                candidate_review_active: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            structural_refresh
+                .iter()
+                .map(|spec| spec.name.as_str())
+                .collect::<std::collections::BTreeSet<_>>(),
+            ["read_file"].into_iter().collect(),
+            "a parser regression gets one fresh exact read, not broad discovery or stale mutation"
+        );
+
+        let behavior_refresh = agent.advertised_tool_specs_for_task_with_patch_trial(
+            "inspect the next owner after a behavior counterexample",
+            context_runtime::ToolProjectionPosture {
+                behavior_counterexample_read_required: true,
+                candidate_review_active: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            behavior_refresh
+                .iter()
+                .map(|spec| spec.name.as_str())
+                .collect::<std::collections::BTreeSet<_>>(),
+            ["git_diff", "grep", "read_file"].into_iter().collect(),
+            "a behavioral counterexample gets bounded owner evidence before another mutation"
+        );
+
+        let localized_closure = agent.advertised_tool_specs_for_task_with_patch_trial(
+            "decide from the consumed exact owner pair",
+            context_runtime::ToolProjectionPosture {
+                localized_closure_active: true,
+                candidate_review_active: true,
+                ..Default::default()
+            },
+        );
+        let localized_closure_names = localized_closure
+            .iter()
+            .map(|spec| spec.name.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            localized_closure_names,
+            ["apply_patch", "edit", "read_file", "write_file"]
+                .into_iter()
+                .collect(),
+            "localized closure permits one exact expansion or mutation, never broad discovery"
+        );
+
         let evidence_insufficient = agent.advertised_tool_specs_for_task_with_patch_trial(
             "report that the candidate was withdrawn",
-            false,
-            false,
-            false,
-            true,
+            context_runtime::ToolProjectionPosture {
+                evidence_insufficient_terminal: true,
+                ..Default::default()
+            },
         );
         assert!(
             evidence_insufficient.is_empty(),
             "a reverted candidate is terminal and must not restore any tool surface"
+        );
+        let candidate_handoff = agent.advertised_tool_specs_for_task_with_patch_trial(
+            "hand off the stable candidate",
+            context_runtime::ToolProjectionPosture {
+                candidate_handoff_terminal: true,
+                ..Default::default()
+            },
+        );
+        assert!(
+            candidate_handoff.is_empty(),
+            "a stable candidate handoff must not expose another mutation surface"
         );
 
         agent.permission_mode = PermissionMode::Plan;
@@ -11128,6 +11558,112 @@ ant-api03-SuperSecretModelToken12345"
             !ws.join("f.txt").exists(),
             "Ask with no channel must fail closed (deny), not apply the edit"
         );
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[tokio::test]
+    async fn thinking_only_end_turn_without_candidate_is_harness_error() {
+        let ws = temp_ws("thinking-only-without-candidate");
+        let mut agent = agent_with_provider(
+            &ws,
+            "thinking-only-without-candidate",
+            std::sync::Arc::new(ScriptedThinkingOnly),
+        );
+
+        assert_eq!(
+            agent.run("answer without a candidate").await.unwrap(),
+            Outcome::HarnessError
+        );
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[tokio::test]
+    async fn thinking_only_end_turn_accepts_only_a_stable_candidate_handoff() {
+        let ws = temp_ws("thinking-only-stable-candidate");
+        std::fs::write(
+            ws.join("f.rs"),
+            "const RegistryOwnerKey: &str = \"a\";\nfn read_owner() -> &'static str {\n    RegistryOwnerKey\n}\n",
+        )
+        .unwrap();
+        let provider = std::sync::Arc::new(ScriptedStableCandidateThinkingOnly::default());
+        let mut agent = agent_with_provider(
+            &ws,
+            "thinking-only-stable-candidate",
+            provider.clone(),
+        );
+        agent.permission_mode = PermissionMode::AcceptEdits;
+
+        let outcome = agent.run("make and hand off one stable edit").await.unwrap();
+        assert_eq!(provider.turns.load(Ordering::SeqCst), 5);
+        assert_eq!(
+            std::fs::read_to_string(ws.join("f.rs")).unwrap(),
+            "const RegistryOwnerKey: &str = \"b\";\nfn read_owner() -> &'static str {\n    RegistryOwnerKey\n}\n"
+        );
+        let events = iteron_record::replay(agent.rollout.path()).unwrap();
+        let grep_result = events
+            .iter()
+            .find_map(|event| match &event.kind {
+                EventKind::ToolDone {
+                    result,
+                    tool: Some(tool),
+                    ..
+                } if tool == "grep" => Some(result),
+                _ => None,
+            })
+            .expect("the scripted handoff must execute its owner-evidence grep");
+        let grep_evidence = iteron_tools::tool_result_workspace_evidence(grep_result);
+        assert!(
+            investigation_convergence::InvestigationConvergence::stable_key_search_supports_owner(
+                "RegistryOwnerKey",
+                grep_evidence,
+            ),
+            "the grep must produce typed owner evidence accepted by convergence: evidence={grep_evidence:?}, result={grep_result:?}"
+        );
+        assert_eq!(outcome, Outcome::Done);
+        assert!(events.iter().any(|event| matches!(
+            &event.kind,
+            EventKind::Notice { text }
+                if text.contains("controller accepted the diff handoff")
+        )));
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[tokio::test]
+    async fn configured_oracle_precedes_thinking_only_candidate_handoff() {
+        let ws = temp_ws("thinking-only-stable-candidate-oracle");
+        std::fs::write(
+            ws.join("f.rs"),
+            "const RegistryOwnerKey: &str = \"a\";\nfn read_owner() -> &'static str {\n    RegistryOwnerKey\n}\n",
+        )
+        .unwrap();
+        let provider = std::sync::Arc::new(ScriptedStableCandidateThinkingOnly::default());
+        let calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let mut agent = agent_with_provider(
+            &ws,
+            "thinking-only-stable-candidate-oracle",
+            provider,
+        );
+        agent.permission_mode = PermissionMode::AcceptEdits;
+        agent.verify_command = Some("controller-check".into());
+        agent.verify_oracle = Some(std::sync::Arc::new(SequencedVerificationOracle {
+            outcomes: std::sync::Arc::new(std::sync::Mutex::new(
+                [iteron_verify::Verdict::new(
+                    iteron_verify::OracleStrength::Strong,
+                    iteron_verify::VerificationOutcome::Pass,
+                    "candidate accepted by the configured oracle",
+                )]
+                .into_iter()
+                .collect(),
+            )),
+            calls: calls.clone(),
+        }));
+        agent.verification_policy.checkpoint.before_verification = false;
+
+        assert_eq!(
+            agent.run("hand the stable edit to the oracle").await.unwrap(),
+            Outcome::Done
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
         let _ = std::fs::remove_dir_all(&ws);
     }
 

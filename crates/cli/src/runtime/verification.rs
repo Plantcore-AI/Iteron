@@ -168,8 +168,39 @@ impl Agent {
         &mut self,
         turn: TurnId,
         command: &str,
+        candidate_state: investigation_convergence::CandidateDiffState,
         convergence: &mut investigation_convergence::InvestigationConvergence,
     ) -> Result<VerificationGateDisposition, KernelError> {
+        match convergence.guard_verification_candidate(candidate_state) {
+            investigation_convergence::VerificationCandidateGuard::Verify => {}
+            investigation_convergence::VerificationCandidateGuard::RequireTransition(guidance) => {
+                let notice =
+                    "verify gate: unchanged rejected candidate; requesting a real transition";
+                self.emit(
+                    turn,
+                    EventKind::Notice {
+                        text: notice.into(),
+                    },
+                );
+                self.ui(UiEvent::Notice(notice.into()));
+                return Ok(VerificationGateDisposition::Retry(guidance.into()));
+            }
+            investigation_convergence::VerificationCandidateGuard::Stop(guidance) => {
+                let notice =
+                    "verify gate: unchanged rejected candidate repeated; stopping without rerun";
+                self.emit(
+                    turn,
+                    EventKind::Notice {
+                        text: notice.into(),
+                    },
+                );
+                self.ui(UiEvent::Notice(notice.into()));
+                return Ok(VerificationGateDisposition::Finish {
+                    outcome: Outcome::Stuck,
+                    guidance: Some(guidance.into()),
+                });
+            }
+        }
         self.turn_mutated_workspace = true;
         let max_verify_attempts = self.verification_policy.retry.max_attempts;
         if self.verify_attempts >= max_verify_attempts {
@@ -283,6 +314,9 @@ impl Agent {
                 Ok(VerificationGateDisposition::Passed)
             }
             iteron_verify::VerificationOutcome::TestFailure => {
+                let structural_regression = convergence.has_failed_verification_candidate()
+                    && verification_detail_is_structural_failure(&detail);
+                convergence.remember_verification_test_failure(candidate_state);
                 let failure_class = failure_classification
                     .expect("every non-pass oracle outcome has a taxonomy entry")
                     .class();
@@ -320,7 +354,8 @@ impl Agent {
                     });
                 }
                 let rolled_back = self.rollback_after_verification_failure().await?;
-                let convergence_request = convergence.verification_failed(rolled_back);
+                let convergence_request =
+                    convergence.verification_failed(rolled_back, structural_regression);
                 // Only a real candidate/test failure consumes the bounded model-fix allowance.
                 self.verify_attempts = self.verify_attempts.saturating_add(1);
                 if recovery == iteron_verify::VerificationRecoveryAction::StopExhausted {
@@ -1304,6 +1339,27 @@ fn is_sha256_digest(value: &str) -> bool {
             .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
 }
 
+/// Detect only verifier text that explicitly reports a parser/load/syntax failure. The signal is
+/// used after an earlier executable candidate failed behaviorally, so generic assertion, type, or
+/// test failures cannot open the structural-refresh path.
+fn verification_detail_is_structural_failure(detail: &str) -> bool {
+    let detail = detail.to_ascii_lowercase();
+    [
+        "syntaxerror",
+        "syntax error",
+        "parse error",
+        "parser error",
+        "failed to parse",
+        "cannot parse",
+        "invalid syntax",
+        "unexpected token",
+        "unexpected eof",
+        "unterminated",
+    ]
+    .iter()
+    .any(|marker| detail.contains(marker))
+}
+
 fn verification_selection_evidence(
     selection: iteron_verify::VerificationSelectionMode,
 ) -> iteron_protocol::VerificationSelectionEvidence {
@@ -1367,6 +1423,41 @@ fn verification_rollback_evidence(
         }
         iteron_verify::VerificationRollbackMode::Workspace => {
             Some(iteron_protocol::VerificationRollbackEvidence::Workspace)
+        }
+    }
+}
+
+#[cfg(test)]
+mod structural_failure_tests {
+    use super::verification_detail_is_structural_failure;
+
+    #[test]
+    fn explicit_parser_diagnostics_are_structural() {
+        for detail in [
+            "SyntaxError: Unexpected token '{'",
+            "parser error: unexpected EOF",
+            "failed to parse module: unterminated string",
+            "invalid syntax at line 4",
+        ] {
+            assert!(
+                verification_detail_is_structural_failure(detail),
+                "{detail}"
+            );
+        }
+    }
+
+    #[test]
+    fn behavior_and_type_failures_are_not_structural() {
+        for detail in [
+            "expected project class, received delivery class",
+            "assertion failed: prefix must be PB",
+            "type mismatch: expected string",
+            "test suite failed with exit code 2",
+        ] {
+            assert!(
+                !verification_detail_is_structural_failure(detail),
+                "{detail}"
+            );
         }
     }
 }

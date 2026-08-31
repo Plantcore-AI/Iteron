@@ -5,7 +5,10 @@ use crate::{
     ObservationToolPolicy, Registry, ToolError, boxfut, err_result, ok_result, resolve_in_root,
 };
 use iteron_protocol::{Capability, Purity, ToolSpec};
-use std::path::Path;
+use std::{
+    cmp::Reverse,
+    path::{Component, Path, PathBuf},
+};
 use tokio::io::AsyncReadExt;
 use walkdir::WalkDir;
 
@@ -30,6 +33,312 @@ const DEFAULT_READ_OFFSET_LINE: u64 = 1;
 /// Shallow orientation is the cheapest useful default. The value remains a searchable runtime
 /// parameter so tuning can change it without introducing a model/provider branch.
 const DEFAULT_LIST_DIR_DEPTH: usize = 1;
+
+/// Path recovery is deliberately much smaller than a general filesystem search. Its purpose is
+/// to turn one failed `read_file` call into a few concrete retry paths, not to inject a directory
+/// listing into the context.
+const MAX_PATH_RECOVERY_RESULTS: usize = 3;
+const MAX_PATH_RECOVERY_SCAN: usize = 192;
+const MAX_PATH_RECOVERY_DEPTH: usize = 4;
+/// A missing path often contains one wrong module segment while preserving the exact basename.
+/// In that case a neighborhood-only search cannot recover. This second pass remains bounded and
+/// only admits exact basenames, so it does not turn a failed read into a general repo map.
+const MAX_EXACT_NAME_RECOVERY_SCAN: usize = 8_192;
+const MAX_EXACT_NAME_RECOVERY_DEPTH: usize = 24;
+
+fn max_path_recovery_results() -> usize {
+    iteron_tunables::param_usize(
+        "tools.fs_tools.max_path_recovery_results",
+        MAX_PATH_RECOVERY_RESULTS,
+    )
+}
+
+fn max_path_recovery_scan() -> usize {
+    iteron_tunables::param_usize(
+        "tools.fs_tools.max_path_recovery_scan",
+        MAX_PATH_RECOVERY_SCAN,
+    )
+}
+
+fn max_path_recovery_depth() -> usize {
+    iteron_tunables::param_usize(
+        "tools.fs_tools.max_path_recovery_depth",
+        MAX_PATH_RECOVERY_DEPTH,
+    )
+}
+
+fn max_exact_name_recovery_scan() -> usize {
+    iteron_tunables::param_usize(
+        "tools.fs_tools.max_exact_name_recovery_scan",
+        MAX_EXACT_NAME_RECOVERY_SCAN,
+    )
+}
+
+fn max_exact_name_recovery_depth() -> usize {
+    iteron_tunables::param_usize(
+        "tools.fs_tools.max_exact_name_recovery_depth",
+        MAX_EXACT_NAME_RECOVERY_DEPTH,
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReadPathFailure {
+    NotFound,
+    IsDirectory,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct RankedPathCandidate {
+    path: String,
+    exact_name: bool,
+    path_token_overlap: usize,
+    path_common_prefix: usize,
+    exact_stem: bool,
+    common_prefix: usize,
+    same_extension: bool,
+    depth: usize,
+}
+
+fn workspace_relative_path(root: &Path, path: &Path) -> Option<PathBuf> {
+    let relative = path.strip_prefix(root).ok()?;
+    if relative.components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    }) {
+        return None;
+    }
+    Some(relative.to_path_buf())
+}
+
+fn display_workspace_path(root: &Path, path: &Path) -> Option<String> {
+    let relative = workspace_relative_path(root, path)?;
+    if relative.as_os_str().is_empty() {
+        Some(".".into())
+    } else {
+        Some(relative.display().to_string().replace('\\', "/"))
+    }
+}
+
+fn nearest_existing_workspace_ancestor<'a>(root: &'a Path, target: &'a Path) -> Option<&'a Path> {
+    workspace_relative_path(root, target)?;
+    let mut current = target;
+    loop {
+        if current.exists() {
+            return current
+                .canonicalize()
+                .ok()?
+                .starts_with(root)
+                .then_some(current);
+        }
+        if current == root {
+            return Some(root);
+        }
+        current = current.parent()?;
+        if !current.starts_with(root) {
+            return None;
+        }
+    }
+}
+
+fn common_prefix_len(left: &str, right: &str) -> usize {
+    left.chars()
+        .zip(right.chars())
+        .take_while(|(left, right)| left == right)
+        .count()
+}
+
+fn path_token_overlap(left: &str, right: &str) -> usize {
+    fn tokens(path: &str) -> std::collections::BTreeSet<&str> {
+        path.split(|character: char| !character.is_ascii_alphanumeric())
+            .filter(|token| !token.is_empty())
+            .collect::<std::collections::BTreeSet<_>>()
+    }
+    let left = tokens(left);
+    let right = tokens(right);
+    left.intersection(&right).count()
+}
+
+fn ranked_recovery_candidates(root: &Path, target: &Path, ancestor: &Path) -> Vec<String> {
+    let requested_path = display_workspace_path(root, target)
+        .unwrap_or_default()
+        .to_lowercase();
+    let requested_name = target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    let requested_stem = Path::new(&requested_name)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("")
+        .to_owned();
+    let requested_extension = Path::new(&requested_name)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or("")
+        .to_owned();
+    let search_root = if ancestor.is_dir() {
+        ancestor
+    } else {
+        ancestor.parent().unwrap_or(root)
+    };
+    let mut candidates = Vec::new();
+
+    let mut consider = |entry: walkdir::DirEntry, exact_name_only: bool| {
+        if !entry.file_type().is_file() || entry.file_type().is_symlink() {
+            return;
+        }
+        let Some(path) = display_workspace_path(root, entry.path()) else {
+            return;
+        };
+        let candidate_name = entry.file_name().to_string_lossy().to_lowercase();
+        let candidate_stem = Path::new(&candidate_name)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("");
+        let candidate_extension = Path::new(&candidate_name)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .unwrap_or("");
+        let common_prefix = common_prefix_len(&requested_name, &candidate_name);
+        let exact_name = !requested_name.is_empty() && candidate_name == requested_name;
+        if exact_name_only && !exact_name {
+            return;
+        }
+        let lowered_path = path.to_lowercase();
+        let path_common_prefix = common_prefix_len(&requested_path, &lowered_path);
+        let exact_stem = !requested_stem.is_empty() && candidate_stem == requested_stem;
+        let same_extension =
+            !requested_extension.is_empty() && candidate_extension == requested_extension;
+        let local_neighbor = !exact_name_only && entry.depth() == 1;
+        if !exact_name && !exact_stem && common_prefix < 2 && !same_extension && !local_neighbor {
+            return;
+        }
+        candidates.push(RankedPathCandidate {
+            path,
+            exact_name,
+            path_token_overlap: path_token_overlap(&requested_path, &lowered_path),
+            path_common_prefix,
+            exact_stem,
+            common_prefix,
+            same_extension,
+            depth: entry.depth(),
+        });
+    };
+
+    for entry in WalkDir::new(search_root)
+        .min_depth(1)
+        .max_depth(max_path_recovery_depth())
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|entry| !is_ignored(entry.file_name().to_str().unwrap_or("")))
+        .take(max_path_recovery_scan())
+        .flatten()
+    {
+        consider(entry, false);
+    }
+
+    if !requested_name.is_empty() {
+        for entry in WalkDir::new(root)
+            .min_depth(1)
+            .max_depth(max_exact_name_recovery_depth())
+            .follow_links(false)
+            .into_iter()
+            .filter_entry(|entry| !is_ignored(entry.file_name().to_str().unwrap_or("")))
+            .take(max_exact_name_recovery_scan())
+            .flatten()
+        {
+            consider(entry, true);
+        }
+    }
+
+    candidates.sort_by_key(|candidate| {
+        (
+            Reverse(candidate.exact_name),
+            Reverse(candidate.path_token_overlap),
+            Reverse(candidate.path_common_prefix),
+            Reverse(candidate.exact_stem),
+            Reverse(candidate.common_prefix),
+            Reverse(candidate.same_extension),
+            candidate.depth,
+            candidate.path.clone(),
+        )
+    });
+    candidates.dedup_by(|left, right| left.path == right.path);
+    candidates
+        .into_iter()
+        .take(max_path_recovery_results())
+        .map(|candidate| candidate.path)
+        .collect()
+}
+
+fn bounded_directory_children(root: &Path, directory: &Path) -> Vec<String> {
+    let mut children = Vec::new();
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return children;
+    };
+    for entry in entries.take(max_path_recovery_scan()).flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_symlink() || (!file_type.is_file() && !file_type.is_dir()) {
+            continue;
+        }
+        let Some(mut path) = display_workspace_path(root, &entry.path()) else {
+            continue;
+        };
+        if file_type.is_dir() {
+            path.push('/');
+        }
+        children.push(path);
+    }
+    children.sort();
+    children.dedup();
+    children.truncate(max_path_recovery_results());
+    children
+}
+
+fn read_path_recovery(
+    root: &Path,
+    requested: &str,
+    target: &Path,
+    failure: ReadPathFailure,
+) -> Option<String> {
+    // `resolve_in_root` intentionally permits host paths. Recovery is narrower: never enumerate
+    // paths unless the resolved target is lexically and canonically anchored in this workspace.
+    let root = root.canonicalize().ok()?;
+    workspace_relative_path(&root, target)?;
+    let ancestor = nearest_existing_workspace_ancestor(&root, target)?;
+    let ancestor_display = display_workspace_path(&root, ancestor)?;
+    let requested = serde_json::to_string(requested).ok()?;
+
+    let (kind, heading, entries) = match failure {
+        ReadPathFailure::NotFound => (
+            "path_not_found",
+            "candidates (existing workspace files; retry read_file with one exact path)",
+            ranked_recovery_candidates(&root, target, ancestor),
+        ),
+        ReadPathFailure::IsDirectory => (
+            "path_is_directory",
+            "children (existing workspace entries; choose a file or call list_dir)",
+            bounded_directory_children(&root, target),
+        ),
+    };
+    let mut output = format!(
+        "read_file:{kind}\nrequested_path: {requested}\nnearest_existing_ancestor: {ancestor_display}\n{heading}:"
+    );
+    if entries.is_empty() {
+        output.push_str("\n- (none found by bounded recovery)");
+    } else {
+        for entry in entries {
+            output.push_str("\n- ");
+            output.push_str(&entry);
+        }
+    }
+    Some(output)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LineEnding {
@@ -386,7 +695,35 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
                             focus.observe(p, &content);
                             ok_result(id, content)
                         }
-                        Err(e) => err_result(id, format!("read {path}: {e}")),
+                        Err(error) => {
+                            let failure = if error.kind() == std::io::ErrorKind::NotFound {
+                                Some(ReadPathFailure::NotFound)
+                            } else if p.is_dir() {
+                                Some(ReadPathFailure::IsDirectory)
+                            } else {
+                                None
+                            };
+                            let fallback = format!("read {path}: {error}");
+                            let Some(failure) = failure else {
+                                return err_result(id, fallback);
+                            };
+                            let recovery_root = root.clone();
+                            let requested = path.to_owned();
+                            let target = p.clone();
+                            match tokio::task::spawn_blocking(move || {
+                                read_path_recovery(
+                                    &recovery_root,
+                                    &requested,
+                                    &target,
+                                    failure,
+                                )
+                            })
+                            .await
+                            {
+                                Ok(Some(recovery)) => err_result(id, recovery),
+                                _ => err_result(id, fallback),
+                            }
+                        }
                     },
                 }
             })
@@ -659,17 +996,22 @@ fn wild_seg(pat: &str, s: &str) -> bool {
 
 /// An on-demand localization fallback: a repo skeleton (declarations only), fit to a token budget.
 /// It remains available when targeted reads and searches leave repository coverage incomplete.
+const REPO_MAP_DESCRIPTION: &str = "Get a bounded skeleton of repository code files and their \
+top-level declarations (functions, classes, types), no bodies. This is a last-resort localization \
+tool: use it only after bounded exact or structural search cannot identify an area. Never repeat \
+`repo_map` after an evidence packet exists. Optional `query` task text or identifiers boost files \
+that declare those identifiers above unrelated declaration-heavy files.";
+
+fn repo_map_description() -> &'static str {
+    iteron_tunables::param_str("tools.fs_tools.repo_map_description", REPO_MAP_DESCRIPTION)
+}
+
 pub(crate) fn register_outline(r: &mut Registry) -> Result<(), ToolError> {
     let repo_map_policy = r.observation_tool_policy_handle();
     r.push_tool(
         ToolSpec {
             name: "repo_map".into(),
-            description: "Get a bounded skeleton of repository code files and their top-level \
-                          declarations (functions, classes, types), no bodies. Use this fallback \
-                          on demand when targeted reads or searches leave repository coverage \
-                          incomplete. Optional `query` task text or identifiers boost files that \
-                          declare those identifiers above unrelated declaration-heavy files."
-                .into(),
+            description: repo_map_description().into(),
             input_schema: serde_json::json!({
                 "type":"object",
                 "properties":{
@@ -835,6 +1177,22 @@ pub(crate) mod structural_context {
             stack.clear();
         } else if start <= target && target <= line && start < line {
             candidates.push((start, line + 1));
+        }
+    }
+}
+
+#[cfg(test)]
+mod evidence_contract_tests {
+    use super::REPO_MAP_DESCRIPTION;
+
+    #[test]
+    fn repo_map_description_is_an_evidence_aware_last_resort() {
+        for guidance in [
+            "last-resort localization tool",
+            "bounded exact or structural search",
+            "Never repeat `repo_map` after an evidence packet exists",
+        ] {
+            assert!(REPO_MAP_DESCRIPTION.contains(guidance), "{guidance}");
         }
     }
 }

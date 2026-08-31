@@ -474,6 +474,133 @@ async fn d3_16_g1_read_file_addresses_the_host_not_only_the_workspace() {
 }
 
 #[tokio::test]
+async fn read_file_not_found_returns_bounded_workspace_retry_candidates() {
+    let root = TestRoot::new("read-path-recovery");
+    std::fs::create_dir_all(root.0.join("src/runtime")).unwrap();
+    std::fs::create_dir_all(root.0.join("src/other")).unwrap();
+    std::fs::write(root.0.join("src/runtime/context.rs"), "context\n").unwrap();
+    std::fs::write(root.0.join("src/runtime/config.rs"), "config\n").unwrap();
+    std::fs::write(root.0.join("src/runtime/contract.rs"), "contract\n").unwrap();
+    std::fs::write(root.0.join("src/runtime/control.rs"), "control\n").unwrap();
+    std::fs::write(root.0.join("src/other/context.rs"), "other\n").unwrap();
+    let registry = read_only_registry(&root.0);
+
+    let result = registry
+        .dispatch(read_call(
+            "missing",
+            serde_json::json!({"path":"src/runtim/context.rs"}),
+        ))
+        .await;
+
+    assert!(result.is_error);
+    assert!(
+        result.content.starts_with("read_file:path_not_found\n"),
+        "{}",
+        result.content
+    );
+    assert!(
+        result.content.contains("nearest_existing_ancestor: src"),
+        "{}",
+        result.content
+    );
+    assert!(
+        result.content.contains("- src/runtime/context.rs"),
+        "{}",
+        result.content
+    );
+    let candidates: Vec<_> = result
+        .content
+        .lines()
+        .filter_map(|line| line.strip_prefix("- "))
+        .collect();
+    assert_eq!(candidates.first(), Some(&"src/runtime/context.rs"));
+    assert!(candidates.len() <= 3, "{}", result.content);
+}
+
+#[tokio::test]
+async fn read_file_not_found_recovers_exact_basename_across_module_boundaries() {
+    let root = TestRoot::new("read-cross-module-recovery");
+    for module in ["pdm-cfg", "pdm-context", "pdm-mix", "pdm-part"] {
+        let directory = root.0.join(module).join("assembly/metadata/data");
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("plat_fam_code_rule.data.json"), module).unwrap();
+    }
+    let registry = read_only_registry(&root.0);
+
+    let result = registry
+        .dispatch(read_call(
+            "missing-cross-module",
+            serde_json::json!({
+                "path":"mpm-mix/assembly/metadata/data/plat_fam_code_rule.data.json"
+            }),
+        ))
+        .await;
+
+    assert!(result.is_error);
+    let candidates: Vec<_> = result
+        .content
+        .lines()
+        .filter_map(|line| line.strip_prefix("- "))
+        .collect();
+    assert_eq!(
+        candidates.first(),
+        Some(&"pdm-mix/assembly/metadata/data/plat_fam_code_rule.data.json"),
+        "{}",
+        result.content
+    );
+    assert!(candidates.len() <= 3, "{}", result.content);
+}
+
+#[tokio::test]
+async fn read_file_directory_error_lists_at_most_three_real_sorted_children() {
+    let root = TestRoot::new("read-directory-recovery");
+    std::fs::create_dir_all(root.0.join("src/b-dir")).unwrap();
+    std::fs::write(root.0.join("src/a.rs"), "a\n").unwrap();
+    std::fs::write(root.0.join("src/c.rs"), "c\n").unwrap();
+    std::fs::write(root.0.join("src/d.rs"), "d\n").unwrap();
+    let registry = read_only_registry(&root.0);
+
+    let result = registry
+        .dispatch(read_call("directory", serde_json::json!({"path":"src"})))
+        .await;
+
+    assert!(result.is_error);
+    assert!(
+        result.content.starts_with("read_file:path_is_directory\n"),
+        "{}",
+        result.content
+    );
+    let children: Vec<_> = result
+        .content
+        .lines()
+        .filter_map(|line| line.strip_prefix("- "))
+        .collect();
+    assert_eq!(children, vec!["src/a.rs", "src/b-dir/", "src/c.rs"]);
+    assert!(!result.content.contains("src/d.rs"));
+}
+
+#[tokio::test]
+async fn read_file_missing_host_path_does_not_enumerate_outside_workspace() {
+    let root = TestRoot::new("read-outside-recovery-root");
+    let outside = TestRoot::new("read-outside-recovery-target");
+    std::fs::write(outside.0.join("nearby-secret.txt"), "outside\n").unwrap();
+    let registry = read_only_registry(&root.0);
+    let missing = outside.0.join("missing.txt");
+
+    let result = registry
+        .dispatch(read_call(
+            "outside-missing",
+            serde_json::json!({"path":missing.to_str().unwrap()}),
+        ))
+        .await;
+
+    assert!(result.is_error);
+    assert!(!result.content.contains("read_file:path_not_found"));
+    assert!(!result.content.contains("nearest_existing_ancestor"));
+    assert!(!result.content.contains("nearby-secret.txt"));
+}
+
+#[tokio::test]
 async fn d3_07_g1_crlf_edit_changes_one_line_without_eol_conversion() {
     let root = TestRoot::new("crlf-fidelity");
     let path = root.0.join("windows.txt");

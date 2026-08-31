@@ -43,6 +43,22 @@ pub(super) struct AdvertisedToolSpecsCache {
     prepared: PreparedToolSchemas,
 }
 
+/// Strategy-owned projection for the current provider turn. Grouping these related flags keeps
+/// call sites explicit and prevents positional boolean drift as the convergence policy evolves.
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct ToolProjectionPosture {
+    pub(super) patch_trial: bool,
+    pub(super) candidate_change_required: bool,
+    pub(super) candidate_revision_required: bool,
+    pub(super) candidate_owner_evidence_required: bool,
+    pub(super) structural_repair_read_required: bool,
+    pub(super) behavior_counterexample_read_required: bool,
+    pub(super) localized_closure_active: bool,
+    pub(super) candidate_review_active: bool,
+    pub(super) evidence_insufficient_terminal: bool,
+    pub(super) candidate_handoff_terminal: bool,
+}
+
 /// Active-task token count charged when the transcript holds no user text message to attribute.
 const NO_ACTIVE_TASK_TOKENS: usize = 0;
 
@@ -660,17 +676,26 @@ impl Agent {
     }
 
     pub(super) fn advertised_tool_specs_for_task(&mut self, task: &str) -> PreparedToolSchemas {
-        self.advertised_tool_specs_for_task_with_patch_trial(task, false, false, false, false)
+        self.advertised_tool_specs_for_task_with_patch_trial(task, ToolProjectionPosture::default())
     }
 
     pub(super) fn advertised_tool_specs_for_task_with_patch_trial(
         &mut self,
         task: &str,
-        patch_trial: bool,
-        candidate_change_required: bool,
-        candidate_review_active: bool,
-        evidence_insufficient_terminal: bool,
+        posture: ToolProjectionPosture,
     ) -> PreparedToolSchemas {
+        let ToolProjectionPosture {
+            patch_trial,
+            candidate_change_required,
+            candidate_revision_required,
+            candidate_owner_evidence_required,
+            structural_repair_read_required,
+            behavior_counterexample_read_required,
+            localized_closure_active,
+            candidate_review_active,
+            evidence_insufficient_terminal,
+            candidate_handoff_terminal,
+        } = posture;
         let admitted = self.authority_ceiling.intersect(self.policy_capabilities);
         let base = self.registry.spec_snapshot();
         let total = base.specs().len();
@@ -697,10 +722,23 @@ impl Agent {
             .collect::<std::collections::BTreeSet<_>>();
         let authority_visible = admitted_names.len();
         let mut recovery_only_filtered = false;
-        if evidence_insufficient_terminal {
+        if evidence_insufficient_terminal || candidate_handoff_terminal {
             admitted_names.clear();
+        } else if structural_repair_read_required {
+            admitted_names.retain(|name| name == "read_file");
+        } else if behavior_counterexample_read_required {
+            admitted_names
+                .retain(|name| matches!(name.as_str(), "read_file" | "grep" | "git_diff"));
+        } else if localized_closure_active {
+            admitted_names
+                .retain(|name| name == "read_file" || self.registry.is_candidate_change_tool(name));
+        } else if candidate_revision_required {
+            admitted_names.retain(|name| matches!(name.as_str(), "edit" | "apply_patch"));
         } else if candidate_change_required {
             admitted_names.retain(|name| self.registry.is_candidate_change_tool(name));
+        } else if candidate_owner_evidence_required {
+            admitted_names
+                .retain(|name| matches!(name.as_str(), "read_file" | "grep" | "git_diff"));
         } else if candidate_review_active {
             admitted_names.retain(|name| self.registry.is_candidate_review_tool(name));
         } else if patch_trial {
@@ -776,10 +814,18 @@ impl Agent {
             let payload = LifecyclePayload {
                 count: Some(u64::try_from(strategy_filtered).unwrap_or(u64::MAX)),
                 reason_code: Some(
-                    if evidence_insufficient_terminal {
+                    if candidate_handoff_terminal {
+                        "strategy_candidate_handoff"
+                    } else if evidence_insufficient_terminal {
                         "strategy_evidence_insufficient"
                     } else if candidate_change_required {
                         "strategy_candidate_change"
+                    } else if structural_repair_read_required {
+                        "strategy_structural_repair_refresh"
+                    } else if localized_closure_active {
+                        "strategy_localized_closure"
+                    } else if candidate_owner_evidence_required {
+                        "strategy_candidate_owner_evidence"
                     } else if candidate_review_active {
                         "strategy_candidate_review"
                     } else if recovery_only_filtered {

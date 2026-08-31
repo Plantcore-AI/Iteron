@@ -1784,6 +1784,32 @@ mod tests {
             &call("grep", serde_json::json!({"pattern":"ToolPurpose"})),
             &workspace,
         ));
+        for localization in [
+            call("grep", serde_json::json!({"pattern":"ToolPurpose"})),
+            call("list_dir", serde_json::json!({})),
+            call("glob", serde_json::json!({"pattern":"**/*.rs"})),
+            call("read_file", serde_json::json!({"path":"src/lib.rs"})),
+        ] {
+            assert!(
+                registry.is_workspace_localization_observation(&localization, &workspace),
+                "{} must remain localization without becoming contract evidence",
+                localization.name
+            );
+        }
+        for non_localization in [
+            call("edit", serde_json::json!({"path":"src/lib.rs"})),
+            call("bash", serde_json::json!({"command":"rg ToolPurpose"})),
+            call(
+                "read_file",
+                serde_json::json!({"path":workspace.parent().unwrap().join("Cargo.toml")}),
+            ),
+        ] {
+            assert!(
+                !registry.is_workspace_localization_observation(&non_localization, &workspace),
+                "{} must not advance workspace localization",
+                non_localization.name
+            );
+        }
         assert!(registry.is_workspace_targeted_observation(
             &call(
                 "grep",

@@ -253,6 +253,49 @@ impl Registry {
         })
     }
 
+    /// Whether this exact call is a native read-only localization observation confined to the
+    /// candidate workspace.
+    ///
+    /// This role is deliberately broader than [`Self::is_workspace_targeted_observation`]: plain
+    /// root grep plus native glob/listing are useful for measuring repeated discovery scopes, but
+    /// they do not become bounded contract evidence. Runtime strategy advances localization only
+    /// after the corresponding tool result succeeds.
+    pub fn is_workspace_localization_observation(&self, call: &ToolUse, workspace: &Path) -> bool {
+        if !matches!(
+            call.name.as_str(),
+            "grep" | "glob" | "list_dir" | "read_file"
+        ) || !self.tools.iter().any(|tool| {
+            tool.spec.name == call.name
+                && tool.spec.purity == iteron_protocol::Purity::Pure
+                && tool.spec.capability == iteron_protocol::Capability::ReadOnly
+        }) {
+            return false;
+        }
+
+        let path = match call.name.as_str() {
+            "read_file" => call
+                .input
+                .get("path")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|path| !path.is_empty()),
+            "grep" | "glob" | "list_dir" => Some(
+                call.input
+                    .get("path")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::trim)
+                    .filter(|path| !path.is_empty())
+                    .unwrap_or("."),
+            ),
+            _ => None,
+        };
+        let (Some(path), Ok(root)) = (path, workspace.canonicalize()) else {
+            return false;
+        };
+        crate::resolve_from_canonical_root(&root, path)
+            .is_ok_and(|resolved| resolved.starts_with(&root))
+    }
+
     /// Whether this call targets the registered source-anchored repair-evidence tool and every
     /// declared source/repair path resolves inside the candidate workspace. This is a cheap
     /// controller predicate only; the executor still performs no-follow traversal, exact line,
