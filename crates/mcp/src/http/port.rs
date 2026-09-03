@@ -207,6 +207,29 @@ pub(crate) fn build_post_with_version(
     policy: &McpHttpHeaderPolicy,
     protocol_frame: (&str, String),
 ) -> Result<McpHttpRequest, McpError> {
+    build_post_with_routing(
+        endpoint,
+        credential,
+        now_secs,
+        session,
+        extra,
+        policy,
+        protocol_frame,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_post_with_routing(
+    endpoint: &McpHttpEndpoint,
+    credential: Option<&Token>,
+    now_secs: u64,
+    session: Option<&McpSessionId>,
+    extra: &[(String, McpHeaderValue)],
+    policy: &McpHttpHeaderPolicy,
+    protocol_frame: (&str, String),
+    routing: Option<(&str, Option<&str>)>,
+) -> Result<McpHttpRequest, McpError> {
     let (protocol_version, frame) = protocol_frame;
     if frame.len() > crate::MAX_FRAME_BYTES {
         return Err(McpError::FrameTooLarge {
@@ -242,6 +265,12 @@ pub(crate) fn build_post_with_version(
             "mcp-session-id".to_owned(),
             McpHeaderValue::new(session.expose())?,
         ));
+    }
+    if let Some((method, name)) = routing {
+        headers.push(("mcp-method".to_owned(), McpHeaderValue::new(method)?));
+        if let Some(name) = name {
+            headers.push(("mcp-name".to_owned(), McpHeaderValue::new(name)?));
+        }
     }
     // Operator headers are appended last but validated against the same reserved set that
     // configuration was validated against, so a later code path cannot smuggle one in.
@@ -302,6 +331,24 @@ mod tests {
             Some(REQUESTED_PROTOCOL_VERSION)
         );
         assert_eq!(header(&request, "authorization"), None);
+        assert_eq!(header(&request, "mcp-session-id"), None);
+    }
+
+    #[test]
+    fn stateless_2026_routes_by_method_and_tool_without_a_session() {
+        let request = build_post_with_routing(
+            &endpoint(),
+            None,
+            0,
+            None,
+            &[],
+            &McpHttpHeaderPolicy::default(),
+            (crate::MODERN_PROTOCOL_VERSION, "{}".into()),
+            Some(("tools/call", Some("echo"))),
+        )
+        .unwrap();
+        assert_eq!(header(&request, "mcp-method"), Some("tools/call"));
+        assert_eq!(header(&request, "mcp-name"), Some("echo"));
         assert_eq!(header(&request, "mcp-session-id"), None);
     }
 

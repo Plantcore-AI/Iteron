@@ -88,7 +88,10 @@ impl Shared {
         // it still validates the source EQ independently before calling this method.
         if matches!(
             event,
-            ServerEvent::Submission { .. } | ServerEvent::WorkflowRun(_) | ServerEvent::Activity(_)
+            ServerEvent::Submission { .. }
+                | ServerEvent::WorkflowRun(_)
+                | ServerEvent::Activity(_)
+                | ServerEvent::McpInputRequested(_)
         ) {
             return Ok(turn);
         }
@@ -125,7 +128,8 @@ impl Shared {
                 ServerEvent::RunEnded { summary, .. } => terminal_result_frame(seq, &summary),
                 ServerEvent::Submission { .. }
                 | ServerEvent::WorkflowRun(_)
-                | ServerEvent::Activity(_) => {
+                | ServerEvent::Activity(_)
+                | ServerEvent::McpInputRequested(_) => {
                     unreachable!("unpublished EQ variants were filtered before projection")
                 }
             };

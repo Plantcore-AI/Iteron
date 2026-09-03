@@ -41,6 +41,8 @@ impl App {
             render_cache_theme_epoch: 0,
             transcript_layout: transcript_layout::HeightIndex::default(),
             editor: Editor::new(),
+            pending_mcp_input: None,
+            queued_mcp_inputs: VecDeque::new(),
             status: "idle".into(),
             last_result: None,
             running: false,

@@ -43,7 +43,11 @@ pub(super) async fn list_tools_governed(
         let next_cursor = pagination.accept_page(&result)?;
         catalog.accept_page(&client.server_name, &result)?;
         let Some(next_cursor) = next_cursor else {
-            return Ok(catalog.finish());
+            let mut tools = catalog.finish();
+            if client.protocol_mode().is_stateless() {
+                tools.sort_by(|left, right| left.name.cmp(&right.name));
+            }
+            return Ok(tools);
         };
         cursor = Some(next_cursor);
     }

@@ -216,7 +216,7 @@ fn validate_property(property: &Value) -> Result<(), McpError> {
     }
 }
 
-fn validate_content(schema: &Value, content: &Value) -> Result<(), McpError> {
+pub(crate) fn validate_content(schema: &Value, content: &Value) -> Result<(), McpError> {
     let content = content
         .as_object()
         .ok_or_else(|| protocol("elicitation content must be an object"))?;

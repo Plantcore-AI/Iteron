@@ -191,6 +191,10 @@
         },
         {
           "kind": "file",
+          "path": "docs/mcp-compatibility.md"
+        },
+        {
+          "kind": "file",
           "path": "docs/maintainer-onboarding.md"
         },
         {
@@ -792,6 +796,10 @@
         {
           "kind": "tree",
           "path": "crates/mcp"
+        },
+        {
+          "kind": "tree",
+          "path": "tests/mcp_conformance"
         }
       ],
       "contracts": [

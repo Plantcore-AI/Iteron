@@ -111,6 +111,84 @@ fn serialized_len(value: &Value) -> Result<usize, McpError> {
     Ok(counter.bytes)
 }
 
+pub(crate) struct ExtensionPagination {
+    key: &'static str,
+    pages: usize,
+    items: Vec<Value>,
+    bytes: usize,
+    seen_cursors: BTreeSet<String>,
+}
+
+impl ExtensionPagination {
+    pub(crate) fn new(method: &str) -> Result<Self, McpError> {
+        let key = match method {
+            "resources/list" => "resources",
+            "prompts/list" => "prompts",
+            _ => return Err(McpError::Protocol("unsupported MCP list method".into())),
+        };
+        Ok(Self {
+            key,
+            pages: 0,
+            items: Vec::new(),
+            bytes: 0,
+            seen_cursors: BTreeSet::new(),
+        })
+    }
+
+    pub(crate) fn accept(&mut self, result: &Value) -> Result<Option<Value>, McpError> {
+        self.pages = self.pages.saturating_add(1);
+        if self.pages > MAX_TOOL_LIST_PAGES {
+            return Err(McpError::Protocol(
+                "MCP extension page limit exceeded".into(),
+            ));
+        }
+        self.bytes = self.bytes.saturating_add(serialized_len(result)?);
+        if self.bytes > MAX_TOOL_LIST_BYTES {
+            return Err(McpError::Protocol(
+                "MCP extension byte limit exceeded".into(),
+            ));
+        }
+        let page = result
+            .get(self.key)
+            .and_then(Value::as_array)
+            .ok_or_else(|| McpError::Protocol("MCP list result omitted its items".into()))?;
+        if self.items.len().saturating_add(page.len()) > MAX_TOOL_LIST_TOOLS {
+            return Err(McpError::Protocol(
+                "MCP extension item limit exceeded".into(),
+            ));
+        }
+        self.items.extend(page.iter().cloned());
+        match result.get("nextCursor") {
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::String(cursor)) if !cursor.is_empty() && cursor.len() <= 4096 => {
+                if !self.seen_cursors.insert(cursor.clone()) {
+                    return Err(McpError::Protocol("MCP extension cursor repeated".into()));
+                }
+                Ok(Some(serde_json::json!({"cursor": cursor})))
+            }
+            _ => Err(McpError::Protocol(
+                "MCP extension nextCursor is invalid".into(),
+            )),
+        }
+    }
+
+    pub(crate) fn finish(mut self) -> Value {
+        self.items.sort_by(|left, right| {
+            item_identity(left)
+                .unwrap_or_default()
+                .cmp(item_identity(right).unwrap_or_default())
+        });
+        serde_json::json!({(self.key): self.items})
+    }
+}
+
+fn item_identity(value: &Value) -> Option<&str> {
+    value
+        .get("name")
+        .or_else(|| value.get("uri"))
+        .and_then(Value::as_str)
+}
+
 #[derive(Default)]
 struct ByteCounter {
     bytes: usize,

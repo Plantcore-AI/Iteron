@@ -14,7 +14,7 @@ mod schema;
 mod verification;
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use std::path::Path;
 
@@ -477,6 +477,10 @@ pub struct McpServerConfig {
     pub command: Option<String>,
     #[serde(default)]
     pub args: Vec<String>,
+    /// Exact environment-variable names explicitly granted to this stdio server. Values remain
+    /// outside configuration and are copied only into this child process.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub env_names: Vec<String>,
     /// Streamable-HTTP endpoint. HTTPS is required except for loopback.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
@@ -965,11 +969,30 @@ impl FileConfig {
                                 "mcp_servers[{index}] stdio transport cannot declare url, header_env, or oauth"
                             ));
                         }
+                        if server.env_names.len() > 64 {
+                            return Err(format!(
+                                "mcp_servers[{index}].env_names exceeds its 64-entry bound"
+                            ));
+                        }
+                        let mut env_names = BTreeSet::new();
+                        for env_name in &server.env_names {
+                            validate_upper_env_name(env_name).map_err(|reason| {
+                                format!("mcp_servers[{index}].env_names: {reason}")
+                            })?;
+                            if !env_names.insert(env_name) {
+                                return Err(format!(
+                                    "mcp_servers[{index}].env_names contains a duplicate"
+                                ));
+                            }
+                        }
                     }
                     McpTransportConfig::Http => {
-                        if server.command.is_some() || !server.args.is_empty() {
+                        if server.command.is_some()
+                            || !server.args.is_empty()
+                            || !server.env_names.is_empty()
+                        {
                             return Err(format!(
-                                "mcp_servers[{index}] http transport cannot declare command or args"
+                                "mcp_servers[{index}] http transport cannot declare command, args, or env_names"
                             ));
                         }
                         let url = server.url.as_deref().ok_or_else(|| {
@@ -2177,6 +2200,7 @@ mod tests {
                     "name": "operator-tools",
                     "command": "/opt/operator/bin/mcp",
                     "args": ["--stdio"],
+                    "env_names": ["MCP_API_TOKEN"],
                     "tools": {
                         "allow": ["shared", "read.file"],
                         "deny": ["delete_all"]
@@ -2188,12 +2212,16 @@ mod tests {
         let server = &config.mcp_servers.unwrap()[0];
         assert_eq!(server.tools.allow, ["shared", "read.file"]);
         assert_eq!(server.tools.deny, ["delete_all"]);
+        assert_eq!(server.env_names, ["MCP_API_TOKEN"]);
 
         for invalid in [
             r#"{"schema_version":2,"mcp_servers":[{"name":"a__b","command":"mcp"}]}"#,
             r#"{"schema_version":2,"mcp_servers":[{"name":"alpha","command":"mcp","tools":{"allow":["unsafe/path"]}}]}"#,
             r#"{"schema_version":2,"mcp_servers":[{"name":"alpha","command":"mcp","tools":{"alllow":["read"]}}]}"#,
             r#"{"schema_version":2,"mcp_servers":[{"name":"alpha","command":"mcp"},{"name":"alpha","command":"other"}]}"#,
+            r#"{"schema_version":2,"mcp_servers":[{"name":"alpha","command":"mcp","env_names":["lowercase"]}]}"#,
+            r#"{"schema_version":2,"mcp_servers":[{"name":"alpha","command":"mcp","env_names":["TOKEN","TOKEN"]}]}"#,
+            r#"{"schema_version":2,"mcp_servers":[{"name":"alpha","transport":"http","url":"https://example.com/mcp","env_names":["TOKEN"]}]}"#,
         ] {
             assert!(FileConfig::parse(invalid).is_err(), "accepted {invalid}");
         }

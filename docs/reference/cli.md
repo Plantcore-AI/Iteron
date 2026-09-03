@@ -126,6 +126,18 @@ This page is generated from the argument parser, so every shipped flag and subco
 | `iteron plugin uninstall <NAME>` | Remove a plugin from runtime composition while retaining cached artifacts. |
 | `iteron plugin rollback <NAME>` | Atomically return to the one retained, re-verified prior artifact. |
 | `iteron plugin doctor` | Re-verify every enabled cache entry and explain composition refusals/conflicts. |
+| `iteron mcp <SUBCOMMAND>` | Configure, authenticate, test, and diagnose MCP servers. |
+| `iteron mcp add <NAME> [--url <URL>] [--stdio <COMMAND>] [--env <NAME>] [ARGS]` | Add one operator-owned MCP server. |
+| `iteron mcp list [--format <FORMAT>]` | List configured MCP servers. |
+| `iteron mcp get <NAME> [--format <FORMAT>]` | Inspect one configured MCP server. |
+| `iteron mcp remove <NAME>` | Remove one configured MCP server. |
+| `iteron mcp auth <SUBCOMMAND>` | Inspect locally stored MCP authentication. |
+| `iteron mcp auth login <NAME> [--client-id <CLIENT_ID>]` | Start an OAuth login for one configured HTTP server. |
+| `iteron mcp auth logout <NAME>` | Remove locally stored credentials for one server. |
+| `iteron mcp auth status <NAME> [--format <FORMAT>]` | Show local credential status without revealing credentials. |
+| `iteron mcp test <NAME> [--format <FORMAT>]` | Connect, negotiate, and discover tools without calling a business tool. |
+| `iteron mcp status [NAME] [--format <FORMAT>]` | Show configured state without opening a connection. |
+| `iteron mcp doctor [--connect] [--format <FORMAT>]` | Validate all MCP configuration, optionally opening bounded discovery connections. |
 
 Local validation runs before a new rollout is opened, so malformed mode, effort,
 verification, or TUI/one-shot combinations should fail without creating a

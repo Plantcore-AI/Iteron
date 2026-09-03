@@ -717,6 +717,12 @@ jobs:
         with:
           toolchain: ${{ env.RUSTUP_TOOLCHAIN }}
           components: clippy,rustfmt
+      - name: install Node.js for the pinned MCP client conformance suite
+        uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: tests/mcp_conformance/package-lock.json
       # The runner administrator provisions this host boundary once. CI verifies it instead of
       # mutating the persistent DGX with passwordless sudo on every pull request.
       - name: verify bubblewrap boundary is provisioned
@@ -732,6 +738,28 @@ jobs:
       - name: test
         shell: bash
         run: cargo test --workspace --all-targets --locked
+      - name: install the pinned MCP conformance suite
+        working-directory: tests/mcp_conformance
+        run: npm ci
+      - name: test the MCP report and regression-gate contract
+        working-directory: tests/mcp_conformance
+        run: python3 -m unittest test_runner.py
+      - name: build the Iteron MCP conformance adapter
+        run: cargo build --locked -p iteron-mcp --example conformance_client
+      - name: reject missing scenarios and new MCP conformance failures
+        working-directory: tests/mcp_conformance
+        run: >-
+          python3 run.py "$CARGO_TARGET_DIR/debug/examples/conformance_client"
+          --baseline-report regression-baseline-v1.json
+          --report "$RUNNER_TEMP/iteron-mcp-conformance.json"
+      - name: publish the MCP conformance report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: iteron-mcp-conformance
+          path: ${{ runner.temp }}/iteron-mcp-conformance.json
+          if-no-files-found: ignore
+          retention-days: 14
 
   # Non-blocking by construction (`continue-on-error`). The suite has 1613 functional tests and
   # not one wall-clock bound, so a one-line concurrency hazard — a lock held across an await, an

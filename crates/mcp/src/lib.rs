@@ -18,11 +18,13 @@
 use serde_json::{Value, json};
 use std::io::Write;
 
+mod cache;
 pub mod client;
 mod deadlines;
 mod elicitation;
 mod evidence;
 pub mod http;
+mod mrtr;
 pub mod oauth;
 mod pagination;
 mod policy;
@@ -44,7 +46,9 @@ pub use elicitation::{
     MAX_ELICITATION_SCHEMA_BYTES, McpElicitationHandler,
 };
 pub use evidence::McpToolCallEvidence;
+pub use mrtr::{McpInputDecision, McpInputRequest, McpMrtrHandler, validate_mrtr_input};
 pub use policy::{MAX_MCP_TOOL_POLICY_ENTRIES, McpServerPolicy, default_host_ceiling};
+pub use protocol_version::{MODERN_PROTOCOL_VERSION, McpProtocolMode};
 pub use remote::{McpRemoteClient, McpServerCapabilities};
 pub use result_policy::{
     DEFAULT_MCP_SPILL_RESULT_BYTES, DEFAULT_MCP_VISIBLE_RESULT_BYTES, MAX_MCP_SPILL_RESULT_BYTES,

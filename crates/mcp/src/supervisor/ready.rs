@@ -64,7 +64,9 @@ impl McpSupervisor {
                 handshake_timeout,
                 self.timeouts.request(),
                 self.launch.sensitive_env_names(),
+                self.launch.granted_env_names(),
                 cancellation,
+                self.launch.protocol_mode(),
             )
             .await;
             let mut client = match connected {

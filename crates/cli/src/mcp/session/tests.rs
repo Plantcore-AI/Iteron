@@ -1,17 +1,21 @@
 use super::*;
 use iteron_protocol::ToolUse;
 use std::collections::BTreeSet;
+use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 
 fn fixture(marker: &Path) -> McpServerConfig {
     let script = concat!(
         "printf 'spawned' > \"$1\"; ",
+        "IFS= read -r discover; ",
+        "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32601,\"message\":\"Method not found\"}}'; ",
         "IFS= read -r initialize; ",
-        "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{\"tools\":{},\"resources\":{},\"prompts\":{}}}}'; ",
+        "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{\"tools\":{},\"resources\":{},\"prompts\":{}}}}'; ",
         "IFS= read -r initialized; ",
         "IFS= read -r list; ",
-        "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"echo\",\"description\":\"fixture\",\"inputSchema\":{\"type\":\"object\"}}]}}'; ",
+        "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"tools\":[{\"name\":\"echo\",\"description\":\"fixture\",\"inputSchema\":{\"type\":\"object\"}}]}}'; ",
         "IFS= read -r call; ",
-        "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"pong\"}]}}'; ",
+        "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":4,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"pong\"}]}}'; ",
         "exec sleep 60"
     );
     McpServerConfig {
@@ -25,6 +29,7 @@ fn fixture(marker: &Path) -> McpServerConfig {
             "mcp-session-fixture".into(),
             marker.to_string_lossy().into_owned(),
         ],
+        env_names: Vec::new(),
         url: None,
         header_env: BTreeMap::new(),
         oauth: None,
@@ -40,11 +45,112 @@ fn http_fixture(oauth: Option<crate::config::McpOAuthConfig>) -> McpServerConfig
         transport: McpTransportConfig::Http,
         command: None,
         args: Vec::new(),
+        env_names: Vec::new(),
         url: Some("https://example.invalid/mcp".into()),
         header_env: BTreeMap::new(),
         oauth,
         tools: iteron_mcp::McpToolFilter::default(),
         policy: iteron_mcp::McpServerPolicy::default(),
+    }
+}
+
+fn modern_fixture(marker: &Path) -> McpServerConfig {
+    let script = concat!(
+        "printf 'spawned' > \"$1\"; ",
+        "IFS= read -r discover; ",
+        "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"resultType\":\"complete\",\"supportedVersions\":[\"2026-07-28\"],\"capabilities\":{\"tools\":{}}}}'; ",
+        "IFS= read -r list; ",
+        "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"echo\",\"description\":\"fixture\",\"inputSchema\":{\"type\":\"object\"}}]}}'; ",
+        "IFS= read -r call; ",
+        "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"pong\"}]}}'; ",
+        "exec sleep 60"
+    );
+    McpServerConfig {
+        args: vec![
+            "-c".into(),
+            script.into(),
+            "mcp-modern-session-fixture".into(),
+            marker.to_string_lossy().into_owned(),
+        ],
+        ..fixture(marker)
+    }
+}
+
+fn modern_mrtr_fixture(marker: &Path, resumed_request: &Path) -> McpServerConfig {
+    let script = concat!(
+        "printf 'spawned' > \"$1\"; ",
+        "IFS= read -r discover; ",
+        "printf '%s\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"resultType\":\"complete\",\"supportedVersions\":[\"2026-07-28\"],\"capabilities\":{\"tools\":{}}}}'; ",
+        "IFS= read -r list; ",
+        "printf '%s\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"profile\",\"description\":\"fixture\",\"inputSchema\":{\"type\":\"object\"}}]}}'; ",
+        "IFS= read -r call; ",
+        "printf '%s\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"resultType\":\"input_required\",\"requestState\":\"round-1\",\"inputRequests\":{\"profile-input\":{\"method\":\"elicitation/create\",\"params\":{\"message\":\"Choose a profile name\",\"requestedSchema\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"}},\"required\":[\"name\"]}}}}}}'; ",
+        "IFS= read -r resumed; ",
+        "printf '%s' \"$resumed\" > \"$2\"; ",
+        "printf '%s\n' '{\"jsonrpc\":\"2.0\",\"id\":4,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"profile accepted\"}]}}'; ",
+        "exec sleep 60"
+    );
+    McpServerConfig {
+        args: vec![
+            "-c".into(),
+            script.into(),
+            "mcp-modern-mrtr-fixture".into(),
+            marker.to_string_lossy().into_owned(),
+            resumed_request.to_string_lossy().into_owned(),
+        ],
+        ..fixture(marker)
+    }
+}
+
+fn stateful_2025_fixture(marker: &Path) -> McpServerConfig {
+    let script = concat!(
+        "printf 'spawned' > \"$1\"; ",
+        "IFS= read -r discover; ",
+        "printf '%s\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32601,\"message\":\"Method not found\"}}'; ",
+        "IFS= read -r initialize; ",
+        "printf '%s\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{\"tools\":{}}}}'; ",
+        "IFS= read -r initialized; ",
+        "IFS= read -r list; ",
+        "printf '%s\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"tools\":[{\"name\":\"echo\",\"description\":\"fixture\",\"inputSchema\":{\"type\":\"object\"}}]}}'; ",
+        "IFS= read -r call; ",
+        "printf '%s\n' '{\"jsonrpc\":\"2.0\",\"id\":4,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"pong\"}]}}'; ",
+        "exec sleep 60"
+    );
+    McpServerConfig {
+        args: vec![
+            "-c".into(),
+            script.into(),
+            "mcp-stateful-2025-fixture".into(),
+            marker.to_string_lossy().into_owned(),
+        ],
+        ..fixture(marker)
+    }
+}
+
+struct RecordingMrtrHandler {
+    states: Arc<StdMutex<Vec<Option<String>>>>,
+}
+
+impl iteron_mcp::McpMrtrHandler for RecordingMrtrHandler {
+    fn request<'a>(
+        &'a self,
+        _server_name: &'a str,
+        _tool_name: &'a str,
+        request_state: Option<&'a str>,
+        requests: Vec<iteron_mcp::McpInputRequest>,
+    ) -> iteron_mcp::McpFuture<'a, iteron_mcp::McpInputDecision> {
+        self.states
+            .lock()
+            .unwrap()
+            .push(request_state.map(str::to_owned));
+        Box::pin(async move {
+            Ok(iteron_mcp::McpInputDecision::Approve(
+                requests
+                    .into_iter()
+                    .map(|request| (request.id().to_owned(), serde_json::json!({"name":"Alice"})))
+                    .collect(),
+            ))
+        })
     }
 }
 
@@ -301,11 +407,154 @@ async fn registration_configuration_and_stale_call_do_not_spawn_then_search_does
     assert_eq!(health.phase, "ready");
     assert_eq!(health.generation, Some(1));
     assert!(health.catalog_current);
+    assert_eq!(
+        health.negotiated_protocol_version.as_deref(),
+        Some("2024-11-05")
+    );
 
     runtime.stop("alpha").await.unwrap();
     assert_eq!(runtime.health()[0].phase, "stopped");
     runtime.restart("alpha").await.unwrap();
     assert_eq!(runtime.health()[0].phase, "deferred");
+    let _ = std::fs::remove_file(marker);
+}
+
+#[tokio::test]
+async fn session_runtime_uses_2026_discovery_without_stateful_initialize() {
+    let marker = marker();
+    let _ = std::fs::remove_file(&marker);
+    let config = modern_fixture(&marker);
+    let mut registry = Registry::read_only(std::env::temp_dir()).unwrap();
+    let runtime =
+        McpRuntimeControl::register(&mut registry, std::slice::from_ref(&config), &[]).unwrap();
+    runtime
+        .configure(
+            settings(iteron_mcp::McpSpillCleanup::SessionEnd),
+            bound_exposure(&config),
+        )
+        .unwrap();
+    let search = registry
+        .run_effect(ToolUse {
+            id: "search-modern".into(),
+            name: "alpha__tool_search".into(),
+            input: json!({"query":"echo","limit":4}),
+        })
+        .await
+        .into_result();
+    assert!(!search.is_error, "{}", search.content);
+    let call = registry
+        .run_effect(ToolUse {
+            id: "call-modern".into(),
+            name: "alpha__tool_call".into(),
+            input: json!({"name":"alpha__echo","arguments":{}}),
+        })
+        .await
+        .into_result();
+    assert!(!call.is_error, "{}", call.content);
+    assert_eq!(
+        runtime.health()[0].negotiated_protocol_version.as_deref(),
+        Some("2026-07-28")
+    );
+    runtime.stop("alpha").await.unwrap();
+    let _ = std::fs::remove_file(marker);
+}
+
+#[tokio::test]
+async fn session_runtime_completes_2026_mrtr_and_echoes_state_on_the_same_server() {
+    let resumed_request = marker();
+    let marker = marker();
+    let _ = std::fs::remove_file(&marker);
+    let _ = std::fs::remove_file(&resumed_request);
+    let config = modern_mrtr_fixture(&marker, &resumed_request);
+    let mut registry = Registry::read_only(std::env::temp_dir()).unwrap();
+    let runtime =
+        McpRuntimeControl::register(&mut registry, std::slice::from_ref(&config), &[]).unwrap();
+    runtime
+        .configure(
+            settings(iteron_mcp::McpSpillCleanup::SessionEnd),
+            bound_exposure(&config),
+        )
+        .unwrap();
+    let states = Arc::new(StdMutex::new(Vec::new()));
+    runtime
+        .install_mrtr_handler(Arc::new(RecordingMrtrHandler {
+            states: states.clone(),
+        }))
+        .unwrap();
+    let search = registry
+        .run_effect(ToolUse {
+            id: "search-mrtr".into(),
+            name: "alpha__tool_search".into(),
+            input: json!({"query":"profile"}),
+        })
+        .await
+        .into_result();
+    assert!(!search.is_error, "{}", search.content);
+    let call = registry
+        .run_effect(ToolUse {
+            id: "call-mrtr".into(),
+            name: "alpha__tool_call".into(),
+            input: json!({"name":"alpha__profile","arguments":{}}),
+        })
+        .await
+        .into_result();
+    assert!(!call.is_error, "{}", call.content);
+    assert!(call.content.contains("profile accepted"));
+    assert_eq!(*states.lock().unwrap(), vec![Some("round-1".into())]);
+    let resumed = std::fs::read_to_string(&resumed_request).unwrap();
+    assert!(resumed.contains(r#""requestState":"round-1""#));
+    assert!(resumed.contains(r#""inputResponses""#));
+    assert!(resumed.contains(r#""action":"accept""#));
+    assert!(resumed.contains(r#""name":"Alice""#));
+    runtime.stop("alpha").await.unwrap();
+    let _ = std::fs::remove_file(marker);
+    let _ = std::fs::remove_file(resumed_request);
+}
+
+#[tokio::test]
+async fn a_2025_session_never_invokes_the_mrtr_handler() {
+    let marker = marker();
+    let _ = std::fs::remove_file(&marker);
+    let config = stateful_2025_fixture(&marker);
+    let mut registry = Registry::read_only(std::env::temp_dir()).unwrap();
+    let runtime =
+        McpRuntimeControl::register(&mut registry, std::slice::from_ref(&config), &[]).unwrap();
+    runtime
+        .configure(
+            settings(iteron_mcp::McpSpillCleanup::SessionEnd),
+            bound_exposure(&config),
+        )
+        .unwrap();
+    let states = Arc::new(StdMutex::new(Vec::new()));
+    runtime
+        .install_mrtr_handler(Arc::new(RecordingMrtrHandler {
+            states: states.clone(),
+        }))
+        .unwrap();
+    let search = registry
+        .run_effect(ToolUse {
+            id: "search-2025".into(),
+            name: "alpha__tool_search".into(),
+            input: json!({"query":"echo"}),
+        })
+        .await
+        .into_result();
+    assert!(!search.is_error, "{}", search.content);
+    let call = registry
+        .run_effect(ToolUse {
+            id: "call-2025".into(),
+            name: "alpha__tool_call".into(),
+            input: json!({"name":"alpha__echo","arguments":{}}),
+        })
+        .await
+        .into_result();
+    assert!(!call.is_error, "{}", call.content);
+    assert!(states.lock().unwrap().is_empty());
+    assert_eq!(
+        runtime.health()[0].negotiated_protocol_version.as_deref(),
+        Some("2025-11-25")
+    );
+    runtime.stop("alpha").await.unwrap();
     let _ = std::fs::remove_file(marker);
 }
 

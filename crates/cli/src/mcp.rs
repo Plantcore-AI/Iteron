@@ -1,5 +1,8 @@
 //! Trusted-user MCP composition and registry wiring.
 
+pub(crate) mod commands;
+pub(crate) mod credential_store;
+mod oauth_login;
 mod session;
 
 pub(crate) use session::{McpRuntimeControl, McpServerHealth};
@@ -29,10 +32,17 @@ pub(crate) enum ConfiguredMcpClient {
 }
 
 impl ConfiguredMcpClient {
-    fn negotiated_protocol_version(&self) -> &str {
+    pub(crate) fn negotiated_protocol_version(&self) -> &str {
         match self {
             Self::Stdio(client) => client.negotiated_protocol_version(),
             Self::Http(client) => client.negotiated_protocol_version(),
+        }
+    }
+
+    pub(crate) fn protocol_mode(&self) -> iteron_mcp::McpProtocolMode {
+        match self {
+            Self::Stdio(client) => client.protocol_mode(),
+            Self::Http(client) => client.protocol_mode(),
         }
     }
     #[cfg(all(test, unix))]
@@ -55,7 +65,7 @@ impl ConfiguredMcpClient {
         }
     }
 
-    async fn list_tools_governed(
+    pub(crate) async fn list_tools_governed(
         &self,
         filter: &iteron_mcp::McpToolFilter,
         policy: &iteron_mcp::McpServerPolicy,
@@ -85,6 +95,30 @@ impl ConfiguredMcpClient {
             Self::Http(client) => {
                 client
                     .call_tool_outcome_observed(name, arguments, on_dispatch)
+                    .await
+            }
+        }
+    }
+
+    async fn call_tool_with_mrtr_outcome_observed<F>(
+        &self,
+        name: &str,
+        arguments: serde_json::Value,
+        handler: &dyn iteron_mcp::McpMrtrHandler,
+        on_dispatch: F,
+    ) -> iteron_mcp::McpToolOutcome
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        match self {
+            Self::Stdio(client) => {
+                client
+                    .call_tool_with_mrtr_outcome_observed(name, arguments, handler, on_dispatch)
+                    .await
+            }
+            Self::Http(client) => {
+                client
+                    .call_tool_with_mrtr_outcome_observed(name, arguments, handler, on_dispatch)
                     .await
             }
         }
@@ -380,8 +414,7 @@ fn register_mcp_extension(
     })
 }
 
-#[cfg(all(test, unix))]
-async fn connect_configured_server(
+pub(crate) async fn connect_configured_server(
     server: &McpServerConfig,
     sensitive_env_names: &[String],
 ) -> Result<ConfiguredMcpClient, iteron_mcp::McpError> {
@@ -410,14 +443,15 @@ async fn connect_configured_server_with_policies(
                         field: "command",
                         limit: 4096,
                     })?;
-            iteron_mcp::McpClient::connect_with_sensitive_env_names(
+            let client = iteron_mcp::McpClient::connect_auto_with_environment(
                 command,
                 &server.args,
                 &server.name,
                 sensitive_env_names,
+                &server.env_names,
             )
-            .await
-            .map(|client| ConfiguredMcpClient::Stdio(Arc::new(client)))
+            .await?;
+            Ok(ConfiguredMcpClient::Stdio(Arc::new(client)))
         }
         McpTransportConfig::Http => {
             let endpoint = iteron_mcp::http::McpHttpEndpoint::parse(server.url.as_deref().ok_or(
@@ -438,10 +472,15 @@ async fn connect_configured_server_with_policies(
                     })?;
                 headers.push((name.clone(), iteron_mcp::http::McpHeaderValue::new(value)?));
             }
-            let credential = server
-                .oauth
-                .as_ref()
-                .map(|oauth| {
+            let stored = if server.oauth.is_none() {
+                credential_store::load(server).map_err(|_| {
+                    iteron_mcp::McpError::Protocol("stored MCP credential is invalid".into())
+                })?
+            } else {
+                None
+            };
+            let credential = if let Some(oauth) = server.oauth.as_ref() {
+                Some({
                     let secret = std::env::var(&oauth.access_token_env).map_err(|_| {
                         iteron_mcp::McpError::Credential(iteron_mcp::token::TokenError::Absent)
                     })?;
@@ -458,49 +497,72 @@ async fn connect_configured_server_with_policies(
                         })
                         .transpose()?
                         .unwrap_or(u64::MAX);
-                    Ok::<_, iteron_mcp::McpError>(iteron_mcp::token::Token::new(secret, expires_at))
+                    iteron_mcp::token::Token::new(secret, expires_at)
                 })
-                .transpose()?;
-            let oauth_grant = server
-                .oauth
-                .as_ref()
-                .and_then(|oauth| {
-                    oauth
-                        .refresh_url
-                        .as_ref()
-                        .zip(oauth.refresh_token_env.as_ref())
-                        .map(|(refresh_url, refresh_token_env)| {
-                            let refresh_token = std::env::var(refresh_token_env).map_err(|_| {
-                                iteron_mcp::McpError::Credential(
-                                    iteron_mcp::token::TokenError::Absent,
-                                )
-                            })?;
-                            let client_secret = oauth
-                                .client_secret_env
-                                .as_ref()
-                                .map(|name| {
-                                    std::env::var(name).map_err(|_| {
-                                        iteron_mcp::McpError::Credential(
-                                            iteron_mcp::token::TokenError::Absent,
-                                        )
-                                    })
+            } else {
+                stored.as_ref().map(|credential| {
+                    iteron_mcp::token::Token::new(
+                        credential.access_token.clone(),
+                        credential.expires_at_unix,
+                    )
+                })
+            };
+            let oauth_grant = if let Some(oauth) = server.oauth.as_ref() {
+                oauth
+                    .refresh_url
+                    .as_ref()
+                    .zip(oauth.refresh_token_env.as_ref())
+                    .map(|(refresh_url, refresh_token_env)| {
+                        let refresh_token = std::env::var(refresh_token_env).map_err(|_| {
+                            iteron_mcp::McpError::Credential(iteron_mcp::token::TokenError::Absent)
+                        })?;
+                        let client_secret = oauth
+                            .client_secret_env
+                            .as_ref()
+                            .map(|name| {
+                                std::env::var(name).map_err(|_| {
+                                    iteron_mcp::McpError::Credential(
+                                        iteron_mcp::token::TokenError::Absent,
+                                    )
                                 })
-                                .transpose()?;
+                            })
+                            .transpose()?;
+                        iteron_mcp::oauth::OAuthRefreshGrant::new(
+                            iteron_mcp::http::McpHttpEndpoint::parse(refresh_url)?,
+                            oauth
+                                .revoke_url
+                                .as_deref()
+                                .map(iteron_mcp::http::McpHttpEndpoint::parse)
+                                .transpose()?,
+                            refresh_token,
+                            oauth.client_id.clone(),
+                            client_secret,
+                        )
+                    })
+                    .transpose()?
+            } else {
+                stored
+                    .as_ref()
+                    .and_then(|credential| {
+                        credential.refresh_token.as_ref().map(|refresh_token| {
                             iteron_mcp::oauth::OAuthRefreshGrant::new(
-                                iteron_mcp::http::McpHttpEndpoint::parse(refresh_url)?,
-                                oauth
-                                    .revoke_url
+                                iteron_mcp::http::McpHttpEndpoint::parse(
+                                    &credential.token_endpoint,
+                                )?,
+                                credential
+                                    .revocation_endpoint
                                     .as_deref()
                                     .map(iteron_mcp::http::McpHttpEndpoint::parse)
                                     .transpose()?,
-                                refresh_token,
-                                oauth.client_id.clone(),
-                                client_secret,
+                                refresh_token.clone(),
+                                Some(credential.client_id.clone()),
+                                None,
                             )
                         })
-                })
-                .transpose()?;
-            iteron_mcp::McpRemoteClient::connect_with_policies(
+                    })
+                    .transpose()?
+            };
+            let client = iteron_mcp::McpRemoteClient::connect_auto_with_policies(
                 endpoint,
                 server.name.clone(),
                 credential,
@@ -510,8 +572,8 @@ async fn connect_configured_server_with_policies(
                 deadlines.http(),
                 result_policy,
             )
-            .await
-            .map(|client| ConfiguredMcpClient::Http(Arc::new(client)))
+            .await?;
+            Ok(ConfiguredMcpClient::Http(Arc::new(client)))
         }
     }
 }
@@ -611,8 +673,10 @@ mod tests {
     use serde_json::json;
 
     const HANDSHAKE: &str = concat!(
+        "IFS= read -r discover; ",
+        "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32601,\"message\":\"Method not found\"}}'; ",
         "IFS= read -r initialize; ",
-        "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\"}}'; ",
+        "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"protocolVersion\":\"2024-11-05\"}}'; ",
         "IFS= read -r initialized; ",
         "IFS= read -r list; "
     );
@@ -631,7 +695,7 @@ mod tests {
         filter: serde_json::Value,
         policy: serde_json::Value,
     ) -> serde_json::Value {
-        let response = json!({"jsonrpc":"2.0","id":2,"result":{"tools":tools}}).to_string();
+        let response = json!({"jsonrpc":"2.0","id":3,"result":{"tools":tools}}).to_string();
         let script = format!("{HANDSHAKE}printf '%s\\n' \"$1\"; exec sleep 60");
         json!({
             "name": name,
@@ -688,13 +752,15 @@ mod tests {
     #[tokio::test]
     async fn declared_resources_and_prompts_are_real_namespaced_model_tools() {
         let script = concat!(
+            "IFS= read -r discover; ",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32601,\"message\":\"Method not found\"}}'; ",
             "IFS= read -r initialize; ",
-            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{\"tools\":{},\"resources\":{},\"prompts\":{}}}}'; ",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{\"tools\":{},\"resources\":{},\"prompts\":{}}}}'; ",
             "IFS= read -r initialized; ",
             "IFS= read -r list; ",
-            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[]}}'; ",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"tools\":[]}}'; ",
             "IFS= read -r resource; ",
-            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"resources\":[{\"uri\":\"plantcore://guide\",\"name\":\"Guide\"}]}}'; ",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":4,\"result\":{\"resources\":[{\"uri\":\"plantcore://guide\",\"name\":\"Guide\"}]}}'; ",
             "exec sleep 60"
         );
         let document = json!({

@@ -8,7 +8,7 @@
 use super::{
     McpEffectCertainty, McpHttpDisposition, McpHttpEndpoint, McpHttpExchange, McpHttpHeaderPolicy,
     McpHttpResponse, McpSessionId, classify, effect_certainty,
-    port::{McpHeaderValue, build_post_with_version},
+    port::{McpHeaderValue, build_post_with_routing},
     sse::{SseInbound, SseLimits, read_json_response, read_matching_sse_response_with},
 };
 use crate::{
@@ -62,7 +62,7 @@ impl<E: McpHttpExchange> McpHttpWire<E> {
             extra_headers: Vec::new(),
             limits: SseLimits::default(),
             protocol_version: RwLock::new(
-                crate::protocol_version::REQUESTED_PROTOCOL_VERSION.to_owned(),
+                crate::protocol_version::STATEFUL_REQUESTED_PROTOCOL_VERSION.to_owned(),
             ),
             elicitation: None,
             next_id: AtomicU64::new(1),
@@ -147,6 +147,10 @@ impl<E: McpHttpExchange> McpHttpWire<E> {
         self.session.lock().await.clone()
     }
 
+    pub(crate) async fn clear_session(&self) {
+        *self.session.lock().await = None;
+    }
+
     /// Send one request and report both the result and whether a failure may already have taken
     /// effect on the server.
     ///
@@ -159,12 +163,21 @@ impl<E: McpHttpExchange> McpHttpWire<E> {
         params: Value,
     ) -> (Result<Value, McpError>, McpEffectCertainty) {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let routed_name = match method {
+            "tools/call" | "prompts/get" => params.get("name"),
+            "resources/read" => params.get("uri"),
+            _ => None,
+        };
+        let routed_name = routed_name.and_then(Value::as_str).map(str::to_owned);
         let frame = match request(id, method, params) {
             Ok(frame) => frame,
             // Nothing was dispatched: serialization failed before any byte could leave.
             Err(error) => return (Err(error), McpEffectCertainty::Definite),
         };
-        let (head, body) = match self.dispatch(frame).await {
+        let (head, body) = match self
+            .dispatch(frame, Some(method), routed_name.as_deref())
+            .await
+        {
             Ok(response) => (response.head, response.body),
             Err(error) => {
                 let certainty = certainty_of(&error);
@@ -172,11 +185,12 @@ impl<E: McpHttpExchange> McpHttpWire<E> {
             }
         };
         let status = head.status;
+        let modern = self.is_modern().await;
         let disposition = classify(
             status,
-            head.session_id.is_some() || self.has_session().await,
+            !modern && (head.session_id.is_some() || self.has_session().await),
         );
-        if let Some(session_id) = head.session_id {
+        if !modern && let Some(session_id) = head.session_id {
             *self.session.lock().await = Some(session_id);
         }
         if let Some(error) = disposition.into_error(status) {
@@ -206,18 +220,29 @@ impl<E: McpHttpExchange> McpHttpWire<E> {
         self.session.lock().await.is_some()
     }
 
-    async fn dispatch(&self, frame: String) -> Result<McpHttpResponse, McpError> {
+    async fn is_modern(&self) -> bool {
+        self.protocol_version.read().await.as_str() == crate::MODERN_PROTOCOL_VERSION
+    }
+
+    async fn dispatch(
+        &self,
+        frame: String,
+        method: Option<&str>,
+        name: Option<&str>,
+    ) -> Result<McpHttpResponse, McpError> {
         let credential = self.credential.lock().await;
         let session = self.session.lock().await.clone();
         let protocol_version = self.protocol_version.read().await.clone();
-        let http_request = build_post_with_version(
+        let modern = protocol_version == crate::MODERN_PROTOCOL_VERSION;
+        let http_request = build_post_with_routing(
             &self.endpoint,
             credential.as_ref(),
             (self.now_secs)(),
-            session.as_ref(),
+            if modern { None } else { session.as_ref() },
             &self.extra_headers,
             &self.header_policy,
             (&protocol_version, frame),
+            modern.then_some((method.unwrap_or("unknown"), name)),
         )?;
         drop(credential);
         self.exchange.exchange(http_request).await
@@ -301,12 +326,16 @@ impl<E: McpHttpExchange> McpHttpWire<E> {
 
     async fn send_server_response(&self, response: Value) -> Result<(), McpError> {
         let frame = crate::encode_frame(&response)?;
-        let response = self.dispatch(frame).await?;
+        let response = self.dispatch(frame, None, None).await?;
         let status = response.head.status;
-        if let Some(session_id) = response.head.session_id {
+        if !self.is_modern().await
+            && let Some(session_id) = response.head.session_id
+        {
             *self.session.lock().await = Some(session_id);
         }
-        match classify(status, self.has_session().await).into_error(status) {
+        match classify(status, !self.is_modern().await && self.has_session().await)
+            .into_error(status)
+        {
             Some(error) => Err(error),
             None => Ok(()),
         }
@@ -347,10 +376,11 @@ impl<E: McpHttpExchange> McpWire for McpHttpWire<E> {
                 "method": method,
                 "params": params,
             }))?;
-            let response = self.dispatch(frame).await?;
+            let response = self.dispatch(frame, Some(method), None).await?;
             let status = response.head.status;
-            let disposition = classify(status, response.head.session_id.is_some());
-            if let Some(session_id) = response.head.session_id {
+            let modern = self.is_modern().await;
+            let disposition = classify(status, !modern && response.head.session_id.is_some());
+            if !modern && let Some(session_id) = response.head.session_id {
                 *self.session.lock().await = Some(session_id);
             }
             match disposition.into_error(status) {
@@ -455,6 +485,19 @@ mod tests {
             exchange.header_names(0),
             ["accept", "content-type", "mcp-protocol-version"]
         );
+    }
+
+    #[tokio::test]
+    async fn json_rpc_integer_ids_remain_exact_above_javascript_safe_integer_range() {
+        const HIGH_ID: u64 = 9_007_199_254_740_993;
+        let exchange = ScriptedExchange::new(vec![(
+            head(200, Some("application/json")),
+            format!("{{\"jsonrpc\":\"2.0\",\"id\":{HIGH_ID},\"result\":{{\"tools\":[]}}}}"),
+        )]);
+        let wire = http_wire(exchange.clone());
+        wire.next_id.store(HIGH_ID, Ordering::SeqCst);
+        wire.send_request("tools/list", json!({})).await.unwrap();
+        assert!(exchange.body(0).contains(&format!("\"id\":{HIGH_ID}")));
     }
 
     #[tokio::test]
@@ -565,6 +608,27 @@ mod tests {
         wire.send_request("tools/list", json!({})).await.unwrap();
         assert!(exchange.header_names(1).contains(&"mcp-session-id".into()));
         assert!(!exchange.header_names(0).contains(&"mcp-session-id".into()));
+    }
+
+    #[tokio::test]
+    async fn stateless_2026_sends_route_headers_and_ignores_session_ids() {
+        let mut issued = head(200, Some("application/json"));
+        issued.session_id = Some(McpSessionId::parse("ignored").unwrap());
+        let exchange = ScriptedExchange::new(vec![(
+            issued,
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}".into(),
+        )]);
+        let wire = http_wire(exchange.clone());
+        wire.set_protocol_version(crate::MODERN_PROTOCOL_VERSION)
+            .await;
+        wire.send_request("tools/call", json!({"name": "echo"}))
+            .await
+            .unwrap();
+        let names = exchange.header_names(0);
+        assert!(names.contains(&"mcp-method".into()));
+        assert!(names.contains(&"mcp-name".into()));
+        assert!(!names.contains(&"mcp-session-id".into()));
+        assert_eq!(wire.session().await, None);
     }
 
     #[tokio::test]

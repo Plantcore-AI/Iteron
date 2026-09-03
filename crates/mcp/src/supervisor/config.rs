@@ -13,6 +13,7 @@ pub const MAX_MCP_LAUNCH_ARGS: usize = 128;
 pub const MAX_MCP_LAUNCH_ARG_BYTES: usize = 16 * 1024;
 pub const MAX_MCP_LAUNCH_BYTES: usize = 64 * 1024;
 pub const MAX_MCP_SENSITIVE_ENV_NAMES: usize = 256;
+pub const MAX_MCP_GRANTED_ENV_NAMES: usize = 64;
 pub const MAX_MCP_ENV_NAME_BYTES: usize = 256;
 pub const MAX_MCP_DEADLINE_MS: u64 = crate::MAX_MCP_DEADLINE_MILLISECONDS;
 pub const DEFAULT_MCP_OPERATION_DEADLINE_MS: u64 = 120_000;
@@ -35,6 +36,8 @@ pub struct McpLaunchConfig {
     args: Vec<String>,
     server_name: String,
     sensitive_env_names: Vec<String>,
+    granted_env_names: Vec<String>,
+    protocol_mode: crate::McpProtocolMode,
     binding: Arc<[u8]>,
 }
 
@@ -119,6 +122,8 @@ impl McpLaunchConfig {
             args,
             server_name,
             sensitive_env_names: Vec::new(),
+            granted_env_names: Vec::new(),
+            protocol_mode: crate::McpProtocolMode::Stateful,
             binding: Arc::from([]),
         };
         config.binding = config.compute_binding();
@@ -169,6 +174,41 @@ impl McpLaunchConfig {
         Ok(self)
     }
 
+    /// Inherit only these operator-authorized environment names into the MCP child.
+    pub fn with_granted_env_names(mut self, names: Vec<String>) -> Result<Self, McpError> {
+        if names.len() > MAX_MCP_GRANTED_ENV_NAMES {
+            return Err(McpError::InvalidLaunchConfiguration {
+                field: "granted_env_names",
+                limit: MAX_MCP_GRANTED_ENV_NAMES,
+            });
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for name in &names {
+            if name.is_empty()
+                || name.len() > 128
+                || !name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
+                || !seen.insert(name.as_str())
+            {
+                return Err(McpError::InvalidLaunchConfiguration {
+                    field: "granted_env_name",
+                    limit: 128,
+                });
+            }
+        }
+        self.granted_env_names = names;
+        self.binding = self.compute_binding();
+        Ok(self)
+    }
+
+    /// Prefer 2026 discovery for this launch while retaining the supervisor's legacy API default.
+    pub fn with_auto_protocol(mut self) -> Self {
+        self.protocol_mode = crate::McpProtocolMode::Auto;
+        self.binding = self.compute_binding();
+        self
+    }
+
     pub fn server_name(&self) -> &str {
         &self.server_name
     }
@@ -185,6 +225,14 @@ impl McpLaunchConfig {
         &self.sensitive_env_names
     }
 
+    pub(super) fn granted_env_names(&self) -> &[String] {
+        &self.granted_env_names
+    }
+
+    pub(super) fn protocol_mode(&self) -> crate::McpProtocolMode {
+        self.protocol_mode
+    }
+
     pub(super) fn binding(&self) -> Arc<[u8]> {
         self.binding.clone()
     }
@@ -195,6 +243,15 @@ impl McpLaunchConfig {
         append_field(&mut binding, self.command.as_bytes());
         append_fields(&mut binding, &self.args);
         append_fields(&mut binding, &self.sensitive_env_names);
+        append_fields(&mut binding, &self.granted_env_names);
+        append_field(
+            &mut binding,
+            match self.protocol_mode {
+                crate::McpProtocolMode::Auto => b"auto",
+                crate::McpProtocolMode::Stateful => b"stateful",
+                crate::McpProtocolMode::Stateless2026 => b"stateless-2026",
+            },
+        );
         binding.into()
     }
 }
@@ -411,8 +468,18 @@ mod tests {
             McpLaunchConfig::new("/bin/server".into(), vec!["a".into()], "files".into()).unwrap();
         let changed =
             McpLaunchConfig::new("/bin/server".into(), vec!["b".into()], "files".into()).unwrap();
+        let granted = McpLaunchConfig::new("/bin/server".into(), vec!["a".into()], "files".into())
+            .unwrap()
+            .with_granted_env_names(vec!["MCP_TOKEN".into()])
+            .unwrap();
+        let automatic =
+            McpLaunchConfig::new("/bin/server".into(), vec!["a".into()], "files".into())
+                .unwrap()
+                .with_auto_protocol();
         assert_eq!(first.binding(), same.binding());
         assert_ne!(first.binding(), changed.binding());
+        assert_ne!(first.binding(), granted.binding());
+        assert_ne!(first.binding(), automatic.binding());
     }
 
     #[test]

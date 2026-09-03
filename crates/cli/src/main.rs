@@ -219,6 +219,11 @@ enum LocalCommand {
         #[command(subcommand)]
         action: plugin::Action,
     },
+    /// Configure, authenticate, test, and diagnose MCP servers.
+    Mcp {
+        #[command(subcommand)]
+        action: mcp::commands::Action,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
@@ -1466,6 +1471,7 @@ async fn run_cli() -> anyhow::Result<u8> {
                 .ok_or_else(|| anyhow::anyhow!("cannot resolve the operator config root"))?;
             return plugin::run(action, &iteron_protocol::home::path(&home, "plugins"));
         }
+        Some(LocalCommand::Mcp { action }) => return mcp::commands::run(action).await,
         _ => {}
     }
 
@@ -3371,6 +3377,7 @@ async fn run_cli() -> anyhow::Result<u8> {
         lifecycle_otel: _,
         hook_health: _,
         activity: _,
+        mcp_input: _,
         control,
     } = handle;
 
@@ -3433,6 +3440,7 @@ async fn run_cli() -> anyhow::Result<u8> {
             // Live activity is already projected by interactive/headless frontends. The frozen
             // one-shot stream-json schema has no activity record, so never forge one here.
             app_server::ServerEvent::Activity(_) => continue,
+            app_server::ServerEvent::McpInputRequested(_) => continue,
             app_server::ServerEvent::RunEnded {
                 snapshot, summary, ..
             } => break (*summary, snapshot.ledger_summary),
@@ -3467,6 +3475,7 @@ async fn run_cli() -> anyhow::Result<u8> {
             )),
             app_server::ServerEvent::Submission { .. } => continue,
             app_server::ServerEvent::Activity(_) => continue,
+            app_server::ServerEvent::McpInputRequested(_) => continue,
             app_server::ServerEvent::RunEnded { .. } => continue,
             // Same as the drain above: no `stream-json` record type exists for it yet.
             app_server::ServerEvent::WorkflowRun(_) => continue,

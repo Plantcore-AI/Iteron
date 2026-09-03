@@ -40,6 +40,7 @@ pub(crate) struct McpRuntimeControl {
     servers: Arc<BTreeMap<String, Arc<ManagedServer>>>,
     policy: Arc<OnceLock<EffectiveMcpSettings>>,
     exposure: Arc<OnceLock<McpCapabilityExposure>>,
+    mrtr_handler: Arc<OnceLock<Arc<dyn iteron_mcp::McpMrtrHandler>>>,
     configuration_lock: Arc<Mutex<()>>,
 }
 
@@ -52,6 +53,7 @@ impl McpRuntimeControl {
         let mut managed = BTreeMap::new();
         let policy = Arc::new(OnceLock::new());
         let exposure = Arc::new(OnceLock::new());
+        let mrtr_handler = Arc::new(OnceLock::new());
         for config in servers {
             config
                 .origin
@@ -67,15 +69,32 @@ impl McpRuntimeControl {
                     sensitive_env_names.to_vec(),
                 )?),
             });
-            register_server_tools(registry, server.clone(), exposure.clone())?;
+            register_server_tools(
+                registry,
+                server.clone(),
+                exposure.clone(),
+                mrtr_handler.clone(),
+            )?;
             managed.insert(config.name.clone(), server);
         }
         Ok(Self {
             servers: Arc::new(managed),
             policy,
             exposure,
+            mrtr_handler,
             configuration_lock: Arc::new(Mutex::new(())),
         })
+    }
+
+    /// Bind the one interactive frontend for this session. One-shot/headless hosts deliberately
+    /// leave the slot empty, so a 2026 input request fails closed instead of reading model prose.
+    pub(crate) fn install_mrtr_handler(
+        &self,
+        handler: Arc<dyn iteron_mcp::McpMrtrHandler>,
+    ) -> Result<(), &'static str> {
+        self.mrtr_handler
+            .set(handler)
+            .map_err(|_| "MCP MRTR handler is already installed for this session")
     }
 
     /// Pure staged-adoption preflight. This verifies the exact live server/configuration owner
@@ -398,14 +417,23 @@ impl ManagedServer {
         &self,
         name: &str,
         arguments: Value,
+        mrtr_handler: Option<Arc<dyn iteron_mcp::McpMrtrHandler>>,
         on_dispatch: F,
     ) -> iteron_mcp::McpToolOutcome
     where
         F: FnOnce() + Send + 'static,
     {
         match self {
-            Self::Stdio(server) => server.call(name, arguments, on_dispatch).await,
-            Self::Http(server) => server.call(name, arguments, on_dispatch).await,
+            Self::Stdio(server) => {
+                server
+                    .call(name, arguments, mrtr_handler, on_dispatch)
+                    .await
+            }
+            Self::Http(server) => {
+                server
+                    .call(name, arguments, mrtr_handler, on_dispatch)
+                    .await
+            }
         }
     }
 
@@ -509,7 +537,9 @@ impl ManagedStdioServer {
             self.config.args.clone(),
             self.config.name.clone(),
         )?
-        .with_sensitive_env_names(self.sensitive_env_names.clone())?;
+        .with_sensitive_env_names(self.sensitive_env_names.clone())?
+        .with_granted_env_names(self.config.env_names.clone())?
+        .with_auto_protocol();
         let deadlines = runtime.deadlines.stdio();
         let timeouts = McpTimeouts::new(
             deadlines.startup(),
@@ -566,6 +596,7 @@ impl ManagedStdioServer {
         &self,
         name: &str,
         arguments: Value,
+        mrtr_handler: Option<Arc<dyn iteron_mcp::McpMrtrHandler>>,
         on_dispatch: F,
     ) -> iteron_mcp::McpToolOutcome
     where
@@ -588,7 +619,13 @@ impl ManagedStdioServer {
             return definite_mcp_error(iteron_mcp::McpError::StaleToolIdentity);
         };
         supervisor
-            .call_tool_observed(&identity, arguments, &cancellation, on_dispatch)
+            .call_tool_with_handler_observed(
+                &identity,
+                arguments,
+                &cancellation,
+                mrtr_handler,
+                on_dispatch,
+            )
             .await
     }
 
@@ -977,6 +1014,7 @@ impl ManagedHttpServer {
         &self,
         name: &str,
         arguments: Value,
+        mrtr_handler: Option<Arc<dyn iteron_mcp::McpMrtrHandler>>,
         on_dispatch: F,
     ) -> iteron_mcp::McpToolOutcome
     where
@@ -1019,10 +1057,23 @@ impl ManagedHttpServer {
         };
         let dispatched = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let observed = dispatched.clone();
-        let call = client.call_tool_outcome_observed(&bare, arguments, move || {
+        let dispatch = move || {
             observed.store(true, Ordering::Release);
             on_dispatch();
-        });
+        };
+        let call = async {
+            if client.protocol_mode().is_stateless()
+                && let Some(handler) = mrtr_handler.as_deref()
+            {
+                client
+                    .call_tool_with_mrtr_outcome_observed(&bare, arguments, handler, dispatch)
+                    .await
+            } else {
+                client
+                    .call_tool_outcome_observed(&bare, arguments, dispatch)
+                    .await
+            }
+        };
         let outcome = tokio::select! {
             biased;
             _ = cancellation.cancelled() => cancellation_outcome(&self.config.name, &bare, dispatched.load(Ordering::Acquire)),
@@ -1389,6 +1440,7 @@ fn register_server_tools(
     registry: &mut Registry,
     server: Arc<ManagedServer>,
     exposure: Arc<OnceLock<McpCapabilityExposure>>,
+    mrtr_handler: Arc<OnceLock<Arc<dyn iteron_mcp::McpMrtrHandler>>>,
 ) -> Result<(), iteron_tools::ToolError> {
     let name = server.name().to_owned();
     let search_name = format!("{name}__tool_search");
@@ -1451,6 +1503,7 @@ fn register_server_tools(
 
     let call_server = server.clone();
     let call_exposure = exposure.clone();
+    let call_mrtr_handler = mrtr_handler;
     registry.register_mcp_effect(
         ToolSpec {
             name: format!("{name}__tool_call"),
@@ -1472,6 +1525,7 @@ fn register_server_tools(
         move |call, _root, dispatch_clock| {
             let server = call_server.clone();
             let exposure = call_exposure.clone();
+            let mrtr_handler = call_mrtr_handler.clone();
             iteron_tools::effectfut::box_it(async move {
                 if !server_identity_admitted(&exposure, &server) {
                     return definite_result(
@@ -1488,7 +1542,9 @@ fn register_server_tools(
                     .cloned()
                     .unwrap_or_else(|| json!({}));
                 let outcome = server
-                    .call(tool, arguments, move || dispatch_clock.mark_dispatched())
+                    .call(tool, arguments, mrtr_handler.get().cloned(), move || {
+                        dispatch_clock.mark_dispatched()
+                    })
                     .await;
                 mcp_tool_execution(call.id, outcome)
             })

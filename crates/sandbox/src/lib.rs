@@ -1096,8 +1096,8 @@ pub(crate) fn apply_confinement_environment(cmd: &mut tokio::process::Command, c
 
 /// Default-deny environment for trusted-config helper processes (MCP servers and hooks). These
 /// helpers may need the operator's executable/toolchain paths, locale, and HOME-based package
-/// caches, but receive no ambient application/provider credentials. A future broker can add an
-/// explicit per-helper secret grant; inheriting every variable is never that grant.
+/// caches, but receive no ambient application/provider credentials. Callers may add an explicit
+/// per-helper grant after this reset; inheriting every variable is never that grant.
 pub fn clear_to_safe_child_env(cmd: &mut tokio::process::Command) {
     clear_to_safe_child_env_with_exact(cmd, &[]);
 }

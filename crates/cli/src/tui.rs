@@ -35,6 +35,7 @@ mod jobs;
 mod keyboard_enhancement;
 mod live_markdown;
 mod mcp_command;
+mod mcp_input;
 mod mouse_capture;
 mod notification;
 mod picker_catalog;
@@ -158,6 +159,7 @@ pub(crate) struct Session {
     client: app_server::AppServerClient,
     /// The control plane. See `app_server::Control` for why these are not `Op`s.
     control: tokio::sync::mpsc::Sender<app_server::ControlRequest>,
+    mcp_input: tokio::sync::mpsc::Sender<app_server::McpInputResponse>,
     /// Shared bounded content-free lifecycle flight recorder.
     lifecycle: iteron_obs::lifecycle::LifecycleBus,
     lifecycle_otel: Option<iteron_obs::otel::lifecycle::LifecycleTelemetryRuntime>,
@@ -173,6 +175,7 @@ impl Session {
     fn new(
         handle_client: app_server::AppServerClient,
         control: tokio::sync::mpsc::Sender<app_server::ControlRequest>,
+        mcp_input: tokio::sync::mpsc::Sender<app_server::McpInputResponse>,
         lifecycle: iteron_obs::lifecycle::LifecycleBus,
         lifecycle_otel: Option<iteron_obs::otel::lifecycle::LifecycleTelemetryRuntime>,
         state: app_server::SessionSnapshot,
@@ -181,11 +184,25 @@ impl Session {
         Self {
             client: handle_client,
             control,
+            mcp_input,
             lifecycle,
             lifecycle_otel,
             state,
             facts,
         }
+    }
+
+    fn answer_mcp_input(&self, response: app_server::McpInputResponse) -> Result<(), String> {
+        self.mcp_input
+            .try_send(response)
+            .map_err(|error| match error {
+                tokio::sync::mpsc::error::TrySendError::Full(_) => {
+                    "MCP input response channel is busy; the form was preserved".into()
+                }
+                tokio::sync::mpsc::error::TrySendError::Closed(_) => {
+                    "MCP input response channel is closed".into()
+                }
+            })
     }
 
     // Accessors mirroring the shapes the frontend used to read straight off the `Agent`. Keeping
@@ -319,6 +336,7 @@ impl Session {
         submissions: tokio::sync::mpsc::Sender<iteron_protocol::SqEnvelope>,
     ) -> Self {
         let (control, _control_rx) = tokio::sync::mpsc::channel(1);
+        let (mcp_input, _mcp_input_rx) = tokio::sync::mpsc::channel(1);
         Self {
             client: app_server::AppServerClient::connect(
                 iteron_protocol::PROTOCOL_VERSION,
@@ -326,6 +344,7 @@ impl Session {
             )
             .expect("the in-process server speaks the current protocol"),
             control,
+            mcp_input,
             lifecycle: iteron_obs::lifecycle::LifecycleBus::default(),
             lifecycle_otel: None,
             state: app_server::SessionSnapshot {
@@ -1240,6 +1259,8 @@ struct App {
     /// with two binary searches instead of being walked for every spinner tick.
     transcript_layout: transcript_layout::HeightIndex,
     editor: Editor,
+    pending_mcp_input: Option<mcp_input::PendingMcpInput>,
+    queued_mcp_inputs: VecDeque<app_server::McpInputPrompt>,
     status: String,
     /// The canonical current-version result object from the most recently terminalized run.
     ///
@@ -1665,6 +1686,7 @@ pub async fn run(
     let mut session = Session::new(
         handle.client,
         handle.control,
+        handle.mcp_input,
         handle.lifecycle,
         handle.lifecycle_otel,
         initial_state,
@@ -2411,6 +2433,9 @@ pub async fn run(
                             ),
                     );
                 }
+                CEvent::Paste(pasted) if app.pending_mcp_input.is_some() => {
+                    mcp_input::handle_paste(&mut app, &pasted);
+                }
                 CEvent::Paste(pasted) if app.transcript_viewer.is_open() => {
                     app.transcript_viewer.handle_paste(
                         &pasted,
@@ -2486,6 +2511,25 @@ pub async fn run(
                                 format!("could not change terminal mouse capture: {error}"),
                             ),
                         }
+                        continue;
+                    }
+
+                    if app.pending_mcp_input.is_some() {
+                        if app.transcript_viewer.is_open() {
+                            app.transcript_viewer.close();
+                        }
+                        if app.workflows_panel.is_open() {
+                            app.workflows_panel.close();
+                        }
+                        mcp_input::handle_key(
+                            &mut app,
+                            &session,
+                            k.code,
+                            k.modifiers,
+                            &interrupt,
+                            &drain,
+                            drain_available,
+                        );
                         continue;
                     }
 
@@ -4650,6 +4694,9 @@ fn render_composer(f: &mut Frame, area: Rect, app: &mut App) {
     if area.width == 0 || area.height == 0 {
         return;
     }
+    if mcp_input::render(f, area, app) {
+        return;
+    }
     if area.height == 1
         && let Some(pending) = &app.pending
     {
@@ -5019,7 +5066,13 @@ fn render_hint(f: &mut Frame, area: Rect, density: surface::Density, app: &App) 
         return;
     }
     let text = app.editor.text();
-    let left = if app.pending.is_some() {
+    let left = if app.pending_mcp_input.is_some() {
+        if density == surface::Density::Compact {
+            "enter answer · esc decline"
+        } else {
+            "enter sends JSON · ctrl+j newline · esc declines · ctrl-c declines and interrupts"
+        }
+    } else if app.pending.is_some() {
         let rememberable = app
             .pending
             .as_ref()
@@ -5199,7 +5252,7 @@ fn draw(f: &mut Frame, app: &mut App) {
     // the first frame — is a pure projection and never scans sidecars.
     // A newly arrived capability decision outranks optional inspection chrome. The viewer cannot
     // hide a fail-closed approval surface while the runtime is blocked on it.
-    if app.pending.is_some() {
+    if app.pending.is_some() || app.pending_mcp_input.is_some() {
         if app.transcript_viewer.is_open() {
             app.transcript_viewer.close();
         }
@@ -5225,9 +5278,14 @@ fn draw(f: &mut Frame, app: &mut App) {
     }
     // The dock grows for multiline input, bounded to six editable rows. A blocking approval asks
     // for the full six-row decision surface; short terminals degrade through Surface::resolve.
-    let n_input_rows = (app.editor.text().split('\n').count().clamp(1, 6) as u16)
-        .saturating_add(u16::try_from(app.editor.chip_count()).unwrap_or(u16::MAX));
-    let lane_rows = if app.pending.is_some() {
+    let n_input_rows = if app.pending_mcp_input.is_some() {
+        6
+    } else {
+        (app.editor.text().split('\n').count().clamp(1, 6) as u16)
+            .saturating_add(u16::try_from(app.editor.chip_count()).unwrap_or(u16::MAX))
+    };
+    let blocking_input = app.pending.is_some() || app.pending_mcp_input.is_some();
+    let lane_rows = if blocking_input {
         0
     } else {
         u16::from(!app.steer_previews.is_empty()) + u16::from(!app.queued.is_empty())
@@ -5263,15 +5321,11 @@ fn draw(f: &mut Frame, app: &mut App) {
     } else {
         surface::Surface::resolve(
             f.area(),
-            if app.pending.is_some() {
-                6
-            } else {
-                n_input_rows
-            },
+            if blocking_input { 6 } else { n_input_rows },
             lane_rows,
             requested_workflow_rows,
             show_status,
-            app.pending.is_some(),
+            blocking_input,
         )
     };
 

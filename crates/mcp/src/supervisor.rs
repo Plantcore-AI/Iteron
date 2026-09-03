@@ -194,6 +194,23 @@ impl McpSupervisor {
     where
         F: FnOnce() + Send + 'static,
     {
+        self.call_tool_with_handler_observed(identity, arguments, cancellation, None, on_dispatch)
+            .await
+    }
+
+    /// Product call path. A handler is used only after negotiation selected the 2026 stateless
+    /// protocol; stateful versions retain the ordinary single-round tools/call behavior.
+    pub async fn call_tool_with_handler_observed<F>(
+        &mut self,
+        identity: &McpToolIdentity,
+        arguments: Value,
+        cancellation: &McpCancellation,
+        mrtr_handler: Option<std::sync::Arc<dyn crate::McpMrtrHandler>>,
+        on_dispatch: F,
+    ) -> McpToolOutcome
+    where
+        F: FnOnce() + Send + 'static,
+    {
         if cancellation.is_cancelled() {
             return McpToolOutcome::FailedDefinite {
                 error: McpError::Cancelled {
@@ -262,13 +279,28 @@ impl McpSupervisor {
             OperationTimedOut,
         }
         let result = {
-            let call = client.call_tool_outcome_observed(&bare_name, arguments, move || {
+            let dispatch = move || {
                 *observed
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) =
                     Some(std::time::Instant::now());
                 on_dispatch();
-            });
+            };
+            let call = async {
+                if client.protocol_mode().is_stateless()
+                    && let Some(handler) = mrtr_handler.as_deref()
+                {
+                    client
+                        .call_tool_with_mrtr_outcome_observed(
+                            &bare_name, arguments, handler, dispatch,
+                        )
+                        .await
+                } else {
+                    client
+                        .call_tool_outcome_observed(&bare_name, arguments, dispatch)
+                        .await
+                }
+            };
             tokio::pin!(call);
             tokio::select! {
                 biased;

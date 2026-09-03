@@ -25,6 +25,8 @@ pub const RESERVED_HEADER_NAMES: &[&str] = &[
     "authorization",
     "mcp-session-id",
     "mcp-protocol-version",
+    "mcp-method",
+    "mcp-name",
     "content-type",
     "accept",
     "content-length",

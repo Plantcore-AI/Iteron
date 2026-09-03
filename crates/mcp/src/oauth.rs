@@ -205,6 +205,7 @@ impl OAuthClient {
                 "OAuth refresh returned a non-bearer token".into(),
             ));
         }
+        validate_refresh_scope(response.scope.as_deref())?;
         validate_secret(&response.access_token)?;
         if let Some(rotated) = response.refresh_token {
             validate_secret(&rotated)?;
@@ -257,6 +258,29 @@ struct RefreshResponse {
     refresh_token: Option<String>,
     #[serde(default)]
     token_type: Option<String>,
+    #[serde(default)]
+    scope: Option<String>,
+}
+
+fn validate_refresh_scope(scope: Option<&str>) -> Result<(), McpError> {
+    let Some(scope) = scope else {
+        return Ok(());
+    };
+    if scope.is_empty()
+        || scope.len() > MAX_OAUTH_SECRET_BYTES
+        || scope.chars().any(char::is_control)
+    {
+        return Err(McpError::Protocol("OAuth refresh scope is invalid".into()));
+    }
+    let scopes = scope
+        .split_ascii_whitespace()
+        .collect::<std::collections::BTreeSet<_>>();
+    if scopes.len() != 1 || !scopes.contains("mcp") {
+        return Err(McpError::Protocol(
+            "OAuth refresh scope differs from the MCP grant".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_secret(secret: &str) -> Result<(), McpError> {
@@ -397,5 +421,9 @@ mod tests {
             )
             .is_err()
         );
+        assert!(validate_refresh_scope(None).is_ok());
+        assert!(validate_refresh_scope(Some("mcp")).is_ok());
+        assert!(validate_refresh_scope(Some("mcp admin")).is_err());
+        assert!(validate_refresh_scope(Some("other")).is_err());
     }
 }
