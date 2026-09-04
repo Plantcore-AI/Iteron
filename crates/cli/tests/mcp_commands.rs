@@ -524,6 +524,50 @@ fn auto_registration_falls_back_to_dcr_but_forced_cimd_does_not() {
     std::fs::remove_dir_all(config).unwrap();
 }
 
+#[test]
+fn oauth_scope_step_up_rejects_a_different_resource_before_network_access() {
+    let config = temp_config("scope-step-up-resource");
+    let (mut fixture, resource) = start_oauth_fixture("success");
+    assert_success(&run(
+        &config,
+        &["mcp", "add", "oauth", "--url", &resource],
+        false,
+    ));
+    let mut login = spawn_modern_login(&config, None);
+    let authorization_url = read_authorization_url(&mut login);
+    let (status, location) = http_get(&authorization_url);
+    assert_eq!(status, 302);
+    assert_eq!(http_get(&location.unwrap()).0, 200);
+    assert!(wait_for_login(&mut login).success());
+
+    fixture.kill().unwrap();
+    let _ = fixture.wait();
+    let other_resource = resource.replace("/mcp", "/other-resource");
+    let step_up = run(
+        &config,
+        &[
+            "mcp",
+            "auth",
+            "login",
+            "oauth",
+            "--scopes",
+            "write",
+            "--oauth-resource",
+            &other_resource,
+        ],
+        false,
+    );
+    assert!(!step_up.status.success());
+    assert!(
+        String::from_utf8_lossy(&step_up.stderr)
+            .contains("MCP OAuth scope step-up resource mismatch"),
+        "stderr={}",
+        String::from_utf8_lossy(&step_up.stderr)
+    );
+
+    std::fs::remove_dir_all(config).unwrap();
+}
+
 fn oauth_protocol_roundtrip(protocol_version: &str, modern: bool) {
     oauth_protocol_roundtrip_mode(protocol_version, modern, "success");
 }
@@ -558,6 +602,20 @@ fn oauth_protocol_roundtrip_mode(protocol_version: &str, modern: bool, mode: &st
     );
     assert_success(&tested);
     assert!(stdout(&tested).contains(&format!("\"protocol_version\":\"{protocol_version}\"")));
+    if mode == "refresh-required" {
+        let status = run(
+            &config,
+            &["mcp", "auth", "status", "oauth", "--format", "json"],
+            false,
+        );
+        assert_success(&status);
+        assert!(stdout(&status).contains("\"authentication\":\"authenticated\""));
+        assert_success(&run(
+            &config,
+            &["mcp", "test", "oauth", "--format", "json"],
+            modern,
+        ));
+    }
     assert_success(&run(&config, &["mcp", "auth", "logout", "oauth"], false));
     fixture.kill().unwrap();
     let _ = fixture.wait();

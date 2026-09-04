@@ -43,6 +43,7 @@ class RunnerTests(unittest.TestCase):
                     "status": "pass",
                     "runnerExitCode": 0,
                     "checksFileCount": 1 if transport == "http" else 0,
+                    "adapterCompleted": True,
                     "checks": [check],
                 }
             )
@@ -142,6 +143,25 @@ class RunnerTests(unittest.TestCase):
         success, problems = self.gate(report, baseline, baseline_bytes)
         self.assertFalse(success)
         self.assertIn(f"missing expected failed check {identity}", problems)
+
+    def test_gate_rejects_an_incomplete_http_adapter(self):
+        report, baseline, baseline_bytes = self.complete_report_and_baseline()
+        scenario = next(
+            scenario
+            for scenario in report["scenarios"]
+            if scenario["transport"] == "http"
+        )
+        scenario["adapterCompleted"] = False
+
+        success, problems = self.gate(report, baseline, baseline_bytes)
+
+        self.assertFalse(success)
+        self.assertTrue(
+            any(
+                problem.startswith("required scenario adapter did not complete")
+                for problem in problems
+            )
+        )
 
     def test_gate_rejects_duplicate_and_unreviewed_checks(self):
         report, baseline, baseline_bytes = self.complete_report_and_baseline()

@@ -176,6 +176,16 @@ impl<E: McpHttpExchange> McpHttpWire<E> {
         method: &str,
         params: Value,
     ) -> (Result<Value, McpError>, McpEffectCertainty) {
+        self.call_with_certainty_and_dispatch_observer(method, params, None)
+            .await
+    }
+
+    pub(crate) async fn call_with_certainty_and_dispatch_observer(
+        &self,
+        method: &str,
+        params: Value,
+        dispatch_observer: Option<Box<dyn FnOnce() + Send>>,
+    ) -> (Result<Value, McpError>, McpEffectCertainty) {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let parameter_headers = self.parameter_headers_for_call(method, &params).await;
         let resets_parameter_headers = method == "tools/list" && params.get("cursor").is_none();
@@ -199,6 +209,7 @@ impl<E: McpHttpExchange> McpHttpWire<E> {
             &parameter_headers,
             resets_parameter_headers,
             id,
+            dispatch_observer,
         );
         if method == "tools/call"
             && !self.is_modern().await
@@ -233,9 +244,16 @@ impl<E: McpHttpExchange> McpHttpWire<E> {
         parameter_headers: &[(String, McpHeaderValue)],
         resets_parameter_headers: bool,
         id: u64,
+        dispatch_observer: Option<Box<dyn FnOnce() + Send>>,
     ) -> (Result<Value, McpError>, McpEffectCertainty) {
         let dispatched = self
-            .dispatch(frame, Some(method), routed_name, parameter_headers)
+            .dispatch_with_observer(
+                frame,
+                Some(method),
+                routed_name,
+                parameter_headers,
+                dispatch_observer,
+            )
             .await;
         let (head, body) = match dispatched {
             Ok(response) => (response.head, response.body),
@@ -313,6 +331,18 @@ impl<E: McpHttpExchange> McpHttpWire<E> {
         name: Option<&str>,
         parameter_headers: &[(String, McpHeaderValue)],
     ) -> Result<McpHttpResponse, McpError> {
+        self.dispatch_with_observer(frame, method, name, parameter_headers, None)
+            .await
+    }
+
+    async fn dispatch_with_observer(
+        &self,
+        frame: String,
+        method: Option<&str>,
+        name: Option<&str>,
+        parameter_headers: &[(String, McpHeaderValue)],
+        dispatch_observer: Option<Box<dyn FnOnce() + Send>>,
+    ) -> Result<McpHttpResponse, McpError> {
         let credential = self.credential.lock().await;
         let session = self.session.lock().await.clone();
         let protocol_version = self.protocol_version.read().await.clone();
@@ -329,6 +359,9 @@ impl<E: McpHttpExchange> McpHttpWire<E> {
             parameter_headers,
         )?;
         drop(credential);
+        if let Some(observer) = dispatch_observer {
+            observer();
+        }
         self.exchange.exchange(http_request).await
     }
 

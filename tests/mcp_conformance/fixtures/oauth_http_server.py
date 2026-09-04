@@ -32,6 +32,8 @@ parser.add_argument(
 ARGUMENTS = parser.parse_args()
 MODE = ARGUMENTS.mode
 AUTHORIZATION_ATTEMPTS = 0
+ACTIVE_REFRESH_TOKEN = "local-refresh"
+ACTIVE_ACCESS_TOKEN = "local-access"
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -131,16 +133,19 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/token":
             values = urllib.parse.parse_qs(body.decode())
             if values.get("grant_type") == ["refresh_token"]:
+                global ACTIVE_REFRESH_TOKEN, ACTIVE_ACCESS_TOKEN
                 if MODE != "refresh-required" or values.get("refresh_token") != [
-                    "local-refresh"
+                    ACTIVE_REFRESH_TOKEN
                 ]:
                     self.send_json(400, {"error": "invalid_grant"})
                     return
+                ACTIVE_REFRESH_TOKEN = "local-refresh-rotated"
+                ACTIVE_ACCESS_TOKEN = "local-access-refreshed"
                 self.send_json(
                     200,
                     {
-                        "access_token": "local-access-refreshed",
-                        "refresh_token": "local-refresh",
+                        "access_token": ACTIVE_ACCESS_TOKEN,
+                        "refresh_token": ACTIVE_REFRESH_TOKEN,
                         "expires_in": 3600,
                         "token_type": "Bearer",
                         "scope": "mcp",
@@ -172,7 +177,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/mcp":
             expected_access = (
-                "Bearer local-access-refreshed"
+                f"Bearer {ACTIVE_ACCESS_TOKEN}"
                 if MODE == "refresh-required"
                 else "Bearer local-access"
             )

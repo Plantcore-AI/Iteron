@@ -606,16 +606,26 @@ async fn resources_and_prompts_paginate_and_preserve_server_errors() {
         .await
         .unwrap();
     let resources = client
-        .call_extension("resources/list", json!({}))
-        .await
-        .unwrap();
-    assert_eq!(resources["resources"][0]["name"], "alpha");
-    assert_eq!(resources["resources"][1]["name"], "β");
+        .call_extension_outcome_observed("resources/list", json!({}), || {})
+        .await;
+    let McpToolOutcome::Completed {
+        content: resources, ..
+    } = resources
+    else {
+        panic!("observed resources/list did not complete");
+    };
+    assert!(resources.contains("alpha"));
+    assert!(resources.contains("β"));
     let prompts = client
-        .call_extension("prompts/list", json!({}))
-        .await
-        .unwrap();
-    assert_eq!(prompts["prompts"][0]["name"], "alpha");
+        .call_extension_outcome_observed("prompts/list", json!({}), || {})
+        .await;
+    let McpToolOutcome::Completed {
+        content: prompts, ..
+    } = prompts
+    else {
+        panic!("observed prompts/list did not complete");
+    };
+    assert!(prompts.contains("alpha"));
     let resource = client
         .call_extension("resources/read", json!({"uri":"test://β"}))
         .await
@@ -638,6 +648,75 @@ async fn resources_and_prompts_paginate_and_preserve_server_errors() {
             .await,
         Err(McpError::Server { code: -32042, .. })
     ));
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn a_later_resource_page_transport_loss_remains_unknown() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for index in 0..3 {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let request = read_request(&mut socket).await;
+            let message = request_message(&request);
+            match index {
+                0 => {
+                    send_json(
+                        &mut socket,
+                        200,
+                        None,
+                        result(
+                            &message["id"],
+                            json!({
+                                "resultType":"complete",
+                                "supportedVersions":[MODERN_VERSION],
+                                "capabilities":{"resources":{}}
+                            }),
+                        ),
+                    )
+                    .await;
+                }
+                1 => {
+                    send_json(
+                        &mut socket,
+                        200,
+                        None,
+                        result(
+                            &message["id"],
+                            json!({
+                                "resources":[{"uri":"test://first","name":"first"}],
+                                "nextCursor":"second"
+                            }),
+                        ),
+                    )
+                    .await;
+                }
+                _ => {
+                    assert_eq!(message["params"]["cursor"], "second");
+                    socket
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 200\r\nconnection: close\r\n\r\n{\"jsonrpc\":\"2.0\"",
+                        )
+                        .await
+                        .unwrap();
+                    socket.shutdown().await.unwrap();
+                }
+            }
+        }
+    });
+    let client = connect_auto(&format!("http://{address}/mcp"))
+        .await
+        .unwrap();
+    let dispatches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = dispatches.clone();
+    let outcome = client
+        .call_extension_outcome_observed("resources/list", json!({}), move || {
+            observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        })
+        .await;
+    assert!(matches!(outcome, McpToolOutcome::Unknown { .. }));
+    assert_eq!(dispatches.load(std::sync::atomic::Ordering::SeqCst), 1);
     server.await.unwrap();
 }
 

@@ -17,6 +17,7 @@ const METADATA_LIMIT: usize = 256 * 1024;
 
 pub(crate) struct LoginOptions<'a> {
     pub(crate) resource: Option<&'a str>,
+    pub(crate) expected_issuer: Option<&'a str>,
     pub(crate) scopes: Option<&'a [String]>,
     pub(crate) registration: Option<OAuthClientRegistration>,
     pub(crate) client_id: Option<&'a str>,
@@ -168,6 +169,11 @@ pub(crate) async fn login(
         .ok_or_else(|| anyhow::anyhow!("MCP resource advertises no authorization server"))
         .and_then(|value| Url::parse(value).map_err(Into::into))?;
     validate_endpoint(&issuer_url, "issuer")?;
+    if let Some(expected_issuer) = options.expected_issuer
+        && Url::parse(expected_issuer)? != issuer_url
+    {
+        anyhow::bail!("MCP OAuth scope step-up issuer mismatch");
+    }
     let authorization = discover_authorization(&client, &issuer_url).await?;
     if Url::parse(&authorization.issuer)? != issuer_url {
         anyhow::bail!("MCP authorization metadata issuer mismatch");
@@ -531,6 +537,8 @@ async fn register_client(
             "authorization server requires --client-id and advertises no dynamic registration"
         )
     })?;
+    let endpoint = Url::parse(endpoint)?;
+    validate_endpoint(&endpoint, "registration endpoint")?;
     let requested_method = if metadata
         .token_endpoint_auth_methods_supported
         .iter()
@@ -604,6 +612,19 @@ async fn resolve_client(
         let is_cimd = Url::parse(client_id)
             .ok()
             .is_some_and(|url| url.scheme() == "https");
+        if strategy == OAuthClientRegistration::Auto && client_secret.is_some() {
+            validate_client_id(client_id, false, false)?;
+            let token_auth_method = resolve_token_auth_method(
+                None,
+                true,
+                &metadata.token_endpoint_auth_methods_supported,
+            )?;
+            return Ok(ResolvedClient {
+                client_id: client_id.to_owned(),
+                client_secret,
+                token_auth_method,
+            });
+        }
         let use_cimd = strategy == OAuthClientRegistration::Cimd
             || (strategy == OAuthClientRegistration::Auto
                 && is_cimd
@@ -825,9 +846,8 @@ async fn receive_callback(
     if !peer.ip().is_loopback() {
         anyhow::bail!("MCP OAuth callback was not loopback");
     }
-    let mut bytes = vec![0_u8; CALLBACK_REQUEST_LIMIT];
-    let read = stream.read(&mut bytes).await?;
-    let request = std::str::from_utf8(&bytes[..read])?;
+    let bytes = read_callback_request_line(&mut stream).await?;
+    let request = std::str::from_utf8(&bytes)?;
     let target = request
         .lines()
         .next()
@@ -874,6 +894,28 @@ async fn receive_callback(
     })
 }
 
+async fn read_callback_request_line(
+    stream: &mut (impl tokio::io::AsyncRead + Unpin),
+) -> anyhow::Result<Vec<u8>> {
+    let mut request = Vec::with_capacity(1024);
+    let mut chunk = [0_u8; 1024];
+    loop {
+        let remaining = CALLBACK_REQUEST_LIMIT.saturating_sub(request.len());
+        if remaining == 0 {
+            anyhow::bail!("MCP OAuth callback request line exceeds its byte bound");
+        }
+        let read_limit = remaining.min(chunk.len());
+        let read = stream.read(&mut chunk[..read_limit]).await?;
+        if read == 0 {
+            anyhow::bail!("MCP OAuth callback request ended before its request line");
+        }
+        request.extend_from_slice(&chunk[..read]);
+        if request.contains(&b'\n') {
+            return Ok(request);
+        }
+    }
+}
+
 fn validate_client_id(
     value: &str,
     cimd_advertised: bool,
@@ -882,11 +924,13 @@ fn validate_client_id(
     if value.is_empty() || value.len() > 8192 || value.chars().any(char::is_control) {
         anyhow::bail!("invalid MCP OAuth client id");
     }
-    let cimd = Url::parse(value).ok().filter(|url| url.scheme() == "https");
-    if require_cimd && cimd.is_none() {
-        anyhow::bail!("2026 MCP OAuth client id must be an HTTPS metadata document URL");
-    }
-    if let Some(url) = cimd {
+    if require_cimd {
+        let url = Url::parse(value)
+            .ok()
+            .filter(|url| url.scheme() == "https")
+            .ok_or_else(|| {
+                anyhow::anyhow!("2026 MCP OAuth client id must be an HTTPS metadata document URL")
+            })?;
         validate_endpoint(&url, "client id metadata document")?;
         if !cimd_advertised {
             anyhow::bail!("authorization server does not advertise Client ID Metadata Documents");
@@ -1085,5 +1129,86 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn callback_request_line_accepts_fragmented_tcp_input() {
+        let (mut writer, mut reader) = tokio::io::duplex(64);
+        let write = tokio::spawn(async move {
+            writer.write_all(b"GET /call").await.unwrap();
+            tokio::task::yield_now().await;
+            writer
+                .write_all(b"back?code=ok&state=s HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                .await
+                .unwrap();
+        });
+        let request = read_callback_request_line(&mut reader).await.unwrap();
+        write.await.unwrap();
+        assert!(request.starts_with(b"GET /callback?code=ok&state=s HTTP/1.1\r\n"));
+    }
+
+    #[tokio::test]
+    async fn auto_treats_an_https_client_with_a_secret_as_pre_registered() {
+        let metadata = AuthorizationMetadata {
+            issuer: "https://issuer.example".into(),
+            authorization_endpoint: "https://issuer.example/authorize".into(),
+            token_endpoint: "https://issuer.example/token".into(),
+            registration_endpoint: Some("https://issuer.example/register".into()),
+            revocation_endpoint: None,
+            client_id_metadata_document_supported: true,
+            authorization_response_iss_parameter_supported: false,
+            token_endpoint_auth_methods_supported: vec!["client_secret_basic".into()],
+            scopes_supported: Vec::new(),
+        };
+        let resolved = resolve_client(
+            &reqwest::Client::new(),
+            &metadata,
+            OAuthClientRegistration::Auto,
+            Some("https://client.example/id"),
+            Some("secret".into()),
+            "http://127.0.0.1:1234/callback",
+            &[],
+        )
+        .await
+        .unwrap();
+        assert_eq!(resolved.client_id, "https://client.example/id");
+        assert_eq!(resolved.client_secret.as_deref(), Some("secret"));
+        assert_eq!(
+            resolved.token_auth_method,
+            iteron_mcp::oauth::TokenEndpointAuthMethod::ClientSecretBasic
+        );
+    }
+
+    #[tokio::test]
+    async fn dcr_rejects_unsafe_registration_endpoints_before_dispatch() {
+        for endpoint in [
+            "http://example.com/register",
+            "https://user@example.com/register",
+            "https://example.com/register#fragment",
+        ] {
+            let metadata = AuthorizationMetadata {
+                issuer: "https://issuer.example".into(),
+                authorization_endpoint: "https://issuer.example/authorize".into(),
+                token_endpoint: "https://issuer.example/token".into(),
+                registration_endpoint: Some(endpoint.into()),
+                revocation_endpoint: None,
+                client_id_metadata_document_supported: false,
+                authorization_response_iss_parameter_supported: false,
+                token_endpoint_auth_methods_supported: vec!["none".into()],
+                scopes_supported: Vec::new(),
+            };
+            let error = match register_client(
+                &reqwest::Client::new(),
+                &metadata,
+                "http://127.0.0.1:1234/callback",
+                &[],
+            )
+            .await
+            {
+                Ok(_) => panic!("unsafe registration endpoint must fail before the request"),
+                Err(error) => error,
+            };
+            assert!(error.to_string().contains("registration endpoint"));
+        }
     }
 }

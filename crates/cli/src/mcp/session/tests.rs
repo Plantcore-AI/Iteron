@@ -15,7 +15,7 @@ fn fixture(marker: &Path) -> McpServerConfig {
         "IFS= read -r list; ",
         "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"tools\":[{\"name\":\"echo\",\"description\":\"fixture\",\"inputSchema\":{\"type\":\"object\"}}]}}'; ",
         "IFS= read -r call; ",
-        "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":4,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"pong\"}]}}'; ",
+        "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":4,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"pong\"}],\"resources\":[{\"uri\":\"file:///fixture.txt\",\"name\":\"fixture\"}]}}'; ",
         "exec sleep 60"
     );
     McpServerConfig {

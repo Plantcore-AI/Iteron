@@ -10,7 +10,7 @@ const CREDENTIAL_SCHEMA_VERSION: u32 = 1;
 const MAX_CREDENTIAL_BYTES: u64 = 64 * 1024;
 
 /// Secret-bearing persisted value. Deliberately no `Debug` implementation.
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct StoredCredential {
     schema_version: u32,
@@ -128,6 +128,41 @@ pub(crate) fn save(server: &McpServerConfig, credential: &StoredCredential) -> a
     crate::config::write_private_atomic(&path, &bytes)
 }
 
+struct StoredRefreshPersistence {
+    server: McpServerConfig,
+    credential: std::sync::Mutex<StoredCredential>,
+}
+
+impl iteron_mcp::oauth::OAuthRefreshPersistence for StoredRefreshPersistence {
+    fn persist(
+        &self,
+        update: &iteron_mcp::oauth::OAuthRefreshUpdate,
+    ) -> Result<(), iteron_mcp::McpError> {
+        let mut credential = self.credential.lock().map_err(|_| {
+            iteron_mcp::McpError::Protocol("stored MCP credential lock was poisoned".into())
+        })?;
+        credential.access_token = update.access_token().to_owned();
+        credential.expires_at_unix = update.expires_at_unix();
+        credential.refresh_token = Some(update.refresh_token().to_owned());
+        credential.granted_scopes = update.granted_scopes().to_vec();
+        save(&self.server, &credential).map_err(|_| {
+            iteron_mcp::McpError::Protocol(
+                "failed to persist refreshed MCP credential atomically".into(),
+            )
+        })
+    }
+}
+
+pub(crate) fn refresh_persistence(
+    server: &McpServerConfig,
+    credential: &StoredCredential,
+) -> std::sync::Arc<dyn iteron_mcp::oauth::OAuthRefreshPersistence> {
+    std::sync::Arc::new(StoredRefreshPersistence {
+        server: server.clone(),
+        credential: std::sync::Mutex::new(credential.clone()),
+    })
+}
+
 pub(crate) fn load(server: &McpServerConfig) -> anyhow::Result<Option<StoredCredential>> {
     let Some(path) = credential_path(server) else {
         return Ok(None);
@@ -202,15 +237,45 @@ pub(crate) async fn run_auth(action: &AuthAction) -> anyhow::Result<u8> {
                     "MCP server `{name}` uses an external bearer; remove access_token_env before interactive login"
                 );
             }
+            let step_up_credential = if scopes.is_empty() {
+                None
+            } else {
+                load(server)?
+            };
+            if let (Some(previous), Some(explicit_resource)) =
+                (&step_up_credential, resource.as_deref())
+                && url::Url::parse(explicit_resource)? != url::Url::parse(&previous.resource)?
+            {
+                anyhow::bail!("MCP OAuth scope step-up resource mismatch");
+            }
+            let requested_scopes = if let Some(credential) = &step_up_credential {
+                credential
+                    .granted_scopes
+                    .iter()
+                    .chain(scopes)
+                    .cloned()
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
+                    .collect::<Vec<_>>()
+            } else {
+                scopes.clone()
+            };
+            let bound_resource = step_up_credential
+                .as_ref()
+                .map(|credential| credential.resource.as_str())
+                .or(resource.as_deref());
             mark_pending(server)?;
             let result = super::oauth_login::login(
                 server,
                 super::oauth_login::LoginOptions {
-                    resource: resource.as_deref(),
-                    scopes: if scopes.is_empty() {
+                    resource: bound_resource,
+                    expected_issuer: step_up_credential
+                        .as_ref()
+                        .map(|credential| credential.issuer.as_str()),
+                    scopes: if requested_scopes.is_empty() {
                         None
                     } else {
-                        Some(scopes)
+                        Some(&requested_scopes)
                     },
                     registration: *registration,
                     client_id: client_id.as_deref(),
@@ -224,6 +289,14 @@ pub(crate) async fn run_auth(action: &AuthAction) -> anyhow::Result<u8> {
                     println!("MCP server `{name}` does not require authentication");
                 }
                 super::oauth_login::LoginOutcome::Credential(credential) => {
+                    if let Some(previous) = &step_up_credential
+                        && (credential.resource != previous.resource
+                            || credential.issuer != previous.issuer)
+                    {
+                        anyhow::bail!(
+                            "MCP OAuth scope step-up crossed its bound resource or issuer"
+                        );
+                    }
                     save(server, &credential)?;
                     println!("authenticated MCP server `{name}`");
                 }
@@ -283,7 +356,8 @@ fn auth_login_error(error: anyhow::Error) -> anyhow::Error {
         || message.contains("compatible client authentication")
     {
         "MCP_AUTH_TOKEN_METHOD_UNSUPPORTED"
-    } else if message.contains("scope was rejected")
+    } else if message.contains("scope step-up")
+        || message.contains("scope was rejected")
         || message.contains("scope exceeded")
         || message.contains("invalid scope")
     {

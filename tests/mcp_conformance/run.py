@@ -11,7 +11,7 @@ import tempfile
 from pathlib import Path
 
 PIN = "49103de6ed70804e940637bf3e9e29e4a3f54e64"
-REVIEWED_BASELINE_SHA256 = "a19b50cc8628ea0a6400ea4e58f02dbab3760913f3a593647f0f85ef589b675c"
+REVIEWED_BASELINE_SHA256 = "7f32eaa8858d0090824e3e4fdf7ced871128649df3a79e538731fc9f9734393e"
 VERSIONS = ("2025-06-18", "2025-11-25", "2026-07-28")
 TRANSPORTS = ("stdio", "http")
 NON_AUTH_SCENARIOS = {
@@ -121,10 +121,12 @@ def parse_args():
 def run_scenario(client, iteron_cli, cli, version, scenario, output_root):
     scenario_output = output_root / version / scenario.replace("/", "-")
     scenario_output.mkdir(parents=True, exist_ok=True)
+    adapter_report = scenario_output / "iteron-adapter.json"
     environment = os.environ.copy()
     environment["ITERON_CONFORMANCE_CLIENT"] = str(client.resolve())
     environment["ITERON_CONFORMANCE_CLI"] = str(iteron_cli.resolve())
     environment["ITERON_MCP_PROTOCOL_VERSION"] = version
+    environment["ITERON_CONFORMANCE_ADAPTER_REPORT"] = str(adapter_report)
     command = [
         "node",
         str(cli.resolve()),
@@ -156,6 +158,15 @@ def run_scenario(client, iteron_cli, cli, version, scenario, output_root):
         if len(check_files) == 1
         else []
     )
+    try:
+        adapter = json.loads(adapter_report.read_text(encoding="utf-8"))
+        adapter_completed = (
+            isinstance(adapter, dict)
+            and adapter.get("success") is True
+            and adapter.get("protocolVersion") == version
+        )
+    except (OSError, json.JSONDecodeError):
+        adapter_completed = False
     records = []
     occurrences = {}
     for check in checks:
@@ -189,15 +200,20 @@ def run_scenario(client, iteron_cli, cli, version, scenario, output_root):
         "scenario": scenario,
         "status": (
             "pass"
-            if runner_exit_code == 0 and len(check_files) == 1 and records
+            if runner_exit_code == 0
+            and len(check_files) == 1
+            and records
+            and adapter_completed
             else "fail"
         ),
         "runnerExitCode": runner_exit_code,
         "checksFileCount": len(check_files),
+        "adapterCompleted": adapter_completed,
         "checks": records,
         "summary": (
             f"official runner exit={runner_exit_code}; "
-            f"checks_files={len(check_files)}; checks={len(records)}"
+            f"checks_files={len(check_files)}; checks={len(records)}; "
+            f"adapter_completed={str(adapter_completed).lower()}"
         ),
     }
 
@@ -375,6 +391,11 @@ def gate(report, baseline, baseline_bytes, reviewed_digest=REVIEWED_BASELINE_SHA
         if entry["transport"] == "http" and entry.get("checksFileCount", 1) != 1:
             problems.append(
                 f"required scenario produced an invalid checks file count "
+                f"{entry['version']}/{entry['transport']}/{entry['scenario']}"
+            )
+        if entry["transport"] == "http" and entry.get("adapterCompleted") is not True:
+            problems.append(
+                f"required scenario adapter did not complete "
                 f"{entry['version']}/{entry['transport']}/{entry['scenario']}"
             )
         # A partial checks file is evidence, not a successful runner completion. The reviewed

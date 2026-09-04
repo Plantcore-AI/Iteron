@@ -23,8 +23,8 @@ session 状态。
 | 协议版本 | stdio | HTTP 非认证 | HTTP OAuth |
 |---|---|---|---|
 | `2025-06-18` | pass (4/4) | pass (4/4) | pass (114/114) |
-| `2025-11-25` | pass (4/4) | pass (37/37) | pass (567/567) |
-| `2026-07-28` | pass (4/4) | pass (52/56; unsupported=4) | pass (811/811) |
+| `2025-11-25` | pass (4/4) | pass (37/37) | pass (539/539) |
+| `2026-07-28` | pass (4/4) | pass (52/56; unsupported=4) | pass (786/786) |
 <!-- generated:mcp-conformance-matrix:end -->
 
 表格由完整执行报告进行逐字一致性校验。`2026-07-28` 的 4 个 `unsupported` 检查包括
@@ -130,7 +130,9 @@ scope 优先级为登录命令、server 配置、`WWW-Authenticate`、resource/a
 metadata、空集合。operator 指定的 scope 不会被自动删改；自动发现值被 provider 拒绝
 时只重试一次空 scope。有效的 403 `insufficient_scope` challenge 会成为独立诊断，要求
 用户确认后以显式 `--scopes` 重新登录，而不是把同一 token 当成 session 失效或自动重放
-请求。
+请求。已有凭据上的显式重新登录会把 challenge scope 与原授权合并，并在访问新的
+authorization server 或发送 client secret 之前固定原 resource 与 issuer；同一操作不会
+进行第二次 step-up。
 
 token 写入 `~/.iteron/mcp-credentials/<binding-id>`，文件权限为 `0600`。最终 schema v1
 绑定 server、resource、issuer、client、token 鉴权方法、requested/granted scopes 和完整

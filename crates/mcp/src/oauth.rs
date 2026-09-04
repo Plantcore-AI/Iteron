@@ -4,6 +4,7 @@ use crate::http::McpHttpEndpoint;
 use crate::token::Token;
 use crate::{MAX_FRAME_BYTES, McpError};
 use serde::Deserialize;
+use std::sync::Arc;
 use std::time::Duration;
 
 const OAUTH_TIMEOUT: Duration = Duration::from_secs(30);
@@ -25,6 +26,40 @@ pub struct OAuthRefreshGrant {
     client_secret: Option<String>,
     token_auth_method: TokenEndpointAuthMethod,
     granted_scopes: std::collections::BTreeSet<String>,
+    persistence: Option<Arc<dyn OAuthRefreshPersistence>>,
+}
+
+/// Refreshed secret material handed only to the caller-provided private credential store.
+/// Deliberately implements neither `Debug` nor `Display`.
+pub struct OAuthRefreshUpdate {
+    access_token: String,
+    expires_at_unix: u64,
+    refresh_token: String,
+    granted_scopes: Vec<String>,
+}
+
+impl OAuthRefreshUpdate {
+    pub fn access_token(&self) -> &str {
+        &self.access_token
+    }
+
+    pub const fn expires_at_unix(&self) -> u64 {
+        self.expires_at_unix
+    }
+
+    pub fn refresh_token(&self) -> &str {
+        &self.refresh_token
+    }
+
+    pub fn granted_scopes(&self) -> &[String] {
+        &self.granted_scopes
+    }
+}
+
+/// Persistence boundary for rotated OAuth credentials. Implementations must keep the update
+/// private and install it atomically before the refreshed token can be used by the client.
+pub trait OAuthRefreshPersistence: Send + Sync {
+    fn persist(&self, update: &OAuthRefreshUpdate) -> Result<(), McpError>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -150,7 +185,13 @@ impl OAuthRefreshGrant {
             client_secret,
             token_auth_method,
             granted_scopes: granted_scopes.into_iter().collect(),
+            persistence: None,
         })
+    }
+
+    pub fn with_persistence(mut self, persistence: Arc<dyn OAuthRefreshPersistence>) -> Self {
+        self.persistence = Some(persistence);
+        self
     }
 
     pub(crate) fn revocation_endpoint_configured(&self) -> bool {
@@ -236,16 +277,25 @@ impl OAuthClient {
         let refreshed_scopes =
             validate_refresh_scope(response.scope.as_deref(), &grant.granted_scopes)?;
         validate_secret(&response.access_token)?;
-        if let Some(rotated) = response.refresh_token {
+        let refresh_token = if let Some(rotated) = response.refresh_token {
             validate_secret(&rotated)?;
-            grant.refresh_token = rotated;
+            rotated
+        } else {
+            grant.refresh_token.clone()
+        };
+        let expires_at_unix = now_secs.saturating_add(response.expires_in);
+        let update = OAuthRefreshUpdate {
+            access_token: response.access_token.clone(),
+            expires_at_unix,
+            refresh_token: refresh_token.clone(),
+            granted_scopes: refreshed_scopes.iter().cloned().collect(),
+        };
+        if let Some(persistence) = &grant.persistence {
+            persistence.persist(&update)?;
         }
+        grant.refresh_token = refresh_token;
         grant.granted_scopes = refreshed_scopes;
-        Ok(Token::from_expires_in(
-            response.access_token,
-            now_secs,
-            response.expires_in,
-        ))
+        Ok(Token::new(response.access_token, expires_at_unix))
     }
 
     pub(crate) async fn revoke(&self, grant: &OAuthRefreshGrant) -> Result<(), McpError> {

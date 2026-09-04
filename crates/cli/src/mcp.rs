@@ -583,6 +583,11 @@ async fn connect_configured_server_with_policies(
                                 credential.token_auth_method,
                                 credential.granted_scopes.clone(),
                             )
+                            .map(|grant| {
+                                grant.with_persistence(credential_store::refresh_persistence(
+                                    server, credential,
+                                ))
+                            })
                         })
                     })
                     .transpose()?

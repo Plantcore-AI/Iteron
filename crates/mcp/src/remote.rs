@@ -919,39 +919,77 @@ impl McpRemoteClient {
     }
 
     async fn request(&self, method: &str, params: Value) -> Result<Value, McpError> {
+        let mut dispatch_observer = None;
+        self.request_with_certainty(method, params, &mut dispatch_observer)
+            .await
+            .0
+    }
+
+    async fn request_with_certainty(
+        &self,
+        method: &str,
+        params: Value,
+        dispatch_observer: &mut Option<Box<dyn FnOnce() + Send>>,
+    ) -> (Result<Value, McpError>, McpEffectCertainty) {
         if self.protocol_mode.is_stateless()
             && method.ends_with("/list")
             && let Some(cached) = self.list_cache.get(method, &params)
         {
-            return Ok(cached);
+            return (Ok(cached), McpEffectCertainty::Definite);
         }
+        let wire_params = match self.params(params.clone()) {
+            Ok(params) => params,
+            Err(error) => return (Err(error), McpEffectCertainty::Definite),
+        };
         let first = self
-            .send_request_with_auth_retry(method, self.params(params.clone())?)
+            .send_request_with_auth_retry_and_certainty(method, wire_params, dispatch_observer)
             .await;
         let first = match first {
-            Err(McpError::HttpStatus { status })
+            (Err(McpError::HttpStatus { status }), _)
                 if method.ends_with("/list")
                     && crate::http::classify(status, false).is_retryable() =>
             {
-                self.send_request_with_auth_retry(method, self.params(params.clone())?)
-                    .await
+                let retry_params = match self.params(params.clone()) {
+                    Ok(params) => params,
+                    Err(error) => return (Err(error), McpEffectCertainty::Definite),
+                };
+                self.send_request_with_auth_retry_and_certainty(
+                    method,
+                    retry_params,
+                    dispatch_observer,
+                )
+                .await
             }
             result => result,
         };
         let result = match first {
-            Err(McpError::SessionExpired)
+            (Err(McpError::SessionExpired), _)
                 if !self.protocol_mode.is_stateless() && method.ends_with("/list") =>
             {
-                self.reinitialize_stateful().await?;
-                self.send_request_with_auth_retry(method, self.params(params.clone())?)
-                    .await?
+                if let Err(error) = self.reinitialize_stateful().await {
+                    return (Err(error), McpEffectCertainty::Unknown);
+                }
+                let retry_params = match self.params(params.clone()) {
+                    Ok(params) => params,
+                    Err(error) => return (Err(error), McpEffectCertainty::Definite),
+                };
+                self.send_request_with_auth_retry_and_certainty(
+                    method,
+                    retry_params,
+                    dispatch_observer,
+                )
+                .await
             }
-            result => result?,
+            result => result,
         };
-        if self.protocol_mode.is_stateless() && method.ends_with("/list") {
-            self.list_cache.put(method, &params, &result)?;
+        if let Ok(value) = &result.0
+            && self.protocol_mode.is_stateless()
+            && method.ends_with("/list")
+            && let Err(error) = self.list_cache.put(method, &params, value)
+        {
+            return (Err(error), McpEffectCertainty::Definite);
         }
-        Ok(result)
+        result
     }
 
     async fn send_request_with_auth_retry(
@@ -959,13 +997,32 @@ impl McpRemoteClient {
         method: &str,
         params: Value,
     ) -> Result<Value, McpError> {
-        let first = self.wire.send_request(method, params.clone()).await;
+        let mut dispatch_observer = None;
+        self.send_request_with_auth_retry_and_certainty(method, params, &mut dispatch_observer)
+            .await
+            .0
+    }
+
+    async fn send_request_with_auth_retry_and_certainty(
+        &self,
+        method: &str,
+        params: Value,
+        dispatch_observer: &mut Option<Box<dyn FnOnce() + Send>>,
+    ) -> (Result<Value, McpError>, McpEffectCertainty) {
+        let first = self
+            .wire
+            .call_with_certainty_and_dispatch_observer(
+                method,
+                params.clone(),
+                dispatch_observer.take(),
+            )
+            .await;
         match first {
-            Err(error @ McpError::HttpStatus { status: 401 }) if self.oauth.is_some() => {
+            (Err(error @ McpError::HttpStatus { status: 401 }), _) if self.oauth.is_some() => {
                 if self.refresh_after_rejection().await.is_ok() {
-                    self.wire.send_request(method, params).await
+                    self.wire.call_with_certainty(method, params).await
                 } else {
-                    Err(error)
+                    (Err(error), McpEffectCertainty::Definite)
                 }
             }
             result => result,
@@ -1019,25 +1076,57 @@ impl McpRemoteClient {
 
     /// Invoke the standard resource/prompt surface under the same response ceilings as tools.
     pub async fn call_extension(&self, method: &str, params: Value) -> Result<Value, McpError> {
+        let mut dispatch_observer = None;
+        self.call_extension_with_certainty(method, params, &mut dispatch_observer)
+            .await
+            .0
+    }
+
+    async fn call_extension_with_certainty(
+        &self,
+        method: &str,
+        params: Value,
+        dispatch_observer: &mut Option<Box<dyn FnOnce() + Send>>,
+    ) -> (Result<Value, McpError>, McpEffectCertainty) {
         match method {
             "resources/list" | "resources/read" if self.capabilities.resources => {}
             "prompts/list" | "prompts/get" if self.capabilities.prompts => {}
-            _ => return Err(McpError::Protocol("MCP capability is not declared".into())),
+            _ => {
+                return (
+                    Err(McpError::Protocol("MCP capability is not declared".into())),
+                    McpEffectCertainty::Definite,
+                );
+            }
         }
-        self.refresh_if_needed().await?;
-        if self.protocol_mode.is_stateless() && matches!(method, "resources/list" | "prompts/list")
-        {
-            let mut pages = crate::pagination::ExtensionPagination::new(method)?;
+        if let Err(error) = self.refresh_if_needed().await {
+            return (Err(error), McpEffectCertainty::Definite);
+        }
+        if matches!(method, "resources/list" | "prompts/list") {
+            let mut pages = match crate::pagination::ExtensionPagination::new(method) {
+                Ok(pages) => pages,
+                Err(error) => return (Err(error), McpEffectCertainty::Definite),
+            };
             let mut request = params;
             loop {
-                let result = self.request(method, request).await?;
-                let Some(next) = pages.accept(&result)? else {
-                    return Ok(pages.finish());
+                let (result, certainty) = self
+                    .request_with_certainty(method, request, dispatch_observer)
+                    .await;
+                let result = match result {
+                    Ok(result) => result,
+                    Err(error) => return (Err(error), certainty),
+                };
+                let next = match pages.accept(&result) {
+                    Ok(next) => next,
+                    Err(error) => return (Err(error), McpEffectCertainty::Definite),
+                };
+                let Some(next) = next else {
+                    return (Ok(pages.finish()), McpEffectCertainty::Definite);
                 };
                 request = next;
             }
         }
-        self.request(method, params).await
+        self.request_with_certainty(method, params, dispatch_observer)
+            .await
     }
 
     pub async fn call_extension_rendered(
@@ -1070,25 +1159,27 @@ impl McpRemoteClient {
                 };
             }
         }
-        if let Err(error) = self.refresh_if_needed().await {
-            return McpToolOutcome::FailedDefinite {
-                error,
-                evidence: None,
-            };
-        }
-        on_dispatch();
         let started = Instant::now();
-        let params = match self.params(params) {
-            Ok(params) => params,
-            Err(error) => {
-                return McpToolOutcome::FailedDefinite {
-                    error,
-                    evidence: None,
-                };
-            }
-        };
-        let (result, certainty) = self.wire.call_with_certainty(method, params).await;
-        let elapsed = u64::try_from(started.elapsed().as_millis())
+        let dispatched_at = Arc::new(std::sync::Mutex::new(None));
+        let observed_at = dispatched_at.clone();
+        let mut dispatch_observer: Option<Box<dyn FnOnce() + Send>> = Some(Box::new(move || {
+            *observed_at
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Instant::now());
+            on_dispatch();
+        }));
+        let (result, certainty) = self
+            .call_extension_with_certainty(method, params, &mut dispatch_observer)
+            .await;
+        if result.is_ok()
+            && let Some(observer) = dispatch_observer.take()
+        {
+            observer();
+        }
+        let dispatched_at = *dispatched_at
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let elapsed = u64::try_from(dispatched_at.unwrap_or(started).elapsed().as_millis())
             .unwrap_or(u64::MAX)
             .max(1);
         let evidence = McpToolCallEvidence::new(
@@ -1098,13 +1189,21 @@ impl McpRemoteClient {
         );
         let result = match result {
             Ok(result) => result,
-            Err(error) if certainty == McpEffectCertainty::Definite => {
+            Err(error) if dispatched_at.is_none() => {
+                return McpToolOutcome::FailedDefinite {
+                    error,
+                    evidence: None,
+                };
+            }
+            Err(error) if certainty == McpEffectCertainty::Unknown => {
+                return McpToolOutcome::Unknown { error, evidence };
+            }
+            Err(error) => {
                 return McpToolOutcome::FailedDefinite {
                     error,
                     evidence: Some(evidence),
                 };
             }
-            Err(error) => return McpToolOutcome::Unknown { error, evidence },
         };
         match render_extension_content(&result, self.result_policy, &self.spill_store) {
             Ok(content) => match self.cleanup_spills(crate::McpSpillCleanup::ToolEnd) {
@@ -1234,6 +1333,67 @@ mod tests {
                 prompts: false,
             }
         );
+    }
+
+    #[tokio::test]
+    async fn extension_refresh_failure_is_definite_and_never_marks_dispatch() {
+        let unavailable = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let unavailable_address = unavailable.local_addr().unwrap();
+        drop(unavailable);
+        let deadlines = crate::McpDeadlinePolicy::default().http();
+        let endpoint =
+            McpHttpEndpoint::parse(&format!("http://{unavailable_address}/mcp")).unwrap();
+        let wire = McpHttpWire::new(
+            endpoint,
+            ReqwestMcpExchange::with_deadlines(deadlines).unwrap(),
+            Arc::new(unix_now),
+            "refresh-failure".into(),
+        )
+        .unwrap()
+        .with_credential(crate::token::Token::new("expired", 0));
+        let grant = crate::oauth::OAuthRefreshGrant::new(
+            McpHttpEndpoint::parse(&format!("http://{unavailable_address}/refresh")).unwrap(),
+            None,
+            "refresh".into(),
+            Some("client".into()),
+            None,
+            crate::oauth::TokenEndpointAuthMethod::None,
+            ["read".into()],
+        )
+        .unwrap();
+        let client = McpRemoteClient {
+            wire: Arc::new(wire),
+            negotiated_protocol_version: crate::MODERN_PROTOCOL_VERSION.into(),
+            capabilities: McpServerCapabilities {
+                resources: true,
+                ..McpServerCapabilities::default()
+            },
+            protocol_mode: McpProtocolMode::Stateless2026,
+            list_cache: crate::cache::McpListCache::new(),
+            advertises_elicitation: false,
+            oauth: Some(Mutex::new(OAuthState {
+                client: crate::oauth::OAuthClient::new().unwrap(),
+                grant,
+            })),
+            authentication_configured: true,
+            oauth_policy: crate::oauth::McpOAuthLifecyclePolicy::for_binding(true, true, false),
+            deadlines,
+            result_policy: crate::McpResultPolicy::default(),
+            spill_store: crate::result_policy::McpSpillStore::create().unwrap(),
+            server_name: "refresh-failure".into(),
+        };
+        let dispatched = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = dispatched.clone();
+        let outcome = client
+            .call_extension_outcome_observed("resources/read", json!({}), move || {
+                observed.store(true, std::sync::atomic::Ordering::SeqCst);
+            })
+            .await;
+        assert!(matches!(
+            outcome,
+            McpToolOutcome::FailedDefinite { evidence: None, .. }
+        ));
+        assert!(!dispatched.load(std::sync::atomic::Ordering::SeqCst));
     }
 
     async fn read_request(socket: &mut TcpStream) -> String {

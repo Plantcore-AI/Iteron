@@ -152,12 +152,7 @@ def login(binary, environment, name, *, scopes=None, client_id=None, secret_env=
                 raise RuntimeError("login did not emit an authorization URL within its bound")
             if process.returncode == 0:
                 return True
-            assert process.stderr is not None
-            detail = process.stderr.read().decode("utf-8", errors="replace").strip().splitlines()
-            raise RuntimeError(
-                "login exited before authorization: "
-                + (detail[-1][:300] if detail else "no diagnostic")
-            )
+            return False
         status, location = open_no_redirect(authorization_url)
         if status not in {301, 302, 303, 307, 308} or not location:
             raise RuntimeError("authorization endpoint did not return a callback redirect")
@@ -173,24 +168,55 @@ def login(binary, environment, name, *, scopes=None, client_id=None, secret_env=
             process.wait(timeout=5)
 
 
-def stored_token(config_root):
+def stored_credential(config_root):
     directory = config_root / ".iteron" / "mcp-credentials"
     files = [path for path in directory.iterdir() if path.suffix != ".pending"]
     if len(files) != 1:
         raise RuntimeError("OAuth login did not create exactly one credential")
     value = json.loads(files[0].read_text(encoding="utf-8"))
-    token = value.get("access_token")
+    return value
+
+
+def stored_token(config_root):
+    token = stored_credential(config_root).get("access_token")
     if not isinstance(token, str) or not token:
         raise RuntimeError("stored credential omitted the access token")
     return token
 
 
-def authenticated_call(client, server_url, version, environment, config_root):
+def authenticated_call(binary, client, server_url, version, environment, config_root):
+    production = command(
+        binary,
+        environment,
+        "mcp",
+        "auth",
+        "status",
+        "official",
+        "--format",
+        "json",
+    )
+    if production.returncode != 0:
+        return False, []
+    try:
+        diagnostic = json.loads(production.stdout)
+    except json.JSONDecodeError:
+        return False, []
+    if diagnostic.get("authentication") != "authenticated":
+        return False, []
     call_environment = environment.copy()
     call_environment["ITERON_MCP_PROTOCOL_VERSION"] = version
     call_environment["MCP_CONFORMANCE_SCENARIO"] = "auth/tool-call"
     call_environment["ITERON_CONFORMANCE_ACCESS_TOKEN"] = stored_token(config_root)
-    return command(client, call_environment, server_url).returncode == 0
+    completed = command(client, call_environment, server_url)
+    if completed.returncode == 0:
+        return True, []
+    marker = "MCP HTTP endpoint requires additional OAuth scope: "
+    for line in completed.stderr.splitlines():
+        if marker in line:
+            scopes = line.split(marker, 1)[1].strip().split(",")
+            if scopes and all(scopes):
+                return False, scopes
+    return False, []
 
 
 def run_auth(server_url):
@@ -235,25 +261,47 @@ def run_auth(server_url):
         if not accepted:
             return False
         if scenario == "auth/scope-step-up":
-            if authenticated_call(client, server_url, version, environment, config_root):
+            succeeded, challenged = authenticated_call(
+                binary, client, server_url, version, environment, config_root
+            )
+            if succeeded or not challenged:
                 return False
-            if not login(binary, environment, "official", scopes=["mcp:basic", "mcp:write"]):
+            if not login(
+                binary,
+                environment,
+                "official",
+                scopes=challenged,
+            ):
                 return False
         elif scenario == "auth/scope-retry-limit":
-            for attempt in range(3):
-                if authenticated_call(client, server_url, version, environment, config_root):
-                    return False
-                if attempt < 2 and not login(
-                    binary, environment, "official", scopes=["mcp:basic", "mcp:write"]
-                ):
-                    return False
-            return True
+            succeeded, challenged = authenticated_call(
+                binary, client, server_url, version, environment, config_root
+            )
+            if succeeded or not challenged:
+                return False
+            if not login(
+                binary,
+                environment,
+                "official",
+                scopes=challenged,
+            ):
+                return False
+            succeeded, _ = authenticated_call(
+                binary, client, server_url, version, environment, config_root
+            )
+            return not succeeded
         elif scenario == "auth/authorization-server-migration":
-            if authenticated_call(client, server_url, version, environment, config_root):
+            succeeded, _ = authenticated_call(
+                binary, client, server_url, version, environment, config_root
+            )
+            if succeeded:
                 return False
             if not login(binary, environment, "official"):
                 return False
-        return authenticated_call(client, server_url, version, environment, config_root)
+        succeeded, _ = authenticated_call(
+            binary, client, server_url, version, environment, config_root
+        )
+        return succeeded
 
 
 def run_non_auth(server_url):

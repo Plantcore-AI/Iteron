@@ -369,9 +369,10 @@ impl McpError {
             // configuration whose path may be capability-bearing, so nothing is reflected.
             Self::InvalidEndpoint { .. } => "invalid MCP HTTP endpoint".into(),
             Self::HttpStatus { status } => format!("MCP HTTP endpoint returned status {status}"),
-            Self::InsufficientScope { .. } => {
-                "MCP HTTP endpoint requires additional OAuth scope".into()
-            }
+            Self::InsufficientScope { scopes } => format!(
+                "MCP HTTP endpoint requires additional OAuth scope: {}",
+                scopes.join(",")
+            ),
             Self::HttpRedirectRefused => {
                 "MCP HTTP endpoint attempted a refused cross-authority redirect".into()
             }

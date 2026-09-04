@@ -10,6 +10,7 @@ use crate::{
 };
 use iteron_protocol::{ToolSpec, capability_set::CapabilitySet};
 use serde_json::{Value, json};
+use std::num::NonZeroU64;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::AsyncWriteExt;
@@ -224,8 +225,7 @@ impl McpClient {
             "prompts/list" | "prompts/get" if self.capabilities.prompts => {}
             _ => return Err(McpError::Protocol("MCP capability is not declared".into())),
         }
-        if self.protocol_mode.is_stateless() && matches!(method, "resources/list" | "prompts/list")
-        {
+        if matches!(method, "resources/list" | "prompts/list") {
             let mut pages = crate::pagination::ExtensionPagination::new(method)?;
             let mut request = params;
             loop {
@@ -237,6 +237,95 @@ impl McpClient {
             }
         }
         self.call(method, params).await
+    }
+
+    async fn call_extension_with_outcome(
+        &self,
+        method: &str,
+        params: Value,
+        dispatch_observer: &mut Option<Box<dyn FnOnce() + Send>>,
+    ) -> CallOutcome {
+        if matches!(method, "resources/list" | "prompts/list") {
+            let mut pages = match crate::pagination::ExtensionPagination::new(method) {
+                Ok(pages) => pages,
+                Err(error) => return CallOutcome::Completed(Err(error), None),
+            };
+            let mut request = params;
+            let mut last_latency = None;
+            loop {
+                let result = match self
+                    .call_extension_page_with_outcome(method, request, dispatch_observer)
+                    .await
+                {
+                    CallOutcome::Completed(Ok(result), latency) => {
+                        if latency.is_some() {
+                            last_latency = latency;
+                        }
+                        result
+                    }
+                    CallOutcome::Completed(Err(error), latency) => {
+                        return CallOutcome::Completed(Err(error), latency.or(last_latency));
+                    }
+                    unknown @ CallOutcome::Unknown(_, _) => return unknown,
+                };
+                let next = match pages.accept(&result) {
+                    Ok(next) => next,
+                    Err(error) => {
+                        return CallOutcome::Completed(Err(error), last_latency);
+                    }
+                };
+                let Some(next) = next else {
+                    return CallOutcome::Completed(Ok(pages.finish()), last_latency);
+                };
+                request = next;
+            }
+        }
+        self.call_extension_page_with_outcome(method, params, dispatch_observer)
+            .await
+    }
+
+    async fn call_extension_page_with_outcome(
+        &self,
+        method: &str,
+        params: Value,
+        dispatch_observer: &mut Option<Box<dyn FnOnce() + Send>>,
+    ) -> CallOutcome {
+        if self.protocol_mode.is_stateless()
+            && method.ends_with("/list")
+            && let Some(cached) = self.list_cache.get(method, &params)
+        {
+            return CallOutcome::Completed(Ok(cached), None);
+        }
+        let cache_params = params.clone();
+        let params = if self.protocol_mode.is_stateless() {
+            match crate::protocol_version::modern_params(params) {
+                Ok(params) => params,
+                Err(error) => return CallOutcome::Completed(Err(error), None),
+            }
+        } else {
+            params
+        };
+        let operation = format!("request `{method}`");
+        match self
+            .call_with_certainty_and_dispatch_observer(
+                method,
+                params,
+                operation,
+                dispatch_observer.take(),
+            )
+            .await
+        {
+            CallOutcome::Completed(Ok(result), latency) => {
+                if self.protocol_mode.is_stateless()
+                    && method.ends_with("/list")
+                    && let Err(error) = self.list_cache.put(method, &cache_params, &result)
+                {
+                    return CallOutcome::Completed(Err(error), latency);
+                }
+                CallOutcome::Completed(Ok(result), latency)
+            }
+            outcome => outcome,
+        }
     }
 
     pub async fn call_extension_rendered(
@@ -272,30 +361,43 @@ impl McpClient {
                 };
             }
         }
-        let (result, latency) = match self
-            .call_with_certainty_and_dispatch_observer(
-                method,
-                params,
-                format!("request `{method}`"),
-                Some(Box::new(on_dispatch)),
-            )
-            .await
+        let started = Instant::now();
+        let mut dispatch_observer: Option<Box<dyn FnOnce() + Send>> = Some(Box::new(on_dispatch));
+        let outcome = self
+            .call_extension_with_outcome(method, params, &mut dispatch_observer)
+            .await;
+        if matches!(&outcome, CallOutcome::Completed(Ok(_), _))
+            && let Some(observer) = dispatch_observer.take()
         {
-            CallOutcome::Completed(Ok(result), Some(latency)) => (result, latency),
-            CallOutcome::Completed(Ok(_), None) => {
+            observer();
+        }
+        let fallback_latency = || {
+            NonZeroU64::new(
+                u64::try_from(started.elapsed().as_millis())
+                    .unwrap_or(u64::MAX)
+                    .max(1),
+            )
+            .expect("elapsed was clamped to at least one")
+        };
+        let (result, evidence) = match outcome {
+            CallOutcome::Completed(Ok(result), latency) => (
+                result,
+                McpToolCallEvidence::new(
+                    &self.server_name,
+                    method,
+                    latency.unwrap_or_else(fallback_latency),
+                ),
+            ),
+            CallOutcome::Completed(Err(error), None) => {
                 return McpToolOutcome::FailedDefinite {
-                    error: McpError::Protocol(
-                        "MCP extension completed without dispatch evidence".into(),
-                    ),
+                    error,
                     evidence: None,
                 };
             }
-            CallOutcome::Completed(Err(error), latency) => {
+            CallOutcome::Completed(Err(error), Some(latency)) => {
                 return McpToolOutcome::FailedDefinite {
                     error,
-                    evidence: latency.map(|latency| {
-                        McpToolCallEvidence::new(&self.server_name, method, latency)
-                    }),
+                    evidence: Some(McpToolCallEvidence::new(&self.server_name, method, latency)),
                 };
             }
             CallOutcome::Unknown(error, latency) => {
@@ -305,7 +407,6 @@ impl McpClient {
                 };
             }
         };
-        let evidence = McpToolCallEvidence::new(&self.server_name, method, latency);
         match render_extension_content(&result, self.result_policy, &self.spill_store) {
             Ok(content) => match self.cleanup_spills(crate::McpSpillCleanup::ToolEnd) {
                 Ok(()) => McpToolOutcome::Completed {
