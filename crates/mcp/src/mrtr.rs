@@ -86,8 +86,15 @@ impl MrtrState {
         if result.get("resultType").and_then(Value::as_str) != Some("input_required") {
             return Ok(MrtrResult::Complete);
         }
+        let max_rounds = iteron_tunables::param_usize("mcp.mrtr.max_rounds", MAX_ROUNDS);
+        let max_item_bytes =
+            iteron_tunables::param_usize("mcp.mrtr.max_item_bytes", MAX_ITEM_BYTES);
+        let max_requests_per_round =
+            iteron_tunables::param_usize("mcp.mrtr.max_requests_per_round", MAX_REQUESTS_PER_ROUND);
+        let max_total_requests =
+            iteron_tunables::param_usize("mcp.mrtr.max_total_requests", MAX_TOTAL_REQUESTS);
         self.rounds = self.rounds.saturating_add(1);
-        if self.rounds > MAX_ROUNDS {
+        if self.rounds > max_rounds {
             return Err(limit("MRTR round limit exceeded"));
         }
         let request_state = result
@@ -95,7 +102,7 @@ impl MrtrState {
             .map(|value| {
                 let state = value
                     .as_str()
-                    .filter(|state| !state.is_empty() && state.len() <= MAX_ITEM_BYTES)
+                    .filter(|state| !state.is_empty() && state.len() <= max_item_bytes)
                     .ok_or_else(|| limit("MRTR requestState is outside its bound"))?;
                 if !self.seen_states.insert(state.to_owned()) {
                     return Err(limit("MRTR requestState repeated"));
@@ -109,16 +116,16 @@ impl MrtrState {
             Some(_) => return Err(protocol("MRTR inputRequests must be an object")),
         };
         let request_count = raw.map_or(0, Map::len);
-        if request_count > MAX_REQUESTS_PER_ROUND {
+        if request_count > max_requests_per_round {
             return Err(limit("MRTR request count is outside its bound"));
         }
         self.total_requests = self.total_requests.saturating_add(request_count);
-        if self.total_requests > MAX_TOTAL_REQUESTS {
+        if self.total_requests > max_total_requests {
             return Err(limit("MRTR total request limit exceeded"));
         }
         let mut requests = Vec::with_capacity(request_count);
         for (id, item) in raw.into_iter().flatten() {
-            if id.is_empty() || id.len() > MAX_ITEM_BYTES || id.chars().any(char::is_control) {
+            if id.is_empty() || id.len() > max_item_bytes || id.chars().any(char::is_control) {
                 return Err(limit("MRTR request id is outside its bound"));
             }
             let object = item
@@ -135,7 +142,7 @@ impl MrtrState {
                 crate::elicitation::ElicitationRequest::parse(Value::Object(params.clone()))?;
             let prompt = elicitation.message().to_owned();
             let schema = elicitation.requested_schema().clone();
-            if serde_json::to_vec(&schema)?.len() > MAX_ITEM_BYTES {
+            if serde_json::to_vec(&schema)?.len() > max_item_bytes {
                 return Err(limit("MRTR request schema exceeds its bound"));
             }
             requests.push(McpInputRequest {
@@ -164,6 +171,10 @@ impl MrtrState {
                 operation: "MCP MRTR input",
             });
         };
+        let max_item_bytes =
+            iteron_tunables::param_usize("mcp.mrtr.max_item_bytes", MAX_ITEM_BYTES);
+        let max_total_input_bytes =
+            iteron_tunables::param_usize("mcp.mrtr.max_total_input_bytes", MAX_TOTAL_INPUT_BYTES);
         let requested = requests
             .iter()
             .map(|request| request.id.as_str())
@@ -179,11 +190,11 @@ impl MrtrState {
                 ));
             }
             let bytes = serde_json::to_vec(&value)?.len();
-            if bytes > MAX_ITEM_BYTES {
+            if bytes > max_item_bytes {
                 return Err(limit("MRTR response exceeds its item bound"));
             }
             self.total_input_bytes = self.total_input_bytes.saturating_add(bytes);
-            if self.total_input_bytes > MAX_TOTAL_INPUT_BYTES {
+            if self.total_input_bytes > max_total_input_bytes {
                 return Err(limit("MRTR total input limit exceeded"));
             }
             let request = requests

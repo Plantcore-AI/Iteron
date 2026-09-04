@@ -13,8 +13,12 @@ pub struct McpBearerChallenge {
 }
 
 pub fn parse_bearer_challenge(value: &str) -> Option<McpBearerChallenge> {
+    let max_challenge_bytes = iteron_tunables::param_usize(
+        "mcp.http.www_authenticate.max_challenge_bytes",
+        MAX_CHALLENGE_BYTES,
+    );
     if value.is_empty()
-        || value.len() > MAX_CHALLENGE_BYTES
+        || value.len() > max_challenge_bytes
         || value
             .bytes()
             .any(|byte| byte != b'\t' && !(0x20..=0x7e).contains(&byte))
@@ -136,11 +140,15 @@ fn decode_value(value: &str) -> Option<String> {
 }
 
 fn parse_scopes(value: &str) -> Option<Vec<String>> {
-    if value.is_empty() || value.len() > MAX_SCOPE_BYTES {
+    let max_scope_bytes =
+        iteron_tunables::param_usize("mcp.http.www_authenticate.max_scope_bytes", MAX_SCOPE_BYTES);
+    let max_scope_count =
+        iteron_tunables::param_usize("mcp.http.www_authenticate.max_scope_count", MAX_SCOPE_COUNT);
+    if value.is_empty() || value.len() > max_scope_bytes {
         return None;
     }
     let scopes = value.split(' ').map(str::to_owned).collect::<Vec<_>>();
-    if scopes.len() > MAX_SCOPE_COUNT
+    if scopes.len() > max_scope_count
         || scopes.iter().any(|scope| {
             scope.is_empty()
                 || scope.len() > 256

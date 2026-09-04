@@ -9,6 +9,13 @@ use std::path::PathBuf;
 const CREDENTIAL_SCHEMA_VERSION: u32 = 1;
 const MAX_CREDENTIAL_BYTES: u64 = 64 * 1024;
 
+fn max_credential_bytes() -> u64 {
+    iteron_tunables::param_u64(
+        "cli.mcp.credential_store.max_credential_bytes",
+        MAX_CREDENTIAL_BYTES,
+    )
+}
+
 /// Secret-bearing persisted value. Deliberately no `Debug` implementation.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -122,7 +129,7 @@ pub(crate) fn save(server: &McpServerConfig, credential: &StoredCredential) -> a
     let path = credential_path(server)
         .ok_or_else(|| anyhow::anyhow!("cannot resolve the MCP credential directory"))?;
     let bytes = serde_json::to_vec(credential)?;
-    if bytes.len() as u64 > MAX_CREDENTIAL_BYTES {
+    if bytes.len() as u64 > max_credential_bytes() {
         anyhow::bail!("MCP credential document exceeds its private storage bound");
     }
     crate::config::write_private_atomic(&path, &bytes)
@@ -172,7 +179,7 @@ pub(crate) fn load(server: &McpServerConfig) -> anyhow::Result<Option<StoredCred
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
     };
-    if file.metadata()?.len() > MAX_CREDENTIAL_BYTES {
+    if file.metadata()?.len() > max_credential_bytes() {
         anyhow::bail!("MCP credential document exceeds its private storage bound");
     }
     let credential: StoredCredential = serde_json::from_reader(file).map_err(|_| {

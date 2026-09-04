@@ -176,10 +176,14 @@ impl McpLaunchConfig {
 
     /// Inherit only these operator-authorized environment names into the MCP child.
     pub fn with_granted_env_names(mut self, names: Vec<String>) -> Result<Self, McpError> {
-        if names.len() > MAX_MCP_GRANTED_ENV_NAMES {
+        let max_granted_env_names = iteron_tunables::param_usize(
+            "mcp.supervisor.config.max_mcp_granted_env_names",
+            MAX_MCP_GRANTED_ENV_NAMES,
+        );
+        if names.len() > max_granted_env_names {
             return Err(McpError::InvalidLaunchConfiguration {
                 field: "granted_env_names",
-                limit: MAX_MCP_GRANTED_ENV_NAMES,
+                limit: max_granted_env_names,
             });
         }
         let mut seen = std::collections::BTreeSet::new();

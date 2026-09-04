@@ -63,9 +63,9 @@ use self::control::{apply_control, apply_immediate_control, is_immediate_control
 #[cfg(test)]
 use self::control::{apply_immediate_workflow_control, apply_side};
 use self::mcp_control::apply_mcp_control;
-pub(crate) use self::mcp_input::CAPACITY as MCP_INPUT_CAPACITY;
 #[cfg(test)]
 pub(crate) use self::mcp_input::McpInputField;
+pub(crate) use self::mcp_input::capacity as mcp_input_capacity;
 pub(crate) use self::mcp_input::{McpInputAnswer, McpInputPrompt, McpInputResponse};
 use self::operator_status::OperatorStatusSources;
 pub(crate) use self::operator_status::{

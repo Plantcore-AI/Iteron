@@ -74,7 +74,7 @@ impl App {
             self.status = "MCP server is waiting for your input".into();
             return Ok(());
         }
-        if self.queued_mcp_inputs.len() >= app_server::MCP_INPUT_CAPACITY.saturating_sub(1) {
+        if self.queued_mcp_inputs.len() >= app_server::mcp_input_capacity().saturating_sub(1) {
             return Err(prompt);
         }
         self.queued_mcp_inputs.push_back(prompt);

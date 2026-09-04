@@ -136,7 +136,7 @@ pub(crate) async fn login(
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(10))
-        .timeout(HTTP_TIMEOUT)
+        .timeout(http_timeout())
         .build()?;
     let probe = probe_resource(&client, &endpoint).await?;
     if probe.unauthenticated {
@@ -370,7 +370,7 @@ pub(crate) async fn revoke(credential: &StoredCredential) -> anyhow::Result<()> 
         .unwrap_or(&credential.access_token);
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
-        .timeout(HTTP_TIMEOUT)
+        .timeout(http_timeout())
         .build()?;
     let mut form = vec![("token", token), ("token_type_hint", "refresh_token")];
     let mut request = client.post(endpoint);
@@ -822,14 +822,15 @@ async fn decode_json<T: serde::de::DeserializeOwned>(
 }
 
 async fn read_bounded_body(mut response: reqwest::Response) -> anyhow::Result<Vec<u8>> {
+    let metadata_limit = metadata_limit();
     let mut bytes = Vec::with_capacity(
         response
             .content_length()
             .unwrap_or(0)
-            .min(METADATA_LIMIT as u64) as usize,
+            .min(metadata_limit as u64) as usize,
     );
     while let Some(chunk) = response.chunk().await? {
-        if bytes.len().saturating_add(chunk.len()) > METADATA_LIMIT {
+        if bytes.len().saturating_add(chunk.len()) > metadata_limit {
             anyhow::bail!("MCP OAuth response exceeds its byte bound");
         }
         bytes.extend_from_slice(&chunk);
@@ -897,10 +898,11 @@ async fn receive_callback(
 async fn read_callback_request_line(
     stream: &mut (impl tokio::io::AsyncRead + Unpin),
 ) -> anyhow::Result<Vec<u8>> {
+    let callback_request_limit = callback_request_limit();
     let mut request = Vec::with_capacity(1024);
     let mut chunk = [0_u8; 1024];
     loop {
-        let remaining = CALLBACK_REQUEST_LIMIT.saturating_sub(request.len());
+        let remaining = callback_request_limit.saturating_sub(request.len());
         if remaining == 0 {
             anyhow::bail!("MCP OAuth callback request line exceeds its byte bound");
         }
@@ -1072,14 +1074,35 @@ fn unix_now() -> u64 {
 }
 
 fn callback_timeout() -> Duration {
+    let callback_timeout =
+        iteron_tunables::param_duration("cli.mcp.oauth_login.callback_timeout", CALLBACK_TIMEOUT);
     #[cfg(debug_assertions)]
     if let Some(milliseconds) = std::env::var("ITERON_TEST_MCP_OAUTH_CALLBACK_TIMEOUT_MS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
     {
-        return Duration::from_millis(milliseconds.clamp(10, CALLBACK_TIMEOUT.as_millis() as u64));
+        return Duration::from_millis(
+            milliseconds
+                .max(10)
+                .min(callback_timeout.as_millis() as u64),
+        );
     }
-    CALLBACK_TIMEOUT
+    callback_timeout
+}
+
+fn http_timeout() -> Duration {
+    iteron_tunables::param_duration("cli.mcp.oauth_login.http_timeout", HTTP_TIMEOUT)
+}
+
+fn metadata_limit() -> usize {
+    iteron_tunables::param_usize("cli.mcp.oauth_login.metadata_limit", METADATA_LIMIT)
+}
+
+fn callback_request_limit() -> usize {
+    iteron_tunables::param_usize(
+        "cli.mcp.oauth_login.callback_request_limit",
+        CALLBACK_REQUEST_LIMIT,
+    )
 }
 
 const fn default_expires_in() -> u64 {

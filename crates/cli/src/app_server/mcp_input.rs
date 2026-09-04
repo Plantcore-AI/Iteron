@@ -8,7 +8,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::{mpsc, oneshot};
 
-pub(crate) const CAPACITY: usize = 8;
+pub(crate) const MAX_CAPACITY: usize = 8;
+
+pub(crate) fn capacity() -> usize {
+    iteron_tunables::param_usize("cli.app_server.mcp_input.max_capacity", MAX_CAPACITY)
+        .clamp(1, MAX_CAPACITY)
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct McpInputField {
@@ -102,8 +107,9 @@ pub(super) struct ServerPort {
 }
 
 pub(super) fn wire() -> (mpsc::Sender<McpInputResponse>, ServerPort) {
-    let (request_tx, request_rx) = mpsc::channel(CAPACITY);
-    let (response_tx, response_rx) = mpsc::channel(CAPACITY);
+    let capacity = capacity();
+    let (request_tx, request_rx) = mpsc::channel(capacity);
+    let (response_tx, response_rx) = mpsc::channel(capacity);
     let handler = Arc::new(BridgeHandler {
         requests: request_tx,
         next_id: AtomicU64::new(1),
@@ -127,7 +133,7 @@ pub(super) async fn publish_request(
     if envelope.reply.is_closed() {
         return;
     }
-    if pending.len() >= CAPACITY || pending.contains_key(&envelope.prompt.request_id) {
+    if pending.len() >= capacity() || pending.contains_key(&envelope.prompt.request_id) {
         let _ = envelope.reply.send(McpInputDecision::Reject);
         return;
     }
@@ -230,7 +236,7 @@ mod tests {
 
     #[tokio::test]
     async fn cancelled_requests_do_not_consume_bridge_capacity() {
-        let (events_tx, _events_rx) = mpsc::channel(CAPACITY + 1);
+        let (events_tx, _events_rx) = mpsc::channel(MAX_CAPACITY + 1);
         let mut events = EventPublisher::new(
             events_tx,
             true,
@@ -239,7 +245,7 @@ mod tests {
             ),
         );
         let mut pending = BTreeMap::new();
-        for request_id in 1..=CAPACITY as u64 {
+        for request_id in 1..=MAX_CAPACITY as u64 {
             let (reply, decision) = oneshot::channel();
             drop(decision);
             publish_request(
@@ -264,7 +270,7 @@ mod tests {
         publish_request(
             McpInputRequestEnvelope {
                 prompt: McpInputPrompt {
-                    request_id: CAPACITY as u64 + 1,
+                    request_id: MAX_CAPACITY as u64 + 1,
                     server: "alpha".into(),
                     tool: "confirm".into(),
                     request_state: None,

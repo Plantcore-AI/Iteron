@@ -51,6 +51,13 @@ impl McpListCache {
         if ttl == 0 {
             return Ok(());
         }
+        let max_cache_entries =
+            iteron_tunables::param_usize("mcp.cache.max_cache_entries", MAX_CACHE_ENTRIES);
+        let max_ttl_milliseconds =
+            iteron_tunables::param_u64("mcp.cache.max_ttl_milliseconds", MAX_TTL_MILLISECONDS);
+        if max_cache_entries == 0 || max_ttl_milliseconds == 0 {
+            return Ok(());
+        }
         let cache_key = key(method, params)?;
         let mut entries = self
             .entries
@@ -58,7 +65,7 @@ impl McpListCache {
             .map_err(|_| McpError::Protocol("MCP list cache lock failed".into()))?;
         let now = Instant::now();
         entries.retain(|_, entry| entry.expires > now);
-        if entries.len() >= MAX_CACHE_ENTRIES
+        if entries.len() >= max_cache_entries
             && let Some(oldest) = entries
                 .iter()
                 .min_by_key(|(_, entry)| entry.expires)
@@ -69,7 +76,7 @@ impl McpListCache {
         entries.insert(
             cache_key,
             Entry {
-                expires: now + Duration::from_millis(ttl.min(MAX_TTL_MILLISECONDS)),
+                expires: now + Duration::from_millis(ttl.min(max_ttl_milliseconds)),
                 value: value.clone(),
             },
         );
