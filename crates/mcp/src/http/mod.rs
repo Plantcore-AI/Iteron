@@ -86,6 +86,7 @@ mod reqwest_exchange;
 pub mod sse;
 mod status;
 mod wire;
+mod www_authenticate;
 
 pub use endpoint::{
     MAX_MCP_HTTP_HEADER_NAME_BYTES, MAX_MCP_HTTP_HEADERS, MAX_MCP_HTTP_HOST_BYTES,
@@ -103,3 +104,4 @@ pub use status::{
     parse_retry_after,
 };
 pub use wire::{McpHttpWire, NowSecs};
+pub use www_authenticate::{McpBearerChallenge, parse_bearer_challenge};

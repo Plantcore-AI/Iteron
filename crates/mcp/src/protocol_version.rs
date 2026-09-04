@@ -104,6 +104,63 @@ pub(crate) enum DiscoveryNegotiation {
     Stateful(String),
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum DiscoveryRejection {
+    RetryModern,
+    Stateful(String),
+}
+
+pub(crate) fn parse_protocol_version_rejection(error: &Value) -> Option<(String, Vec<String>)> {
+    let data = error.get("data")?.as_object()?;
+    let requested = data
+        .get("requested")?
+        .as_str()
+        .filter(|version| is_bounded_protocol_token(version))?
+        .to_owned();
+    let supported = data.get("supported")?.as_array()?;
+    if supported.is_empty() || supported.len() > SUPPORTED_PROTOCOL_VERSIONS.len() {
+        return None;
+    }
+    let supported = supported
+        .iter()
+        .map(|version| {
+            version
+                .as_str()
+                .filter(|version| is_bounded_protocol_token(version))
+                .map(str::to_owned)
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some((requested, supported))
+}
+
+pub(crate) fn discovery_rejection(error: &McpError) -> Option<DiscoveryRejection> {
+    let McpError::ProtocolVersionRejected {
+        requested,
+        supported,
+    } = error
+    else {
+        return None;
+    };
+    if requested != MODERN_PROTOCOL_VERSION
+        || supported
+            .iter()
+            .any(|version| !SUPPORTED_PROTOCOL_VERSIONS.contains(&version.as_str()))
+    {
+        return None;
+    }
+    if supported
+        .iter()
+        .any(|version| version == MODERN_PROTOCOL_VERSION)
+    {
+        return Some(DiscoveryRejection::RetryModern);
+    }
+    SUPPORTED_PROTOCOL_VERSIONS
+        .iter()
+        .copied()
+        .find(|candidate| supported.iter().any(|version| version == candidate))
+        .map(|version| DiscoveryRejection::Stateful(version.to_owned()))
+}
+
 pub(crate) fn negotiate_discovery(result: &Value) -> Result<DiscoveryNegotiation, McpError> {
     if result.get("resultType").and_then(Value::as_str) != Some("complete") {
         return Err(McpError::Protocol(
@@ -153,7 +210,10 @@ pub(crate) fn negotiate_discovery(result: &Value) -> Result<DiscoveryNegotiation
 }
 
 pub(crate) fn discovery_allows_stateful_fallback(error: &McpError) -> bool {
-    matches!(error, McpError::Server { code: -32601, .. })
+    matches!(
+        error,
+        McpError::Server { code: -32601, .. } | McpError::HttpStatus { status: 404 | 405 }
+    )
 }
 
 pub(crate) fn require_modern_discovery(
@@ -287,10 +347,57 @@ mod tests {
             code: -32601,
             message: "Method not found".into(),
         }));
-        for status in [400, 401, 403, 404, 405, 408, 429, 500] {
+        for status in [400, 401, 403, 408, 429, 500] {
             assert!(!discovery_allows_stateful_fallback(&McpError::HttpStatus {
                 status
             }));
+        }
+        for status in [404, 405] {
+            assert!(discovery_allows_stateful_fallback(&McpError::HttpStatus {
+                status
+            }));
+        }
+    }
+
+    #[test]
+    fn structured_version_rejections_only_authorize_bounded_known_actions() {
+        let current = McpError::ProtocolVersionRejected {
+            requested: MODERN_PROTOCOL_VERSION.into(),
+            supported: vec![MODERN_PROTOCOL_VERSION.into()],
+        };
+        assert_eq!(
+            discovery_rejection(&current),
+            Some(DiscoveryRejection::RetryModern)
+        );
+
+        let legacy = McpError::ProtocolVersionRejected {
+            requested: MODERN_PROTOCOL_VERSION.into(),
+            supported: vec![
+                "2025-06-18".into(),
+                STATEFUL_REQUESTED_PROTOCOL_VERSION.into(),
+            ],
+        };
+        assert_eq!(
+            discovery_rejection(&legacy),
+            Some(DiscoveryRejection::Stateful(
+                STATEFUL_REQUESTED_PROTOCOL_VERSION.into()
+            ))
+        );
+
+        for rejected in [
+            McpError::ProtocolVersionRejected {
+                requested: "2099-01-01".into(),
+                supported: vec![STATEFUL_REQUESTED_PROTOCOL_VERSION.into()],
+            },
+            McpError::ProtocolVersionRejected {
+                requested: MODERN_PROTOCOL_VERSION.into(),
+                supported: vec![
+                    STATEFUL_REQUESTED_PROTOCOL_VERSION.into(),
+                    "2099-01-01".into(),
+                ],
+            },
+        ] {
+            assert_eq!(discovery_rejection(&rejected), None);
         }
     }
 

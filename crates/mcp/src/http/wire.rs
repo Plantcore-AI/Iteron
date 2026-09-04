@@ -8,13 +8,18 @@
 use super::{
     McpEffectCertainty, McpHttpDisposition, McpHttpEndpoint, McpHttpExchange, McpHttpHeaderPolicy,
     McpHttpResponse, McpSessionId, classify, effect_certainty,
-    port::{McpHeaderValue, build_post_with_routing},
-    sse::{SseInbound, SseLimits, read_json_response, read_matching_sse_response_with},
+    port::{McpHeaderValue, build_post_with_routing, build_sse_get},
+    sse::{
+        SseInbound, SseLimits, SseReadOutcome, read_json_response,
+        read_matching_sse_response_resumable,
+    },
 };
 use crate::{
     MAX_FRAME_BYTES, McpError, McpFuture, McpTransportKind, McpWire, request, token::Token,
 };
+use base64::Engine as _;
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -41,7 +46,15 @@ pub struct McpHttpWire<E: McpHttpExchange> {
     protocol_version: RwLock<String>,
     elicitation: Option<Arc<dyn crate::McpElicitationHandler>>,
     next_id: AtomicU64,
+    parameter_headers: RwLock<BTreeMap<String, Vec<ParameterHeader>>>,
     pub server_name: String,
+}
+
+#[derive(Clone)]
+struct ParameterHeader {
+    argument: String,
+    suffix: String,
+    value_type: String,
 }
 
 impl<E: McpHttpExchange> McpHttpWire<E> {
@@ -66,6 +79,7 @@ impl<E: McpHttpExchange> McpHttpWire<E> {
             ),
             elicitation: None,
             next_id: AtomicU64::new(1),
+            parameter_headers: RwLock::new(BTreeMap::new()),
             server_name,
         })
     }
@@ -163,21 +177,67 @@ impl<E: McpHttpExchange> McpHttpWire<E> {
         params: Value,
     ) -> (Result<Value, McpError>, McpEffectCertainty) {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let parameter_headers = self.parameter_headers_for_call(method, &params).await;
+        let resets_parameter_headers = method == "tools/list" && params.get("cursor").is_none();
         let routed_name = match method {
             "tools/call" | "prompts/get" => params.get("name"),
             "resources/read" => params.get("uri"),
             _ => None,
         };
-        let routed_name = routed_name.and_then(Value::as_str).map(str::to_owned);
+        let routed_name = routed_name
+            .and_then(Value::as_str)
+            .map(encode_mirrored_text);
         let frame = match request(id, method, params) {
             Ok(frame) => frame,
             // Nothing was dispatched: serialization failed before any byte could leave.
             Err(error) => return (Err(error), McpEffectCertainty::Definite),
         };
-        let (head, body) = match self
-            .dispatch(frame, Some(method), routed_name.as_deref())
-            .await
+        let call = self.execute_call_frame(
+            frame,
+            method,
+            routed_name.as_deref(),
+            &parameter_headers,
+            resets_parameter_headers,
+            id,
+        );
+        if method == "tools/call"
+            && !self.is_modern().await
+            && self.elicitation.is_some()
+            && self.has_session().await
         {
+            let inbound_response = match self.open_inbound_stream().await {
+                Ok(response) => response,
+                Err(error) => return (Err(error), McpEffectCertainty::Definite),
+            };
+            let inbound = self.listen_for_inbound(inbound_response);
+            tokio::pin!(call);
+            tokio::pin!(inbound);
+            tokio::select! {
+                biased;
+                result = &mut inbound => match result {
+                    Ok(()) => call.await,
+                    Err(error) => (Err(error), McpEffectCertainty::Unknown),
+                },
+                result = &mut call => result,
+            }
+        } else {
+            call.await
+        }
+    }
+
+    async fn execute_call_frame(
+        &self,
+        frame: String,
+        method: &str,
+        routed_name: Option<&str>,
+        parameter_headers: &[(String, McpHeaderValue)],
+        resets_parameter_headers: bool,
+        id: u64,
+    ) -> (Result<Value, McpError>, McpEffectCertainty) {
+        let dispatched = self
+            .dispatch(frame, Some(method), routed_name, parameter_headers)
+            .await;
+        let (head, body) = match dispatched {
             Ok(response) => (response.head, response.body),
             Err(error) => {
                 let certainty = certainty_of(&error);
@@ -185,6 +245,7 @@ impl<E: McpHttpExchange> McpHttpWire<E> {
             }
         };
         let status = head.status;
+        let insufficient_scope = head.insufficient_scope.clone();
         let modern = self.is_modern().await;
         let disposition = classify(
             status,
@@ -193,7 +254,22 @@ impl<E: McpHttpExchange> McpHttpWire<E> {
         if !modern && let Some(session_id) = head.session_id {
             *self.session.lock().await = Some(session_id);
         }
+        if status == 400 && head.media_type.as_deref() == Some(super::MCP_JSON_MEDIA_TYPE) {
+            let result = match self.read_body(head.media_type.as_deref(), body, id).await {
+                Ok(_) => Err(McpError::HttpStatus { status }),
+                Err(error) => Err(error),
+            };
+            return (result, McpEffectCertainty::Definite);
+        }
         if let Some(error) = disposition.into_error(status) {
+            if status == 403
+                && let Some(scopes) = insufficient_scope
+            {
+                return (
+                    Err(McpError::InsufficientScope { scopes }),
+                    McpEffectCertainty::Definite,
+                );
+            }
             return (Err(error), effect_certainty(status));
         }
         if disposition == McpHttpDisposition::Accepted {
@@ -206,6 +282,12 @@ impl<E: McpHttpExchange> McpHttpWire<E> {
             );
         }
         let result = self.read_body(head.media_type.as_deref(), body, id).await;
+        if method == "tools/list"
+            && let Ok(value) = &result
+        {
+            self.remember_parameter_headers(value, resets_parameter_headers)
+                .await;
+        }
         let certainty = match &result {
             Ok(_) => McpEffectCertainty::Definite,
             // A matching JSON-RPC error is an authoritative remote terminal, exactly as on stdio.
@@ -229,6 +311,7 @@ impl<E: McpHttpExchange> McpHttpWire<E> {
         frame: String,
         method: Option<&str>,
         name: Option<&str>,
+        parameter_headers: &[(String, McpHeaderValue)],
     ) -> Result<McpHttpResponse, McpError> {
         let credential = self.credential.lock().await;
         let session = self.session.lock().await.clone();
@@ -243,9 +326,91 @@ impl<E: McpHttpExchange> McpHttpWire<E> {
             &self.header_policy,
             (&protocol_version, frame),
             modern.then_some((method.unwrap_or("unknown"), name)),
+            parameter_headers,
         )?;
         drop(credential);
         self.exchange.exchange(http_request).await
+    }
+
+    async fn parameter_headers_for_call(
+        &self,
+        method: &str,
+        params: &Value,
+    ) -> Vec<(String, McpHeaderValue)> {
+        if method != "tools/call" {
+            return Vec::new();
+        }
+        let Some(name) = params.get("name").and_then(Value::as_str) else {
+            return Vec::new();
+        };
+        let Some(arguments) = params.get("arguments").and_then(Value::as_object) else {
+            return Vec::new();
+        };
+        self.parameter_headers
+            .read()
+            .await
+            .get(name)
+            .into_iter()
+            .flatten()
+            .filter_map(|header| {
+                let value = arguments.get(&header.argument)?;
+                encode_parameter_value(value, &header.value_type)
+                    .and_then(|value| McpHeaderValue::new(value).ok())
+                    .map(|value| {
+                        (
+                            format!("mcp-param-{}", header.suffix.to_ascii_lowercase()),
+                            value,
+                        )
+                    })
+            })
+            .collect()
+    }
+
+    async fn remember_parameter_headers(&self, result: &Value, reset: bool) {
+        let mut catalog = BTreeMap::new();
+        for tool in result
+            .get("tools")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let Some(name) = tool.get("name").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(properties) = tool
+                .get("inputSchema")
+                .and_then(|schema| schema.get("properties"))
+                .and_then(Value::as_object)
+            else {
+                continue;
+            };
+            let mut headers = Vec::new();
+            for (argument, schema) in properties {
+                let Some(suffix) = schema.get("x-mcp-header").and_then(Value::as_str) else {
+                    continue;
+                };
+                let Some(value_type) = schema.get("type").and_then(Value::as_str) else {
+                    continue;
+                };
+                if valid_parameter_suffix(suffix)
+                    && matches!(value_type, "string" | "integer" | "number" | "boolean")
+                {
+                    headers.push(ParameterHeader {
+                        argument: argument.clone(),
+                        suffix: suffix.to_owned(),
+                        value_type: value_type.to_owned(),
+                    });
+                }
+            }
+            if !headers.is_empty() {
+                catalog.insert(name.to_owned(), headers);
+            }
+        }
+        let mut retained = self.parameter_headers.write().await;
+        if reset {
+            retained.clear();
+        }
+        retained.extend(catalog);
     }
 
     async fn read_body(
@@ -259,12 +424,85 @@ impl<E: McpHttpExchange> McpHttpWire<E> {
                 read_json_response(&mut body, id, MAX_FRAME_BYTES).await
             }
             Some(super::MCP_SSE_MEDIA_TYPE) => {
-                read_matching_sse_response_with(body, id, self.limits, self).await
+                let initial =
+                    read_matching_sse_response_resumable(body, id, self.limits, self).await?;
+                match initial {
+                    SseReadOutcome::Response(value) => Ok(value),
+                    SseReadOutcome::Closed {
+                        last_event_id,
+                        retry_ms,
+                    } if !self.is_modern().await && last_event_id.is_some() => {
+                        let delay = retry_ms.unwrap_or(1_000).min(10_000);
+                        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                        let credential = self.credential.lock().await;
+                        let session = self.session.lock().await.clone();
+                        let version = self.protocol_version.read().await.clone();
+                        let request = build_sse_get(
+                            &self.endpoint,
+                            credential.as_ref(),
+                            (self.now_secs)(),
+                            session.as_ref(),
+                            &version,
+                            last_event_id.as_deref(),
+                        )?;
+                        drop(credential);
+                        let response = self.exchange.exchange(request).await?;
+                        if response.head.status != 200
+                            || response.head.media_type.as_deref()
+                                != Some(super::MCP_SSE_MEDIA_TYPE)
+                        {
+                            return Err(McpError::TransportClosed);
+                        }
+                        if let Some(session_id) = response.head.session_id {
+                            *self.session.lock().await = Some(session_id);
+                        }
+                        match read_matching_sse_response_resumable(
+                            response.body,
+                            id,
+                            self.limits,
+                            self,
+                        )
+                        .await?
+                        {
+                            SseReadOutcome::Response(value) => Ok(value),
+                            SseReadOutcome::Closed { .. } => Err(McpError::TransportClosed),
+                        }
+                    }
+                    SseReadOutcome::Closed { .. } => Err(McpError::TransportClosed),
+                }
             }
             // Guessing is the failure mode: a proxy error page served as `text/html` would be fed
             // to the JSON parser and reported as a protocol violation by the MCP server.
             _ => Err(McpError::UnsupportedMediaType),
         }
+    }
+
+    async fn open_inbound_stream(&self) -> Result<McpHttpResponse, McpError> {
+        let credential = self.credential.lock().await;
+        let session = self.session.lock().await.clone();
+        let version = self.protocol_version.read().await.clone();
+        let request = build_sse_get(
+            &self.endpoint,
+            credential.as_ref(),
+            (self.now_secs)(),
+            session.as_ref(),
+            &version,
+            None,
+        )?;
+        drop(credential);
+        let response = self.exchange.exchange(request).await?;
+        if response.head.status != 200
+            || response.head.media_type.as_deref() != Some(super::MCP_SSE_MEDIA_TYPE)
+        {
+            return Err(McpError::TransportClosed);
+        }
+        Ok(response)
+    }
+
+    async fn listen_for_inbound(&self, response: McpHttpResponse) -> Result<(), McpError> {
+        let _ = read_matching_sse_response_resumable(response.body, u64::MAX, self.limits, self)
+            .await?;
+        Ok(())
     }
 
     async fn answer_inbound(&self, message: Value) -> Result<(), McpError> {
@@ -326,7 +564,7 @@ impl<E: McpHttpExchange> McpHttpWire<E> {
 
     async fn send_server_response(&self, response: Value) -> Result<(), McpError> {
         let frame = crate::encode_frame(&response)?;
-        let response = self.dispatch(frame, None, None).await?;
+        let response = self.dispatch(frame, None, None, &[]).await?;
         let status = response.head.status;
         if !self.is_modern().await
             && let Some(session_id) = response.head.session_id
@@ -345,6 +583,45 @@ impl<E: McpHttpExchange> McpHttpWire<E> {
 impl<E: McpHttpExchange> SseInbound for McpHttpWire<E> {
     fn handle<'a>(&'a self, message: Value) -> McpFuture<'a, ()> {
         Box::pin(async move { self.answer_inbound(message).await })
+    }
+}
+
+fn valid_parameter_suffix(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(
+                    byte,
+                    b'!' | b'#'
+                        ..=b'\'' | b'*' | b'+' | b'-' | b'.' | b'^' | b'_' | b'`' | b'|' | b'~'
+                )
+        })
+}
+
+fn encode_parameter_value(value: &Value, value_type: &str) -> Option<String> {
+    let rendered = match value_type {
+        "string" => value.as_str()?.to_owned(),
+        "integer" | "number" if value.is_number() => value.to_string(),
+        "boolean" => value.as_bool()?.to_string(),
+        _ => return None,
+    };
+    Some(encode_mirrored_text(&rendered))
+}
+
+fn encode_mirrored_text(rendered: &str) -> String {
+    let plain = !rendered.is_empty()
+        && rendered.trim() == rendered
+        && rendered
+            .bytes()
+            .all(|byte| byte == b'\t' || (0x20..=0x7e).contains(&byte));
+    if plain {
+        rendered.to_owned()
+    } else {
+        format!(
+            "=?base64?{}?=",
+            base64::engine::general_purpose::STANDARD.encode(rendered.as_bytes())
+        )
     }
 }
 
@@ -376,7 +653,7 @@ impl<E: McpHttpExchange> McpWire for McpHttpWire<E> {
                 "method": method,
                 "params": params,
             }))?;
-            let response = self.dispatch(frame, Some(method), None).await?;
+            let response = self.dispatch(frame, Some(method), None, &[]).await?;
             let status = response.head.status;
             let modern = self.is_modern().await;
             let disposition = classify(status, !modern && response.head.session_id.is_some());
@@ -400,11 +677,13 @@ mod tests {
     use std::sync::Mutex as StdMutex;
     use tokio::io::BufReader;
 
+    type RecordedRequest = (String, Vec<(String, String)>, String);
+
     /// A scripted exchange. It records what it was asked to send, so the request-side contract is
     /// observable, and replays canned responses in order.
     struct ScriptedExchange {
         responses: StdMutex<Vec<(McpHttpResponseHead, String)>>,
-        seen: StdMutex<Vec<(String, Vec<String>, String)>>,
+        seen: StdMutex<Vec<RecordedRequest>>,
     }
 
     impl ScriptedExchange {
@@ -416,7 +695,19 @@ mod tests {
         }
 
         fn header_names(&self, index: usize) -> Vec<String> {
-            self.seen.lock().unwrap()[index].1.clone()
+            self.seen.lock().unwrap()[index]
+                .1
+                .iter()
+                .map(|(name, _)| name.clone())
+                .collect()
+        }
+
+        fn header_value(&self, index: usize, expected: &str) -> Option<String> {
+            self.seen.lock().unwrap()[index]
+                .1
+                .iter()
+                .find(|(name, _)| name == expected)
+                .map(|(_, value)| value.clone())
         }
 
         fn body(&self, index: usize) -> String {
@@ -435,7 +726,7 @@ mod tests {
                 request
                     .headers()
                     .iter()
-                    .map(|(name, _)| name.clone())
+                    .map(|(name, value)| (name.clone(), value.expose().to_owned()))
                     .collect(),
                 request.body().to_owned(),
             ));
@@ -456,6 +747,7 @@ mod tests {
             media_type: media_type.map(str::to_owned),
             session_id: None,
             retry_after_secs: None,
+            insufficient_scope: None,
         }
     }
 
@@ -516,6 +808,90 @@ mod tests {
             .await
             .unwrap();
         assert!(result.get("content").is_some());
+    }
+
+    #[tokio::test]
+    async fn a_gracefully_closed_sse_response_reconnects_once_with_its_event_id() {
+        let exchange = ScriptedExchange::new(vec![
+            (
+                head(200, Some("text/event-stream")),
+                "id: event-7\nretry: 0\ndata:\n\n".into(),
+            ),
+            (
+                head(200, Some("text/event-stream")),
+                "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true}}\n\n".into(),
+            ),
+        ]);
+        let result = http_wire(exchange.clone())
+            .send_request("tools/call", json!({"name":"retry"}))
+            .await
+            .unwrap();
+        assert_eq!(result["ok"], true);
+        assert_eq!(exchange.call_count(), 2);
+        assert_eq!(
+            exchange.header_value(1, "last-event-id").as_deref(),
+            Some("event-7")
+        );
+    }
+
+    #[tokio::test]
+    async fn custom_parameter_headers_encode_unsafe_values_and_ignore_unannotated_fields() {
+        let exchange = ScriptedExchange::new(Vec::new());
+        let wire = http_wire(exchange);
+        wire.remember_parameter_headers(
+            &json!({
+                "tools":[{
+                    "name":"headers",
+                    "inputSchema":{"type":"object","properties":{
+                        "region":{"type":"string","x-mcp-header":"Region"},
+                        "debug":{"type":"boolean","x-mcp-header":"Debug"},
+                        "ignored":{"type":"string"}
+                    }}
+                }]
+            }),
+            true,
+        )
+        .await;
+        let headers = wire
+            .parameter_headers_for_call(
+                "tools/call",
+                &json!({
+                    "name":"headers",
+                    "arguments":{"region":" 北 ","debug":true,"ignored":"secret"}
+                }),
+            )
+            .await;
+        assert_eq!(headers.len(), 2);
+        assert_eq!(headers[0].0, "mcp-param-debug");
+        assert_eq!(headers[0].1.expose(), "true");
+        assert_eq!(headers[1].0, "mcp-param-region");
+        assert!(headers[1].1.expose().starts_with("=?base64?"));
+        assert!(headers.iter().all(|(name, _)| !name.contains("ignored")));
+    }
+
+    #[tokio::test]
+    async fn parameter_header_catalog_merges_pages_and_resets_on_a_fresh_listing() {
+        let exchange = ScriptedExchange::new(Vec::new());
+        let wire = http_wire(exchange);
+        wire.remember_parameter_headers(
+            &json!({"tools":[{"name":"first","inputSchema":{"properties":{
+                "region":{"type":"string","x-mcp-header":"Region"}
+            }}}]}),
+            true,
+        )
+        .await;
+        wire.remember_parameter_headers(
+            &json!({"tools":[{"name":"second","inputSchema":{"properties":{
+                "count":{"type":"integer","x-mcp-header":"Count"}
+            }}}]}),
+            false,
+        )
+        .await;
+        assert_eq!(wire.parameter_headers.read().await.len(), 2);
+
+        wire.remember_parameter_headers(&json!({"tools":[]}), true)
+            .await;
+        assert!(wire.parameter_headers.read().await.is_empty());
     }
 
     struct AcceptPublicName;

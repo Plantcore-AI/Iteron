@@ -156,24 +156,30 @@ impl iteron_mcp::McpMrtrHandler for RecordingMrtrHandler {
 
 fn bearer_oauth() -> crate::config::McpOAuthConfig {
     crate::config::McpOAuthConfig {
-        access_token_env: "MCP_ACCESS_TOKEN".into(),
+        access_token_env: Some("MCP_ACCESS_TOKEN".into()),
         expires_at_env: None,
         refresh_url: None,
         refresh_token_env: None,
         client_id: None,
         client_secret_env: None,
+        resource: None,
+        scopes: Vec::new(),
+        registration: crate::config::OAuthClientRegistration::Auto,
         revoke_url: None,
     }
 }
 
 fn refresh_oauth() -> crate::config::McpOAuthConfig {
     crate::config::McpOAuthConfig {
-        access_token_env: "MCP_ACCESS_TOKEN".into(),
+        access_token_env: Some("MCP_ACCESS_TOKEN".into()),
         expires_at_env: Some("MCP_ACCESS_EXPIRES".into()),
         refresh_url: Some("https://example.invalid/oauth/refresh".into()),
         refresh_token_env: Some("MCP_REFRESH_TOKEN".into()),
         client_id: Some("core-test".into()),
         client_secret_env: Some("MCP_CLIENT_SECRET".into()),
+        resource: None,
+        scopes: Vec::new(),
+        registration: crate::config::OAuthClientRegistration::Auto,
         revoke_url: Some("https://example.invalid/oauth/revoke".into()),
     }
 }

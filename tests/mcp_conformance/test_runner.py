@@ -6,9 +6,21 @@ import hashlib
 import unittest
 
 import run
+import check_document
 
 
 class RunnerTests(unittest.TestCase):
+    def test_official_oauth_inventory_is_versioned_and_http_required(self):
+        self.assertEqual(
+            {version: len(scenarios) for version, scenarios in run.AUTH_SCENARIOS.items()},
+            {"2025-06-18": 3, "2025-11-25": 14, "2026-07-28": 25},
+        )
+        for version, scenarios in run.AUTH_SCENARIOS.items():
+            self.assertTrue(all(scenario.startswith("auth/") for scenario in scenarios))
+            for scenario in scenarios:
+                self.assertIn((version, "http", scenario), run.required_cases())
+                self.assertNotIn((version, "stdio", scenario), run.required_cases())
+
     def complete_report_and_baseline(self):
         scenarios = []
         expected_passes = []
@@ -60,6 +72,14 @@ class RunnerTests(unittest.TestCase):
         self.assertLessEqual(len(run.safe_text("x" * 4096)), 1024)
         self.assertIn("redacted", run.safe_text("Bearer secret-value"))
 
+    def test_document_matrix_is_derived_from_a_complete_report(self):
+        report, _, _ = self.complete_report_and_baseline()
+        report.update(schemaVersion=2, conformanceCommit=run.PIN)
+        table = check_document.render_table(report)
+        check_document.verify(report, f"heading\n\n{table}\n")
+        with self.assertRaisesRegex(ValueError, "does not match"):
+            check_document.verify(report, f"heading\n\n{table.replace('pass', 'fail', 1)}\n")
+
     def test_gate_rejects_missing_scenarios_new_failures_and_baseline_changes(self):
         _, baseline, baseline_bytes = self.complete_report_and_baseline()
         report = {"scenarios": []}
@@ -99,7 +119,7 @@ class RunnerTests(unittest.TestCase):
             any(problem.startswith("required scenario runner failed") for problem in problems)
         )
 
-    def test_gate_allows_exit_one_only_when_all_failed_checks_are_reviewed(self):
+    def test_gate_rejects_exit_one_even_when_all_failed_checks_are_reviewed(self):
         report, baseline, _ = self.complete_report_and_baseline()
         scenario = report["scenarios"][0]
         check = scenario["checks"][0]
@@ -113,7 +133,10 @@ class RunnerTests(unittest.TestCase):
 
         success, problems = self.gate(report, baseline, baseline_bytes)
 
-        self.assertTrue(success, problems)
+        self.assertFalse(success)
+        self.assertTrue(
+            any(problem.startswith("required scenario runner failed") for problem in problems)
+        )
 
         scenario["checks"].clear()
         success, problems = self.gate(report, baseline, baseline_bytes)

@@ -1,6 +1,9 @@
 //! Operator-owned MCP configuration and provider-free diagnostics.
 
-use crate::config::{FileConfig, McpServerConfig, McpServerOrigin, McpTransportConfig};
+use crate::config::{
+    FileConfig, McpOAuthConfig, McpServerConfig, McpServerOrigin, McpTransportConfig,
+    OAuthClientRegistration,
+};
 use clap::{Subcommand, ValueEnum};
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -16,9 +19,21 @@ pub(crate) enum AuthAction {
     /// Start an OAuth login for one configured HTTP server.
     Login {
         name: String,
+        /// Override the protected resource for this login only.
+        #[arg(long = "oauth-resource")]
+        resource: Option<String>,
+        /// Override requested OAuth scopes for this login only.
+        #[arg(long, value_delimiter = ',')]
+        scopes: Vec<String>,
+        /// Select OAuth client registration independently from MCP protocol negotiation.
+        #[arg(long = "oauth-client-registration", value_enum)]
+        registration: Option<OAuthClientRegistration>,
         /// Pre-registered client id or HTTPS Client ID Metadata Document URL.
         #[arg(long)]
         client_id: Option<String>,
+        /// Environment-variable name containing a pre-registered client secret.
+        #[arg(long)]
+        client_secret_env: Option<String>,
     },
     /// Remove locally stored credentials for one server.
     Logout { name: String },
@@ -42,6 +57,16 @@ pub(crate) enum Action {
         /// Environment-variable name explicitly granted to this stdio server. Repeatable.
         #[arg(long = "env", value_name = "NAME", requires = "stdio")]
         env_names: Vec<String>,
+        #[arg(long, requires = "url")]
+        oauth_resource: Option<String>,
+        #[arg(long, value_delimiter = ',', requires = "url")]
+        oauth_scopes: Vec<String>,
+        #[arg(long, value_enum, requires = "url")]
+        oauth_client_registration: Option<OAuthClientRegistration>,
+        #[arg(long, requires = "url")]
+        oauth_client_id: Option<String>,
+        #[arg(long, requires = "url")]
+        oauth_client_secret_env: Option<String>,
         #[arg(last = true)]
         args: Vec<String>,
     },
@@ -69,9 +94,12 @@ pub(crate) enum Action {
         #[arg(long, value_enum, default_value_t = Format::Text)]
         format: Format,
     },
-    /// Show configured state without opening a connection.
+    /// Show configured state, optionally with a bounded live connection probe.
     Status {
         name: Option<String>,
+        /// Open bounded discovery connections and report live negotiated state.
+        #[arg(long)]
+        connect: bool,
         #[arg(long, value_enum, default_value_t = Format::Text)]
         format: Format,
     },
@@ -107,11 +135,11 @@ struct Diagnostic<'a> {
 }
 
 #[derive(Serialize)]
-struct StatusView<'a> {
-    name: &'a str,
+struct StatusView {
+    name: String,
     transport: &'static str,
     connection_state: &'static str,
-    protocol_version: Option<&'static str>,
+    protocol_version: Option<String>,
     tool_count: Option<usize>,
     last_error_time: Option<&'static str>,
     authentication: &'static str,
@@ -121,6 +149,8 @@ struct StatusView<'a> {
 struct ProbeDiagnostic {
     server: String,
     outcome: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    authentication: Option<&'static str>,
     protocol_version: Option<String>,
     diagnostics: Vec<&'static str>,
     remediation: Vec<&'static str>,
@@ -134,13 +164,35 @@ pub(crate) async fn run(action: &Action) -> anyhow::Result<u8> {
             url,
             stdio,
             env_names,
+            oauth_resource,
+            oauth_scopes,
+            oauth_client_registration,
+            oauth_client_id,
+            oauth_client_secret_env,
             args,
-        } => add(name, url.as_deref(), stdio.as_deref(), env_names, args),
+        } => add(
+            name,
+            url.as_deref(),
+            stdio.as_deref(),
+            env_names,
+            args,
+            AddOAuthOptions {
+                resource: oauth_resource.as_deref(),
+                scopes: oauth_scopes,
+                registration: *oauth_client_registration,
+                client_id: oauth_client_id.as_deref(),
+                client_secret_env: oauth_client_secret_env.as_deref(),
+            },
+        ),
         Action::List { format } => list(*format),
         Action::Get { name, format } => get(name, *format),
         Action::Remove { name } => remove(name),
         Action::Test { name, format } => test(name, *format).await,
-        Action::Status { name, format } => status(name.as_deref(), *format),
+        Action::Status {
+            name,
+            connect,
+            format,
+        } => status(name.as_deref(), *connect, *format).await,
         Action::Doctor { connect, format } => doctor(*connect, *format).await,
         Action::Auth { action } => super::credential_store::run_auth(action).await,
     }
@@ -152,6 +204,7 @@ fn add(
     stdio: Option<&str>,
     env_names: &[String],
     args: &[String],
+    oauth: AddOAuthOptions<'_>,
 ) -> anyhow::Result<u8> {
     let server = match (url, stdio) {
         (Some(url), None) if args.is_empty() => McpServerConfig {
@@ -163,7 +216,7 @@ fn add(
             env_names: Vec::new(),
             url: Some(url.to_owned()),
             header_env: BTreeMap::new(),
-            oauth: None,
+            oauth: oauth.into_config(),
             tools: iteron_mcp::McpToolFilter::default(),
             policy: iteron_mcp::McpServerPolicy::default(),
         },
@@ -195,6 +248,39 @@ fn add(
     })?;
     println!("added MCP server `{name}` to {}", path.display());
     Ok(crate::output::EXIT_SUCCESS)
+}
+
+struct AddOAuthOptions<'a> {
+    resource: Option<&'a str>,
+    scopes: &'a [String],
+    registration: Option<OAuthClientRegistration>,
+    client_id: Option<&'a str>,
+    client_secret_env: Option<&'a str>,
+}
+
+impl AddOAuthOptions<'_> {
+    fn into_config(self) -> Option<McpOAuthConfig> {
+        if self.resource.is_none()
+            && self.scopes.is_empty()
+            && self.registration.is_none()
+            && self.client_id.is_none()
+            && self.client_secret_env.is_none()
+        {
+            return None;
+        }
+        Some(McpOAuthConfig {
+            access_token_env: None,
+            expires_at_env: None,
+            refresh_url: None,
+            refresh_token_env: None,
+            client_id: self.client_id.map(str::to_owned),
+            client_secret_env: self.client_secret_env.map(str::to_owned),
+            resource: self.resource.map(str::to_owned),
+            scopes: self.scopes.to_vec(),
+            registration: self.registration.unwrap_or_default(),
+            revoke_url: None,
+        })
+    }
 }
 
 fn list(format: Format) -> anyhow::Result<u8> {
@@ -240,11 +326,7 @@ fn sanitized_config(server: &McpServerConfig) -> anyhow::Result<serde_json::Valu
     }
     object.insert(
         "authentication".into(),
-        serde_json::Value::String(if server.oauth.is_some() {
-            "environment".into()
-        } else {
-            super::credential_store::local_status(server).into()
-        }),
+        serde_json::Value::String(authentication_status(server).into()),
     );
     Ok(value)
 }
@@ -278,6 +360,7 @@ async fn test(name: &str, format: Format) -> anyhow::Result<u8> {
                 &ProbeDiagnostic {
                     server: name.to_owned(),
                     outcome: "fail",
+                    authentication: None,
                     protocol_version: None,
                     diagnostics: vec!["MCP_SERVER_UNKNOWN"],
                     remediation: vec![remediation("MCP_SERVER_UNKNOWN")],
@@ -315,6 +398,7 @@ async fn probe(server: &McpServerConfig) -> ProbeDiagnostic {
                     return ProbeDiagnostic {
                         server: server.name.clone(),
                         outcome: "fail",
+                        authentication: Some(authentication_status(server)),
                         protocol_version: Some(version),
                         diagnostics: vec![code],
                         remediation: vec![remediation(code)],
@@ -325,6 +409,7 @@ async fn probe(server: &McpServerConfig) -> ProbeDiagnostic {
             ProbeDiagnostic {
                 server: server.name.clone(),
                 outcome: "pass",
+                authentication: Some(authentication_status(server)),
                 protocol_version: Some(version),
                 diagnostics: Vec::new(),
                 remediation: Vec::new(),
@@ -336,6 +421,7 @@ async fn probe(server: &McpServerConfig) -> ProbeDiagnostic {
             ProbeDiagnostic {
                 server: server.name.clone(),
                 outcome: "fail",
+                authentication: Some(authentication_status(server)),
                 protocol_version: None,
                 diagnostics: vec![code],
                 remediation: vec![remediation(code)],
@@ -345,7 +431,7 @@ async fn probe(server: &McpServerConfig) -> ProbeDiagnostic {
     }
 }
 
-fn status(name: Option<&str>, format: Format) -> anyhow::Result<u8> {
+async fn status(name: Option<&str>, connect: bool, format: Format) -> anyhow::Result<u8> {
     let config = FileConfig::load_user()?;
     let servers = config.mcp_servers.as_deref().unwrap_or_default();
     let selected = match name {
@@ -369,37 +455,64 @@ fn status(name: Option<&str>, format: Format) -> anyhow::Result<u8> {
         },
         None => servers.iter().collect(),
     };
+    let mut values = Vec::with_capacity(selected.len());
+    for server in selected {
+        values.push(if connect {
+            let probe = probe(server).await;
+            StatusView {
+                name: server.name.clone(),
+                transport: transport(server),
+                connection_state: if probe.outcome == "pass" {
+                    "connected"
+                } else {
+                    "failed"
+                },
+                protocol_version: probe.protocol_version,
+                tool_count: probe.tool_count,
+                last_error_time: None,
+                authentication: authentication_status(server),
+            }
+        } else {
+            status_view(server)
+        });
+    }
+    let failed = values
+        .iter()
+        .any(|status| status.connection_state == "failed");
     match format {
         Format::Text => {
-            for server in selected {
-                let status = status_view(server);
+            for status in values {
                 println!(
-                    "{}\t{}\t{}\tprotocol=-\ttools=-\tlast_error=-\tauth={}",
-                    status.name, status.connection_state, status.transport, status.authentication
+                    "{}\t{}\t{}\tprotocol={}\ttools={}\tlast_error=-\tauth={}",
+                    status.name,
+                    status.connection_state,
+                    status.transport,
+                    status.protocol_version.as_deref().unwrap_or("-"),
+                    status
+                        .tool_count
+                        .map_or_else(|| "-".into(), |count| count.to_string()),
+                    status.authentication
                 );
             }
         }
-        Format::Json => {
-            let values = selected.into_iter().map(status_view).collect::<Vec<_>>();
-            println!("{}", serde_json::to_string(&values)?);
-        }
+        Format::Json => println!("{}", serde_json::to_string(&values)?),
     }
-    Ok(crate::output::EXIT_SUCCESS)
+    Ok(if failed {
+        crate::output::EXIT_HARNESS
+    } else {
+        crate::output::EXIT_SUCCESS
+    })
 }
 
-fn status_view(server: &McpServerConfig) -> StatusView<'_> {
+fn status_view(server: &McpServerConfig) -> StatusView {
     StatusView {
-        name: &server.name,
+        name: server.name.clone(),
         transport: transport(server),
         connection_state: "not_connected",
         protocol_version: None,
         tool_count: None,
         last_error_time: None,
-        authentication: if server.oauth.is_some() {
-            "environment"
-        } else {
-            super::credential_store::local_status(server)
-        },
+        authentication: authentication_status(server),
     }
 }
 
@@ -456,7 +569,8 @@ fn local_check(server: &McpServerConfig) -> ProbeDiagnostic {
             if server
                 .oauth
                 .as_ref()
-                .is_some_and(|oauth| std::env::var_os(&oauth.access_token_env).is_none()) =>
+                .and_then(|oauth| oauth.access_token_env.as_deref())
+                .is_some_and(|name| std::env::var_os(name).is_none()) =>
         {
             Some("MCP_AUTH_REQUIRED")
         }
@@ -473,6 +587,7 @@ fn local_check(server: &McpServerConfig) -> ProbeDiagnostic {
     ProbeDiagnostic {
         server: server.name.clone(),
         outcome: if code.is_some() { "fail" } else { "pass" },
+        authentication: Some(authentication_status(server)),
         protocol_version: None,
         diagnostics: code.into_iter().collect(),
         remediation: code.into_iter().map(remediation).collect(),
@@ -495,7 +610,14 @@ fn emit_doctor(format: Format, checks: &[ProbeDiagnostic], failed: bool) -> anyh
         Format::Text => {
             println!("mcp.doctor: {}", if failed { "fail" } else { "pass" });
             for check in checks {
-                println!("{}: {}", check.server, check.outcome);
+                println!(
+                    "{}: {}{}",
+                    check.server,
+                    check.outcome,
+                    check
+                        .authentication
+                        .map_or_else(String::new, |status| format!(" (auth={status})"))
+                );
                 for (code, remediation) in check.diagnostics.iter().zip(&check.remediation) {
                     println!("diagnostic: {code}");
                     println!("remediation: {remediation}");
@@ -545,11 +667,19 @@ fn view(server: &McpServerConfig) -> ServerView<'_> {
                     |endpoint| endpoint.public_origin(),
                 ),
         },
-        authentication: if server.oauth.is_some() {
-            "environment"
-        } else {
-            super::credential_store::local_status(server)
-        },
+        authentication: authentication_status(server),
+    }
+}
+
+fn authentication_status(server: &McpServerConfig) -> &'static str {
+    match server
+        .oauth
+        .as_ref()
+        .and_then(|oauth| oauth.access_token_env.as_deref())
+    {
+        Some(name) if std::env::var_os(name).is_some() => "external",
+        Some(_) => "unauthenticated",
+        None => super::credential_store::local_status(server),
     }
 }
 
@@ -563,9 +693,19 @@ fn transport(server: &McpServerConfig) -> &'static str {
 fn diagnostic_code(error: &iteron_mcp::McpError) -> &'static str {
     match error {
         iteron_mcp::McpError::UnsupportedProtocolVersion { .. }
-        | iteron_mcp::McpError::InvalidProtocolVersion { .. } => "MCP_PROTOCOL_UNSUPPORTED",
+        | iteron_mcp::McpError::InvalidProtocolVersion { .. }
+        | iteron_mcp::McpError::ProtocolVersionRejected { .. } => "MCP_PROTOCOL_UNSUPPORTED",
         iteron_mcp::McpError::Credential(_) => "MCP_AUTH_REQUIRED",
         iteron_mcp::McpError::HttpStatus { status: 401 | 403 } => "MCP_AUTH_REQUIRED",
+        iteron_mcp::McpError::InsufficientScope { .. } => "MCP_AUTH_SCOPE_REJECTED",
+        iteron_mcp::McpError::Protocol(message)
+            if message == "stored MCP credential is invalid" =>
+        {
+            "MCP_AUTH_CREDENTIAL_INVALID"
+        }
+        iteron_mcp::McpError::FrameTooLarge { .. }
+        | iteron_mcp::McpError::ResponseTooLarge { .. }
+        | iteron_mcp::McpError::TooManyFrames { .. } => "MCP_MESSAGE_LIMIT",
         iteron_mcp::McpError::Deadline { .. } => "MCP_TRANSPORT_TIMEOUT",
         iteron_mcp::McpError::Protocol(message)
             if message.starts_with("MCP server/discover")
@@ -590,6 +730,13 @@ fn remediation(code: &str) -> &'static str {
         "MCP_AUTH_REQUIRED" => {
             "Run `iteron mcp auth login <name>` or refresh configured credentials."
         }
+        "MCP_AUTH_SCOPE_REJECTED" => {
+            "Review the requested scopes, then explicitly re-run `iteron mcp auth login <name> --scopes <scope,...>`."
+        }
+        "MCP_AUTH_CREDENTIAL_INVALID" => {
+            "Remove the invalid local credential and run `iteron mcp auth login <name>` again."
+        }
+        "MCP_MESSAGE_LIMIT" => "Reduce the MCP response size before reconnecting.",
         "MCP_COMMAND_NOT_FOUND" => "Install the executable or use an absolute command path.",
         "MCP_TRANSPORT_TIMEOUT" => "Check the server and network, then retry.",
         "MCP_TOOL_CATALOG_INVALID" => "Fix the server tool catalog before reconnecting.",

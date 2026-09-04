@@ -81,6 +81,21 @@ impl McpHttpExchange for ReqwestMcpExchange {
                 .get(reqwest::header::RETRY_AFTER)
                 .and_then(|value| value.to_str().ok())
                 .and_then(parse_retry_after);
+            let insufficient_scope = (status == 403)
+                .then(|| {
+                    response
+                        .headers()
+                        .get_all(reqwest::header::WWW_AUTHENTICATE)
+                        .iter()
+                        .filter_map(|value| value.to_str().ok())
+                        .filter_map(super::parse_bearer_challenge)
+                        .find(|challenge| {
+                            challenge.error.as_deref() == Some("insufficient_scope")
+                                && !challenge.scopes.is_empty()
+                        })
+                        .map(|challenge| challenge.scopes)
+                })
+                .flatten();
             let stream = response
                 .bytes_stream()
                 .map_err(|_| io::Error::other("MCP HTTP response body closed"));
@@ -91,6 +106,7 @@ impl McpHttpExchange for ReqwestMcpExchange {
                     media_type,
                     session_id,
                     retry_after_secs,
+                    insufficient_scope,
                 },
                 body: Box::new(BufReader::new(reader)),
             })
@@ -170,6 +186,29 @@ mod tests {
         assert!(matches!(
             wire.send_request("ping", json!({})).await,
             Err(McpError::HttpRedirectRefused)
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_valid_403_scope_challenge_is_typed_and_never_retried() {
+        let url = server(concat!(
+            "HTTP/1.1 403 Forbidden\r\n",
+            "www-authenticate: Bearer error=\"insufficient_scope\", scope=\"files:read files:write\"\r\n",
+            "content-length: 0\r\n",
+            "connection: close\r\n\r\n"
+        ))
+        .await;
+        let wire = McpHttpWire::new(
+            McpHttpEndpoint::parse(&url).unwrap(),
+            ReqwestMcpExchange::new().unwrap(),
+            Arc::new(|| 0_u64) as NowSecs,
+            "loopback".into(),
+        )
+        .unwrap();
+        assert!(matches!(
+            wire.send_request("tools/list", json!({})).await,
+            Err(McpError::InsufficientScope { scopes })
+                if scopes == ["files:read", "files:write"]
         ));
     }
 }

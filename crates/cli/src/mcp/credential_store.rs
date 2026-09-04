@@ -19,6 +19,11 @@ pub(crate) struct StoredCredential {
     pub(crate) resource: String,
     pub(crate) issuer: String,
     pub(crate) client_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) client_secret: Option<String>,
+    pub(crate) token_auth_method: iteron_mcp::oauth::TokenEndpointAuthMethod,
+    pub(crate) requested_scopes: Vec<String>,
+    pub(crate) granted_scopes: Vec<String>,
     pub(crate) access_token: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) refresh_token: Option<String>,
@@ -35,6 +40,10 @@ impl StoredCredential {
         resource: String,
         issuer: String,
         client_id: String,
+        client_secret: Option<String>,
+        token_auth_method: iteron_mcp::oauth::TokenEndpointAuthMethod,
+        requested_scopes: Vec<String>,
+        granted_scopes: Vec<String>,
         access_token: String,
         refresh_token: Option<String>,
         expires_at_unix: u64,
@@ -49,26 +58,43 @@ impl StoredCredential {
             validate_public_field("revocation_endpoint", endpoint)?;
         }
         validate_secret(&access_token)?;
+        if let Some(secret) = &client_secret {
+            validate_secret(secret)?;
+        }
         if let Some(token) = &refresh_token {
             validate_secret(token)?;
         }
-        Ok(Self {
+        let credential = Self {
             schema_version: CREDENTIAL_SCHEMA_VERSION,
             binding_id: binding_id(server)?,
             server_name: server.name.clone(),
             resource,
             issuer,
             client_id,
+            client_secret,
+            token_auth_method,
+            requested_scopes,
+            granted_scopes,
             access_token,
             refresh_token,
             expires_at_unix,
             token_endpoint,
             revocation_endpoint,
-        })
+        };
+        validate_credential_fields(&credential)?;
+        Ok(credential)
     }
 }
 
 pub(crate) fn local_status(server: &McpServerConfig) -> &'static str {
+    if server
+        .oauth
+        .as_ref()
+        .and_then(|oauth| oauth.access_token_env.as_deref())
+        .is_some_and(|name| std::env::var_os(name).is_some())
+    {
+        return "external";
+    }
     if pending_path(server).is_some_and(|path| {
         path.metadata()
             .and_then(|metadata| metadata.modified())
@@ -92,6 +118,7 @@ pub(crate) fn save(server: &McpServerConfig, credential: &StoredCredential) -> a
         anyhow::bail!("MCP credential binding does not match the configured server");
     }
     validate_binding(server, credential)?;
+    validate_credential_fields(credential)?;
     let path = credential_path(server)
         .ok_or_else(|| anyhow::anyhow!("cannot resolve the MCP credential directory"))?;
     let bytes = serde_json::to_vec(credential)?;
@@ -113,7 +140,9 @@ pub(crate) fn load(server: &McpServerConfig) -> anyhow::Result<Option<StoredCred
     if file.metadata()?.len() > MAX_CREDENTIAL_BYTES {
         anyhow::bail!("MCP credential document exceeds its private storage bound");
     }
-    let credential: StoredCredential = serde_json::from_reader(file)?;
+    let credential: StoredCredential = serde_json::from_reader(file).map_err(|_| {
+        anyhow::anyhow!("MCP credential schema is incomplete; run `iteron mcp auth login` again")
+    })?;
     if credential.schema_version != CREDENTIAL_SCHEMA_VERSION
         || credential.server_name != server.name
         || credential.binding_id != binding_id(server)?
@@ -121,10 +150,7 @@ pub(crate) fn load(server: &McpServerConfig) -> anyhow::Result<Option<StoredCred
         anyhow::bail!("MCP credential binding does not match the configured server");
     }
     validate_binding(server, &credential)?;
-    validate_secret(&credential.access_token)?;
-    if let Some(token) = &credential.refresh_token {
-        validate_secret(token)?;
-    }
+    validate_credential_fields(&credential)?;
     Ok(Some(credential))
 }
 
@@ -142,20 +168,56 @@ pub(crate) fn delete(server: &McpServerConfig) -> anyhow::Result<bool> {
 pub(crate) async fn run_auth(action: &AuthAction) -> anyhow::Result<u8> {
     let config = crate::config::FileConfig::load_user()?;
     match action {
-        AuthAction::Login { name, client_id } => {
+        AuthAction::Login {
+            name,
+            resource,
+            scopes,
+            registration,
+            client_id,
+            client_secret_env,
+        } => {
             let server = find(&config, name)?;
             if server.transport != McpTransportConfig::Http {
                 anyhow::bail!("MCP OAuth login is available only for HTTP servers");
             }
-            if matches!(local_status(server), "authenticated") {
+            let has_overrides = resource.is_some()
+                || !scopes.is_empty()
+                || registration.is_some()
+                || client_id.is_some()
+                || client_secret_env.is_some();
+            if matches!(local_status(server), "authenticated") && !has_overrides {
                 println!("MCP server `{name}` is already authenticated");
                 return Ok(crate::output::EXIT_SUCCESS);
             }
             if matches!(local_status(server), "pending") {
                 anyhow::bail!("MCP OAuth login is already pending for `{name}`");
             }
+            if server
+                .oauth
+                .as_ref()
+                .and_then(|oauth| oauth.access_token_env.as_ref())
+                .is_some()
+            {
+                anyhow::bail!(
+                    "MCP server `{name}` uses an external bearer; remove access_token_env before interactive login"
+                );
+            }
             mark_pending(server)?;
-            let result = super::oauth_login::login(server, client_id.as_deref(), true).await;
+            let result = super::oauth_login::login(
+                server,
+                super::oauth_login::LoginOptions {
+                    resource: resource.as_deref(),
+                    scopes: if scopes.is_empty() {
+                        None
+                    } else {
+                        Some(scopes)
+                    },
+                    registration: *registration,
+                    client_id: client_id.as_deref(),
+                    client_secret_env: client_secret_env.as_deref(),
+                },
+            )
+            .await;
             clear_pending(server)?;
             match result.map_err(auth_login_error)? {
                 super::oauth_login::LoginOutcome::NotRequired => {
@@ -205,10 +267,27 @@ pub(crate) async fn run_auth(action: &AuthAction) -> anyhow::Result<u8> {
 
 fn auth_login_error(error: anyhow::Error) -> anyhow::Error {
     let message = error.to_string();
-    let code = if message.contains("issuer mismatch")
-        || message.contains("resource metadata does not match")
-    {
+    let code = if message.contains("issuer mismatch") {
         "MCP_AUTH_ISSUER_MISMATCH"
+    } else if message.contains("resource metadata does not match")
+        || message.contains("crosses the configured endpoint origin")
+    {
+        "MCP_AUTH_RESOURCE_MISMATCH"
+    } else if message.contains("MCP_AUTH_REGISTRATION_UNSUPPORTED")
+        || message.contains("CIMD registration requires")
+        || message.contains("does not advertise Client ID Metadata Documents")
+    {
+        "MCP_AUTH_REGISTRATION_UNSUPPORTED"
+    } else if message.contains("token auth")
+        || message.contains("public token endpoint")
+        || message.contains("compatible client authentication")
+    {
+        "MCP_AUTH_TOKEN_METHOD_UNSUPPORTED"
+    } else if message.contains("scope was rejected")
+        || message.contains("scope exceeded")
+        || message.contains("invalid scope")
+    {
+        "MCP_AUTH_SCOPE_REJECTED"
     } else if message.contains("callback timed out") {
         "MCP_AUTH_CALLBACK_TIMEOUT"
     } else {
@@ -285,10 +364,16 @@ fn validate_secret(value: &str) -> anyhow::Result<()> {
 }
 
 fn validate_binding(server: &McpServerConfig, credential: &StoredCredential) -> anyhow::Result<()> {
-    if server.url.as_deref() != Some(credential.resource.as_str()) {
+    if let Some(configured) = server
+        .oauth
+        .as_ref()
+        .and_then(|oauth| oauth.resource.as_deref())
+        && url::Url::parse(configured)? != url::Url::parse(&credential.resource)?
+    {
         anyhow::bail!("MCP credential resource does not match the configured server");
     }
-    let issuer = url::Url::parse(&credential.issuer)?;
+    validate_credential_url(&credential.resource, "resource")?;
+    validate_credential_url(&credential.issuer, "issuer")?;
     for endpoint in [
         Some(credential.token_endpoint.as_str()),
         credential.revocation_endpoint.as_deref(),
@@ -296,13 +381,66 @@ fn validate_binding(server: &McpServerConfig, credential: &StoredCredential) -> 
     .into_iter()
     .flatten()
     {
-        let endpoint = url::Url::parse(endpoint)?;
-        if issuer.scheme() != endpoint.scheme()
-            || issuer.host_str() != endpoint.host_str()
-            || issuer.port_or_known_default() != endpoint.port_or_known_default()
-        {
-            anyhow::bail!("MCP credential endpoint does not match its issuer");
+        validate_credential_url(endpoint, "endpoint")?;
+    }
+    Ok(())
+}
+
+fn validate_credential_fields(credential: &StoredCredential) -> anyhow::Result<()> {
+    validate_secret(&credential.access_token)?;
+    if let Some(token) = &credential.refresh_token {
+        validate_secret(token)?;
+    }
+    if let Some(secret) = &credential.client_secret {
+        validate_secret(secret)?;
+    }
+    for scopes in [&credential.requested_scopes, &credential.granted_scopes] {
+        if scopes.len() > 64 || scopes.iter().map(String::len).sum::<usize>() > 4096 {
+            anyhow::bail!("MCP credential scopes exceed their bound");
         }
+        let mut unique = std::collections::BTreeSet::new();
+        if scopes.iter().any(|scope| {
+            scope.is_empty()
+                || scope.len() > 256
+                || scope.chars().any(char::is_whitespace)
+                || scope.chars().any(char::is_control)
+                || !unique.insert(scope)
+        }) {
+            anyhow::bail!("MCP credential scope is invalid");
+        }
+    }
+    let requested = credential
+        .requested_scopes
+        .iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    if !credential
+        .granted_scopes
+        .iter()
+        .all(|scope| requested.contains(scope))
+    {
+        anyhow::bail!("MCP credential granted scope exceeds its request");
+    }
+    if credential.token_auth_method != iteron_mcp::oauth::TokenEndpointAuthMethod::None
+        && credential.client_secret.is_none()
+    {
+        anyhow::bail!("MCP credential token auth method requires a client secret");
+    }
+    Ok(())
+}
+
+fn validate_credential_url(value: &str, field: &str) -> anyhow::Result<()> {
+    let url = url::Url::parse(value)?;
+    let loopback = url.host_str().is_some_and(|host| {
+        host.eq_ignore_ascii_case("localhost")
+            || host
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|address| address.is_loopback())
+    });
+    if url.scheme() != "https" && !(url.scheme() == "http" && loopback) {
+        anyhow::bail!("MCP credential {field} must use HTTPS or loopback HTTP");
+    }
+    if !url.username().is_empty() || url.password().is_some() || url.fragment().is_some() {
+        anyhow::bail!("MCP credential {field} contains forbidden URL components");
     }
     Ok(())
 }
@@ -350,6 +488,10 @@ mod tests {
             "https://example.com/mcp".into(),
             "https://auth.example.com".into(),
             "client".into(),
+            None,
+            iteron_mcp::oauth::TokenEndpointAuthMethod::None,
+            Vec::new(),
+            Vec::new(),
             "access-secret".into(),
             Some("refresh-secret".into()),
             99,
@@ -365,13 +507,29 @@ mod tests {
     }
 
     #[test]
-    fn resource_and_issuer_endpoint_changes_cannot_reuse_a_credential() {
-        let server = server("safe");
+    fn resource_changes_cannot_reuse_a_credential_but_metadata_endpoints_may_cross_origin() {
+        let mut server = server("safe");
+        server.oauth = Some(crate::config::McpOAuthConfig {
+            access_token_env: None,
+            expires_at_env: None,
+            refresh_url: None,
+            refresh_token_env: None,
+            client_id: None,
+            client_secret_env: None,
+            resource: Some("https://example.com/mcp".into()),
+            scopes: Vec::new(),
+            registration: crate::config::OAuthClientRegistration::Auto,
+            revoke_url: None,
+        });
         let mut credential = StoredCredential::new(
             &server,
             "https://example.com/mcp".into(),
             "https://auth.example.com".into(),
             "client".into(),
+            None,
+            iteron_mcp::oauth::TokenEndpointAuthMethod::None,
+            Vec::new(),
+            Vec::new(),
             "access-secret".into(),
             None,
             99,
@@ -383,6 +541,8 @@ mod tests {
         assert!(validate_binding(&server, &credential).is_err());
         credential.resource = "https://example.com/mcp".into();
         credential.token_endpoint = "https://other-auth.example/token".into();
+        assert!(validate_binding(&server, &credential).is_ok());
+        credential.token_endpoint = "https://other-auth.example/token#fragment".into();
         assert!(validate_binding(&server, &credential).is_err());
     }
 }

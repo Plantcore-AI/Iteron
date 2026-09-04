@@ -204,3 +204,42 @@ impl Write for ByteCounter {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn extension_pages_preserve_values_and_reject_a_cursor_cycle() {
+        let mut pages = ExtensionPagination::new("resources/list").unwrap();
+        assert_eq!(
+            pages
+                .accept(&json!({
+                    "resources":[{"uri":"test://β","name":null,"meta":{}}],
+                    "nextCursor":"same"
+                }))
+                .unwrap(),
+            Some(json!({"cursor":"same"}))
+        );
+        assert!(matches!(
+            pages.accept(&json!({"resources":[],"nextCursor":"same"})),
+            Err(McpError::Protocol(_))
+        ));
+    }
+
+    #[test]
+    fn resources_and_prompts_use_distinct_result_keys() {
+        let mut resources = ExtensionPagination::new("resources/list").unwrap();
+        resources
+            .accept(&json!({"resources":[{"uri":"test://one"}]}))
+            .unwrap();
+        assert_eq!(resources.finish()["resources"].as_array().unwrap().len(), 1);
+
+        let mut prompts = ExtensionPagination::new("prompts/list").unwrap();
+        prompts
+            .accept(&json!({"prompts":[{"name":"one","arguments":[]}]}))
+            .unwrap();
+        assert_eq!(prompts.finish()["prompts"][0]["arguments"], json!([]));
+    }
+}

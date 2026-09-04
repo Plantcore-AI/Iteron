@@ -7,9 +7,9 @@ use crate::http::{
 };
 use crate::pagination::{ToolListLimits, ToolListPagination};
 use crate::protocol_version::{
-    DiscoveryNegotiation, McpProtocolMode, STATEFUL_REQUESTED_PROTOCOL_VERSION, discover_params,
-    discovery_allows_stateful_fallback, modern_params, negotiate_discovery,
-    negotiate_initialize_result, require_modern_discovery,
+    DiscoveryNegotiation, DiscoveryRejection, McpProtocolMode, STATEFUL_REQUESTED_PROTOCOL_VERSION,
+    discover_params, discovery_allows_stateful_fallback, discovery_rejection, modern_params,
+    negotiate_discovery, negotiate_initialize_result, require_modern_discovery,
 };
 use crate::tool_catalog::ToolCatalogBuilder;
 use crate::tool_filter::{McpToolFilter, validate_bare_tool_name, validate_server_name};
@@ -304,17 +304,42 @@ impl McpRemoteClient {
                     operation: "2026 discovery handshake".into(),
                 })?;
             let discovery = match first {
-                Err(McpError::HttpStatus { status: 400 }) if protocol_mode.prefers_modern() => {
+                Err(McpError::HttpStatus { status: 503 }) if protocol_mode.prefers_modern() => {
                     tokio::time::timeout(deadlines.startup(), discover())
                         .await
                         .map_err(|_| McpError::Deadline {
                             operation: "2026 discovery retry".into(),
                         })?
                 }
+                Err(error)
+                    if matches!(
+                        discovery_rejection(&error),
+                        Some(DiscoveryRejection::RetryModern)
+                    ) =>
+                {
+                    tokio::time::timeout(deadlines.startup(), discover())
+                        .await
+                        .map_err(|_| McpError::Deadline {
+                            operation: "2026 discovery version retry".into(),
+                        })?
+                }
                 result => result,
             };
             let negotiation = match discovery {
                 Ok(result) => negotiate_discovery(&result)?,
+                Err(error)
+                    if protocol_mode == McpProtocolMode::Auto
+                        && matches!(
+                            discovery_rejection(&error),
+                            Some(DiscoveryRejection::Stateful(_))
+                        ) =>
+                {
+                    let Some(DiscoveryRejection::Stateful(version)) = discovery_rejection(&error)
+                    else {
+                        unreachable!("guard requires a stateful discovery rejection")
+                    };
+                    DiscoveryNegotiation::Stateful(version)
+                }
                 Err(error)
                     if protocol_mode == McpProtocolMode::Auto
                         && discovery_allows_stateful_fallback(&error) =>
@@ -343,25 +368,36 @@ impl McpRemoteClient {
             }
         }
         wire.set_protocol_version(&stateful_request_version).await;
+        let initialize_params = || {
+            json!({
+                "protocolVersion": stateful_request_version,
+                "capabilities": if advertises_elicitation {
+                    json!({"elicitation": {"form": {}}})
+                } else {
+                    json!({})
+                },
+                "clientInfo": {"name": "iteron", "version": env!("CARGO_PKG_VERSION")}
+            })
+        };
         let initialize = tokio::time::timeout(
             deadlines.startup(),
-            client.send_request_with_auth_retry(
-                "initialize",
-                json!({
-                    "protocolVersion": stateful_request_version,
-                    "capabilities": if advertises_elicitation {
-                        json!({"elicitation": {"form": {}}})
-                    } else {
-                        json!({})
-                    },
-                    "clientInfo": {"name": "iteron", "version": env!("CARGO_PKG_VERSION")}
-                }),
-            ),
+            client.send_request_with_auth_retry("initialize", initialize_params()),
         )
         .await
         .map_err(|_| McpError::Deadline {
             operation: "initialize handshake".into(),
-        })??;
+        })?;
+        let initialize = match initialize {
+            Err(McpError::HttpStatus { status: 503 }) => tokio::time::timeout(
+                deadlines.startup(),
+                client.send_request_with_auth_retry("initialize", initialize_params()),
+            )
+            .await
+            .map_err(|_| McpError::Deadline {
+                operation: "initialize retry".into(),
+            })?,
+            result => result,
+        }?;
         client.negotiated_protocol_version = negotiate_initialize_result(&initialize)?;
         wire.set_protocol_version(client.negotiated_protocol_version.clone())
             .await;
@@ -892,6 +928,16 @@ impl McpRemoteClient {
         let first = self
             .send_request_with_auth_retry(method, self.params(params.clone())?)
             .await;
+        let first = match first {
+            Err(McpError::HttpStatus { status })
+                if method.ends_with("/list")
+                    && crate::http::classify(status, false).is_retryable() =>
+            {
+                self.send_request_with_auth_retry(method, self.params(params.clone())?)
+                    .await
+            }
+            result => result,
+        };
         let result = match first {
             Err(McpError::SessionExpired)
                 if !self.protocol_mode.is_stateless() && method.ends_with("/list") =>
@@ -1744,6 +1790,8 @@ mod tests {
             "refresh-initial".into(),
             Some("client".into()),
             None,
+            crate::oauth::TokenEndpointAuthMethod::None,
+            vec!["mcp".into()],
         )
         .unwrap();
         let client = McpRemoteClient::connect(

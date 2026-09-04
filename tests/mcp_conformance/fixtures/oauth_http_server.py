@@ -13,10 +13,13 @@ parser.add_argument(
     choices=(
         "success",
         "no-auth",
+        "no-cimd",
         "issuer-mismatch",
         "resource-mismatch",
         "scope-escalation",
         "scope-missing",
+        "discovered-scope-rejected-once",
+        "refresh-required",
         "unsupported-token-auth",
     ),
     default="success",
@@ -28,6 +31,7 @@ parser.add_argument(
 )
 ARGUMENTS = parser.parse_args()
 MODE = ARGUMENTS.mode
+AUTHORIZATION_ATTEMPTS = 0
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -60,11 +64,12 @@ class Handler(BaseHTTPRequestHandler):
                 200,
                 {
                     "resource": (
-                        f"{self.origin}/other"
+                        "http://127.0.0.1:1/other"
                         if MODE == "resource-mismatch"
                         else f"{self.origin}/mcp"
                     ),
                     "authorization_servers": [self.origin],
+                    "scopes_supported": ["mcp"],
                 },
             )
         elif url.path == "/.well-known/oauth-authorization-server":
@@ -80,7 +85,7 @@ class Handler(BaseHTTPRequestHandler):
                     "token_endpoint": f"{self.origin}/token",
                     "registration_endpoint": f"{self.origin}/register",
                     "revocation_endpoint": f"{self.origin}/revoke",
-                    "client_id_metadata_document_supported": True,
+                    "client_id_metadata_document_supported": MODE != "no-cimd",
                     "authorization_response_iss_parameter_supported": True,
                     "token_endpoint_auth_methods_supported": (
                         ["client_secret_basic"]
@@ -90,14 +95,26 @@ class Handler(BaseHTTPRequestHandler):
                 },
             )
         elif url.path == "/authorize":
+            global AUTHORIZATION_ATTEMPTS
+            AUTHORIZATION_ATTEMPTS += 1
             query = urllib.parse.parse_qs(url.query)
             redirect = query["redirect_uri"][0]
             separator = "&" if "?" in redirect else "?"
-            location = (
-                f"{redirect}{separator}code=local-code"
-                f"&state={urllib.parse.quote(query['state'][0])}"
-                f"&iss={urllib.parse.quote(self.origin, safe='')}"
-            )
+            if (
+                MODE == "discovered-scope-rejected-once"
+                and AUTHORIZATION_ATTEMPTS == 1
+                and query.get("scope")
+            ):
+                location = (
+                    f"{redirect}{separator}error=invalid_scope"
+                    f"&state={urllib.parse.quote(query['state'][0])}"
+                )
+            else:
+                location = (
+                    f"{redirect}{separator}code=local-code"
+                    f"&state={urllib.parse.quote(query['state'][0])}"
+                    f"&iss={urllib.parse.quote(self.origin, safe='')}"
+                )
             self.send_response(302)
             self.send_header("Location", location)
             self.send_header("Content-Length", "0")
@@ -113,6 +130,23 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/token":
             values = urllib.parse.parse_qs(body.decode())
+            if values.get("grant_type") == ["refresh_token"]:
+                if MODE != "refresh-required" or values.get("refresh_token") != [
+                    "local-refresh"
+                ]:
+                    self.send_json(400, {"error": "invalid_grant"})
+                    return
+                self.send_json(
+                    200,
+                    {
+                        "access_token": "local-access-refreshed",
+                        "refresh_token": "local-refresh",
+                        "expires_in": 3600,
+                        "token_type": "Bearer",
+                        "scope": "mcp",
+                    },
+                )
+                return
             if values.get("code") != ["local-code"]:
                 self.send_json(400, {"error": "invalid_grant"})
                 return
@@ -121,11 +155,11 @@ class Handler(BaseHTTPRequestHandler):
                 {
                     "access_token": "local-access",
                     "refresh_token": "local-refresh",
-                    "expires_in": 3600,
+                    "expires_in": 0 if MODE == "refresh-required" else 3600,
                     "token_type": "Bearer",
                     **(
                         {}
-                        if MODE == "scope-missing"
+                        if MODE in ("scope-missing", "discovered-scope-rejected-once")
                         else {
                             "scope": "mcp admin" if MODE == "scope-escalation" else "mcp"
                         }
@@ -137,7 +171,12 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(200, {})
             return
         if self.path == "/mcp":
-            if MODE != "no-auth" and self.headers.get("Authorization") != "Bearer local-access":
+            expected_access = (
+                "Bearer local-access-refreshed"
+                if MODE == "refresh-required"
+                else "Bearer local-access"
+            )
+            if MODE != "no-auth" and self.headers.get("Authorization") != expected_access:
                 self.send_json(401, {"error": "unauthorized"})
                 return
             request = json.loads(body)
@@ -179,6 +218,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json(404, {"error": "not_found"})
 
 
-server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+class QuietThreadingHTTPServer(ThreadingHTTPServer):
+    def handle_error(self, _request, _client_address):
+        return
+
+
+server = QuietThreadingHTTPServer(("127.0.0.1", 0), Handler)
 print(f"http://127.0.0.1:{server.server_port}/mcp", flush=True)
 server.serve_forever()

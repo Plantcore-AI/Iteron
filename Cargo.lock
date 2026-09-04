@@ -1503,6 +1503,7 @@ dependencies = [
 name = "iteron-mcp"
 version = "0.0.20"
 dependencies = [
+ "base64",
  "futures-util",
  "iteron-protocol",
  "iteron-sandbox",

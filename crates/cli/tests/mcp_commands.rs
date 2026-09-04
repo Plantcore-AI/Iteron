@@ -168,6 +168,16 @@ fn lifecycle(version: &str, modern: bool) {
     assert!(status.contains("\"connection_state\":\"not_connected\""));
     assert!(status.contains("\"protocol_version\":null"));
     assert!(status.contains("\"tool_count\":null"));
+    let connected_status = run(
+        &config,
+        &["mcp", "status", "local", "--connect", "--format", "json"],
+        modern,
+    );
+    assert_success(&connected_status);
+    let connected_status = stdout(&connected_status);
+    assert!(connected_status.contains("\"connection_state\":\"connected\""));
+    assert!(connected_status.contains(&format!("\"protocol_version\":\"{version}\"")));
+    assert!(connected_status.contains("\"tool_count\":1"));
     let doctor = run(
         &config,
         &["mcp", "doctor", "--connect", "--format", "json"],
@@ -402,18 +412,7 @@ fn oauth_login_status_test_and_logout_use_only_loopback_and_private_storage() {
     };
     assert!(login_status.success());
 
-    let duplicate = run(
-        &config,
-        &[
-            "mcp",
-            "auth",
-            "login",
-            "oauth",
-            "--client-id",
-            "https://client.example/iteron.json",
-        ],
-        false,
-    );
+    let duplicate = run(&config, &["mcp", "auth", "login", "oauth"], false);
     assert_success(&duplicate);
     assert!(stdout(&duplicate).contains("already authenticated"));
 
@@ -444,6 +443,13 @@ fn oauth_login_status_test_and_logout_use_only_loopback_and_private_storage() {
         &["mcp", "test", "oauth", "--format", "json"],
         false,
     ));
+    let doctor = run(
+        &config,
+        &["mcp", "doctor", "--connect", "--format", "json"],
+        false,
+    );
+    assert_success(&doctor);
+    assert!(stdout(&doctor).contains("\"protocol_version\":\"2025-11-25\""));
     assert_success(&run(&config, &["mcp", "auth", "logout", "oauth"], false));
     assert!(!credential.exists());
     let revoked = run(
@@ -453,6 +459,7 @@ fn oauth_login_status_test_and_logout_use_only_loopback_and_private_storage() {
     );
     assert!(!revoked.status.success());
     assert!(stdout(&revoked).contains("MCP_AUTH_REQUIRED"));
+    assert_success(&run(&config, &["mcp", "remove", "oauth"], false));
 
     fixture.kill().unwrap();
     let _ = fixture.wait();
@@ -474,6 +481,49 @@ fn oauth_scope_omission_keeps_the_requested_scope() {
     oauth_protocol_roundtrip_mode("2026-07-28", true, "scope-missing");
 }
 
+#[test]
+fn an_expired_login_credential_refreshes_before_protocol_negotiation() {
+    oauth_protocol_roundtrip_mode("2026-07-28", true, "refresh-required");
+}
+
+#[test]
+fn auto_registration_falls_back_to_dcr_but_forced_cimd_does_not() {
+    let config = temp_config("auto-dcr");
+    let (mut fixture, resource) = start_oauth_fixture("no-cimd");
+    assert_success(&run(
+        &config,
+        &["mcp", "add", "oauth", "--url", &resource],
+        false,
+    ));
+    let mut login = spawn_modern_login(&config, None);
+    let authorization_url = read_authorization_url(&mut login);
+    let (status, location) = http_get(&authorization_url);
+    assert_eq!(status, 302);
+    assert_eq!(http_get(&location.unwrap()).0, 200);
+    assert!(wait_for_login(&mut login).success());
+    assert_success(&run(&config, &["mcp", "auth", "logout", "oauth"], false));
+
+    let forced = run(
+        &config,
+        &[
+            "mcp",
+            "auth",
+            "login",
+            "oauth",
+            "--oauth-client-registration",
+            "cimd",
+            "--client-id",
+            "https://client.example/iteron.json",
+        ],
+        false,
+    );
+    assert!(!forced.status.success());
+    assert!(String::from_utf8_lossy(&forced.stderr).contains("MCP_AUTH_REGISTRATION_UNSUPPORTED"));
+    fixture.kill().unwrap();
+    let _ = fixture.wait();
+    std::fs::remove_dir_all(config).unwrap();
+}
+
 fn oauth_protocol_roundtrip(protocol_version: &str, modern: bool) {
     oauth_protocol_roundtrip_mode(protocol_version, modern, "success");
 }
@@ -492,6 +542,15 @@ fn oauth_protocol_roundtrip_mode(protocol_version: &str, modern: bool, mode: &st
     assert_eq!(status, 302);
     assert_eq!(http_get(&location.expect("authorization redirect")).0, 200);
     assert!(wait_for_login(&mut login).success());
+    if mode == "refresh-required" {
+        let status = run(
+            &config,
+            &["mcp", "auth", "status", "oauth", "--format", "json"],
+            false,
+        );
+        assert_success(&status);
+        assert!(stdout(&status).contains("\"authentication\":\"expired\""));
+    }
     let tested = run(
         &config,
         &["mcp", "test", "oauth", "--format", "json"],
@@ -509,8 +568,11 @@ fn oauth_protocol_roundtrip_mode(protocol_version: &str, modern: bool, mode: &st
 fn oauth_metadata_binding_errors_fail_before_callback_without_storing_credentials() {
     for (mode, code) in [
         ("issuer-mismatch", "MCP_AUTH_ISSUER_MISMATCH"),
-        ("resource-mismatch", "MCP_AUTH_ISSUER_MISMATCH"),
-        ("unsupported-token-auth", "MCP_AUTH_FAILED"),
+        ("resource-mismatch", "MCP_AUTH_RESOURCE_MISMATCH"),
+        (
+            "unsupported-token-auth",
+            "MCP_AUTH_TOKEN_METHOD_UNSUPPORTED",
+        ),
     ] {
         let config = temp_config(mode);
         let (mut fixture, resource) = start_oauth_fixture(mode);
@@ -539,7 +601,7 @@ fn oauth_metadata_binding_errors_fail_before_callback_without_storing_credential
         );
         assert!(!combined.contains("local-access"));
         assert!(!combined.contains("local-refresh"));
-        assert!(combined.contains(code));
+        assert!(combined.contains(code), "{mode}: {combined}");
         assert_success(&run(
             &config,
             &["mcp", "auth", "status", "oauth", "--format", "json"],
@@ -625,6 +687,118 @@ fn oauth_scope_escalation_and_callback_timeout_fail_without_storing_credentials(
         let _ = fixture.wait();
         std::fs::remove_dir_all(config).unwrap();
     }
+}
+
+#[test]
+fn discovered_scope_rejection_restarts_once_without_changing_operator_scopes() {
+    let config = temp_config("scope-fallback");
+    let (mut fixture, resource) = start_oauth_fixture("discovered-scope-rejected-once");
+    assert_success(&run(
+        &config,
+        &["mcp", "add", "oauth", "--url", &resource],
+        false,
+    ));
+    let mut login = Command::new(env!("CARGO_BIN_EXE_iteron"))
+        .env("ITERON_CONFIG_HOME", &config)
+        .args(["mcp", "auth", "login", "oauth"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let first = read_authorization_url(&mut login);
+    assert!(
+        url::Url::parse(&first)
+            .unwrap()
+            .query_pairs()
+            .any(|(name, value)| { name == "scope" && value == "mcp" })
+    );
+    let (_, first_callback) = http_get(&first);
+    assert_eq!(http_get(&first_callback.unwrap()).0, 400);
+    let second = read_authorization_url(&mut login);
+    assert!(
+        !url::Url::parse(&second)
+            .unwrap()
+            .query_pairs()
+            .any(|(name, _)| name == "scope")
+    );
+    let (_, second_callback) = http_get(&second);
+    assert_eq!(http_get(&second_callback.unwrap()).0, 200);
+    assert!(wait_for_login(&mut login).success());
+    assert!(
+        stdout(&run(
+            &config,
+            &["mcp", "auth", "status", "oauth", "--format", "json"],
+            false,
+        ))
+        .contains("\"authentication\":\"authenticated\"")
+    );
+    fixture.kill().unwrap();
+    let _ = fixture.wait();
+    std::fs::remove_dir_all(config).unwrap();
+
+    let config = temp_config("operator-scope-no-fallback");
+    let (mut fixture, resource) = start_oauth_fixture("discovered-scope-rejected-once");
+    assert_success(&run(
+        &config,
+        &["mcp", "add", "oauth", "--url", &resource],
+        false,
+    ));
+    let mut login = Command::new(env!("CARGO_BIN_EXE_iteron"))
+        .env("ITERON_CONFIG_HOME", &config)
+        .args(["mcp", "auth", "login", "oauth", "--scopes", "mcp"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let authorization = read_authorization_url(&mut login);
+    let (_, callback) = http_get(&authorization);
+    assert_eq!(http_get(&callback.unwrap()).0, 400);
+    assert!(!wait_for_login(&mut login).success());
+    fixture.kill().unwrap();
+    let _ = fixture.wait();
+    std::fs::remove_dir_all(config).unwrap();
+}
+
+#[test]
+fn external_bearer_status_is_truthful_and_interactive_login_leaves_no_pending_state() {
+    let config = temp_config("external-bearer");
+    let directory = config.join(".iteron");
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(
+        directory.join("config.json"),
+        r#"{
+            "schema_version":2,
+            "mcp_servers":[{
+                "name":"external",
+                "transport":"http",
+                "url":"https://mcp.example/mcp",
+                "oauth":{"access_token_env":"MCP_EXTERNAL_TOKEN"}
+            }]
+        }"#,
+    )
+    .unwrap();
+    let secret = "external-secret-marker";
+    for args in [
+        vec!["mcp", "auth", "status", "external", "--format", "json"],
+        vec!["mcp", "list", "--format", "json"],
+        vec!["mcp", "get", "external", "--format", "json"],
+        vec!["mcp", "status", "external", "--format", "json"],
+        vec!["mcp", "doctor", "--format", "json"],
+    ] {
+        let output = run_with_env(&config, &args, "MCP_EXTERNAL_TOKEN", secret);
+        assert_success(&output);
+        assert!(stdout(&output).contains("\"authentication\":\"external\""));
+        assert!(!stdout(&output).contains(secret));
+    }
+    let login = run_with_env(
+        &config,
+        &["mcp", "auth", "login", "external"],
+        "MCP_EXTERNAL_TOKEN",
+        secret,
+    );
+    assert!(!login.status.success());
+    assert!(!config.join(".iteron/mcp-credentials").exists());
+    std::fs::remove_dir_all(config).unwrap();
 }
 
 fn http_get(url: &str) -> (u16, Option<String>) {

@@ -23,6 +23,16 @@ pub struct OAuthRefreshGrant {
     refresh_token: String,
     client_id: Option<String>,
     client_secret: Option<String>,
+    token_auth_method: TokenEndpointAuthMethod,
+    granted_scopes: std::collections::BTreeSet<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TokenEndpointAuthMethod {
+    None,
+    ClientSecretBasic,
+    ClientSecretPost,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -100,6 +110,8 @@ impl OAuthRefreshGrant {
         refresh_token: String,
         client_id: Option<String>,
         client_secret: Option<String>,
+        token_auth_method: TokenEndpointAuthMethod,
+        granted_scopes: impl IntoIterator<Item = String>,
     ) -> Result<Self, McpError> {
         validate_secret(&refresh_token)?;
         if let Some(client_secret) = &client_secret {
@@ -122,12 +134,22 @@ impl OAuthRefreshGrant {
                 ),
             });
         }
+        if token_auth_method != TokenEndpointAuthMethod::None
+            && (client_id.is_none() || client_secret.is_none())
+        {
+            return Err(McpError::InvalidEndpoint {
+                field: "oauth_token_auth",
+                limit: 0,
+            });
+        }
         Ok(Self {
             endpoint,
             revoke_endpoint,
             refresh_token,
             client_id,
             client_secret,
+            token_auth_method,
+            granted_scopes: granted_scopes.into_iter().collect(),
         })
     }
 
@@ -166,15 +188,29 @@ impl OAuthClient {
             ("grant_type", "refresh_token".to_owned()),
             ("refresh_token", grant.refresh_token.clone()),
         ];
-        if let Some(client_id) = &grant.client_id {
-            form.push(("client_id", client_id.clone()));
+        let mut request = self.client.post(grant.endpoint.expose_url());
+        match grant.token_auth_method {
+            TokenEndpointAuthMethod::None => {
+                if let Some(client_id) = &grant.client_id {
+                    form.push(("client_id", client_id.clone()));
+                }
+            }
+            TokenEndpointAuthMethod::ClientSecretBasic => {
+                request = request.basic_auth(
+                    grant.client_id.as_deref().unwrap_or_default(),
+                    grant.client_secret.as_deref(),
+                );
+            }
+            TokenEndpointAuthMethod::ClientSecretPost => {
+                if let Some(client_id) = &grant.client_id {
+                    form.push(("client_id", client_id.clone()));
+                }
+                if let Some(client_secret) = &grant.client_secret {
+                    form.push(("client_secret", client_secret.clone()));
+                }
+            }
         }
-        if let Some(client_secret) = &grant.client_secret {
-            form.push(("client_secret", client_secret.clone()));
-        }
-        let response = self
-            .client
-            .post(grant.endpoint.expose_url())
+        let response = request
             .form(&form)
             .send()
             .await
@@ -186,15 +222,7 @@ impl OAuthClient {
         if !response.status().is_success() {
             return Err(McpError::HttpStatus { status });
         }
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|_| transport_error("refresh_body"))?;
-        if bytes.len() > MAX_FRAME_BYTES {
-            return Err(McpError::FrameTooLarge {
-                limit: MAX_FRAME_BYTES,
-            });
-        }
+        let bytes = read_bounded_body(response, "refresh_body").await?;
         let response: RefreshResponse = serde_json::from_slice(&bytes)?;
         if response
             .token_type
@@ -205,12 +233,14 @@ impl OAuthClient {
                 "OAuth refresh returned a non-bearer token".into(),
             ));
         }
-        validate_refresh_scope(response.scope.as_deref())?;
+        let refreshed_scopes =
+            validate_refresh_scope(response.scope.as_deref(), &grant.granted_scopes)?;
         validate_secret(&response.access_token)?;
         if let Some(rotated) = response.refresh_token {
             validate_secret(&rotated)?;
             grant.refresh_token = rotated;
         }
+        grant.granted_scopes = refreshed_scopes;
         Ok(Token::from_expires_in(
             response.access_token,
             now_secs,
@@ -226,15 +256,29 @@ impl OAuthClient {
             ("token", grant.refresh_token.clone()),
             ("token_type_hint", "refresh_token".to_owned()),
         ];
-        if let Some(client_id) = &grant.client_id {
-            form.push(("client_id", client_id.clone()));
+        let mut request = self.client.post(endpoint.expose_url());
+        match grant.token_auth_method {
+            TokenEndpointAuthMethod::None => {
+                if let Some(client_id) = &grant.client_id {
+                    form.push(("client_id", client_id.clone()));
+                }
+            }
+            TokenEndpointAuthMethod::ClientSecretBasic => {
+                request = request.basic_auth(
+                    grant.client_id.as_deref().unwrap_or_default(),
+                    grant.client_secret.as_deref(),
+                );
+            }
+            TokenEndpointAuthMethod::ClientSecretPost => {
+                if let Some(client_id) = &grant.client_id {
+                    form.push(("client_id", client_id.clone()));
+                }
+                if let Some(client_secret) = &grant.client_secret {
+                    form.push(("client_secret", client_secret.clone()));
+                }
+            }
         }
-        if let Some(client_secret) = &grant.client_secret {
-            form.push(("client_secret", client_secret.clone()));
-        }
-        let response = self
-            .client
-            .post(endpoint.expose_url())
+        let response = request
             .form(&form)
             .send()
             .await
@@ -250,6 +294,27 @@ impl OAuthClient {
     }
 }
 
+async fn read_bounded_body(
+    mut response: reqwest::Response,
+    stage: &'static str,
+) -> Result<Vec<u8>, McpError> {
+    let mut bytes = Vec::with_capacity(
+        response
+            .content_length()
+            .unwrap_or(0)
+            .min(MAX_FRAME_BYTES as u64) as usize,
+    );
+    while let Some(chunk) = response.chunk().await.map_err(|_| transport_error(stage))? {
+        if bytes.len().saturating_add(chunk.len()) > MAX_FRAME_BYTES {
+            return Err(McpError::FrameTooLarge {
+                limit: MAX_FRAME_BYTES,
+            });
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
+}
+
 #[derive(Deserialize)]
 struct RefreshResponse {
     access_token: String,
@@ -262,9 +327,12 @@ struct RefreshResponse {
     scope: Option<String>,
 }
 
-fn validate_refresh_scope(scope: Option<&str>) -> Result<(), McpError> {
+fn validate_refresh_scope(
+    scope: Option<&str>,
+    granted: &std::collections::BTreeSet<String>,
+) -> Result<std::collections::BTreeSet<String>, McpError> {
     let Some(scope) = scope else {
-        return Ok(());
+        return Ok(granted.clone());
     };
     if scope.is_empty()
         || scope.len() > MAX_OAUTH_SECRET_BYTES
@@ -274,13 +342,14 @@ fn validate_refresh_scope(scope: Option<&str>) -> Result<(), McpError> {
     }
     let scopes = scope
         .split_ascii_whitespace()
+        .map(str::to_owned)
         .collect::<std::collections::BTreeSet<_>>();
-    if scopes.len() != 1 || !scopes.contains("mcp") {
+    if !scopes.is_subset(granted) {
         return Err(McpError::Protocol(
-            "OAuth refresh scope differs from the MCP grant".into(),
+            "OAuth refresh scope exceeds the original grant".into(),
         ));
     }
-    Ok(())
+    Ok(scopes)
 }
 
 fn validate_secret(secret: &str) -> Result<(), McpError> {
@@ -382,6 +451,8 @@ mod tests {
             "refresh-initial".into(),
             Some("client-id".into()),
             Some("client-secret".into()),
+            TokenEndpointAuthMethod::ClientSecretPost,
+            ["mcp".to_owned()],
         )
         .unwrap();
         let client = OAuthClient::new().unwrap();
@@ -408,6 +479,8 @@ mod tests {
                 String::new(),
                 None,
                 None,
+                TokenEndpointAuthMethod::None,
+                Vec::new(),
             )
             .is_err()
         );
@@ -418,12 +491,27 @@ mod tests {
                 "r".into(),
                 Some("bad\nclient".into()),
                 None,
+                TokenEndpointAuthMethod::None,
+                Vec::new(),
             )
             .is_err()
         );
-        assert!(validate_refresh_scope(None).is_ok());
-        assert!(validate_refresh_scope(Some("mcp")).is_ok());
-        assert!(validate_refresh_scope(Some("mcp admin")).is_err());
-        assert!(validate_refresh_scope(Some("other")).is_err());
+        assert!(
+            OAuthRefreshGrant::new(
+                McpHttpEndpoint::parse("https://example.com/token").unwrap(),
+                None,
+                "refresh".into(),
+                Some("client".into()),
+                None,
+                TokenEndpointAuthMethod::ClientSecretBasic,
+                Vec::new(),
+            )
+            .is_err()
+        );
+        let granted = std::collections::BTreeSet::from(["mcp".to_owned()]);
+        assert!(validate_refresh_scope(None, &granted).is_ok());
+        assert!(validate_refresh_scope(Some("mcp"), &granted).is_ok());
+        assert!(validate_refresh_scope(Some("mcp admin"), &granted).is_err());
+        assert!(validate_refresh_scope(Some("other"), &granted).is_err());
     }
 }

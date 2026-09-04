@@ -472,42 +472,51 @@ async fn connect_configured_server_with_policies(
                     })?;
                 headers.push((name.clone(), iteron_mcp::http::McpHeaderValue::new(value)?));
             }
-            let stored = if server.oauth.is_none() {
+            let external = server
+                .oauth
+                .as_ref()
+                .and_then(|oauth| oauth.access_token_env.as_ref());
+            let stored = if external.is_none() {
                 credential_store::load(server).map_err(|_| {
                     iteron_mcp::McpError::Protocol("stored MCP credential is invalid".into())
                 })?
             } else {
                 None
             };
-            let credential = if let Some(oauth) = server.oauth.as_ref() {
-                Some({
-                    let secret = std::env::var(&oauth.access_token_env).map_err(|_| {
-                        iteron_mcp::McpError::Credential(iteron_mcp::token::TokenError::Absent)
-                    })?;
-                    let expires_at = oauth
-                        .expires_at_env
-                        .as_ref()
-                        .map(|name| {
-                            std::env::var(name)
-                                .ok()
-                                .and_then(|value| value.parse::<u64>().ok())
-                                .ok_or(iteron_mcp::McpError::Credential(
-                                    iteron_mcp::token::TokenError::Expired { skew: 30 },
-                                ))
-                        })
-                        .transpose()?
-                        .unwrap_or(u64::MAX);
-                    iteron_mcp::token::Token::new(secret, expires_at)
-                })
-            } else {
-                stored.as_ref().map(|credential| {
-                    iteron_mcp::token::Token::new(
-                        credential.access_token.clone(),
-                        credential.expires_at_unix,
-                    )
-                })
-            };
-            let oauth_grant = if let Some(oauth) = server.oauth.as_ref() {
+            let credential =
+                if let Some((oauth, access_token_env)) = server.oauth.as_ref().zip(external) {
+                    Some({
+                        let secret = std::env::var(access_token_env).map_err(|_| {
+                            iteron_mcp::McpError::Credential(iteron_mcp::token::TokenError::Absent)
+                        })?;
+                        let expires_at = oauth
+                            .expires_at_env
+                            .as_ref()
+                            .map(|name| {
+                                std::env::var(name)
+                                    .ok()
+                                    .and_then(|value| value.parse::<u64>().ok())
+                                    .ok_or(iteron_mcp::McpError::Credential(
+                                        iteron_mcp::token::TokenError::Expired { skew: 30 },
+                                    ))
+                            })
+                            .transpose()?
+                            .unwrap_or(u64::MAX);
+                        iteron_mcp::token::Token::new(secret, expires_at)
+                    })
+                } else {
+                    stored.as_ref().map(|credential| {
+                        iteron_mcp::token::Token::new(
+                            credential.access_token.clone(),
+                            credential.expires_at_unix,
+                        )
+                    })
+                };
+            let oauth_grant = if let Some(oauth) = server
+                .oauth
+                .as_ref()
+                .filter(|oauth| oauth.access_token_env.is_some())
+            {
                 oauth
                     .refresh_url
                     .as_ref()
@@ -537,6 +546,20 @@ async fn connect_configured_server_with_policies(
                             refresh_token,
                             oauth.client_id.clone(),
                             client_secret,
+                            if oauth.client_secret_env.is_some() {
+                                // This manual credential path has no authorization metadata. Keep
+                                // the pre-existing form-body contract instead of guessing Basic.
+                                iteron_mcp::oauth::TokenEndpointAuthMethod::ClientSecretPost
+                            } else {
+                                iteron_mcp::oauth::TokenEndpointAuthMethod::None
+                            },
+                            if oauth.scopes.is_empty() {
+                                // Before configurable scopes, this manual refresh path admitted
+                                // only `mcp`; retain that bound for existing configurations.
+                                vec!["mcp".into()]
+                            } else {
+                                oauth.scopes.clone()
+                            },
                         )
                     })
                     .transpose()?
@@ -556,7 +579,9 @@ async fn connect_configured_server_with_policies(
                                     .transpose()?,
                                 refresh_token.clone(),
                                 Some(credential.client_id.clone()),
-                                None,
+                                credential.client_secret.clone(),
+                                credential.token_auth_method,
+                                credential.granted_scopes.clone(),
                             )
                         })
                     })

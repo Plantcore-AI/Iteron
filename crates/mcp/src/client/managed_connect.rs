@@ -4,9 +4,10 @@ use super::{McpClient, lifecycle::OwnedProcess, multiplex::ResponseRouter};
 use crate::{
     McpError,
     protocol_version::{
-        DiscoveryNegotiation, MODERN_PROTOCOL_VERSION, McpProtocolMode,
+        DiscoveryNegotiation, DiscoveryRejection, MODERN_PROTOCOL_VERSION, McpProtocolMode,
         STATEFUL_REQUESTED_PROTOCOL_VERSION, discover_params, discovery_allows_stateful_fallback,
-        negotiate_discovery, negotiate_initialize_result, require_modern_discovery,
+        discovery_rejection, negotiate_discovery, negotiate_initialize_result,
+        require_modern_discovery,
     },
     tool_filter::validate_server_name,
 };
@@ -125,11 +126,32 @@ pub(super) async fn connect(
     let handshake = async {
         let mut stateful_request_version = STATEFUL_REQUESTED_PROTOCOL_VERSION.to_owned();
         if protocol_mode.prefers_modern() {
-            let discovery = client
+            let mut discovery = client
                 .call_unbounded_by_outer_deadline("server/discover", discover_params())
                 .await;
+            if matches!(
+                discovery.as_ref().err().and_then(discovery_rejection),
+                Some(DiscoveryRejection::RetryModern)
+            ) {
+                discovery = client
+                    .call_unbounded_by_outer_deadline("server/discover", discover_params())
+                    .await;
+            }
             let negotiation = match discovery {
                 Ok(result) => negotiate_discovery(&result)?,
+                Err(error)
+                    if protocol_mode == McpProtocolMode::Auto
+                        && matches!(
+                            discovery_rejection(&error),
+                            Some(DiscoveryRejection::Stateful(_))
+                        ) =>
+                {
+                    let Some(DiscoveryRejection::Stateful(version)) = discovery_rejection(&error)
+                    else {
+                        unreachable!("guard requires a stateful discovery rejection")
+                    };
+                    DiscoveryNegotiation::Stateful(version)
+                }
                 Err(error)
                     if protocol_mode == McpProtocolMode::Auto
                         && discovery_allows_stateful_fallback(&error) =>

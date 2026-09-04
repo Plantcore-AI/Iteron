@@ -11,10 +11,10 @@ import tempfile
 from pathlib import Path
 
 PIN = "49103de6ed70804e940637bf3e9e29e4a3f54e64"
-REVIEWED_BASELINE_SHA256 = "6cedefd50c572dfddcd543756eee2b3b9d3d4529421c86e680e9f6ccfe980a77"
+REVIEWED_BASELINE_SHA256 = "a19b50cc8628ea0a6400ea4e58f02dbab3760913f3a593647f0f85ef589b675c"
 VERSIONS = ("2025-06-18", "2025-11-25", "2026-07-28")
 TRANSPORTS = ("stdio", "http")
-SCENARIOS = {
+NON_AUTH_SCENARIOS = {
     "2025-06-18": ("initialize", "tools_call"),
     "2025-11-25": (
         "initialize",
@@ -33,6 +33,62 @@ SCENARIOS = {
     ),
 }
 
+AUTH_SCENARIOS = {
+    "2025-06-18": (
+        "auth/token-endpoint-auth-basic",
+        "auth/token-endpoint-auth-post",
+        "auth/token-endpoint-auth-none",
+    ),
+    "2025-11-25": (
+        "auth/metadata-default",
+        "auth/metadata-var1",
+        "auth/metadata-var2",
+        "auth/metadata-var3",
+        "auth/basic-cimd",
+        "auth/scope-from-www-authenticate",
+        "auth/scope-from-scopes-supported",
+        "auth/scope-omitted-when-undefined",
+        "auth/scope-step-up",
+        "auth/scope-retry-limit",
+        "auth/token-endpoint-auth-basic",
+        "auth/token-endpoint-auth-post",
+        "auth/token-endpoint-auth-none",
+        "auth/pre-registration",
+    ),
+    "2026-07-28": (
+        "auth/metadata-default",
+        "auth/metadata-var1",
+        "auth/metadata-var2",
+        "auth/metadata-var3",
+        "auth/basic-cimd",
+        "auth/scope-from-www-authenticate",
+        "auth/scope-from-scopes-supported",
+        "auth/scope-omitted-when-undefined",
+        "auth/scope-step-up",
+        "auth/scope-retry-limit",
+        "auth/token-endpoint-auth-basic",
+        "auth/token-endpoint-auth-post",
+        "auth/token-endpoint-auth-none",
+        "auth/pre-registration",
+        "auth/resource-mismatch",
+        "auth/offline-access-scope",
+        "auth/offline-access-not-supported",
+        "auth/authorization-server-migration",
+        "auth/iss-supported",
+        "auth/iss-not-advertised",
+        "auth/iss-supported-missing",
+        "auth/iss-wrong-issuer",
+        "auth/iss-unexpected",
+        "auth/iss-normalized",
+        "auth/metadata-issuer-mismatch",
+    ),
+}
+
+SCENARIOS = {
+    version: NON_AUTH_SCENARIOS[version] + AUTH_SCENARIOS[version]
+    for version in VERSIONS
+}
+
 
 def safe_text(value, limit=1024):
     """Keep untrusted conformance prose bounded and single-line without retaining secrets."""
@@ -48,6 +104,7 @@ def safe_text(value, limit=1024):
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("client", type=Path)
+    parser.add_argument("--iteron-cli", type=Path)
     parser.add_argument(
         "--conformance-cli",
         type=Path,
@@ -61,11 +118,12 @@ def parse_args():
     return parser.parse_args()
 
 
-def run_scenario(client, cli, version, scenario, output_root):
+def run_scenario(client, iteron_cli, cli, version, scenario, output_root):
     scenario_output = output_root / version / scenario.replace("/", "-")
     scenario_output.mkdir(parents=True, exist_ok=True)
     environment = os.environ.copy()
     environment["ITERON_CONFORMANCE_CLIENT"] = str(client.resolve())
+    environment["ITERON_CONFORMANCE_CLI"] = str(iteron_cli.resolve())
     environment["ITERON_MCP_PROTOCOL_VERSION"] = version
     command = [
         "node",
@@ -314,18 +372,14 @@ def gate(report, baseline, baseline_bytes, reviewed_digest=REVIEWED_BASELINE_SHA
         if case not in required:
             continue
         exit_code = entry.get("runnerExitCode", 0)
-        entry_failures = sum(
-            check.get("status") == "fail" for check in entry.get("checks", [])
-        )
         if entry["transport"] == "http" and entry.get("checksFileCount", 1) != 1:
             problems.append(
                 f"required scenario produced an invalid checks file count "
                 f"{entry['version']}/{entry['transport']}/{entry['scenario']}"
             )
-        # The upstream CLI uses exit 1 for ordinary failed checks. Those failures are
-        # handled by the reviewed baseline below. Any other non-zero result, or exit 1
-        # without a recorded failing check, is runner/infrastructure failure evidence.
-        if exit_code not in (0, 1) or (exit_code == 1 and entry_failures == 0):
+        # A partial checks file is evidence, not a successful runner completion. The reviewed
+        # baseline classifies individual checks but can never waive process failure.
+        if exit_code != 0:
             problems.append(
                 f"required scenario runner failed "
                 f"{entry['version']}/{entry['transport']}/{entry['scenario']} "
@@ -370,6 +424,9 @@ def main():
     arguments = parse_args()
     if not arguments.client.is_file():
         raise SystemExit("conformance client executable does not exist")
+    iteron_cli = arguments.iteron_cli or arguments.client.parent.parent / "iteron"
+    if not iteron_cli.is_file():
+        raise SystemExit("Iteron CLI executable does not exist; pass --iteron-cli")
     if not arguments.conformance_cli.is_file():
         raise SystemExit("run npm ci in tests/mcp_conformance first")
     versions = (arguments.version,) if arguments.version else tuple(SCENARIOS)
@@ -385,6 +442,7 @@ def main():
                 scenarios.append(
                     run_scenario(
                         arguments.client,
+                        iteron_cli,
                         arguments.conformance_cli,
                         version,
                         scenario,

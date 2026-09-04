@@ -11,10 +11,12 @@
 ```bash
 npm ci
 python3 -m unittest test_runner.py
-cargo build --locked -p iteron-mcp --example conformance_client
+cargo build --locked -p iteron-mcp --example conformance_client -p iteron-cli --bin iteron
 python3 run.py ../../target/debug/examples/conformance_client \
   --baseline-report regression-baseline-v1.json \
   --report /tmp/iteron-mcp-conformance.json
+python3 check_document.py /tmp/iteron-mcp-conformance.json \
+  ../../docs/mcp-compatibility.md
 ```
 
 报告中的每个 check 包含版本、传输、场景、check id、同名出现序号和四态状态。报告内的
@@ -23,7 +25,7 @@ python3 run.py ../../target/debug/examples/conformance_client \
 
 紧凑基线同时保存全部预期通过项和已知失败项。门禁拒绝场景或既有通过项消失、runner
 异常退出、`checks.json` 缺失/重复、新增失败、额外未审核检查和基线摘要变化。官方 runner
-因已知断言失败返回 1 时，只有报告中的失败项全部经过基线审核才可通过。
+的任何非零退出都会阻断；已生成的部分 checks 只能作为诊断证据，不能由基线豁免。
 
 审核一次完整报告后生成候选基线：
 

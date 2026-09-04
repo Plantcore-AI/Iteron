@@ -745,13 +745,18 @@ jobs:
         working-directory: tests/mcp_conformance
         run: python3 -m unittest test_runner.py
       - name: build the Iteron MCP conformance adapter
-        run: cargo build --locked -p iteron-mcp --example conformance_client
+        run: cargo build --locked -p iteron-mcp --example conformance_client -p iteron-cli --bin iteron
       - name: reject missing scenarios and new MCP conformance failures
         working-directory: tests/mcp_conformance
         run: >-
           python3 run.py "$CARGO_TARGET_DIR/debug/examples/conformance_client"
           --baseline-report regression-baseline-v1.json
           --report "$RUNNER_TEMP/iteron-mcp-conformance.json"
+      - name: verify the published MCP matrix matches the execution report
+        working-directory: tests/mcp_conformance
+        run: >-
+          python3 check_document.py "$RUNNER_TEMP/iteron-mcp-conformance.json"
+          ../../docs/mcp-compatibility.md
       - name: publish the MCP conformance report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

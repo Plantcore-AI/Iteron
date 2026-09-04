@@ -28,11 +28,14 @@ async fn run() -> Result<(), iteron_mcp::McpError> {
     let endpoint = McpHttpEndpoint::parse(&url)?;
     let version =
         std::env::var("ITERON_MCP_PROTOCOL_VERSION").unwrap_or_else(|_| "2026-07-28".into());
+    let credential = std::env::var("ITERON_CONFORMANCE_ACCESS_TOKEN")
+        .ok()
+        .map(|secret| iteron_mcp::token::Token::new(secret, u64::MAX));
     let client = if version == iteron_mcp::MODERN_PROTOCOL_VERSION {
         McpRemoteClient::connect_auto(
             endpoint,
             "conformance".into(),
-            None,
+            credential,
             McpHttpHeaderPolicy::default(),
             Vec::new(),
             None,
@@ -42,7 +45,7 @@ async fn run() -> Result<(), iteron_mcp::McpError> {
         McpRemoteClient::connect_with_elicitation(
             endpoint,
             "conformance".into(),
-            None,
+            credential,
             McpHttpHeaderPolicy::default(),
             Vec::new(),
             None,
@@ -85,6 +88,20 @@ async fn run() -> Result<(), iteron_mcp::McpError> {
         {
             client
                 .call_extension("resources/read", serde_json::json!({"uri": uri}))
+                .await?;
+        }
+        let prompts = client
+            .call_extension("prompts/list", serde_json::json!({}))
+            .await?;
+        if let Some(name) = prompts
+            .get("prompts")
+            .and_then(Value::as_array)
+            .and_then(|prompts| prompts.first())
+            .and_then(|prompt| prompt.get("name"))
+            .and_then(Value::as_str)
+        {
+            client
+                .call_extension("prompts/get", serde_json::json!({"name": name}))
                 .await?;
         }
     }
@@ -180,6 +197,7 @@ fn scenario_calls(scenario: &str) -> Result<Vec<(String, Value)>, iteron_mcp::Mc
             "valid_tool".into(),
             serde_json::json!({"region":"us-west1"}),
         )],
+        "auth/tool-call" => vec![("test-tool".into(), serde_json::json!({}))],
         _ => Vec::new(),
     };
     Ok(calls)

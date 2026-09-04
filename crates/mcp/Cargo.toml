@@ -16,6 +16,7 @@ tokio = { workspace = true }
 thiserror = { workspace = true }
 reqwest = { workspace = true }
 futures-util = { workspace = true }
+base64 = { workspace = true }
 tokio-util = { version = "0.7", features = ["io"] }
 
 [dev-dependencies]
