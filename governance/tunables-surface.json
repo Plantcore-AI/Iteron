@@ -4,7 +4,7 @@
   "registry_revision": 24,
   "registry_digest": "a8439500a335e0086a326dbfd88222fc1501373d333aa7bb2315779f220bd663",
   "param_registry_id": "iteron-params",
-  "param_registry_digest": "d792eb0ae56d3995f4856fefb8cd381d1e4628387ec345b8ac83a126202028b2",
+  "param_registry_digest": "d02a6ba4f22ee40ca67b26da0daf4dcaccca216e8de4d4560be756969616f5a2",
   "tool_text_registry_id": "iteron-builtin-tool-descriptions",
   "tool_text_registry_digest": "7da44a496e668c86c4456291e0e8178955ae7b99f473e69e1804d7742ae9738d",
   "counts": {
@@ -16717,7 +16717,7 @@
         },
         {
           "path": "crates/cli/src/runtime/resume.rs",
-          "line": 365,
+          "line": 366,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -17826,7 +17826,7 @@
         },
         {
           "path": "crates/cli/src/runtime/resume.rs",
-          "line": 515,
+          "line": 524,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -20394,7 +20394,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/resume.rs",
-          "line": 1150,
+          "line": 1164,
           "evidence": "Rust path reference"
         },
         {
