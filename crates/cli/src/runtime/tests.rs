@@ -6796,6 +6796,41 @@ mod gate_integration_tests {
     }
 
     #[test]
+    fn historical_adoption_uses_the_adopted_environment_snapshot() {
+        let ws = temp_ws("adopt-environment-snapshot");
+        let runs = ws.join(".iteron/runs");
+        {
+            let mut target = agent_for_run(&ws, "adopt-environment-target");
+            target
+                .set_environment_context("captured_at_unix_secs: 1".into(), Trust::Workspace)
+                .unwrap();
+            record_test_genesis(&mut target, &ws);
+        }
+
+        let mut live = agent_for_run(&ws, "adopt-environment-live");
+        live.set_environment_context("captured_at_unix_secs: 2".into(), Trust::Workspace)
+            .unwrap();
+        record_test_genesis(&mut live, &ws);
+
+        let target = Rollout::open_existing(
+            &runs,
+            &iteron_protocol::RunId("adopt-environment-target".into()),
+            iteron_protocol::TenantId::default(),
+        )
+        .unwrap();
+        live.adopt_run(target).unwrap();
+
+        assert_eq!(
+            live.environment_context,
+            Some(("captured_at_unix_secs: 1".into(), Trust::Workspace)),
+            "adoption must use the target record's environment rather than the live session's"
+        );
+
+        drop(live);
+        let _ = std::fs::remove_dir_all(ws);
+    }
+
+    #[test]
     fn late_historical_adoption_failure_leaves_the_live_run_projection_and_writer_atomic() {
         let ws = temp_ws("adopt-late-projection-failure");
         let runs = ws.join(".iteron/runs");

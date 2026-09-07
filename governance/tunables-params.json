@@ -12040,7 +12040,7 @@
         },
         {
           "path": "crates/cli/src/runtime/resume.rs",
-          "line": 365,
+          "line": 366,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -13125,7 +13125,7 @@
         },
         {
           "path": "crates/cli/src/runtime/resume.rs",
-          "line": 515,
+          "line": 524,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -15627,7 +15627,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/resume.rs",
-          "line": 1150,
+          "line": 1164,
           "evidence": "Rust path reference"
         },
         {
