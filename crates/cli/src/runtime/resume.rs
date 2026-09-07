@@ -319,6 +319,7 @@ impl Agent {
         &mut self,
         rollout: &mut Rollout,
         messages: Vec<Message>,
+        effective_content: &crate::runtime_tunables::effective_content::EffectiveContentIdentities,
         effective_core: &crate::runtime_tunables::effective_core::EffectiveCoreSettings,
         compiled_policy_bundle: &crate::bundle_adapter::CompiledPolicyBundle,
     ) -> Result<StagedAdoptedResume, KernelError> {
@@ -382,7 +383,15 @@ impl Agent {
             }
         });
         let recorded_environment = recorded_environment.flatten();
-        self.validate_environment_identity(recorded_environment.as_ref())?;
+        if !effective_content
+            .environment
+            .matches(recorded_environment.as_ref())
+        {
+            return Err(KernelError::ExecutionPolicy(
+                "adopted runtime environment differs from its immutable environment_snapshot identity"
+                    .into(),
+            ));
+        }
 
         if let Some(recorded) = scoped_events.iter().find_map(|scoped| {
             if &scoped.run_id != rollout.run_id() {
@@ -663,9 +672,13 @@ impl Agent {
         tooling
             .verify_installed(&self.registry)
             .map_err(|error| KernelError::ToolingPolicy(error.to_string()))?;
-        if self.effective_content.as_ref() != Some(&effective.content) {
+        if self.effective_content.as_ref().is_none_or(|current| {
+            current.hooks != effective.content.hooks
+                || current.workflow_graph != effective.content.workflow_graph
+                || current.agent_catalog != effective.content.agent_catalog
+        }) {
             return Err(KernelError::ExecutionPolicy(
-                "adopted content-owner identities differ from the running process".into(),
+                "adopted resident content-owner identities differ from the running process".into(),
             ));
         }
         let effective_content = effective.content;
@@ -828,6 +841,7 @@ impl Agent {
         let staged = self.stage_adopted_resume(
             &mut rollout,
             messages,
+            &effective_content,
             &effective_core,
             compiled_policy_bundle.as_ref(),
         )?;
