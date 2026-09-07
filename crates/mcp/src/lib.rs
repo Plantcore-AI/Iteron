@@ -587,11 +587,11 @@ mod tests {
     #[test]
     fn public_protocol_mismatch_summary_only_reflects_known_dated_versions() {
         let actionable = McpError::UnsupportedProtocolVersion {
-            client_version: "2024-11-05".into(),
+            client_version: "2025-06-18".into(),
             server_version: "2099-01-01".into(),
         }
         .public_summary();
-        assert!(actionable.contains("2024-11-05"));
+        assert!(actionable.contains("2025-06-18"));
         assert!(actionable.contains("2099-01-01"));
 
         let credential_shaped = ["gh", "p_", "AbCdEf1234567890AbCdEf1234567890"].concat();
@@ -601,7 +601,7 @@ mod tests {
             "2".repeat(65),
         ] {
             let redacted = McpError::UnsupportedProtocolVersion {
-                client_version: "2024-11-05".into(),
+                client_version: "2025-06-18".into(),
                 server_version: unsafe_version.clone(),
             }
             .public_summary();

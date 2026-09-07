@@ -63,10 +63,12 @@ impl McpRuntimeControl {
                 McpTransportConfig::Stdio => ManagedServer::Stdio(ManagedStdioServer::new(
                     config.clone(),
                     sensitive_env_names.to_vec(),
+                    mrtr_handler.clone(),
                 )?),
                 McpTransportConfig::Http => ManagedServer::Http(ManagedHttpServer::new(
                     config.clone(),
                     sensitive_env_names.to_vec(),
+                    mrtr_handler.clone(),
                 )?),
             });
             register_server_tools(
@@ -475,6 +477,7 @@ struct ManagedStdioServer {
     config: McpServerConfig,
     resolved_command: PathBuf,
     sensitive_env_names: Vec<String>,
+    mrtr_handler: Arc<OnceLock<Arc<dyn iteron_mcp::McpMrtrHandler>>>,
     policy: OnceLock<EffectiveMcpSettings>,
     cancellation: Mutex<McpCancellation>,
     state: tokio::sync::Mutex<ManagedState>,
@@ -487,7 +490,11 @@ struct ManagedState {
 }
 
 impl ManagedStdioServer {
-    fn new(config: McpServerConfig, sensitive_env_names: Vec<String>) -> anyhow::Result<Self> {
+    fn new(
+        config: McpServerConfig,
+        sensitive_env_names: Vec<String>,
+        mrtr_handler: Arc<OnceLock<Arc<dyn iteron_mcp::McpMrtrHandler>>>,
+    ) -> anyhow::Result<Self> {
         // Resolve before registration so a missing executable is a startup configuration error,
         // but do not spawn it. The absolute path is part of the supervisor's immutable binding.
         let command = config.command.as_deref().ok_or_else(|| {
@@ -498,6 +505,7 @@ impl ManagedStdioServer {
             config,
             resolved_command,
             sensitive_env_names,
+            mrtr_handler,
             policy: OnceLock::new(),
             cancellation: Mutex::new(McpCancellation::new()),
             state: tokio::sync::Mutex::new(ManagedState {
@@ -532,7 +540,7 @@ impl ManagedStdioServer {
             .get()
             .copied()
             .ok_or(iteron_mcp::McpError::LifecycleFailed)?;
-        let launch = McpLaunchConfig::new(
+        let mut launch = McpLaunchConfig::new(
             self.resolved_command.to_string_lossy().into_owned(),
             self.config.args.clone(),
             self.config.name.clone(),
@@ -540,6 +548,9 @@ impl ManagedStdioServer {
         .with_sensitive_env_names(self.sensitive_env_names.clone())?
         .with_granted_env_names(self.config.env_names.clone())?
         .with_auto_protocol();
+        if self.mrtr_handler.get().is_some() {
+            launch = launch.with_elicitation_form();
+        }
         let deadlines = runtime.deadlines.stdio();
         let timeouts = McpTimeouts::new(
             deadlines.startup(),
@@ -750,6 +761,7 @@ impl ManagedStdioServer {
 struct ManagedHttpServer {
     config: McpServerConfig,
     sensitive_env_names: Vec<String>,
+    mrtr_handler: Arc<OnceLock<Arc<dyn iteron_mcp::McpMrtrHandler>>>,
     binding: Arc<[u8]>,
     policy: OnceLock<EffectiveMcpSettings>,
     cancellation: Mutex<McpCancellation>,
@@ -768,11 +780,16 @@ struct ManagedHttpState {
 }
 
 impl ManagedHttpServer {
-    fn new(config: McpServerConfig, sensitive_env_names: Vec<String>) -> anyhow::Result<Self> {
+    fn new(
+        config: McpServerConfig,
+        sensitive_env_names: Vec<String>,
+        mrtr_handler: Arc<OnceLock<Arc<dyn iteron_mcp::McpMrtrHandler>>>,
+    ) -> anyhow::Result<Self> {
         let binding = http_server_binding(&config)?;
         Ok(Self {
             config,
             sensitive_env_names,
+            mrtr_handler,
             binding,
             policy: OnceLock::new(),
             cancellation: Mutex::new(McpCancellation::new()),
@@ -887,6 +904,7 @@ impl ManagedHttpServer {
                 &self.sensitive_env_names,
                 runtime.deadlines,
                 runtime.result,
+                self.mrtr_handler.get().is_some(),
             );
             let connected = tokio::select! {
                 biased;

@@ -4956,7 +4956,7 @@ mod tests {
             "-c".to_string(),
             concat!(
                 "IFS= read -r init; ",
-                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\"}}'; ",
+                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-06-18\"}}'; ",
                 "IFS= read -r initialized; ",
                 "IFS= read -r list; ",
                 "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"delayed\",\"description\":\"fixture\",\"inputSchema\":{\"type\":\"object\"}}]}}'; ",

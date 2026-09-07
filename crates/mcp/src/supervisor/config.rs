@@ -37,6 +37,7 @@ pub struct McpLaunchConfig {
     server_name: String,
     sensitive_env_names: Vec<String>,
     granted_env_names: Vec<String>,
+    advertises_elicitation: bool,
     protocol_mode: crate::McpProtocolMode,
     binding: Arc<[u8]>,
 }
@@ -123,6 +124,7 @@ impl McpLaunchConfig {
             server_name,
             sensitive_env_names: Vec::new(),
             granted_env_names: Vec::new(),
+            advertises_elicitation: false,
             protocol_mode: crate::McpProtocolMode::Stateful,
             binding: Arc::from([]),
         };
@@ -213,6 +215,13 @@ impl McpLaunchConfig {
         self
     }
 
+    /// Advertise form elicitation only when the owning session installed an interactive handler.
+    pub fn with_elicitation_form(mut self) -> Self {
+        self.advertises_elicitation = true;
+        self.binding = self.compute_binding();
+        self
+    }
+
     pub fn server_name(&self) -> &str {
         &self.server_name
     }
@@ -237,6 +246,10 @@ impl McpLaunchConfig {
         self.protocol_mode
     }
 
+    pub(super) fn advertises_elicitation(&self) -> bool {
+        self.advertises_elicitation
+    }
+
     pub(super) fn binding(&self) -> Arc<[u8]> {
         self.binding.clone()
     }
@@ -248,6 +261,14 @@ impl McpLaunchConfig {
         append_fields(&mut binding, &self.args);
         append_fields(&mut binding, &self.sensitive_env_names);
         append_fields(&mut binding, &self.granted_env_names);
+        append_field(
+            &mut binding,
+            if self.advertises_elicitation {
+                b"elicitation-form"
+            } else {
+                b"no-elicitation"
+            },
+        );
         append_field(
             &mut binding,
             match self.protocol_mode {
@@ -480,10 +501,15 @@ mod tests {
             McpLaunchConfig::new("/bin/server".into(), vec!["a".into()], "files".into())
                 .unwrap()
                 .with_auto_protocol();
+        let elicitation =
+            McpLaunchConfig::new("/bin/server".into(), vec!["a".into()], "files".into())
+                .unwrap()
+                .with_elicitation_form();
         assert_eq!(first.binding(), same.binding());
         assert_ne!(first.binding(), changed.binding());
         assert_ne!(first.binding(), granted.binding());
         assert_ne!(first.binding(), automatic.binding());
+        assert_ne!(first.binding(), elicitation.binding());
     }
 
     #[test]

@@ -11,11 +11,11 @@ session 状态。
 | 协议版本 | stdio | HTTP JSON | HTTP SSE 响应 | OAuth | 版本特有能力 |
 |---|---|---|---|---|---|
 | `2025-06-18` | pass（CLI E2E） | pass（官方 conformance） | pass（传输回归） | pass（官方 OAuth） | 状态式 initialize/session |
-| `2025-11-25` | pass（CLI E2E） | pass（官方 conformance） | pass（官方重连场景） | pass（官方 OAuth） | form elicitation 与 SSE 恢复 |
+| `2025-11-25` | pass（CLI E2E） | pass（官方 conformance） | pass（传输回归） | pass（官方 OAuth） | form elicitation 与 SSE 恢复 |
 | `2026-07-28` | pass（CLI E2E） | pass（官方 conformance） | pass（传输回归） | pass（官方 OAuth） | discover、请求元数据、路由/参数头、MRTR、私有列表缓存 |
 
-`2024-11-05` 不在兼容矩阵与发布承诺范围内。当前状态式协商代码仍可能接受它；本文不将
-该版本标记为 deprecated，也不以未执行的测试声称兼容。
+`2024-11-05` 与 `2025-03-26` 不在兼容矩阵与发布承诺范围内，客户端会拒绝服务端协商到
+这两个版本；本文不将它们标记为 deprecated。
 
 当前审核基线对应的三版本 × 双传输证据如下；数字为通过 check 数/总 check 数：
 
@@ -23,8 +23,8 @@ session 状态。
 | 协议版本 | stdio | HTTP 非认证 | HTTP OAuth |
 |---|---|---|---|
 | `2025-06-18` | pass (4/4) | pass (4/4) | pass (114/114) |
-| `2025-11-25` | pass (4/4) | pass (37/37) | pass (539/539) |
-| `2026-07-28` | pass (4/4) | pass (52/56; unsupported=4) | pass (786/786) |
+| `2025-11-25` | pass (4/4) | pass (21/21) | pass (542/542) |
+| `2026-07-28` | pass (4/4) | pass (52/56; unsupported=4) | pass (789/789) |
 <!-- generated:mcp-conformance-matrix:end -->
 
 表格由完整执行报告进行逐字一致性校验。`2026-07-28` 的 4 个 `unsupported` 检查包括
@@ -53,11 +53,15 @@ runner/报告异常以及未经审核的基线变化。每次 Rust CI 会发布�
 `iteron-mcp-conformance` 的完整机器可读报告 artifact。仓库不提交容易与执行结果脱节的
 “最新报告”或静态矩阵。
 
-当前已通过的关键官方场景包括：两个 2025 版本的初始化、工具调用、elicitation 默认值和
-SSE 恢复；2026 的工具调用、每请求元数据、MRTR 状态回显、标准/自定义参数头、非法
+当前已通过的关键官方场景包括：两个 2025 版本的初始化、工具调用和 elicitation 默认值；
+2026 的工具调用、每请求元数据、MRTR 状态回显、标准/自定义参数头、非法
 header 定义拒绝和 JSON Schema `$ref` 保留；以及三个版本共 42 个 OAuth 场景。审核
 基线不再保留 `expectedFailures`。新增失败、原通过项消失、场景缺失或 runner 异常都会
 阻断门禁。
+
+固定 suite 的 `sse-retry` fixture 会协商本项目不支持的 `2025-03-26`，因此不作为
+`2025-11-25` 的官方兼容证据。该版本的 SSE 断流、`retry` 延迟和 `Last-Event-ID` 恢复由
+HTTP wire 黑盒回归测试覆盖；客户端仍会拒绝 fixture 返回的未支持版本。
 
 ## 未实现能力
 
@@ -89,7 +93,7 @@ iteron mcp add <name> --url <https-or-loopback-url>
   [--oauth-resource <URL>] [--oauth-scopes <SCOPE,SCOPE>]
   [--oauth-client-registration <auto|cimd|dcr>]
   [--oauth-client-id <id-or-CIMD-url>]
-  [--oauth-client-secret-env <ENV_NAME>]
+  [--oauth-client-secret-env <ENV_NAME>] [--oauth-issuer <URL>]
 iteron mcp add <name> --stdio <command> [--env <NAME>]... -- <args...>
 iteron mcp list [--format text|json]
 iteron mcp get <name> [--format text|json]
@@ -98,6 +102,7 @@ iteron mcp auth login <name>
   [--oauth-resource <URL>] [--scopes <SCOPE,SCOPE>]
   [--oauth-client-registration <auto|cimd|dcr>]
   [--client-id <id-or-CIMD-url>] [--client-secret-env <ENV_NAME>]
+  [--oauth-issuer <URL>]
 iteron mcp auth status <name> [--format text|json]
 iteron mcp auth logout <name>
 iteron mcp test <name> [--format text|json]
@@ -122,9 +127,10 @@ iteron mcp doctor [--connect] [--format text|json]
 
 endpoint、OAuth resource 和 authorization-server issuer 分开验证：同源的 `/mcp`、
 origin 根路径和连接查询参数差异合法；显式 resource 必须与 metadata 精确匹配；未明确
-绑定的跨 origin resource 会被拒绝。authorization/token/registration endpoint 可以与
-issuer 不同 origin，但只能使用 issuer metadata 明确公布、通过 HTTPS 或 loopback HTTP
-验证且没有 userinfo/fragment 的地址。
+绑定的跨 origin resource 会被拒绝。authorization endpoint 只有在 issuer-bound callback
+可用，或与 issuer/token endpoint 同源时才可跨 origin；预注册 client secret 只会发送到
+与操作员固定 issuer 同源的 token endpoint。token/registration/revocation endpoint 还必须
+由 issuer metadata 明确公布，通过 HTTPS 或 loopback HTTP 验证且没有 userinfo/fragment。
 
 scope 优先级为登录命令、server 配置、`WWW-Authenticate`、resource/authorization
 metadata、空集合。operator 指定的 scope 不会被自动删改；自动发现值被 provider 拒绝
@@ -151,6 +157,8 @@ stdio 子进程默认看不到 Iteron 进程的环境变量。只有通过 `mcp 
   `Effecting + IrreversibleExternal` 处理。
 - 非 loopback 明文 HTTP、URL 用户信息、未验证的跨 origin resource 和 metadata redirect
   会被拒绝；凭据只发送到配置 endpoint 或已验证 metadata 明确公布的 token endpoint。
+- OAuth 出站请求会解析并固定本次连接使用的地址；公网 MCP 不能把 discovery、注册或
+  token 请求引向 private、loopback 或 link-local 网络，跨网络区 DNS 结果会被拒绝。
 - session、列表 cursor、SSE 帧、缓存、MRTR 轮数/输入量、OAuth callback 和所有网络
   请求均有固定上限。
 - 2026 的 `ttlMs`/`cacheScope` 只控制当前 client 私有列表缓存，不授予工具权限。

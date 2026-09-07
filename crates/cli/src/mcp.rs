@@ -2,6 +2,7 @@
 
 pub(crate) mod commands;
 pub(crate) mod credential_store;
+mod oauth_http;
 mod oauth_login;
 mod session;
 
@@ -423,6 +424,7 @@ pub(crate) async fn connect_configured_server(
         sensitive_env_names,
         iteron_mcp::McpDeadlinePolicy::default(),
         iteron_mcp::McpResultPolicy::default(),
+        false,
     )
     .await
 }
@@ -432,6 +434,7 @@ async fn connect_configured_server_with_policies(
     sensitive_env_names: &[String],
     deadlines: iteron_mcp::McpDeadlinePolicy,
     result_policy: iteron_mcp::McpResultPolicy,
+    advertises_elicitation: bool,
 ) -> Result<ConfiguredMcpClient, iteron_mcp::McpError> {
     match server.transport {
         McpTransportConfig::Stdio => {
@@ -443,12 +446,13 @@ async fn connect_configured_server_with_policies(
                         field: "command",
                         limit: 4096,
                     })?;
-            let client = iteron_mcp::McpClient::connect_auto_with_environment(
+            let client = iteron_mcp::McpClient::connect_auto_with_environment_and_elicitation(
                 command,
                 &server.args,
                 &server.name,
                 sensitive_env_names,
                 &server.env_names,
+                advertises_elicitation,
             )
             .await?;
             Ok(ConfiguredMcpClient::Stdio(Arc::new(client)))
@@ -592,13 +596,14 @@ async fn connect_configured_server_with_policies(
                     })
                     .transpose()?
             };
-            let client = iteron_mcp::McpRemoteClient::connect_auto_with_policies(
+            let client = iteron_mcp::McpRemoteClient::connect_auto_with_policies_and_elicitation(
                 endpoint,
                 server.name.clone(),
                 credential,
                 policy,
                 headers,
                 oauth_grant,
+                advertises_elicitation,
                 deadlines.http(),
                 result_policy,
             )
@@ -706,7 +711,7 @@ mod tests {
         "IFS= read -r discover; ",
         "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32601,\"message\":\"Method not found\"}}'; ",
         "IFS= read -r initialize; ",
-        "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"protocolVersion\":\"2024-11-05\"}}'; ",
+        "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"protocolVersion\":\"2025-06-18\"}}'; ",
         "IFS= read -r initialized; ",
         "IFS= read -r list; "
     );

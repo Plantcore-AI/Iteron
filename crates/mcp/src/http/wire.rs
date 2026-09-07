@@ -57,6 +57,16 @@ struct ParameterHeader {
     value_type: String,
 }
 
+struct PreparedCall {
+    frame: String,
+    method: String,
+    routed_name: Option<String>,
+    parameter_headers: Vec<(String, McpHeaderValue)>,
+    resets_parameter_headers: bool,
+    id: u64,
+    dispatch_observer: Option<Box<dyn FnOnce() + Send>>,
+}
+
 impl<E: McpHttpExchange> McpHttpWire<E> {
     pub fn new(
         endpoint: McpHttpEndpoint,
@@ -202,15 +212,15 @@ impl<E: McpHttpExchange> McpHttpWire<E> {
             // Nothing was dispatched: serialization failed before any byte could leave.
             Err(error) => return (Err(error), McpEffectCertainty::Definite),
         };
-        let call = self.execute_call_frame(
+        let call = self.execute_call_frame(PreparedCall {
             frame,
-            method,
-            routed_name.as_deref(),
-            &parameter_headers,
+            method: method.to_owned(),
+            routed_name,
+            parameter_headers,
             resets_parameter_headers,
             id,
             dispatch_observer,
-        );
+        });
         if method == "tools/call"
             && !self.is_modern().await
             && self.elicitation.is_some()
@@ -238,21 +248,15 @@ impl<E: McpHttpExchange> McpHttpWire<E> {
 
     async fn execute_call_frame(
         &self,
-        frame: String,
-        method: &str,
-        routed_name: Option<&str>,
-        parameter_headers: &[(String, McpHeaderValue)],
-        resets_parameter_headers: bool,
-        id: u64,
-        dispatch_observer: Option<Box<dyn FnOnce() + Send>>,
+        call: PreparedCall,
     ) -> (Result<Value, McpError>, McpEffectCertainty) {
         let dispatched = self
             .dispatch_with_observer(
-                frame,
-                Some(method),
-                routed_name,
-                parameter_headers,
-                dispatch_observer,
+                call.frame,
+                Some(&call.method),
+                call.routed_name.as_deref(),
+                &call.parameter_headers,
+                call.dispatch_observer,
             )
             .await;
         let (head, body) = match dispatched {
@@ -273,7 +277,10 @@ impl<E: McpHttpExchange> McpHttpWire<E> {
             *self.session.lock().await = Some(session_id);
         }
         if status == 400 && head.media_type.as_deref() == Some(super::MCP_JSON_MEDIA_TYPE) {
-            let result = match self.read_body(head.media_type.as_deref(), body, id).await {
+            let result = match self
+                .read_body(head.media_type.as_deref(), body, call.id)
+                .await
+            {
                 Ok(_) => Err(McpError::HttpStatus { status }),
                 Err(error) => Err(error),
             };
@@ -299,11 +306,13 @@ impl<E: McpHttpExchange> McpHttpWire<E> {
                 McpEffectCertainty::Unknown,
             );
         }
-        let result = self.read_body(head.media_type.as_deref(), body, id).await;
-        if method == "tools/list"
+        let result = self
+            .read_body(head.media_type.as_deref(), body, call.id)
+            .await;
+        if call.method == "tools/list"
             && let Ok(value) = &result
         {
-            self.remember_parameter_headers(value, resets_parameter_headers)
+            self.remember_parameter_headers(value, call.resets_parameter_headers)
                 .await;
         }
         let certainty = match &result {

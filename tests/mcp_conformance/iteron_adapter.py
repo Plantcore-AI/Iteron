@@ -44,6 +44,36 @@ def open_no_redirect(url):
             error.close()
 
 
+def trusted_conformance_issuer(server_url):
+    server = urllib.parse.urlsplit(server_url)
+    if server.scheme != "http" or not is_loopback(server.hostname):
+        raise RuntimeError("pre-registration fixture must use a loopback MCP endpoint")
+    metadata_url = urllib.parse.urlunsplit(
+        (
+            server.scheme,
+            server.netloc,
+            "/.well-known/oauth-protected-resource" + server.path,
+            "",
+            "",
+        )
+    )
+    opener = build_opener(ProxyHandler({}), NoRedirect())
+    with opener.open(Request(metadata_url, method="GET"), timeout=10) as response:
+        body = response.read(16 * 1024 + 1)
+    if len(body) > 16 * 1024:
+        raise RuntimeError("pre-registration resource metadata exceeded its bound")
+    metadata = json.loads(body)
+    if metadata.get("resource") != server_url:
+        raise RuntimeError("pre-registration resource metadata changed the MCP endpoint")
+    issuers = metadata.get("authorization_servers")
+    if not isinstance(issuers, list) or len(issuers) != 1:
+        raise RuntimeError("pre-registration fixture did not publish one issuer")
+    issuer = urllib.parse.urlsplit(issuers[0])
+    if issuer.scheme != "http" or not is_loopback(issuer.hostname):
+        raise RuntimeError("pre-registration fixture issuer escaped loopback")
+    return urllib.parse.urlunsplit(issuer)
+
+
 def is_loopback(host):
     if host is None:
         return False
@@ -233,6 +263,7 @@ def run_auth(server_url):
         environment["ITERON_CONFIG_HOME"] = str(config_root)
         client_id = None
         secret_env = None
+        issuer = None
         if scenario == "auth/basic-cimd":
             client_id = CIMD_CLIENT_ID
         elif scenario == "auth/pre-registration":
@@ -242,11 +273,14 @@ def run_auth(server_url):
                 raise RuntimeError("pre-registration context omitted client credentials")
             environment[SECRET_ENV] = secret
             secret_env = SECRET_ENV
+            issuer = trusted_conformance_issuer(server_url)
         add = ["mcp", "add", "official", "--url", server_url]
         if client_id:
             add.extend(["--oauth-client-id", client_id])
         if secret_env:
             add.extend(["--oauth-client-secret-env", secret_env])
+        if issuer:
+            add.extend(["--oauth-issuer", issuer])
         if command(binary, environment, *add).returncode != 0:
             return False
         accepted = login(

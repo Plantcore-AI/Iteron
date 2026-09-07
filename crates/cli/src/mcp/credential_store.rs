@@ -217,6 +217,7 @@ pub(crate) async fn run_auth(action: &AuthAction) -> anyhow::Result<u8> {
             registration,
             client_id,
             client_secret_env,
+            issuer,
         } => {
             let server = find(&config, name)?;
             if server.transport != McpTransportConfig::Http {
@@ -226,7 +227,8 @@ pub(crate) async fn run_auth(action: &AuthAction) -> anyhow::Result<u8> {
                 || !scopes.is_empty()
                 || registration.is_some()
                 || client_id.is_some()
-                || client_secret_env.is_some();
+                || client_secret_env.is_some()
+                || issuer.is_some();
             if matches!(local_status(server), "authenticated") && !has_overrides {
                 println!("MCP server `{name}` is already authenticated");
                 return Ok(crate::output::EXIT_SUCCESS);
@@ -271,6 +273,16 @@ pub(crate) async fn run_auth(action: &AuthAction) -> anyhow::Result<u8> {
                 .as_ref()
                 .map(|credential| credential.resource.as_str())
                 .or(resource.as_deref());
+            let configured_issuer = server
+                .oauth
+                .as_ref()
+                .and_then(|oauth| oauth.issuer.as_deref());
+            let operator_issuer = issuer.as_deref().or(configured_issuer);
+            if let (Some(previous), Some(operator_issuer)) = (&step_up_credential, operator_issuer)
+                && url::Url::parse(operator_issuer)? != url::Url::parse(&previous.issuer)?
+            {
+                anyhow::bail!("MCP OAuth scope step-up issuer mismatch");
+            }
             mark_pending(server)?;
             let result = super::oauth_login::login(
                 server,
@@ -278,7 +290,8 @@ pub(crate) async fn run_auth(action: &AuthAction) -> anyhow::Result<u8> {
                     resource: bound_resource,
                     expected_issuer: step_up_credential
                         .as_ref()
-                        .map(|credential| credential.issuer.as_str()),
+                        .map(|credential| credential.issuer.as_str())
+                        .or(operator_issuer),
                     scopes: if requested_scopes.is_empty() {
                         None
                     } else {
@@ -597,6 +610,7 @@ mod tests {
             refresh_token_env: None,
             client_id: None,
             client_secret_env: None,
+            issuer: None,
             resource: Some("https://example.com/mcp".into()),
             scopes: Vec::new(),
             registration: crate::config::OAuthClientRegistration::Auto,

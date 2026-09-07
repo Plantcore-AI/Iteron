@@ -672,6 +672,104 @@ fn oauth_metadata_binding_errors_fail_before_callback_without_storing_credential
 }
 
 #[test]
+fn confidential_client_rejects_a_substituted_issuer_before_secret_dispatch() {
+    let config = temp_config("confidential-issuer-substitution");
+    let (mut fixture, resource) = start_oauth_fixture("confidential-issuer-substitution");
+    let trusted_issuer = resource.replace("/mcp", "/trusted");
+    assert_success(&run(
+        &config,
+        &[
+            "mcp",
+            "add",
+            "oauth",
+            "--url",
+            &resource,
+            "--oauth-client-id",
+            "registered-client",
+            "--oauth-client-secret-env",
+            "MCP_CLIENT_SECRET",
+            "--oauth-issuer",
+            &trusted_issuer,
+        ],
+        false,
+    ));
+    let secret = "must-not-reach-attacker";
+    let login = run_with_env(
+        &config,
+        &["mcp", "auth", "login", "oauth"],
+        "MCP_CLIENT_SECRET",
+        secret,
+    );
+    assert!(!login.status.success());
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&login.stdout),
+        String::from_utf8_lossy(&login.stderr),
+    );
+    assert!(combined.contains("MCP_AUTH_ISSUER_MISMATCH"), "{combined}");
+    assert!(!combined.contains(secret));
+
+    let counts = http_get_body(&resource.replace("/mcp", "/attack-counts"));
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&counts).unwrap(),
+        serde_json::json!({"metadata": 0, "token": 0}),
+    );
+
+    fixture.kill().unwrap();
+    let _ = fixture.wait();
+    std::fs::remove_dir_all(config).unwrap();
+}
+
+#[test]
+fn confidential_client_rejects_a_substituted_token_endpoint_before_secret_dispatch() {
+    let config = temp_config("confidential-token-substitution");
+    let (mut fixture, resource) = start_oauth_fixture("confidential-token-substitution");
+    let trusted_issuer = resource.trim_end_matches("/mcp");
+    assert_success(&run(
+        &config,
+        &[
+            "mcp",
+            "add",
+            "oauth",
+            "--url",
+            &resource,
+            "--oauth-client-id",
+            "registered-client",
+            "--oauth-client-secret-env",
+            "MCP_CLIENT_SECRET",
+            "--oauth-issuer",
+            trusted_issuer,
+        ],
+        false,
+    ));
+    let secret = "must-not-reach-attacker";
+    let login = run_with_env(
+        &config,
+        &["mcp", "auth", "login", "oauth"],
+        "MCP_CLIENT_SECRET",
+        secret,
+    );
+    assert!(!login.status.success());
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&login.stdout),
+        String::from_utf8_lossy(&login.stderr),
+    );
+    assert!(combined.contains("MCP_AUTH_ISSUER_MISMATCH"), "{combined}");
+    assert!(!combined.contains(secret));
+
+    let counts = http_get_body(&resource.replace("/mcp", "/attack-counts"));
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&counts).unwrap(),
+        serde_json::json!({"metadata": 0, "token": 0}),
+    );
+
+    fixture.kill().unwrap();
+    let _ = fixture.wait();
+    std::fs::remove_dir_all(config).unwrap();
+}
+
+#[test]
 fn oauth_login_reports_when_authentication_is_not_required() {
     let config = temp_config("no-auth");
     let (mut fixture, resource) = start_oauth_fixture("no-auth");
@@ -860,6 +958,32 @@ fn external_bearer_status_is_truthful_and_interactive_login_leaves_no_pending_st
 }
 
 fn http_get(url: &str) -> (u16, Option<String>) {
+    let response = http_get_response(url);
+    let mut lines = response.lines();
+    let status = lines
+        .next()
+        .unwrap()
+        .split_whitespace()
+        .nth(1)
+        .unwrap()
+        .parse()
+        .unwrap();
+    let location = lines.find_map(|line| {
+        line.strip_prefix("Location: ")
+            .or_else(|| line.strip_prefix("location: "))
+            .map(str::to_owned)
+    });
+    (status, location)
+}
+
+fn http_get_body(url: &str) -> String {
+    http_get_response(url)
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body.to_owned())
+        .unwrap()
+}
+
+fn http_get_response(url: &str) -> String {
     let url = url::Url::parse(url).unwrap();
     assert_eq!(url.scheme(), "http");
     assert!(url.host_str().is_some_and(|host| host == "127.0.0.1"));
@@ -885,19 +1009,5 @@ fn http_get(url: &str) -> (u16, Option<String>) {
     stream.flush().unwrap();
     let mut response = String::new();
     stream.read_to_string(&mut response).unwrap();
-    let mut lines = response.lines();
-    let status = lines
-        .next()
-        .unwrap()
-        .split_whitespace()
-        .nth(1)
-        .unwrap()
-        .parse()
-        .unwrap();
-    let location = lines.find_map(|line| {
-        line.strip_prefix("Location: ")
-            .or_else(|| line.strip_prefix("location: "))
-            .map(str::to_owned)
-    });
-    (status, location)
+    response
 }

@@ -34,6 +34,9 @@ pub(crate) enum AuthAction {
         /// Environment-variable name containing a pre-registered client secret.
         #[arg(long)]
         client_secret_env: Option<String>,
+        /// Authorization-server issuer pinned by the operator.
+        #[arg(long = "oauth-issuer")]
+        issuer: Option<String>,
     },
     /// Remove locally stored credentials for one server.
     Logout { name: String },
@@ -67,6 +70,8 @@ pub(crate) enum Action {
         oauth_client_id: Option<String>,
         #[arg(long, requires = "url")]
         oauth_client_secret_env: Option<String>,
+        #[arg(long, requires = "url")]
+        oauth_issuer: Option<String>,
         #[arg(last = true)]
         args: Vec<String>,
     },
@@ -169,6 +174,7 @@ pub(crate) async fn run(action: &Action) -> anyhow::Result<u8> {
             oauth_client_registration,
             oauth_client_id,
             oauth_client_secret_env,
+            oauth_issuer,
             args,
         } => add(
             name,
@@ -182,6 +188,7 @@ pub(crate) async fn run(action: &Action) -> anyhow::Result<u8> {
                 registration: *oauth_client_registration,
                 client_id: oauth_client_id.as_deref(),
                 client_secret_env: oauth_client_secret_env.as_deref(),
+                issuer: oauth_issuer.as_deref(),
             },
         ),
         Action::List { format } => list(*format),
@@ -256,6 +263,7 @@ struct AddOAuthOptions<'a> {
     registration: Option<OAuthClientRegistration>,
     client_id: Option<&'a str>,
     client_secret_env: Option<&'a str>,
+    issuer: Option<&'a str>,
 }
 
 impl AddOAuthOptions<'_> {
@@ -265,6 +273,7 @@ impl AddOAuthOptions<'_> {
             && self.registration.is_none()
             && self.client_id.is_none()
             && self.client_secret_env.is_none()
+            && self.issuer.is_none()
         {
             return None;
         }
@@ -275,6 +284,7 @@ impl AddOAuthOptions<'_> {
             refresh_token_env: None,
             client_id: self.client_id.map(str::to_owned),
             client_secret_env: self.client_secret_env.map(str::to_owned),
+            issuer: self.issuer.map(str::to_owned),
             resource: self.resource.map(str::to_owned),
             scopes: self.scopes.to_vec(),
             registration: self.registration.unwrap_or_default(),

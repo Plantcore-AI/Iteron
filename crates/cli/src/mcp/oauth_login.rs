@@ -1,6 +1,7 @@
 //! Bounded browser OAuth login for one configured HTTP MCP resource.
 
 use super::credential_store::StoredCredential;
+use super::oauth_http::{OAuthHttpClient, validate_endpoint};
 use crate::config::{McpServerConfig, OAuthClientRegistration};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -126,6 +127,15 @@ pub(crate) async fn login(
     server: &McpServerConfig,
     options: LoginOptions<'_>,
 ) -> anyhow::Result<LoginOutcome> {
+    let configured_oauth = server.oauth.as_ref();
+    let configured_client_id = configured_oauth.and_then(|oauth| oauth.client_id.as_deref());
+    let requested_client_id = options.client_id.or(configured_client_id);
+    let secret_env = options
+        .client_secret_env
+        .or_else(|| configured_oauth.and_then(|oauth| oauth.client_secret_env.as_deref()));
+    if secret_env.is_some() && options.expected_issuer.is_none() {
+        anyhow::bail!("MCP OAuth pre-registered client secret requires an operator-pinned issuer");
+    }
     let endpoint = Url::parse(
         server
             .url
@@ -133,16 +143,11 @@ pub(crate) async fn login(
             .ok_or_else(|| anyhow::anyhow!("HTTP MCP server has no URL"))?,
     )?;
     validate_endpoint(&endpoint, "resource")?;
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(http_timeout())
-        .build()?;
+    let client = OAuthHttpClient::new(&endpoint, http_timeout()).await?;
     let probe = probe_resource(&client, &endpoint).await?;
     if probe.unauthenticated {
         return Ok(LoginOutcome::NotRequired);
     }
-    let configured_oauth = server.oauth.as_ref();
     let explicit_resource = options
         .resource
         .or_else(|| configured_oauth.and_then(|oauth| oauth.resource.as_deref()));
@@ -163,17 +168,27 @@ pub(crate) async fn login(
     } else if !same_origin(&endpoint, &resource) && probe.resource.as_ref() != Some(&resource) {
         anyhow::bail!("MCP protected-resource metadata crosses the configured endpoint origin");
     }
-    let issuer_url = protected
-        .authorization_servers
-        .first()
-        .ok_or_else(|| anyhow::anyhow!("MCP resource advertises no authorization server"))
-        .and_then(|value| Url::parse(value).map_err(Into::into))?;
+    let expected_issuer = options.expected_issuer.map(Url::parse).transpose()?;
+    let issuer_url = if let Some(expected_issuer) = expected_issuer {
+        protected
+            .authorization_servers
+            .iter()
+            .map(|value| Url::parse(value))
+            .find_map(|candidate| match candidate {
+                Ok(candidate) if candidate == expected_issuer => Some(Ok(candidate)),
+                Err(error) => Some(Err(error)),
+                Ok(_) => None,
+            })
+            .transpose()?
+            .ok_or_else(|| anyhow::anyhow!("MCP OAuth issuer mismatch"))?
+    } else {
+        protected
+            .authorization_servers
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("MCP resource advertises no authorization server"))
+            .and_then(|value| Url::parse(value).map_err(Into::into))?
+    };
     validate_endpoint(&issuer_url, "issuer")?;
-    if let Some(expected_issuer) = options.expected_issuer
-        && Url::parse(expected_issuer)? != issuer_url
-    {
-        anyhow::bail!("MCP OAuth scope step-up issuer mismatch");
-    }
     let authorization = discover_authorization(&client, &issuer_url).await?;
     if Url::parse(&authorization.issuer)? != issuer_url {
         anyhow::bail!("MCP authorization metadata issuer mismatch");
@@ -183,6 +198,15 @@ pub(crate) async fn login(
     let token_endpoint = Url::parse(&authorization.token_endpoint)?;
     validate_endpoint(&authorization_endpoint, "authorization endpoint")?;
     validate_endpoint(&token_endpoint, "token endpoint")?;
+    validate_authorization_endpoint_binding(
+        &authorization,
+        &issuer_url,
+        &authorization_endpoint,
+        &token_endpoint,
+    )?;
+    if secret_env.is_some() && !same_origin(&issuer_url, &token_endpoint) {
+        anyhow::bail!("MCP OAuth token endpoint issuer mismatch");
+    }
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();
@@ -193,11 +217,6 @@ pub(crate) async fn login(
         format!("/callback/{callback_id}")
     };
     let redirect_uri = format!("http://127.0.0.1:{port}{callback_path}");
-    let configured_client_id = configured_oauth.and_then(|oauth| oauth.client_id.as_deref());
-    let requested_client_id = options.client_id.or(configured_client_id);
-    let secret_env = options
-        .client_secret_env
-        .or_else(|| configured_oauth.and_then(|oauth| oauth.client_secret_env.as_deref()));
     let client_secret = secret_env
         .map(|name| {
             std::env::var(name)
@@ -368,12 +387,11 @@ pub(crate) async fn revoke(credential: &StoredCredential) -> anyhow::Result<()> 
         .refresh_token
         .as_deref()
         .unwrap_or(&credential.access_token);
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(http_timeout())
-        .build()?;
+    let resource = Url::parse(&credential.resource)?;
+    let client = OAuthHttpClient::new(&resource, http_timeout()).await?;
     let mut form = vec![("token", token), ("token_type_hint", "refresh_token")];
-    let mut request = client.post(endpoint);
+    let endpoint = Url::parse(endpoint)?;
+    let mut request = client.post(&endpoint, "revocation endpoint").await?;
     match credential.token_auth_method {
         iteron_mcp::oauth::TokenEndpointAuthMethod::None => {
             form.push(("client_id", credential.client_id.as_str()));
@@ -398,16 +416,22 @@ pub(crate) async fn revoke(credential: &StoredCredential) -> anyhow::Result<()> 
 }
 
 async fn discover_resource(
-    client: &reqwest::Client,
+    client: &OAuthHttpClient,
     endpoint: &Url,
     explicit_resource: Option<&str>,
     challenge_metadata: Option<&Url>,
 ) -> anyhow::Result<Option<ResourceMetadata>> {
     if let Some(metadata_url) = challenge_metadata {
         validate_endpoint(metadata_url, "resource metadata")?;
-        return decode_json(client.get(metadata_url.clone()).send().await?)
-            .await
-            .map(Some);
+        return decode_json(
+            client
+                .get(metadata_url, "resource metadata")
+                .await?
+                .send()
+                .await?,
+        )
+        .await
+        .map(Some);
     }
     let base = explicit_resource
         .map(Url::parse)
@@ -423,7 +447,11 @@ async fn discover_resource(
         let mut metadata_url = base.clone();
         metadata_url.set_path(&path);
         metadata_url.set_query(None);
-        let response = client.get(metadata_url).send().await?;
+        let response = client
+            .get(&metadata_url, "resource metadata")
+            .await?
+            .send()
+            .await?;
         if response.status().as_u16() == 404 {
             continue;
         }
@@ -432,9 +460,10 @@ async fn discover_resource(
     Ok(None)
 }
 
-async fn probe_resource(client: &reqwest::Client, resource: &Url) -> anyhow::Result<ProbeResult> {
+async fn probe_resource(client: &OAuthHttpClient, resource: &Url) -> anyhow::Result<ProbeResult> {
     let response = client
-        .post(resource.clone())
+        .post(resource, "resource")
+        .await?
         .header("MCP-Protocol-Version", iteron_mcp::MODERN_PROTOCOL_VERSION)
         .header("Mcp-Method", "server/discover")
         .json(&serde_json::json!({
@@ -495,7 +524,7 @@ fn parse_www_authenticate(
 }
 
 async fn discover_authorization(
-    client: &reqwest::Client,
+    client: &OAuthHttpClient,
     issuer: &Url,
 ) -> anyhow::Result<AuthorizationMetadata> {
     let issuer_path = issuer.path().trim_matches('/');
@@ -517,7 +546,11 @@ async fn discover_authorization(
         let mut metadata_url = issuer.clone();
         metadata_url.set_path(&path);
         metadata_url.set_query(None);
-        let response = client.get(metadata_url).send().await?;
+        let response = client
+            .get(&metadata_url, "authorization metadata")
+            .await?
+            .send()
+            .await?;
         if response.status().as_u16() == 404 {
             continue;
         }
@@ -527,7 +560,7 @@ async fn discover_authorization(
 }
 
 async fn register_client(
-    client: &reqwest::Client,
+    client: &OAuthHttpClient,
     metadata: &AuthorizationMetadata,
     redirect_uri: &str,
     scopes: &[String],
@@ -572,7 +605,12 @@ async fn register_client(
     if !scopes.is_empty() {
         registration["scope"] = serde_json::Value::String(scopes.join(" "));
     }
-    let response = client.post(endpoint).json(&registration).send().await?;
+    let response = client
+        .post(&endpoint, "registration endpoint")
+        .await?
+        .json(&registration)
+        .send()
+        .await?;
     let registered: RegistrationResponse = decode_json(response).await?;
     validate_client_id(&registered.client_id, false, false)?;
     if let Some(secret) = &registered.client_secret {
@@ -594,7 +632,7 @@ async fn register_client(
 }
 
 async fn resolve_client(
-    client: &reqwest::Client,
+    client: &OAuthHttpClient,
     metadata: &AuthorizationMetadata,
     strategy: OAuthClientRegistration,
     requested_client_id: Option<&str>,
@@ -741,7 +779,7 @@ fn resolve_token_auth_method(
 
 #[allow(clippy::too_many_arguments)]
 async fn exchange_code(
-    client: &reqwest::Client,
+    client: &OAuthHttpClient,
     endpoint: &Url,
     code: &str,
     resolved: &ResolvedClient,
@@ -756,7 +794,7 @@ async fn exchange_code(
         ("code_verifier", verifier),
         ("resource", resource),
     ];
-    let mut request = client.post(endpoint.clone());
+    let mut request = client.post(endpoint, "token endpoint").await?;
     match resolved.token_auth_method {
         iteron_mcp::oauth::TokenEndpointAuthMethod::None => {
             form.push(("client_id", &resolved.client_id));
@@ -912,7 +950,9 @@ async fn read_callback_request_line(
             anyhow::bail!("MCP OAuth callback request ended before its request line");
         }
         request.extend_from_slice(&chunk[..read]);
-        if request.contains(&b'\n') {
+        if request.windows(4).any(|window| window == b"\r\n\r\n")
+            || request.windows(2).any(|window| window == b"\n\n")
+        {
             return Ok(request);
         }
     }
@@ -994,26 +1034,27 @@ fn validate_token_endpoint_auth_methods(methods: &[String]) -> anyhow::Result<()
     Ok(())
 }
 
-fn validate_endpoint(url: &Url, field: &str) -> anyhow::Result<()> {
-    let loopback = url.host_str().is_some_and(|host| {
-        host.eq_ignore_ascii_case("localhost")
-            || host
-                .parse::<std::net::IpAddr>()
-                .is_ok_and(|ip| ip.is_loopback())
-    });
-    if url.scheme() != "https" && !(url.scheme() == "http" && loopback) {
-        anyhow::bail!("MCP OAuth {field} must use HTTPS or loopback HTTP");
-    }
-    if !url.username().is_empty() || url.password().is_some() || url.fragment().is_some() {
-        anyhow::bail!("MCP OAuth {field} contains forbidden URL components");
-    }
-    Ok(())
-}
-
 fn same_origin(expected: &Url, actual: &Url) -> bool {
     expected.scheme() == actual.scheme()
         && expected.host_str() == actual.host_str()
         && expected.port_or_known_default() == actual.port_or_known_default()
+}
+
+fn validate_authorization_endpoint_binding(
+    metadata: &AuthorizationMetadata,
+    issuer: &Url,
+    authorization_endpoint: &Url,
+    token_endpoint: &Url,
+) -> anyhow::Result<()> {
+    if metadata.authorization_response_iss_parameter_supported
+        || same_origin(authorization_endpoint, issuer)
+        || same_origin(authorization_endpoint, token_endpoint)
+    {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "MCP OAuth authorization endpoint is not bound to its issuer without issuer-bound callbacks"
+    )
 }
 
 fn validate_secret(value: &str) -> anyhow::Result<()> {
@@ -1112,6 +1153,7 @@ const fn default_expires_in() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mcp::oauth_http::NetworkZone;
 
     #[test]
     fn callback_identity_and_state_comparison_are_stable() {
@@ -1154,6 +1196,43 @@ mod tests {
         );
     }
 
+    #[test]
+    fn authorization_endpoint_requires_an_issuer_binding() {
+        let issuer = Url::parse("https://issuer.example").unwrap();
+        let authorization_endpoint = Url::parse("https://login.example/authorize").unwrap();
+        let token_endpoint = Url::parse("https://tokens.example/token").unwrap();
+        let mut metadata = AuthorizationMetadata {
+            issuer: issuer.to_string(),
+            authorization_endpoint: authorization_endpoint.to_string(),
+            token_endpoint: token_endpoint.to_string(),
+            registration_endpoint: None,
+            revocation_endpoint: None,
+            client_id_metadata_document_supported: false,
+            authorization_response_iss_parameter_supported: false,
+            token_endpoint_auth_methods_supported: vec!["none".into()],
+            scopes_supported: Vec::new(),
+        };
+        assert!(
+            validate_authorization_endpoint_binding(
+                &metadata,
+                &issuer,
+                &authorization_endpoint,
+                &token_endpoint,
+            )
+            .is_err()
+        );
+        metadata.authorization_response_iss_parameter_supported = true;
+        assert!(
+            validate_authorization_endpoint_binding(
+                &metadata,
+                &issuer,
+                &authorization_endpoint,
+                &token_endpoint,
+            )
+            .is_ok()
+        );
+    }
+
     #[tokio::test]
     async fn callback_request_line_accepts_fragmented_tcp_input() {
         let (mut writer, mut reader) = tokio::io::duplex(64);
@@ -1183,8 +1262,9 @@ mod tests {
             token_endpoint_auth_methods_supported: vec!["client_secret_basic".into()],
             scopes_supported: Vec::new(),
         };
+        let client = OAuthHttpClient::with_source_zone(NetworkZone::Public);
         let resolved = resolve_client(
-            &reqwest::Client::new(),
+            &client,
             &metadata,
             OAuthClientRegistration::Auto,
             Some("https://client.example/id"),
@@ -1209,6 +1289,7 @@ mod tests {
             "https://user@example.com/register",
             "https://example.com/register#fragment",
         ] {
+            let client = OAuthHttpClient::with_source_zone(NetworkZone::Public);
             let metadata = AuthorizationMetadata {
                 issuer: "https://issuer.example".into(),
                 authorization_endpoint: "https://issuer.example/authorize".into(),
@@ -1220,17 +1301,13 @@ mod tests {
                 token_endpoint_auth_methods_supported: vec!["none".into()],
                 scopes_supported: Vec::new(),
             };
-            let error = match register_client(
-                &reqwest::Client::new(),
-                &metadata,
-                "http://127.0.0.1:1234/callback",
-                &[],
-            )
-            .await
-            {
-                Ok(_) => panic!("unsafe registration endpoint must fail before the request"),
-                Err(error) => error,
-            };
+            let error =
+                match register_client(&client, &metadata, "http://127.0.0.1:1234/callback", &[])
+                    .await
+                {
+                    Ok(_) => panic!("unsafe registration endpoint must fail before the request"),
+                    Err(error) => error,
+                };
             assert!(error.to_string().contains("registration endpoint"));
         }
     }

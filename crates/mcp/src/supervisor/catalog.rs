@@ -525,21 +525,21 @@ mod tests {
         let one = ManagedCatalog::admit(
             "files",
             Arc::from([7]),
-            "2024-11-05",
+            "2025-06-18",
             vec![spec("read", "first", json!({"type":"object"}))],
         )
         .unwrap();
         let unchanged = ManagedCatalog::admit(
             "files",
             Arc::from([7]),
-            "2024-11-05",
+            "2025-06-18",
             vec![spec("read", "first", json!({"type":"object"}))],
         )
         .unwrap();
         let changed_schema = ManagedCatalog::admit(
             "files",
             Arc::from([7]),
-            "2024-11-05",
+            "2025-06-18",
             vec![spec(
                 "read",
                 "first",
@@ -550,7 +550,7 @@ mod tests {
         let changed_description = ManagedCatalog::admit(
             "files",
             Arc::from([7]),
-            "2024-11-05",
+            "2025-06-18",
             vec![spec("read", "new wording", json!({"type":"object"}))],
         )
         .unwrap();
@@ -565,14 +565,14 @@ mod tests {
         let original = ManagedCatalog::admit(
             "files",
             Arc::from([1]),
-            "2024-11-05",
+            "2025-06-18",
             vec![spec("read", "", json!({}))],
         )
         .unwrap();
         let other_binding = ManagedCatalog::admit(
             "files",
             Arc::from([2]),
-            "2024-11-05",
+            "2025-06-18",
             vec![spec("read", "", json!({}))],
         )
         .unwrap();
@@ -592,14 +592,14 @@ mod tests {
     fn adversarial_catalog_is_rejected_again_at_supervisor_boundary() {
         let unsafe_description = vec![spec("read", "escape\u{1b}[31m", json!({}))];
         assert!(
-            ManagedCatalog::admit("files", Arc::from([0]), "2024-11-05", unsafe_description)
+            ManagedCatalog::admit("files", Arc::from([0]), "2025-06-18", unsafe_description)
                 .is_err()
         );
         assert!(
             ManagedCatalog::admit(
                 "files",
                 Arc::from([0]),
-                "2024-11-05",
+                "2025-06-18",
                 vec![spec("read", "safe prefix\rrewritten", json!({}))]
             )
             .is_err()
@@ -610,13 +610,13 @@ mod tests {
             ..spec("read", "", json!({}))
         };
         assert!(
-            ManagedCatalog::admit("files", Arc::from([0]), "2024-11-05", vec![wrong_risk]).is_err()
+            ManagedCatalog::admit("files", Arc::from([0]), "2025-06-18", vec![wrong_risk]).is_err()
         );
         assert!(
             ManagedCatalog::admit(
                 "files",
                 Arc::from([0]),
-                "2024-11-05",
+                "2025-06-18",
                 vec![spec("read", "", json!({"description":"\u{202e}"}))]
             )
             .is_err()
@@ -630,7 +630,7 @@ mod tests {
             ManagedCatalog::admit(
                 "files",
                 Arc::from([0]),
-                "2024-11-05",
+                "2025-06-18",
                 vec![spec("deep", "", deep)]
             )
             .is_err()
@@ -642,7 +642,7 @@ mod tests {
         let catalog = ManagedCatalog::admit(
             "files",
             Arc::from([0]),
-            "2024-11-05",
+            "2025-06-18",
             vec![
                 spec("grep", "search file text", json!({})),
                 spec("read", "read a file", json!({})),

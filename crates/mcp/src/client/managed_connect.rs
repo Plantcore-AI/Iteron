@@ -27,6 +27,7 @@ pub(super) async fn connect(
     sensitive_env_names: &[String],
     granted_env_names: &[String],
     cancellation: Option<&crate::supervisor::McpCancellation>,
+    advertises_elicitation: bool,
     protocol_mode: McpProtocolMode,
 ) -> Result<McpClient, McpError> {
     let startup_milliseconds =
@@ -118,6 +119,7 @@ pub(super) async fn connect(
         capabilities: crate::McpServerCapabilities::default(),
         protocol_mode,
         list_cache: crate::cache::McpListCache::new(),
+        advertises_elicitation,
         server_name: name.to_string(),
     };
 
@@ -127,14 +129,20 @@ pub(super) async fn connect(
         let mut stateful_request_version = STATEFUL_REQUESTED_PROTOCOL_VERSION.to_owned();
         if protocol_mode.prefers_modern() {
             let mut discovery = client
-                .call_unbounded_by_outer_deadline("server/discover", discover_params())
+                .call_unbounded_by_outer_deadline(
+                    "server/discover",
+                    discover_params(advertises_elicitation),
+                )
                 .await;
             if matches!(
                 discovery.as_ref().err().and_then(discovery_rejection),
                 Some(DiscoveryRejection::RetryModern)
             ) {
                 discovery = client
-                    .call_unbounded_by_outer_deadline("server/discover", discover_params())
+                    .call_unbounded_by_outer_deadline(
+                        "server/discover",
+                        discover_params(advertises_elicitation),
+                    )
                     .await;
             }
             let negotiation = match discovery {
@@ -183,7 +191,11 @@ pub(super) async fn connect(
                 "initialize",
                 json!({
                     "protocolVersion": stateful_request_version,
-                    "capabilities": {},
+                    "capabilities": if advertises_elicitation {
+                        json!({"elicitation": {"form": {}}})
+                    } else {
+                        json!({})
+                    },
                     "clientInfo": {"name": "iteron", "version": env!("CARGO_PKG_VERSION")}
                 }),
             )

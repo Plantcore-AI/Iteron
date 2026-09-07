@@ -21,6 +21,8 @@ parser.add_argument(
         "discovered-scope-rejected-once",
         "refresh-required",
         "unsupported-token-auth",
+        "confidential-issuer-substitution",
+        "confidential-token-substitution",
     ),
     default="success",
 )
@@ -32,6 +34,8 @@ parser.add_argument(
 ARGUMENTS = parser.parse_args()
 MODE = ARGUMENTS.mode
 AUTHORIZATION_ATTEMPTS = 0
+ATTACKER_METADATA_REQUESTS = 0
+ATTACKER_TOKEN_REQUESTS = 0
 ACTIVE_REFRESH_TOKEN = "local-refresh"
 ACTIVE_ACCESS_TOKEN = "local-access"
 
@@ -70,21 +74,39 @@ class Handler(BaseHTTPRequestHandler):
                         if MODE == "resource-mismatch"
                         else f"{self.origin}/mcp"
                     ),
-                    "authorization_servers": [self.origin],
+                    "authorization_servers": [
+                        f"{self.origin}/attacker"
+                        if MODE == "confidential-issuer-substitution"
+                        else self.origin
+                    ],
                     "scopes_supported": ["mcp"],
                 },
             )
-        elif url.path == "/.well-known/oauth-authorization-server":
+        elif url.path in (
+            "/.well-known/oauth-authorization-server",
+            "/.well-known/oauth-authorization-server/attacker",
+        ):
+            if url.path.endswith("/attacker"):
+                global ATTACKER_METADATA_REQUESTS
+                ATTACKER_METADATA_REQUESTS += 1
             self.send_json(
                 200,
                 {
                     "issuer": (
                         f"{self.origin}/unexpected"
                         if MODE == "issuer-mismatch"
+                        else f"{self.origin}/attacker"
+                        if MODE == "confidential-issuer-substitution"
                         else self.origin
                     ),
                     "authorization_endpoint": f"{self.origin}/authorize",
-                    "token_endpoint": f"{self.origin}/token",
+                    "token_endpoint": (
+                        f"{self.origin}/attacker-token"
+                        if MODE == "confidential-issuer-substitution"
+                        else f"http://localhost:{self.server.server_port}/attacker-token"
+                        if MODE == "confidential-token-substitution"
+                        else f"{self.origin}/token"
+                    ),
                     "registration_endpoint": f"{self.origin}/register",
                     "revocation_endpoint": f"{self.origin}/revoke",
                     "client_id_metadata_document_supported": MODE != "no-cimd",
@@ -94,6 +116,14 @@ class Handler(BaseHTTPRequestHandler):
                         if MODE == "unsupported-token-auth"
                         else ["none"]
                     ),
+                },
+            )
+        elif url.path == "/attack-counts":
+            self.send_json(
+                200,
+                {
+                    "metadata": ATTACKER_METADATA_REQUESTS,
+                    "token": ATTACKER_TOKEN_REQUESTS,
                 },
             )
         elif url.path == "/authorize":
@@ -130,7 +160,10 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/register":
             self.send_json(201, {"client_id": "local-client"})
             return
-        if self.path == "/token":
+        if self.path in ("/token", "/attacker-token"):
+            if self.path == "/attacker-token":
+                global ATTACKER_TOKEN_REQUESTS
+                ATTACKER_TOKEN_REQUESTS += 1
             values = urllib.parse.parse_qs(body.decode())
             if values.get("grant_type") == ["refresh_token"]:
                 global ACTIVE_REFRESH_TOKEN, ACTIVE_ACCESS_TOKEN

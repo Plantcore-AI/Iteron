@@ -75,6 +75,7 @@ pub struct McpClient {
     capabilities: crate::McpServerCapabilities,
     protocol_mode: crate::McpProtocolMode,
     list_cache: crate::cache::McpListCache,
+    advertises_elicitation: bool,
     pub server_name: String,
 }
 
@@ -145,6 +146,7 @@ impl McpClient {
             sensitive_env_names,
             &[],
             None,
+            false,
             crate::McpProtocolMode::Stateless2026,
         )
         .await
@@ -167,6 +169,27 @@ impl McpClient {
         sensitive_env_names: &[String],
         granted_env_names: &[String],
     ) -> Result<Self, McpError> {
+        Self::connect_auto_with_environment_and_elicitation(
+            command,
+            args,
+            name,
+            sensitive_env_names,
+            granted_env_names,
+            false,
+        )
+        .await
+    }
+
+    /// Prefer 2026 while advertising form elicitation only when the owning host has installed an
+    /// interactive input handler.
+    pub async fn connect_auto_with_environment_and_elicitation(
+        command: &str,
+        args: &[String],
+        name: &str,
+        sensitive_env_names: &[String],
+        granted_env_names: &[String],
+        advertises_elicitation: bool,
+    ) -> Result<Self, McpError> {
         let deadlines = crate::McpDeadlinePolicy::default().stdio();
         managed_connect::connect(
             command,
@@ -177,6 +200,7 @@ impl McpClient {
             sensitive_env_names,
             granted_env_names,
             None,
+            advertises_elicitation,
             crate::McpProtocolMode::Auto,
         )
         .await
@@ -298,7 +322,7 @@ impl McpClient {
         }
         let cache_params = params.clone();
         let params = if self.protocol_mode.is_stateless() {
-            match crate::protocol_version::modern_params(params) {
+            match crate::protocol_version::modern_params(params, self.advertises_elicitation) {
                 Ok(params) => params,
                 Err(error) => return CallOutcome::Completed(Err(error), None),
             }
@@ -482,6 +506,7 @@ impl McpClient {
             &[],
             &[],
             None,
+            false,
             protocol_mode,
         )
         .await
@@ -504,6 +529,7 @@ impl McpClient {
             sensitive_env_names,
             &[],
             None,
+            false,
             crate::McpProtocolMode::Stateful,
         )
         .await
@@ -522,6 +548,7 @@ impl McpClient {
         sensitive_env_names: &[String],
         granted_env_names: &[String],
         cancellation: &crate::supervisor::McpCancellation,
+        advertises_elicitation: bool,
         protocol_mode: crate::McpProtocolMode,
     ) -> Result<Self, McpError> {
         managed_connect::connect(
@@ -533,6 +560,7 @@ impl McpClient {
             sensitive_env_names,
             granted_env_names,
             Some(cancellation),
+            advertises_elicitation,
             protocol_mode,
         )
         .await
@@ -626,7 +654,7 @@ impl McpClient {
         }
         let cache_params = params.clone();
         let params = if self.protocol_mode.is_stateless() {
-            crate::protocol_version::modern_params(params)?
+            crate::protocol_version::modern_params(params, self.advertises_elicitation)?
         } else {
             params
         };
@@ -834,7 +862,7 @@ impl McpClient {
         }
         let params = json!({"name": name, "arguments": arguments});
         let params = if self.protocol_mode.is_stateless() {
-            match crate::protocol_version::modern_params(params) {
+            match crate::protocol_version::modern_params(params, self.advertises_elicitation) {
                 Ok(params) => params,
                 Err(error) => {
                     return McpToolOutcome::FailedDefinite {
@@ -935,9 +963,10 @@ impl McpClient {
         arguments: Value,
         handler: &dyn crate::McpMrtrHandler,
     ) -> Result<String, McpError> {
-        if !self.protocol_mode.is_stateless() {
+        if !self.protocol_mode.is_stateless() || !self.advertises_elicitation {
             return Err(McpError::Protocol(
-                "MRTR requires the 2026 stateless protocol".into(),
+                "MRTR requires the 2026 stateless protocol and an advertised elicitation handler"
+                    .into(),
             ));
         }
         validate_bare_tool_name(name)?;
@@ -1017,9 +1046,12 @@ impl McpClient {
     where
         F: FnOnce() + Send + 'static,
     {
-        if !self.protocol_mode.is_stateless() {
+        if !self.protocol_mode.is_stateless() || !self.advertises_elicitation {
             return McpToolOutcome::FailedDefinite {
-                error: McpError::Protocol("MRTR requires the 2026 stateless protocol".into()),
+                error: McpError::Protocol(
+                    "MRTR requires the 2026 stateless protocol and an advertised elicitation handler"
+                        .into(),
+                ),
                 evidence: None,
             };
         }
@@ -1044,7 +1076,10 @@ impl McpClient {
                     },
                 );
             };
-            let wire_params = match crate::protocol_version::modern_params(params.clone()) {
+            let wire_params = match crate::protocol_version::modern_params(
+                params.clone(),
+                self.advertises_elicitation,
+            ) {
                 Ok(params) => params,
                 Err(error) => {
                     return mrtr_failure(&self.server_name, name, started, error);
@@ -1206,6 +1241,56 @@ mod tests {
     use std::process::Stdio;
     use tokio::io::{AsyncWriteExt, duplex};
 
+    struct RejectMrtrInput;
+
+    impl crate::McpMrtrHandler for RejectMrtrInput {
+        fn request<'a>(
+            &'a self,
+            _server_name: &'a str,
+            _tool_name: &'a str,
+            _request_state: Option<&'a str>,
+            _requests: Vec<crate::McpInputRequest>,
+        ) -> crate::McpFuture<'a, crate::McpInputDecision> {
+            Box::pin(async { Ok(crate::McpInputDecision::Reject) })
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stdio_mrtr_cannot_start_when_elicitation_was_not_advertised() {
+        let reached = std::env::temp_dir().join(format!(
+            "iteron-mcp-no-elicitation-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let args = vec![
+            "-c".into(),
+            concat!(
+                "IFS= read -r discover; ",
+                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"resultType\":\"complete\",\"supportedVersions\":[\"2026-07-28\"],\"capabilities\":{\"tools\":{}}}}'; ",
+                "if IFS= read -r request; then printf reached > \"$1\"; fi"
+            )
+            .into(),
+            "mcp-no-elicitation".into(),
+            reached.to_string_lossy().into_owned(),
+        ];
+        let client = McpClient::connect_2026("/bin/bash", &args, "fixture")
+            .await
+            .unwrap();
+        assert!(matches!(
+            client
+                .call_tool_with_mrtr("interactive", json!({}), &RejectMrtrInput)
+                .await,
+            Err(McpError::Protocol(message))
+                if message.contains("advertised elicitation handler")
+        ));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!reached.exists(), "MRTR request reached the stdio server");
+    }
+
     #[tokio::test]
     async fn overlong_frame_without_newline_is_rejected_without_growing_past_limit() {
         let (mut peer, stream) = duplex(128);
@@ -1340,7 +1425,7 @@ mod tests {
                 "-c".to_string(),
                 concat!(
                     "IFS= read -r init; ",
-                    "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\"}}'; ",
+                    "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-06-18\"}}'; ",
                     "IFS= read -r initialized; sleep 60 & descendant=$!; ",
                     "printf '%s %s' $$ $descendant > \"$1\"; wait"
                 )
@@ -1569,7 +1654,7 @@ mod tests {
             concat!(
                 "printf '%s|%s|%s' \"${ITERON_TEST_PRICING_KEY-EMPTY}\" \"${XDG_CONFIG_HOME-EMPTY}\" \"$PWD\" > \"$1\"; ",
                 "IFS= read -r init; ",
-                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\"}}'; ",
+                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-06-18\"}}'; ",
                 "IFS= read -r initialized; exec sleep 60"
             )
             .to_string(),
@@ -1606,7 +1691,7 @@ mod tests {
             "-c".to_string(),
             concat!(
                 "IFS= read -r init; ",
-                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\"}}'; ",
+                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-06-18\"}}'; ",
                 "IFS= read -r initialized; echo $$ > \"$1\"; ",
                 "IFS= read -r request; exec sleep 60"
             )
@@ -1645,7 +1730,7 @@ mod tests {
             "-c".to_string(),
             concat!(
                 "IFS= read -r init; ",
-                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\"}}'; ",
+                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-06-18\"}}'; ",
                 "IFS= read -r initialized; ",
                 "IFS= read -r slow; IFS= read -r fast; ",
                 "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"fast\"}]}}'; ",
@@ -1721,7 +1806,7 @@ mod tests {
             "-c".to_string(),
             concat!(
                 "IFS= read -r init; ",
-                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\"}}'; ",
+                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-06-18\"}}'; ",
                 "IFS= read -r initialized; echo $$ > \"$1\"; ",
                 "IFS= read -r request; exec sleep 60"
             )
@@ -1770,7 +1855,7 @@ mod tests {
             "-c".to_string(),
             concat!(
                 "IFS= read -r init; ",
-                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\"}}'; ",
+                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-06-18\"}}'; ",
                 "IFS= read -r initialized; exec sleep 60"
             )
             .to_string(),

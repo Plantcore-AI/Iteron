@@ -28,13 +28,8 @@ impl McpProtocolMode {
     }
 }
 
-const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &[
-    REQUESTED_PROTOCOL_VERSION,
-    "2025-11-25",
-    "2025-06-18",
-    "2025-03-26",
-    "2024-11-05",
-];
+const SUPPORTED_PROTOCOL_VERSIONS: &[&str] =
+    &[REQUESTED_PROTOCOL_VERSION, "2025-11-25", "2025-06-18"];
 const MAX_PROTOCOL_VERSION_BYTES: usize = 64;
 
 /// Validate the version selected by the server before the initialized notification is sent.
@@ -62,25 +57,29 @@ pub(crate) fn negotiate_initialize_result(result: &Value) -> Result<String, McpE
     Ok(server_version.to_owned())
 }
 
-pub(crate) fn client_metadata() -> Value {
+pub(crate) fn client_metadata(advertises_elicitation: bool) -> Value {
+    let mut capabilities = serde_json::Map::from_iter([("tools".into(), serde_json::json!({}))]);
+    if advertises_elicitation {
+        capabilities.insert("elicitation".into(), serde_json::json!({"form": {}}));
+    }
     serde_json::json!({
         "io.modelcontextprotocol/protocolVersion": MODERN_PROTOCOL_VERSION,
         "io.modelcontextprotocol/clientInfo": {
             "name": "iteron",
             "version": env!("CARGO_PKG_VERSION")
         },
-        "io.modelcontextprotocol/clientCapabilities": {
-            "tools": {},
-            "elicitation": {"form": {}}
-        }
+        "io.modelcontextprotocol/clientCapabilities": capabilities
     })
 }
 
-pub(crate) fn modern_params(mut params: Value) -> Result<Value, McpError> {
+pub(crate) fn modern_params(
+    mut params: Value,
+    advertises_elicitation: bool,
+) -> Result<Value, McpError> {
     let object = params
         .as_object_mut()
         .ok_or_else(|| McpError::Protocol("MCP request params must be an object".into()))?;
-    let metadata = client_metadata();
+    let metadata = client_metadata(advertises_elicitation);
     let client_fields = metadata
         .as_object()
         .expect("repository-owned client metadata is an object");
@@ -95,8 +94,8 @@ pub(crate) fn modern_params(mut params: Value) -> Result<Value, McpError> {
     Ok(params)
 }
 
-pub(crate) fn discover_params() -> Value {
-    serde_json::json!({"_meta": client_metadata()})
+pub(crate) fn discover_params(advertises_elicitation: bool) -> Value {
+    serde_json::json!({"_meta": client_metadata(advertises_elicitation)})
 }
 
 pub(crate) enum DiscoveryNegotiation {
@@ -403,12 +402,54 @@ mod tests {
 
     #[test]
     fn modern_metadata_is_attached_without_overwriting_business_params() {
-        let params = modern_params(json!({"name": "echo"})).unwrap();
+        let params = modern_params(json!({"name": "echo"}), false).unwrap();
         assert_eq!(params["name"], "echo");
         assert_eq!(
             params["_meta"]["io.modelcontextprotocol/protocolVersion"],
             MODERN_PROTOCOL_VERSION
         );
+    }
+
+    #[test]
+    fn discovery_metadata_exactly_tracks_the_input_handler_capability() {
+        assert_eq!(
+            discover_params(false),
+            json!({
+                "_meta": {
+                    "io.modelcontextprotocol/protocolVersion": MODERN_PROTOCOL_VERSION,
+                    "io.modelcontextprotocol/clientInfo": {
+                        "name": "iteron",
+                        "version": env!("CARGO_PKG_VERSION")
+                    },
+                    "io.modelcontextprotocol/clientCapabilities": {"tools": {}}
+                }
+            })
+        );
+        assert_eq!(
+            discover_params(true),
+            json!({
+                "_meta": {
+                    "io.modelcontextprotocol/protocolVersion": MODERN_PROTOCOL_VERSION,
+                    "io.modelcontextprotocol/clientInfo": {
+                        "name": "iteron",
+                        "version": env!("CARGO_PKG_VERSION")
+                    },
+                    "io.modelcontextprotocol/clientCapabilities": {
+                        "tools": {},
+                        "elicitation": {"form": {}}
+                    }
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn untested_legacy_versions_are_rejected() {
+        for version in ["2025-03-26", "2024-11-05"] {
+            let error = negotiate_initialize_result(&json!({"protocolVersion": version}))
+                .expect_err("an untested version must not enter the runtime allowlist");
+            assert!(matches!(error, McpError::UnsupportedProtocolVersion { .. }));
+        }
     }
 
     #[test]

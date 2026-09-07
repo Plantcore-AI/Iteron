@@ -10,7 +10,7 @@ fn fixture(marker: &Path) -> McpServerConfig {
         "IFS= read -r discover; ",
         "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32601,\"message\":\"Method not found\"}}'; ",
         "IFS= read -r initialize; ",
-        "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{\"tools\":{},\"resources\":{},\"prompts\":{}}}}'; ",
+        "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{\"tools\":{},\"resources\":{},\"prompts\":{}}}}'; ",
         "IFS= read -r initialized; ",
         "IFS= read -r list; ",
         "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"tools\":[{\"name\":\"echo\",\"description\":\"fixture\",\"inputSchema\":{\"type\":\"object\"}}]}}'; ",
@@ -162,6 +162,7 @@ fn bearer_oauth() -> crate::config::McpOAuthConfig {
         refresh_token_env: None,
         client_id: None,
         client_secret_env: None,
+        issuer: None,
         resource: None,
         scopes: Vec::new(),
         registration: crate::config::OAuthClientRegistration::Auto,
@@ -177,6 +178,7 @@ fn refresh_oauth() -> crate::config::McpOAuthConfig {
         refresh_token_env: Some("MCP_REFRESH_TOKEN".into()),
         client_id: Some("core-test".into()),
         client_secret_env: Some("MCP_CLIENT_SECRET".into()),
+        issuer: None,
         resource: None,
         scopes: Vec::new(),
         registration: crate::config::OAuthClientRegistration::Auto,
@@ -415,7 +417,7 @@ async fn registration_configuration_and_stale_call_do_not_spawn_then_search_does
     assert!(health.catalog_current);
     assert_eq!(
         health.negotiated_protocol_version.as_deref(),
-        Some("2024-11-05")
+        Some("2025-06-18")
     );
 
     runtime.stop("alpha").await.unwrap();

@@ -98,6 +98,7 @@ impl McpRemoteClient {
             header_policy,
             headers,
             oauth_grant,
+            false,
             None,
             deadlines,
             result_policy,
@@ -146,6 +147,37 @@ impl McpRemoteClient {
             header_policy,
             headers,
             oauth_grant,
+            false,
+            None,
+            deadlines,
+            result_policy,
+            McpProtocolMode::Auto,
+        )
+        .await
+    }
+
+    /// Prefer 2026 discovery and advertise form elicitation only when the owning host has
+    /// installed an interactive input handler.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn connect_auto_with_policies_and_elicitation(
+        endpoint: McpHttpEndpoint,
+        server_name: String,
+        credential: Option<crate::token::Token>,
+        header_policy: McpHttpHeaderPolicy,
+        headers: Vec<(String, McpHeaderValue)>,
+        oauth_grant: Option<crate::oauth::OAuthRefreshGrant>,
+        advertises_elicitation: bool,
+        deadlines: crate::McpTransportDeadlines,
+        result_policy: crate::McpResultPolicy,
+    ) -> Result<Self, McpError> {
+        Self::connect_with_elicitation_and_policies(
+            endpoint,
+            server_name,
+            credential,
+            header_policy,
+            headers,
+            oauth_grant,
+            advertises_elicitation,
             None,
             deadlines,
             result_policy,
@@ -170,6 +202,7 @@ impl McpRemoteClient {
             header_policy,
             headers,
             oauth_grant,
+            false,
             None,
             crate::McpDeadlinePolicy::default().http(),
             crate::McpResultPolicy::default(),
@@ -196,6 +229,7 @@ impl McpRemoteClient {
             header_policy,
             headers,
             oauth_grant,
+            false,
             None,
             deadlines,
             result_policy,
@@ -216,6 +250,7 @@ impl McpRemoteClient {
         oauth_grant: Option<crate::oauth::OAuthRefreshGrant>,
         elicitation: Option<Arc<dyn crate::McpElicitationHandler>>,
     ) -> Result<Self, McpError> {
+        let advertises_elicitation = elicitation.is_some();
         Self::connect_with_elicitation_and_policies(
             endpoint,
             server_name,
@@ -223,6 +258,7 @@ impl McpRemoteClient {
             header_policy,
             headers,
             oauth_grant,
+            advertises_elicitation,
             elicitation,
             crate::McpDeadlinePolicy::default().http(),
             crate::McpResultPolicy::default(),
@@ -239,13 +275,13 @@ impl McpRemoteClient {
         header_policy: McpHttpHeaderPolicy,
         headers: Vec<(String, McpHeaderValue)>,
         oauth_grant: Option<crate::oauth::OAuthRefreshGrant>,
+        advertises_elicitation: bool,
         elicitation: Option<Arc<dyn crate::McpElicitationHandler>>,
         deadlines: crate::McpTransportDeadlines,
         result_policy: crate::McpResultPolicy,
         protocol_mode: McpProtocolMode,
     ) -> Result<Self, McpError> {
         validate_server_name(&server_name)?;
-        let advertises_elicitation = elicitation.is_some();
         let now: NowSecs = Arc::new(unix_now);
         let authentication_configured = credential.is_some() || oauth_grant.is_some();
         let oauth_policy = crate::oauth::McpOAuthLifecyclePolicy::for_binding(
@@ -296,8 +332,12 @@ impl McpRemoteClient {
         if protocol_mode.prefers_modern() {
             wire.set_protocol_version(crate::MODERN_PROTOCOL_VERSION)
                 .await;
-            let discover =
-                || client.send_request_with_auth_retry("server/discover", discover_params());
+            let discover = || {
+                client.send_request_with_auth_retry(
+                    "server/discover",
+                    discover_params(advertises_elicitation),
+                )
+            };
             let first = tokio::time::timeout(deadlines.startup(), discover())
                 .await
                 .map_err(|_| McpError::Deadline {
@@ -602,9 +642,10 @@ impl McpRemoteClient {
         arguments: Value,
         handler: &dyn crate::McpMrtrHandler,
     ) -> Result<String, McpError> {
-        if !self.protocol_mode.is_stateless() {
+        if !self.protocol_mode.is_stateless() || !self.advertises_elicitation {
             return Err(McpError::Protocol(
-                "MRTR requires the 2026 stateless protocol".into(),
+                "MRTR requires the 2026 stateless protocol and an advertised elicitation handler"
+                    .into(),
             ));
         }
         validate_bare_tool_name(name)?;
@@ -689,9 +730,12 @@ impl McpRemoteClient {
     where
         F: FnOnce() + Send + 'static,
     {
-        if !self.protocol_mode.is_stateless() {
+        if !self.protocol_mode.is_stateless() || !self.advertises_elicitation {
             return McpToolOutcome::FailedDefinite {
-                error: McpError::Protocol("MRTR requires the 2026 stateless protocol".into()),
+                error: McpError::Protocol(
+                    "MRTR requires the 2026 stateless protocol and an advertised elicitation handler"
+                        .into(),
+                ),
                 evidence: None,
             };
         }
@@ -912,7 +956,7 @@ impl McpRemoteClient {
 
     fn params(&self, params: Value) -> Result<Value, McpError> {
         if self.protocol_mode.is_stateless() {
-            modern_params(params)
+            modern_params(params, self.advertises_elicitation)
         } else {
             Ok(params)
         }
@@ -1320,6 +1364,24 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
 
+    async fn connect_2026_advertising_elicitation(endpoint: McpHttpEndpoint) -> McpRemoteClient {
+        McpRemoteClient::connect_with_elicitation_and_policies(
+            endpoint,
+            "fixture".into(),
+            None,
+            McpHttpHeaderPolicy::default(),
+            Vec::new(),
+            None,
+            true,
+            None,
+            crate::McpDeadlinePolicy::default().http(),
+            crate::McpResultPolicy::default(),
+            McpProtocolMode::Stateless2026,
+        )
+        .await
+        .unwrap()
+    }
+
     #[test]
     fn capability_projection_is_exact_and_unknown_fields_grant_nothing() {
         let capabilities = capabilities_from(&json!({
@@ -1644,6 +1706,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stateless_mrtr_cannot_start_when_elicitation_was_not_advertised() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let request = read_request(&mut socket).await;
+            let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
+            let message: Value = serde_json::from_str(body).unwrap();
+            assert_eq!(message["method"], "server/discover");
+            assert!(message["params"]["_meta"].get("capabilities").is_none());
+            let frame = json!({
+                "jsonrpc": "2.0",
+                "id": message["id"],
+                "result": {
+                    "resultType": "complete",
+                    "supportedVersions": [crate::MODERN_PROTOCOL_VERSION],
+                    "capabilities": {"tools": {}},
+                    "serverInfo": {"name": "fixture", "version": "1"}
+                }
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{frame}",
+                frame.len()
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+            tokio::time::timeout(std::time::Duration::from_millis(200), listener.accept())
+                .await
+                .is_ok()
+        });
+        let client = McpRemoteClient::connect_2026(
+            McpHttpEndpoint::parse(&format!("http://{address}/mcp")).unwrap(),
+            "fixture".into(),
+            None,
+            McpHttpHeaderPolicy::default(),
+            Vec::new(),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            client
+                .call_tool_with_mrtr("interactive", json!({}), &RejectInputs)
+                .await,
+            Err(McpError::Protocol(message))
+                if message.contains("advertised elicitation handler")
+        ));
+        assert!(!server.await.unwrap(), "MRTR request reached the server");
+    }
+
+    #[tokio::test]
     async fn stateless_mrtr_requires_a_handler_and_rejection_never_replays_the_tool() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -1690,16 +1803,10 @@ mod tests {
                 socket.write_all(response.as_bytes()).await.unwrap();
             }
         });
-        let client = McpRemoteClient::connect_2026(
+        let client = connect_2026_advertising_elicitation(
             McpHttpEndpoint::parse(&format!("http://{address}/mcp")).unwrap(),
-            "fixture".into(),
-            None,
-            McpHttpHeaderPolicy::default(),
-            Vec::new(),
-            None,
         )
-        .await
-        .unwrap();
+        .await;
         assert!(matches!(
             client
                 .call_tool_outcome_observed("interactive", json!({}), || {})
@@ -1784,16 +1891,10 @@ mod tests {
                 socket.write_all(response.as_bytes()).await.unwrap();
             }
         });
-        let client = McpRemoteClient::connect_2026(
+        let client = connect_2026_advertising_elicitation(
             McpHttpEndpoint::parse(&format!("http://{address}/mcp")).unwrap(),
-            "fixture".into(),
-            None,
-            McpHttpHeaderPolicy::default(),
-            Vec::new(),
-            None,
         )
-        .await
-        .unwrap();
+        .await;
         let dispatches = StdArc::new(StdMutex::new(0_u8));
         let observed = dispatches.clone();
         let outcome = client

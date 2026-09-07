@@ -127,12 +127,12 @@ This page is generated from the argument parser, so every shipped flag and subco
 | `iteron plugin rollback <NAME>` | Atomically return to the one retained, re-verified prior artifact. |
 | `iteron plugin doctor` | Re-verify every enabled cache entry and explain composition refusals/conflicts. |
 | `iteron mcp <SUBCOMMAND>` | Configure, authenticate, test, and diagnose MCP servers. |
-| `iteron mcp add <NAME> [--url <URL>] [--stdio <COMMAND>] [--env <NAME>] [--oauth-resource <OAUTH_RESOURCE>] [--oauth-scopes <OAUTH_SCOPES>] [--oauth-client-registration <OAUTH_CLIENT_REGISTRATION>] [--oauth-client-id <OAUTH_CLIENT_ID>] [--oauth-client-secret-env <OAUTH_CLIENT_SECRET_ENV>] [ARGS]` | Add one operator-owned MCP server. |
+| `iteron mcp add <NAME> [--url <URL>] [--stdio <COMMAND>] [--env <NAME>] [--oauth-resource <OAUTH_RESOURCE>] [--oauth-scopes <OAUTH_SCOPES>] [--oauth-client-registration <OAUTH_CLIENT_REGISTRATION>] [--oauth-client-id <OAUTH_CLIENT_ID>] [--oauth-client-secret-env <OAUTH_CLIENT_SECRET_ENV>] [--oauth-issuer <OAUTH_ISSUER>] [ARGS]` | Add one operator-owned MCP server. |
 | `iteron mcp list [--format <FORMAT>]` | List configured MCP servers. |
 | `iteron mcp get <NAME> [--format <FORMAT>]` | Inspect one configured MCP server. |
 | `iteron mcp remove <NAME>` | Remove one configured MCP server. |
 | `iteron mcp auth <SUBCOMMAND>` | Inspect locally stored MCP authentication. |
-| `iteron mcp auth login <NAME> [--oauth-resource <RESOURCE>] [--scopes <SCOPES>] [--oauth-client-registration <REGISTRATION>] [--client-id <CLIENT_ID>] [--client-secret-env <CLIENT_SECRET_ENV>]` | Start an OAuth login for one configured HTTP server. |
+| `iteron mcp auth login <NAME> [--oauth-resource <RESOURCE>] [--scopes <SCOPES>] [--oauth-client-registration <REGISTRATION>] [--client-id <CLIENT_ID>] [--client-secret-env <CLIENT_SECRET_ENV>] [--oauth-issuer <ISSUER>]` | Start an OAuth login for one configured HTTP server. |
 | `iteron mcp auth logout <NAME>` | Remove locally stored credentials for one server. |
 | `iteron mcp auth status <NAME> [--format <FORMAT>]` | Show local credential status without revealing credentials. |
 | `iteron mcp test <NAME> [--format <FORMAT>]` | Connect, negotiate, and discover tools without calling a business tool. |

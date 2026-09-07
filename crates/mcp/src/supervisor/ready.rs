@@ -66,6 +66,7 @@ impl McpSupervisor {
                 self.launch.sensitive_env_names(),
                 self.launch.granted_env_names(),
                 cancellation,
+                self.launch.advertises_elicitation(),
                 self.launch.protocol_mode(),
             )
             .await;

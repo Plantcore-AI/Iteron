@@ -110,7 +110,7 @@ mod unix {
         let script = concat!(
             "echo $$ > \"$1\"; ",
             "IFS= read -r init; ",
-            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\"}}'; ",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-06-18\"}}'; ",
             "IFS= read -r initialized; IFS= read -r list; ",
             "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"reader\",\"description\":\"read a file\"},{\"name\":\"read\",\"description\":\"exact reader\"},{\"name\":\"grep\",\"description\":\"search text\"}]}}'; ",
             "exec sleep 60"
@@ -152,7 +152,7 @@ mod unix {
             "count=0; test ! -f \"$1\" || count=$(cat \"$1\"); count=$((count + 1)); ",
             "printf '%s' \"$count\" > \"$1\"; echo $$ >> \"$2\"; ",
             "IFS= read -r init; ",
-            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\"}}'; ",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-06-18\"}}'; ",
             "IFS= read -r initialized; IFS= read -r list; ",
             "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"read\"}]}}'; ",
             "if test \"$count\" = 1; then exit 0; fi; exec sleep 60"
@@ -198,7 +198,7 @@ mod unix {
             "count=0; test ! -f \"$1\" || count=$(cat \"$1\"); count=$((count + 1)); ",
             "printf '%s' \"$count\" > \"$1\"; echo $$ >> \"$2\"; ",
             "IFS= read -r init; ",
-            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\"}}'; ",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-06-18\"}}'; ",
             "IFS= read -r initialized; IFS= read -r list; ",
             "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"mutate\"}]}}'; ",
             "if test \"$count\" = 1; then while test ! -f \"$3\"; do sleep 0.01; done; exit 0; fi; ",
@@ -307,7 +307,7 @@ mod unix {
         let first_script = concat!(
             "printf spawned > \"$1\"; ",
             "IFS= read -r init; ",
-            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\"}}'; ",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-06-18\"}}'; ",
             "IFS= read -r initialized; IFS= read -r list; ",
             "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"read\"}]}}'; exec sleep 60"
         );
@@ -354,7 +354,7 @@ mod unix {
         let script = concat!(
             "echo $$ > \"$1\"; ",
             "IFS= read -r init; ",
-            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\"}}'; ",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-06-18\"}}'; ",
             "IFS= read -r initialized; IFS= read -r list; printf '\\377\\n'; exec sleep 60"
         );
         let mut server = supervisor(
@@ -420,7 +420,7 @@ mod unix {
         let script = concat!(
             "n=0; test ! -f \"$1\" || n=$(cat \"$1\"); n=$((n+1)); printf '%s' \"$n\" > \"$1\"; ",
             "IFS= read -r init; ",
-            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\"}}'; ",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-06-18\"}}'; ",
             "IFS= read -r initialized; IFS= read -r list; ",
             "if test \"$n\" = 1; then exec sleep 60; fi; ",
             "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"read\"}]}}'; exec sleep 60"
@@ -486,7 +486,7 @@ mod unix {
         let counter = temp_path("identity-counter");
         let script = concat!(
             "n=0; test ! -f \"$1\" || n=$(cat \"$1\"); n=$((n+1)); printf '%s' \"$n\" > \"$1\"; ",
-            "IFS= read -r init; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\"}}'; ",
+            "IFS= read -r init; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-06-18\"}}'; ",
             "IFS= read -r initialized; IFS= read -r list; ",
             "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"mutate\",\"inputSchema\":{\"type\":\"object\"}}]}}'; ",
             "IFS= read -r call; if test \"$n\" = 1; then exit 7; fi; ",
@@ -530,7 +530,7 @@ mod unix {
         let dispatch_marker = temp_path("schema-dispatch");
         let script = concat!(
             "n=0; test ! -f \"$1\" || n=$(cat \"$1\"); n=$((n+1)); printf '%s' \"$n\" > \"$1\"; ",
-            "IFS= read -r init; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\"}}'; ",
+            "IFS= read -r init; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-06-18\"}}'; ",
             "IFS= read -r initialized; IFS= read -r list; ",
             "if test \"$n\" = 1; then schema='{\"type\":\"object\"}'; else schema='{\"type\":\"object\",\"required\":[\"path\"]}'; fi; ",
             "printf '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"mutate\",\"inputSchema\":%s}]}}\\n' \"$schema\"; ",
@@ -578,7 +578,7 @@ mod unix {
         let pid_path = temp_path("cancel-call-pid");
         let script = concat!(
             "echo $$ > \"$2\"; IFS= read -r init; ",
-            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\"}}'; ",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-06-18\"}}'; ",
             "IFS= read -r initialized; IFS= read -r list; ",
             "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"mutate\"}]}}'; ",
             "IFS= read -r call; printf seen > \"$1\"; exec sleep 60"

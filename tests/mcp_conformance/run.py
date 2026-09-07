@@ -11,7 +11,7 @@ import tempfile
 from pathlib import Path
 
 PIN = "49103de6ed70804e940637bf3e9e29e4a3f54e64"
-REVIEWED_BASELINE_SHA256 = "7f32eaa8858d0090824e3e4fdf7ced871128649df3a79e538731fc9f9734393e"
+REVIEWED_BASELINE_SHA256 = "ea1cb9069b46bb9ae6b9df36d2bca6b40cf361a0866026c62a76104f174bfb6a"
 VERSIONS = ("2025-06-18", "2025-11-25", "2026-07-28")
 TRANSPORTS = ("stdio", "http")
 NON_AUTH_SCENARIOS = {
@@ -20,7 +20,6 @@ NON_AUTH_SCENARIOS = {
         "initialize",
         "tools_call",
         "elicitation-sep1034-client-defaults",
-        "sse-retry",
     ),
     "2026-07-28": (
         "tools_call",

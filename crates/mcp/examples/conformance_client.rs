@@ -32,13 +32,16 @@ async fn run() -> Result<(), iteron_mcp::McpError> {
         .ok()
         .map(|secret| iteron_mcp::token::Token::new(secret, u64::MAX));
     let client = if version == iteron_mcp::MODERN_PROTOCOL_VERSION {
-        McpRemoteClient::connect_auto(
+        McpRemoteClient::connect_auto_with_policies_and_elicitation(
             endpoint,
             "conformance".into(),
             credential,
             McpHttpHeaderPolicy::default(),
             Vec::new(),
             None,
+            true,
+            iteron_mcp::McpDeadlinePolicy::default().http(),
+            iteron_mcp::McpResultPolicy::default(),
         )
         .await?
     } else if matches!(version.as_str(), "2025-06-18" | "2025-11-25") {
