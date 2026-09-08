@@ -424,7 +424,7 @@ pub(crate) async fn connect_configured_server(
         sensitive_env_names,
         iteron_mcp::McpDeadlinePolicy::default(),
         iteron_mcp::McpResultPolicy::default(),
-        false,
+        None,
     )
     .await
 }
@@ -434,7 +434,7 @@ async fn connect_configured_server_with_policies(
     sensitive_env_names: &[String],
     deadlines: iteron_mcp::McpDeadlinePolicy,
     result_policy: iteron_mcp::McpResultPolicy,
-    advertises_elicitation: bool,
+    mrtr_handler: Option<Arc<dyn iteron_mcp::McpMrtrHandler>>,
 ) -> Result<ConfiguredMcpClient, iteron_mcp::McpError> {
     match server.transport {
         McpTransportConfig::Stdio => {
@@ -452,7 +452,7 @@ async fn connect_configured_server_with_policies(
                 &server.name,
                 sensitive_env_names,
                 &server.env_names,
-                advertises_elicitation,
+                mrtr_handler.is_some(),
             )
             .await?;
             Ok(ConfiguredMcpClient::Stdio(Arc::new(client)))
@@ -516,6 +516,29 @@ async fn connect_configured_server_with_policies(
                         )
                     })
                 };
+            let manual_source_zone = if server.oauth.as_ref().is_some_and(|oauth| {
+                oauth.access_token_env.is_some()
+                    && oauth.refresh_url.is_some()
+                    && oauth.refresh_token_env.is_some()
+            }) {
+                let resource = url::Url::parse(server.url.as_deref().ok_or(
+                    iteron_mcp::McpError::InvalidEndpoint {
+                        field: "url",
+                        limit: iteron_mcp::http::MAX_MCP_HTTP_URL_BYTES,
+                    },
+                )?)
+                .map_err(|_| iteron_mcp::McpError::InvalidEndpoint {
+                    field: "url",
+                    limit: iteron_mcp::http::MAX_MCP_HTTP_URL_BYTES,
+                })?;
+                Some(
+                    iteron_mcp::oauth::OAuthHttpClient::new(&resource, deadlines.http().startup())
+                        .await?
+                        .source_zone(),
+                )
+            } else {
+                None
+            };
             let oauth_grant = if let Some(oauth) = server
                 .oauth
                 .as_ref()
@@ -541,12 +564,15 @@ async fn connect_configured_server_with_policies(
                             })
                             .transpose()?;
                         iteron_mcp::oauth::OAuthRefreshGrant::new(
-                            iteron_mcp::http::McpHttpEndpoint::parse(refresh_url)?,
-                            oauth
-                                .revoke_url
-                                .as_deref()
-                                .map(iteron_mcp::http::McpHttpEndpoint::parse)
-                                .transpose()?,
+                            iteron_mcp::oauth::OAuthEndpointBinding::new(
+                                iteron_mcp::http::McpHttpEndpoint::parse(refresh_url)?,
+                                oauth
+                                    .revoke_url
+                                    .as_deref()
+                                    .map(iteron_mcp::http::McpHttpEndpoint::parse)
+                                    .transpose()?,
+                                manual_source_zone.expect("refresh configuration classified above"),
+                            ),
                             refresh_token,
                             oauth.client_id.clone(),
                             client_secret,
@@ -573,14 +599,17 @@ async fn connect_configured_server_with_policies(
                     .and_then(|credential| {
                         credential.refresh_token.as_ref().map(|refresh_token| {
                             iteron_mcp::oauth::OAuthRefreshGrant::new(
-                                iteron_mcp::http::McpHttpEndpoint::parse(
-                                    &credential.token_endpoint,
-                                )?,
-                                credential
-                                    .revocation_endpoint
-                                    .as_deref()
-                                    .map(iteron_mcp::http::McpHttpEndpoint::parse)
-                                    .transpose()?,
+                                iteron_mcp::oauth::OAuthEndpointBinding::new(
+                                    iteron_mcp::http::McpHttpEndpoint::parse(
+                                        &credential.token_endpoint,
+                                    )?,
+                                    credential
+                                        .revocation_endpoint
+                                        .as_deref()
+                                        .map(iteron_mcp::http::McpHttpEndpoint::parse)
+                                        .transpose()?,
+                                    credential.source_zone,
+                                ),
                                 refresh_token.clone(),
                                 Some(credential.client_id.clone()),
                                 credential.client_secret.clone(),
@@ -596,6 +625,7 @@ async fn connect_configured_server_with_policies(
                     })
                     .transpose()?
             };
+            let elicitation = mrtr_handler.map(iteron_mcp::elicitation_handler_from_mrtr);
             let client = iteron_mcp::McpRemoteClient::connect_auto_with_policies_and_elicitation(
                 endpoint,
                 server.name.clone(),
@@ -603,7 +633,7 @@ async fn connect_configured_server_with_policies(
                 policy,
                 headers,
                 oauth_grant,
-                advertises_elicitation,
+                elicitation,
                 deadlines.http(),
                 result_policy,
             )

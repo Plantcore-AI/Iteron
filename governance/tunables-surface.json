@@ -4,7 +4,7 @@
   "registry_revision": 24,
   "registry_digest": "a8439500a335e0086a326dbfd88222fc1501373d333aa7bb2315779f220bd663",
   "param_registry_id": "iteron-params",
-  "param_registry_digest": "38208b2e6d0c282cff46cd5377ac83e7acc6ff75195c87a92e0dcacd658018bf",
+  "param_registry_digest": "7d4bfb705402e5f45c1c806d54fbd66cdcbcabf70d6869bf672471d3bc433a67",
   "tool_text_registry_id": "iteron-builtin-tool-descriptions",
   "tool_text_registry_digest": "7da44a496e668c86c4456291e0e8178955ae7b99f473e69e1804d7742ae9738d",
   "counts": {
@@ -10862,12 +10862,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/mcp/credential_store.rs",
-          "line": 75,
+          "line": 77,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/mcp/credential_store.rs",
-          "line": 188,
+          "line": 191,
           "evidence": "Rust path reference"
         }
       ]
@@ -10926,7 +10926,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/mcp/oauth_login.rs",
-          "line": 1143,
+          "line": 1156,
           "evidence": "param_usize runtime resolution"
         }
       ],
@@ -10954,7 +10954,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/mcp/oauth_login.rs",
-          "line": 1119,
+          "line": 1132,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -10982,7 +10982,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/mcp/oauth_login.rs",
-          "line": 1135,
+          "line": 1148,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -11012,7 +11012,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/mcp/oauth_login.rs",
-          "line": 1139,
+          "line": 1152,
           "evidence": "param_usize runtime resolution"
         }
       ],
@@ -11096,7 +11096,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/mcp.rs",
-          "line": 689,
+          "line": 719,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -11462,22 +11462,22 @@
         },
         {
           "path": "crates/cli/src/mcp/credential_store.rs",
-          "line": 234,
+          "line": 237,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/mcp/credential_store.rs",
-          "line": 324,
+          "line": 327,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/mcp/credential_store.rs",
-          "line": 341,
+          "line": 344,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/mcp/credential_store.rs",
-          "line": 356,
+          "line": 359,
           "evidence": "Rust path reference"
         },
         {
@@ -45581,7 +45581,7 @@
       "use_sites": [
         {
           "path": "crates/mcp/src/elicitation.rs",
-          "line": 112,
+          "line": 113,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -45611,7 +45611,7 @@
       "use_sites": [
         {
           "path": "crates/mcp/src/elicitation.rs",
-          "line": 293,
+          "line": 332,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -45641,12 +45641,12 @@
       "use_sites": [
         {
           "path": "crates/mcp/src/elicitation.rs",
-          "line": 158,
+          "line": 197,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/mcp/src/elicitation.rs",
-          "line": 176,
+          "line": 215,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -45676,7 +45676,7 @@
       "use_sites": [
         {
           "path": "crates/mcp/src/elicitation.rs",
-          "line": 40,
+          "line": 41,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -45706,7 +45706,7 @@
       "use_sites": [
         {
           "path": "crates/mcp/src/elicitation.rs",
-          "line": 140,
+          "line": 179,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -46383,7 +46383,7 @@
       "use_sites": [
         {
           "path": "crates/mcp/src/lib.rs",
-          "line": 426,
+          "line": 429,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -46413,12 +46413,12 @@
       "use_sites": [
         {
           "path": "crates/mcp/src/lib.rs",
-          "line": 397,
+          "line": 400,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/mcp/src/lib.rs",
-          "line": 404,
+          "line": 407,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -46810,7 +46810,7 @@
       "use_sites": [
         {
           "path": "crates/mcp/src/lib.rs",
-          "line": 470,
+          "line": 473,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -46840,12 +46840,12 @@
       "use_sites": [
         {
           "path": "crates/mcp/src/mrtr.rs",
-          "line": 91,
+          "line": 99,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/mcp/src/mrtr.rs",
-          "line": 175,
+          "line": 183,
           "evidence": "param_usize runtime resolution"
         }
       ],
@@ -46875,7 +46875,7 @@
       "use_sites": [
         {
           "path": "crates/mcp/src/mrtr.rs",
-          "line": 93,
+          "line": 101,
           "evidence": "param_usize runtime resolution"
         }
       ],
@@ -46905,7 +46905,7 @@
       "use_sites": [
         {
           "path": "crates/mcp/src/mrtr.rs",
-          "line": 89,
+          "line": 97,
           "evidence": "param_usize runtime resolution"
         }
       ],
@@ -46935,7 +46935,7 @@
       "use_sites": [
         {
           "path": "crates/mcp/src/mrtr.rs",
-          "line": 177,
+          "line": 185,
           "evidence": "param_usize runtime resolution"
         }
       ],
@@ -46965,7 +46965,7 @@
       "use_sites": [
         {
           "path": "crates/mcp/src/mrtr.rs",
-          "line": 95,
+          "line": 103,
           "evidence": "param_usize runtime resolution"
         }
       ],
@@ -46995,12 +46995,12 @@
       "use_sites": [
         {
           "path": "crates/mcp/src/oauth.rs",
-          "line": 158,
+          "line": 372,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/mcp/src/oauth.rs",
-          "line": 166,
+          "line": 380,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -47030,12 +47030,12 @@
       "use_sites": [
         {
           "path": "crates/mcp/src/oauth.rs",
-          "line": 408,
+          "line": 622,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/mcp/src/oauth.rs",
-          "line": 416,
+          "line": 630,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -47063,7 +47063,7 @@
       "use_sites": [
         {
           "path": "crates/mcp/src/oauth.rs",
-          "line": 210,
+          "line": 150,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -47091,7 +47091,7 @@
       "use_sites": [
         {
           "path": "crates/mcp/src/oauth.rs",
-          "line": 214,
+          "line": 422,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -47249,7 +47249,7 @@
         },
         {
           "path": "crates/mcp/src/remote.rs",
-          "line": 333,
+          "line": 326,
           "evidence": "Rust path reference"
         }
       ]
@@ -47338,22 +47338,22 @@
         },
         {
           "path": "crates/mcp/src/remote.rs",
-          "line": 331,
+          "line": 324,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/mcp/src/remote.rs",
-          "line": 387,
+          "line": 380,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/mcp/src/remote.rs",
+          "line": 1072,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/mcp/src/remote.rs",
           "line": 1079,
-          "evidence": "Rust path reference"
-        },
-        {
-          "path": "crates/mcp/src/remote.rs",
-          "line": 1086,
           "evidence": "macro token reference"
         }
       ]
@@ -47556,12 +47556,12 @@
       "use_sites": [
         {
           "path": "crates/mcp/src/remote.rs",
-          "line": 628,
+          "line": 621,
           "evidence": "param_bool runtime resolution"
         },
         {
           "path": "crates/mcp/src/remote.rs",
-          "line": 875,
+          "line": 868,
           "evidence": "param_bool runtime resolution"
         }
       ],

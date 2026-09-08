@@ -186,16 +186,16 @@ pub(super) async fn connect(
                 }
             }
         }
+        // Stateful stdio has no server-request dispatch loop. A 2026 MRTR handler can justify the
+        // stateless discovery claim, but it must not be projected as ordinary elicitation after
+        // falling back to initialize.
+        client.advertises_elicitation = false;
         let initialize_result = client
             .call_unbounded_by_outer_deadline(
                 "initialize",
                 json!({
                     "protocolVersion": stateful_request_version,
-                    "capabilities": if advertises_elicitation {
-                        json!({"elicitation": {"form": {}}})
-                    } else {
-                        json!({})
-                    },
+                    "capabilities": {},
                     "clientInfo": {"name": "iteron", "version": env!("CARGO_PKG_VERSION")}
                 }),
             )

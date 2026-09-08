@@ -207,7 +207,6 @@ pub(crate) async fn login(
     if secret_env.is_some() && !same_origin(&issuer_url, &token_endpoint) {
         anyhow::bail!("MCP OAuth token endpoint issuer mismatch");
     }
-
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();
     let callback_id = callback_id(resource.as_str());
@@ -278,7 +277,10 @@ pub(crate) async fn login(
                 .append_pair("scope", &requested_scopes.join(" "));
         }
         println!("Open this URL to authorize MCP access:\n{authorize_url}");
-        let _ = open_browser(authorize_url.as_str()).await;
+        let _ = open_authorization_url(&client, authorize_url, |url| async move {
+            open_browser(&url).await
+        })
+        .await;
         let callback = tokio::time::timeout(
             callback_timeout(),
             receive_callback(&listener, &callback_path, &state),
@@ -364,6 +366,7 @@ pub(crate) async fn login(
         server,
         resource.to_string(),
         authorization.issuer,
+        client.source_zone(),
         resolved.client_id,
         resolved.client_secret,
         resolved.token_auth_method,
@@ -387,8 +390,7 @@ pub(crate) async fn revoke(credential: &StoredCredential) -> anyhow::Result<()> 
         .refresh_token
         .as_deref()
         .unwrap_or(&credential.access_token);
-    let resource = Url::parse(&credential.resource)?;
-    let client = OAuthHttpClient::new(&resource, http_timeout()).await?;
+    let client = OAuthHttpClient::with_source_zone(credential.source_zone);
     let mut form = vec![("token", token), ("token_type_hint", "refresh_token")];
     let endpoint = Url::parse(endpoint)?;
     let mut request = client.post(&endpoint, "revocation endpoint").await?;
@@ -1108,6 +1110,17 @@ async fn open_browser(url: &str) -> bool {
     }
 }
 
+async fn open_authorization_url<F, Fut>(client: &OAuthHttpClient, url: Url, opener: F) -> bool
+where
+    F: FnOnce(String) -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    if client.validate_target(&url).await.is_err() {
+        return false;
+    }
+    opener(url.to_string()).await
+}
+
 fn unix_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1154,6 +1167,8 @@ const fn default_expires_in() -> u64 {
 mod tests {
     use super::*;
     use crate::mcp::oauth_http::NetworkZone;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     #[test]
     fn callback_identity_and_state_comparison_are_stable() {
@@ -1231,6 +1246,46 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[tokio::test]
+    async fn cross_zone_authorization_url_never_invokes_the_browser_launcher() {
+        let client = OAuthHttpClient::with_source_zone(NetworkZone::Public);
+        let invoked = Arc::new(AtomicBool::new(false));
+        let observed = invoked.clone();
+
+        assert!(
+            !open_authorization_url(
+                &client,
+                Url::parse("http://127.0.0.1:8765/authorize").unwrap(),
+                move |_| async move {
+                    observed.store(true, Ordering::SeqCst);
+                    true
+                },
+            )
+            .await
+        );
+        assert!(!invoked.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn permitted_authorization_url_invokes_the_browser_launcher() {
+        let client = OAuthHttpClient::with_source_zone(NetworkZone::Loopback);
+        let invoked = Arc::new(AtomicBool::new(false));
+        let observed = invoked.clone();
+
+        assert!(
+            open_authorization_url(
+                &client,
+                Url::parse("http://127.0.0.1:8765/authorize").unwrap(),
+                move |_| async move {
+                    observed.store(true, Ordering::SeqCst);
+                    true
+                },
+            )
+            .await
+        );
+        assert!(invoked.load(Ordering::SeqCst));
     }
 
     #[tokio::test]

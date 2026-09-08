@@ -39,7 +39,9 @@ async fn run() -> Result<(), iteron_mcp::McpError> {
             McpHttpHeaderPolicy::default(),
             Vec::new(),
             None,
-            true,
+            Some(iteron_mcp::elicitation_handler_from_mrtr(Arc::new(
+                ApproveInputs,
+            ))),
             iteron_mcp::McpDeadlinePolicy::default().http(),
             iteron_mcp::McpResultPolicy::default(),
         )

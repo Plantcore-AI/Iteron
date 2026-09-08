@@ -3,7 +3,9 @@
 use crate::http::McpHttpEndpoint;
 use crate::token::Token;
 use crate::{MAX_FRAME_BYTES, McpError};
+use reqwest::{Method, RequestBuilder, Url};
 use serde::Deserialize;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -19,14 +21,227 @@ const MAX_OAUTH_CLIENT_ID_BYTES: usize = 1024;
 /// Refresh authority. Secrets are process-local and this type deliberately implements neither
 /// `Debug` nor `Display`.
 pub struct OAuthRefreshGrant {
-    endpoint: McpHttpEndpoint,
-    revoke_endpoint: Option<McpHttpEndpoint>,
+    endpoints: OAuthEndpointBinding,
     refresh_token: String,
     client_id: Option<String>,
     client_secret: Option<String>,
     token_auth_method: TokenEndpointAuthMethod,
     granted_scopes: std::collections::BTreeSet<String>,
     persistence: Option<Arc<dyn OAuthRefreshPersistence>>,
+}
+
+/// Persistable, secret-free authority facts that every token refresh and revocation must retain.
+/// The endpoint paths may still be capability-bearing, so this type implements no formatter.
+pub struct OAuthEndpointBinding {
+    token_endpoint: McpHttpEndpoint,
+    revocation_endpoint: Option<McpHttpEndpoint>,
+    source_zone: OAuthNetworkZone,
+}
+
+impl OAuthEndpointBinding {
+    pub const fn new(
+        token_endpoint: McpHttpEndpoint,
+        revocation_endpoint: Option<McpHttpEndpoint>,
+        source_zone: OAuthNetworkZone,
+    ) -> Self {
+        Self {
+            token_endpoint,
+            revocation_endpoint,
+            source_zone,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OAuthNetworkZone {
+    Public,
+    Private,
+    Loopback,
+}
+
+impl OAuthNetworkZone {
+    pub const fn permits(self, target: Self) -> bool {
+        match self {
+            Self::Public => matches!(target, Self::Public),
+            Self::Private => !matches!(target, Self::Loopback),
+            Self::Loopback => true,
+        }
+    }
+}
+
+struct ResolvedTarget {
+    domain: Option<String>,
+    addresses: Vec<SocketAddr>,
+    zone: OAuthNetworkZone,
+}
+
+/// OAuth-only authority boundary. A request resolves and classifies its target before its builder
+/// can carry credentials, then pins that address set into a proxy-free, redirect-free client.
+pub struct OAuthHttpClient {
+    source_zone: OAuthNetworkZone,
+    connect_timeout: Duration,
+    request_timeout: Duration,
+}
+
+impl OAuthHttpClient {
+    pub async fn new(source: &Url, request_timeout: Duration) -> Result<Self, McpError> {
+        validate_oauth_endpoint(source)?;
+        let connect_timeout = oauth_connect_timeout().min(request_timeout);
+        let source = resolve_target(source, connect_timeout).await?;
+        Ok(Self {
+            source_zone: source.zone,
+            connect_timeout,
+            request_timeout,
+        })
+    }
+
+    pub fn with_source_zone(source_zone: OAuthNetworkZone, request_timeout: Duration) -> Self {
+        Self {
+            source_zone,
+            connect_timeout: oauth_connect_timeout().min(request_timeout),
+            request_timeout,
+        }
+    }
+
+    pub const fn source_zone(&self) -> OAuthNetworkZone {
+        self.source_zone
+    }
+
+    pub async fn validate_target(&self, url: &Url) -> Result<(), McpError> {
+        validate_oauth_endpoint(url)?;
+        let target = resolve_target(url, self.connect_timeout).await?;
+        if !self.source_zone.permits(target.zone) {
+            return Err(McpError::OAuthNetworkPolicy);
+        }
+        Ok(())
+    }
+
+    pub async fn get(&self, url: &Url) -> Result<RequestBuilder, McpError> {
+        self.request(Method::GET, url).await
+    }
+
+    pub async fn post(&self, url: &Url) -> Result<RequestBuilder, McpError> {
+        self.request(Method::POST, url).await
+    }
+
+    async fn request(&self, method: Method, url: &Url) -> Result<RequestBuilder, McpError> {
+        validate_oauth_endpoint(url)?;
+        let target = resolve_target(url, self.connect_timeout).await?;
+        if !self.source_zone.permits(target.zone) {
+            return Err(McpError::OAuthNetworkPolicy);
+        }
+        let mut client = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(self.connect_timeout)
+            .timeout(self.request_timeout);
+        if let Some(domain) = target.domain {
+            client = client.resolve_to_addrs(&domain, &target.addresses);
+        }
+        Ok(client
+            .build()
+            .map_err(|_| transport_error("oauth_client"))?
+            .request(method, url.clone()))
+    }
+}
+
+fn oauth_connect_timeout() -> Duration {
+    iteron_tunables::param_duration("mcp.oauth.oauth_connect_timeout", OAUTH_CONNECT_TIMEOUT)
+}
+
+async fn resolve_target(url: &Url, timeout: Duration) -> Result<ResolvedTarget, McpError> {
+    let port = url
+        .port_or_known_default()
+        .ok_or(McpError::OAuthNetworkPolicy)?;
+    let host = url.host_str().ok_or(McpError::OAuthNetworkPolicy)?;
+    let (domain, addresses) = if let Ok(address) = host.parse::<IpAddr>() {
+        (None, vec![SocketAddr::new(address, port)])
+    } else {
+        let addresses = tokio::time::timeout(timeout, tokio::net::lookup_host((host, port)))
+            .await
+            .map_err(|_| McpError::OAuthNetworkPolicy)?
+            .map_err(|_| McpError::OAuthNetworkPolicy)?
+            .collect::<Vec<_>>();
+        (Some(host.to_owned()), addresses)
+    };
+    let zone = uniform_zone(addresses.iter().map(SocketAddr::ip))?;
+    Ok(ResolvedTarget {
+        domain,
+        addresses,
+        zone,
+    })
+}
+
+fn uniform_zone(addresses: impl IntoIterator<Item = IpAddr>) -> Result<OAuthNetworkZone, McpError> {
+    let mut addresses = addresses.into_iter();
+    let zone = addresses
+        .next()
+        .map(classify_oauth_ip)
+        .ok_or(McpError::OAuthNetworkPolicy)?;
+    if addresses.any(|address| classify_oauth_ip(address) != zone) {
+        return Err(McpError::OAuthNetworkPolicy);
+    }
+    Ok(zone)
+}
+
+pub fn classify_oauth_ip(ip: IpAddr) -> OAuthNetworkZone {
+    let ip = match ip {
+        IpAddr::V6(address) => address.to_ipv4_mapped().map_or(ip, IpAddr::V4),
+        IpAddr::V4(_) => ip,
+    };
+    if ip.is_loopback() {
+        OAuthNetworkZone::Loopback
+    } else if is_non_public_ip(ip) {
+        OAuthNetworkZone::Private
+    } else {
+        OAuthNetworkZone::Public
+    }
+}
+
+fn is_non_public_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(address) => {
+            let octets = address.octets();
+            address.is_private()
+                || address.is_link_local()
+                || address.is_unspecified()
+                || address.is_broadcast()
+                || address.is_documentation()
+                || address.is_multicast()
+                || octets[0] == 0
+                || octets[0] >= 240
+                || (octets[0] == 100 && octets[1] & 0xc0 == 64)
+                || (octets[0] == 192 && octets[1] == 0 && octets[2] == 0)
+                || (octets[0] == 198 && matches!(octets[1], 18 | 19))
+        }
+        IpAddr::V6(address) => {
+            let first = address.segments()[0];
+            address.is_unspecified()
+                || address.is_multicast()
+                || first & 0xfe00 == 0xfc00
+                || first & 0xffc0 == 0xfe80
+                || address
+                    .to_ipv4_mapped()
+                    .is_some_and(|mapped| is_non_public_ip(IpAddr::V4(mapped)))
+        }
+    }
+}
+
+pub fn validate_oauth_endpoint(url: &Url) -> Result<(), McpError> {
+    let loopback = url.host_str().is_some_and(|host| {
+        host.eq_ignore_ascii_case("localhost")
+            || host
+                .parse::<IpAddr>()
+                .is_ok_and(|address| address.is_loopback())
+    });
+    if url.scheme() != "https" && !(url.scheme() == "http" && loopback) {
+        return Err(McpError::OAuthNetworkPolicy);
+    }
+    if !url.username().is_empty() || url.password().is_some() || url.fragment().is_some() {
+        return Err(McpError::OAuthNetworkPolicy);
+    }
+    Ok(())
 }
 
 /// Refreshed secret material handed only to the caller-provided private credential store.
@@ -140,8 +355,7 @@ impl McpOAuthLifecyclePolicy {
 
 impl OAuthRefreshGrant {
     pub fn new(
-        endpoint: McpHttpEndpoint,
-        revoke_endpoint: Option<McpHttpEndpoint>,
+        endpoints: OAuthEndpointBinding,
         refresh_token: String,
         client_id: Option<String>,
         client_secret: Option<String>,
@@ -178,8 +392,7 @@ impl OAuthRefreshGrant {
             });
         }
         Ok(Self {
-            endpoint,
-            revoke_endpoint,
+            endpoints,
             refresh_token,
             client_id,
             client_secret,
@@ -195,29 +408,22 @@ impl OAuthRefreshGrant {
     }
 
     pub(crate) fn revocation_endpoint_configured(&self) -> bool {
-        self.revoke_endpoint.is_some()
+        self.endpoints.revocation_endpoint.is_some()
     }
 }
 
 pub(crate) struct OAuthClient {
-    client: reqwest::Client,
+    request_timeout: Duration,
 }
 
 impl OAuthClient {
     pub(crate) fn new() -> Result<Self, McpError> {
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(iteron_tunables::param_duration(
-                "mcp.oauth.oauth_connect_timeout",
-                OAUTH_CONNECT_TIMEOUT,
-            ))
-            .timeout(iteron_tunables::param_duration(
+        Ok(Self {
+            request_timeout: iteron_tunables::param_duration(
                 "mcp.oauth.oauth_timeout",
                 OAUTH_TIMEOUT,
-            ))
-            .build()
-            .map_err(|_| transport_error("client"))?;
-        Ok(Self { client })
+            ),
+        })
     }
 
     pub(crate) async fn refresh(
@@ -229,7 +435,11 @@ impl OAuthClient {
             ("grant_type", "refresh_token".to_owned()),
             ("refresh_token", grant.refresh_token.clone()),
         ];
-        let mut request = self.client.post(grant.endpoint.expose_url());
+        let endpoint = Url::parse(&grant.endpoints.token_endpoint.expose_url())
+            .map_err(|_| McpError::OAuthNetworkPolicy)?;
+        let client =
+            OAuthHttpClient::with_source_zone(grant.endpoints.source_zone, self.request_timeout);
+        let mut request = client.post(&endpoint).await?;
         match grant.token_auth_method {
             TokenEndpointAuthMethod::None => {
                 if let Some(client_id) = &grant.client_id {
@@ -299,14 +509,18 @@ impl OAuthClient {
     }
 
     pub(crate) async fn revoke(&self, grant: &OAuthRefreshGrant) -> Result<(), McpError> {
-        let Some(endpoint) = &grant.revoke_endpoint else {
+        let Some(endpoint) = &grant.endpoints.revocation_endpoint else {
             return Ok(());
         };
         let mut form = vec![
             ("token", grant.refresh_token.clone()),
             ("token_type_hint", "refresh_token".to_owned()),
         ];
-        let mut request = self.client.post(endpoint.expose_url());
+        let endpoint =
+            Url::parse(&endpoint.expose_url()).map_err(|_| McpError::OAuthNetworkPolicy)?;
+        let client =
+            OAuthHttpClient::with_source_zone(grant.endpoints.source_zone, self.request_timeout);
+        let mut request = client.post(&endpoint).await?;
         match grant.token_auth_method {
             TokenEndpointAuthMethod::None => {
                 if let Some(client_id) = &grant.client_id {
@@ -496,8 +710,11 @@ mod tests {
     async fn refresh_rotates_the_grant_accepts_additive_fields_and_revoke_uses_the_rotation() {
         let (origin, seen, server) = oauth_server().await;
         let mut grant = OAuthRefreshGrant::new(
-            McpHttpEndpoint::parse(&format!("{origin}/refresh")).unwrap(),
-            Some(McpHttpEndpoint::parse(&format!("{origin}/revoke")).unwrap()),
+            OAuthEndpointBinding::new(
+                McpHttpEndpoint::parse(&format!("{origin}/refresh")).unwrap(),
+                Some(McpHttpEndpoint::parse(&format!("{origin}/revoke")).unwrap()),
+                OAuthNetworkZone::Loopback,
+            ),
             "refresh-initial".into(),
             Some("client-id".into()),
             Some("client-secret".into()),
@@ -520,12 +737,88 @@ mod tests {
         assert!(requests[1].contains("token_type_hint=refresh_token"));
     }
 
+    #[tokio::test]
+    async fn public_refresh_refuses_loopback_before_dispatch() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let mut grant = OAuthRefreshGrant::new(
+            OAuthEndpointBinding::new(
+                McpHttpEndpoint::parse(&format!("http://{address}/refresh")).unwrap(),
+                None,
+                OAuthNetworkZone::Public,
+            ),
+            "refresh-secret".into(),
+            Some("client-id".into()),
+            Some("client-secret".into()),
+            TokenEndpointAuthMethod::ClientSecretPost,
+            ["mcp".to_owned()],
+        )
+        .unwrap();
+        let client = OAuthClient::new().unwrap();
+
+        assert!(matches!(
+            client.refresh(&mut grant, 1_000).await,
+            Err(McpError::OAuthNetworkPolicy)
+        ));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), listener.accept())
+                .await
+                .is_err(),
+            "refresh secret reached the forbidden loopback endpoint"
+        );
+    }
+
+    #[tokio::test]
+    async fn public_revoke_refuses_loopback_before_dispatch() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let grant = OAuthRefreshGrant::new(
+            OAuthEndpointBinding::new(
+                McpHttpEndpoint::parse("https://example.com/refresh").unwrap(),
+                Some(McpHttpEndpoint::parse(&format!("http://{address}/revoke")).unwrap()),
+                OAuthNetworkZone::Public,
+            ),
+            "refresh-secret".into(),
+            Some("client-id".into()),
+            Some("client-secret".into()),
+            TokenEndpointAuthMethod::ClientSecretPost,
+            ["mcp".to_owned()],
+        )
+        .unwrap();
+        let client = OAuthClient::new().unwrap();
+
+        assert!(matches!(
+            client.revoke(&grant).await,
+            Err(McpError::OAuthNetworkPolicy)
+        ));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), listener.accept())
+                .await
+                .is_err(),
+            "revocation secret reached the forbidden loopback endpoint"
+        );
+    }
+
+    #[test]
+    fn mixed_dns_zones_are_rejected_before_a_request_can_be_built() {
+        assert!(matches!(
+            uniform_zone([
+                "93.184.216.34".parse().unwrap(),
+                "127.0.0.1".parse().unwrap(),
+            ]),
+            Err(McpError::OAuthNetworkPolicy)
+        ));
+    }
+
     #[test]
     fn credential_authority_is_bounded_and_not_printable() {
         assert!(
             OAuthRefreshGrant::new(
-                McpHttpEndpoint::parse("https://example.com/token").unwrap(),
-                None,
+                OAuthEndpointBinding::new(
+                    McpHttpEndpoint::parse("https://example.com/token").unwrap(),
+                    None,
+                    OAuthNetworkZone::Public,
+                ),
                 String::new(),
                 None,
                 None,
@@ -536,8 +829,11 @@ mod tests {
         );
         assert!(
             OAuthRefreshGrant::new(
-                McpHttpEndpoint::parse("https://example.com/token").unwrap(),
-                None,
+                OAuthEndpointBinding::new(
+                    McpHttpEndpoint::parse("https://example.com/token").unwrap(),
+                    None,
+                    OAuthNetworkZone::Public,
+                ),
                 "r".into(),
                 Some("bad\nclient".into()),
                 None,
@@ -548,8 +844,11 @@ mod tests {
         );
         assert!(
             OAuthRefreshGrant::new(
-                McpHttpEndpoint::parse("https://example.com/token").unwrap(),
-                None,
+                OAuthEndpointBinding::new(
+                    McpHttpEndpoint::parse("https://example.com/token").unwrap(),
+                    None,
+                    OAuthNetworkZone::Public,
+                ),
                 "refresh".into(),
                 Some("client".into()),
                 None,

@@ -43,7 +43,7 @@ pub use deadlines::{MAX_MCP_DEADLINE_MILLISECONDS, McpDeadlinePolicy, McpTranspo
 pub use elicitation::{
     ElicitationAction, ElicitationRequest, ElicitationResponse, MAX_ELICITATION_CONTENT_BYTES,
     MAX_ELICITATION_FIELD_NAME_BYTES, MAX_ELICITATION_FIELDS, MAX_ELICITATION_MESSAGE_BYTES,
-    MAX_ELICITATION_SCHEMA_BYTES, McpElicitationHandler,
+    MAX_ELICITATION_SCHEMA_BYTES, McpElicitationHandler, elicitation_handler_from_mrtr,
 };
 pub use evidence::McpToolCallEvidence;
 pub use mrtr::{McpInputDecision, McpInputRequest, McpMrtrHandler, validate_mrtr_input};
@@ -221,6 +221,8 @@ pub enum McpError {
     HttpStatus { status: u16 },
     #[error("MCP HTTP endpoint requires additional OAuth scope")]
     InsufficientScope { scopes: Vec<String> },
+    #[error("MCP OAuth request violates the bounded network policy")]
+    OAuthNetworkPolicy,
     /// A 3xx was answered, not followed. The configured endpoint is an authority boundary: a
     /// redirect target chosen by the peer must never receive the bearer credential or the body.
     #[error(
@@ -373,6 +375,7 @@ impl McpError {
                 "MCP HTTP endpoint requires additional OAuth scope: {}",
                 scopes.join(",")
             ),
+            Self::OAuthNetworkPolicy => "MCP OAuth request violates the network policy".into(),
             Self::HttpRedirectRefused => {
                 "MCP HTTP endpoint attempted a refused cross-authority redirect".into()
             }

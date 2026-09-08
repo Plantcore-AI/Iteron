@@ -7,6 +7,7 @@
 
 use crate::{McpError, McpFuture};
 use serde_json::{Map, Value, json};
+use std::sync::Arc;
 
 pub const MAX_ELICITATION_MESSAGE_BYTES: usize = 4096;
 pub const MAX_ELICITATION_SCHEMA_BYTES: usize = 64 * 1024;
@@ -133,6 +134,44 @@ pub trait McpElicitationHandler: Send + Sync {
         server_name: &'a str,
         request: ElicitationRequest,
     ) -> McpFuture<'a, ElicitationResponse>;
+}
+
+struct MrtrElicitationHandler {
+    inner: Arc<dyn crate::McpMrtrHandler>,
+}
+
+impl McpElicitationHandler for MrtrElicitationHandler {
+    fn elicit<'a>(
+        &'a self,
+        server_name: &'a str,
+        request: ElicitationRequest,
+    ) -> McpFuture<'a, ElicitationResponse> {
+        Box::pin(async move {
+            let input = crate::McpInputRequest::from_elicitation(&request);
+            match self
+                .inner
+                .request(server_name, "elicitation/create", None, vec![input])
+                .await?
+            {
+                crate::McpInputDecision::Approve(mut answers) => {
+                    if answers.len() != 1 || answers[0].0 != "form" {
+                        return Err(protocol("elicitation handler returned an invalid answer"));
+                    }
+                    Ok(ElicitationResponse::accept(answers.remove(0).1))
+                }
+                crate::McpInputDecision::Reject => Ok(ElicitationResponse::decline()),
+            }
+        })
+    }
+}
+
+/// Adapt the session's bounded interactive-input port to the standard MCP form-elicitation port.
+/// One installed frontend can therefore truthfully serve both 2026 MRTR and ordinary server
+/// `elicitation/create` requests.
+pub fn elicitation_handler_from_mrtr(
+    handler: Arc<dyn crate::McpMrtrHandler>,
+) -> Arc<dyn McpElicitationHandler> {
+    Arc::new(MrtrElicitationHandler { inner: handler })
 }
 
 fn validate_schema(schema: &Value) -> Result<(), McpError> {

@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use super::NetworkZone;
 use super::OAuthHttpClient;
-use super::classify_ip;
+use iteron_mcp::oauth::classify_oauth_ip;
 
 #[test]
 fn network_zone_transitions_never_enter_a_more_privileged_network() {
@@ -38,7 +38,7 @@ async fn public_oauth_discovery_refuses_local_networks_before_dispatch() {
             .await
             .expect_err("more privileged targets must be rejected before dispatch");
         assert!(
-            error.to_string().contains("more privileged network zone"),
+            error.to_string().contains("bounded network policy"),
             "target={target} error={error:#}",
         );
     }
@@ -48,6 +48,14 @@ async fn public_oauth_discovery_refuses_local_networks_before_dispatch() {
             .await
             .is_err()
     );
+}
+
+#[tokio::test]
+async fn public_oauth_does_not_admit_a_local_browser_target() {
+    let client = OAuthHttpClient::with_source_zone(NetworkZone::Public);
+    let target = url::Url::parse("http://127.0.0.1:8765/authorize").unwrap();
+
+    assert!(client.validate_target(&target).await.is_err());
 }
 
 #[test]
@@ -62,14 +70,14 @@ fn private_loopback_and_link_local_addresses_are_not_public() {
         "fe80::1",
     ] {
         assert_eq!(
-            classify_ip(address.parse::<IpAddr>().unwrap()),
+            classify_oauth_ip(address.parse::<IpAddr>().unwrap()),
             NetworkZone::Private,
             "address={address}",
         );
     }
     for address in ["127.0.0.1", "::1", "::ffff:127.0.0.1"] {
         assert_eq!(
-            classify_ip(address.parse::<IpAddr>().unwrap()),
+            classify_oauth_ip(address.parse::<IpAddr>().unwrap()),
             NetworkZone::Loopback,
             "address={address}",
         );

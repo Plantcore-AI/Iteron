@@ -82,6 +82,10 @@ HTTP wire 黑盒回归测试覆盖；客户端仍会拒绝 fixture 返回的未�
 输入处理器，因此不会等待一个不存在的用户。2025 及更早协议始终走普通 `tools/call`，
 即使交互处理器存在也不会进入 MRTR。
 
+HTTP 连接会把同一个交互入口适配为标准 `elicitation/create` handler，因此只有真正能够
+回答服务端 form request 时才宣告 `elicitation.form`。stdio 回退到状态式 2025 后不会
+宣告该能力，因为当前 stdio response router 不处理服务端主动请求。
+
 这条路径分别由 stdio 产品调用测试、HTTP 两轮 wire 测试、app-server 关联测试和 TUI
 表单测试覆盖；它证明 Iteron 自己的各层可以完成往返，但不替代上文仍为 `blocked` 的
 正式第三方 SDK 交叉兼容证据。
@@ -131,6 +135,7 @@ origin 根路径和连接查询参数差异合法；显式 resource 必须与 me
 可用，或与 issuer/token endpoint 同源时才可跨 origin；预注册 client secret 只会发送到
 与操作员固定 issuer 同源的 token endpoint。token/registration/revocation endpoint 还必须
 由 issuer metadata 明确公布，通过 HTTPS 或 loopback HTTP 验证且没有 userinfo/fragment。
+授权地址若跨入更高权限网络区，只会显示给操作员，不会由 Iteron 自动交给浏览器打开。
 
 scope 优先级为登录命令、server 配置、`WWW-Authenticate`、resource/authorization
 metadata、空集合。operator 指定的 scope 不会被自动删改；自动发现值被 provider 拒绝
@@ -141,8 +146,8 @@ authorization server 或发送 client secret 之前固定原 resource 与 issuer
 进行第二次 step-up。
 
 token 写入 `~/.iteron/mcp-credentials/<binding-id>`，文件权限为 `0600`。最终 schema v1
-绑定 server、resource、issuer、client、token 鉴权方法、requested/granted scopes 和完整
-配置摘要；早期 Draft 的不完整 v1 会要求重新登录，不维护第二套格式。DCR client secret
+绑定 server、resource、issuer、初始网络区、client、token 鉴权方法、requested/granted
+scopes 和完整配置摘要；早期 Draft 的不完整 v1 会要求重新登录，不维护第二套格式。DCR client secret
 只进入私有凭据文件。配置文件、JSON 诊断和命令输出都不包含 token、Authorization
 header、环境变量值或 callback query。`auth logout` 最佳努力撤销凭据，无论远端撤销是否
 成功都会删除本地文件。环境变量提供的 bearer/PAT 在 `auth status`、`status` 和 `doctor`
@@ -157,8 +162,10 @@ stdio 子进程默认看不到 Iteron 进程的环境变量。只有通过 `mcp 
   `Effecting + IrreversibleExternal` 处理。
 - 非 loopback 明文 HTTP、URL 用户信息、未验证的跨 origin resource 和 metadata redirect
   会被拒绝；凭据只发送到配置 endpoint 或已验证 metadata 明确公布的 token endpoint。
-- OAuth 出站请求会解析并固定本次连接使用的地址；公网 MCP 不能把 discovery、注册或
-  token 请求引向 private、loopback 或 link-local 网络，跨网络区 DNS 结果会被拒绝。
+- OAuth 出站请求会解析并固定本次连接使用的地址；首次登录保存资源的初始网络区，后续
+  refresh 和 revoke 继续从该边界检查。公网 MCP 不能把 discovery、注册、token、refresh
+  或 revoke 请求引向 private、loopback 或 link-local 网络，跨网络区 DNS 结果会被拒绝，
+  这些请求不使用环境代理。
 - session、列表 cursor、SSE 帧、缓存、MRTR 轮数/输入量、OAuth callback 和所有网络
   请求均有固定上限。
 - 2026 的 `ttlMs`/`cacheScope` 只控制当前 client 私有列表缓存，不授予工具权限。

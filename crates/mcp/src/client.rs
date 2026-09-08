@@ -1605,6 +1605,36 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn stateful_stdio_fallback_does_not_advertise_an_unhandled_elicitation_method() {
+        let args = vec![
+            "-c".to_string(),
+            concat!(
+                "IFS= read -r discover; ",
+                "printf '%s\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32601,\"message\":\"Method not found\"}}'; ",
+                "IFS= read -r initialize; ",
+                "case \"$initialize\" in *'elicitation'*) exit 40;; esac; ",
+                "printf '%s\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"fixture\",\"version\":\"1\"}}}'; ",
+                "IFS= read -r initialized; exec sleep 60"
+            )
+            .to_string(),
+        ];
+        let mut client = McpClient::connect_auto_with_environment_and_elicitation(
+            "/bin/bash",
+            &args,
+            "stateful",
+            &[],
+            &[],
+            true,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(client.protocol_mode(), crate::McpProtocolMode::Stateful);
+        client.terminate().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn handshake_timeout_kills_and_reaps_server() {
         let pid_path = pid_file("handshake-timeout");
         let args = vec![

@@ -904,7 +904,7 @@ impl ManagedHttpServer {
                 &self.sensitive_env_names,
                 runtime.deadlines,
                 runtime.result,
-                self.mrtr_handler.get().is_some(),
+                self.mrtr_handler.get().cloned(),
             );
             let connected = tokio::select! {
                 biased;

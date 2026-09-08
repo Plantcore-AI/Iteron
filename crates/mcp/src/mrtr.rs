@@ -18,6 +18,14 @@ pub struct McpInputRequest {
 }
 
 impl McpInputRequest {
+    pub(crate) fn from_elicitation(request: &crate::ElicitationRequest) -> Self {
+        Self {
+            id: "form".into(),
+            prompt: request.message().to_owned(),
+            schema: request.requested_schema().clone(),
+        }
+    }
+
     pub fn id(&self) -> &str {
         &self.id
     }

@@ -98,7 +98,6 @@ impl McpRemoteClient {
             header_policy,
             headers,
             oauth_grant,
-            false,
             None,
             deadlines,
             result_policy,
@@ -147,7 +146,6 @@ impl McpRemoteClient {
             header_policy,
             headers,
             oauth_grant,
-            false,
             None,
             deadlines,
             result_policy,
@@ -166,7 +164,7 @@ impl McpRemoteClient {
         header_policy: McpHttpHeaderPolicy,
         headers: Vec<(String, McpHeaderValue)>,
         oauth_grant: Option<crate::oauth::OAuthRefreshGrant>,
-        advertises_elicitation: bool,
+        elicitation: Option<Arc<dyn crate::McpElicitationHandler>>,
         deadlines: crate::McpTransportDeadlines,
         result_policy: crate::McpResultPolicy,
     ) -> Result<Self, McpError> {
@@ -177,8 +175,7 @@ impl McpRemoteClient {
             header_policy,
             headers,
             oauth_grant,
-            advertises_elicitation,
-            None,
+            elicitation,
             deadlines,
             result_policy,
             McpProtocolMode::Auto,
@@ -202,7 +199,6 @@ impl McpRemoteClient {
             header_policy,
             headers,
             oauth_grant,
-            false,
             None,
             crate::McpDeadlinePolicy::default().http(),
             crate::McpResultPolicy::default(),
@@ -229,7 +225,6 @@ impl McpRemoteClient {
             header_policy,
             headers,
             oauth_grant,
-            false,
             None,
             deadlines,
             result_policy,
@@ -250,7 +245,6 @@ impl McpRemoteClient {
         oauth_grant: Option<crate::oauth::OAuthRefreshGrant>,
         elicitation: Option<Arc<dyn crate::McpElicitationHandler>>,
     ) -> Result<Self, McpError> {
-        let advertises_elicitation = elicitation.is_some();
         Self::connect_with_elicitation_and_policies(
             endpoint,
             server_name,
@@ -258,7 +252,6 @@ impl McpRemoteClient {
             header_policy,
             headers,
             oauth_grant,
-            advertises_elicitation,
             elicitation,
             crate::McpDeadlinePolicy::default().http(),
             crate::McpResultPolicy::default(),
@@ -275,13 +268,13 @@ impl McpRemoteClient {
         header_policy: McpHttpHeaderPolicy,
         headers: Vec<(String, McpHeaderValue)>,
         oauth_grant: Option<crate::oauth::OAuthRefreshGrant>,
-        advertises_elicitation: bool,
         elicitation: Option<Arc<dyn crate::McpElicitationHandler>>,
         deadlines: crate::McpTransportDeadlines,
         result_policy: crate::McpResultPolicy,
         protocol_mode: McpProtocolMode,
     ) -> Result<Self, McpError> {
         validate_server_name(&server_name)?;
+        let advertises_elicitation = elicitation.is_some();
         let now: NowSecs = Arc::new(unix_now);
         let authentication_configured = credential.is_some() || oauth_grant.is_some();
         let oauth_policy = crate::oauth::McpOAuthLifecyclePolicy::for_binding(
@@ -1365,6 +1358,7 @@ mod tests {
     use tokio::net::{TcpListener, TcpStream};
 
     async fn connect_2026_advertising_elicitation(endpoint: McpHttpEndpoint) -> McpRemoteClient {
+        let elicitation = crate::elicitation_handler_from_mrtr(StdArc::new(RejectInputs));
         McpRemoteClient::connect_with_elicitation_and_policies(
             endpoint,
             "fixture".into(),
@@ -1372,8 +1366,7 @@ mod tests {
             McpHttpHeaderPolicy::default(),
             Vec::new(),
             None,
-            true,
-            None,
+            Some(elicitation),
             crate::McpDeadlinePolicy::default().http(),
             crate::McpResultPolicy::default(),
             McpProtocolMode::Stateless2026,
@@ -1414,8 +1407,11 @@ mod tests {
         .unwrap()
         .with_credential(crate::token::Token::new("expired", 0));
         let grant = crate::oauth::OAuthRefreshGrant::new(
-            McpHttpEndpoint::parse(&format!("http://{unavailable_address}/refresh")).unwrap(),
-            None,
+            crate::oauth::OAuthEndpointBinding::new(
+                McpHttpEndpoint::parse(&format!("http://{unavailable_address}/refresh")).unwrap(),
+                None,
+                crate::oauth::OAuthNetworkZone::Loopback,
+            ),
             "refresh".into(),
             Some("client".into()),
             None,
@@ -2046,8 +2042,11 @@ mod tests {
     async fn unauthorized_initialize_refreshes_once_and_retries_once() {
         let (origin, seen, server) = unauthorized_then_refresh_server().await;
         let grant = crate::oauth::OAuthRefreshGrant::new(
-            McpHttpEndpoint::parse(&format!("{origin}/refresh")).unwrap(),
-            None,
+            crate::oauth::OAuthEndpointBinding::new(
+                McpHttpEndpoint::parse(&format!("{origin}/refresh")).unwrap(),
+                None,
+                crate::oauth::OAuthNetworkZone::Loopback,
+            ),
             "refresh-initial".into(),
             Some("client".into()),
             None,
