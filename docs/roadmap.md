@@ -115,7 +115,7 @@ Acceptance gates:
 - bounded strategy slots with optimizer-neutral harness-producer provenance
   (legacy SFT/preference/GRPO/RL names never authorize model training);
 - independent evaluation ownership and contamination controls;
-- a second non-coding vertical demonstrated without a kernel branch.
+- a second non-coding, domain-specific agent demonstrated without a kernel branch.
 
 Live self-evolution is intentionally outside the critical path until M0–M3 are
 accepted. Training directly on unreviewed private sessions or optimizing safety

@@ -1,9 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title description">
-  <title id="title">Iteron mark</title>
-  <desc id="description">Code brackets surrounding a small iteron inside a bounded square.</desc>
-  <rect width="256" height="256" rx="52" fill="#0b1020"/>
-  <rect x="24" y="24" width="208" height="208" rx="44" fill="none" stroke="#27324a" stroke-width="4"/>
-  <path d="M105 78 64 128l41 50" fill="none" stroke="#5b8cff" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="m151 78 41 50-41 50" fill="none" stroke="#9b7bff" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
-  <rect x="116" y="116" width="24" height="24" rx="7" fill="#f8fafc"/>
+  <title id="title">Iteron pixel-step mark</title>
+  <desc id="description">Three interlocking blue stepped forms on a dark square.</desc>
+  <rect width="256" height="256" rx="44" fill="#1a1b25"/>
+  <g transform="translate(24 65) scale(13 14)" shape-rendering="crispEdges">
+    <path fill="#386eb2" d="M9 0h1v1h4v2h2v6h-6V7h1V5h-1V3H9Z"/>
+    <path fill="#4762b7" d="M7 1h2v2h1v2H7V3H6V2h1ZM3 5h1v2H2v2H0V7h2V6h1Z"/>
+    <path fill="#4ea5d7" d="M5 3h2v2h4v2h-1v2H2V7h2V4h1Z"/>
+  </g>
 </svg>

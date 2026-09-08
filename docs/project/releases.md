@@ -18,6 +18,9 @@ assets attached to each tag.
 | `v0.0.5` | 2026-08-14 | release workflow | release page is authoritative |
 | `v0.0.6` | not published | validation refusal | none |
 | `v0.0.7` | 2026-08-15 | release workflow | release page is authoritative |
+| `v0.0.9` | 2026-08-16 | release workflow | three macOS/Linux archives |
+| `v0.0.19` | 2026-08-23 | release workflow | three macOS/Linux archives |
+| `v0.0.20` | 2026-08-24 | release workflow | macOS arm64, Linux arm64/x86-64, Windows x86-64 |
 
 The first four were produced while hosted Actions capacity was unavailable. They carry
 content-addressed manifests, receipts, checksums, legal evidence, and SBOMs, but
@@ -29,22 +32,23 @@ release contract below.
 creating a release because the public schema chronology had not advanced. It has
 no downloadable assets and is not a release fallback.
 
-`v0.0.7` is the current pre-alpha release. Its release manifest and GitHub asset
+`v0.0.20` is the current pre-alpha release. Its release manifest and GitHub asset
 list, rather than this summary table, are authoritative for its exact targets and
 attestations.
 
 ## Accepted release artifacts
 
-The supported distribution matrix is macOS and Linux:
+The current distribution matrix is:
 
 - `aarch64-apple-darwin`;
-- `aarch64-unknown-linux-musl` and `x86_64-unknown-linux-musl`.
+- `aarch64-unknown-linux-musl` and `x86_64-unknown-linux-musl`;
+- `x86_64-pc-windows-msvc`.
 
 An accepted release contains the targets named by its release notes and, for the
 complete supported matrix:
 
-- three native macOS/Linux archives;
-- a version-bound `install.sh` and `SHA256SUMS`;
+- three native macOS/Linux archives and one Windows x86-64 archive;
+- version-bound `install.sh` and `install.ps1`, plus `SHA256SUMS`;
 - `release-manifest.json` with commit, CLI stream, target, size, and digest
   evidence;
 - `release-manifest.receipt.json` identifying the exact final manifest bytes;
@@ -57,9 +61,11 @@ fixture optimizer, and its protocol development assets are not release or instal
 Researchers build that binary explicitly from a reviewed source checkout; see the
 [research harness protocol](../reference/research-harness-protocol.md).
 
-Windows is not a release target. Published releases are expected to use GitHub's
-immutable-release control; if a correction is required, the project publishes a
-new patch version rather than moving a tag or editing assets.
+Windows first became a release target in v0.0.20. That archive does not imply a
+code-execution sandbox or a supported interactive TUI. Published releases are
+expected to use GitHub's immutable-release control; if a correction is required,
+the project publishes a new patch version rather than moving a tag or editing
+assets.
 
 See the [installation guide](../getting-started/installation.md) for current
 availability, version pinning, verification, and uninstall instructions.
@@ -80,12 +86,12 @@ A release is accepted only when all of the following are true:
 
 - the annotated SemVer tag resolves to the current protected `main` commit;
 - source, ownership, formatting, clippy, and full workspace tests pass;
-- all three macOS/Linux targets are built, tested, packaged, and smoke-tested on
-  their declared release runners;
+- all declared targets are built, tested, packaged, and smoke-tested on their
+  declared release runners;
 - archive structure, licenses, notices, checksums, SBOMs, and provenance pass;
 - the Owner approves the protected `release` environment;
 - the published release reports itself immutable;
 - content-addressed artifact canaries and fixed-version plus `latest` installer
-  canaries pass on all three targets.
+  canaries pass on every declared target.
 
 Maintainers follow the detailed [release guide](../development/releasing.md).

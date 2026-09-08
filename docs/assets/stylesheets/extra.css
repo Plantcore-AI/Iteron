@@ -1,0 +1,227 @@
+:root {
+  --iteron-ink: #17202a;
+  --iteron-paper: #f8fafb;
+  --iteron-panel: #ffffff;
+  --iteron-line: #d9e1e7;
+  --iteron-muted: #5f6b76;
+  --iteron-accent: #24765b;
+  --iteron-accent-soft: #edf7f2;
+  --iteron-navy: #101820;
+  --iteron-code: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+
+[data-md-color-scheme="slate"] {
+  --iteron-ink: #eef3f7;
+  --iteron-paper: #0b1219;
+  --iteron-panel: #111b25;
+  --iteron-line: #2a3947;
+  --iteron-muted: #abb8c3;
+  --iteron-accent: #79d9b4;
+  --iteron-accent-soft: #122920;
+  --md-default-bg-color: #0b1219;
+  --md-default-fg-color: #eef3f7;
+}
+
+[data-md-color-primary="black"] {
+  --md-primary-fg-color: #101820;
+  --md-primary-fg-color--light: #1b2935;
+  --md-primary-fg-color--dark: #091017;
+}
+
+body {
+  background: var(--iteron-paper);
+}
+
+.md-header,
+.md-tabs {
+  background: var(--iteron-navy);
+}
+
+.md-header__button.md-logo img,
+.md-header__button.md-logo svg {
+  width: 2rem;
+  height: 2rem;
+}
+
+.md-main__inner {
+  margin-top: 1rem;
+}
+
+.md-content__inner {
+  padding-bottom: 4rem;
+}
+
+.md-typeset h1,
+.md-typeset h2,
+.md-typeset h3 {
+  color: var(--iteron-ink);
+  font-weight: 720;
+  letter-spacing: -0.02em;
+}
+
+.md-typeset h1 {
+  margin-bottom: .65em;
+}
+
+.md-typeset code,
+.md-typeset pre {
+  font-family: var(--iteron-code);
+}
+
+.md-typeset a {
+  text-underline-offset: .18em;
+}
+
+.iteron-hero {
+  margin: 0 0 2.25rem;
+  padding: clamp(1.35rem, 3vw, 2.35rem);
+  border: 1px solid #2c3e4d;
+  border-radius: .9rem;
+  background: linear-gradient(145deg, #101820 0%, #172634 100%);
+  box-shadow: 0 1rem 2.8rem rgba(12, 24, 34, .12);
+  color: #edf3f7;
+}
+
+.iteron-hero__logo {
+  display: block;
+  width: min(100%, 38rem);
+  margin: 0 0 1.25rem;
+}
+
+.iteron-hero__eyebrow {
+  color: #8bdcbc;
+  font-family: var(--iteron-code);
+  font-size: .7rem;
+  font-weight: 700;
+  letter-spacing: .13em;
+}
+
+.iteron-hero h1 {
+  max-width: 20ch;
+  margin: .45rem 0 .65rem;
+  color: #f6f9fb;
+  font-size: clamp(2rem, 4.5vw, 3.35rem);
+  line-height: 1.05;
+}
+
+.iteron-hero p {
+  max-width: 44rem;
+  margin-bottom: 0;
+  color: #c1ccd5;
+  font-size: clamp(.98rem, 1.8vw, 1.12rem);
+}
+
+.iteron-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .65rem;
+  margin-top: 1.35rem;
+}
+
+.iteron-button {
+  display: inline-block;
+  padding: .6rem .9rem;
+  border: 1px solid #566b7b;
+  border-radius: .42rem;
+  color: #edf3f7 !important;
+  font-size: .78rem;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.iteron-button:hover {
+  border-color: #8bdcbc;
+}
+
+.iteron-button--primary {
+  border-color: #8bdcbc;
+  background: #8bdcbc;
+  color: #101820 !important;
+}
+
+.iteron-thesis {
+  margin: 1.25rem 0;
+  padding: 1rem 1.2rem;
+  border-left: .22rem solid var(--iteron-accent);
+  border-radius: 0 .55rem .55rem 0;
+  background: var(--iteron-accent-soft);
+  color: var(--iteron-ink);
+  font-family: var(--iteron-code);
+  font-size: clamp(.88rem, 1.8vw, 1.02rem);
+}
+
+.iteron-figure {
+  margin: 1.5rem 0 1.8rem;
+  padding: .45rem;
+  border: 1px solid var(--iteron-line);
+  border-radius: .65rem;
+  background: #ffffff;
+}
+
+.iteron-figure img {
+  display: block;
+  width: 100%;
+  border-radius: .35rem;
+}
+
+.iteron-lead {
+  display: grid;
+  grid-template-columns: 5rem 1fr;
+  gap: 1rem;
+  align-items: center;
+  margin: 1.25rem 0;
+  padding: 1.1rem;
+  border: 1px solid var(--iteron-line);
+  border-radius: .65rem;
+  background: var(--iteron-panel);
+}
+
+.iteron-lead img,
+.iteron-person img {
+  border-radius: 50%;
+}
+
+.iteron-contributor-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: .8rem;
+  margin: 1.1rem 0 1.5rem;
+}
+
+.iteron-person {
+  padding: .85rem;
+  border: 1px solid var(--iteron-line);
+  border-radius: .65rem;
+  background: var(--iteron-panel);
+  text-align: center;
+  text-decoration: none;
+}
+
+.iteron-person img {
+  width: 3rem;
+}
+
+.iteron-person strong,
+.iteron-person small {
+  display: block;
+}
+
+.iteron-person small {
+  color: var(--iteron-muted);
+  font-family: var(--iteron-code);
+  font-size: .65rem;
+}
+
+@media screen and (max-width: 44.984375em) {
+  .iteron-hero {
+    border-radius: .65rem;
+  }
+
+  .iteron-lead {
+    grid-template-columns: 3.75rem 1fr;
+  }
+
+  .iteron-contributor-grid {
+    grid-template-columns: 1fr;
+  }
+}
