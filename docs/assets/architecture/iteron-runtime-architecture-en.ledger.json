@@ -1,0 +1,65 @@
+{
+  "title": "ITERON · GOVERNED HARNESS ARCHITECTURE",
+  "purpose": "Show how Iteron keeps harness optimization offline and non-authoritative while a fixed runtime kernel alone admits effects and appends evidence.",
+  "caption": "CANDIDATES PROPOSE. EVIDENCE, HUMANS, AND THE KERNEL DECIDE.",
+  "canvas": {"aspect": "16:9 landscape", "background": "near-white technical paper"},
+  "style": {
+    "medium": "formal systems-paper architecture diagram, precise flat boxes, thin marker-like connector lines, generous whitespace, compact monospace labels, no decoration",
+    "palette": "navy text; purple candidate production; green evaluation and governance; amber human decision; cobalt runtime; red rejection"
+  },
+  "zones": [
+    {"id": "offline", "label": "OFFLINE CHECKPOINT CONTROL PLANE", "tone": "green"},
+    {"id": "runtime", "label": "ONLINE ITERON RUNTIME", "tone": "blue"}
+  ],
+  "nodes": [
+    {"id": "evidence", "label": "APPEND-ONLY EVIDENCE", "zone": "offline", "kind": "governed outcomes and lineage"},
+    {"id": "candidate_factory", "label": "HARNESS CANDIDATE FACTORY", "zone": "offline", "kind": "search, bandit, structured mutation, text evolution, implementation selection"},
+    {"id": "independent_eval", "label": "INDEPENDENT EVALUATION", "zone": "offline", "kind": "held-out quality, cost, latency, reliability and invariant checks"},
+    {"id": "rejected", "label": "REJECT / RETIRE", "zone": "offline", "kind": "failed candidates cannot advance"},
+    {"id": "human_promotion", "label": "HUMAN PROMOTION", "zone": "offline", "kind": "accountable release decision"},
+    {"id": "checkpoint_registry", "label": "IMMUTABLE CHECKPOINT REGISTRY", "zone": "offline", "kind": "versioned policy bundles with known-good rollback"},
+    {"id": "bundle_resolver", "label": "PINNED BUNDLE RESOLVER", "zone": "runtime", "kind": "read-only identity resolution at run admission"},
+    {"id": "strategy_slots", "label": "TYPED STRATEGY SLOTS", "zone": "runtime", "kind": "router, planner, context, memory, scheduler, tools, verifier, model router, collaboration"},
+    {"id": "authority_kernel", "label": "FIXED AUTHORITY KERNEL", "zone": "runtime", "kind": "protocol, reducer, capability admission, budgets, effect broker, record and replay"},
+    {"id": "world_modules", "label": "EXECUTION MODULES", "zone": "runtime", "kind": "providers, filesystem, shell and git, sandbox, MCP and LSP, vertical adapters"}
+  ],
+  "edges": [
+    {"id": "RA-01", "from": "evidence", "to": "candidate_factory", "label": "governed outcomes", "tone": "purple", "style": "solid"},
+    {"id": "RA-02", "from": "candidate_factory", "to": "independent_eval", "label": "typed candidate", "tone": "purple", "style": "solid"},
+    {"id": "RA-03", "from": "independent_eval", "to": "rejected", "label": "fail", "tone": "red", "style": "solid"},
+    {"id": "RA-04", "from": "rejected", "to": "evidence", "label": "failure evidence", "tone": "red", "style": "dashed"},
+    {"id": "RA-05", "from": "independent_eval", "to": "human_promotion", "label": "eligible", "tone": "green", "style": "solid"},
+    {"id": "RA-06", "from": "human_promotion", "to": "checkpoint_registry", "label": "approved checkpoint", "tone": "green", "style": "solid"},
+    {"id": "RA-07", "from": "checkpoint_registry", "to": "bundle_resolver", "label": "pin or rollback", "tone": "green", "style": "solid"},
+    {"id": "RA-08", "from": "bundle_resolver", "to": "strategy_slots", "label": "typed policies", "tone": "blue", "style": "solid"},
+    {"id": "RA-09", "from": "strategy_slots", "to": "authority_kernel", "label": "intent", "tone": "blue", "style": "solid"},
+    {"id": "RA-10", "from": "authority_kernel", "to": "world_modules", "label": "admitted effect", "tone": "blue", "style": "solid"},
+    {"id": "RA-11", "from": "world_modules", "to": "authority_kernel", "label": "result", "tone": "blue", "style": "dashed"},
+    {"id": "RA-12", "from": "authority_kernel", "to": "evidence", "label": "append outcome", "tone": "green", "style": "solid"}
+  ],
+  "forbidden_edges": [
+    {"from": "candidate_factory", "to": "bundle_resolver", "reason": "A producer cannot activate its candidate."},
+    {"from": "candidate_factory", "to": "authority_kernel", "reason": "A producer cannot grant authority."},
+    {"from": "independent_eval", "to": "checkpoint_registry", "reason": "Evaluation cannot bypass accountable human promotion."},
+    {"from": "strategy_slots", "to": "world_modules", "reason": "A learned strategy cannot bypass capability admission and the effect broker."},
+    {"from": "world_modules", "to": "evidence", "reason": "Runtime evidence is committed through the fixed authority kernel."}
+  ],
+  "layout_notes": [
+    "Place the offline zone as a wide top band and the runtime zone as a wide bottom band.",
+    "Arrange the main success path left to right with the reject branch below independent evaluation.",
+    "Arrange the online runtime left to right as bundle resolver, typed strategy slots, fixed authority kernel, execution modules.",
+    "Route RA-10 and RA-11 in clearly separated upper and lower lanes; never use a double-headed arrow.",
+    "Route RA-12 around the far left margin from the fixed authority kernel to append-only evidence without touching a zone border.",
+    "Show a small red prohibition annotation between candidate factory and runtime: NO SELF-ACTIVATION. It is not an arrow.",
+    "Do not mention model training, SFT, DPO, GRPO, or RL anywhere in the figure."
+  ],
+  "required_text": [
+    "ITERON", "GOVERNED HARNESS ARCHITECTURE",
+    "CANDIDATES PROPOSE. EVIDENCE, HUMANS, AND THE KERNEL DECIDE.",
+    "OFFLINE CHECKPOINT CONTROL PLANE", "ONLINE ITERON RUNTIME", "NO SELF-ACTIVATION",
+    "APPEND-ONLY EVIDENCE", "HARNESS CANDIDATE FACTORY", "INDEPENDENT EVALUATION",
+    "REJECT / RETIRE", "HUMAN PROMOTION", "IMMUTABLE CHECKPOINT REGISTRY",
+    "PINNED BUNDLE RESOLVER", "TYPED STRATEGY SLOTS", "FIXED AUTHORITY KERNEL",
+    "EXECUTION MODULES"
+  ]
+}

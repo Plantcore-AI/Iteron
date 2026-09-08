@@ -1,0 +1,91 @@
+Create a presentation-ready systems-paper architecture figure.
+
+PURPOSE
+- Title, verbatim: "ITERON · 受治理的 HARNESS 架构"
+- Intended message: "展示 Iteron 如何把 harness 优化留在离线、非权威控制面，并由固定运行时内核独占 effect 准入与证据追加。"
+
+CANVAS
+- Aspect ratio: "16:9 landscape"
+- Background: "近白色技术论文纸面"
+
+VISUAL STYLE
+- Medium: "正式系统论文架构图，精确扁平框，细线连接器，充足留白，清晰中文技术字体，无装饰插画"
+- Palette: "深蓝文字；紫色候选生产；绿色评估与治理；橙色人工决策；钴蓝运行时；红色拒绝"
+
+SEMANTIC ZONES — draw each zone exactly once as containment, never as an arrow endpoint:
+- offline: "离线 CHECKPOINT 控制平面"; semantic tone: green
+- runtime: "在线 ITERON 运行时"; semantic tone: blue
+
+NODE INVENTORY — draw each node exactly once; kind is semantic guidance only and must not be rendered:
+- evidence: "只追加证据"; zone: offline; semantic kind, do not render: "受治理的结果与 lineage"
+- candidate_factory: "HARNESS 候选工厂"; zone: offline; semantic kind, do not render: "搜索、bandit、结构化变异、文本演化、实现选择"
+- independent_eval: "独立评估"; zone: offline; semantic kind, do not render: "留出集质量、成本、延迟、可靠性与不变量检查"
+- rejected: "拒绝 / 退役"; zone: offline; semantic kind, do not render: "失败候选不能前进"
+- human_promotion: "人工晋升"; zone: offline; semantic kind, do not render: "可问责发布决策"
+- checkpoint_registry: "不可变 CHECKPOINT 注册表"; zone: offline; semantic kind, do not render: "带已知良好回滚目标的版本化 policy bundle"
+- bundle_resolver: "固定 BUNDLE 解析器"; zone: runtime; semantic kind, do not render: "运行准入时只读解析身份"
+- strategy_slots: "类型化策略槽"; zone: runtime; semantic kind, do not render: "路由、规划、上下文、记忆、调度、工具、验证、模型路由、协作"
+- authority_kernel: "固定权威内核"; zone: runtime; semantic kind, do not render: "协议、归约器、能力准入、预算、effect broker、记录与重放"
+- world_modules: "执行模块"; zone: runtime; semantic kind, do not render: "模型提供商、文件系统、shell 与 git、沙箱、MCP 与 LSP、垂类适配器"
+
+ONLY ALLOWED SINGLE-HEADED ARROW LEDGER — draw every listed edge exactly once and no unlisted connector:
+- RA-01: "只追加证据" (evidence) — "受治理结果" → "HARNESS 候选工厂" (candidate_factory); tone: purple; style: solid; place the sole arrowhead at the receiver candidate_factory
+- RA-02: "HARNESS 候选工厂" (candidate_factory) — "类型化候选" → "独立评估" (independent_eval); tone: purple; style: solid; place the sole arrowhead at the receiver independent_eval
+- RA-03: "独立评估" (independent_eval) — "失败" → "拒绝 / 退役" (rejected); tone: red; style: solid; place the sole arrowhead at the receiver rejected
+- RA-04: "拒绝 / 退役" (rejected) — "失败证据" → "只追加证据" (evidence); tone: red; style: dashed; place the sole arrowhead at the receiver evidence
+- RA-05: "独立评估" (independent_eval) — "具备资格" → "人工晋升" (human_promotion); tone: green; style: solid; place the sole arrowhead at the receiver human_promotion
+- RA-06: "人工晋升" (human_promotion) — "批准 CHECKPOINT" → "不可变 CHECKPOINT 注册表" (checkpoint_registry); tone: green; style: solid; place the sole arrowhead at the receiver checkpoint_registry
+- RA-07: "不可变 CHECKPOINT 注册表" (checkpoint_registry) — "固定或回滚" → "固定 BUNDLE 解析器" (bundle_resolver); tone: green; style: solid; place the sole arrowhead at the receiver bundle_resolver
+- RA-08: "固定 BUNDLE 解析器" (bundle_resolver) — "类型化 POLICY" → "类型化策略槽" (strategy_slots); tone: blue; style: solid; place the sole arrowhead at the receiver strategy_slots
+- RA-09: "类型化策略槽" (strategy_slots) — "意图" → "固定权威内核" (authority_kernel); tone: blue; style: solid; place the sole arrowhead at the receiver authority_kernel
+- RA-10: "固定权威内核" (authority_kernel) — "已准入 EFFECT" → "执行模块" (world_modules); tone: blue; style: solid; place the sole arrowhead at the receiver world_modules
+- RA-11: "执行模块" (world_modules) — "结果" → "固定权威内核" (authority_kernel); tone: blue; style: dashed; place the sole arrowhead at the receiver authority_kernel
+- RA-12: "固定权威内核" (authority_kernel) — "追加结果" → "只追加证据" (evidence); tone: green; style: solid; place the sole arrowhead at the receiver evidence
+
+FORBIDDEN EDGES — never draw these source/receiver pairs:
+- "HARNESS 候选工厂" (candidate_factory) → "固定 BUNDLE 解析器" (bundle_resolver): "producer 不能激活自己的候选。"
+- "HARNESS 候选工厂" (candidate_factory) → "固定权威内核" (authority_kernel): "producer 不能授予权威。"
+- "独立评估" (independent_eval) → "不可变 CHECKPOINT 注册表" (checkpoint_registry): "评估不能绕过可问责的人工晋升。"
+- "类型化策略槽" (strategy_slots) → "执行模块" (world_modules): "可学习策略不能绕过能力准入与 effect broker。"
+- "执行模块" (world_modules) → "只追加证据" (evidence): "运行时证据必须经固定权威内核提交。"
+
+LAYOUT REQUIREMENTS:
+- "离线区是顶部宽带，运行时区是底部宽带。"
+- "主成功路径从左到右；拒绝分支放在独立评估下方。"
+- "在线运行时从左到右排列固定 bundle 解析器、类型化策略槽、固定权威内核、执行模块。"
+- "RA-10 与 RA-11 使用清楚分开的上下通道，禁止双向箭头。"
+- "RA-12 沿最左侧外缘从固定权威内核绕回只追加证据，不得在区域边框终止。"
+- "候选工厂与运行时之间放一个红色禁止标记：禁止自我激活。它不是箭头。"
+- "图中不得出现模型训练、SFT、DPO、GRPO 或 RL。"
+
+REQUIRED TEXT — render each string verbatim:
+- "ITERON"
+- "受治理的 HARNESS 架构"
+- "候选提出方案；证据、人类与内核作出决定。"
+- "离线 CHECKPOINT 控制平面"
+- "在线 ITERON 运行时"
+- "禁止自我激活"
+- "只追加证据"
+- "HARNESS 候选工厂"
+- "独立评估"
+- "拒绝 / 退役"
+- "人工晋升"
+- "不可变 CHECKPOINT 注册表"
+- "固定 BUNDLE 解析器"
+- "类型化策略槽"
+- "固定权威内核"
+- "执行模块"
+
+CAPTION
+- Bottom caption, verbatim: "候选提出方案；证据、人类与内核作出决定。"
+
+CONNECTOR INTEGRITY — mandatory:
+- Every connector must correspond to exactly one ledger edge above.
+- Treat zone, node, and edge IDs as internal references; do not render the IDs.
+- Render every zone label, node label, edge label, required-text string, title, and caption verbatim.
+- Draw one conventional single-headed arrow per edge, with its arrowhead at the receiver and its tail visibly leaving the source.
+- Draw no extra connectors, no dangling connectors, no double-headed arrows, and no shared-trunk connectors.
+- Never terminate an arrow in whitespace, on a zone boundary, on a node that is not its receiver, or on another connector.
+- Route opposite-direction edges in visibly separate lanes; never merge them into a single two-way line.
+- Keep edge labels beside unobstructed line segments and keep arrowheads clear of all text.
+- If routing becomes crowded, increase whitespace or simplify node interiors; never reverse, merge, omit, duplicate, or invent an edge.

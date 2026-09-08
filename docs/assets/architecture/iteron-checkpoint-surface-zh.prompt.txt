@@ -1,0 +1,91 @@
+Create a presentation-ready systems-paper architecture figure.
+
+PURPOSE
+- Title, verbatim: "ITERON · 模型—任务 CHECKPOINT 曲面"
+- Intended message: "解释研究目标：根据显式目标、硬约束与敏感度证据，为每个已刻画的模型—任务运行区域选择一个受治理的 harness checkpoint。"
+
+CANVAS
+- Aspect ratio: "16:9 landscape"
+- Background: "近白色技术论文纸面"
+
+VISUAL STYLE
+- Medium: "正式系统论文概念图，精确扁平框，细线单向箭头，充足留白，清晰中文技术字体"
+- Palette: "深蓝文字；钴蓝画像；紫色选择；绿色证据与注册表；深灰硬约束"
+
+SEMANTIC ZONES — draw each zone exactly once as containment, never as an arrow endpoint:
+- operating_cell: "刻画运行单元"; semantic tone: blue
+- selection: "选择已准入 CHECKPOINT"; semantic tone: purple
+- evidence: "测量并更新"; semantic tone: green
+
+NODE INVENTORY — draw each node exactly once; kind is semantic guidance only and must not be rendered:
+- model_profile: "模型画像"; zone: operating_cell; semantic kind, do not render: "冻结模型 route 的实测能力与失效模式"
+- task_profile: "任务画像"; zone: operating_cell; semantic kind, do not render: "不含答案特征的任务类别要求"
+- objective_constraints: "目标 + 硬约束"; zone: operating_cell; semantic kind, do not render: "服务目标、权威、完整性与资源上限"
+- cell: "模型 × 任务单元"; zone: operating_cell; semantic kind, do not render: "内容寻址的运行坐标"
+- registry: "CHECKPOINT 适用性注册表"; zone: selection; semantic kind, do not render: "支持区域、证据强度、fallback、过期与失效条件"
+- selector: "受约束选择器"; zone: selection; semantic kind, do not render: "从 Pareto 可准入 checkpoint 中选择且不授予权威"
+- checkpoint: "HARNESS CHECKPOINT"; zone: selection; semantic kind, do not render: "带 lineage 与 rollback 的类型化版本化 policy bundle"
+- runtime_trial: "有界运行试验"; zone: evidence; semantic kind, do not render: "冻结模型与选定 harness 在已刻画任务分布上运行"
+- outcome: "结果向量"; zone: evidence; semantic kind, do not render: "带不确定性的质量、成本、延迟与可靠性"
+- sensitivity: "敏感度证据"; zone: evidence; semantic kind, do not render: "以模型和任务为条件的成对 harness 扰动增量"
+
+ONLY ALLOWED SINGLE-HEADED ARROW LEDGER — draw every listed edge exactly once and no unlisted connector:
+- CS-01: "模型画像" (model_profile) — "能力画像" → "模型 × 任务单元" (cell); tone: blue; style: solid; place the sole arrowhead at the receiver cell
+- CS-02: "任务画像" (task_profile) — "任务要求" → "模型 × 任务单元" (cell); tone: blue; style: solid; place the sole arrowhead at the receiver cell
+- CS-03: "目标 + 硬约束" (objective_constraints) — "目标与上限" → "模型 × 任务单元" (cell); tone: ink; style: solid; place the sole arrowhead at the receiver cell
+- CS-04: "模型 × 任务单元" (cell) — "运行坐标" → "受约束选择器" (selector); tone: purple; style: solid; place the sole arrowhead at the receiver selector
+- CS-05: "CHECKPOINT 适用性注册表" (registry) — "已准入适用性" → "受约束选择器" (selector); tone: green; style: solid; place the sole arrowhead at the receiver selector
+- CS-06: "受约束选择器" (selector) — "选择" → "HARNESS CHECKPOINT" (checkpoint); tone: purple; style: solid; place the sole arrowhead at the receiver checkpoint
+- CS-07: "HARNESS CHECKPOINT" (checkpoint) — "类型化 POLICY BUNDLE" → "有界运行试验" (runtime_trial); tone: blue; style: solid; place the sole arrowhead at the receiver runtime_trial
+- CS-08: "有界运行试验" (runtime_trial) — "观测" → "结果向量" (outcome); tone: green; style: solid; place the sole arrowhead at the receiver outcome
+- CS-09: "结果向量" (outcome) — "成对增量" → "敏感度证据" (sensitivity); tone: green; style: solid; place the sole arrowhead at the receiver sensitivity
+- CS-10: "敏感度证据" (sensitivity) — "支持、过期、失效" → "CHECKPOINT 适用性注册表" (registry); tone: green; style: dashed; place the sole arrowhead at the receiver registry
+
+FORBIDDEN EDGES — never draw these source/receiver pairs:
+- "受约束选择器" (selector) → "有界运行试验" (runtime_trial): "选择器必须解析版本化 checkpoint，不能注入匿名配置。"
+- "模型画像" (model_profile) → "HARNESS CHECKPOINT" (checkpoint): "缺少任务画像和目标时，模型身份不能单独决定 checkpoint。"
+- "任务画像" (task_profile) → "HARNESS CHECKPOINT" (checkpoint): "缺少模型画像和目标时，任务身份不能单独决定 checkpoint。"
+- "结果向量" (outcome) → "受约束选择器" (selector): "原始结果必须先变成受治理的敏感度和适用性证据。"
+- "敏感度证据" (sensitivity) → "有界运行试验" (runtime_trial): "证据不能直接激活 checkpoint。"
+
+LAYOUT REQUIREMENTS:
+- "从左到右使用三个清楚分离的竖向区域：运行单元、选择、证据。"
+- "模型画像、任务画像、目标加硬约束纵向排列，并用三条独立通道汇入模型乘任务单元。"
+- "CHECKPOINT 适用性注册表放在受约束选择器正下方，CS-05 是短竖向连接；HARNESS CHECKPOINT 放在选择器右侧。"
+- "有界运行试验、结果向量、敏感度证据在证据区从左到右排列。"
+- "CS-10 是从敏感度证据向左进入 CHECKPOINT 适用性注册表的单独虚线下方通道；箭头只接触注册表。"
+- "不要画单个 benchmark 问题的笛卡尔网格。任务画像表示已刻画的任务类别或分布。"
+- "不要显示模型权重变化；模型 route 始终冻结。"
+
+REQUIRED TEXT — render each string verbatim:
+- "ITERON"
+- "模型—任务 CHECKPOINT 曲面"
+- "可迁移性必须测量，不能预设。"
+- "刻画运行单元"
+- "选择已准入 CHECKPOINT"
+- "测量并更新"
+- "模型画像"
+- "任务画像"
+- "目标 + 硬约束"
+- "模型 × 任务单元"
+- "CHECKPOINT 适用性注册表"
+- "受约束选择器"
+- "HARNESS CHECKPOINT"
+- "有界运行试验"
+- "结果向量"
+- "敏感度证据"
+- "质量 · 成本 · 延迟 · 可靠性"
+
+CAPTION
+- Bottom caption, verbatim: "可迁移性必须测量，不能预设。"
+
+CONNECTOR INTEGRITY — mandatory:
+- Every connector must correspond to exactly one ledger edge above.
+- Treat zone, node, and edge IDs as internal references; do not render the IDs.
+- Render every zone label, node label, edge label, required-text string, title, and caption verbatim.
+- Draw one conventional single-headed arrow per edge, with its arrowhead at the receiver and its tail visibly leaving the source.
+- Draw no extra connectors, no dangling connectors, no double-headed arrows, and no shared-trunk connectors.
+- Never terminate an arrow in whitespace, on a zone boundary, on a node that is not its receiver, or on another connector.
+- Route opposite-direction edges in visibly separate lanes; never merge them into a single two-way line.
+- Keep edge labels beside unobstructed line segments and keep arrowheads clear of all text.
+- If routing becomes crowded, increase whitespace or simplify node interiors; never reverse, merge, omit, duplicate, or invent an edge.

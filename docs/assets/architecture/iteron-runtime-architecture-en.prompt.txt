@@ -1,0 +1,91 @@
+Create a presentation-ready systems-paper architecture figure.
+
+PURPOSE
+- Title, verbatim: "ITERON · GOVERNED HARNESS ARCHITECTURE"
+- Intended message: "Show how Iteron keeps harness optimization offline and non-authoritative while a fixed runtime kernel alone admits effects and appends evidence."
+
+CANVAS
+- Aspect ratio: "16:9 landscape"
+- Background: "near-white technical paper"
+
+VISUAL STYLE
+- Medium: "formal systems-paper architecture diagram, precise flat boxes, thin marker-like connector lines, generous whitespace, compact monospace labels, no decoration"
+- Palette: "navy text; purple candidate production; green evaluation and governance; amber human decision; cobalt runtime; red rejection"
+
+SEMANTIC ZONES — draw each zone exactly once as containment, never as an arrow endpoint:
+- offline: "OFFLINE CHECKPOINT CONTROL PLANE"; semantic tone: green
+- runtime: "ONLINE ITERON RUNTIME"; semantic tone: blue
+
+NODE INVENTORY — draw each node exactly once; kind is semantic guidance only and must not be rendered:
+- evidence: "APPEND-ONLY EVIDENCE"; zone: offline; semantic kind, do not render: "governed outcomes and lineage"
+- candidate_factory: "HARNESS CANDIDATE FACTORY"; zone: offline; semantic kind, do not render: "search, bandit, structured mutation, text evolution, implementation selection"
+- independent_eval: "INDEPENDENT EVALUATION"; zone: offline; semantic kind, do not render: "held-out quality, cost, latency, reliability and invariant checks"
+- rejected: "REJECT / RETIRE"; zone: offline; semantic kind, do not render: "failed candidates cannot advance"
+- human_promotion: "HUMAN PROMOTION"; zone: offline; semantic kind, do not render: "accountable release decision"
+- checkpoint_registry: "IMMUTABLE CHECKPOINT REGISTRY"; zone: offline; semantic kind, do not render: "versioned policy bundles with known-good rollback"
+- bundle_resolver: "PINNED BUNDLE RESOLVER"; zone: runtime; semantic kind, do not render: "read-only identity resolution at run admission"
+- strategy_slots: "TYPED STRATEGY SLOTS"; zone: runtime; semantic kind, do not render: "router, planner, context, memory, scheduler, tools, verifier, model router, collaboration"
+- authority_kernel: "FIXED AUTHORITY KERNEL"; zone: runtime; semantic kind, do not render: "protocol, reducer, capability admission, budgets, effect broker, record and replay"
+- world_modules: "EXECUTION MODULES"; zone: runtime; semantic kind, do not render: "providers, filesystem, shell and git, sandbox, MCP and LSP, vertical adapters"
+
+ONLY ALLOWED SINGLE-HEADED ARROW LEDGER — draw every listed edge exactly once and no unlisted connector:
+- RA-01: "APPEND-ONLY EVIDENCE" (evidence) — "governed outcomes" → "HARNESS CANDIDATE FACTORY" (candidate_factory); tone: purple; style: solid; place the sole arrowhead at the receiver candidate_factory
+- RA-02: "HARNESS CANDIDATE FACTORY" (candidate_factory) — "typed candidate" → "INDEPENDENT EVALUATION" (independent_eval); tone: purple; style: solid; place the sole arrowhead at the receiver independent_eval
+- RA-03: "INDEPENDENT EVALUATION" (independent_eval) — "fail" → "REJECT / RETIRE" (rejected); tone: red; style: solid; place the sole arrowhead at the receiver rejected
+- RA-04: "REJECT / RETIRE" (rejected) — "failure evidence" → "APPEND-ONLY EVIDENCE" (evidence); tone: red; style: dashed; place the sole arrowhead at the receiver evidence
+- RA-05: "INDEPENDENT EVALUATION" (independent_eval) — "eligible" → "HUMAN PROMOTION" (human_promotion); tone: green; style: solid; place the sole arrowhead at the receiver human_promotion
+- RA-06: "HUMAN PROMOTION" (human_promotion) — "approved checkpoint" → "IMMUTABLE CHECKPOINT REGISTRY" (checkpoint_registry); tone: green; style: solid; place the sole arrowhead at the receiver checkpoint_registry
+- RA-07: "IMMUTABLE CHECKPOINT REGISTRY" (checkpoint_registry) — "pin or rollback" → "PINNED BUNDLE RESOLVER" (bundle_resolver); tone: green; style: solid; place the sole arrowhead at the receiver bundle_resolver
+- RA-08: "PINNED BUNDLE RESOLVER" (bundle_resolver) — "typed policies" → "TYPED STRATEGY SLOTS" (strategy_slots); tone: blue; style: solid; place the sole arrowhead at the receiver strategy_slots
+- RA-09: "TYPED STRATEGY SLOTS" (strategy_slots) — "intent" → "FIXED AUTHORITY KERNEL" (authority_kernel); tone: blue; style: solid; place the sole arrowhead at the receiver authority_kernel
+- RA-10: "FIXED AUTHORITY KERNEL" (authority_kernel) — "admitted effect" → "EXECUTION MODULES" (world_modules); tone: blue; style: solid; place the sole arrowhead at the receiver world_modules
+- RA-11: "EXECUTION MODULES" (world_modules) — "result" → "FIXED AUTHORITY KERNEL" (authority_kernel); tone: blue; style: dashed; place the sole arrowhead at the receiver authority_kernel
+- RA-12: "FIXED AUTHORITY KERNEL" (authority_kernel) — "append outcome" → "APPEND-ONLY EVIDENCE" (evidence); tone: green; style: solid; place the sole arrowhead at the receiver evidence
+
+FORBIDDEN EDGES — never draw these source/receiver pairs:
+- "HARNESS CANDIDATE FACTORY" (candidate_factory) → "PINNED BUNDLE RESOLVER" (bundle_resolver): "A producer cannot activate its candidate."
+- "HARNESS CANDIDATE FACTORY" (candidate_factory) → "FIXED AUTHORITY KERNEL" (authority_kernel): "A producer cannot grant authority."
+- "INDEPENDENT EVALUATION" (independent_eval) → "IMMUTABLE CHECKPOINT REGISTRY" (checkpoint_registry): "Evaluation cannot bypass accountable human promotion."
+- "TYPED STRATEGY SLOTS" (strategy_slots) → "EXECUTION MODULES" (world_modules): "A learned strategy cannot bypass capability admission and the effect broker."
+- "EXECUTION MODULES" (world_modules) → "APPEND-ONLY EVIDENCE" (evidence): "Runtime evidence is committed through the fixed authority kernel."
+
+LAYOUT REQUIREMENTS:
+- "Place the offline zone as a wide top band and the runtime zone as a wide bottom band."
+- "Arrange the main success path left to right with the reject branch below independent evaluation."
+- "Arrange the online runtime left to right as bundle resolver, typed strategy slots, fixed authority kernel, execution modules."
+- "Route RA-10 and RA-11 in clearly separated upper and lower lanes; never use a double-headed arrow."
+- "Route RA-12 around the far left margin from the fixed authority kernel to append-only evidence without touching a zone border."
+- "Show a small red prohibition annotation between candidate factory and runtime: NO SELF-ACTIVATION. It is not an arrow."
+- "Do not mention model training, SFT, DPO, GRPO, or RL anywhere in the figure."
+
+REQUIRED TEXT — render each string verbatim:
+- "ITERON"
+- "GOVERNED HARNESS ARCHITECTURE"
+- "CANDIDATES PROPOSE. EVIDENCE, HUMANS, AND THE KERNEL DECIDE."
+- "OFFLINE CHECKPOINT CONTROL PLANE"
+- "ONLINE ITERON RUNTIME"
+- "NO SELF-ACTIVATION"
+- "APPEND-ONLY EVIDENCE"
+- "HARNESS CANDIDATE FACTORY"
+- "INDEPENDENT EVALUATION"
+- "REJECT / RETIRE"
+- "HUMAN PROMOTION"
+- "IMMUTABLE CHECKPOINT REGISTRY"
+- "PINNED BUNDLE RESOLVER"
+- "TYPED STRATEGY SLOTS"
+- "FIXED AUTHORITY KERNEL"
+- "EXECUTION MODULES"
+
+CAPTION
+- Bottom caption, verbatim: "CANDIDATES PROPOSE. EVIDENCE, HUMANS, AND THE KERNEL DECIDE."
+
+CONNECTOR INTEGRITY — mandatory:
+- Every connector must correspond to exactly one ledger edge above.
+- Treat zone, node, and edge IDs as internal references; do not render the IDs.
+- Render every zone label, node label, edge label, required-text string, title, and caption verbatim.
+- Draw one conventional single-headed arrow per edge, with its arrowhead at the receiver and its tail visibly leaving the source.
+- Draw no extra connectors, no dangling connectors, no double-headed arrows, and no shared-trunk connectors.
+- Never terminate an arrow in whitespace, on a zone boundary, on a node that is not its receiver, or on another connector.
+- Route opposite-direction edges in visibly separate lanes; never merge them into a single two-way line.
+- Keep edge labels beside unobstructed line segments and keep arrowheads clear of all text.
+- If routing becomes crowded, increase whitespace or simplify node interiors; never reverse, merge, omit, duplicate, or invent an edge.

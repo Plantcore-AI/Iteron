@@ -1,0 +1,63 @@
+{
+  "title": "ITERON · MODEL–TASK CHECKPOINT SURFACE",
+  "purpose": "Explain the research target: select a governed harness checkpoint for each characterized model-task operating region using explicit objectives, constraints and sensitivity evidence.",
+  "caption": "PORTABILITY IS MEASURED, NOT ASSUMED.",
+  "canvas": {"aspect": "16:9 landscape", "background": "near-white technical paper"},
+  "style": {
+    "medium": "formal systems-paper concept diagram, precise flat boxes, thin marker-like single-headed arrows, generous whitespace, concise monospace labels",
+    "palette": "navy text; cobalt profiles; purple selection; green evidence and registry; amber constraints"
+  },
+  "zones": [
+    {"id": "operating_cell", "label": "CHARACTERIZE THE OPERATING CELL", "tone": "blue"},
+    {"id": "selection", "label": "SELECT AN ADMITTED CHECKPOINT", "tone": "purple"},
+    {"id": "evidence", "label": "MEASURE AND UPDATE", "tone": "green"}
+  ],
+  "nodes": [
+    {"id": "model_profile", "label": "MODEL PROFILE", "zone": "operating_cell", "kind": "measured frozen-route capabilities and failure modes"},
+    {"id": "task_profile", "label": "TASK PROFILE", "zone": "operating_cell", "kind": "task-class requirements without answer features"},
+    {"id": "objective_constraints", "label": "OBJECTIVE + HARD CONSTRAINTS", "zone": "operating_cell", "kind": "service objective, authority, integrity and resource ceilings"},
+    {"id": "cell", "label": "MODEL × TASK CELL", "zone": "operating_cell", "kind": "content-addressed operating coordinate"},
+    {"id": "registry", "label": "CHECKPOINT APPLICABILITY REGISTRY", "zone": "selection", "kind": "supported regions, evidence strength, fallback, expiry and invalidation"},
+    {"id": "selector", "label": "CONSTRAINED SELECTOR", "zone": "selection", "kind": "selects from Pareto-admissible checkpoints without granting authority"},
+    {"id": "checkpoint", "label": "HARNESS CHECKPOINT", "zone": "selection", "kind": "typed versioned policy bundle with lineage and rollback"},
+    {"id": "runtime_trial", "label": "BOUNDED RUNTIME TRIAL", "zone": "evidence", "kind": "frozen model plus selected harness on the characterized task distribution"},
+    {"id": "outcome", "label": "OUTCOME VECTOR", "zone": "evidence", "kind": "quality, cost, latency and reliability with uncertainty"},
+    {"id": "sensitivity", "label": "SENSITIVITY EVIDENCE", "zone": "evidence", "kind": "paired harness perturbation deltas conditioned on model and task"}
+  ],
+  "edges": [
+    {"id": "CS-01", "from": "model_profile", "to": "cell", "label": "capabilities", "tone": "blue", "style": "solid"},
+    {"id": "CS-02", "from": "task_profile", "to": "cell", "label": "requirements", "tone": "blue", "style": "solid"},
+    {"id": "CS-03", "from": "objective_constraints", "to": "cell", "label": "objective and ceilings", "tone": "ink", "style": "solid"},
+    {"id": "CS-04", "from": "cell", "to": "selector", "label": "operating coordinate", "tone": "purple", "style": "solid"},
+    {"id": "CS-05", "from": "registry", "to": "selector", "label": "admitted applicability", "tone": "green", "style": "solid"},
+    {"id": "CS-06", "from": "selector", "to": "checkpoint", "label": "select", "tone": "purple", "style": "solid"},
+    {"id": "CS-07", "from": "checkpoint", "to": "runtime_trial", "label": "typed policy bundle", "tone": "blue", "style": "solid"},
+    {"id": "CS-08", "from": "runtime_trial", "to": "outcome", "label": "observe", "tone": "green", "style": "solid"},
+    {"id": "CS-09", "from": "outcome", "to": "sensitivity", "label": "paired deltas", "tone": "green", "style": "solid"},
+    {"id": "CS-10", "from": "sensitivity", "to": "registry", "label": "support, expiry, invalidation", "tone": "green", "style": "dashed"}
+  ],
+  "forbidden_edges": [
+    {"from": "selector", "to": "runtime_trial", "reason": "Selection must resolve a versioned checkpoint rather than inject an anonymous configuration."},
+    {"from": "model_profile", "to": "checkpoint", "reason": "Model identity alone cannot determine a checkpoint without a task profile and objective."},
+    {"from": "task_profile", "to": "checkpoint", "reason": "Task identity alone cannot determine a checkpoint without a model profile and objective."},
+    {"from": "outcome", "to": "selector", "reason": "Raw outcomes require governed sensitivity and applicability evidence before selection."},
+    {"from": "sensitivity", "to": "runtime_trial", "reason": "Evidence cannot activate a checkpoint directly."}
+  ],
+  "layout_notes": [
+    "Use three clean vertical zones from left to right: operating cell, selection, evidence.",
+    "Stack model profile, task profile, and objective plus hard constraints vertically, feeding the model by task cell in three separate lanes.",
+    "Place checkpoint applicability registry directly below constrained selector so CS-05 is short and vertical; place harness checkpoint to the right of selector.",
+    "Place runtime trial, outcome vector, and sensitivity evidence left to right in the evidence zone.",
+    "Route CS-10 as one dashed lower lane from sensitivity evidence leftward into checkpoint applicability registry. Its arrowhead touches only the registry.",
+    "Do not draw a Cartesian grid of individual benchmark questions. Task profile means a characterized class or distribution.",
+    "Do not show model weights changing. The model route is frozen."
+  ],
+  "required_text": [
+    "ITERON", "MODEL–TASK CHECKPOINT SURFACE", "PORTABILITY IS MEASURED, NOT ASSUMED.",
+    "CHARACTERIZE THE OPERATING CELL", "SELECT AN ADMITTED CHECKPOINT", "MEASURE AND UPDATE",
+    "MODEL PROFILE", "TASK PROFILE", "OBJECTIVE + HARD CONSTRAINTS", "MODEL × TASK CELL",
+    "CHECKPOINT APPLICABILITY REGISTRY", "CONSTRAINED SELECTOR", "HARNESS CHECKPOINT",
+    "BOUNDED RUNTIME TRIAL", "OUTCOME VECTOR", "SENSITIVITY EVIDENCE",
+    "quality · cost · latency · reliability"
+  ]
+}

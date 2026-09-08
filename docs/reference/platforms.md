@@ -1,10 +1,9 @@
 # Supported platforms
 
 Iteron is developed and tested primarily on macOS and Linux. Those remain the
-only platforms where the whole product is supported. The v0.0.19 release ships
-macOS arm64, Linux arm64, and Linux x86-64 assets. Windows remains a source-build
-and non-required CI target; it has no code-execution sandbox and v0.0.19 does not
-publish a Windows archive or installer.
+only platforms where the whole product is supported. Release v0.0.20 ships
+macOS arm64, Linux arm64, Linux x86-64, and Windows x86-64 assets. Windows
+remains a non-required CI surface and has no code-execution sandbox.
 
 | Platform | Build | Interactive TUI | Code-execution sandbox |
 | --- | --- | --- | --- |
@@ -12,19 +11,20 @@ publish a Windows archive or installer.
 | macOS x86-64 | source/internal CI only | supported from source | system Seatbelt interface |
 | Linux x86-64 on `dgx` | release target and CI | supported | usable bubblewrap/user-namespace boundary required |
 | Linux arm64 on `dgx` | native release and CI | supported | usable bubblewrap/user-namespace boundary required |
-| Windows x86-64 | source build and non-required CI; no v0.0.19 asset | not claimed | **none — no backend** |
+| Windows x86-64 | v0.0.20 release asset; non-required CI | not claimed | **none — no backend** |
 
 ## Windows
 
-Windows can be built from source and has a non-required CI lane. It does not
-have a sandbox, and v0.0.19 does not publish a Windows archive or installer.
+Windows can be installed from the v0.0.20 release or built from source and has a
+non-required CI lane. It does not have a code-execution sandbox.
 
 What exists:
 
 - `.github/workflows/windows.yml` compiles the workspace for
   `x86_64-pc-windows-msvc` and runs the native ConPTY oracle.
-- `install.ps1` remains source-controlled for future Windows release work, but
-  it is not a v0.0.19 release asset.
+- `v0.0.20` publishes `install.ps1` and an
+  `x86_64-pc-windows-msvc` archive with manifest, checksum, SBOM, and provenance
+  material.
 
 What does not exist, and is not implied by any of the above:
 
@@ -50,8 +50,9 @@ $ gh variable set WINDOWS_RUNNER_LABELS --repo Plantcore-AI/Iteron \
 While that variable is unset, `windows.yml` is skipped outright. See
 `ops/windows-runner/README.md` for the machine's provisioning runbook.
 
-Windows artifacts are published once issue #344 is closed; verify the
-selected release's asset list for availability.
+`v0.0.20` is the first release in this project history to publish Windows
+artifacts. Verify the selected release's asset list because this does not imply a
+compatibility promise for every future pre-alpha tag.
 
 ## Linux requirements
 
