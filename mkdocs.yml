@@ -95,6 +95,7 @@ nav:
   - Concepts:
       - Architecture: architecture.md
       - Why harness checkpoints: concepts/harness-checkpoints.md
+      - 为什么需要 Harness checkpoint: concepts/harness-checkpoints.zh-CN.md
       - Runtime lifecycle: concepts/runtime-lifecycle.md
       - Records and replay: concepts/records-and-replay.md
       - Effects and authority: concepts/effects-and-authority.md
