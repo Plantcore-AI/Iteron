@@ -133,7 +133,7 @@ agent behavior = frozen model × task × harness
 这个命题指导 Iteron 的架构，但不会让日常产品体验变成实验系统：用户安装一个
 CLI、选择提供商、在终端中工作，并获得有界执行与持久证据。完整搜索空间、敏感度
 模型、适用规则和当前实现边界见
-[Harness checkpoints](docs/concepts/harness-checkpoints.md)。
+[Harness checkpoints 中文版](docs/concepts/harness-checkpoints.zh-CN.md)。
 
 ## 架构
 
@@ -178,7 +178,7 @@ Iteron 仍处于 pre-alpha 阶段，不声称已经生产就绪、具备机密�
 | [安装](docs/getting-started/installation.md) | [终端界面](docs/using/tui.md) | [架构](docs/architecture.md) |
 | [快速开始](docs/getting-started/quickstart.md) | [模型与提供商](docs/using/models-and-providers.md) | [贡献指南](CONTRIBUTING.md) |
 | [设置与 BYOK](docs/getting-started/setup-and-byok.md) | [会话](docs/using/sessions.md) | [治理](GOVERNANCE.md) |
-| [故障排查](docs/reference/troubleshooting.md) | [权限与沙箱](docs/using/permissions-and-sandbox.md) | [Harness checkpoints](docs/concepts/harness-checkpoints.md) |
+| [故障排查](docs/reference/troubleshooting.md) | [权限与沙箱](docs/using/permissions-and-sandbox.md) | [Harness checkpoints 中文版](docs/concepts/harness-checkpoints.zh-CN.md) |
 
 ## 参与贡献
 

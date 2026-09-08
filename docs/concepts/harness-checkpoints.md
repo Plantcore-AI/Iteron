@@ -1,5 +1,7 @@
 # Why harness checkpoints
 
+[中文版](harness-checkpoints.zh-CN.md)
+
 An agent is the product of a model, a task, and the harness that connects them.
 Changing the model while holding the harness fixed can move the useful operating
 point. Changing the task while holding the model fixed can do the same. This is
