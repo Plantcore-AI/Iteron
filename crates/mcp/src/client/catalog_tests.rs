@@ -9,7 +9,7 @@ use crate::{
 const FIXTURE_HANDSHAKE: &str = r#"
 IFS= read -r initialize
 [[ "$initialize" == *'"method":"initialize"'* ]] || exit 30
-printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05"}}'
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18"}}'
 IFS= read -r initialized
 [[ "$initialized" == *'"method":"notifications/initialized"'* ]] || exit 31
 "#;

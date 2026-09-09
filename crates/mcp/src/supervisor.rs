@@ -26,7 +26,7 @@ pub use config::{
 pub use identity::McpServerIdentity;
 
 use crate::{
-    McpClient, McpError, McpResultPolicy, McpServerPolicy, McpToolOutcome,
+    McpClient, McpDispatchProgress, McpError, McpResultPolicy, McpServerPolicy, McpToolOutcome,
     reconnect::{
         LifecycleCore, LifecycleFailure, LifecyclePhase, LifecycleStatus, ReconnectPolicy,
         ServerGeneration,
@@ -194,6 +194,23 @@ impl McpSupervisor {
     where
         F: FnOnce() + Send + 'static,
     {
+        self.call_tool_with_handler_observed(identity, arguments, cancellation, None, on_dispatch)
+            .await
+    }
+
+    /// Product call path. A handler is used only after negotiation selected the 2026 stateless
+    /// protocol; stateful versions retain the ordinary single-round tools/call behavior.
+    pub async fn call_tool_with_handler_observed<F>(
+        &mut self,
+        identity: &McpToolIdentity,
+        arguments: Value,
+        cancellation: &McpCancellation,
+        mrtr_handler: Option<std::sync::Arc<dyn crate::McpMrtrHandler>>,
+        on_dispatch: F,
+    ) -> McpToolOutcome
+    where
+        F: FnOnce() + Send + 'static,
+    {
         if cancellation.is_cancelled() {
             return McpToolOutcome::FailedDefinite {
                 error: McpError::Cancelled {
@@ -256,19 +273,39 @@ impl McpSupervisor {
 
         let dispatch_started = std::sync::Arc::new(std::sync::Mutex::new(None));
         let observed = dispatch_started.clone();
+        let uses_mrtr = client.protocol_mode().is_stateless() && mrtr_handler.is_some();
+        let progress = std::sync::Arc::new(McpDispatchProgress::new());
+        let call_progress = progress.clone();
         enum CallResult {
             Completed(McpToolOutcome),
             Cancelled,
             OperationTimedOut,
         }
         let result = {
-            let call = client.call_tool_outcome_observed(&bare_name, arguments, move || {
+            let dispatch = move || {
                 *observed
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) =
                     Some(std::time::Instant::now());
                 on_dispatch();
-            });
+            };
+            let call = async {
+                if uses_mrtr && let Some(handler) = mrtr_handler.as_deref() {
+                    client
+                        .call_tool_with_mrtr_outcome_observed_with_progress(
+                            &bare_name,
+                            arguments,
+                            handler,
+                            call_progress,
+                            dispatch,
+                        )
+                        .await
+                } else {
+                    client
+                        .call_tool_outcome_observed(&bare_name, arguments, dispatch)
+                        .await
+                }
+            };
             tokio::pin!(call);
             tokio::select! {
                 biased;
@@ -276,6 +313,14 @@ impl McpSupervisor {
                 _ = tokio::time::sleep_until(budget.deadline()) => CallResult::OperationTimedOut,
                 outcome = &mut call => CallResult::Completed(outcome),
             }
+        };
+        let request_pending = if uses_mrtr {
+            progress.is_pending()
+        } else {
+            dispatch_started
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_some()
         };
 
         match result {
@@ -289,7 +334,9 @@ impl McpSupervisor {
                 }
                 self.ready_since = None;
                 self.healthy_calls = 0;
-                if let Some(dispatched_at) = dispatched_at {
+                if request_pending {
+                    let dispatched_at =
+                        dispatched_at.expect("a pending physical request has dispatch evidence");
                     McpToolOutcome::Unknown {
                         error: McpError::Cancelled {
                             operation: "dispatched tool call",
@@ -306,7 +353,14 @@ impl McpSupervisor {
                         error: McpError::Cancelled {
                             operation: "tool call",
                         },
-                        evidence: None,
+                        evidence: dispatched_at.map(|dispatched_at| {
+                            crate::McpToolCallEvidence::new(
+                                self.server_name(),
+                                &bare_name,
+                                NonZeroU64::new(duration_ms_ceil(dispatched_at.elapsed()).max(1))
+                                    .expect("a value clamped to one is non-zero"),
+                            )
+                        }),
                     }
                 }
             }
@@ -314,7 +368,9 @@ impl McpSupervisor {
                 let dispatched_at = *dispatch_started
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if let Some(dispatched_at) = dispatched_at {
+                if request_pending {
+                    let dispatched_at =
+                        dispatched_at.expect("a pending physical request has dispatch evidence");
                     client.terminate().await;
                     if self
                         .record_failure(generation, LifecycleFailure::Deadline)
@@ -332,12 +388,19 @@ impl McpSupervisor {
                         ),
                     }
                 } else {
-                    // The dispatch observer runs before the first fallible write. Dropping the
-                    // undispatched call future therefore leaves this connection reusable.
+                    // No physical request is in flight. This includes pre-dispatch work and a
+                    // settled MRTR round followed by bounded local input handling.
                     self.client = Some(client);
                     McpToolOutcome::FailedDefinite {
                         error: operation_deadline(),
-                        evidence: None,
+                        evidence: dispatched_at.map(|dispatched_at| {
+                            crate::McpToolCallEvidence::new(
+                                self.server_name(),
+                                &bare_name,
+                                NonZeroU64::new(duration_ms_ceil(dispatched_at.elapsed()).max(1))
+                                    .expect("a value clamped to one is non-zero"),
+                            )
+                        }),
                     }
                 }
             }

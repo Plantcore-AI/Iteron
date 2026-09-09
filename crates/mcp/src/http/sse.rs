@@ -293,13 +293,45 @@ where
     R: AsyncBufRead + Unpin,
     H: SseInbound + ?Sized,
 {
+    match read_matching_sse_response_resumable(reader, id, limits, inbound).await? {
+        SseReadOutcome::Response(value) => Ok(value),
+        SseReadOutcome::Closed { .. } => Err(McpError::TransportClosed),
+    }
+}
+
+pub(crate) enum SseReadOutcome {
+    Response(Value),
+    Closed {
+        last_event_id: Option<String>,
+        retry_ms: Option<u64>,
+    },
+}
+
+pub(crate) async fn read_matching_sse_response_resumable<R, H>(
+    reader: R,
+    id: u64,
+    limits: SseLimits,
+    inbound: &H,
+) -> Result<SseReadOutcome, McpError>
+where
+    R: AsyncBufRead + Unpin,
+    H: SseInbound + ?Sized,
+{
     let mut lines = SseLineReader::new(reader);
     let mut decoder = SseDecoder::new(limits);
+    let mut last_event_id = None;
+    let mut retry_ms = None;
     while let Some(raw) = lines.next_line(limits.event_bytes).await? {
         let text = std::str::from_utf8(&raw).map_err(|_| McpError::InvalidUtf8)?;
         let Some(event) = decoder.push_line(text)? else {
             continue;
         };
+        if event.id.is_some() {
+            last_event_id = event.id.clone();
+        }
+        if event.retry_ms.is_some() {
+            retry_ms = event.retry_ms;
+        }
         // MCP carries JSON-RPC on the default event type; a server may emit others for its own
         // purposes and they are not protocol errors.
         if event.event.as_deref().is_some_and(|name| name != "message") {
@@ -315,10 +347,13 @@ where
         if value.get("method").and_then(Value::as_str).is_some() {
             inbound.handle(value).await?;
         } else if value.get("id").and_then(Value::as_u64) == Some(id) {
-            return parse_response(&event.data);
+            return parse_response(&event.data).map(SseReadOutcome::Response);
         }
     }
-    Err(McpError::TransportClosed)
+    Ok(SseReadOutcome::Closed {
+        last_event_id,
+        retry_ms,
+    })
 }
 
 /// Read a single-document `application/json` body and correlate it.

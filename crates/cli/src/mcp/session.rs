@@ -40,6 +40,7 @@ pub(crate) struct McpRuntimeControl {
     servers: Arc<BTreeMap<String, Arc<ManagedServer>>>,
     policy: Arc<OnceLock<EffectiveMcpSettings>>,
     exposure: Arc<OnceLock<McpCapabilityExposure>>,
+    mrtr_handler: Arc<OnceLock<Arc<dyn iteron_mcp::McpMrtrHandler>>>,
     configuration_lock: Arc<Mutex<()>>,
 }
 
@@ -52,6 +53,7 @@ impl McpRuntimeControl {
         let mut managed = BTreeMap::new();
         let policy = Arc::new(OnceLock::new());
         let exposure = Arc::new(OnceLock::new());
+        let mrtr_handler = Arc::new(OnceLock::new());
         for config in servers {
             config
                 .origin
@@ -61,21 +63,40 @@ impl McpRuntimeControl {
                 McpTransportConfig::Stdio => ManagedServer::Stdio(ManagedStdioServer::new(
                     config.clone(),
                     sensitive_env_names.to_vec(),
+                    mrtr_handler.clone(),
                 )?),
                 McpTransportConfig::Http => ManagedServer::Http(ManagedHttpServer::new(
                     config.clone(),
                     sensitive_env_names.to_vec(),
+                    mrtr_handler.clone(),
                 )?),
             });
-            register_server_tools(registry, server.clone(), exposure.clone())?;
+            register_server_tools(
+                registry,
+                server.clone(),
+                exposure.clone(),
+                mrtr_handler.clone(),
+            )?;
             managed.insert(config.name.clone(), server);
         }
         Ok(Self {
             servers: Arc::new(managed),
             policy,
             exposure,
+            mrtr_handler,
             configuration_lock: Arc::new(Mutex::new(())),
         })
+    }
+
+    /// Bind the one interactive frontend for this session. One-shot/headless hosts deliberately
+    /// leave the slot empty, so a 2026 input request fails closed instead of reading model prose.
+    pub(crate) fn install_mrtr_handler(
+        &self,
+        handler: Arc<dyn iteron_mcp::McpMrtrHandler>,
+    ) -> Result<(), &'static str> {
+        self.mrtr_handler
+            .set(handler)
+            .map_err(|_| "MCP MRTR handler is already installed for this session")
     }
 
     /// Pure staged-adoption preflight. This verifies the exact live server/configuration owner
@@ -398,14 +419,23 @@ impl ManagedServer {
         &self,
         name: &str,
         arguments: Value,
+        mrtr_handler: Option<Arc<dyn iteron_mcp::McpMrtrHandler>>,
         on_dispatch: F,
     ) -> iteron_mcp::McpToolOutcome
     where
         F: FnOnce() + Send + 'static,
     {
         match self {
-            Self::Stdio(server) => server.call(name, arguments, on_dispatch).await,
-            Self::Http(server) => server.call(name, arguments, on_dispatch).await,
+            Self::Stdio(server) => {
+                server
+                    .call(name, arguments, mrtr_handler, on_dispatch)
+                    .await
+            }
+            Self::Http(server) => {
+                server
+                    .call(name, arguments, mrtr_handler, on_dispatch)
+                    .await
+            }
         }
     }
 
@@ -447,6 +477,7 @@ struct ManagedStdioServer {
     config: McpServerConfig,
     resolved_command: PathBuf,
     sensitive_env_names: Vec<String>,
+    mrtr_handler: Arc<OnceLock<Arc<dyn iteron_mcp::McpMrtrHandler>>>,
     policy: OnceLock<EffectiveMcpSettings>,
     cancellation: Mutex<McpCancellation>,
     state: tokio::sync::Mutex<ManagedState>,
@@ -459,7 +490,11 @@ struct ManagedState {
 }
 
 impl ManagedStdioServer {
-    fn new(config: McpServerConfig, sensitive_env_names: Vec<String>) -> anyhow::Result<Self> {
+    fn new(
+        config: McpServerConfig,
+        sensitive_env_names: Vec<String>,
+        mrtr_handler: Arc<OnceLock<Arc<dyn iteron_mcp::McpMrtrHandler>>>,
+    ) -> anyhow::Result<Self> {
         // Resolve before registration so a missing executable is a startup configuration error,
         // but do not spawn it. The absolute path is part of the supervisor's immutable binding.
         let command = config.command.as_deref().ok_or_else(|| {
@@ -470,6 +505,7 @@ impl ManagedStdioServer {
             config,
             resolved_command,
             sensitive_env_names,
+            mrtr_handler,
             policy: OnceLock::new(),
             cancellation: Mutex::new(McpCancellation::new()),
             state: tokio::sync::Mutex::new(ManagedState {
@@ -504,12 +540,17 @@ impl ManagedStdioServer {
             .get()
             .copied()
             .ok_or(iteron_mcp::McpError::LifecycleFailed)?;
-        let launch = McpLaunchConfig::new(
+        let mut launch = McpLaunchConfig::new(
             self.resolved_command.to_string_lossy().into_owned(),
             self.config.args.clone(),
             self.config.name.clone(),
         )?
-        .with_sensitive_env_names(self.sensitive_env_names.clone())?;
+        .with_sensitive_env_names(self.sensitive_env_names.clone())?
+        .with_granted_env_names(self.config.env_names.clone())?
+        .with_auto_protocol();
+        if self.mrtr_handler.get().is_some() {
+            launch = launch.with_elicitation_form();
+        }
         let deadlines = runtime.deadlines.stdio();
         let timeouts = McpTimeouts::new(
             deadlines.startup(),
@@ -566,6 +607,7 @@ impl ManagedStdioServer {
         &self,
         name: &str,
         arguments: Value,
+        mrtr_handler: Option<Arc<dyn iteron_mcp::McpMrtrHandler>>,
         on_dispatch: F,
     ) -> iteron_mcp::McpToolOutcome
     where
@@ -588,7 +630,13 @@ impl ManagedStdioServer {
             return definite_mcp_error(iteron_mcp::McpError::StaleToolIdentity);
         };
         supervisor
-            .call_tool_observed(&identity, arguments, &cancellation, on_dispatch)
+            .call_tool_with_handler_observed(
+                &identity,
+                arguments,
+                &cancellation,
+                mrtr_handler,
+                on_dispatch,
+            )
             .await
     }
 
@@ -713,6 +761,7 @@ impl ManagedStdioServer {
 struct ManagedHttpServer {
     config: McpServerConfig,
     sensitive_env_names: Vec<String>,
+    mrtr_handler: Arc<OnceLock<Arc<dyn iteron_mcp::McpMrtrHandler>>>,
     binding: Arc<[u8]>,
     policy: OnceLock<EffectiveMcpSettings>,
     cancellation: Mutex<McpCancellation>,
@@ -731,11 +780,16 @@ struct ManagedHttpState {
 }
 
 impl ManagedHttpServer {
-    fn new(config: McpServerConfig, sensitive_env_names: Vec<String>) -> anyhow::Result<Self> {
+    fn new(
+        config: McpServerConfig,
+        sensitive_env_names: Vec<String>,
+        mrtr_handler: Arc<OnceLock<Arc<dyn iteron_mcp::McpMrtrHandler>>>,
+    ) -> anyhow::Result<Self> {
         let binding = http_server_binding(&config)?;
         Ok(Self {
             config,
             sensitive_env_names,
+            mrtr_handler,
             binding,
             policy: OnceLock::new(),
             cancellation: Mutex::new(McpCancellation::new()),
@@ -850,6 +904,7 @@ impl ManagedHttpServer {
                 &self.sensitive_env_names,
                 runtime.deadlines,
                 runtime.result,
+                self.mrtr_handler.get().cloned(),
             );
             let connected = tokio::select! {
                 biased;
@@ -977,6 +1032,7 @@ impl ManagedHttpServer {
         &self,
         name: &str,
         arguments: Value,
+        mrtr_handler: Option<Arc<dyn iteron_mcp::McpMrtrHandler>>,
         on_dispatch: F,
     ) -> iteron_mcp::McpToolOutcome
     where
@@ -1017,16 +1073,42 @@ impl ManagedHttpServer {
         let Some(client) = state.client.clone() else {
             return definite_mcp_error(iteron_mcp::McpError::LifecycleFailed);
         };
+        let uses_mrtr = client.protocol_mode().is_stateless() && mrtr_handler.is_some();
+        let progress = Arc::new(iteron_mcp::McpDispatchProgress::new());
+        let call_progress = progress.clone();
         let dispatched = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let observed = dispatched.clone();
-        let call = client.call_tool_outcome_observed(&bare, arguments, move || {
+        let dispatch = move || {
             observed.store(true, Ordering::Release);
             on_dispatch();
-        });
+        };
+        let call = async {
+            if uses_mrtr && let Some(handler) = mrtr_handler.as_deref() {
+                client
+                    .call_tool_with_mrtr_outcome_observed(
+                        &bare,
+                        arguments,
+                        handler,
+                        call_progress,
+                        dispatch,
+                    )
+                    .await
+            } else {
+                client
+                    .call_tool_outcome_observed_with_progress(
+                        &bare,
+                        arguments,
+                        call_progress,
+                        dispatch,
+                    )
+                    .await
+            }
+        };
+        let request_pending = || progress.is_pending();
         let outcome = tokio::select! {
             biased;
-            _ = cancellation.cancelled() => cancellation_outcome(&self.config.name, &bare, dispatched.load(Ordering::Acquire)),
-            _ = tokio::time::sleep_until(deadline) => timeout_outcome(&self.config.name, &bare, dispatched.load(Ordering::Acquire)),
+            _ = cancellation.cancelled() => cancellation_outcome(&self.config.name, &bare, dispatched.load(Ordering::Acquire), request_pending()),
+            _ = tokio::time::sleep_until(deadline) => timeout_outcome(&self.config.name, &bare, dispatched.load(Ordering::Acquire), request_pending()),
             outcome = call => outcome,
         };
         self.settle_http_outcome(&mut state, generation, &outcome);
@@ -1075,8 +1157,8 @@ impl ManagedHttpServer {
         });
         let outcome = tokio::select! {
             biased;
-            _ = cancellation.cancelled() => cancellation_outcome(&self.config.name, method, dispatched.load(Ordering::Acquire)),
-            _ = tokio::time::sleep_until(deadline) => timeout_outcome(&self.config.name, method, dispatched.load(Ordering::Acquire)),
+            _ = cancellation.cancelled() => cancellation_outcome(&self.config.name, method, dispatched.load(Ordering::Acquire), dispatched.load(Ordering::Acquire)),
+            _ = tokio::time::sleep_until(deadline) => timeout_outcome(&self.config.name, method, dispatched.load(Ordering::Acquire), dispatched.load(Ordering::Acquire)),
             outcome = call => outcome,
         };
         self.settle_http_outcome(&mut state, generation, &outcome);
@@ -1287,8 +1369,9 @@ fn cancellation_outcome(
     server: &str,
     operation: &str,
     dispatched: bool,
+    request_pending: bool,
 ) -> iteron_mcp::McpToolOutcome {
-    if dispatched {
+    if request_pending {
         iteron_mcp::McpToolOutcome::Unknown {
             error: iteron_mcp::McpError::Cancelled {
                 operation: "dispatched HTTP MCP request",
@@ -1296,20 +1379,31 @@ fn cancellation_outcome(
             evidence: synthetic_evidence(server, operation),
         }
     } else {
-        definite_mcp_error(iteron_mcp::McpError::Cancelled {
-            operation: "HTTP MCP request",
-        })
+        iteron_mcp::McpToolOutcome::FailedDefinite {
+            error: iteron_mcp::McpError::Cancelled {
+                operation: "HTTP MCP request",
+            },
+            evidence: dispatched.then(|| synthetic_evidence(server, operation)),
+        }
     }
 }
 
-fn timeout_outcome(server: &str, operation: &str, dispatched: bool) -> iteron_mcp::McpToolOutcome {
-    if dispatched {
+fn timeout_outcome(
+    server: &str,
+    operation: &str,
+    dispatched: bool,
+    request_pending: bool,
+) -> iteron_mcp::McpToolOutcome {
+    if request_pending {
         iteron_mcp::McpToolOutcome::Unknown {
             error: managed_deadline(),
             evidence: synthetic_evidence(server, operation),
         }
     } else {
-        definite_mcp_error(managed_deadline())
+        iteron_mcp::McpToolOutcome::FailedDefinite {
+            error: managed_deadline(),
+            evidence: dispatched.then(|| synthetic_evidence(server, operation)),
+        }
     }
 }
 
@@ -1389,6 +1483,7 @@ fn register_server_tools(
     registry: &mut Registry,
     server: Arc<ManagedServer>,
     exposure: Arc<OnceLock<McpCapabilityExposure>>,
+    mrtr_handler: Arc<OnceLock<Arc<dyn iteron_mcp::McpMrtrHandler>>>,
 ) -> Result<(), iteron_tools::ToolError> {
     let name = server.name().to_owned();
     let search_name = format!("{name}__tool_search");
@@ -1451,6 +1546,7 @@ fn register_server_tools(
 
     let call_server = server.clone();
     let call_exposure = exposure.clone();
+    let call_mrtr_handler = mrtr_handler;
     registry.register_mcp_effect(
         ToolSpec {
             name: format!("{name}__tool_call"),
@@ -1472,6 +1568,7 @@ fn register_server_tools(
         move |call, _root, dispatch_clock| {
             let server = call_server.clone();
             let exposure = call_exposure.clone();
+            let mrtr_handler = call_mrtr_handler.clone();
             iteron_tools::effectfut::box_it(async move {
                 if !server_identity_admitted(&exposure, &server) {
                     return definite_result(
@@ -1488,7 +1585,9 @@ fn register_server_tools(
                     .cloned()
                     .unwrap_or_else(|| json!({}));
                 let outcome = server
-                    .call(tool, arguments, move || dispatch_clock.mark_dispatched())
+                    .call(tool, arguments, mrtr_handler.get().cloned(), move || {
+                        dispatch_clock.mark_dispatched()
+                    })
                     .await;
                 mcp_tool_execution(call.id, outcome)
             })

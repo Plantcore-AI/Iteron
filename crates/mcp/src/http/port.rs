@@ -141,6 +141,8 @@ pub struct McpHttpResponseHead {
     pub session_id: Option<McpSessionId>,
     /// `retry-after` in seconds, when it was expressed as delta-seconds.
     pub retry_after_secs: Option<u64>,
+    /// Bounded scopes from a valid Bearer `insufficient_scope` challenge.
+    pub insufficient_scope: Option<Vec<String>>,
 }
 
 /// One response: a decided head, plus a body the framing layer reads incrementally.
@@ -207,6 +209,31 @@ pub(crate) fn build_post_with_version(
     policy: &McpHttpHeaderPolicy,
     protocol_frame: (&str, String),
 ) -> Result<McpHttpRequest, McpError> {
+    build_post_with_routing(
+        endpoint,
+        credential,
+        now_secs,
+        session,
+        extra,
+        policy,
+        protocol_frame,
+        None,
+        &[],
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_post_with_routing(
+    endpoint: &McpHttpEndpoint,
+    credential: Option<&Token>,
+    now_secs: u64,
+    session: Option<&McpSessionId>,
+    extra: &[(String, McpHeaderValue)],
+    policy: &McpHttpHeaderPolicy,
+    protocol_frame: (&str, String),
+    routing: Option<(&str, Option<&str>)>,
+    parameter_headers: &[(String, McpHeaderValue)],
+) -> Result<McpHttpRequest, McpError> {
     let (protocol_version, frame) = protocol_frame;
     if frame.len() > crate::MAX_FRAME_BYTES {
         return Err(McpError::FrameTooLarge {
@@ -243,6 +270,24 @@ pub(crate) fn build_post_with_version(
             McpHeaderValue::new(session.expose())?,
         ));
     }
+    if let Some((method, name)) = routing {
+        headers.push(("mcp-method".to_owned(), McpHeaderValue::new(method)?));
+        if let Some(name) = name {
+            headers.push(("mcp-name".to_owned(), McpHeaderValue::new(name)?));
+        }
+    }
+    for (name, value) in parameter_headers {
+        if !name
+            .strip_prefix("mcp-param-")
+            .is_some_and(validate_parameter_header_suffix)
+        {
+            return Err(McpError::InvalidEndpoint {
+                field: "parameter_header",
+                limit: MAX_MCP_HEADER_VALUE_BYTES,
+            });
+        }
+        headers.push((name.clone(), value.clone()));
+    }
     // Operator headers are appended last but validated against the same reserved set that
     // configuration was validated against, so a later code path cannot smuggle one in.
     for (name, value) in extra {
@@ -262,6 +307,64 @@ pub(crate) fn build_post_with_version(
         headers,
         body: frame,
     })
+}
+
+pub(crate) fn build_sse_get(
+    endpoint: &McpHttpEndpoint,
+    credential: Option<&Token>,
+    now_secs: u64,
+    session: Option<&McpSessionId>,
+    protocol_version: &str,
+    last_event_id: Option<&str>,
+) -> Result<McpHttpRequest, McpError> {
+    let mut headers = vec![
+        (
+            "accept".to_owned(),
+            McpHeaderValue::new(MCP_SSE_MEDIA_TYPE)?,
+        ),
+        (
+            "mcp-protocol-version".to_owned(),
+            McpHeaderValue::new(protocol_version)?,
+        ),
+    ];
+    if let Some(credential) = credential {
+        headers.push((
+            "authorization".to_owned(),
+            McpHeaderValue::new(format!("Bearer {}", credential.authorize(now_secs)?))?,
+        ));
+    }
+    if let Some(session) = session {
+        headers.push((
+            "mcp-session-id".to_owned(),
+            McpHeaderValue::new(session.expose())?,
+        ));
+    }
+    if let Some(last_event_id) = last_event_id {
+        headers.push((
+            "last-event-id".to_owned(),
+            McpHeaderValue::new(last_event_id)?,
+        ));
+    }
+    Ok(McpHttpRequest {
+        method: "GET",
+        url: endpoint.expose_url(),
+        origin: endpoint.public_origin(),
+        headers,
+        body: String::new(),
+    })
+}
+
+fn validate_parameter_header_suffix(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(
+                    byte,
+                    b'!' | b'#'
+                        ..=b'\'' | b'*' | b'+' | b'-' | b'.' | b'^' | b'_' | b'`' | b'|' | b'~'
+                )
+        })
 }
 
 #[cfg(test)]
@@ -302,6 +405,25 @@ mod tests {
             Some(REQUESTED_PROTOCOL_VERSION)
         );
         assert_eq!(header(&request, "authorization"), None);
+        assert_eq!(header(&request, "mcp-session-id"), None);
+    }
+
+    #[test]
+    fn stateless_2026_routes_by_method_and_tool_without_a_session() {
+        let request = build_post_with_routing(
+            &endpoint(),
+            None,
+            0,
+            None,
+            &[],
+            &McpHttpHeaderPolicy::default(),
+            (crate::MODERN_PROTOCOL_VERSION, "{}".into()),
+            Some(("tools/call", Some("echo"))),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(header(&request, "mcp-method"), Some("tools/call"));
+        assert_eq!(header(&request, "mcp-name"), Some("echo"));
         assert_eq!(header(&request, "mcp-session-id"), None);
     }
 

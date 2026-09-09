@@ -1,15 +1,23 @@
 //! High-level MCP client over streamable HTTP.
 
-use crate::client::{render_extension_content, render_tool_content};
+use crate::client::{
+    is_extension_method, reject_extension_mrtr, render_extension_content, render_tool_content,
+};
 use crate::http::{
     McpEffectCertainty, McpHeaderValue, McpHttpEndpoint, McpHttpHeaderPolicy, McpHttpWire, NowSecs,
     ReqwestMcpExchange,
 };
 use crate::pagination::{ToolListLimits, ToolListPagination};
-use crate::protocol_version::{REQUESTED_PROTOCOL_VERSION, negotiate_initialize_result};
+use crate::protocol_version::{
+    DiscoveryNegotiation, DiscoveryRejection, McpProtocolMode, STATEFUL_REQUESTED_PROTOCOL_VERSION,
+    discover_params, discovery_allows_stateful_fallback, discovery_rejection, modern_params,
+    negotiate_discovery, negotiate_initialize_result, require_modern_discovery,
+};
 use crate::tool_catalog::ToolCatalogBuilder;
 use crate::tool_filter::{McpToolFilter, validate_bare_tool_name, validate_server_name};
-use crate::{McpError, McpServerPolicy, McpToolCallEvidence, McpToolOutcome, McpWire};
+use crate::{
+    McpDispatchProgress, McpError, McpServerPolicy, McpToolCallEvidence, McpToolOutcome, McpWire,
+};
 use iteron_protocol::{ToolSpec, capability_set::CapabilitySet};
 use serde_json::{Value, json};
 use std::num::NonZeroU64;
@@ -40,6 +48,9 @@ pub struct McpRemoteClient {
     wire: Arc<McpHttpWire<ReqwestMcpExchange>>,
     negotiated_protocol_version: String,
     capabilities: McpServerCapabilities,
+    protocol_mode: McpProtocolMode,
+    list_cache: crate::cache::McpListCache,
+    advertises_elicitation: bool,
     oauth: Option<Mutex<OAuthState>>,
     authentication_configured: bool,
     oauth_policy: crate::oauth::McpOAuthLifecyclePolicy,
@@ -94,6 +105,134 @@ impl McpRemoteClient {
             None,
             deadlines,
             result_policy,
+            McpProtocolMode::Stateful,
+        )
+        .await
+    }
+
+    /// Prefer 2026 discovery and negotiate a stateful fallback on the same HTTP endpoint.
+    pub async fn connect_auto(
+        endpoint: McpHttpEndpoint,
+        server_name: String,
+        credential: Option<crate::token::Token>,
+        header_policy: McpHttpHeaderPolicy,
+        headers: Vec<(String, McpHeaderValue)>,
+        oauth_grant: Option<crate::oauth::OAuthRefreshGrant>,
+    ) -> Result<Self, McpError> {
+        Self::connect_auto_with_policies(
+            endpoint,
+            server_name,
+            credential,
+            header_policy,
+            headers,
+            oauth_grant,
+            crate::McpDeadlinePolicy::default().http(),
+            crate::McpResultPolicy::default(),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn connect_auto_with_policies(
+        endpoint: McpHttpEndpoint,
+        server_name: String,
+        credential: Option<crate::token::Token>,
+        header_policy: McpHttpHeaderPolicy,
+        headers: Vec<(String, McpHeaderValue)>,
+        oauth_grant: Option<crate::oauth::OAuthRefreshGrant>,
+        deadlines: crate::McpTransportDeadlines,
+        result_policy: crate::McpResultPolicy,
+    ) -> Result<Self, McpError> {
+        Self::connect_with_elicitation_and_policies(
+            endpoint,
+            server_name,
+            credential,
+            header_policy,
+            headers,
+            oauth_grant,
+            None,
+            deadlines,
+            result_policy,
+            McpProtocolMode::Auto,
+        )
+        .await
+    }
+
+    /// Prefer 2026 discovery and advertise form elicitation only when the owning host has
+    /// installed an interactive input handler.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn connect_auto_with_policies_and_elicitation(
+        endpoint: McpHttpEndpoint,
+        server_name: String,
+        credential: Option<crate::token::Token>,
+        header_policy: McpHttpHeaderPolicy,
+        headers: Vec<(String, McpHeaderValue)>,
+        oauth_grant: Option<crate::oauth::OAuthRefreshGrant>,
+        elicitation: Option<Arc<dyn crate::McpElicitationHandler>>,
+        deadlines: crate::McpTransportDeadlines,
+        result_policy: crate::McpResultPolicy,
+    ) -> Result<Self, McpError> {
+        Self::connect_with_elicitation_and_policies(
+            endpoint,
+            server_name,
+            credential,
+            header_policy,
+            headers,
+            oauth_grant,
+            elicitation,
+            deadlines,
+            result_policy,
+            McpProtocolMode::Auto,
+        )
+        .await
+    }
+
+    /// Connect using the 2026-07-28 stateless HTTP protocol.
+    pub async fn connect_2026(
+        endpoint: McpHttpEndpoint,
+        server_name: String,
+        credential: Option<crate::token::Token>,
+        header_policy: McpHttpHeaderPolicy,
+        headers: Vec<(String, McpHeaderValue)>,
+        oauth_grant: Option<crate::oauth::OAuthRefreshGrant>,
+    ) -> Result<Self, McpError> {
+        Self::connect_with_elicitation_and_policies(
+            endpoint,
+            server_name,
+            credential,
+            header_policy,
+            headers,
+            oauth_grant,
+            None,
+            crate::McpDeadlinePolicy::default().http(),
+            crate::McpResultPolicy::default(),
+            McpProtocolMode::Stateless2026,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn connect_2026_with_policies(
+        endpoint: McpHttpEndpoint,
+        server_name: String,
+        credential: Option<crate::token::Token>,
+        header_policy: McpHttpHeaderPolicy,
+        headers: Vec<(String, McpHeaderValue)>,
+        oauth_grant: Option<crate::oauth::OAuthRefreshGrant>,
+        deadlines: crate::McpTransportDeadlines,
+        result_policy: crate::McpResultPolicy,
+    ) -> Result<Self, McpError> {
+        Self::connect_with_elicitation_and_policies(
+            endpoint,
+            server_name,
+            credential,
+            header_policy,
+            headers,
+            oauth_grant,
+            None,
+            deadlines,
+            result_policy,
+            McpProtocolMode::Stateless2026,
         )
         .await
     }
@@ -120,6 +259,7 @@ impl McpRemoteClient {
             elicitation,
             crate::McpDeadlinePolicy::default().http(),
             crate::McpResultPolicy::default(),
+            McpProtocolMode::Stateful,
         )
         .await
     }
@@ -135,6 +275,7 @@ impl McpRemoteClient {
         elicitation: Option<Arc<dyn crate::McpElicitationHandler>>,
         deadlines: crate::McpTransportDeadlines,
         result_policy: crate::McpResultPolicy,
+        protocol_mode: McpProtocolMode,
     ) -> Result<Self, McpError> {
         validate_server_name(&server_name)?;
         let advertises_elicitation = elicitation.is_some();
@@ -165,6 +306,9 @@ impl McpRemoteClient {
             wire: wire.clone(),
             negotiated_protocol_version: String::new(),
             capabilities: McpServerCapabilities::default(),
+            protocol_mode,
+            list_cache: crate::cache::McpListCache::new(),
+            advertises_elicitation,
             oauth: oauth_grant
                 .map(|grant| {
                     Ok::<_, McpError>(Mutex::new(OAuthState {
@@ -181,25 +325,116 @@ impl McpRemoteClient {
             server_name,
         };
         client.refresh_if_needed().await?;
+        let mut stateful_request_version = STATEFUL_REQUESTED_PROTOCOL_VERSION.to_owned();
+        if protocol_mode.prefers_modern() {
+            wire.set_protocol_version(crate::MODERN_PROTOCOL_VERSION)
+                .await;
+            let discover = || {
+                client.send_request_with_auth_retry(
+                    "server/discover",
+                    discover_params(advertises_elicitation),
+                )
+            };
+            let first = tokio::time::timeout(deadlines.startup(), discover())
+                .await
+                .map_err(|_| McpError::Deadline {
+                    operation: "2026 discovery handshake".into(),
+                })?;
+            let discovery = match first {
+                Err(McpError::HttpStatus { status: 503 }) if protocol_mode.prefers_modern() => {
+                    tokio::time::timeout(deadlines.startup(), discover())
+                        .await
+                        .map_err(|_| McpError::Deadline {
+                            operation: "2026 discovery retry".into(),
+                        })?
+                }
+                Err(error)
+                    if matches!(
+                        discovery_rejection(&error),
+                        Some(DiscoveryRejection::RetryModern)
+                    ) =>
+                {
+                    tokio::time::timeout(deadlines.startup(), discover())
+                        .await
+                        .map_err(|_| McpError::Deadline {
+                            operation: "2026 discovery version retry".into(),
+                        })?
+                }
+                result => result,
+            };
+            let negotiation = match discovery {
+                Ok(result) => negotiate_discovery(&result)?,
+                Err(error)
+                    if protocol_mode == McpProtocolMode::Auto
+                        && matches!(
+                            discovery_rejection(&error),
+                            Some(DiscoveryRejection::Stateful(_))
+                        ) =>
+                {
+                    let Some(DiscoveryRejection::Stateful(version)) = discovery_rejection(&error)
+                    else {
+                        unreachable!("guard requires a stateful discovery rejection")
+                    };
+                    DiscoveryNegotiation::Stateful(version)
+                }
+                Err(error)
+                    if protocol_mode == McpProtocolMode::Auto
+                        && discovery_allows_stateful_fallback(&error) =>
+                {
+                    DiscoveryNegotiation::Stateful(STATEFUL_REQUESTED_PROTOCOL_VERSION.to_owned())
+                }
+                Err(error) => return Err(error),
+            };
+            match negotiation {
+                DiscoveryNegotiation::Modern(version, capabilities) => {
+                    client.negotiated_protocol_version = version;
+                    client.capabilities = capabilities;
+                    client.protocol_mode = McpProtocolMode::Stateless2026;
+                    return Ok(client);
+                }
+                legacy @ DiscoveryNegotiation::Stateful(_)
+                    if protocol_mode == McpProtocolMode::Stateless2026 =>
+                {
+                    require_modern_discovery(legacy)?;
+                    unreachable!("strict modern negotiation cannot select a stateful version")
+                }
+                DiscoveryNegotiation::Stateful(version) => {
+                    stateful_request_version = version;
+                    client.protocol_mode = McpProtocolMode::Stateful;
+                }
+            }
+        }
+        wire.set_protocol_version(&stateful_request_version).await;
+        let initialize_params = || {
+            json!({
+                "protocolVersion": stateful_request_version,
+                "capabilities": if advertises_elicitation {
+                    json!({"elicitation": {"form": {}}})
+                } else {
+                    json!({})
+                },
+                "clientInfo": {"name": "iteron", "version": env!("CARGO_PKG_VERSION")}
+            })
+        };
         let initialize = tokio::time::timeout(
             deadlines.startup(),
-            wire.send_request(
-                "initialize",
-                json!({
-                    "protocolVersion": REQUESTED_PROTOCOL_VERSION,
-                    "capabilities": if advertises_elicitation {
-                        json!({"elicitation": {"form": {}}})
-                    } else {
-                        json!({})
-                    },
-                    "clientInfo": {"name": "iteron", "version": env!("CARGO_PKG_VERSION")}
-                }),
-            ),
+            client.send_request_with_auth_retry("initialize", initialize_params()),
         )
         .await
         .map_err(|_| McpError::Deadline {
             operation: "initialize handshake".into(),
-        })??;
+        })?;
+        let initialize = match initialize {
+            Err(McpError::HttpStatus { status: 503 }) => tokio::time::timeout(
+                deadlines.startup(),
+                client.send_request_with_auth_retry("initialize", initialize_params()),
+            )
+            .await
+            .map_err(|_| McpError::Deadline {
+                operation: "initialize retry".into(),
+            })?,
+            result => result,
+        }?;
         client.negotiated_protocol_version = negotiate_initialize_result(&initialize)?;
         wire.set_protocol_version(client.negotiated_protocol_version.clone())
             .await;
@@ -221,6 +456,10 @@ impl McpRemoteClient {
 
     pub fn capabilities(&self) -> McpServerCapabilities {
         self.capabilities
+    }
+
+    pub fn protocol_mode(&self) -> McpProtocolMode {
+        self.protocol_mode
     }
 
     pub fn deadlines(&self) -> crate::McpTransportDeadlines {
@@ -262,11 +501,15 @@ impl McpRemoteClient {
             let params = cursor
                 .take()
                 .map_or_else(|| json!({}), |cursor| json!({"cursor": cursor}));
-            let result = self.wire.send_request("tools/list", params).await?;
+            let result = self.request("tools/list", params).await?;
             let next_cursor = pagination.accept_page(&result)?;
             catalog.accept_page(&self.server_name, &result)?;
             let Some(next_cursor) = next_cursor else {
-                return Ok(catalog.finish());
+                let mut tools = catalog.finish();
+                if self.protocol_mode.is_stateless() {
+                    tools.sort_by(|left, right| left.name.cmp(&right.name));
+                }
+                return Ok(tools);
             };
             cursor = Some(next_cursor);
         }
@@ -276,6 +519,27 @@ impl McpRemoteClient {
         &self,
         name: &str,
         arguments: Value,
+        on_dispatch: F,
+    ) -> McpToolOutcome
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        self.call_tool_outcome_observed_with_progress(
+            name,
+            arguments,
+            Arc::new(McpDispatchProgress::new()),
+            on_dispatch,
+        )
+        .await
+    }
+
+    /// Variant used by a composition layer whose own deadline can interrupt authentication
+    /// refresh after an authoritative tool response.
+    pub async fn call_tool_outcome_observed_with_progress<F>(
+        &self,
+        name: &str,
+        arguments: Value,
+        progress: Arc<McpDispatchProgress>,
         on_dispatch: F,
     ) -> McpToolOutcome
     where
@@ -293,45 +557,62 @@ impl McpRemoteClient {
                 evidence: None,
             };
         }
-        on_dispatch();
-        let started = Instant::now();
-        let (mut result, mut certainty) = self
-            .wire
-            .call_with_certainty(
+        let dispatched_at = Arc::new(std::sync::Mutex::new(None));
+        let observed_at = dispatched_at.clone();
+        let mut dispatch_observer: Option<Box<dyn FnOnce() + Send>> = Some(Box::new(move || {
+            *observed_at
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Instant::now());
+            on_dispatch();
+        }));
+        let (result, certainty) = self
+            .request_with_certainty_tracking(
                 "tools/call",
-                json!({"name": name, "arguments": arguments.clone()}),
+                json!({"name": name, "arguments": arguments}),
+                &mut dispatch_observer,
+                Some(&progress),
+                false,
             )
             .await;
-        if matches!(result, Err(McpError::HttpStatus { status: 401 }))
-            && certainty == McpEffectCertainty::Definite
-            && self.refresh_after_rejection().await.is_ok()
-        {
-            (result, certainty) = self
-                .wire
-                .call_with_certainty("tools/call", json!({"name": name, "arguments": arguments}))
-                .await;
-        }
-        let elapsed = u64::try_from(started.elapsed().as_millis())
-            .unwrap_or(u64::MAX)
-            .max(1);
-        let evidence = McpToolCallEvidence::new(
-            &self.server_name,
-            name,
-            NonZeroU64::new(elapsed).expect("elapsed was clamped to at least one"),
-        );
+        let dispatched_at = *dispatched_at
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let evidence =
+            dispatched_at.map(|started| remote_mrtr_evidence(&self.server_name, name, started));
         let result = match result {
             Ok(result) => result,
             Err(error) if certainty == McpEffectCertainty::Definite => {
                 if matches!(error, McpError::HttpStatus { status: 403 }) {
                     self.wire.revoke_credential().await;
                 }
-                return McpToolOutcome::FailedDefinite {
-                    error,
-                    evidence: Some(evidence),
-                };
+                return McpToolOutcome::FailedDefinite { error, evidence };
             }
-            Err(error) => return McpToolOutcome::Unknown { error, evidence },
+            Err(error) => match evidence {
+                Some(evidence) => return McpToolOutcome::Unknown { error, evidence },
+                None => {
+                    return McpToolOutcome::FailedDefinite {
+                        error,
+                        evidence: None,
+                    };
+                }
+            },
         };
+        let Some(evidence) = evidence else {
+            return McpToolOutcome::FailedDefinite {
+                error: McpError::Protocol("tools/call completed without dispatch evidence".into()),
+                evidence: None,
+            };
+        };
+        if self.protocol_mode.is_stateless()
+            && result.get("resultType").and_then(Value::as_str) == Some("input_required")
+        {
+            return McpToolOutcome::FailedDefinite {
+                error: McpError::Protocol(
+                    "MCP MRTR input requires an interactive host handler".into(),
+                ),
+                evidence: Some(evidence),
+            };
+        }
         let output = match render_tool_content(&result, self.result_policy, &self.spill_store) {
             Ok(output) => output,
             Err(error) => {
@@ -359,15 +640,603 @@ impl McpRemoteClient {
         }
     }
 
+    /// Run an explicitly interactive 2026 tool call. Each additional request requires a fresh
+    /// handler decision; the ordinary tool-call path never retries into MRTR.
+    pub async fn call_tool_with_mrtr(
+        &self,
+        name: &str,
+        arguments: Value,
+        handler: &dyn crate::McpMrtrHandler,
+    ) -> Result<String, McpError> {
+        if !self.protocol_mode.is_stateless() || !self.advertises_elicitation {
+            return Err(McpError::Protocol(
+                "MRTR requires the 2026 stateless protocol and an advertised elicitation handler"
+                    .into(),
+            ));
+        }
+        validate_bare_tool_name(name)?;
+        let mut state = crate::mrtr::MrtrState::new();
+        let mut params = json!({"name": name, "arguments": arguments});
+        let started = Instant::now();
+        loop {
+            let remaining = self
+                .deadlines
+                .tool_call()
+                .checked_sub(started.elapsed())
+                .ok_or_else(|| McpError::Deadline {
+                    operation: "MCP MRTR total interaction".into(),
+                })?;
+            let result = tokio::time::timeout(
+                remaining,
+                self.send_request_with_auth_retry(
+                    "tools/call",
+                    self.params("tools/call", params.clone())?,
+                ),
+            )
+            .await
+            .map_err(|_| McpError::Deadline {
+                operation: "MCP MRTR total interaction".into(),
+            })??;
+            match state.inspect(&result)? {
+                crate::mrtr::MrtrResult::Complete => {
+                    let output =
+                        render_tool_content(&result, self.result_policy, &self.spill_store)?;
+                    self.cleanup_spills(crate::McpSpillCleanup::ToolEnd)?;
+                    return Ok(output);
+                }
+                crate::mrtr::MrtrResult::InputRequired {
+                    request_state,
+                    requests,
+                } => {
+                    let decision = if requests.is_empty() {
+                        crate::McpInputDecision::Approve(Vec::new())
+                    } else {
+                        let remaining = self
+                            .deadlines
+                            .tool_call()
+                            .checked_sub(started.elapsed())
+                            .ok_or_else(|| McpError::Deadline {
+                            operation: "MCP MRTR total interaction".into(),
+                        })?;
+                        tokio::time::timeout(
+                            remaining,
+                            handler.request(
+                                &self.server_name,
+                                name,
+                                request_state.as_deref(),
+                                requests.clone(),
+                            ),
+                        )
+                        .await
+                        .map_err(|_| McpError::Deadline {
+                            operation: "MCP MRTR user input".into(),
+                        })??
+                    };
+                    let continuation = state.responses(request_state, &requests, decision)?;
+                    let object = params.as_object_mut().expect("tool params are an object");
+                    object.remove("requestState");
+                    object.remove("inputResponses");
+                    if let Some(request_state) = continuation.request_state {
+                        object.insert("requestState".into(), Value::String(request_state));
+                    }
+                    if let Some(input_responses) = continuation.input_responses {
+                        object.insert("inputResponses".into(), input_responses);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Run a 2026 MRTR tool call without erasing post-dispatch uncertainty from the product
+    /// effect ledger. All rounds share one total deadline and one external-effect dispatch mark.
+    pub async fn call_tool_with_mrtr_outcome_observed<F>(
+        &self,
+        name: &str,
+        arguments: Value,
+        handler: &dyn crate::McpMrtrHandler,
+        on_dispatch: F,
+    ) -> McpToolOutcome
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        self.call_tool_with_mrtr_outcome_observed_with_progress(
+            name,
+            arguments,
+            handler,
+            Arc::new(McpDispatchProgress::new()),
+            on_dispatch,
+        )
+        .await
+    }
+
+    /// Variant used by a composition layer whose own aggregate timeout can interrupt this call.
+    /// `progress` distinguishes an in-flight physical request from an already-settled MRTR round.
+    pub async fn call_tool_with_mrtr_outcome_observed_with_progress<F>(
+        &self,
+        name: &str,
+        arguments: Value,
+        handler: &dyn crate::McpMrtrHandler,
+        progress: Arc<McpDispatchProgress>,
+        on_dispatch: F,
+    ) -> McpToolOutcome
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        if !self.protocol_mode.is_stateless() || !self.advertises_elicitation {
+            return McpToolOutcome::FailedDefinite {
+                error: McpError::Protocol(
+                    "MRTR requires the 2026 stateless protocol and an advertised elicitation handler"
+                        .into(),
+                ),
+                evidence: None,
+            };
+        }
+        if let Err(error) = validate_bare_tool_name(name) {
+            return McpToolOutcome::FailedDefinite {
+                error,
+                evidence: None,
+            };
+        }
+        if let Err(error) = self.refresh_if_needed().await {
+            return McpToolOutcome::FailedDefinite {
+                error,
+                evidence: None,
+            };
+        }
+        let started = Instant::now();
+        let mut state = crate::mrtr::MrtrState::new();
+        let mut params = json!({"name": name, "arguments": arguments});
+        let dispatched_at = Arc::new(std::sync::Mutex::new(None));
+        let observed_at = dispatched_at.clone();
+        let mut dispatch_observer: Option<Box<dyn FnOnce() + Send>> = Some(Box::new(move || {
+            *observed_at
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Instant::now());
+            on_dispatch();
+        }));
+        loop {
+            let Some(remaining) = self.deadlines.tool_call().checked_sub(started.elapsed()) else {
+                return remote_mrtr_timeout(
+                    &self.server_name,
+                    name,
+                    observed_dispatch(&dispatched_at),
+                    progress.is_pending(),
+                    McpError::Deadline {
+                        operation: "MCP MRTR total interaction".into(),
+                    },
+                );
+            };
+            let round = tokio::time::timeout(
+                remaining,
+                self.request_with_certainty_tracking(
+                    "tools/call",
+                    params.clone(),
+                    &mut dispatch_observer,
+                    Some(&progress),
+                    false,
+                ),
+            )
+            .await;
+            let (result, certainty) = match round {
+                Ok(outcome) => outcome,
+                Err(_) => {
+                    return remote_mrtr_timeout(
+                        &self.server_name,
+                        name,
+                        observed_dispatch(&dispatched_at),
+                        progress.is_pending(),
+                        McpError::Deadline {
+                            operation: "MCP MRTR total interaction".into(),
+                        },
+                    );
+                }
+            };
+            let result = match result {
+                Ok(result) => result,
+                Err(error) if certainty == McpEffectCertainty::Definite => {
+                    if matches!(error, McpError::HttpStatus { status: 403 }) {
+                        self.wire.revoke_credential().await;
+                    }
+                    return remote_mrtr_failure(
+                        &self.server_name,
+                        name,
+                        observed_dispatch(&dispatched_at),
+                        error,
+                    );
+                }
+                Err(error) => {
+                    return remote_mrtr_unknown_or_predispatch(
+                        &self.server_name,
+                        name,
+                        observed_dispatch(&dispatched_at),
+                        error,
+                    );
+                }
+            };
+            match state.inspect(&result) {
+                Ok(crate::mrtr::MrtrResult::Complete) => {
+                    let Some(dispatched_at) = observed_dispatch(&dispatched_at) else {
+                        return McpToolOutcome::FailedDefinite {
+                            error: McpError::Protocol(
+                                "tools/call completed without dispatch evidence".into(),
+                            ),
+                            evidence: None,
+                        };
+                    };
+                    let evidence = remote_mrtr_evidence(&self.server_name, name, dispatched_at);
+                    let output =
+                        match render_tool_content(&result, self.result_policy, &self.spill_store) {
+                            Ok(output) => output,
+                            Err(error) => {
+                                return McpToolOutcome::FailedDefinite {
+                                    error,
+                                    evidence: Some(evidence),
+                                };
+                            }
+                        };
+                    if let Err(error) = self.cleanup_spills(crate::McpSpillCleanup::ToolEnd) {
+                        return McpToolOutcome::FailedDefinite {
+                            error,
+                            evidence: Some(evidence),
+                        };
+                    }
+                    return McpToolOutcome::Completed {
+                        content: output,
+                        is_error: result.get("isError").and_then(Value::as_bool).unwrap_or(
+                            iteron_tunables::param_bool(
+                                "mcp.remote.tool_result_is_error_default",
+                                TOOL_RESULT_IS_ERROR_DEFAULT,
+                            ),
+                        ),
+                        evidence,
+                    };
+                }
+                Ok(crate::mrtr::MrtrResult::InputRequired {
+                    request_state,
+                    requests,
+                }) => {
+                    let decision = if requests.is_empty() {
+                        crate::McpInputDecision::Approve(Vec::new())
+                    } else {
+                        let Some(remaining) =
+                            self.deadlines.tool_call().checked_sub(started.elapsed())
+                        else {
+                            return remote_mrtr_failure(
+                                &self.server_name,
+                                name,
+                                observed_dispatch(&dispatched_at),
+                                McpError::Deadline {
+                                    operation: "MCP MRTR total interaction".into(),
+                                },
+                            );
+                        };
+                        match tokio::time::timeout(
+                            remaining,
+                            handler.request(
+                                &self.server_name,
+                                name,
+                                request_state.as_deref(),
+                                requests.clone(),
+                            ),
+                        )
+                        .await
+                        {
+                            Ok(Ok(decision)) => decision,
+                            Ok(Err(error)) => {
+                                return remote_mrtr_failure(
+                                    &self.server_name,
+                                    name,
+                                    observed_dispatch(&dispatched_at),
+                                    error,
+                                );
+                            }
+                            Err(_) => {
+                                return remote_mrtr_failure(
+                                    &self.server_name,
+                                    name,
+                                    observed_dispatch(&dispatched_at),
+                                    McpError::Deadline {
+                                        operation: "MCP MRTR user input".into(),
+                                    },
+                                );
+                            }
+                        }
+                    };
+                    let continuation = match state.responses(request_state, &requests, decision) {
+                        Ok(continuation) => continuation,
+                        Err(error) => {
+                            return remote_mrtr_failure(
+                                &self.server_name,
+                                name,
+                                observed_dispatch(&dispatched_at),
+                                error,
+                            );
+                        }
+                    };
+                    let object = params.as_object_mut().expect("tool params are an object");
+                    object.remove("requestState");
+                    object.remove("inputResponses");
+                    if let Some(request_state) = continuation.request_state {
+                        object.insert("requestState".into(), Value::String(request_state));
+                    }
+                    if let Some(input_responses) = continuation.input_responses {
+                        object.insert("inputResponses".into(), input_responses);
+                    }
+                }
+                Err(error) => {
+                    return remote_mrtr_failure(
+                        &self.server_name,
+                        name,
+                        observed_dispatch(&dispatched_at),
+                        error,
+                    );
+                }
+            }
+        }
+    }
+
+    fn params(&self, method: &str, params: Value) -> Result<Value, McpError> {
+        if self.protocol_mode.is_stateless() {
+            modern_params(
+                params,
+                self.advertises_elicitation && method == "tools/call",
+            )
+        } else {
+            Ok(params)
+        }
+    }
+
+    async fn request(&self, method: &str, params: Value) -> Result<Value, McpError> {
+        let mut dispatch_observer = None;
+        self.request_with_certainty(method, params, &mut dispatch_observer, true)
+            .await
+            .0
+    }
+
+    async fn request_with_certainty(
+        &self,
+        method: &str,
+        params: Value,
+        dispatch_observer: &mut Option<Box<dyn FnOnce() + Send>>,
+        allow_cache: bool,
+    ) -> (Result<Value, McpError>, McpEffectCertainty) {
+        self.request_with_certainty_tracking(method, params, dispatch_observer, None, allow_cache)
+            .await
+    }
+
+    async fn request_with_certainty_tracking(
+        &self,
+        method: &str,
+        params: Value,
+        dispatch_observer: &mut Option<Box<dyn FnOnce() + Send>>,
+        dispatch_pending: Option<&Arc<McpDispatchProgress>>,
+        allow_cache: bool,
+    ) -> (Result<Value, McpError>, McpEffectCertainty) {
+        if allow_cache
+            && self.protocol_mode.is_stateless()
+            && method.ends_with("/list")
+            && let Some(cached) = self.list_cache.get(method, &params)
+        {
+            return (Ok(cached), McpEffectCertainty::Definite);
+        }
+        let wire_params = match self.params(method, params.clone()) {
+            Ok(params) => params,
+            Err(error) => return (Err(error), McpEffectCertainty::Definite),
+        };
+        let first = self
+            .send_request_with_auth_retry_and_certainty(
+                method,
+                wire_params,
+                dispatch_observer,
+                dispatch_pending,
+            )
+            .await;
+        let first = match first {
+            (Err(McpError::HttpStatus { status }), _)
+                if method.ends_with("/list")
+                    && crate::http::classify(status, false).is_retryable() =>
+            {
+                let retry_params = match self.params(method, params.clone()) {
+                    Ok(params) => params,
+                    Err(error) => return (Err(error), McpEffectCertainty::Definite),
+                };
+                self.send_request_with_auth_retry_and_certainty(
+                    method,
+                    retry_params,
+                    dispatch_observer,
+                    dispatch_pending,
+                )
+                .await
+            }
+            result => result,
+        };
+        let result = match first {
+            (Err(McpError::SessionExpired), _)
+                if !self.protocol_mode.is_stateless() && method.ends_with("/list") =>
+            {
+                if let Err(error) = self.reinitialize_stateful().await {
+                    return (Err(error), McpEffectCertainty::Unknown);
+                }
+                let retry_params = match self.params(method, params.clone()) {
+                    Ok(params) => params,
+                    Err(error) => return (Err(error), McpEffectCertainty::Definite),
+                };
+                self.send_request_with_auth_retry_and_certainty(
+                    method,
+                    retry_params,
+                    dispatch_observer,
+                    dispatch_pending,
+                )
+                .await
+            }
+            result => result,
+        };
+        let result = if is_extension_method(method) {
+            (result.0.and_then(reject_extension_mrtr), result.1)
+        } else {
+            result
+        };
+        if let Ok(value) = &result.0
+            && self.protocol_mode.is_stateless()
+            && method.ends_with("/list")
+            && let Err(error) = self.list_cache.put(method, &params, value)
+        {
+            return (Err(error), McpEffectCertainty::Definite);
+        }
+        result
+    }
+
+    async fn send_request_with_auth_retry(
+        &self,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, McpError> {
+        let mut dispatch_observer = None;
+        self.send_request_with_auth_retry_and_certainty(
+            method,
+            params,
+            &mut dispatch_observer,
+            None,
+        )
+        .await
+        .0
+    }
+
+    async fn send_request_with_auth_retry_and_certainty(
+        &self,
+        method: &str,
+        params: Value,
+        dispatch_observer: &mut Option<Box<dyn FnOnce() + Send>>,
+        dispatch_pending: Option<&Arc<McpDispatchProgress>>,
+    ) -> (Result<Value, McpError>, McpEffectCertainty) {
+        let observer = tracked_dispatch_observer(dispatch_observer.take(), dispatch_pending);
+        let first = self
+            .wire
+            .call_with_certainty_and_dispatch_observer(method, params.clone(), observer)
+            .await;
+        settle_definite_dispatch(dispatch_pending, first.1);
+        match first {
+            (Err(error @ McpError::HttpStatus { status: 401 }), _) if self.oauth.is_some() => {
+                if self.refresh_after_rejection().await.is_ok() {
+                    let observer = tracked_dispatch_observer(None, dispatch_pending);
+                    let retry = self
+                        .wire
+                        .call_with_certainty_and_dispatch_observer(method, params, observer)
+                        .await;
+                    settle_definite_dispatch(dispatch_pending, retry.1);
+                    retry
+                } else {
+                    (Err(error), McpEffectCertainty::Definite)
+                }
+            }
+            result => result,
+        }
+    }
+
+    async fn reinitialize_stateful(&self) -> Result<(), McpError> {
+        self.wire.clear_session().await;
+        self.wire
+            .set_protocol_version(STATEFUL_REQUESTED_PROTOCOL_VERSION)
+            .await;
+        let initialize = tokio::time::timeout(
+            self.deadlines.startup(),
+            self.wire.send_request(
+                "initialize",
+                json!({
+                    "protocolVersion": STATEFUL_REQUESTED_PROTOCOL_VERSION,
+                    "capabilities": if self.advertises_elicitation {
+                        json!({"elicitation": {"form": {}}})
+                    } else {
+                        json!({})
+                    },
+                    "clientInfo": {"name": "iteron", "version": env!("CARGO_PKG_VERSION")}
+                }),
+            ),
+        )
+        .await
+        .map_err(|_| McpError::Deadline {
+            operation: "MCP HTTP session re-initialize".into(),
+        })??;
+        let version = negotiate_initialize_result(&initialize)?;
+        if version != self.negotiated_protocol_version
+            || capabilities_from(&initialize) != self.capabilities
+        {
+            return Err(McpError::Protocol(
+                "MCP server contract changed while replacing an expired session".into(),
+            ));
+        }
+        self.wire.set_protocol_version(version).await;
+        tokio::time::timeout(
+            self.deadlines.startup(),
+            self.wire
+                .send_notification("notifications/initialized", json!({})),
+        )
+        .await
+        .map_err(|_| McpError::Deadline {
+            operation: "MCP HTTP session re-initialized notification".into(),
+        })??;
+        Ok(())
+    }
+
     /// Invoke the standard resource/prompt surface under the same response ceilings as tools.
     pub async fn call_extension(&self, method: &str, params: Value) -> Result<Value, McpError> {
+        let mut dispatch_observer = None;
+        self.call_extension_with_certainty(method, params, &mut dispatch_observer, true)
+            .await
+            .0
+    }
+
+    async fn call_extension_with_certainty(
+        &self,
+        method: &str,
+        params: Value,
+        dispatch_observer: &mut Option<Box<dyn FnOnce() + Send>>,
+        allow_cache: bool,
+    ) -> (Result<Value, McpError>, McpEffectCertainty) {
         match method {
             "resources/list" | "resources/read" if self.capabilities.resources => {}
             "prompts/list" | "prompts/get" if self.capabilities.prompts => {}
-            _ => return Err(McpError::Protocol("MCP capability is not declared".into())),
+            _ => {
+                return (
+                    Err(McpError::Protocol("MCP capability is not declared".into())),
+                    McpEffectCertainty::Definite,
+                );
+            }
         }
-        self.refresh_if_needed().await?;
-        self.wire.send_request(method, params).await
+        if let Err(error) = self.refresh_if_needed().await {
+            return (Err(error), McpEffectCertainty::Definite);
+        }
+        if matches!(method, "resources/list" | "prompts/list") {
+            let mut pages = match crate::pagination::ExtensionPagination::new(method) {
+                Ok(pages) => pages,
+                Err(error) => return (Err(error), McpEffectCertainty::Definite),
+            };
+            let mut request = params;
+            loop {
+                let (result, certainty) = self
+                    .request_with_certainty(method, request, dispatch_observer, allow_cache)
+                    .await;
+                let result = match result {
+                    Ok(result) => match reject_extension_mrtr(result) {
+                        Ok(result) => result,
+                        Err(error) => return (Err(error), certainty),
+                    },
+                    Err(error) => return (Err(error), certainty),
+                };
+                let next = match pages.accept(&result) {
+                    Ok(next) => next,
+                    Err(error) => return (Err(error), McpEffectCertainty::Definite),
+                };
+                let Some(next) = next else {
+                    return (Ok(pages.finish()), McpEffectCertainty::Definite);
+                };
+                request = next;
+            }
+        }
+        let (result, certainty) = self
+            .request_with_certainty(method, params, dispatch_observer, allow_cache)
+            .await;
+        (result.and_then(reject_extension_mrtr), certainty)
     }
 
     pub async fn call_extension_rendered(
@@ -400,16 +1269,22 @@ impl McpRemoteClient {
                 };
             }
         }
-        if let Err(error) = self.refresh_if_needed().await {
-            return McpToolOutcome::FailedDefinite {
-                error,
-                evidence: None,
-            };
-        }
-        on_dispatch();
         let started = Instant::now();
-        let (result, certainty) = self.wire.call_with_certainty(method, params).await;
-        let elapsed = u64::try_from(started.elapsed().as_millis())
+        let dispatched_at = Arc::new(std::sync::Mutex::new(None));
+        let observed_at = dispatched_at.clone();
+        let mut dispatch_observer: Option<Box<dyn FnOnce() + Send>> = Some(Box::new(move || {
+            *observed_at
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Instant::now());
+            on_dispatch();
+        }));
+        let (result, certainty) = self
+            .call_extension_with_certainty(method, params, &mut dispatch_observer, false)
+            .await;
+        let dispatched_at = *dispatched_at
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let elapsed = u64::try_from(dispatched_at.unwrap_or(started).elapsed().as_millis())
             .unwrap_or(u64::MAX)
             .max(1);
         let evidence = McpToolCallEvidence::new(
@@ -419,13 +1294,21 @@ impl McpRemoteClient {
         );
         let result = match result {
             Ok(result) => result,
-            Err(error) if certainty == McpEffectCertainty::Definite => {
+            Err(error) if dispatched_at.is_none() => {
+                return McpToolOutcome::FailedDefinite {
+                    error,
+                    evidence: None,
+                };
+            }
+            Err(error) if certainty == McpEffectCertainty::Unknown => {
+                return McpToolOutcome::Unknown { error, evidence };
+            }
+            Err(error) => {
                 return McpToolOutcome::FailedDefinite {
                     error,
                     evidence: Some(evidence),
                 };
             }
-            Err(error) => return McpToolOutcome::Unknown { error, evidence },
         };
         match render_extension_content(&result, self.result_policy, &self.spill_store) {
             Ok(content) => match self.cleanup_spills(crate::McpSpillCleanup::ToolEnd) {
@@ -483,6 +1366,95 @@ impl McpRemoteClient {
     }
 }
 
+fn remote_mrtr_evidence(server: &str, name: &str, started: Instant) -> McpToolCallEvidence {
+    let elapsed = u64::try_from(started.elapsed().as_millis())
+        .unwrap_or(u64::MAX)
+        .max(1);
+    McpToolCallEvidence::new(
+        server,
+        name,
+        NonZeroU64::new(elapsed).expect("elapsed was clamped to at least one"),
+    )
+}
+
+fn tracked_dispatch_observer(
+    observer: Option<Box<dyn FnOnce() + Send>>,
+    dispatch_pending: Option<&Arc<McpDispatchProgress>>,
+) -> Option<Box<dyn FnOnce() + Send>> {
+    let dispatch_pending = dispatch_pending.cloned();
+    if observer.is_none() && dispatch_pending.is_none() {
+        return None;
+    }
+    Some(Box::new(move || {
+        if let Some(dispatch_pending) = dispatch_pending {
+            dispatch_pending.mark_pending();
+        }
+        if let Some(observer) = observer {
+            observer();
+        }
+    }))
+}
+
+fn settle_definite_dispatch(
+    dispatch_pending: Option<&Arc<McpDispatchProgress>>,
+    certainty: McpEffectCertainty,
+) {
+    if certainty == McpEffectCertainty::Definite
+        && let Some(dispatch_pending) = dispatch_pending
+    {
+        dispatch_pending.settle();
+    }
+}
+
+fn observed_dispatch(dispatched_at: &Arc<std::sync::Mutex<Option<Instant>>>) -> Option<Instant> {
+    *dispatched_at
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn remote_mrtr_failure(
+    server: &str,
+    name: &str,
+    dispatched_at: Option<Instant>,
+    error: McpError,
+) -> McpToolOutcome {
+    McpToolOutcome::FailedDefinite {
+        error,
+        evidence: dispatched_at.map(|started| remote_mrtr_evidence(server, name, started)),
+    }
+}
+
+fn remote_mrtr_unknown_or_predispatch(
+    server: &str,
+    name: &str,
+    dispatched_at: Option<Instant>,
+    error: McpError,
+) -> McpToolOutcome {
+    match dispatched_at {
+        Some(started) => McpToolOutcome::Unknown {
+            error,
+            evidence: remote_mrtr_evidence(server, name, started),
+        },
+        None => McpToolOutcome::FailedDefinite {
+            error,
+            evidence: None,
+        },
+    }
+}
+
+fn remote_mrtr_timeout(
+    server: &str,
+    name: &str,
+    dispatched_at: Option<Instant>,
+    dispatch_pending: bool,
+    error: McpError,
+) -> McpToolOutcome {
+    if dispatch_pending {
+        return remote_mrtr_unknown_or_predispatch(server, name, dispatched_at, error);
+    }
+    remote_mrtr_failure(server, name, dispatched_at, error)
+}
+
 fn capabilities_from(initialize: &Value) -> McpServerCapabilities {
     let capabilities = initialize.get("capabilities").and_then(Value::as_object);
     McpServerCapabilities {
@@ -502,9 +1474,28 @@ fn unix_now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol_version::STATEFUL_REQUESTED_PROTOCOL_VERSION;
     use std::sync::{Arc as StdArc, Mutex as StdMutex};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
+
+    async fn connect_2026_advertising_elicitation(endpoint: McpHttpEndpoint) -> McpRemoteClient {
+        let elicitation = crate::elicitation_handler_from_mrtr(StdArc::new(RejectInputs));
+        McpRemoteClient::connect_with_elicitation_and_policies(
+            endpoint,
+            "fixture".into(),
+            None,
+            McpHttpHeaderPolicy::default(),
+            Vec::new(),
+            None,
+            Some(elicitation),
+            crate::McpDeadlinePolicy::default().http(),
+            crate::McpResultPolicy::default(),
+            McpProtocolMode::Stateless2026,
+        )
+        .await
+        .unwrap()
+    }
 
     #[test]
     fn capability_projection_is_exact_and_unknown_fields_grant_nothing() {
@@ -519,6 +1510,70 @@ mod tests {
                 prompts: false,
             }
         );
+    }
+
+    #[tokio::test]
+    async fn extension_refresh_failure_is_definite_and_never_marks_dispatch() {
+        let unavailable = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let unavailable_address = unavailable.local_addr().unwrap();
+        drop(unavailable);
+        let deadlines = crate::McpDeadlinePolicy::default().http();
+        let endpoint =
+            McpHttpEndpoint::parse(&format!("http://{unavailable_address}/mcp")).unwrap();
+        let wire = McpHttpWire::new(
+            endpoint,
+            ReqwestMcpExchange::with_deadlines(deadlines).unwrap(),
+            Arc::new(unix_now),
+            "refresh-failure".into(),
+        )
+        .unwrap()
+        .with_credential(crate::token::Token::new("expired", 0));
+        let grant = crate::oauth::OAuthRefreshGrant::new(
+            crate::oauth::OAuthEndpointBinding::new(
+                McpHttpEndpoint::parse(&format!("http://{unavailable_address}/refresh")).unwrap(),
+                None,
+                crate::oauth::OAuthNetworkZone::Loopback,
+            ),
+            "refresh".into(),
+            Some("client".into()),
+            None,
+            crate::oauth::TokenEndpointAuthMethod::None,
+            ["read".into()],
+        )
+        .unwrap();
+        let client = McpRemoteClient {
+            wire: Arc::new(wire),
+            negotiated_protocol_version: crate::MODERN_PROTOCOL_VERSION.into(),
+            capabilities: McpServerCapabilities {
+                resources: true,
+                ..McpServerCapabilities::default()
+            },
+            protocol_mode: McpProtocolMode::Stateless2026,
+            list_cache: crate::cache::McpListCache::new(),
+            advertises_elicitation: false,
+            oauth: Some(Mutex::new(OAuthState {
+                client: crate::oauth::OAuthClient::new().unwrap(),
+                grant,
+            })),
+            authentication_configured: true,
+            oauth_policy: crate::oauth::McpOAuthLifecyclePolicy::for_binding(true, true, false),
+            deadlines,
+            result_policy: crate::McpResultPolicy::default(),
+            spill_store: crate::result_policy::McpSpillStore::create().unwrap(),
+            server_name: "refresh-failure".into(),
+        };
+        let dispatched = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = dispatched.clone();
+        let outcome = client
+            .call_extension_outcome_observed("resources/read", json!({}), move || {
+                observed.store(true, std::sync::atomic::Ordering::SeqCst);
+            })
+            .await;
+        assert!(matches!(
+            outcome,
+            McpToolOutcome::FailedDefinite { evidence: None, .. }
+        ));
+        assert!(!dispatched.load(std::sync::atomic::Ordering::SeqCst));
     }
 
     async fn read_request(socket: &mut TcpStream) -> String {
@@ -579,7 +1634,7 @@ mod tests {
                 }
                 let result = match method {
                     "initialize" => json!({
-                        "protocolVersion": REQUESTED_PROTOCOL_VERSION,
+                        "protocolVersion": STATEFUL_REQUESTED_PROTOCOL_VERSION,
                         "capabilities": {"tools": {}, "resources": {}, "prompts": {}},
                         "serverInfo": {"name": "fixture", "version": "1.0.0"}
                     }),
@@ -617,6 +1672,793 @@ mod tests {
         (format!("http://{address}/mcp"), seen, task)
     }
 
+    async fn expiring_session_server() -> (
+        String,
+        StdArc<StdMutex<Vec<String>>>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let seen = StdArc::new(StdMutex::new(Vec::new()));
+        let recorded = seen.clone();
+        let task = tokio::spawn(async move {
+            for index in 0..6 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let request = read_request(&mut socket).await;
+                let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
+                let message: Value = serde_json::from_str(body).unwrap();
+                recorded.lock().unwrap().push(request);
+                if index == 2 {
+                    socket
+                        .write_all(
+                            b"HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+                        )
+                        .await
+                        .unwrap();
+                    continue;
+                }
+                let Some(id) = message.get("id") else {
+                    socket
+                        .write_all(
+                            b"HTTP/1.1 202 Accepted\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+                        )
+                        .await
+                        .unwrap();
+                    continue;
+                };
+                let method = message.get("method").and_then(Value::as_str).unwrap();
+                let result = if method == "initialize" {
+                    json!({
+                        "protocolVersion": STATEFUL_REQUESTED_PROTOCOL_VERSION,
+                        "capabilities": {"tools": {}},
+                        "serverInfo": {"name": "fixture", "version": "1.0.0"}
+                    })
+                } else {
+                    assert_eq!(method, "tools/list");
+                    json!({"tools": [{
+                        "name": "read_public",
+                        "description": "read public data",
+                        "inputSchema": {"type": "object"}
+                    }]})
+                };
+                let frame = json!({"jsonrpc":"2.0", "id":id, "result":result}).to_string();
+                let session = match index {
+                    0 => "mcp-session-id: session-old\r\n",
+                    3 => "mcp-session-id: session-new\r\n",
+                    _ => "",
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n{session}content-length: {}\r\nconnection: close\r\n\r\n{frame}",
+                    frame.len()
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        (format!("http://{address}/mcp"), seen, task)
+    }
+
+    async fn unauthorized_then_refresh_server() -> (
+        String,
+        StdArc<StdMutex<Vec<String>>>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let seen = StdArc::new(StdMutex::new(Vec::new()));
+        let recorded = seen.clone();
+        let task = tokio::spawn(async move {
+            for index in 0..4 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let request = read_request(&mut socket).await;
+                recorded.lock().unwrap().push(request.clone());
+                let response = match index {
+                    0 => "HTTP/1.1 401 Unauthorized\r\ncontent-length: 0\r\nconnection: close\r\n\r\n".to_owned(),
+                    1 => {
+                        assert!(request.starts_with("POST /refresh "));
+                        let body = r#"{"access_token":"access-next","expires_in":3600,"token_type":"Bearer","scope":"mcp"}"#;
+                        format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len())
+                    }
+                    2 => {
+                        assert!(
+                            request
+                                .to_ascii_lowercase()
+                                .contains("authorization: bearer access-next")
+                        );
+                        let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
+                        let message: Value = serde_json::from_str(body).unwrap();
+                        let id = message.get("id").unwrap();
+                        let frame = json!({
+                            "jsonrpc":"2.0",
+                            "id":id,
+                            "result":{
+                                "protocolVersion":STATEFUL_REQUESTED_PROTOCOL_VERSION,
+                                "capabilities":{"tools":{}},
+                                "serverInfo":{"name":"fixture","version":"1"}
+                            }
+                        }).to_string();
+                        format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nmcp-session-id: refreshed\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{frame}", frame.len())
+                    }
+                    _ => "HTTP/1.1 202 Accepted\r\ncontent-length: 0\r\nconnection: close\r\n\r\n".to_owned(),
+                };
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        (format!("http://{address}"), seen, task)
+    }
+
+    struct RejectInputs;
+
+    impl crate::McpMrtrHandler for RejectInputs {
+        fn request<'a>(
+            &'a self,
+            _server_name: &'a str,
+            _tool_name: &'a str,
+            _request_state: Option<&'a str>,
+            _requests: Vec<crate::McpInputRequest>,
+        ) -> crate::McpFuture<'a, crate::McpInputDecision> {
+            Box::pin(async { Ok(crate::McpInputDecision::Reject) })
+        }
+    }
+
+    struct ApproveInputs;
+
+    impl crate::McpMrtrHandler for ApproveInputs {
+        fn request<'a>(
+            &'a self,
+            server_name: &'a str,
+            tool_name: &'a str,
+            request_state: Option<&'a str>,
+            requests: Vec<crate::McpInputRequest>,
+        ) -> crate::McpFuture<'a, crate::McpInputDecision> {
+            Box::pin(async move {
+                assert_eq!(server_name, "fixture");
+                assert_eq!(tool_name, "interactive");
+                assert_eq!(request_state, Some("approval-1"));
+                assert_eq!(requests.len(), 1);
+                Ok(crate::McpInputDecision::Approve(vec![(
+                    requests[0].id().to_owned(),
+                    json!({"confirm": true}),
+                )]))
+            })
+        }
+    }
+
+    struct OversizedInputs;
+
+    impl crate::McpMrtrHandler for OversizedInputs {
+        fn request<'a>(
+            &'a self,
+            _server_name: &'a str,
+            _tool_name: &'a str,
+            _request_state: Option<&'a str>,
+            requests: Vec<crate::McpInputRequest>,
+        ) -> crate::McpFuture<'a, crate::McpInputDecision> {
+            Box::pin(async move {
+                Ok(crate::McpInputDecision::Approve(vec![(
+                    requests[0].id().to_owned(),
+                    json!({"value": "x".repeat(5_000)}),
+                )]))
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn oversized_remote_tool_requests_are_definite_before_dispatch() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let request = read_request(&mut socket).await;
+            let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
+            let message: Value = serde_json::from_str(body).unwrap();
+            assert_eq!(message["method"], "server/discover");
+            let frame = json!({
+                "jsonrpc": "2.0",
+                "id": message["id"],
+                "result": {
+                    "resultType": "complete",
+                    "supportedVersions": [crate::MODERN_PROTOCOL_VERSION],
+                    "capabilities": {"tools": {}},
+                    "serverInfo": {"name": "fixture", "version": "1"}
+                }
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{frame}",
+                frame.len()
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+            tokio::time::timeout(std::time::Duration::from_millis(200), listener.accept())
+                .await
+                .is_ok()
+        });
+        let client = connect_2026_advertising_elicitation(
+            McpHttpEndpoint::parse(&format!("http://{address}/mcp")).unwrap(),
+        )
+        .await;
+        let dispatches = StdArc::new(std::sync::atomic::AtomicUsize::new(0));
+
+        let observed = dispatches.clone();
+        let ordinary = client
+            .call_tool_outcome_observed(
+                "oversized",
+                json!({"payload": "x".repeat(crate::MAX_FRAME_BYTES)}),
+                move || {
+                    observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                },
+            )
+            .await;
+        assert!(matches!(
+            ordinary,
+            McpToolOutcome::FailedDefinite {
+                error: McpError::FrameTooLarge { .. },
+                evidence: None,
+            }
+        ));
+
+        let observed = dispatches.clone();
+        let mrtr = client
+            .call_tool_with_mrtr_outcome_observed(
+                "oversized",
+                json!({"payload": "x".repeat(crate::MAX_FRAME_BYTES)}),
+                &RejectInputs,
+                move || {
+                    observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                },
+            )
+            .await;
+        assert!(matches!(
+            mrtr,
+            McpToolOutcome::FailedDefinite {
+                error: McpError::FrameTooLarge { .. },
+                evidence: None,
+            }
+        ));
+        assert_eq!(dispatches.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(
+            !server.await.unwrap(),
+            "an oversized request reached the server"
+        );
+    }
+
+    #[tokio::test]
+    async fn extension_requests_do_not_claim_or_accept_mrtr() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let extension_params = StdArc::new(StdMutex::new(None));
+        let recorded = extension_params.clone();
+        let server = tokio::spawn(async move {
+            for index in 0..2 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let request = read_request(&mut socket).await;
+                let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
+                let message: Value = serde_json::from_str(body).unwrap();
+                let result = if index == 0 {
+                    assert_eq!(message["method"], "server/discover");
+                    json!({
+                        "resultType": "complete",
+                        "supportedVersions": [crate::MODERN_PROTOCOL_VERSION],
+                        "capabilities": {"tools": {}, "resources": {}},
+                        "serverInfo": {"name": "fixture", "version": "1"}
+                    })
+                } else {
+                    assert_eq!(message["method"], "resources/read");
+                    *recorded.lock().unwrap() = Some(message["params"].clone());
+                    json!({
+                        "resultType": "input_required",
+                        "requestState": "extension-input",
+                        "inputRequests": {}
+                    })
+                };
+                let frame =
+                    json!({"jsonrpc":"2.0", "id":message["id"], "result":result}).to_string();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{frame}",
+                    frame.len()
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let client = connect_2026_advertising_elicitation(
+            McpHttpEndpoint::parse(&format!("http://{address}/mcp")).unwrap(),
+        )
+        .await;
+        let dispatches = StdArc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = dispatches.clone();
+        let outcome = client
+            .call_extension_outcome_observed(
+                "resources/read",
+                json!({"uri": "plantcore://guide"}),
+                move || {
+                    observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                },
+            )
+            .await;
+
+        assert!(matches!(
+            outcome,
+            McpToolOutcome::FailedDefinite {
+                error: McpError::Protocol(message),
+                evidence: Some(_),
+            } if message.contains("only supported for tools/call")
+        ));
+        assert_eq!(dispatches.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let params = extension_params.lock().unwrap().take().unwrap();
+        assert!(
+            params["_meta"]["io.modelcontextprotocol/clientCapabilities"]
+                .get("elicitation")
+                .is_none()
+        );
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn extension_input_required_is_not_cached() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for index in 0..4 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let request = read_request(&mut socket).await;
+                let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
+                let message: Value = serde_json::from_str(body).unwrap();
+                let result = match index {
+                    0 => json!({
+                        "resultType": "complete",
+                        "supportedVersions": [crate::MODERN_PROTOCOL_VERSION],
+                        "capabilities": {"resources": {}},
+                        "serverInfo": {"name": "fixture", "version": "1"}
+                    }),
+                    1 => {
+                        assert_eq!(message["method"], "resources/list");
+                        assert!(message["params"]["_meta"]
+                            ["io.modelcontextprotocol/clientCapabilities"]
+                            .get("elicitation")
+                            .is_none());
+                        json!({
+                            "resultType": "input_required",
+                            "requestState": "list-input",
+                            "inputRequests": {},
+                            "ttlMs": 1000,
+                            "cacheScope": "private"
+                        })
+                    }
+                    2 => {
+                        assert_eq!(message["method"], "resources/list");
+                        json!({"resources": [], "ttlMs": 1000, "cacheScope": "private"})
+                    }
+                    _ => {
+                        assert_eq!(message["method"], "resources/list");
+                        json!({"resources": []})
+                    }
+                };
+                let frame =
+                    json!({"jsonrpc":"2.0", "id":message["id"], "result":result}).to_string();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{frame}",
+                    frame.len()
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let client = connect_2026_advertising_elicitation(
+            McpHttpEndpoint::parse(&format!("http://{address}/mcp")).unwrap(),
+        )
+        .await;
+
+        assert!(matches!(
+            client.call_extension("resources/list", json!({})).await,
+            Err(McpError::Protocol(message)) if message.contains("only supported for tools/call")
+        ));
+        assert_eq!(
+            client
+                .call_extension("resources/list", json!({}))
+                .await
+                .unwrap(),
+            json!({"resources": []})
+        );
+        let dispatches = StdArc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = dispatches.clone();
+        assert!(matches!(
+            client
+                .call_extension_outcome_observed("resources/list", json!({}), move || {
+                    observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                })
+                .await,
+            McpToolOutcome::Completed { .. }
+        ));
+        assert_eq!(dispatches.load(std::sync::atomic::Ordering::SeqCst), 1);
+        tokio::time::timeout(std::time::Duration::from_secs(1), server)
+            .await
+            .expect("observed extension did not reach the HTTP server")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn refresh_timeout_after_authoritative_401_is_definite() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let requests = StdArc::new(std::sync::atomic::AtomicUsize::new(0));
+        let recorded = requests.clone();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let request = read_request(&mut socket).await;
+            assert!(request.starts_with("POST /mcp "));
+            recorded.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            socket
+                .write_all(
+                    b"HTTP/1.1 401 Unauthorized\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let request = read_request(&mut socket).await;
+            assert!(request.starts_with("POST /refresh "));
+            recorded.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            drop(socket);
+        });
+        let deadlines = crate::McpTransportDeadlines::new(200, 150).unwrap();
+        let endpoint = McpHttpEndpoint::parse(&format!("http://{address}/mcp")).unwrap();
+        let wire = McpHttpWire::new(
+            endpoint,
+            ReqwestMcpExchange::with_deadlines(deadlines).unwrap(),
+            Arc::new(unix_now),
+            "refresh-timeout".into(),
+        )
+        .unwrap()
+        .with_credential(crate::token::Token::new("access-stale", u64::MAX));
+        wire.set_protocol_version(crate::MODERN_PROTOCOL_VERSION)
+            .await;
+        let grant = crate::oauth::OAuthRefreshGrant::new(
+            crate::oauth::OAuthEndpointBinding::new(
+                McpHttpEndpoint::parse(&format!("http://{address}/refresh")).unwrap(),
+                None,
+                crate::oauth::OAuthNetworkZone::Loopback,
+            ),
+            "refresh".into(),
+            Some("client".into()),
+            None,
+            crate::oauth::TokenEndpointAuthMethod::None,
+            ["mcp".into()],
+        )
+        .unwrap();
+        let client = McpRemoteClient {
+            wire: Arc::new(wire),
+            negotiated_protocol_version: crate::MODERN_PROTOCOL_VERSION.into(),
+            capabilities: McpServerCapabilities {
+                tools: true,
+                ..McpServerCapabilities::default()
+            },
+            protocol_mode: McpProtocolMode::Stateless2026,
+            list_cache: crate::cache::McpListCache::new(),
+            advertises_elicitation: true,
+            oauth: Some(Mutex::new(OAuthState {
+                client: crate::oauth::OAuthClient::new().unwrap(),
+                grant,
+            })),
+            authentication_configured: true,
+            oauth_policy: crate::oauth::McpOAuthLifecyclePolicy::for_binding(true, true, false),
+            deadlines,
+            result_policy: crate::McpResultPolicy::default(),
+            spill_store: crate::result_policy::McpSpillStore::create().unwrap(),
+            server_name: "fixture".into(),
+        };
+        let dispatches = StdArc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = dispatches.clone();
+        let outcome = client
+            .call_tool_with_mrtr_outcome_observed(
+                "interactive",
+                json!({}),
+                &RejectInputs,
+                move || {
+                    observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                },
+            )
+            .await;
+
+        assert!(matches!(
+            outcome,
+            McpToolOutcome::FailedDefinite {
+                error: McpError::Deadline { .. },
+                evidence: Some(_),
+            }
+        ));
+        assert_eq!(dispatches.load(std::sync::atomic::Ordering::SeqCst), 1);
+        server.await.unwrap();
+        assert_eq!(requests.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn rejected_second_mrtr_round_does_not_mark_another_dispatch() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for index in 0..2 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let request = read_request(&mut socket).await;
+                let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
+                let message: Value = serde_json::from_str(body).unwrap();
+                let result = if index == 0 {
+                    json!({
+                        "resultType": "complete",
+                        "supportedVersions": [crate::MODERN_PROTOCOL_VERSION],
+                        "capabilities": {"tools": {}},
+                        "serverInfo": {"name": "fixture", "version": "1"}
+                    })
+                } else {
+                    json!({
+                        "resultType": "input_required",
+                        "requestState": "approval-1",
+                        "inputRequests": {"value": {
+                            "method": "elicitation/create",
+                            "params": {
+                                "message": "Value?",
+                                "requestedSchema": {
+                                    "type": "object",
+                                    "properties": {"value": {"type": "string"}},
+                                    "required": ["value"]
+                                }
+                            }
+                        }}
+                    })
+                };
+                let frame =
+                    json!({"jsonrpc":"2.0", "id":message["id"], "result":result}).to_string();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{frame}",
+                    frame.len()
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+            tokio::time::timeout(std::time::Duration::from_millis(200), listener.accept())
+                .await
+                .is_ok()
+        });
+        let client = connect_2026_advertising_elicitation(
+            McpHttpEndpoint::parse(&format!("http://{address}/mcp")).unwrap(),
+        )
+        .await;
+        let dispatches = StdArc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = dispatches.clone();
+        let outcome = client
+            .call_tool_with_mrtr_outcome_observed(
+                "interactive",
+                json!({}),
+                &OversizedInputs,
+                move || {
+                    observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                },
+            )
+            .await;
+
+        assert!(matches!(
+            outcome,
+            McpToolOutcome::FailedDefinite {
+                error: McpError::Protocol(message),
+                evidence: Some(_),
+            } if message.contains("item bound")
+        ));
+        assert_eq!(dispatches.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(
+            !server.await.unwrap(),
+            "a second MRTR request was dispatched"
+        );
+    }
+
+    #[tokio::test]
+    async fn stateless_mrtr_cannot_start_when_elicitation_was_not_advertised() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let request = read_request(&mut socket).await;
+            let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
+            let message: Value = serde_json::from_str(body).unwrap();
+            assert_eq!(message["method"], "server/discover");
+            assert!(message["params"]["_meta"].get("capabilities").is_none());
+            let frame = json!({
+                "jsonrpc": "2.0",
+                "id": message["id"],
+                "result": {
+                    "resultType": "complete",
+                    "supportedVersions": [crate::MODERN_PROTOCOL_VERSION],
+                    "capabilities": {"tools": {}},
+                    "serverInfo": {"name": "fixture", "version": "1"}
+                }
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{frame}",
+                frame.len()
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+            tokio::time::timeout(std::time::Duration::from_millis(200), listener.accept())
+                .await
+                .is_ok()
+        });
+        let client = McpRemoteClient::connect_2026(
+            McpHttpEndpoint::parse(&format!("http://{address}/mcp")).unwrap(),
+            "fixture".into(),
+            None,
+            McpHttpHeaderPolicy::default(),
+            Vec::new(),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            client
+                .call_tool_with_mrtr("interactive", json!({}), &RejectInputs)
+                .await,
+            Err(McpError::Protocol(message))
+                if message.contains("advertised elicitation handler")
+        ));
+        assert!(!server.await.unwrap(), "MRTR request reached the server");
+    }
+
+    #[tokio::test]
+    async fn stateless_mrtr_requires_a_handler_and_rejection_never_replays_the_tool() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let seen = StdArc::new(StdMutex::new(Vec::new()));
+        let recorded = seen.clone();
+        let server = tokio::spawn(async move {
+            for _ in 0..3 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let request = read_request(&mut socket).await;
+                let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
+                let message: Value = serde_json::from_str(body).unwrap();
+                let id = message.get("id").unwrap();
+                let method = message.get("method").and_then(Value::as_str).unwrap();
+                recorded.lock().unwrap().push(request);
+                let result = match method {
+                    "server/discover" => json!({
+                        "resultType": "complete",
+                        "supportedVersions": [crate::MODERN_PROTOCOL_VERSION],
+                        "capabilities": {"tools": {}},
+                        "serverInfo": {"name": "fixture", "version": "1"}
+                    }),
+                    "tools/call" => json!({
+                        "resultType": "input_required",
+                        "requestState": "approval-1",
+                        "inputRequests": {"confirm": {
+                            "method": "elicitation/create",
+                            "params": {
+                                "message": "Continue?",
+                                "requestedSchema": {
+                                    "type":"object",
+                                    "properties":{"confirm":{"type":"boolean"}},
+                                    "required":["confirm"]
+                                }
+                            }
+                        }}
+                    }),
+                    other => panic!("unexpected method {other}"),
+                };
+                let frame = json!({"jsonrpc":"2.0", "id":id, "result":result}).to_string();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{frame}",
+                    frame.len()
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let client = connect_2026_advertising_elicitation(
+            McpHttpEndpoint::parse(&format!("http://{address}/mcp")).unwrap(),
+        )
+        .await;
+        assert!(matches!(
+            client
+                .call_tool_outcome_observed("interactive", json!({}), || {})
+                .await,
+            McpToolOutcome::FailedDefinite {
+                error: McpError::Protocol(_),
+                ..
+            }
+        ));
+        assert!(matches!(
+            client
+                .call_tool_with_mrtr("interactive", json!({}), &RejectInputs)
+                .await,
+            Err(McpError::Cancelled { .. })
+        ));
+        server.await.unwrap();
+        let requests = seen.lock().unwrap();
+        assert_eq!(requests.len(), 3);
+        assert!(!requests[1].contains("inputResponses"));
+        assert!(!requests[2].contains("inputResponses"));
+    }
+
+    #[tokio::test]
+    async fn stateless_http_mrtr_resumes_with_correlated_input_and_one_dispatch_mark() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for index in 0..3 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let request = read_request(&mut socket).await;
+                let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
+                let message: Value = serde_json::from_str(body).unwrap();
+                let id = message.get("id").unwrap();
+                let method = message.get("method").and_then(Value::as_str).unwrap();
+                let result = match (index, method) {
+                    (0, "server/discover") => json!({
+                        "resultType": "complete",
+                        "supportedVersions": [crate::MODERN_PROTOCOL_VERSION],
+                        "capabilities": {"tools": {}},
+                        "serverInfo": {"name": "fixture", "version": "1"}
+                    }),
+                    (1, "tools/call") => {
+                        assert!(message["params"].get("inputResponses").is_none());
+                        json!({
+                            "resultType": "input_required",
+                            "requestState": "approval-1",
+                            "inputRequests": {"confirm": {
+                                "method": "elicitation/create",
+                                "params": {
+                                    "message": "Continue?",
+                                    "requestedSchema": {
+                                        "type":"object",
+                                        "properties":{"confirm":{"type":"boolean"}},
+                                        "required":["confirm"]
+                                    }
+                                }
+                            }}
+                        })
+                    }
+                    (2, "tools/call") => {
+                        assert_eq!(message["params"]["requestState"], "approval-1");
+                        assert_eq!(
+                            message["params"]["inputResponses"]["confirm"]["action"],
+                            "accept"
+                        );
+                        assert_eq!(
+                            message["params"]["inputResponses"]["confirm"]["content"],
+                            json!({"confirm": true})
+                        );
+                        json!({
+                            "resultType": "complete",
+                            "content": [{"type":"text", "text":"continued"}]
+                        })
+                    }
+                    other => panic!("unexpected request {other:?}"),
+                };
+                let frame = json!({"jsonrpc":"2.0", "id":id, "result":result}).to_string();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{frame}",
+                    frame.len()
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let client = connect_2026_advertising_elicitation(
+            McpHttpEndpoint::parse(&format!("http://{address}/mcp")).unwrap(),
+        )
+        .await;
+        let dispatches = StdArc::new(StdMutex::new(0_u8));
+        let observed = dispatches.clone();
+        let outcome = client
+            .call_tool_with_mrtr_outcome_observed(
+                "interactive",
+                json!({}),
+                &ApproveInputs,
+                move || *observed.lock().unwrap() += 1,
+            )
+            .await;
+        assert!(matches!(
+            outcome,
+            McpToolOutcome::Completed {
+                content,
+                is_error: false,
+                ..
+            } if content == "continued\n"
+        ));
+        assert_eq!(*dispatches.lock().unwrap(), 1);
+        server.await.unwrap();
+    }
+
     #[tokio::test]
     async fn production_remote_client_completes_handshake_tools_resources_and_prompts() {
         let (url, seen, server) = full_server().await;
@@ -632,7 +2474,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             client.negotiated_protocol_version(),
-            REQUESTED_PROTOCOL_VERSION
+            STATEFUL_REQUESTED_PROTOCOL_VERSION
         );
         assert_eq!(
             client.capabilities(),
@@ -684,7 +2526,7 @@ mod tests {
 
         let requests = seen.lock().unwrap();
         assert!(requests[0].contains(&format!(
-            "\"protocolVersion\":\"{REQUESTED_PROTOCOL_VERSION}\""
+            "\"protocolVersion\":\"{STATEFUL_REQUESTED_PROTOCOL_VERSION}\""
         )));
         assert!(requests[0].contains("\"capabilities\":{}"));
         assert!(
@@ -696,8 +2538,90 @@ mod tests {
             requests[2..]
                 .iter()
                 .all(|request| request.contains(&format!(
-                    "mcp-protocol-version: {REQUESTED_PROTOCOL_VERSION}"
+                    "mcp-protocol-version: {STATEFUL_REQUESTED_PROTOCOL_VERSION}"
                 )))
+        );
+    }
+
+    #[tokio::test]
+    async fn expired_session_reinitializes_once_before_replaying_a_read_only_list() {
+        let (url, seen, server) = expiring_session_server().await;
+        let client = McpRemoteClient::connect(
+            McpHttpEndpoint::parse(&url).unwrap(),
+            "fixture".into(),
+            None,
+            McpHttpHeaderPolicy::default(),
+            Vec::new(),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            client
+                .list_tools_governed(
+                    &McpToolFilter::default(),
+                    &McpServerPolicy::default(),
+                    crate::default_host_ceiling(),
+                )
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        server.await.unwrap();
+
+        let requests = seen.lock().unwrap();
+        assert!(
+            requests[2]
+                .to_ascii_lowercase()
+                .contains("mcp-session-id: session-old")
+        );
+        assert!(!requests[3].to_ascii_lowercase().contains("mcp-session-id:"));
+        assert!(
+            requests[5]
+                .to_ascii_lowercase()
+                .contains("mcp-session-id: session-new")
+        );
+    }
+
+    #[tokio::test]
+    async fn unauthorized_initialize_refreshes_once_and_retries_once() {
+        let (origin, seen, server) = unauthorized_then_refresh_server().await;
+        let grant = crate::oauth::OAuthRefreshGrant::new(
+            crate::oauth::OAuthEndpointBinding::new(
+                McpHttpEndpoint::parse(&format!("{origin}/refresh")).unwrap(),
+                None,
+                crate::oauth::OAuthNetworkZone::Loopback,
+            ),
+            "refresh-initial".into(),
+            Some("client".into()),
+            None,
+            crate::oauth::TokenEndpointAuthMethod::None,
+            vec!["mcp".into()],
+        )
+        .unwrap();
+        let client = McpRemoteClient::connect(
+            McpHttpEndpoint::parse(&format!("{origin}/mcp")).unwrap(),
+            "fixture".into(),
+            Some(crate::token::Token::new("access-stale", u64::MAX)),
+            McpHttpHeaderPolicy::default(),
+            Vec::new(),
+            Some(grant),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            client.negotiated_protocol_version(),
+            STATEFUL_REQUESTED_PROTOCOL_VERSION
+        );
+        server.await.unwrap();
+        let requests = seen.lock().unwrap();
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request.starts_with("POST /refresh "))
+                .count(),
+            1
         );
     }
 }

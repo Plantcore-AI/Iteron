@@ -54,6 +54,7 @@
 mod backpressure;
 mod control;
 mod mcp_control;
+mod mcp_input;
 mod operator_status;
 
 pub(crate) use backpressure::{AppServerQueuePolicy, AuthoritativeOverflow, CosmeticOverflow};
@@ -62,6 +63,10 @@ use self::control::{apply_control, apply_immediate_control, is_immediate_control
 #[cfg(test)]
 use self::control::{apply_immediate_workflow_control, apply_side};
 use self::mcp_control::apply_mcp_control;
+#[cfg(test)]
+pub(crate) use self::mcp_input::McpInputField;
+pub(crate) use self::mcp_input::capacity as mcp_input_capacity;
+pub(crate) use self::mcp_input::{McpInputAnswer, McpInputPrompt, McpInputResponse};
 use self::operator_status::OperatorStatusSources;
 pub(crate) use self::operator_status::{
     LanguageServerStatus, OperatorStatusSnapshot, WorkflowHealth,
@@ -274,6 +279,9 @@ pub(crate) enum ServerEvent {
     WorkflowRun(crate::workflow::WorkflowRunUiEvent),
     /// Content-free live work projection. Durable `Phase` remains the replay authority.
     Activity(iteron_protocol::ActivityEvent),
+    /// A 2026 server paused one tool call for bounded operator-owned input. This is not model prose
+    /// and not a permission decision; only the dedicated correlated response port can answer it.
+    McpInputRequested(McpInputPrompt),
 }
 
 impl ServerEvent {
@@ -340,6 +348,26 @@ fn event_heap_bytes(event: &ServerEvent) -> usize {
         ServerEvent::Submission { .. } | ServerEvent::Lagged { .. } => 128,
         ServerEvent::WorkflowRun(_) => 64 * 1024,
         ServerEvent::Activity(_) => 512,
+        ServerEvent::McpInputRequested(prompt) => prompt
+            .server
+            .len()
+            .saturating_add(prompt.tool.len())
+            .saturating_add(prompt.request_state.as_ref().map_or(0, String::len))
+            .saturating_add(
+                prompt
+                    .fields
+                    .iter()
+                    .map(|field| {
+                        field
+                            .id
+                            .len()
+                            .saturating_add(field.prompt.len())
+                            .saturating_add(
+                                serde_json::to_vec(&field.schema).map_or(0, |bytes| bytes.len()),
+                            )
+                    })
+                    .sum::<usize>(),
+            ),
     })
 }
 
@@ -1378,6 +1406,8 @@ pub(crate) struct AppServerHandle {
     pub(crate) activity: mpsc::Sender<iteron_protocol::ActivityEvent>,
     /// The control plane. See [`Control`] for why it is not the SQ.
     pub(crate) control: mpsc::Sender<ControlRequest>,
+    /// Dedicated response lane for 2026 MCP input. It cannot submit model text or permissions.
+    pub(crate) mcp_input: mpsc::Sender<McpInputResponse>,
 }
 
 /// The EQ publisher, held by the server side.
@@ -1873,6 +1903,7 @@ pub(crate) struct ServerEnds {
     pub(crate) events: EventPublisher,
     pub(crate) hook_health: crate::runtime::lifecycle_hooks::LifecycleHookHealth,
     pub(crate) activity: mpsc::Receiver<iteron_protocol::ActivityEvent>,
+    mcp_input: mcp_input::ServerPort,
 }
 
 /// The protocol version the in-process runtime advertises to a connecting frontend.
@@ -1913,6 +1944,7 @@ fn wire_with_queue_policy(
     // The control plane is deliberately shallow: these are operator commands, one at a time, and a
     // backlog of them would mean the frontend is issuing config changes faster than a human can.
     let (control_tx, control_rx) = mpsc::channel::<ControlRequest>(8);
+    let (mcp_input_tx, mcp_input) = mcp_input::wire();
     let (activity_tx, activity_rx) = mpsc::channel::<iteron_protocol::ActivityEvent>(
         iteron_tunables::param_integer(
             "cli.app_server.activity_channel_capacity",
@@ -1943,6 +1975,7 @@ fn wire_with_queue_policy(
             lifecycle_otel,
             hook_health: hook_health.clone(),
             control: control_tx,
+            mcp_input: mcp_input_tx,
             activity: activity_tx,
         },
         ServerEnds {
@@ -1958,6 +1991,7 @@ fn wire_with_queue_policy(
             ),
             hook_health,
             activity: activity_rx,
+            mcp_input,
         },
     ))
 }
@@ -2033,6 +2067,8 @@ pub(crate) struct AppServer {
     /// server never reaches into a running turn.
     to_kernel: mpsc::Sender<SqEnvelope>,
     activity: mpsc::Receiver<iteron_protocol::ActivityEvent>,
+    mcp_input_requests: mpsc::Receiver<mcp_input::McpInputRequestEnvelope>,
+    mcp_input_responses: mpsc::Receiver<McpInputResponse>,
 }
 
 impl AppServer {
@@ -2044,6 +2080,9 @@ impl AppServer {
     /// the frontend owned.
     pub(crate) fn new(mut agent: Agent, ends: ServerEnds, interactive_approvals: bool) -> Self {
         let mut ends = ends;
+        if interactive_approvals && let Some(runtime) = agent.mcp_runtime_control() {
+            let _ = runtime.install_mrtr_handler(ends.mcp_input.handler.clone());
+        }
         let run_id = agent.rollout.run_id().clone();
         ends.events
             .bind_lifecycle_identity(SessionId(format!("session-{}", run_id.0)), run_id);
@@ -2140,6 +2179,8 @@ impl AppServer {
             lifecycle_hook_runtime,
             to_kernel,
             activity: ends.activity,
+            mcp_input_requests: ends.mcp_input.requests,
+            mcp_input_responses: ends.mcp_input.responses,
         }
     }
 
@@ -2182,7 +2223,10 @@ impl AppServer {
             lifecycle_hook_runtime,
             to_kernel,
             mut activity,
+            mut mcp_input_requests,
+            mut mcp_input_responses,
         } = self;
+        let mut pending_mcp_inputs = std::collections::BTreeMap::new();
 
         // Runtime emitters never await presentation. The finite bridge makes a stopped frontend a
         // counted/coalesced presentation gap instead of an unbounded heap; terminal authority is
@@ -2453,6 +2497,22 @@ impl AppServer {
                     }
                     Some(activity_event) = activity.recv() => {
                         let _ = events.publish(ServerEvent::Activity(activity_event)).await;
+                        continue
+                    }
+                    Some(request) = mcp_input_requests.recv() => {
+                        mcp_input::publish_request(
+                            request,
+                            &mut pending_mcp_inputs,
+                            &mut events,
+                        ).await;
+                        continue
+                    }
+                    Some(response) = mcp_input_responses.recv() => {
+                        if !mcp_input::resolve_response(response, &mut pending_mcp_inputs) {
+                            let _ = events.publish(ServerEvent::Notice(
+                                "stale MCP input response was refused".into(),
+                            )).await;
+                        }
                         continue
                     }
                     Some(observation) = receive_stop_hook_observation(&mut stop_hooks) => {
@@ -2792,6 +2852,20 @@ impl AppServer {
                             ready.sort_by_key(|event| event.updated_at_unix_ms);
                             for activity_event in ready {
                                 let _ = events.publish(ServerEvent::Activity(activity_event)).await;
+                            }
+                        }
+                        Some(request) = mcp_input_requests.recv() => {
+                            mcp_input::publish_request(
+                                request,
+                                &mut pending_mcp_inputs,
+                                &mut events,
+                            ).await;
+                        }
+                        Some(response) = mcp_input_responses.recv() => {
+                            if !mcp_input::resolve_response(response, &mut pending_mcp_inputs) {
+                                let _ = events.publish(ServerEvent::Notice(
+                                    "stale MCP input response was refused".into(),
+                                )).await;
                             }
                         }
                         Some(observation) = receive_stop_hook_observation(&mut stop_hooks) => {
@@ -3397,6 +3471,7 @@ impl AppServer {
         session_lifecycle = session_lifecycle
             .transition(SessionLifecycleState::Stopping)
             .unwrap_or(SessionLifecycleState::Stopping);
+        mcp_input::reject_all(&mut pending_mcp_inputs);
         events.record_lifecycle("session.stopping", None, None, LifecyclePayload::default());
         let stop_hook_shutdown_error = if let Some(observer) = stop_hooks.take() {
             match observer.shutdown().await {
@@ -4828,7 +4903,8 @@ mod tests {
                 | ServerEvent::Notice(_)
                 | ServerEvent::Submission { .. }
                 | ServerEvent::WorkflowRun(_)
-                | ServerEvent::Activity(_) => {}
+                | ServerEvent::Activity(_)
+                | ServerEvent::McpInputRequested(_) => {}
             }
         }
         publish.await.expect("publisher task").expect("delivered");
@@ -4907,7 +4983,8 @@ mod tests {
                 ServerEvent::Ui(_)
                 | ServerEvent::Submission { .. }
                 | ServerEvent::WorkflowRun(_)
-                | ServerEvent::Activity(_) => deltas += 1,
+                | ServerEvent::Activity(_)
+                | ServerEvent::McpInputRequested(_) => deltas += 1,
                 ServerEvent::Lagged { dropped: count } => dropped += count,
                 ServerEvent::RunEnded { .. } => {
                     saw_terminal = true;
@@ -5711,6 +5788,7 @@ mod tests {
             lifecycle_otel: _,
             hook_health: _,
             activity: _,
+            mcp_input: _,
             control,
         } = handle;
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();

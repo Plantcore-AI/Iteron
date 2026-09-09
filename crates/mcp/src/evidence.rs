@@ -5,7 +5,10 @@
 //! fold it into its existing ledger and durable effect record.
 
 use std::num::NonZeroU64;
-use std::sync::Mutex;
+use std::sync::{
+    Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::Instant;
 
 /// Evidence for the interval from the first possibly-partial request write until the caller
@@ -24,6 +27,34 @@ impl McpToolCallEvidence {
             tool_name: tool_name.to_string(),
             dispatch_to_terminal_ms: latency_ms,
         }
+    }
+}
+
+/// Live certainty state for a bounded multi-round call. Composition layers use this only when
+/// their own cancellation or aggregate deadline interrupts the transport before it can return a
+/// terminal [`crate::McpToolOutcome`].
+#[derive(Debug, Default)]
+pub struct McpDispatchProgress {
+    pending: AtomicBool,
+}
+
+impl McpDispatchProgress {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// True only while the latest physical request may have applied an effect without an
+    /// authoritative response. A previous completed MRTR round does not keep this bit set.
+    pub fn is_pending(&self) -> bool {
+        self.pending.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn mark_pending(&self) {
+        self.pending.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn settle(&self) {
+        self.pending.store(false, Ordering::Release);
     }
 }
 

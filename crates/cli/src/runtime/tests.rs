@@ -7116,6 +7116,7 @@ mod gate_integration_tests {
             lifecycle_otel: _,
             hook_health: _,
             activity: _,
+            mcp_input: _,
             control,
         } = handle;
         let (reply, answer) = tokio::sync::oneshot::channel();

@@ -105,6 +105,18 @@ pub(super) fn apply_server_event<T: notification::NotificationTransport + ?Sized
             }
         }
         app_server::ServerEvent::Notice(text) => app.note(block::NoticeLevel::Warn, text),
+        app_server::ServerEvent::McpInputRequested(prompt) => {
+            if let Err(prompt) = app.enqueue_mcp_input(prompt) {
+                let _ = session.answer_mcp_input(app_server::McpInputResponse {
+                    request_id: prompt.request_id,
+                    answer: app_server::McpInputAnswer::Reject,
+                });
+                app.note(
+                    block::NoticeLevel::Warn,
+                    "too many pending MCP input requests; the newest request was declined",
+                );
+            }
+        }
         app_server::ServerEvent::Submission {
             id,
             state,
@@ -204,6 +216,7 @@ pub(super) fn apply_server_event<T: notification::NotificationTransport + ?Sized
             }
             app.flush_text();
             app.pending = None; // a pending approval cannot outlive its run
+            app.clear_mcp_inputs();
             app.settle_unfinished_tools();
             interrupt.store(false, Ordering::Relaxed);
             drain.store(false, Ordering::Relaxed);

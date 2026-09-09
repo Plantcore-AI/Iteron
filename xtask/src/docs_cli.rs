@@ -19,6 +19,7 @@ use std::path::Path;
 
 const CLI_SOURCE: &str = "crates/cli/src/main.rs";
 const EXTERNAL_SUBCOMMAND_SOURCES: &[(&str, &str)] = &[
+    ("mcp::commands", "crates/cli/src/mcp/commands.rs"),
     ("plugin", "crates/cli/src/plugin.rs"),
     ("tunables", "crates/cli/src/tunables.rs"),
 ];
@@ -477,7 +478,8 @@ fn collect_subcommands(
                     .context("subcommand fields must be named")?
                     .to_string();
                 if subcommand_enum(field).is_some() {
-                    children = collect_subcommands(enums, &type_name(&field.ty), &path)?;
+                    let child_name = relative_enum_name(enums, enum_name, &type_name(&field.ty));
+                    children = collect_subcommands(enums, &child_name, &path)?;
                     continue;
                 }
                 args.push(parse_arg(&field_name, field)?);
@@ -491,6 +493,21 @@ fn collect_subcommands(
         });
     }
     Ok(subcommands)
+}
+
+fn relative_enum_name(
+    enums: &BTreeMap<String, syn::ItemEnum>,
+    parent: &str,
+    child: &str,
+) -> String {
+    if child.contains("::") {
+        return child.to_owned();
+    }
+    parent
+        .rsplit_once("::")
+        .map(|(module, _)| format!("{module}::{child}"))
+        .filter(|candidate| enums.contains_key(candidate))
+        .unwrap_or_else(|| child.to_owned())
 }
 
 /// `UserPromptSubmit` -> `user-prompt-submit`, matching clap's derive default for a variant name.

@@ -1,0 +1,7 @@
+{
+  "name": "iteron-mcp-conformance",
+  "private": true,
+  "dependencies": {
+    "@modelcontextprotocol/conformance": "github:modelcontextprotocol/conformance#49103de6ed70804e940637bf3e9e29e4a3f54e64"
+  }
+}

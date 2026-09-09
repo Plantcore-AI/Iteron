@@ -2,7 +2,7 @@
 
 use crate::{
     MAX_FRAME_BYTES, McpError, encode_frame,
-    evidence::{DispatchClock, McpToolCallEvidence},
+    evidence::{DispatchClock, McpDispatchProgress, McpToolCallEvidence},
     pagination::ToolListLimits,
     policy::McpServerPolicy,
     request,
@@ -10,8 +10,9 @@ use crate::{
 };
 use iteron_protocol::{ToolSpec, capability_set::CapabilitySet};
 use serde_json::{Value, json};
+use std::num::NonZeroU64;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::AsyncWriteExt;
 use tokio::process::ChildStdin;
 use tokio::sync::Mutex;
@@ -72,6 +73,9 @@ pub struct McpClient {
     spill_store: crate::result_policy::McpSpillStore,
     negotiated_protocol_version: Option<String>,
     capabilities: crate::McpServerCapabilities,
+    protocol_mode: crate::McpProtocolMode,
+    list_cache: crate::cache::McpListCache,
+    advertises_elicitation: bool,
     pub server_name: String,
 }
 
@@ -79,12 +83,125 @@ impl McpClient {
     /// Spawn `command args...` as an MCP server and complete the initialize handshake.
     pub async fn connect(command: &str, args: &[String], name: &str) -> Result<Self, McpError> {
         let deadlines = crate::McpDeadlinePolicy::default().stdio();
-        Self::connect_with_deadlines(
+        Self::connect_with_deadlines_and_mode(
             command,
             args,
             name,
             deadlines.startup(),
             deadlines.tool_call(),
+            crate::McpProtocolMode::Stateful,
+        )
+        .await
+    }
+
+    /// Prefer the newest protocol and negotiate a stateful fallback on the same process.
+    pub async fn connect_auto(
+        command: &str,
+        args: &[String],
+        name: &str,
+    ) -> Result<Self, McpError> {
+        let deadlines = crate::McpDeadlinePolicy::default().stdio();
+        Self::connect_with_deadlines_and_mode(
+            command,
+            args,
+            name,
+            deadlines.startup(),
+            deadlines.tool_call(),
+            crate::McpProtocolMode::Auto,
+        )
+        .await
+    }
+
+    /// Spawn a server using the 2026-07-28 stateless stdio protocol.
+    pub async fn connect_2026(
+        command: &str,
+        args: &[String],
+        name: &str,
+    ) -> Result<Self, McpError> {
+        let deadlines = crate::McpDeadlinePolicy::default().stdio();
+        Self::connect_with_deadlines_and_mode(
+            command,
+            args,
+            name,
+            deadlines.startup(),
+            deadlines.tool_call(),
+            crate::McpProtocolMode::Stateless2026,
+        )
+        .await
+    }
+
+    pub async fn connect_2026_with_sensitive_env_names(
+        command: &str,
+        args: &[String],
+        name: &str,
+        sensitive_env_names: &[String],
+    ) -> Result<Self, McpError> {
+        let deadlines = crate::McpDeadlinePolicy::default().stdio();
+        managed_connect::connect(
+            command,
+            args,
+            name,
+            deadlines.startup(),
+            deadlines.tool_call(),
+            sensitive_env_names,
+            &[],
+            None,
+            false,
+            crate::McpProtocolMode::Stateless2026,
+        )
+        .await
+    }
+
+    pub async fn connect_auto_with_sensitive_env_names(
+        command: &str,
+        args: &[String],
+        name: &str,
+        sensitive_env_names: &[String],
+    ) -> Result<Self, McpError> {
+        Self::connect_auto_with_environment(command, args, name, sensitive_env_names, &[]).await
+    }
+
+    /// Prefer 2026 while granting only the named environment values to this child process.
+    pub async fn connect_auto_with_environment(
+        command: &str,
+        args: &[String],
+        name: &str,
+        sensitive_env_names: &[String],
+        granted_env_names: &[String],
+    ) -> Result<Self, McpError> {
+        Self::connect_auto_with_environment_and_elicitation(
+            command,
+            args,
+            name,
+            sensitive_env_names,
+            granted_env_names,
+            false,
+        )
+        .await
+    }
+
+    /// Prefer 2026 while advertising form elicitation only when the owning host has installed an
+    /// interactive input handler.
+    pub async fn connect_auto_with_environment_and_elicitation(
+        command: &str,
+        args: &[String],
+        name: &str,
+        sensitive_env_names: &[String],
+        granted_env_names: &[String],
+        advertises_elicitation: bool,
+    ) -> Result<Self, McpError> {
+        let deadlines = crate::McpDeadlinePolicy::default().stdio();
+        managed_connect::connect(
+            command,
+            args,
+            name,
+            deadlines.startup(),
+            deadlines.tool_call(),
+            sensitive_env_names,
+            granted_env_names,
+            None,
+            advertises_elicitation,
+            crate::McpProtocolMode::Auto,
         )
         .await
     }
@@ -98,6 +215,10 @@ impl McpClient {
 
     pub fn capabilities(&self) -> crate::McpServerCapabilities {
         self.capabilities
+    }
+
+    pub fn protocol_mode(&self) -> crate::McpProtocolMode {
+        self.protocol_mode
     }
 
     pub fn deadlines(&self) -> crate::McpTransportDeadlines {
@@ -128,7 +249,119 @@ impl McpClient {
             "prompts/list" | "prompts/get" if self.capabilities.prompts => {}
             _ => return Err(McpError::Protocol("MCP capability is not declared".into())),
         }
-        self.call(method, params).await
+        if matches!(method, "resources/list" | "prompts/list") {
+            let mut pages = crate::pagination::ExtensionPagination::new(method)?;
+            let mut request = params;
+            loop {
+                let result = reject_extension_mrtr(self.call(method, request).await?)?;
+                let Some(next) = pages.accept(&result)? else {
+                    return Ok(pages.finish());
+                };
+                request = next;
+            }
+        }
+        reject_extension_mrtr(self.call(method, params).await?)
+    }
+
+    async fn call_extension_with_outcome(
+        &self,
+        method: &str,
+        params: Value,
+        dispatch_observer: &mut Option<Box<dyn FnOnce() + Send>>,
+        allow_cache: bool,
+    ) -> CallOutcome {
+        if matches!(method, "resources/list" | "prompts/list") {
+            let mut pages = match crate::pagination::ExtensionPagination::new(method) {
+                Ok(pages) => pages,
+                Err(error) => return CallOutcome::Completed(Err(error), None),
+            };
+            let mut request = params;
+            let mut last_latency = None;
+            loop {
+                let result = match self
+                    .call_extension_page_with_outcome(
+                        method,
+                        request,
+                        dispatch_observer,
+                        allow_cache,
+                    )
+                    .await
+                {
+                    CallOutcome::Completed(Ok(result), latency) => {
+                        if latency.is_some() {
+                            last_latency = latency;
+                        }
+                        result
+                    }
+                    CallOutcome::Completed(Err(error), latency) => {
+                        return CallOutcome::Completed(Err(error), latency.or(last_latency));
+                    }
+                    unknown @ CallOutcome::Unknown(_, _) => return unknown,
+                };
+                let next = match pages.accept(&result) {
+                    Ok(next) => next,
+                    Err(error) => {
+                        return CallOutcome::Completed(Err(error), last_latency);
+                    }
+                };
+                let Some(next) = next else {
+                    return CallOutcome::Completed(Ok(pages.finish()), last_latency);
+                };
+                request = next;
+            }
+        }
+        self.call_extension_page_with_outcome(method, params, dispatch_observer, allow_cache)
+            .await
+    }
+
+    async fn call_extension_page_with_outcome(
+        &self,
+        method: &str,
+        params: Value,
+        dispatch_observer: &mut Option<Box<dyn FnOnce() + Send>>,
+        allow_cache: bool,
+    ) -> CallOutcome {
+        if allow_cache
+            && self.protocol_mode.is_stateless()
+            && method.ends_with("/list")
+            && let Some(cached) = self.list_cache.get(method, &params)
+        {
+            return CallOutcome::Completed(reject_extension_mrtr(cached), None);
+        }
+        let cache_params = params.clone();
+        let params = if self.protocol_mode.is_stateless() {
+            match crate::protocol_version::modern_params(params, false) {
+                Ok(params) => params,
+                Err(error) => return CallOutcome::Completed(Err(error), None),
+            }
+        } else {
+            params
+        };
+        let operation = format!("request `{method}`");
+        match self
+            .call_with_certainty_and_dispatch_observer(
+                method,
+                params,
+                operation,
+                dispatch_observer.take(),
+            )
+            .await
+        {
+            CallOutcome::Completed(Ok(result), latency) => {
+                let result = match reject_extension_mrtr(result) {
+                    Ok(result) => result,
+                    Err(error) => return CallOutcome::Completed(Err(error), latency),
+                };
+                if self.protocol_mode.is_stateless()
+                    && method.ends_with("/list")
+                    && let Err(error) = self.list_cache.put(method, &cache_params, &result)
+                {
+                    return CallOutcome::Completed(Err(error), latency);
+                }
+                CallOutcome::Completed(Ok(result), latency)
+            }
+            outcome => outcome,
+        }
     }
 
     pub async fn call_extension_rendered(
@@ -164,30 +397,38 @@ impl McpClient {
                 };
             }
         }
-        let (result, latency) = match self
-            .call_with_certainty_and_dispatch_observer(
-                method,
-                params,
-                format!("request `{method}`"),
-                Some(Box::new(on_dispatch)),
+        let started = Instant::now();
+        let mut dispatch_observer: Option<Box<dyn FnOnce() + Send>> = Some(Box::new(on_dispatch));
+        let outcome = self
+            .call_extension_with_outcome(method, params, &mut dispatch_observer, false)
+            .await;
+        let fallback_latency = || {
+            NonZeroU64::new(
+                u64::try_from(started.elapsed().as_millis())
+                    .unwrap_or(u64::MAX)
+                    .max(1),
             )
-            .await
-        {
-            CallOutcome::Completed(Ok(result), Some(latency)) => (result, latency),
-            CallOutcome::Completed(Ok(_), None) => {
+            .expect("elapsed was clamped to at least one")
+        };
+        let (result, evidence) = match outcome {
+            CallOutcome::Completed(Ok(result), latency) => (
+                result,
+                McpToolCallEvidence::new(
+                    &self.server_name,
+                    method,
+                    latency.unwrap_or_else(fallback_latency),
+                ),
+            ),
+            CallOutcome::Completed(Err(error), None) => {
                 return McpToolOutcome::FailedDefinite {
-                    error: McpError::Protocol(
-                        "MCP extension completed without dispatch evidence".into(),
-                    ),
+                    error,
                     evidence: None,
                 };
             }
-            CallOutcome::Completed(Err(error), latency) => {
+            CallOutcome::Completed(Err(error), Some(latency)) => {
                 return McpToolOutcome::FailedDefinite {
                     error,
-                    evidence: latency.map(|latency| {
-                        McpToolCallEvidence::new(&self.server_name, method, latency)
-                    }),
+                    evidence: Some(McpToolCallEvidence::new(&self.server_name, method, latency)),
                 };
             }
             CallOutcome::Unknown(error, latency) => {
@@ -197,7 +438,6 @@ impl McpClient {
                 };
             }
         };
-        let evidence = McpToolCallEvidence::new(&self.server_name, method, latency);
         match render_extension_content(&result, self.result_policy, &self.spill_store) {
             Ok(content) => match self.cleanup_spills(crate::McpSpillCleanup::ToolEnd) {
                 Ok(()) => McpToolOutcome::Completed {
@@ -237,6 +477,7 @@ impl McpClient {
         .await
     }
 
+    #[cfg(test)]
     async fn connect_with_deadlines(
         command: &str,
         args: &[String],
@@ -244,13 +485,36 @@ impl McpClient {
         handshake_timeout: Duration,
         request_timeout: Duration,
     ) -> Result<Self, McpError> {
-        Self::connect_with_deadlines_and_sensitive_env_names(
+        Self::connect_with_deadlines_and_mode(
+            command,
+            args,
+            name,
+            handshake_timeout,
+            request_timeout,
+            crate::McpProtocolMode::Stateful,
+        )
+        .await
+    }
+
+    async fn connect_with_deadlines_and_mode(
+        command: &str,
+        args: &[String],
+        name: &str,
+        handshake_timeout: Duration,
+        request_timeout: Duration,
+        protocol_mode: crate::McpProtocolMode,
+    ) -> Result<Self, McpError> {
+        managed_connect::connect(
             command,
             args,
             name,
             handshake_timeout,
             request_timeout,
             &[],
+            &[],
+            None,
+            false,
+            protocol_mode,
         )
         .await
     }
@@ -270,11 +534,18 @@ impl McpClient {
             handshake_timeout,
             request_timeout,
             sensitive_env_names,
+            &[],
             None,
+            false,
+            crate::McpProtocolMode::Stateful,
         )
         .await
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the managed launch seam keeps each security- and protocol-relevant input explicit instead of hiding them in an ambient options object"
+    )]
     pub(crate) async fn connect_managed(
         command: &str,
         args: &[String],
@@ -282,7 +553,10 @@ impl McpClient {
         handshake_timeout: Duration,
         request_timeout: Duration,
         sensitive_env_names: &[String],
+        granted_env_names: &[String],
         cancellation: &crate::supervisor::McpCancellation,
+        advertises_elicitation: bool,
+        protocol_mode: crate::McpProtocolMode,
     ) -> Result<Self, McpError> {
         managed_connect::connect(
             command,
@@ -291,7 +565,10 @@ impl McpClient {
             handshake_timeout,
             request_timeout,
             sensitive_env_names,
+            granted_env_names,
             Some(cancellation),
+            advertises_elicitation,
+            protocol_mode,
         )
         .await
     }
@@ -376,14 +653,38 @@ impl McpClient {
     /// interleaved notifications the server may emit). The deadline covers the complete exchange,
     /// including request serialization/write and lock acquisition.
     pub(crate) async fn call(&self, method: &str, params: Value) -> Result<Value, McpError> {
+        if self.protocol_mode.is_stateless()
+            && method.ends_with("/list")
+            && let Some(cached) = self.list_cache.get(method, &params)
+        {
+            return Ok(cached);
+        }
+        let cache_params = params.clone();
+        let params = if self.protocol_mode.is_stateless() {
+            crate::protocol_version::modern_params(
+                params,
+                self.advertises_elicitation && method == "tools/call",
+            )?
+        } else {
+            params
+        };
         let operation = format!("request `{method}`");
-        match self
+        let result = match self
             .call_with_certainty(method, params, operation.clone())
             .await
         {
             CallOutcome::Completed(result, _) => result,
             CallOutcome::Unknown(error, _) => Err(error),
+        }?;
+        let result = if is_extension_method(method) {
+            reject_extension_mrtr(result)?
+        } else {
+            result
+        };
+        if self.protocol_mode.is_stateless() && method.ends_with("/list") {
+            self.list_cache.put(method, &cache_params, &result)?;
         }
+        Ok(result)
     }
 
     async fn call_with_certainty(
@@ -403,9 +704,27 @@ impl McpClient {
         operation: String,
         dispatch_observer: Option<Box<dyn FnOnce() + Send>>,
     ) -> CallOutcome {
+        self.call_with_certainty_and_dispatch_observer_with_timeout(
+            method,
+            params,
+            operation,
+            dispatch_observer,
+            self.request_timeout,
+        )
+        .await
+    }
+
+    async fn call_with_certainty_and_dispatch_observer_with_timeout(
+        &self,
+        method: &str,
+        params: Value,
+        operation: String,
+        dispatch_observer: Option<Box<dyn FnOnce() + Send>>,
+        timeout: Duration,
+    ) -> CallOutcome {
         let dispatch_clock = DispatchClock::with_observer(dispatch_observer);
         match tokio::time::timeout(
-            self.request_timeout,
+            timeout,
             self.call_unbounded_with_certainty(method, params, &dispatch_clock),
         )
         .await
@@ -525,7 +844,8 @@ impl McpClient {
     /// Call an MCP tool without erasing transport certainty. `name` is the bare server-side name
     /// (not the namespaced spec name).
     pub async fn call_tool_outcome(&self, name: &str, arguments: Value) -> McpToolOutcome {
-        self.call_tool_outcome_inner(name, arguments, None).await
+        self.call_tool_outcome_inner(name, arguments, None, None)
+            .await
     }
 
     /// Call an MCP tool and notify a local observer at the exact conservative dispatch boundary.
@@ -540,7 +860,22 @@ impl McpClient {
     where
         F: FnOnce() + Send + 'static,
     {
-        self.call_tool_outcome_inner(name, arguments, Some(Box::new(on_dispatch)))
+        self.call_tool_outcome_inner(name, arguments, Some(Box::new(on_dispatch)), None)
+            .await
+    }
+
+    /// Variant used by a composition layer whose own deadline can interrupt this request.
+    pub async fn call_tool_outcome_observed_with_progress<F>(
+        &self,
+        name: &str,
+        arguments: Value,
+        progress: Arc<McpDispatchProgress>,
+        on_dispatch: F,
+    ) -> McpToolOutcome
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        self.call_tool_outcome_inner(name, arguments, Some(Box::new(on_dispatch)), Some(progress))
             .await
     }
 
@@ -549,6 +884,7 @@ impl McpClient {
         name: &str,
         arguments: Value,
         dispatch_observer: Option<Box<dyn FnOnce() + Send>>,
+        progress: Option<Arc<McpDispatchProgress>>,
     ) -> McpToolOutcome {
         if let Err(error) = validate_bare_tool_name(name) {
             return McpToolOutcome::FailedDefinite {
@@ -556,15 +892,38 @@ impl McpClient {
                 evidence: None,
             };
         }
-        let (result, latency) = match self
+        let params = json!({"name": name, "arguments": arguments});
+        let params = if self.protocol_mode.is_stateless() {
+            match crate::protocol_version::modern_params(params, self.advertises_elicitation) {
+                Ok(params) => params,
+                Err(error) => {
+                    return McpToolOutcome::FailedDefinite {
+                        error,
+                        evidence: None,
+                    };
+                }
+            }
+        } else {
+            params
+        };
+        let dispatch_observer = match &progress {
+            Some(progress) => tracked_dispatch_observer(dispatch_observer, progress.clone()),
+            None => dispatch_observer,
+        };
+        let outcome = self
             .call_with_certainty_and_dispatch_observer(
                 "tools/call",
-                json!({"name": name, "arguments": arguments}),
+                params,
                 "request `tools/call`".into(),
                 dispatch_observer,
             )
-            .await
+            .await;
+        if matches!(outcome, CallOutcome::Completed(..))
+            && let Some(progress) = &progress
         {
+            progress.settle();
+        }
+        let (result, latency) = match outcome {
             CallOutcome::Completed(Ok(result), Some(latency)) => (result, latency),
             CallOutcome::Completed(Ok(_), None) => {
                 return McpToolOutcome::FailedDefinite {
@@ -589,6 +948,16 @@ impl McpClient {
             }
         };
         let evidence = McpToolCallEvidence::new(&self.server_name, name, latency);
+        if self.protocol_mode.is_stateless()
+            && result.get("resultType").and_then(Value::as_str) == Some("input_required")
+        {
+            return McpToolOutcome::FailedDefinite {
+                error: McpError::Protocol(
+                    "MCP MRTR input requires an interactive host handler".into(),
+                ),
+                evidence: Some(evidence),
+            };
+        }
         // Preserve text and make every unsupported block observable without reflecting its
         // untrusted type/payload. The renderer enforces one total output ceiling.
         let output = match render_tool_content(&result, self.result_policy, &self.spill_store) {
@@ -627,16 +996,635 @@ impl McpClient {
             | McpToolOutcome::Unknown { error, .. } => Err(error),
         }
     }
+
+    /// Run an explicitly interactive 2026 tool call. A normal tool call never enters this loop.
+    pub async fn call_tool_with_mrtr(
+        &self,
+        name: &str,
+        arguments: Value,
+        handler: &dyn crate::McpMrtrHandler,
+    ) -> Result<String, McpError> {
+        if !self.protocol_mode.is_stateless() || !self.advertises_elicitation {
+            return Err(McpError::Protocol(
+                "MRTR requires the 2026 stateless protocol and an advertised elicitation handler"
+                    .into(),
+            ));
+        }
+        validate_bare_tool_name(name)?;
+        let mut state = crate::mrtr::MrtrState::new();
+        let mut params = json!({"name": name, "arguments": arguments});
+        let started = Instant::now();
+        loop {
+            let remaining = self
+                .request_timeout
+                .checked_sub(started.elapsed())
+                .ok_or_else(|| McpError::Deadline {
+                    operation: "MCP MRTR total interaction".into(),
+                })?;
+            let result = tokio::time::timeout(remaining, self.call("tools/call", params.clone()))
+                .await
+                .map_err(|_| McpError::Deadline {
+                    operation: "MCP MRTR total interaction".into(),
+                })??;
+            match state.inspect(&result)? {
+                crate::mrtr::MrtrResult::Complete => {
+                    let output =
+                        render_tool_content(&result, self.result_policy, &self.spill_store)?;
+                    self.cleanup_spills(crate::McpSpillCleanup::ToolEnd)?;
+                    return Ok(output);
+                }
+                crate::mrtr::MrtrResult::InputRequired {
+                    request_state,
+                    requests,
+                } => {
+                    let decision = if requests.is_empty() {
+                        crate::McpInputDecision::Approve(Vec::new())
+                    } else {
+                        let remaining = self
+                            .request_timeout
+                            .checked_sub(started.elapsed())
+                            .ok_or_else(|| McpError::Deadline {
+                                operation: "MCP MRTR total interaction".into(),
+                            })?;
+                        tokio::time::timeout(
+                            remaining,
+                            handler.request(
+                                &self.server_name,
+                                name,
+                                request_state.as_deref(),
+                                requests.clone(),
+                            ),
+                        )
+                        .await
+                        .map_err(|_| McpError::Deadline {
+                            operation: "MCP MRTR user input".into(),
+                        })??
+                    };
+                    let continuation = state.responses(request_state, &requests, decision)?;
+                    let object = params.as_object_mut().expect("tool params are an object");
+                    object.remove("requestState");
+                    object.remove("inputResponses");
+                    if let Some(request_state) = continuation.request_state {
+                        object.insert("requestState".into(), Value::String(request_state));
+                    }
+                    if let Some(input_responses) = continuation.input_responses {
+                        object.insert("inputResponses".into(), input_responses);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Run a 2026 MRTR tool call while preserving the first dispatch boundary and any later
+    /// transport uncertainty for an effect ledger.
+    pub async fn call_tool_with_mrtr_outcome_observed<F>(
+        &self,
+        name: &str,
+        arguments: Value,
+        handler: &dyn crate::McpMrtrHandler,
+        on_dispatch: F,
+    ) -> McpToolOutcome
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        self.call_tool_with_mrtr_outcome_observed_with_progress(
+            name,
+            arguments,
+            handler,
+            Arc::new(McpDispatchProgress::new()),
+            on_dispatch,
+        )
+        .await
+    }
+
+    /// Variant used by a composition layer whose own aggregate timeout can interrupt this call.
+    /// `progress` distinguishes an in-flight physical request from an already-settled MRTR round.
+    pub async fn call_tool_with_mrtr_outcome_observed_with_progress<F>(
+        &self,
+        name: &str,
+        arguments: Value,
+        handler: &dyn crate::McpMrtrHandler,
+        progress: Arc<McpDispatchProgress>,
+        on_dispatch: F,
+    ) -> McpToolOutcome
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        if !self.protocol_mode.is_stateless() || !self.advertises_elicitation {
+            return McpToolOutcome::FailedDefinite {
+                error: McpError::Protocol(
+                    "MRTR requires the 2026 stateless protocol and an advertised elicitation handler"
+                        .into(),
+                ),
+                evidence: None,
+            };
+        }
+        if let Err(error) = validate_bare_tool_name(name) {
+            return McpToolOutcome::FailedDefinite {
+                error,
+                evidence: None,
+            };
+        }
+        let started = Instant::now();
+        let mut state = crate::mrtr::MrtrState::new();
+        let mut params = json!({"name": name, "arguments": arguments});
+        let dispatched_at = Arc::new(std::sync::Mutex::new(None));
+        let observed_at = dispatched_at.clone();
+        let mut observer: Option<Box<dyn FnOnce() + Send>> = Some(Box::new(move || {
+            *observed_at
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Instant::now());
+            on_dispatch();
+        }));
+        loop {
+            let Some(remaining) = self.request_timeout.checked_sub(started.elapsed()) else {
+                return mrtr_failure(
+                    &self.server_name,
+                    name,
+                    observed_dispatch(&dispatched_at),
+                    McpError::Deadline {
+                        operation: "MCP MRTR total interaction".into(),
+                    },
+                );
+            };
+            let wire_params = match crate::protocol_version::modern_params(
+                params.clone(),
+                self.advertises_elicitation,
+            ) {
+                Ok(params) => params,
+                Err(error) => {
+                    return mrtr_failure(
+                        &self.server_name,
+                        name,
+                        observed_dispatch(&dispatched_at),
+                        error,
+                    );
+                }
+            };
+            let round_observer = tracked_dispatch_observer(observer.take(), progress.clone());
+            let result = match self
+                .call_with_certainty_and_dispatch_observer_with_timeout(
+                    "tools/call",
+                    wire_params,
+                    "MCP MRTR total interaction".into(),
+                    round_observer,
+                    remaining,
+                )
+                .await
+            {
+                CallOutcome::Completed(Ok(result), Some(_)) => {
+                    progress.settle();
+                    result
+                }
+                CallOutcome::Completed(Ok(_), None) => {
+                    progress.settle();
+                    return McpToolOutcome::FailedDefinite {
+                        error: McpError::Protocol(
+                            "tools/call completed without dispatch evidence".into(),
+                        ),
+                        evidence: observed_dispatch(&dispatched_at)
+                            .map(|started| mrtr_evidence(&self.server_name, name, started)),
+                    };
+                }
+                CallOutcome::Completed(Err(error), _) => {
+                    progress.settle();
+                    return McpToolOutcome::FailedDefinite {
+                        error,
+                        evidence: observed_dispatch(&dispatched_at)
+                            .map(|started| mrtr_evidence(&self.server_name, name, started)),
+                    };
+                }
+                CallOutcome::Unknown(error, _) => {
+                    let Some(dispatched_at) = observed_dispatch(&dispatched_at) else {
+                        return McpToolOutcome::FailedDefinite {
+                            error: McpError::Protocol(
+                                "tools/call became uncertain without dispatch evidence".into(),
+                            ),
+                            evidence: None,
+                        };
+                    };
+                    return McpToolOutcome::Unknown {
+                        error,
+                        evidence: mrtr_evidence(&self.server_name, name, dispatched_at),
+                    };
+                }
+            };
+            match state.inspect(&result) {
+                Ok(crate::mrtr::MrtrResult::Complete) => {
+                    let Some(dispatched_at) = observed_dispatch(&dispatched_at) else {
+                        return McpToolOutcome::FailedDefinite {
+                            error: McpError::Protocol(
+                                "tools/call completed without dispatch evidence".into(),
+                            ),
+                            evidence: None,
+                        };
+                    };
+                    let evidence = mrtr_evidence(&self.server_name, name, dispatched_at);
+                    let output =
+                        match render_tool_content(&result, self.result_policy, &self.spill_store) {
+                            Ok(output) => output,
+                            Err(error) => {
+                                return McpToolOutcome::FailedDefinite {
+                                    error,
+                                    evidence: Some(evidence),
+                                };
+                            }
+                        };
+                    if let Err(error) = self.cleanup_spills(crate::McpSpillCleanup::ToolEnd) {
+                        return McpToolOutcome::FailedDefinite {
+                            error,
+                            evidence: Some(evidence),
+                        };
+                    }
+                    return McpToolOutcome::Completed {
+                        content: output,
+                        is_error: result.get("isError").and_then(Value::as_bool).unwrap_or(
+                            iteron_tunables::param_bool(
+                                "mcp.client.tool_result_is_error_default",
+                                TOOL_RESULT_IS_ERROR_DEFAULT,
+                            ),
+                        ),
+                        evidence,
+                    };
+                }
+                Ok(crate::mrtr::MrtrResult::InputRequired {
+                    request_state,
+                    requests,
+                }) => {
+                    let decision = if requests.is_empty() {
+                        crate::McpInputDecision::Approve(Vec::new())
+                    } else {
+                        let Some(remaining) = self.request_timeout.checked_sub(started.elapsed())
+                        else {
+                            return mrtr_failure(
+                                &self.server_name,
+                                name,
+                                observed_dispatch(&dispatched_at),
+                                McpError::Deadline {
+                                    operation: "MCP MRTR total interaction".into(),
+                                },
+                            );
+                        };
+                        match tokio::time::timeout(
+                            remaining,
+                            handler.request(
+                                &self.server_name,
+                                name,
+                                request_state.as_deref(),
+                                requests.clone(),
+                            ),
+                        )
+                        .await
+                        {
+                            Ok(Ok(decision)) => decision,
+                            Ok(Err(error)) => {
+                                return mrtr_failure(
+                                    &self.server_name,
+                                    name,
+                                    observed_dispatch(&dispatched_at),
+                                    error,
+                                );
+                            }
+                            Err(_) => {
+                                return mrtr_failure(
+                                    &self.server_name,
+                                    name,
+                                    observed_dispatch(&dispatched_at),
+                                    McpError::Deadline {
+                                        operation: "MCP MRTR user input".into(),
+                                    },
+                                );
+                            }
+                        }
+                    };
+                    let continuation = match state.responses(request_state, &requests, decision) {
+                        Ok(continuation) => continuation,
+                        Err(error) => {
+                            return mrtr_failure(
+                                &self.server_name,
+                                name,
+                                observed_dispatch(&dispatched_at),
+                                error,
+                            );
+                        }
+                    };
+                    let object = params.as_object_mut().expect("tool params are an object");
+                    object.remove("requestState");
+                    object.remove("inputResponses");
+                    if let Some(request_state) = continuation.request_state {
+                        object.insert("requestState".into(), Value::String(request_state));
+                    }
+                    if let Some(input_responses) = continuation.input_responses {
+                        object.insert("inputResponses".into(), input_responses);
+                    }
+                }
+                Err(error) => {
+                    return mrtr_failure(
+                        &self.server_name,
+                        name,
+                        observed_dispatch(&dispatched_at),
+                        error,
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn mrtr_evidence(server: &str, name: &str, started: Instant) -> McpToolCallEvidence {
+    let elapsed = u64::try_from(started.elapsed().as_millis())
+        .unwrap_or(u64::MAX)
+        .max(1);
+    McpToolCallEvidence::new(
+        server,
+        name,
+        std::num::NonZeroU64::new(elapsed).expect("elapsed was clamped to at least one"),
+    )
+}
+
+fn observed_dispatch(dispatched_at: &Arc<std::sync::Mutex<Option<Instant>>>) -> Option<Instant> {
+    *dispatched_at
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn tracked_dispatch_observer(
+    observer: Option<Box<dyn FnOnce() + Send>>,
+    progress: Arc<McpDispatchProgress>,
+) -> Option<Box<dyn FnOnce() + Send>> {
+    Some(Box::new(move || {
+        progress.mark_pending();
+        if let Some(observer) = observer {
+            observer();
+        }
+    }))
+}
+
+fn mrtr_failure(
+    server: &str,
+    name: &str,
+    dispatched_at: Option<Instant>,
+    error: McpError,
+) -> McpToolOutcome {
+    McpToolOutcome::FailedDefinite {
+        error,
+        evidence: dispatched_at.map(|started| mrtr_evidence(server, name, started)),
+    }
+}
+
+pub(crate) fn reject_extension_mrtr(result: Value) -> Result<Value, McpError> {
+    if result.get("resultType").and_then(Value::as_str) == Some("input_required") {
+        return Err(McpError::Protocol(
+            "MCP MRTR input is only supported for tools/call".into(),
+        ));
+    }
+    Ok(result)
+}
+
+pub(crate) fn is_extension_method(method: &str) -> bool {
+    matches!(
+        method,
+        "resources/list" | "resources/read" | "prompts/list" | "prompts/get"
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     #[cfg(unix)]
-    use crate::protocol_version::REQUESTED_PROTOCOL_VERSION;
+    use crate::protocol_version::STATEFUL_REQUESTED_PROTOCOL_VERSION;
     #[cfg(unix)]
     use std::process::Stdio;
     use tokio::io::{AsyncWriteExt, duplex};
+
+    struct RejectMrtrInput;
+
+    impl crate::McpMrtrHandler for RejectMrtrInput {
+        fn request<'a>(
+            &'a self,
+            _server_name: &'a str,
+            _tool_name: &'a str,
+            _request_state: Option<&'a str>,
+            _requests: Vec<crate::McpInputRequest>,
+        ) -> crate::McpFuture<'a, crate::McpInputDecision> {
+            Box::pin(async { Ok(crate::McpInputDecision::Reject) })
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stdio_mrtr_cannot_start_when_elicitation_was_not_advertised() {
+        let reached = std::env::temp_dir().join(format!(
+            "iteron-mcp-no-elicitation-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let args = vec![
+            "-c".into(),
+            concat!(
+                "IFS= read -r discover; ",
+                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"resultType\":\"complete\",\"supportedVersions\":[\"2026-07-28\"],\"capabilities\":{\"tools\":{}}}}'; ",
+                "if IFS= read -r request; then printf reached > \"$1\"; fi"
+            )
+            .into(),
+            "mcp-no-elicitation".into(),
+            reached.to_string_lossy().into_owned(),
+        ];
+        let client = McpClient::connect_2026("/bin/bash", &args, "fixture")
+            .await
+            .unwrap();
+        assert!(matches!(
+            client
+                .call_tool_with_mrtr("interactive", json!({}), &RejectMrtrInput)
+                .await,
+            Err(McpError::Protocol(message))
+                if message.contains("advertised elicitation handler")
+        ));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!reached.exists(), "MRTR request reached the stdio server");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stdio_extension_requests_do_not_claim_or_accept_mrtr() {
+        let read_request = pid_file("extension-read-request");
+        let list_request = pid_file("extension-list-request");
+        let observed_request = pid_file("extension-observed-request");
+        let args = vec![
+            "-c".to_string(),
+            concat!(
+                "IFS= read -r discover; ",
+                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"resultType\":\"complete\",\"supportedVersions\":[\"2026-07-28\"],\"capabilities\":{\"resources\":{}}}}'; ",
+                "IFS= read -r read_request; printf '%s' \"$read_request\" > \"$1\"; ",
+                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"resultType\":\"input_required\",\"requestState\":\"read-input\",\"inputRequests\":{}}}'; ",
+                "IFS= read -r list_request; printf '%s\\n' \"$list_request\" > \"$2\"; ",
+                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"resultType\":\"input_required\",\"requestState\":\"list-input\",\"inputRequests\":{},\"ttlMs\":1000,\"cacheScope\":\"private\"}}'; ",
+                "IFS= read -r list_retry; printf '%s\\n' \"$list_retry\" >> \"$2\"; ",
+                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":4,\"result\":{\"resources\":[],\"ttlMs\":1000,\"cacheScope\":\"private\"}}'; ",
+                "IFS= read -r observed_request; printf '%s' \"$observed_request\" > \"$3\"; ",
+                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":5,\"result\":{\"resources\":[]}}'; exec sleep 60"
+            )
+            .to_string(),
+            "mcp-extension".to_string(),
+            read_request.to_string_lossy().into_owned(),
+            list_request.to_string_lossy().into_owned(),
+            observed_request.to_string_lossy().into_owned(),
+        ];
+        let mut client = McpClient::connect_auto_with_environment_and_elicitation(
+            "/bin/bash",
+            &args,
+            "fixture",
+            &[],
+            &[],
+            true,
+        )
+        .await
+        .unwrap();
+
+        let outcome = client
+            .call_extension_outcome_observed(
+                "resources/read",
+                json!({"uri": "plantcore://guide"}),
+                || {},
+            )
+            .await;
+        assert!(matches!(
+            outcome,
+            McpToolOutcome::FailedDefinite {
+                error: McpError::Protocol(message),
+                evidence: Some(_),
+            } if message.contains("only supported for tools/call")
+        ));
+        assert!(matches!(
+            client.call_extension("resources/list", json!({})).await,
+            Err(McpError::Protocol(message)) if message.contains("only supported for tools/call")
+        ));
+        assert_eq!(
+            client
+                .call_extension("resources/list", json!({}))
+                .await
+                .unwrap(),
+            json!({"resources": []})
+        );
+        let dispatches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = dispatches.clone();
+        assert!(matches!(
+            client
+                .call_extension_outcome_observed("resources/list", json!({}), move || {
+                    observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                })
+                .await,
+            McpToolOutcome::Completed { .. }
+        ));
+        assert_eq!(dispatches.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(
+            observed_request.is_file(),
+            "observed extension completion must correspond to a physical dispatch"
+        );
+        for request in [&read_request, &list_request] {
+            let request = std::fs::read_to_string(request).unwrap();
+            assert!(!request.contains("elicitation"));
+        }
+
+        client.terminate().await;
+        let _ = std::fs::remove_file(read_request);
+        let _ = std::fs::remove_file(list_request);
+        let _ = std::fs::remove_file(observed_request);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stdio_mrtr_predispatch_failure_uses_only_observed_dispatch_evidence() {
+        let args = vec![
+            "-c".to_string(),
+            concat!(
+                "IFS= read -r discover; ",
+                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"resultType\":\"complete\",\"supportedVersions\":[\"2026-07-28\"],\"capabilities\":{\"tools\":{}}}}'; exec sleep 60"
+            )
+            .to_string(),
+        ];
+        let client = McpClient::connect_auto_with_environment_and_elicitation(
+            "/bin/bash",
+            &args,
+            "fixture",
+            &[],
+            &[],
+            true,
+        )
+        .await
+        .unwrap();
+        let dispatches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = dispatches.clone();
+        let outcome = client
+            .call_tool_with_mrtr_outcome_observed(
+                "interactive",
+                Value::String("x".repeat(MAX_FRAME_BYTES)),
+                &RejectMrtrInput,
+                move || {
+                    observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                },
+            )
+            .await;
+        assert!(matches!(
+            outcome,
+            McpToolOutcome::FailedDefinite {
+                error: McpError::FrameTooLarge { .. },
+                evidence: None,
+            }
+        ));
+        assert_eq!(dispatches.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stdio_mrtr_second_round_predispatch_failure_keeps_first_dispatch_evidence() {
+        let state = "s".repeat(4096);
+        let args = vec![
+            "-c".to_string(),
+            concat!(
+                "IFS= read -r discover; ",
+                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"resultType\":\"complete\",\"supportedVersions\":[\"2026-07-28\"],\"capabilities\":{\"tools\":{}}}}'; ",
+                "IFS= read -r call; ",
+                "printf '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"resultType\":\"input_required\",\"requestState\":\"%s\",\"inputRequests\":{}}}\\n' \"$1\"; exec sleep 60"
+            )
+            .to_string(),
+            "mcp-mrtr-second-round".to_string(),
+            state,
+        ];
+        let client = McpClient::connect_auto_with_environment_and_elicitation(
+            "/bin/bash",
+            &args,
+            "fixture",
+            &[],
+            &[],
+            true,
+        )
+        .await
+        .unwrap();
+        let dispatches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = dispatches.clone();
+        let outcome = client
+            .call_tool_with_mrtr_outcome_observed(
+                "interactive",
+                Value::String("x".repeat(MAX_FRAME_BYTES - 2048)),
+                &RejectMrtrInput,
+                move || {
+                    observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                },
+            )
+            .await;
+        assert!(matches!(
+            outcome,
+            McpToolOutcome::FailedDefinite {
+                error: McpError::FrameTooLarge { .. },
+                evidence: Some(_),
+            }
+        ));
+        assert_eq!(dispatches.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
 
     #[tokio::test]
     async fn overlong_frame_without_newline_is_rejected_without_growing_past_limit() {
@@ -772,7 +1760,7 @@ mod tests {
                 "-c".to_string(),
                 concat!(
                     "IFS= read -r init; ",
-                    "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\"}}'; ",
+                    "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-06-18\"}}'; ",
                     "IFS= read -r initialized; sleep 60 & descendant=$!; ",
                     "printf '%s %s' $$ $descendant > \"$1\"; wait"
                 )
@@ -842,7 +1830,7 @@ mod tests {
 
         assert_eq!(
             client.negotiated_protocol_version(),
-            REQUESTED_PROTOCOL_VERSION
+            STATEFUL_REQUESTED_PROTOCOL_VERSION
         );
         assert!(wait_until_file_exists(&initialized_path).await);
         let initialized = std::fs::read_to_string(&initialized_path).unwrap();
@@ -891,10 +1879,10 @@ mod tests {
             McpError::UnsupportedProtocolVersion {
                 client_version,
                 server_version,
-            } if client_version == REQUESTED_PROTOCOL_VERSION && server_version == "2099-01-01"
+            } if client_version == STATEFUL_REQUESTED_PROTOCOL_VERSION && server_version == "2099-01-01"
         ));
         let diagnostic = error.to_string();
-        assert!(diagnostic.contains(REQUESTED_PROTOCOL_VERSION));
+        assert!(diagnostic.contains(STATEFUL_REQUESTED_PROTOCOL_VERSION));
         assert!(diagnostic.contains("2099-01-01"));
         let pid: u32 = std::fs::read_to_string(&pid_path)
             .unwrap()
@@ -912,6 +1900,72 @@ mod tests {
 
         let _ = std::fs::remove_file(pid_path);
         let _ = std::fs::remove_file(initialized_path);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stateless_2026_stdio_discovers_lists_and_calls_without_initialize() {
+        let args = vec![
+            "-c".to_string(),
+            concat!(
+                "IFS= read -r discover; ",
+                "case \"$discover\" in *'\"method\":\"server/discover\"'*'\"_meta\"'*) ;; *) exit 30;; esac; ",
+                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"resultType\":\"complete\",\"supportedVersions\":[\"2026-07-28\"],\"capabilities\":{\"tools\":{}}}}'; ",
+                "IFS= read -r list; ",
+                "case \"$list\" in *'\"method\":\"tools/list\"'*'\"_meta\"'*) ;; *) exit 31;; esac; ",
+                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"echo\",\"description\":\"echo\",\"inputSchema\":{\"type\":\"object\"}}]}}'; ",
+                "IFS= read -r call; ",
+                "case \"$call\" in *'\"method\":\"tools/call\"'*) ;; *) exit 32;; esac; ",
+                "case \"$call\" in *'\"name\":\"echo\"'*) ;; *) exit 33;; esac; ",
+                "case \"$call\" in *'\"_meta\"'*) ;; *) exit 34;; esac; ",
+                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"done\"}]}}'; exec sleep 60"
+            )
+            .to_string(),
+        ];
+        let mut client = McpClient::connect_2026("/bin/bash", &args, "modern")
+            .await
+            .unwrap();
+        assert_eq!(
+            client.protocol_mode(),
+            crate::McpProtocolMode::Stateless2026
+        );
+        assert_eq!(
+            client.negotiated_protocol_version(),
+            crate::MODERN_PROTOCOL_VERSION
+        );
+        assert_eq!(client.list_tools().await.unwrap().len(), 1);
+        assert_eq!(client.call_tool("echo", json!({})).await.unwrap(), "done\n");
+        client.terminate().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stateful_stdio_fallback_does_not_advertise_an_unhandled_elicitation_method() {
+        let args = vec![
+            "-c".to_string(),
+            concat!(
+                "IFS= read -r discover; ",
+                "printf '%s\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32601,\"message\":\"Method not found\"}}'; ",
+                "IFS= read -r initialize; ",
+                "case \"$initialize\" in *'elicitation'*) exit 40;; esac; ",
+                "printf '%s\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"fixture\",\"version\":\"1\"}}}'; ",
+                "IFS= read -r initialized; exec sleep 60"
+            )
+            .to_string(),
+        ];
+        let mut client = McpClient::connect_auto_with_environment_and_elicitation(
+            "/bin/bash",
+            &args,
+            "stateful",
+            &[],
+            &[],
+            true,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(client.protocol_mode(), crate::McpProtocolMode::Stateful);
+        client.terminate().await;
     }
 
     #[cfg(unix)]
@@ -965,7 +2019,7 @@ mod tests {
             concat!(
                 "printf '%s|%s|%s' \"${ITERON_TEST_PRICING_KEY-EMPTY}\" \"${XDG_CONFIG_HOME-EMPTY}\" \"$PWD\" > \"$1\"; ",
                 "IFS= read -r init; ",
-                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\"}}'; ",
+                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-06-18\"}}'; ",
                 "IFS= read -r initialized; exec sleep 60"
             )
             .to_string(),
@@ -1002,7 +2056,7 @@ mod tests {
             "-c".to_string(),
             concat!(
                 "IFS= read -r init; ",
-                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\"}}'; ",
+                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-06-18\"}}'; ",
                 "IFS= read -r initialized; echo $$ > \"$1\"; ",
                 "IFS= read -r request; exec sleep 60"
             )
@@ -1041,7 +2095,7 @@ mod tests {
             "-c".to_string(),
             concat!(
                 "IFS= read -r init; ",
-                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\"}}'; ",
+                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-06-18\"}}'; ",
                 "IFS= read -r initialized; ",
                 "IFS= read -r slow; IFS= read -r fast; ",
                 "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"fast\"}]}}'; ",
@@ -1117,7 +2171,7 @@ mod tests {
             "-c".to_string(),
             concat!(
                 "IFS= read -r init; ",
-                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\"}}'; ",
+                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-06-18\"}}'; ",
                 "IFS= read -r initialized; echo $$ > \"$1\"; ",
                 "IFS= read -r request; exec sleep 60"
             )
@@ -1166,7 +2220,7 @@ mod tests {
             "-c".to_string(),
             concat!(
                 "IFS= read -r init; ",
-                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\"}}'; ",
+                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-06-18\"}}'; ",
                 "IFS= read -r initialized; exec sleep 60"
             )
             .to_string(),

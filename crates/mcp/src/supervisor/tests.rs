@@ -81,6 +81,85 @@ mod unix {
         .unwrap()
     }
 
+    struct PendingMrtrInput;
+
+    impl crate::McpMrtrHandler for PendingMrtrInput {
+        fn request<'a>(
+            &'a self,
+            _server_name: &'a str,
+            _tool_name: &'a str,
+            _request_state: Option<&'a str>,
+            _requests: Vec<crate::McpInputRequest>,
+        ) -> crate::McpFuture<'a, crate::McpInputDecision> {
+            Box::pin(std::future::pending())
+        }
+    }
+
+    #[tokio::test]
+    async fn mrtr_handler_timeout_after_authoritative_round_is_definite() {
+        let script = concat!(
+            "IFS= read -r discover; ",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"resultType\":\"complete\",\"supportedVersions\":[\"2026-07-28\"],\"capabilities\":{\"tools\":{}}}}'; ",
+            "IFS= read -r list; ",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"mutate\",\"inputSchema\":{\"type\":\"object\"}}]}}'; ",
+            "IFS= read -r call; ",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"resultType\":\"input_required\",\"requestState\":\"round-one\",\"inputRequests\":{\"confirm\":{\"method\":\"elicitation/create\",\"params\":{\"message\":\"Continue?\",\"requestedSchema\":{\"type\":\"object\",\"properties\":{\"confirmed\":{\"type\":\"boolean\"}},\"required\":[\"confirmed\"]}}}}}}'; exec sleep 60"
+        );
+        let timeouts = McpTimeouts::new(
+            Duration::from_secs(2),
+            Duration::from_secs(2),
+            Duration::from_secs(2),
+        )
+        .unwrap()
+        .with_operation_deadlines(Duration::from_secs(2), Duration::from_millis(100))
+        .unwrap();
+        let launch = McpLaunchConfig::new(
+            "/bin/bash".into(),
+            vec!["-c".into(), script.into(), "mcp-test".into()],
+            "files".into(),
+        )
+        .unwrap()
+        .with_auto_protocol()
+        .with_elicitation_form();
+        let mut server = McpSupervisor::deferred(
+            launch,
+            McpToolFilter::default(),
+            ReconnectPolicy::default(),
+            timeouts,
+        )
+        .unwrap();
+        let identity = server
+            .search_tools("mutate", 1, &McpCancellation::new())
+            .await
+            .unwrap()
+            .matches
+            .remove(0)
+            .identity;
+        let dispatches = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = dispatches.clone();
+        let outcome = server
+            .call_tool_with_handler_observed(
+                &identity,
+                json!({}),
+                &McpCancellation::new(),
+                Some(std::sync::Arc::new(PendingMrtrInput)),
+                move || {
+                    observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                },
+            )
+            .await;
+        assert!(matches!(
+            outcome,
+            McpToolOutcome::FailedDefinite {
+                error: McpError::Deadline { .. },
+                evidence: Some(_),
+            }
+        ));
+        assert_eq!(dispatches.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(server.status().phase, LifecyclePhase::Ready);
+        server.stop().await;
+    }
+
     #[tokio::test]
     async fn invalid_search_is_rejected_before_lazy_spawn() {
         let marker = temp_path("must-not-spawn");
@@ -110,7 +189,7 @@ mod unix {
         let script = concat!(
             "echo $$ > \"$1\"; ",
             "IFS= read -r init; ",
-            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\"}}'; ",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-06-18\"}}'; ",
             "IFS= read -r initialized; IFS= read -r list; ",
             "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"reader\",\"description\":\"read a file\"},{\"name\":\"read\",\"description\":\"exact reader\"},{\"name\":\"grep\",\"description\":\"search text\"}]}}'; ",
             "exec sleep 60"
@@ -152,7 +231,7 @@ mod unix {
             "count=0; test ! -f \"$1\" || count=$(cat \"$1\"); count=$((count + 1)); ",
             "printf '%s' \"$count\" > \"$1\"; echo $$ >> \"$2\"; ",
             "IFS= read -r init; ",
-            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\"}}'; ",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-06-18\"}}'; ",
             "IFS= read -r initialized; IFS= read -r list; ",
             "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"read\"}]}}'; ",
             "if test \"$count\" = 1; then exit 0; fi; exec sleep 60"
@@ -198,7 +277,7 @@ mod unix {
             "count=0; test ! -f \"$1\" || count=$(cat \"$1\"); count=$((count + 1)); ",
             "printf '%s' \"$count\" > \"$1\"; echo $$ >> \"$2\"; ",
             "IFS= read -r init; ",
-            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\"}}'; ",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-06-18\"}}'; ",
             "IFS= read -r initialized; IFS= read -r list; ",
             "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"mutate\"}]}}'; ",
             "if test \"$count\" = 1; then while test ! -f \"$3\"; do sleep 0.01; done; exit 0; fi; ",
@@ -307,7 +386,7 @@ mod unix {
         let first_script = concat!(
             "printf spawned > \"$1\"; ",
             "IFS= read -r init; ",
-            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\"}}'; ",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-06-18\"}}'; ",
             "IFS= read -r initialized; IFS= read -r list; ",
             "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"read\"}]}}'; exec sleep 60"
         );
@@ -354,7 +433,7 @@ mod unix {
         let script = concat!(
             "echo $$ > \"$1\"; ",
             "IFS= read -r init; ",
-            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\"}}'; ",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-06-18\"}}'; ",
             "IFS= read -r initialized; IFS= read -r list; printf '\\377\\n'; exec sleep 60"
         );
         let mut server = supervisor(
@@ -420,7 +499,7 @@ mod unix {
         let script = concat!(
             "n=0; test ! -f \"$1\" || n=$(cat \"$1\"); n=$((n+1)); printf '%s' \"$n\" > \"$1\"; ",
             "IFS= read -r init; ",
-            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\"}}'; ",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-06-18\"}}'; ",
             "IFS= read -r initialized; IFS= read -r list; ",
             "if test \"$n\" = 1; then exec sleep 60; fi; ",
             "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"read\"}]}}'; exec sleep 60"
@@ -486,7 +565,7 @@ mod unix {
         let counter = temp_path("identity-counter");
         let script = concat!(
             "n=0; test ! -f \"$1\" || n=$(cat \"$1\"); n=$((n+1)); printf '%s' \"$n\" > \"$1\"; ",
-            "IFS= read -r init; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\"}}'; ",
+            "IFS= read -r init; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-06-18\"}}'; ",
             "IFS= read -r initialized; IFS= read -r list; ",
             "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"mutate\",\"inputSchema\":{\"type\":\"object\"}}]}}'; ",
             "IFS= read -r call; if test \"$n\" = 1; then exit 7; fi; ",
@@ -530,7 +609,7 @@ mod unix {
         let dispatch_marker = temp_path("schema-dispatch");
         let script = concat!(
             "n=0; test ! -f \"$1\" || n=$(cat \"$1\"); n=$((n+1)); printf '%s' \"$n\" > \"$1\"; ",
-            "IFS= read -r init; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\"}}'; ",
+            "IFS= read -r init; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-06-18\"}}'; ",
             "IFS= read -r initialized; IFS= read -r list; ",
             "if test \"$n\" = 1; then schema='{\"type\":\"object\"}'; else schema='{\"type\":\"object\",\"required\":[\"path\"]}'; fi; ",
             "printf '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"mutate\",\"inputSchema\":%s}]}}\\n' \"$schema\"; ",
@@ -578,7 +657,7 @@ mod unix {
         let pid_path = temp_path("cancel-call-pid");
         let script = concat!(
             "echo $$ > \"$2\"; IFS= read -r init; ",
-            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\"}}'; ",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-06-18\"}}'; ",
             "IFS= read -r initialized; IFS= read -r list; ",
             "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"mutate\"}]}}'; ",
             "IFS= read -r call; printf seen > \"$1\"; exec sleep 60"

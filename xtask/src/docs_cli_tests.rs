@@ -36,6 +36,10 @@ fn every_shipped_flag_and_subcommand_appears() {
         "iteron tunables explain",
         "iteron plugin install",
         "iteron plugin doctor",
+        "iteron mcp add",
+        "iteron mcp auth login",
+        "iteron mcp test",
+        "iteron mcp doctor",
         "--allow-code",
         "--image",
         "--timeline",
@@ -55,7 +59,12 @@ fn a_new_flag_without_a_doc_entry_is_a_rendering_difference() {
     let source = std::fs::read_to_string(root.join(CLI_SOURCE)).unwrap();
     let plugin = std::fs::read_to_string(root.join("crates/cli/src/plugin.rs")).unwrap();
     let tunables = std::fs::read_to_string(root.join("crates/cli/src/tunables.rs")).unwrap();
-    let modules = [("plugin", plugin.as_str()), ("tunables", tunables.as_str())];
+    let mcp = std::fs::read_to_string(root.join("crates/cli/src/mcp/commands.rs")).unwrap();
+    let modules = [
+        ("mcp::commands", mcp.as_str()),
+        ("plugin", plugin.as_str()),
+        ("tunables", tunables.as_str()),
+    ];
     let published = render_sources(&source, &modules).unwrap();
     let with_new_flag = source.replacen(
         "    /// The repository to work in (defaults to the current directory).",

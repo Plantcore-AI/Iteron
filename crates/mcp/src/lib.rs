@@ -18,11 +18,13 @@
 use serde_json::{Value, json};
 use std::io::Write;
 
+mod cache;
 pub mod client;
 mod deadlines;
 mod elicitation;
 mod evidence;
 pub mod http;
+mod mrtr;
 pub mod oauth;
 mod pagination;
 mod policy;
@@ -41,10 +43,12 @@ pub use deadlines::{MAX_MCP_DEADLINE_MILLISECONDS, McpDeadlinePolicy, McpTranspo
 pub use elicitation::{
     ElicitationAction, ElicitationRequest, ElicitationResponse, MAX_ELICITATION_CONTENT_BYTES,
     MAX_ELICITATION_FIELD_NAME_BYTES, MAX_ELICITATION_FIELDS, MAX_ELICITATION_MESSAGE_BYTES,
-    MAX_ELICITATION_SCHEMA_BYTES, McpElicitationHandler,
+    MAX_ELICITATION_SCHEMA_BYTES, McpElicitationHandler, elicitation_handler_from_mrtr,
 };
-pub use evidence::McpToolCallEvidence;
+pub use evidence::{McpDispatchProgress, McpToolCallEvidence};
+pub use mrtr::{McpInputDecision, McpInputRequest, McpMrtrHandler, validate_mrtr_input};
 pub use policy::{MAX_MCP_TOOL_POLICY_ENTRIES, McpServerPolicy, default_host_ceiling};
+pub use protocol_version::{MODERN_PROTOCOL_VERSION, McpProtocolMode};
 pub use remote::{McpRemoteClient, McpServerCapabilities};
 pub use result_policy::{
     DEFAULT_MCP_SPILL_RESULT_BYTES, DEFAULT_MCP_VISIBLE_RESULT_BYTES, MAX_MCP_SPILL_RESULT_BYTES,
@@ -114,6 +118,11 @@ pub enum McpError {
     UnsupportedProtocolVersion {
         client_version: String,
         server_version: String,
+    },
+    #[error("MCP server rejected protocol version `{requested}`")]
+    ProtocolVersionRejected {
+        requested: String,
+        supported: Vec<String>,
     },
     #[error("MCP frame exceeds {limit} byte limit")]
     FrameTooLarge { limit: usize },
@@ -210,6 +219,10 @@ pub enum McpError {
     InvalidEndpoint { field: &'static str, limit: usize },
     #[error("MCP HTTP endpoint returned status {status}")]
     HttpStatus { status: u16 },
+    #[error("MCP HTTP endpoint requires additional OAuth scope")]
+    InsufficientScope { scopes: Vec<String> },
+    #[error("MCP OAuth request violates the bounded network policy")]
+    OAuthNetworkPolicy,
     /// A 3xx was answered, not followed. The configured endpoint is an authority boundary: a
     /// redirect target chosen by the peer must never receive the bearer credential or the body.
     #[error(
@@ -253,6 +266,9 @@ impl McpError {
                 format!(
                     "MCP protocol version mismatch: client supports `{client_version}` but server selected `{server_version}`"
                 )
+            }
+            Self::ProtocolVersionRejected { .. } => {
+                "MCP server rejected the requested protocol version".into()
             }
             Self::UnsupportedProtocolVersion { .. } => {
                 "MCP server selected an unsupported protocol version".into()
@@ -355,6 +371,11 @@ impl McpError {
             // configuration whose path may be capability-bearing, so nothing is reflected.
             Self::InvalidEndpoint { .. } => "invalid MCP HTTP endpoint".into(),
             Self::HttpStatus { status } => format!("MCP HTTP endpoint returned status {status}"),
+            Self::InsufficientScope { scopes } => format!(
+                "MCP HTTP endpoint requires additional OAuth scope: {}",
+                scopes.join(",")
+            ),
+            Self::OAuthNetworkPolicy => "MCP OAuth request violates the network policy".into(),
             Self::HttpRedirectRefused => {
                 "MCP HTTP endpoint attempted a refused cross-authority redirect".into()
             }
@@ -438,6 +459,15 @@ const UNSPECIFIED_SERVER_ERROR_CODE: i64 = 0;
 pub fn parse_response(line: &str) -> Result<Value, McpError> {
     let v: Value = serde_json::from_str(line)?;
     if let Some(err) = v.get("error") {
+        if err.get("code").and_then(Value::as_i64) == Some(-32022)
+            && let Some((requested, supported)) =
+                protocol_version::parse_protocol_version_rejection(err)
+        {
+            return Err(McpError::ProtocolVersionRejected {
+                requested,
+                supported,
+            });
+        }
         return Err(McpError::Server {
             code: err.get("code").and_then(|x| x.as_i64()).unwrap_or(
                 iteron_tunables::param_integer(
@@ -505,6 +535,19 @@ mod tests {
     }
 
     #[test]
+    fn parse_response_preserves_structured_protocol_version_rejection() {
+        let error = parse_response(
+            r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32022,"message":"Unsupported protocol version","data":{"supported":["2026-07-28"],"requested":"2026-07-28"}}}"#,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            McpError::ProtocolVersionRejected { requested, supported }
+                if requested == "2026-07-28" && supported == ["2026-07-28"]
+        ));
+    }
+
+    #[test]
     fn public_error_summary_never_reflects_peer_or_terminal_control_text() {
         let secret = "opaque-secret\u{1b}[31m";
         let error = McpError::Server {
@@ -547,11 +590,11 @@ mod tests {
     #[test]
     fn public_protocol_mismatch_summary_only_reflects_known_dated_versions() {
         let actionable = McpError::UnsupportedProtocolVersion {
-            client_version: "2024-11-05".into(),
+            client_version: "2025-06-18".into(),
             server_version: "2099-01-01".into(),
         }
         .public_summary();
-        assert!(actionable.contains("2024-11-05"));
+        assert!(actionable.contains("2025-06-18"));
         assert!(actionable.contains("2099-01-01"));
 
         let credential_shaped = ["gh", "p_", "AbCdEf1234567890AbCdEf1234567890"].concat();
@@ -561,7 +604,7 @@ mod tests {
             "2".repeat(65),
         ] {
             let redacted = McpError::UnsupportedProtocolVersion {
-                client_version: "2024-11-05".into(),
+                client_version: "2025-06-18".into(),
                 server_version: unsafe_version.clone(),
             }
             .public_summary();

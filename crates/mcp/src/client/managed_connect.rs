@@ -3,7 +3,12 @@
 use super::{McpClient, lifecycle::OwnedProcess, multiplex::ResponseRouter};
 use crate::{
     McpError,
-    protocol_version::{REQUESTED_PROTOCOL_VERSION, negotiate_initialize_result},
+    protocol_version::{
+        DiscoveryNegotiation, DiscoveryRejection, MODERN_PROTOCOL_VERSION, McpProtocolMode,
+        STATEFUL_REQUESTED_PROTOCOL_VERSION, discover_params, discovery_allows_stateful_fallback,
+        discovery_rejection, negotiate_discovery, negotiate_initialize_result,
+        require_modern_discovery,
+    },
     tool_filter::validate_server_name,
 };
 use serde_json::json;
@@ -12,6 +17,7 @@ use tokio::{io::BufReader, sync::Mutex};
 
 const READ_BUFFER_BYTES: usize = 8 * 1024;
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn connect(
     command: &str,
     args: &[String],
@@ -19,7 +25,10 @@ pub(super) async fn connect(
     handshake_timeout: Duration,
     request_timeout: Duration,
     sensitive_env_names: &[String],
+    granted_env_names: &[String],
     cancellation: Option<&crate::supervisor::McpCancellation>,
+    advertises_elicitation: bool,
+    protocol_mode: McpProtocolMode,
 ) -> Result<McpClient, McpError> {
     let startup_milliseconds =
         u64::try_from(handshake_timeout.as_millis()).map_err(|_| McpError::InvalidEndpoint {
@@ -41,9 +50,28 @@ pub(super) async fn connect(
     validate_server_name(name)?;
     let mut command = tokio::process::Command::new(command);
     // A stdio server is trusted user configuration, but it is not entitled to every provider
-    // credential injected into Core. Give it only a toolchain/locale environment; explicit
-    // per-server secret grants require a future credential broker.
+    // credential injected into Core. Give it only toolchain/locale values plus exact names the
+    // operator explicitly granted to this server.
     iteron_sandbox::clear_to_safe_child_env_with_exact(&mut command, sensitive_env_names);
+    if granted_env_names.len() > 64
+        || granted_env_names.iter().any(|name| {
+            name.is_empty()
+                || name.len() > 128
+                || !name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
+        })
+    {
+        return Err(McpError::InvalidEndpoint {
+            field: "stdio_env_name",
+            limit: 64,
+        });
+    }
+    for name in granted_env_names {
+        if let Some(value) = std::env::var_os(name) {
+            command.env(name, value);
+        }
+    }
     iteron_sandbox::configure_process_group(&mut command);
     #[cfg(unix)]
     command.current_dir("/");
@@ -89,17 +117,84 @@ pub(super) async fn connect(
         spill_store: crate::result_policy::McpSpillStore::create()?,
         negotiated_protocol_version: None,
         capabilities: crate::McpServerCapabilities::default(),
+        protocol_mode,
+        list_cache: crate::cache::McpListCache::new(),
+        advertises_elicitation,
         server_name: name.to_string(),
     };
 
     // One deadline covers both handshake messages, their writes, lock acquisition, and the
     // initialize response. On every failure path the process is explicitly killed and reaped.
     let handshake = async {
+        let mut stateful_request_version = STATEFUL_REQUESTED_PROTOCOL_VERSION.to_owned();
+        if protocol_mode.prefers_modern() {
+            let mut discovery = client
+                .call_unbounded_by_outer_deadline(
+                    "server/discover",
+                    discover_params(advertises_elicitation),
+                )
+                .await;
+            if matches!(
+                discovery.as_ref().err().and_then(discovery_rejection),
+                Some(DiscoveryRejection::RetryModern)
+            ) {
+                discovery = client
+                    .call_unbounded_by_outer_deadline(
+                        "server/discover",
+                        discover_params(advertises_elicitation),
+                    )
+                    .await;
+            }
+            let negotiation = match discovery {
+                Ok(result) => negotiate_discovery(&result)?,
+                Err(error)
+                    if protocol_mode == McpProtocolMode::Auto
+                        && matches!(
+                            discovery_rejection(&error),
+                            Some(DiscoveryRejection::Stateful(_))
+                        ) =>
+                {
+                    let Some(DiscoveryRejection::Stateful(version)) = discovery_rejection(&error)
+                    else {
+                        unreachable!("guard requires a stateful discovery rejection")
+                    };
+                    DiscoveryNegotiation::Stateful(version)
+                }
+                Err(error)
+                    if protocol_mode == McpProtocolMode::Auto
+                        && discovery_allows_stateful_fallback(&error) =>
+                {
+                    DiscoveryNegotiation::Stateful(STATEFUL_REQUESTED_PROTOCOL_VERSION.to_owned())
+                }
+                Err(error) => return Err(error),
+            };
+            match negotiation {
+                DiscoveryNegotiation::Modern(version, capabilities) => {
+                    client.negotiated_protocol_version = Some(version);
+                    client.capabilities = capabilities;
+                    client.protocol_mode = McpProtocolMode::Stateless2026;
+                    return Ok(());
+                }
+                legacy @ DiscoveryNegotiation::Stateful(_)
+                    if protocol_mode == McpProtocolMode::Stateless2026 =>
+                {
+                    require_modern_discovery(legacy)?;
+                    unreachable!("strict modern negotiation cannot select a stateful version")
+                }
+                DiscoveryNegotiation::Stateful(version) => {
+                    stateful_request_version = version;
+                }
+            }
+        }
+        // Stateful stdio has no server-request dispatch loop. A 2026 MRTR handler can justify the
+        // stateless discovery claim, but it must not be projected as ordinary elicitation after
+        // falling back to initialize.
+        client.advertises_elicitation = false;
         let initialize_result = client
             .call_unbounded_by_outer_deadline(
                 "initialize",
                 json!({
-                    "protocolVersion": REQUESTED_PROTOCOL_VERSION,
+                    "protocolVersion": stateful_request_version,
                     "capabilities": {},
                     "clientInfo": {"name": "iteron", "version": env!("CARGO_PKG_VERSION")}
                 }),
@@ -114,6 +209,7 @@ pub(super) async fn connect(
             resources: capabilities.is_some_and(|value| value.contains_key("resources")),
             prompts: capabilities.is_some_and(|value| value.contains_key("prompts")),
         };
+        client.protocol_mode = McpProtocolMode::Stateful;
         client
             .notify_unbounded_by_outer_deadline("notifications/initialized", json!({}))
             .await
@@ -148,7 +244,7 @@ pub(super) async fn connect(
         HandshakeResult::TimedOut => {
             client.terminate().await;
             Err(McpError::Deadline {
-                operation: "initialize handshake".into(),
+                operation: format!("{MODERN_PROTOCOL_VERSION} discovery/initialize handshake"),
             })
         }
         HandshakeResult::Cancelled => {

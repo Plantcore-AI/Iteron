@@ -14,7 +14,7 @@ mod schema;
 mod verification;
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use std::path::Path;
 
@@ -477,6 +477,10 @@ pub struct McpServerConfig {
     pub command: Option<String>,
     #[serde(default)]
     pub args: Vec<String>,
+    /// Exact environment-variable names explicitly granted to this stdio server. Values remain
+    /// outside configuration and are copied only into this child process.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub env_names: Vec<String>,
     /// Streamable-HTTP endpoint. HTTPS is required except for loopback.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
@@ -524,7 +528,8 @@ impl McpTransportConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpOAuthConfig {
-    pub access_token_env: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_token_env: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at_env: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -536,7 +541,30 @@ pub struct McpOAuthConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_secret_env: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issuer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scopes: Vec<String>,
+    #[serde(default, skip_serializing_if = "OAuthClientRegistration::is_auto")]
+    pub registration: OAuthClientRegistration,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revoke_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "snake_case")]
+pub enum OAuthClientRegistration {
+    #[default]
+    Auto,
+    Cimd,
+    Dcr,
+}
+
+impl OAuthClientRegistration {
+    fn is_auto(&self) -> bool {
+        matches!(self, Self::Auto)
+    }
 }
 
 /// Where one provider instance's credential comes from.
@@ -965,11 +993,30 @@ impl FileConfig {
                                 "mcp_servers[{index}] stdio transport cannot declare url, header_env, or oauth"
                             ));
                         }
+                        if server.env_names.len() > 64 {
+                            return Err(format!(
+                                "mcp_servers[{index}].env_names exceeds its 64-entry bound"
+                            ));
+                        }
+                        let mut env_names = BTreeSet::new();
+                        for env_name in &server.env_names {
+                            validate_upper_env_name(env_name).map_err(|reason| {
+                                format!("mcp_servers[{index}].env_names: {reason}")
+                            })?;
+                            if !env_names.insert(env_name) {
+                                return Err(format!(
+                                    "mcp_servers[{index}].env_names contains a duplicate"
+                                ));
+                            }
+                        }
                     }
                     McpTransportConfig::Http => {
-                        if server.command.is_some() || !server.args.is_empty() {
+                        if server.command.is_some()
+                            || !server.args.is_empty()
+                            || !server.env_names.is_empty()
+                        {
                             return Err(format!(
-                                "mcp_servers[{index}] http transport cannot declare command or args"
+                                "mcp_servers[{index}] http transport cannot declare command, args, or env_names"
                             ));
                         }
                         let url = server.url.as_deref().ok_or_else(|| {
@@ -987,9 +1034,11 @@ impl FileConfig {
                             })?;
                         }
                         if let Some(oauth) = &server.oauth {
-                            validate_upper_env_name(&oauth.access_token_env).map_err(|reason| {
-                                format!("mcp_servers[{index}].oauth.access_token_env: {reason}")
-                            })?;
+                            if let Some(name) = oauth.access_token_env.as_deref() {
+                                validate_upper_env_name(name).map_err(|reason| {
+                                    format!("mcp_servers[{index}].oauth.access_token_env: {reason}")
+                                })?;
+                            }
                             for name in [
                                 oauth.expires_at_env.as_deref(),
                                 oauth.refresh_token_env.as_deref(),
@@ -1007,6 +1056,58 @@ impl FileConfig {
                                     "mcp_servers[{index}].oauth refresh_url and refresh_token_env must be declared together"
                                 ));
                             }
+                            if oauth.client_secret_env.is_some() && oauth.client_id.is_none() {
+                                return Err(format!(
+                                    "mcp_servers[{index}].oauth client_secret_env requires client_id"
+                                ));
+                            }
+                            if oauth.client_secret_env.is_some()
+                                && oauth.access_token_env.is_none()
+                                && oauth.issuer.is_none()
+                            {
+                                return Err(format!(
+                                    "mcp_servers[{index}].oauth client_secret_env requires issuer"
+                                ));
+                            }
+                            match oauth.registration {
+                                OAuthClientRegistration::Cimd => {
+                                    let client_id = oauth.client_id.as_deref().ok_or_else(|| {
+                                        format!(
+                                            "mcp_servers[{index}].oauth registration=cimd requires client_id"
+                                        )
+                                    })?;
+                                    let parsed = url::Url::parse(client_id).map_err(|_| {
+                                        format!(
+                                            "mcp_servers[{index}].oauth CIMD client_id must be an HTTPS URL"
+                                        )
+                                    })?;
+                                    if parsed.scheme() != "https" {
+                                        return Err(format!(
+                                            "mcp_servers[{index}].oauth CIMD client_id must be an HTTPS URL"
+                                        ));
+                                    }
+                                }
+                                OAuthClientRegistration::Dcr
+                                    if oauth.client_id.is_some()
+                                        || oauth.client_secret_env.is_some() =>
+                                {
+                                    return Err(format!(
+                                        "mcp_servers[{index}].oauth registration=dcr cannot declare client_id or client_secret_env"
+                                    ));
+                                }
+                                _ => {}
+                            }
+                            if let Some(resource) = oauth.resource.as_deref() {
+                                iteron_mcp::http::McpHttpEndpoint::parse(resource).map_err(
+                                    |error| format!("mcp_servers[{index}].oauth.resource: {error}"),
+                                )?;
+                            }
+                            if let Some(issuer) = oauth.issuer.as_deref() {
+                                iteron_mcp::http::McpHttpEndpoint::parse(issuer).map_err(
+                                    |error| format!("mcp_servers[{index}].oauth.issuer: {error}"),
+                                )?;
+                            }
+                            validate_oauth_scopes(index, &oauth.scopes)?;
                             for endpoint in
                                 [oauth.refresh_url.as_deref(), oauth.revoke_url.as_deref()]
                                     .into_iter()
@@ -1491,6 +1592,32 @@ fn read_bounded_config(path: &Path, allow_symlink: bool) -> anyhow::Result<Optio
     String::from_utf8(bytes)
         .map(Some)
         .map_err(|_| anyhow::anyhow!("{}: config is not valid UTF-8", path.display()))
+}
+
+fn validate_oauth_scopes(index: usize, scopes: &[String]) -> Result<(), String> {
+    if scopes.len() > 64 || scopes.iter().map(String::len).sum::<usize>() > 4096 {
+        return Err(format!(
+            "mcp_servers[{index}].oauth.scopes exceeds its bounded size"
+        ));
+    }
+    let mut seen = BTreeSet::new();
+    for scope in scopes {
+        if scope.is_empty()
+            || scope.len() > 256
+            || scope.chars().any(char::is_control)
+            || scope.chars().any(char::is_whitespace)
+        {
+            return Err(format!(
+                "mcp_servers[{index}].oauth.scopes contains an invalid scope"
+            ));
+        }
+        if !seen.insert(scope.as_str()) {
+            return Err(format!(
+                "mcp_servers[{index}].oauth.scopes contains a duplicate"
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn validate_api_root(provider_id: &str, value: &str) -> Result<(), String> {
@@ -2177,6 +2304,7 @@ mod tests {
                     "name": "operator-tools",
                     "command": "/opt/operator/bin/mcp",
                     "args": ["--stdio"],
+                    "env_names": ["MCP_API_TOKEN"],
                     "tools": {
                         "allow": ["shared", "read.file"],
                         "deny": ["delete_all"]
@@ -2188,12 +2316,16 @@ mod tests {
         let server = &config.mcp_servers.unwrap()[0];
         assert_eq!(server.tools.allow, ["shared", "read.file"]);
         assert_eq!(server.tools.deny, ["delete_all"]);
+        assert_eq!(server.env_names, ["MCP_API_TOKEN"]);
 
         for invalid in [
             r#"{"schema_version":2,"mcp_servers":[{"name":"a__b","command":"mcp"}]}"#,
             r#"{"schema_version":2,"mcp_servers":[{"name":"alpha","command":"mcp","tools":{"allow":["unsafe/path"]}}]}"#,
             r#"{"schema_version":2,"mcp_servers":[{"name":"alpha","command":"mcp","tools":{"alllow":["read"]}}]}"#,
             r#"{"schema_version":2,"mcp_servers":[{"name":"alpha","command":"mcp"},{"name":"alpha","command":"other"}]}"#,
+            r#"{"schema_version":2,"mcp_servers":[{"name":"alpha","command":"mcp","env_names":["lowercase"]}]}"#,
+            r#"{"schema_version":2,"mcp_servers":[{"name":"alpha","command":"mcp","env_names":["TOKEN","TOKEN"]}]}"#,
+            r#"{"schema_version":2,"mcp_servers":[{"name":"alpha","transport":"http","url":"https://example.com/mcp","env_names":["TOKEN"]}]}"#,
         ] {
             assert!(FileConfig::parse(invalid).is_err(), "accepted {invalid}");
         }
@@ -2210,6 +2342,47 @@ mod tests {
             }]
         });
         assert!(FileConfig::parse(&oversized.to_string()).is_err());
+    }
+
+    #[test]
+    fn mcp_oauth_configuration_is_strict_and_keeps_only_environment_names() {
+        let config = FileConfig::parse(
+            r#"{
+                "schema_version":2,
+                "mcp_servers":[{
+                    "name":"remote",
+                    "transport":"http",
+                    "url":"https://mcp.example/mcp",
+                    "oauth":{
+                        "resource":"https://mcp.example",
+                        "scopes":["tools:read","prompts:read"],
+                        "registration":"auto",
+                        "client_id":"registered-client",
+                        "client_secret_env":"MCP_CLIENT_SECRET",
+                        "issuer":"https://auth.example"
+                    }
+                }]
+            }"#,
+        )
+        .unwrap();
+        let oauth = config.mcp_servers.unwrap()[0].oauth.clone().unwrap();
+        assert_eq!(oauth.resource.as_deref(), Some("https://mcp.example"));
+        assert_eq!(oauth.scopes, ["tools:read", "prompts:read"]);
+        assert_eq!(
+            oauth.client_secret_env.as_deref(),
+            Some("MCP_CLIENT_SECRET")
+        );
+        assert_eq!(oauth.issuer.as_deref(), Some("https://auth.example"));
+
+        for invalid in [
+            r#"{"schema_version":2,"mcp_servers":[{"name":"remote","transport":"http","url":"https://mcp.example/mcp","oauth":{"client_secret_env":"SECRET"}}]}"#,
+            r#"{"schema_version":2,"mcp_servers":[{"name":"remote","transport":"http","url":"https://mcp.example/mcp","oauth":{"client_id":"client","client_secret_env":"SECRET"}}]}"#,
+            r#"{"schema_version":2,"mcp_servers":[{"name":"remote","transport":"http","url":"https://mcp.example/mcp","oauth":{"registration":"dcr","client_id":"client"}}]}"#,
+            r#"{"schema_version":2,"mcp_servers":[{"name":"remote","transport":"http","url":"https://mcp.example/mcp","oauth":{"registration":"cimd","client_id":"plain-client"}}]}"#,
+            r#"{"schema_version":2,"mcp_servers":[{"name":"remote","transport":"http","url":"https://mcp.example/mcp","oauth":{"scopes":["same","same"]}}]}"#,
+        ] {
+            assert!(FileConfig::parse(invalid).is_err(), "accepted {invalid}");
+        }
     }
 
     #[test]

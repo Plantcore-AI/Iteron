@@ -91,6 +91,7 @@ nav:
       - Sessions, resume, and fork: using/sessions.md
       - Verification gates: using/verification.md
       - Skills, hooks, and MCP: using/extensions.md
+      - MCP compatibility: mcp-compatibility.md
       - Ultracode: using/ultracode.md
   - Concepts:
       - Architecture: architecture.md
