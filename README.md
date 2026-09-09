@@ -1,5 +1,5 @@
 <h1 align="center">
-  <img src="docs/assets/brand/iteron-logo.svg" width="720" alt="Iteron">
+  <img src="docs/assets/brand/iteron-logo.png" width="720" alt="Iteron">
 </h1>
 
 <p align="center">
