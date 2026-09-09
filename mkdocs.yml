@@ -1,7 +1,7 @@
 site_name: Iteron
 site_description: >-
-  Documentation for Iteron, a pre-alpha terminal coding agent and modular
-  Rust substrate for bounded, recoverable agent runtimes.
+  Documentation for Iteron, the open-source substrate for building, evaluating,
+  and governing harness checkpoints across domain-specific AI agents.
 site_url: https://plantcore-ai.github.io/Iteron/
 repo_url: https://github.com/Plantcore-AI/Iteron
 repo_name: Plantcore-AI/Iteron
@@ -95,6 +95,8 @@ nav:
       - Ultracode: using/ultracode.md
   - Concepts:
       - Architecture: architecture.md
+      - Why harness checkpoints: concepts/harness-checkpoints.md
+      - 为什么需要 Harness checkpoint: concepts/harness-checkpoints.zh-CN.md
       - Runtime lifecycle: concepts/runtime-lifecycle.md
       - Records and replay: concepts/records-and-replay.md
       - Effects and authority: concepts/effects-and-authority.md
@@ -172,6 +174,9 @@ validation:
   omitted_files: warn
   absolute_links: warn
   unrecognized_links: warn
+
+extra_css:
+  - assets/stylesheets/extra.css
 
 copyright: Iteron contributors · Apache-2.0
 

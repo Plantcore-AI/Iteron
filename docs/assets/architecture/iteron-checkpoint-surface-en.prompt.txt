@@ -1,0 +1,91 @@
+Create a presentation-ready systems-paper architecture figure.
+
+PURPOSE
+- Title, verbatim: "ITERON · MODEL–TASK CHECKPOINT SURFACE"
+- Intended message: "Explain the research target: select a governed harness checkpoint for each characterized model-task operating region using explicit objectives, constraints and sensitivity evidence."
+
+CANVAS
+- Aspect ratio: "16:9 landscape"
+- Background: "near-white technical paper"
+
+VISUAL STYLE
+- Medium: "formal systems-paper concept diagram, precise flat boxes, thin marker-like single-headed arrows, generous whitespace, concise monospace labels"
+- Palette: "navy text; cobalt profiles; purple selection; green evidence and registry; amber constraints"
+
+SEMANTIC ZONES — draw each zone exactly once as containment, never as an arrow endpoint:
+- operating_cell: "CHARACTERIZE THE OPERATING CELL"; semantic tone: blue
+- selection: "SELECT AN ADMITTED CHECKPOINT"; semantic tone: purple
+- evidence: "MEASURE AND UPDATE"; semantic tone: green
+
+NODE INVENTORY — draw each node exactly once; kind is semantic guidance only and must not be rendered:
+- model_profile: "MODEL PROFILE"; zone: operating_cell; semantic kind, do not render: "measured frozen-route capabilities and failure modes"
+- task_profile: "TASK PROFILE"; zone: operating_cell; semantic kind, do not render: "task-class requirements without answer features"
+- objective_constraints: "OBJECTIVE + HARD CONSTRAINTS"; zone: operating_cell; semantic kind, do not render: "service objective, authority, integrity and resource ceilings"
+- cell: "MODEL × TASK CELL"; zone: operating_cell; semantic kind, do not render: "content-addressed operating coordinate"
+- registry: "CHECKPOINT APPLICABILITY REGISTRY"; zone: selection; semantic kind, do not render: "supported regions, evidence strength, fallback, expiry and invalidation"
+- selector: "CONSTRAINED SELECTOR"; zone: selection; semantic kind, do not render: "selects from Pareto-admissible checkpoints without granting authority"
+- checkpoint: "HARNESS CHECKPOINT"; zone: selection; semantic kind, do not render: "typed versioned policy bundle with lineage and rollback"
+- runtime_trial: "BOUNDED RUNTIME TRIAL"; zone: evidence; semantic kind, do not render: "frozen model plus selected harness on the characterized task distribution"
+- outcome: "OUTCOME VECTOR"; zone: evidence; semantic kind, do not render: "quality, cost, latency and reliability with uncertainty"
+- sensitivity: "SENSITIVITY EVIDENCE"; zone: evidence; semantic kind, do not render: "paired harness perturbation deltas conditioned on model and task"
+
+ONLY ALLOWED SINGLE-HEADED ARROW LEDGER — draw every listed edge exactly once and no unlisted connector:
+- CS-01: "MODEL PROFILE" (model_profile) — "capabilities" → "MODEL × TASK CELL" (cell); tone: blue; style: solid; place the sole arrowhead at the receiver cell
+- CS-02: "TASK PROFILE" (task_profile) — "requirements" → "MODEL × TASK CELL" (cell); tone: blue; style: solid; place the sole arrowhead at the receiver cell
+- CS-03: "OBJECTIVE + HARD CONSTRAINTS" (objective_constraints) — "objective and ceilings" → "MODEL × TASK CELL" (cell); tone: ink; style: solid; place the sole arrowhead at the receiver cell
+- CS-04: "MODEL × TASK CELL" (cell) — "operating coordinate" → "CONSTRAINED SELECTOR" (selector); tone: purple; style: solid; place the sole arrowhead at the receiver selector
+- CS-05: "CHECKPOINT APPLICABILITY REGISTRY" (registry) — "admitted applicability" → "CONSTRAINED SELECTOR" (selector); tone: green; style: solid; place the sole arrowhead at the receiver selector
+- CS-06: "CONSTRAINED SELECTOR" (selector) — "select" → "HARNESS CHECKPOINT" (checkpoint); tone: purple; style: solid; place the sole arrowhead at the receiver checkpoint
+- CS-07: "HARNESS CHECKPOINT" (checkpoint) — "typed policy bundle" → "BOUNDED RUNTIME TRIAL" (runtime_trial); tone: blue; style: solid; place the sole arrowhead at the receiver runtime_trial
+- CS-08: "BOUNDED RUNTIME TRIAL" (runtime_trial) — "observe" → "OUTCOME VECTOR" (outcome); tone: green; style: solid; place the sole arrowhead at the receiver outcome
+- CS-09: "OUTCOME VECTOR" (outcome) — "paired deltas" → "SENSITIVITY EVIDENCE" (sensitivity); tone: green; style: solid; place the sole arrowhead at the receiver sensitivity
+- CS-10: "SENSITIVITY EVIDENCE" (sensitivity) — "support, expiry, invalidation" → "CHECKPOINT APPLICABILITY REGISTRY" (registry); tone: green; style: dashed; place the sole arrowhead at the receiver registry
+
+FORBIDDEN EDGES — never draw these source/receiver pairs:
+- "CONSTRAINED SELECTOR" (selector) → "BOUNDED RUNTIME TRIAL" (runtime_trial): "Selection must resolve a versioned checkpoint rather than inject an anonymous configuration."
+- "MODEL PROFILE" (model_profile) → "HARNESS CHECKPOINT" (checkpoint): "Model identity alone cannot determine a checkpoint without a task profile and objective."
+- "TASK PROFILE" (task_profile) → "HARNESS CHECKPOINT" (checkpoint): "Task identity alone cannot determine a checkpoint without a model profile and objective."
+- "OUTCOME VECTOR" (outcome) → "CONSTRAINED SELECTOR" (selector): "Raw outcomes require governed sensitivity and applicability evidence before selection."
+- "SENSITIVITY EVIDENCE" (sensitivity) → "BOUNDED RUNTIME TRIAL" (runtime_trial): "Evidence cannot activate a checkpoint directly."
+
+LAYOUT REQUIREMENTS:
+- "Use three clean vertical zones from left to right: operating cell, selection, evidence."
+- "Stack model profile, task profile, and objective plus hard constraints vertically, feeding the model by task cell in three separate lanes."
+- "Place checkpoint applicability registry directly below constrained selector so CS-05 is short and vertical; place harness checkpoint to the right of selector."
+- "Place runtime trial, outcome vector, and sensitivity evidence left to right in the evidence zone."
+- "Route CS-10 as one dashed lower lane from sensitivity evidence leftward into checkpoint applicability registry. Its arrowhead touches only the registry."
+- "Do not draw a Cartesian grid of individual benchmark questions. Task profile means a characterized class or distribution."
+- "Do not show model weights changing. The model route is frozen."
+
+REQUIRED TEXT — render each string verbatim:
+- "ITERON"
+- "MODEL–TASK CHECKPOINT SURFACE"
+- "PORTABILITY IS MEASURED, NOT ASSUMED."
+- "CHARACTERIZE THE OPERATING CELL"
+- "SELECT AN ADMITTED CHECKPOINT"
+- "MEASURE AND UPDATE"
+- "MODEL PROFILE"
+- "TASK PROFILE"
+- "OBJECTIVE + HARD CONSTRAINTS"
+- "MODEL × TASK CELL"
+- "CHECKPOINT APPLICABILITY REGISTRY"
+- "CONSTRAINED SELECTOR"
+- "HARNESS CHECKPOINT"
+- "BOUNDED RUNTIME TRIAL"
+- "OUTCOME VECTOR"
+- "SENSITIVITY EVIDENCE"
+- "quality · cost · latency · reliability"
+
+CAPTION
+- Bottom caption, verbatim: "PORTABILITY IS MEASURED, NOT ASSUMED."
+
+CONNECTOR INTEGRITY — mandatory:
+- Every connector must correspond to exactly one ledger edge above.
+- Treat zone, node, and edge IDs as internal references; do not render the IDs.
+- Render every zone label, node label, edge label, required-text string, title, and caption verbatim.
+- Draw one conventional single-headed arrow per edge, with its arrowhead at the receiver and its tail visibly leaving the source.
+- Draw no extra connectors, no dangling connectors, no double-headed arrows, and no shared-trunk connectors.
+- Never terminate an arrow in whitespace, on a zone boundary, on a node that is not its receiver, or on another connector.
+- Route opposite-direction edges in visibly separate lanes; never merge them into a single two-way line.
+- Keep edge labels beside unobstructed line segments and keep arrowheads clear of all text.
+- If routing becomes crowded, increase whitespace or simplify node interiors; never reverse, merge, omit, duplicate, or invent an edge.

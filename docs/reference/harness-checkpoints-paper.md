@@ -145,11 +145,11 @@ reward improvement.
 
 ## 9. Implementation evidence
 
-The v0.0.5 source contains typed evolution contracts, reserved model-artifact
+The v0.0.20 source contains typed evolution contracts, reserved model-artifact
 refusal, conformance guards, and the `iteron-research/1` bridge. The optimization
-census schema v4 reports 2,724 independent candidate rows: 1,894
+census schema v4 reports 2,971 independent candidate rows: 2,084
 runtime-settable/applied/externally addressed, zero unaddressed, zero
-binding-required, and 830 invariant/read-only.
+binding-required, and 887 invariant/read-only.
 The harness gap audit describes 28 modules and 66 services. These are structural
 inventory facts cited in the [claim sheet](claim-sheet.md), not empirical system
 performance.

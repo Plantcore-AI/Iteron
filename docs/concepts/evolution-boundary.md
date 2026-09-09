@@ -4,6 +4,11 @@ Iteron includes types for a governed strategy-evolution control plane. It
 optimizes harness artifacts only and does **not** train or fine-tune a model or
 promote a live policy autonomously.
 
+The [model-task view of harness checkpoints](harness-checkpoints.md) explains
+why the selected policy bundle depends on both a measured model profile and a
+characterized task profile, and why transfer to another region needs new
+evidence.
+
 ## Intended separation
 
 The target architecture separates:

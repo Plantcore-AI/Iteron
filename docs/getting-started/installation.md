@@ -1,10 +1,8 @@
 # Installation
 
-The v0.0.19 distribution matrix covers macOS arm64, Linux arm64, and Linux
-x86-64. Windows remains a source-build and non-required CI target, but this
-release does not publish a Windows archive or installer. Consult the selected
-release's asset list before installing; source versioning alone does not prove
-that an archive exists for a host.
+The v0.0.20 distribution matrix covers macOS arm64, Linux arm64, Linux x86-64,
+and Windows x86-64. Consult the selected release's asset list before installing;
+source versioning alone does not prove that an archive exists for a host.
 
 !!! warning "Pre-alpha release"
     A downloadable release is not a compatibility or unattended-safety promise.
@@ -21,12 +19,20 @@ host for which the latest release actually contains an archive can use:
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/Plantcore-AI/Iteron/releases/latest/download/install.sh | sh
 ```
 
+On Windows PowerShell:
+
+```powershell
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; Invoke-RestMethod -Uri 'https://github.com/Plantcore-AI/Iteron/releases/latest/download/install.ps1' | Invoke-Expression
+```
+
 Then verify shell resolution and the binary version:
 
 ```sh
 command -v iteron
 iteron --version
 ```
+
+In PowerShell, use `Get-Command iteron` followed by `iteron --version`.
 
 `command -v` must print the intended executable path. If it prints nothing, the
 binary may be installed but not on `PATH`. If it prints a different path, invoke
@@ -67,7 +73,7 @@ you actually use (`~/.profile` for login `sh`, `~/.bashrc` for interactive bash,
 `~/.zshrc` for zsh), then open a new terminal. Do not run an automated profile
 editor; choose the file for your shell deliberately.
 
-The installer:
+The POSIX installer:
 
 - accepts only a version-bound release from `Plantcore-AI/Iteron`;
 - maps the current operating system and architecture to an explicit allowlist;
@@ -93,8 +99,8 @@ For `install.sh`, an explicit `--bin-dir` wins. Otherwise the destination is
 
 ```sh
 curl --proto '=https' --tlsv1.2 -LsSf \
-  https://github.com/Plantcore-AI/Iteron/releases/download/v0.0.7/install.sh \
-  | sh -s -- --version v0.0.7 --bin-dir "$HOME/bin"
+  https://github.com/Plantcore-AI/Iteron/releases/download/v0.0.20/install.sh \
+  | sh -s -- --version v0.0.20 --bin-dir "$HOME/bin"
 ```
 
 The only mutating options are `--version vX.Y.Z` and `--bin-dir PATH`. Run the
@@ -112,11 +118,12 @@ operator-authority mode runs commands unconfined. See
 | macOS, Apple Silicon | `aarch64-apple-darwin` | `macos-15` | verify on the release page |
 | Linux, arm64 | `aarch64-unknown-linux-musl` | `dgx` | verify on the release page |
 | Linux, x86-64 | `x86_64-unknown-linux-musl` | `dgx` | verify on the release page |
-| Windows, x86-64 | `x86_64-pc-windows-msvc` | non-required CI | not published in v0.0.19 |
+| Windows, x86-64 | `x86_64-pc-windows-msvc` | `windows-2025` | published in v0.0.20 |
 
-The v0.0.19 release workflow requires the three macOS/Linux targets to be built,
-tested, packaged, and smoke-tested before release publication. Release notes
-remain authoritative for the archives a particular tag actually contains.
+The v0.0.20 release publishes all four targets above. Release notes remain
+authoritative for the archives a particular tag actually contains. A Windows
+archive proves distribution and native validation; it does not add the missing
+code-execution sandbox or make Windows a fully supported runtime.
 
 ## Linux prerequisite for confined code execution
 
@@ -142,9 +149,9 @@ artifacts, not accepted workflow release evidence.
 
 An accepted workflow release is expected to publish:
 
-- deterministic archives for all three macOS/Linux targets;
-- a version-bound `install.sh` asset recorded by digest and size in the release
-  manifest;
+- deterministic archives for the three macOS/Linux targets and Windows x86-64;
+- version-bound `install.sh` and `install.ps1` assets recorded by digest and size
+  in the release manifest;
 - `SHA256SUMS`, `release-manifest.json`, and
   `release-manifest.receipt.json`;
 - the Apache-2.0 license and audited third-party notices;

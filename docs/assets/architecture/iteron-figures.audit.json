@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "audited_at": "2026-09-08",
+  "method": "ledger validation plus connector-by-connector visual inspection of the final PNG",
+  "shared_assumptions": [
+    "Base-model weights and adapters remain frozen.",
+    "Harness candidates cannot widen authority, hard budgets, evidence integrity, durability, replay, or effect mediation.",
+    "The diagrams describe target contracts; the current implementation remains a modular monolith."
+  ],
+  "figures": [
+    {
+      "png": "iteron-runtime-architecture-en.png",
+      "sha256": "c4a122e2355ff09da7eb72ea0da9491cc5fd787387de0af0438a274d6274242a",
+      "dimensions": [1672, 941],
+      "ledger": "iteron-runtime-architecture-en.ledger.json",
+      "compiled_prompt": "iteron-runtime-architecture-en.prompt.txt",
+      "verified_edges": ["RA-01", "RA-02", "RA-03", "RA-04", "RA-05", "RA-06", "RA-07", "RA-08", "RA-09", "RA-10", "RA-11", "RA-12"],
+      "forbidden_edges": "pass",
+      "visual_result": "pass"
+    },
+    {
+      "png": "iteron-runtime-architecture-zh.png",
+      "sha256": "67b105dde20a39ed4476ea02efd96fed3dd1bc93fcdd6c979525926b28991534",
+      "dimensions": [1672, 941],
+      "ledger": "iteron-runtime-architecture-zh.ledger.json",
+      "compiled_prompt": "iteron-runtime-architecture-zh.prompt.txt",
+      "production_note": "Localized from the audited English geometry with connectors locked; the Chinese ledger carries the final required labels.",
+      "verified_edges": ["RA-01", "RA-02", "RA-03", "RA-04", "RA-05", "RA-06", "RA-07", "RA-08", "RA-09", "RA-10", "RA-11", "RA-12"],
+      "forbidden_edges": "pass",
+      "visual_result": "pass"
+    },
+    {
+      "png": "iteron-checkpoint-surface-en.png",
+      "sha256": "b58c6af28a766546294053a7274dc02b923eaea7299e05116ddb2737512746d8",
+      "dimensions": [1672, 941],
+      "ledger": "iteron-checkpoint-surface-en.ledger.json",
+      "compiled_prompt": "iteron-checkpoint-surface-en.prompt.txt",
+      "verified_edges": ["CS-01", "CS-02", "CS-03", "CS-04", "CS-05", "CS-06", "CS-07", "CS-08", "CS-09", "CS-10"],
+      "forbidden_edges": "pass",
+      "visual_result": "pass"
+    },
+    {
+      "png": "iteron-checkpoint-surface-zh.png",
+      "sha256": "ab9b36f44c9d875e6d39b1c0fe41d225c5e9ff163cf4b495047f0018718c7fdd",
+      "dimensions": [1672, 941],
+      "ledger": "iteron-checkpoint-surface-zh.ledger.json",
+      "compiled_prompt": "iteron-checkpoint-surface-zh.prompt.txt",
+      "production_note": "Localized from the audited English geometry with connectors locked; the Chinese ledger carries the final required labels.",
+      "verified_edges": ["CS-01", "CS-02", "CS-03", "CS-04", "CS-05", "CS-06", "CS-07", "CS-08", "CS-09", "CS-10"],
+      "forbidden_edges": "pass",
+      "visual_result": "pass"
+    }
+  ]
+}

@@ -2,7 +2,8 @@
 
 Iteron is Apache-2.0 licensed and **pre-alpha**. The current `main` branch is the
 only development line; there is no stable compatibility or support promise.
-The current source workspace declares version **v0.0.7**.
+The current source workspace and latest public release declare version
+**v0.0.20**.
 
 ## Delivered baseline
 
@@ -24,15 +25,16 @@ The repository currently contains:
 - a repository-only `iteron-harness` research executable, versioned JSON protocol schema,
   stdlib-only Python client, and credential-free fixture optimizer; these research tools are
   source interfaces and are deliberately absent from release archives and the installer;
-- six published pre-alpha releases (`v0.0.1` through `v0.0.5`, plus `v0.0.7`).
-  The first four are historical local macOS builds; `v0.0.7` is the current
-  release. The immutable `v0.0.6` tag has no release or assets because its
-  schema-chronology validation failed before publication. Each published
-  release's manifest and GitHub asset list are authoritative for its exact
-  targets and attestations;
-- a macOS/Linux three-target release workflow, installer, checksums, license
-  evidence, SBOMs, provenance, and public-install canaries; a release counts as
-  accepted three-target evidence only after those exact workflow gates pass.
+- nine published pre-alpha releases: `v0.0.1` through `v0.0.5`, plus `v0.0.7`,
+  `v0.0.9`, `v0.0.19`, and `v0.0.20`. The first four are historical local macOS
+  builds; `v0.0.20` is current. The immutable `v0.0.6` tag has no release or
+  assets because its schema-chronology validation failed before publication.
+  Each published release's manifest and GitHub asset list are authoritative for
+  its exact targets and attestations;
+- a release workflow covering macOS arm64, Linux arm64/x86-64, and Windows
+  x86-64, with installers, checksums, license evidence, SBOMs, provenance, and
+  public-install canaries. Windows distribution remains narrower than full
+  runtime support because it has no code-execution sandbox.
 
 ## Not accepted as complete
 
@@ -43,7 +45,8 @@ Iteron does not yet claim:
 - a stable App Server or public runtime protocol;
 - complete MCP, LSP, plugin, PTY, or background-process lifecycle support;
 - authoritative context, cache, cost, or billing truth for every provider route;
-- Windows distribution, a stable compatibility promise, or long-term support;
+- a Windows code-execution sandbox or supported Windows interactive TUI;
+- a stable compatibility promise or long-term support;
 - model training or fine-tuning of any kind; legacy SFT, preference, GRPO, and
   RL names are provenance labels for harness candidates only;
 - autonomous policy promotion;
