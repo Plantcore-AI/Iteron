@@ -1,5 +1,5 @@
 <div class="iteron-hero">
-  <img class="iteron-hero__logo" src="assets/brand/iteron-logo.svg" alt="Iteron">
+  <img class="iteron-hero__logo" src="assets/brand/iteron-logo.png" alt="Iteron">
   <div class="iteron-hero__eyebrow">OPEN SOURCE · RUST · PRE-ALPHA · v0.0.20</div>
   <h1>Harness checkpoints for domain-specific agents.</h1>
   <p>Iteron is an open-source substrate for building, evaluating, and governing
