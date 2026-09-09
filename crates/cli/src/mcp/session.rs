@@ -1073,6 +1073,9 @@ impl ManagedHttpServer {
         let Some(client) = state.client.clone() else {
             return definite_mcp_error(iteron_mcp::McpError::LifecycleFailed);
         };
+        let uses_mrtr = client.protocol_mode().is_stateless() && mrtr_handler.is_some();
+        let progress = Arc::new(iteron_mcp::McpDispatchProgress::new());
+        let call_progress = progress.clone();
         let dispatched = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let observed = dispatched.clone();
         let dispatch = move || {
@@ -1080,22 +1083,32 @@ impl ManagedHttpServer {
             on_dispatch();
         };
         let call = async {
-            if client.protocol_mode().is_stateless()
-                && let Some(handler) = mrtr_handler.as_deref()
-            {
+            if uses_mrtr && let Some(handler) = mrtr_handler.as_deref() {
                 client
-                    .call_tool_with_mrtr_outcome_observed(&bare, arguments, handler, dispatch)
+                    .call_tool_with_mrtr_outcome_observed(
+                        &bare,
+                        arguments,
+                        handler,
+                        call_progress,
+                        dispatch,
+                    )
                     .await
             } else {
                 client
-                    .call_tool_outcome_observed(&bare, arguments, dispatch)
+                    .call_tool_outcome_observed_with_progress(
+                        &bare,
+                        arguments,
+                        call_progress,
+                        dispatch,
+                    )
                     .await
             }
         };
+        let request_pending = || progress.is_pending();
         let outcome = tokio::select! {
             biased;
-            _ = cancellation.cancelled() => cancellation_outcome(&self.config.name, &bare, dispatched.load(Ordering::Acquire)),
-            _ = tokio::time::sleep_until(deadline) => timeout_outcome(&self.config.name, &bare, dispatched.load(Ordering::Acquire)),
+            _ = cancellation.cancelled() => cancellation_outcome(&self.config.name, &bare, dispatched.load(Ordering::Acquire), request_pending()),
+            _ = tokio::time::sleep_until(deadline) => timeout_outcome(&self.config.name, &bare, dispatched.load(Ordering::Acquire), request_pending()),
             outcome = call => outcome,
         };
         self.settle_http_outcome(&mut state, generation, &outcome);
@@ -1144,8 +1157,8 @@ impl ManagedHttpServer {
         });
         let outcome = tokio::select! {
             biased;
-            _ = cancellation.cancelled() => cancellation_outcome(&self.config.name, method, dispatched.load(Ordering::Acquire)),
-            _ = tokio::time::sleep_until(deadline) => timeout_outcome(&self.config.name, method, dispatched.load(Ordering::Acquire)),
+            _ = cancellation.cancelled() => cancellation_outcome(&self.config.name, method, dispatched.load(Ordering::Acquire), dispatched.load(Ordering::Acquire)),
+            _ = tokio::time::sleep_until(deadline) => timeout_outcome(&self.config.name, method, dispatched.load(Ordering::Acquire), dispatched.load(Ordering::Acquire)),
             outcome = call => outcome,
         };
         self.settle_http_outcome(&mut state, generation, &outcome);
@@ -1356,8 +1369,9 @@ fn cancellation_outcome(
     server: &str,
     operation: &str,
     dispatched: bool,
+    request_pending: bool,
 ) -> iteron_mcp::McpToolOutcome {
-    if dispatched {
+    if request_pending {
         iteron_mcp::McpToolOutcome::Unknown {
             error: iteron_mcp::McpError::Cancelled {
                 operation: "dispatched HTTP MCP request",
@@ -1365,20 +1379,31 @@ fn cancellation_outcome(
             evidence: synthetic_evidence(server, operation),
         }
     } else {
-        definite_mcp_error(iteron_mcp::McpError::Cancelled {
-            operation: "HTTP MCP request",
-        })
+        iteron_mcp::McpToolOutcome::FailedDefinite {
+            error: iteron_mcp::McpError::Cancelled {
+                operation: "HTTP MCP request",
+            },
+            evidence: dispatched.then(|| synthetic_evidence(server, operation)),
+        }
     }
 }
 
-fn timeout_outcome(server: &str, operation: &str, dispatched: bool) -> iteron_mcp::McpToolOutcome {
-    if dispatched {
+fn timeout_outcome(
+    server: &str,
+    operation: &str,
+    dispatched: bool,
+    request_pending: bool,
+) -> iteron_mcp::McpToolOutcome {
+    if request_pending {
         iteron_mcp::McpToolOutcome::Unknown {
             error: managed_deadline(),
             evidence: synthetic_evidence(server, operation),
         }
     } else {
-        definite_mcp_error(managed_deadline())
+        iteron_mcp::McpToolOutcome::FailedDefinite {
+            error: managed_deadline(),
+            evidence: dispatched.then(|| synthetic_evidence(server, operation)),
+        }
     }
 }
 

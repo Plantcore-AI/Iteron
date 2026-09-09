@@ -186,6 +186,18 @@ fn validate_schema(schema: &Value) -> Result<(), McpError> {
     let object = schema
         .as_object()
         .ok_or_else(|| protocol("elicitation schema must be an object"))?;
+    reject_unsupported_keywords(
+        object,
+        &[
+            "$schema",
+            "type",
+            "title",
+            "description",
+            "properties",
+            "required",
+        ],
+    )?;
+    validate_annotations(object, &["$schema", "title", "description"])?;
     if object.get("type").and_then(Value::as_str) != Some("object") {
         return Err(protocol("elicitation schema root must be an object"));
     }
@@ -236,22 +248,134 @@ fn validate_property(property: &Value) -> Result<(), McpError> {
         .as_object()
         .ok_or_else(|| protocol("elicitation property must be an object"))?;
     match object.get("type").and_then(Value::as_str) {
-        Some("string" | "number" | "integer" | "boolean") => Ok(()),
+        Some(property_type @ ("string" | "number" | "integer" | "boolean")) => {
+            reject_unsupported_keywords(
+                object,
+                &["type", "title", "description", "default", "enum", "oneOf"],
+            )?;
+            validate_annotations(object, &["title", "description"])?;
+            if object.contains_key("enum") && object.contains_key("oneOf") {
+                return Err(protocol("elicitation property choices are unsupported"));
+            }
+            if let Some(choices) = object.get("enum") {
+                validate_enum(choices, property_type)?;
+            }
+            if let Some(choices) = object.get("oneOf") {
+                if property_type != "string" {
+                    return Err(protocol("elicitation property choices are unsupported"));
+                }
+                validate_one_of(choices)?;
+            }
+            if let Some(default) = object.get("default") {
+                validate_value(object, default)?;
+            }
+            Ok(())
+        }
         Some("array") => {
+            reject_unsupported_keywords(
+                object,
+                &["type", "title", "description", "default", "items"],
+            )?;
+            validate_annotations(object, &["title", "description"])?;
             let items = object
                 .get("items")
                 .and_then(Value::as_object)
                 .ok_or_else(|| protocol("elicitation array items are required"))?;
-            if items.get("type").and_then(Value::as_str) == Some("string")
-                && items.get("enum").is_some_and(Value::is_array)
-            {
-                Ok(())
-            } else {
-                Err(protocol("elicitation arrays must be string enums"))
+            reject_unsupported_keywords(items, &["type", "title", "description", "enum"])?;
+            validate_annotations(items, &["title", "description"])?;
+            if items.get("type").and_then(Value::as_str) != Some("string") {
+                return Err(protocol("elicitation array items are unsupported"));
             }
+            validate_enum(
+                items
+                    .get("enum")
+                    .ok_or_else(|| protocol("elicitation array items are unsupported"))?,
+                "string",
+            )?;
+            if let Some(default) = object.get("default") {
+                validate_value(object, default)?;
+            }
+            Ok(())
         }
-        _ if object.get("oneOf").is_some_and(Value::is_array) => Ok(()),
+        None if object.get("oneOf").is_some() => {
+            reject_unsupported_keywords(object, &["title", "description", "default", "oneOf"])?;
+            validate_annotations(object, &["title", "description"])?;
+            validate_one_of(&object["oneOf"])?;
+            if let Some(default) = object.get("default") {
+                validate_value(object, default)?;
+            }
+            Ok(())
+        }
         _ => Err(protocol("elicitation property type is unsupported")),
+    }
+}
+
+fn reject_unsupported_keywords(
+    object: &Map<String, Value>,
+    supported: &[&str],
+) -> Result<(), McpError> {
+    if object.keys().any(|key| !supported.contains(&key.as_str())) {
+        return Err(protocol(
+            "elicitation schema contains an unsupported keyword",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_annotations(object: &Map<String, Value>, annotations: &[&str]) -> Result<(), McpError> {
+    if annotations.iter().any(|annotation| {
+        object
+            .get(*annotation)
+            .is_some_and(|value| !value.is_string())
+    }) {
+        return Err(protocol("elicitation schema annotation must be a string"));
+    }
+    Ok(())
+}
+
+fn validate_enum(choices: &Value, property_type: &str) -> Result<(), McpError> {
+    let choices = choices
+        .as_array()
+        .filter(|choices| !choices.is_empty())
+        .ok_or_else(|| protocol("elicitation enum is unsupported"))?;
+    if choices
+        .iter()
+        .any(|choice| !value_matches_type(choice, property_type))
+    {
+        return Err(protocol("elicitation enum is unsupported"));
+    }
+    Ok(())
+}
+
+fn validate_one_of(choices: &Value) -> Result<(), McpError> {
+    let choices = choices
+        .as_array()
+        .filter(|choices| !choices.is_empty())
+        .ok_or_else(|| protocol("elicitation choices are unsupported"))?;
+    for choice in choices {
+        let choice = choice
+            .as_object()
+            .ok_or_else(|| protocol("elicitation choices are unsupported"))?;
+        reject_unsupported_keywords(choice, &["const", "title", "description"])?;
+        if !choice.get("const").is_some_and(Value::is_string)
+            || choice.get("title").is_some_and(|title| !title.is_string())
+            || choice
+                .get("description")
+                .is_some_and(|description| !description.is_string())
+        {
+            return Err(protocol("elicitation choices are unsupported"));
+        }
+    }
+    Ok(())
+}
+
+fn value_matches_type(value: &Value, property_type: &str) -> bool {
+    match property_type {
+        "string" => value.is_string(),
+        "number" => value.is_number(),
+        "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
+        "boolean" => value.is_boolean(),
+        _ => false,
     }
 }
 
@@ -437,5 +561,54 @@ mod tests {
                 .unwrap(),
             json!({"action": "decline"})
         );
+    }
+
+    #[test]
+    fn unsupported_validation_constraints_fail_before_input_collection() {
+        for property in [
+            json!({"type": "string", "minLength": 8}),
+            json!({"type": "string", "maxLength": 64}),
+            json!({"type": "number", "minimum": 0}),
+            json!({"type": "number", "maximum": 100}),
+            json!({"type": "array", "items": {"type": "string", "enum": ["a"]}, "minItems": 1}),
+            json!({"type": "array", "items": {"type": "string", "enum": ["a"]}, "maxItems": 1}),
+            json!({"type": "string", "format": "email"}),
+            json!({"type": "array", "items": {"anyOf": [{"const": "a", "title": "A"}]}}),
+        ] {
+            let result = ElicitationRequest::parse(json!({
+                "mode": "form",
+                "message": "Choose a value",
+                "requestedSchema": {
+                    "type": "object",
+                    "properties": {"value": property}
+                }
+            }));
+            assert!(
+                matches!(result, Err(McpError::Protocol(message)) if message.contains("unsupported")),
+                "unsupported property was admitted"
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_schema_annotations_fail_before_input_collection() {
+        for schema in [
+            json!({"type": "object", "$schema": 7, "properties": {}}),
+            json!({"type": "object", "title": false, "properties": {}}),
+            json!({"type": "object", "description": [], "properties": {}}),
+            json!({"type": "object", "properties": {"value": {"type": "string", "title": 7}}}),
+            json!({"type": "object", "properties": {"value": {"type": "string", "description": {}}}}),
+            json!({"type": "object", "properties": {"value": {"type": "array", "items": {"type": "string", "enum": ["a"], "title": []}}}}),
+        ] {
+            let result = ElicitationRequest::parse(json!({
+                "mode": "form",
+                "message": "Choose a value",
+                "requestedSchema": schema,
+            }));
+            assert!(
+                matches!(result, Err(McpError::Protocol(message)) if message.contains("annotation")),
+                "malformed annotation was admitted"
+            );
+        }
     }
 }

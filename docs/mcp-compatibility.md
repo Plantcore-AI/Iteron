@@ -12,7 +12,7 @@ session 状态。
 |---|---|---|---|---|---|
 | `2025-06-18` | pass（CLI E2E） | pass（官方 conformance） | pass（传输回归） | pass（官方 OAuth） | 状态式 initialize/session |
 | `2025-11-25` | pass（CLI E2E） | pass（官方 conformance） | pass（传输回归） | pass（官方 OAuth） | form elicitation 与 SSE 恢复 |
-| `2026-07-28` | pass（CLI E2E） | pass（官方 conformance） | pass（传输回归） | pass（官方 OAuth） | discover、请求元数据、路由/参数头、MRTR、私有列表缓存 |
+| `2026-07-28` | pass（CLI E2E） | pass（官方 conformance） | pass（传输回归） | pass（官方 OAuth） | discover、请求元数据、路由/参数头、`tools/call` MRTR、私有列表缓存 |
 
 `2024-11-05` 与 `2025-03-26` 不在兼容矩阵与发布承诺范围内，客户端会拒绝服务端协商到
 这两个版本；本文不将它们标记为 deprecated。
@@ -75,12 +75,15 @@ HTTP wire 黑盒回归测试覆盖；客户端仍会拒绝 fixture 返回的未�
 | 资源订阅 | unsupported | 不订阅资源变更通知 |
 | 图片与音频内容 | unsupported | 工具结果目前只向 agent 投影文本内容 |
 
-交互式 TUI 会把 2026 MRTR 请求显示为独立 JSON 表单。批准后，运行时在同一个 server、
-同一个工具调用上回送对应的 `requestState` 与 `inputResponses`；拒绝、关闭前端、错误的
-请求 ID 和不符合服务端 schema 的答案都会安全失败。表单有独立的有界通道，不会混入
-普通聊天输入；答案正文也不会写入生命周期事件。非交互 one-shot/headless 模式不安装
-输入处理器，因此不会等待一个不存在的用户。2025 及更早协议始终走普通 `tools/call`，
-即使交互处理器存在也不会进入 MRTR。
+交互式 TUI 会把 2026 `tools/call` MRTR 请求显示为独立 JSON 表单。批准后，运行时在同
+一个 server、同一个工具调用上回送对应的 `requestState` 与 `inputResponses`；拒绝、关
+闭前端、错误的请求 ID 和不符合服务端 schema 的答案都会安全失败。表单当前只接收基
+础对象字段、标量、枚举、字符串枚举数组和单选 `oneOf`；包含未实现约束或其他形态的
+schema 会在收集答案前拒绝。表单有独立的有界通道，不会混入普通聊天输入；答案正文也
+不会写入生命周期事件。非交互 one-shot/headless 模式不安装输入处理器，因此不会等待
+一个不存在的用户。2025 及更早协议始终走普通 `tools/call`，即使交互处理器存在也不会
+进入 MRTR。`resources/read`、`prompts/get` 等扩展当前不宣告 MRTR 输入能力；如果服务端
+仍返回 `resultType=input_required`，客户端会明确返回协议错误，而不会把它渲染成成功。
 
 HTTP 连接会把同一个交互入口适配为标准 `elicitation/create` handler，因此只有真正能够
 回答服务端 form request 时才宣告 `elicitation.form`。stdio 回退到状态式 2025 后不会

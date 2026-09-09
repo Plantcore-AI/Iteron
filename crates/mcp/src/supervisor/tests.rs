@@ -81,6 +81,85 @@ mod unix {
         .unwrap()
     }
 
+    struct PendingMrtrInput;
+
+    impl crate::McpMrtrHandler for PendingMrtrInput {
+        fn request<'a>(
+            &'a self,
+            _server_name: &'a str,
+            _tool_name: &'a str,
+            _request_state: Option<&'a str>,
+            _requests: Vec<crate::McpInputRequest>,
+        ) -> crate::McpFuture<'a, crate::McpInputDecision> {
+            Box::pin(std::future::pending())
+        }
+    }
+
+    #[tokio::test]
+    async fn mrtr_handler_timeout_after_authoritative_round_is_definite() {
+        let script = concat!(
+            "IFS= read -r discover; ",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"resultType\":\"complete\",\"supportedVersions\":[\"2026-07-28\"],\"capabilities\":{\"tools\":{}}}}'; ",
+            "IFS= read -r list; ",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"mutate\",\"inputSchema\":{\"type\":\"object\"}}]}}'; ",
+            "IFS= read -r call; ",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"resultType\":\"input_required\",\"requestState\":\"round-one\",\"inputRequests\":{\"confirm\":{\"method\":\"elicitation/create\",\"params\":{\"message\":\"Continue?\",\"requestedSchema\":{\"type\":\"object\",\"properties\":{\"confirmed\":{\"type\":\"boolean\"}},\"required\":[\"confirmed\"]}}}}}}'; exec sleep 60"
+        );
+        let timeouts = McpTimeouts::new(
+            Duration::from_secs(2),
+            Duration::from_secs(2),
+            Duration::from_secs(2),
+        )
+        .unwrap()
+        .with_operation_deadlines(Duration::from_secs(2), Duration::from_millis(100))
+        .unwrap();
+        let launch = McpLaunchConfig::new(
+            "/bin/bash".into(),
+            vec!["-c".into(), script.into(), "mcp-test".into()],
+            "files".into(),
+        )
+        .unwrap()
+        .with_auto_protocol()
+        .with_elicitation_form();
+        let mut server = McpSupervisor::deferred(
+            launch,
+            McpToolFilter::default(),
+            ReconnectPolicy::default(),
+            timeouts,
+        )
+        .unwrap();
+        let identity = server
+            .search_tools("mutate", 1, &McpCancellation::new())
+            .await
+            .unwrap()
+            .matches
+            .remove(0)
+            .identity;
+        let dispatches = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = dispatches.clone();
+        let outcome = server
+            .call_tool_with_handler_observed(
+                &identity,
+                json!({}),
+                &McpCancellation::new(),
+                Some(std::sync::Arc::new(PendingMrtrInput)),
+                move || {
+                    observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                },
+            )
+            .await;
+        assert!(matches!(
+            outcome,
+            McpToolOutcome::FailedDefinite {
+                error: McpError::Deadline { .. },
+                evidence: Some(_),
+            }
+        ));
+        assert_eq!(dispatches.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(server.status().phase, LifecyclePhase::Ready);
+        server.stop().await;
+    }
+
     #[tokio::test]
     async fn invalid_search_is_rejected_before_lazy_spawn() {
         let marker = temp_path("must-not-spawn");

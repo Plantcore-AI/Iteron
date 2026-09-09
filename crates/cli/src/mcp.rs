@@ -78,10 +78,11 @@ impl ConfiguredMcpClient {
         }
     }
 
-    async fn call_tool_outcome_observed<F>(
+    async fn call_tool_outcome_observed_with_progress<F>(
         &self,
         name: &str,
         arguments: serde_json::Value,
+        progress: Arc<iteron_mcp::McpDispatchProgress>,
         on_dispatch: F,
     ) -> iteron_mcp::McpToolOutcome
     where
@@ -90,12 +91,22 @@ impl ConfiguredMcpClient {
         match self {
             Self::Stdio(client) => {
                 client
-                    .call_tool_outcome_observed(name, arguments, on_dispatch)
+                    .call_tool_outcome_observed_with_progress(
+                        name,
+                        arguments,
+                        progress,
+                        on_dispatch,
+                    )
                     .await
             }
             Self::Http(client) => {
                 client
-                    .call_tool_outcome_observed(name, arguments, on_dispatch)
+                    .call_tool_outcome_observed_with_progress(
+                        name,
+                        arguments,
+                        progress,
+                        on_dispatch,
+                    )
                     .await
             }
         }
@@ -106,6 +117,7 @@ impl ConfiguredMcpClient {
         name: &str,
         arguments: serde_json::Value,
         handler: &dyn iteron_mcp::McpMrtrHandler,
+        progress: Arc<iteron_mcp::McpDispatchProgress>,
         on_dispatch: F,
     ) -> iteron_mcp::McpToolOutcome
     where
@@ -114,12 +126,24 @@ impl ConfiguredMcpClient {
         match self {
             Self::Stdio(client) => {
                 client
-                    .call_tool_with_mrtr_outcome_observed(name, arguments, handler, on_dispatch)
+                    .call_tool_with_mrtr_outcome_observed_with_progress(
+                        name,
+                        arguments,
+                        handler,
+                        progress,
+                        on_dispatch,
+                    )
                     .await
             }
             Self::Http(client) => {
                 client
-                    .call_tool_with_mrtr_outcome_observed(name, arguments, handler, on_dispatch)
+                    .call_tool_with_mrtr_outcome_observed_with_progress(
+                        name,
+                        arguments,
+                        handler,
+                        progress,
+                        on_dispatch,
+                    )
                     .await
             }
         }
@@ -683,9 +707,12 @@ pub(crate) fn register_mcp_tool(
         iteron_tools::effectfut::box_it(async move {
             let clock = dispatch_clock.clone();
             let outcome = client
-                .call_tool_outcome_observed(&bare, call.input.clone(), move || {
-                    clock.mark_dispatched()
-                })
+                .call_tool_outcome_observed_with_progress(
+                    &bare,
+                    call.input.clone(),
+                    Arc::new(iteron_mcp::McpDispatchProgress::new()),
+                    move || clock.mark_dispatched(),
+                )
                 .await;
             mcp_tool_execution(call.id, outcome)
         })

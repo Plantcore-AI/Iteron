@@ -92,8 +92,11 @@ Remote sessions negotiate current and compatible final MCP revisions, carry the 
 and server session on later requests, stream bounded SSE, and refuse redirects or implicit effect
 retries. Tools, resources, and prompts are available through the client API. Form elicitation is
 advertised only by an interactive frontend that installs an operator decision handler; one-shot and
-other noninteractive paths fail closed. OAuth refresh rotates the retained refresh token and
-explicit revocation clears the active bearer credential.
+other noninteractive paths fail closed. The 2026 multi-round `input_required` flow is limited to
+`tools/call`; resource and prompt extensions neither advertise that request capability nor treat an
+`input_required` result as success. The form handler accepts only its documented basic-schema
+subset and rejects unsupported validation keywords before collecting input. OAuth refresh rotates
+the retained refresh token and explicit revocation clears the active bearer credential.
 
 Configured servers are session-owned and lazy: startup registers bounded proxy tools but does not
 spawn a stdio process or contact an HTTP endpoint. The first search/resource/prompt request opens

@@ -45,7 +45,7 @@ pub use elicitation::{
     MAX_ELICITATION_FIELD_NAME_BYTES, MAX_ELICITATION_FIELDS, MAX_ELICITATION_MESSAGE_BYTES,
     MAX_ELICITATION_SCHEMA_BYTES, McpElicitationHandler, elicitation_handler_from_mrtr,
 };
-pub use evidence::McpToolCallEvidence;
+pub use evidence::{McpDispatchProgress, McpToolCallEvidence};
 pub use mrtr::{McpInputDecision, McpInputRequest, McpMrtrHandler, validate_mrtr_input};
 pub use policy::{MAX_MCP_TOOL_POLICY_ENTRIES, McpServerPolicy, default_host_ceiling};
 pub use protocol_version::{MODERN_PROTOCOL_VERSION, McpProtocolMode};
