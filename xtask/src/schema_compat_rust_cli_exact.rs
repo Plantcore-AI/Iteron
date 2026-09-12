@@ -11,6 +11,7 @@ pub(super) fn validate(file: &syn::File) -> Result<()> {
                 Outcome::HarnessError => EXIT_HARNESS,
                 Outcome::BudgetExhausted(_) => EXIT_BUDGET,
                 Outcome::Stuck => EXIT_STUCK,
+                Outcome::UsageUnavailable => EXIT_USAGE_UNAVAILABLE,
                 Outcome::Interrupted => EXIT_INTERRUPTED,
             }
         }"#,
@@ -25,6 +26,7 @@ pub(super) fn validate(file: &syn::File) -> Result<()> {
                 Outcome::HarnessError => "harness_error",
                 Outcome::BudgetExhausted(_) => "budget_exhausted",
                 Outcome::Stuck => "stuck",
+                Outcome::UsageUnavailable => "usage_unavailable",
                 Outcome::Interrupted => "interrupted",
             }
         }"#,
@@ -138,12 +140,21 @@ pub(super) fn validate(file: &syn::File) -> Result<()> {
                     format!("unsupported CLI output schema version {schema_version}"),
                 ));
             }
+            if schema_version == V7_SCHEMA_VERSION {
+                return v7::opaque_value(value);
+            }
             let fields = value.as_object_mut().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "machine output record must be a JSON object",
                 )
             })?;
+            if fields.get("type").and_then(Value::as_str) == Some("usage") {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "PlantCore usage has no v4-v6 projection",
+                ));
+            }
             fields.insert("schema_version".into(), Value::from(schema_version));
             if schema_version < SCHEMA_VERSION
                 && fields.get("type").and_then(Value::as_str) == Some("turn_end")
@@ -174,6 +185,7 @@ fn validate_emitter(file: &syn::File) -> Result<()> {
                 stream_turn: 0,
                 assistant_scrubber: StreamingScrubber::default(),
                 thinking_scrubber: StreamingScrubber::default(),
+                v7_assistant: V7AssistantStream::default(),
                 text_line_open: false,
             }
         }"#,
@@ -210,9 +222,22 @@ fn validate_emitter(file: &syn::File) -> Result<()> {
     require_method(
         file,
         "Emitter",
+        "write_v7_stream_value",
+        r#"fn write_v7_stream_value(&mut self, value: &Value) -> io::Result<()> {
+            let value = project_schema(value.clone(), self.schema_version)?;
+            write_json_line(std::io::stdout().lock(), &value)
+        }"#,
+    )?;
+    require_method(
+        file,
+        "Emitter",
         "flush_stream_text",
         r#"fn flush_stream_text(&mut self) -> io::Result<()> {
-            if let Some(delta) = self.assistant_scrubber.finish() {
+            if self.schema_version == V7_SCHEMA_VERSION {
+                if let Some(value) = self.v7_assistant.flush()? {
+                    self.write_v7_stream_value(&value)?;
+                }
+            } else if let Some(delta) = self.assistant_scrubber.finish() {
                 self.write_stream_event(UiEvent::Text(delta))?;
             }
             if let Some(delta) = self.thinking_scrubber.finish() {
@@ -240,6 +265,11 @@ fn validate_emitter(file: &syn::File) -> Result<()> {
                     _ => {}
                 },
                 OutputFormat::StreamJson => match event {
+                    UiEvent::Text(delta) if self.schema_version == V7_SCHEMA_VERSION => {
+                        if let Some(value) = self.v7_assistant.push(&delta)? {
+                            self.write_v7_stream_value(&value)?;
+                        }
+                    }
                     UiEvent::Text(delta) => {
                         if let Some(delta) = self.assistant_scrubber.push(&delta) {
                             self.write_stream_event(UiEvent::Text(delta))?;
@@ -261,6 +291,57 @@ fn validate_emitter(file: &syn::File) -> Result<()> {
                         display_notice_on_stderr(&message);
                     }
                 }
+            }
+            Ok(())
+        }"#,
+    )?;
+    require_method(
+        file,
+        "Emitter",
+        "finish_stream_output",
+        r#"fn finish_stream_output(&mut self, value: &Value) -> io::Result<()> {
+            self.flush_stream_text()?;
+            if self.schema_version == V7_SCHEMA_VERSION {
+                let completes_assistant = value
+                    .get("product_result_candidate")
+                    .and_then(|product| product.get("status"))
+                    .and_then(Value::as_str)
+                    == Some("completed");
+                let assistant_text = value
+                    .get("product_result_candidate")
+                    .and_then(|product| product.get("assistant_text_utf8"))
+                    .and_then(Value::as_str);
+                for event in self.v7_assistant.finish_run(
+                    completes_assistant,
+                    if completes_assistant {
+                        assistant_text
+                    } else {
+                        None
+                    },
+                )? {
+                    self.write_v7_stream_value(&event)?;
+                }
+            }
+            Ok(())
+        }"#,
+    )?;
+    require_method(
+        file,
+        "Emitter",
+        "result",
+        r#"pub fn result(&mut self, value: &Value) -> io::Result<()> {
+            match self.format {
+                OutputFormat::Text => {
+                    self.flush_text_output(true)?;
+                }
+                OutputFormat::StreamJson => {
+                    self.finish_stream_output(value)?;
+                }
+                OutputFormat::Json => {}
+            }
+            if self.format.is_machine() {
+                let value = project_schema(value.clone(), self.schema_version)?;
+                write_json_line(std::io::stdout().lock(), &value)?;
             }
             Ok(())
         }"#,

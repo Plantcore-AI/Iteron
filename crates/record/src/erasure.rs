@@ -403,10 +403,7 @@ fn execute_retention(
         dry_run: true,
         ..policy
     };
-    let report = match session::prune_at(runs_dir, &tenant, &verification_policy, evaluation_secs) {
-        Ok(report) => report,
-        Err(error) => return Err(error.into()),
-    };
+    let report = session::prune_at(runs_dir, &tenant, &verification_policy, evaluation_secs)?;
     if !report.removed.is_empty() {
         return fail(runs_dir, receipt, ErasureFailureCode::VerificationFailure);
     }

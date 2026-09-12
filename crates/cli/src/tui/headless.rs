@@ -10,14 +10,17 @@ mod framing;
 mod input;
 
 use self::auth::BearerToken;
+use self::control::PlantcoreCommand;
 use self::framing::{
     EncodedServerFrame, ReplayRing, ServerFrame, max_in_flight_server_bytes,
-    max_pinned_replay_bytes, send_encoded_frame, send_frame,
+    max_pinned_replay_bytes, send_encoded_frame, send_frame, send_recording_fault,
 };
 use self::input::{
     ClientFrame, FrameBytes, FrameReader, MAX_CLIENT_FRAME_BYTES, MAX_PENDING_CLIENT_BYTES,
 };
-use crate::app_server::{AppServerClient, Attached, ControlRequest, ServerEvent, TerminalSummary};
+#[cfg(test)]
+use crate::app_server::TerminalSummary;
+use crate::app_server::{AppServerClient, Attached, ControlRequest, ServerEvent};
 use crate::output;
 use crate::runtime::UiEvent;
 use anyhow::{Context, Result, bail};
@@ -40,12 +43,17 @@ const PARTIAL_FRAME_TIMEOUT: Duration = Duration::from_secs(15);
 const AUTHENTICATED_IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const ROLLOUT_REPLAY_TIMEOUT: Duration = Duration::from_secs(30);
 
-fn terminal_result_frame(seq: u64, summary: &TerminalSummary) -> ServerFrame {
-    ServerFrame::Result {
+#[cfg(test)]
+fn terminal_result_frame(
+    seq: u64,
+    summary: &TerminalSummary,
+    schema_version: u32,
+) -> Result<ServerFrame> {
+    Ok(ServerFrame::Result {
         protocol_version: PROTOCOL_VERSION,
         seq,
-        result: summary.current_result(),
-    }
+        result: summary.result_for_schema(schema_version)?,
+    })
 }
 
 #[cfg(test)]
@@ -53,7 +61,26 @@ pub(super) fn capture_terminal_result_frame(
     seq: u64,
     summary: &TerminalSummary,
 ) -> (u32, u64, Value) {
-    match terminal_result_frame(seq, summary) {
+    capture_terminal_result_frame_for_schema(seq, summary, output::SCHEMA_VERSION)
+}
+
+#[cfg(test)]
+pub(super) fn capture_plantcore_terminal_result_frame(
+    seq: u64,
+    summary: &TerminalSummary,
+) -> (u32, u64, Value) {
+    capture_terminal_result_frame_for_schema(seq, summary, output::V7_SCHEMA_VERSION)
+}
+
+#[cfg(test)]
+fn capture_terminal_result_frame_for_schema(
+    seq: u64,
+    summary: &TerminalSummary,
+    schema_version: u32,
+) -> (u32, u64, Value) {
+    match terminal_result_frame(seq, summary, schema_version)
+        .expect("test terminal facts must project")
+    {
         ServerFrame::Result {
             protocol_version,
             seq,
@@ -77,10 +104,250 @@ struct Shared {
     cursor: AtomicU64,
     client_failures: AtomicU64,
     rollout_path: PathBuf,
+    session_id: String,
+    plantcore: bool,
+    machine_schema_version: u32,
+    plantcore_commands: Mutex<std::collections::BTreeMap<String, RecordedCommand>>,
+    dispatch_gate: Option<Arc<crate::runtime::DispatchGate>>,
+    interrupt: Arc<std::sync::atomic::AtomicBool>,
+    drain: Arc<std::sync::atomic::AtomicBool>,
+    recording_fault: Mutex<Option<crate::app_server::RecordingAppServerFault>>,
+}
+
+#[derive(Clone)]
+struct RecordedCommand {
+    command: PlantcoreCommand,
+    reply: Option<PreparedPlantcoreReply>,
+    completed: tokio::sync::watch::Sender<bool>,
+}
+
+#[derive(Clone)]
+struct PreparedPlantcoreReply {
+    value: Value,
+    resume_activation: Option<crate::runtime::ResumeActivation>,
+}
+
+#[cfg(test)]
+fn admit_plantcore_command(
+    recorded: &mut std::collections::BTreeMap<String, RecordedCommand>,
+    command_id: String,
+    command: PlantcoreCommand,
+    submit: impl FnOnce(
+        iteron_protocol::Op,
+    ) -> Result<iteron_protocol::SubmissionId, crate::app_server::SubmitError>,
+) -> Value {
+    const MAX_RECORDED_COMMANDS: usize = 4096;
+    if let Some(previous) = recorded.get(&command_id) {
+        if previous.command == command {
+            return previous
+                .reply
+                .as_ref()
+                .map(|reply| reply.value.clone())
+                .unwrap_or_else(|| {
+                    json!({
+                        "type": "plantcore_command_reply_v1",
+                        "command_id": command_id,
+                        "status": "rejected",
+                        "reason": "busy",
+                    })
+                });
+        }
+        return json!({
+            "type": "plantcore_command_reply_v1",
+            "command_id": command_id,
+            "status": "rejected",
+            "reason": "command_conflict",
+        });
+    }
+    if recorded.len() >= MAX_RECORDED_COMMANDS {
+        return json!({
+            "type": "plantcore_command_reply_v1",
+            "command_id": command_id,
+            "status": "rejected",
+            "reason": "command_window_exhausted",
+        });
+    }
+    let reply = submit_sq_plantcore_command(None, &command_id, &command, submit);
+    recorded.insert(
+        command_id,
+        RecordedCommand {
+            command,
+            reply: Some(PreparedPlantcoreReply {
+                value: reply.clone(),
+                resume_activation: None,
+            }),
+            completed: tokio::sync::watch::channel(true).0,
+        },
+    );
+    reply
+}
+
+fn submit_sq_plantcore_command(
+    dispatch_gate: Option<&Arc<crate::runtime::DispatchGate>>,
+    command_id: &str,
+    command: &PlantcoreCommand,
+    submit: impl FnOnce(
+        iteron_protocol::Op,
+    ) -> Result<iteron_protocol::SubmissionId, crate::app_server::SubmitError>,
+) -> Value {
+    let Some(op) = command.clone().into_op() else {
+        return plantcore_command_rejection(command_id, "dispatch_gate_unavailable");
+    };
+    let submitted = match dispatch_gate {
+        Some(gate) => {
+            let submitted = if matches!(
+                command,
+                PlantcoreCommand::Interrupt | PlantcoreCommand::Drain
+            ) {
+                gate.terminalize_if_accepted(|| submit(op))
+            } else {
+                gate.submit_if_admitted(|| submit(op))
+            };
+            match submitted {
+                Ok(submitted) => submitted,
+                Err(reason) => return plantcore_command_rejection(command_id, reason),
+            }
+        }
+        None => submit(op),
+    };
+    match submitted {
+        Ok(submission_id) => json!({
+            "type": "plantcore_command_reply_v1",
+            "command_id": command_id,
+            "status": "accepted",
+            "safe_point": "kernel_submission_queue",
+            "submission_id": submission_id.0,
+        }),
+        Err(crate::app_server::SubmitError::Busy) => json!({
+            "type": "plantcore_command_reply_v1",
+            "command_id": command_id,
+            "status": "rejected",
+            "reason": "busy",
+        }),
+        Err(crate::app_server::SubmitError::Disconnected) => json!({
+            "type": "plantcore_command_reply_v1",
+            "command_id": command_id,
+            "status": "rejected",
+            "reason": "runtime_disconnected",
+        }),
+    }
+}
+
+fn submit_plantcore_initial_input<T, E>(
+    dispatch_gate: Option<&Arc<crate::runtime::DispatchGate>>,
+    op: iteron_protocol::Op,
+    submit: impl FnOnce(iteron_protocol::Op) -> Result<T, E>,
+) -> Result<Result<T, E>, &'static str> {
+    if !matches!(
+        op,
+        iteron_protocol::Op::UserInput { .. }
+            | iteron_protocol::Op::UserInputV2 { .. }
+            | iteron_protocol::Op::UserInputV3 { .. }
+    ) {
+        return Err("plantcore_initial_input_required");
+    }
+    dispatch_gate
+        .ok_or("dispatch_gate_unavailable")?
+        .submit_initial_input_if_admitted(|| submit(op))
 }
 
 impl Shared {
-    async fn publish(&self, event: ServerEvent, turn: u32) -> Result<u32> {
+    async fn submit_plantcore_command(
+        &self,
+        command_id: String,
+        command: PlantcoreCommand,
+    ) -> PreparedPlantcoreReply {
+        const MAX_RECORDED_COMMANDS: usize = 4096;
+        let pending_replay = {
+            let mut recorded = self.plantcore_commands.lock().await;
+            if let Some(previous) = recorded.get(&command_id) {
+                if previous.command != command {
+                    return PreparedPlantcoreReply {
+                        value: plantcore_command_rejection(&command_id, "command_conflict"),
+                        resume_activation: None,
+                    };
+                }
+                if let Some(reply) = &previous.reply {
+                    return reply.clone();
+                }
+                Some(previous.completed.subscribe())
+            } else {
+                if recorded.len() >= MAX_RECORDED_COMMANDS {
+                    return PreparedPlantcoreReply {
+                        value: plantcore_command_rejection(&command_id, "command_window_exhausted"),
+                        resume_activation: None,
+                    };
+                }
+                recorded.insert(
+                    command_id.clone(),
+                    RecordedCommand {
+                        command: command.clone(),
+                        reply: None,
+                        completed: tokio::sync::watch::channel(false).0,
+                    },
+                );
+                None
+            }
+        };
+        if let Some(mut completed) = pending_replay {
+            let _ = completed.wait_for(|done| *done).await;
+            let recorded = self.plantcore_commands.lock().await;
+            return recorded
+                .get(&command_id)
+                .and_then(|recorded| recorded.reply.clone())
+                .unwrap_or_else(|| PreparedPlantcoreReply {
+                    value: plantcore_command_rejection(&command_id, "runtime_disconnected"),
+                    resume_activation: None,
+                });
+        }
+
+        let prepared = if let Some(reply) =
+            dispatch_gate_command_reply(self.dispatch_gate.as_ref(), &command_id, &command).await
+        {
+            reply
+        } else {
+            let reply = submit_sq_plantcore_command(
+                self.dispatch_gate.as_ref(),
+                &command_id,
+                &command,
+                |op| self.client.submit_identified(op),
+            );
+            if reply["status"] == "accepted" {
+                match command {
+                    PlantcoreCommand::Interrupt => {
+                        self.interrupt.store(true, Ordering::SeqCst);
+                    }
+                    PlantcoreCommand::Drain => {
+                        self.drain.store(true, Ordering::SeqCst);
+                    }
+                    PlantcoreCommand::Steer { .. }
+                    | PlantcoreCommand::PauseDispatchAfterSafePoint
+                    | PlantcoreCommand::ResumeDispatch => {}
+                }
+            }
+            PreparedPlantcoreReply {
+                value: reply,
+                resume_activation: None,
+            }
+        };
+        let mut recorded = self.plantcore_commands.lock().await;
+        let entry = recorded
+            .get_mut(&command_id)
+            .expect("the bounded command record was inserted before execution");
+        if let Some(existing) = &entry.reply {
+            return existing.clone();
+        }
+        entry.reply = Some(prepared.clone());
+        entry.completed.send_replace(true);
+        prepared
+    }
+
+    async fn publish(
+        &self,
+        event: ServerEvent,
+        turn: u32,
+        mut assistant: output::V7AssistantStream,
+    ) -> Result<(u32, output::V7AssistantStream)> {
         // `resume_from` names this transport's presentation stream, not the in-process EQ. Some EQ
         // variants intentionally have no frozen stream-json representation, so carrying their EQ
         // sequence numbers across the projection would manufacture holes that every correct client
@@ -93,67 +360,123 @@ impl Shared {
                 | ServerEvent::Activity(_)
                 | ServerEvent::McpInputRequested(_)
         ) {
-            return Ok(turn);
+            return Ok((turn, assistant));
         }
-        let seq = self
-            .cursor
-            .load(Ordering::Acquire)
-            .checked_add(1)
-            .context("headless presentation cursor exhausted")?;
+        let previous_seq = self.cursor.load(Ordering::Acquire);
+        let machine_schema_version = self.machine_schema_version;
         // Projection can redact or serialize the full bounded provider result. Keep that work, and
         // the following two-pass frame preparation, off Tokio's runtime workers.
-        let (frame, next_turn) = tokio::task::spawn_blocking(move || {
+        let (frames, next_turn, assistant) = tokio::task::spawn_blocking(move || {
             let mut next_turn = turn;
-            let frame = match event {
-                ServerEvent::Ui(event) => ServerFrame::Event {
-                    protocol_version: PROTOCOL_VERSION,
-                    seq,
-                    event: output::stream_event(event, &mut next_turn),
-                },
-                ServerEvent::Notice(message) => ServerFrame::Event {
-                    protocol_version: PROTOCOL_VERSION,
-                    seq,
-                    event: output::stream_event(UiEvent::Notice(message), &mut next_turn),
-                },
-                ServerEvent::Lagged { dropped } => ServerFrame::Event {
-                    protocol_version: PROTOCOL_VERSION,
-                    seq,
-                    event: output::stream_event(
+            let mut logical = Vec::with_capacity(3);
+            match event {
+                ServerEvent::Ui(UiEvent::Text(delta))
+                    if machine_schema_version == output::V7_SCHEMA_VERSION =>
+                {
+                    if let Some(event) = assistant.push(&delta)? {
+                        logical.push((false, event));
+                    }
+                }
+                ServerEvent::Ui(event) => logical.push((
+                    false,
+                    output::stream_event_for_schema(event, &mut next_turn, machine_schema_version)?,
+                )),
+                ServerEvent::Notice(message) => logical.push((
+                    false,
+                    output::stream_event_for_schema(
+                        UiEvent::Notice(message),
+                        &mut next_turn,
+                        machine_schema_version,
+                    )?,
+                )),
+                ServerEvent::Lagged { dropped } => logical.push((
+                    false,
+                    output::stream_event_for_schema(
                         UiEvent::Notice(format!(
                             "{dropped} streamed update(s) were dropped by the bounded event queue"
                         )),
                         &mut next_turn,
-                    ),
-                },
-                ServerEvent::RunEnded { summary, .. } => terminal_result_frame(seq, &summary),
+                        machine_schema_version,
+                    )?,
+                )),
+                ServerEvent::RunEnded { summary, .. } => {
+                    if machine_schema_version == output::V7_SCHEMA_VERSION {
+                        let completes_assistant = summary.completes_assistant_stream_for_v7();
+                        logical.extend(
+                            assistant
+                                .finish_run(
+                                    completes_assistant,
+                                    completes_assistant.then_some(summary.assistant_text_for_v7()),
+                                )?
+                                .into_iter()
+                                .map(|event| (false, event)),
+                        );
+                    }
+                    logical.push((true, summary.result_for_schema(machine_schema_version)?));
+                }
                 ServerEvent::Submission { .. }
                 | ServerEvent::WorkflowRun(_)
                 | ServerEvent::Activity(_)
                 | ServerEvent::McpInputRequested(_) => {
                     unreachable!("unpublished EQ variants were filtered before projection")
                 }
-            };
-            Ok::<_, anyhow::Error>((Some(frame), next_turn))
+            }
+            let frames = logical
+                .into_iter()
+                .enumerate()
+                .map(|(index, (result, value))| {
+                    let seq = previous_seq
+                        .checked_add(u64::try_from(index).unwrap_or(u64::MAX))
+                        .and_then(|value| value.checked_add(1))
+                        .context("headless presentation cursor exhausted")?;
+                    Ok(if result {
+                        ServerFrame::Result {
+                            protocol_version: PROTOCOL_VERSION,
+                            seq,
+                            result: value,
+                        }
+                    } else {
+                        ServerFrame::Event {
+                            protocol_version: PROTOCOL_VERSION,
+                            seq,
+                            event: value,
+                        }
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            Ok::<_, anyhow::Error>((frames, next_turn, assistant))
         })
         .await
         .context("headless live-frame projection task join")??;
-        let Some(frame) = frame else {
-            return Ok(next_turn);
-        };
-        let frame = Arc::new(
-            tokio::task::spawn_blocking(move || EncodedServerFrame::from_live(frame))
-                .await
-                .context("headless live-frame encoder task join")??,
-        );
-        let seq = frame.seq;
+        let frames = tokio::task::spawn_blocking(move || {
+            frames
+                .into_iter()
+                .map(EncodedServerFrame::from_live)
+                .collect::<Result<Vec<_>>>()
+        })
+        .await
+        .context("headless live-frame encoder task join")??;
+        if frames.is_empty() {
+            return Ok((next_turn, assistant));
+        }
+        let sequences = frames.iter().map(|frame| frame.seq).collect::<Vec<_>>();
         let mut ring = self.ring.lock().await;
-        ring.push(frame.clone());
+        for frame in frames {
+            ring.push(Arc::new(frame));
+        }
         // Publish the cursor under the same ring lock so a reconnect snapshot cannot observe a
         // cursor whose complete logical frame has not entered the ring yet.
-        self.cursor.store(seq, Ordering::Release);
+        self.cursor.store(
+            *sequences
+                .last()
+                .expect("a nonempty frame batch has a cursor"),
+            Ordering::Release,
+        );
         drop(ring);
-        let _ = self.live.send(seq);
-        Ok(next_turn)
+        for seq in sequences {
+            let _ = self.live.send(seq);
+        }
+        Ok((next_turn, assistant))
     }
 
     fn record_client_failure(&self) {
@@ -175,11 +498,86 @@ impl Shared {
     }
 }
 
-/// Run a local-only multi-client listener until interrupted.
-pub(crate) async fn serve(attached: Attached, listen: SocketAddr) -> Result<()> {
-    if !listen.ip().is_loopback() {
-        bail!("headless App Server refuses non-loopback listen address {listen}");
+fn plantcore_command_rejection(command_id: &str, reason: &'static str) -> Value {
+    json!({
+        "type": "plantcore_command_reply_v1",
+        "command_id": command_id,
+        "status": "rejected",
+        "reason": reason,
+    })
+}
+
+async fn dispatch_gate_command_reply(
+    gate: Option<&Arc<crate::runtime::DispatchGate>>,
+    command_id: &str,
+    command: &PlantcoreCommand,
+) -> Option<PreparedPlantcoreReply> {
+    let result = match command {
+        PlantcoreCommand::PauseDispatchAfterSafePoint => match gate {
+            Some(gate) => gate.pause_after_safe_point().await.map(|()| {
+                (
+                    json!({
+                        "type": "plantcore_command_reply_v1",
+                        "command_id": command_id,
+                        "status": "accepted",
+                        "safe_point": "dispatch_gate_active",
+                    }),
+                    None,
+                )
+            }),
+            None => Err("dispatch_gate_unavailable"),
+        },
+        PlantcoreCommand::ResumeDispatch => match gate {
+            Some(gate) => gate.prepare_resume().map(|activation| {
+                (
+                    json!({
+                        "type": "plantcore_command_reply_v1",
+                        "command_id": command_id,
+                        "status": "accepted",
+                        "safe_point": "dispatch_gate_open",
+                    }),
+                    Some(activation),
+                )
+            }),
+            None => Err("dispatch_gate_unavailable"),
+        },
+        PlantcoreCommand::Steer { .. } | PlantcoreCommand::Interrupt | PlantcoreCommand::Drain => {
+            return None;
+        }
+    };
+    Some(match result {
+        Ok((value, resume_activation)) => PreparedPlantcoreReply {
+            value,
+            resume_activation,
+        },
+        Err(reason) => PreparedPlantcoreReply {
+            value: plantcore_command_rejection(command_id, reason),
+            resume_activation: None,
+        },
+    })
+}
+
+fn validate_listen(listen: SocketAddr, plantcore: bool) -> Result<()> {
+    let required_plantcore_listen = SocketAddr::from(([127, 0, 0, 1], 0));
+    if plantcore && listen != required_plantcore_listen {
+        bail!(
+            "PlantCore headless App Server requires listen address {required_plantcore_listen}, got {listen}"
+        );
     }
+    if !listen.ip().is_loopback() {
+        bail!("headless App Server requires a loopback listen address, got {listen}");
+    }
+    Ok(())
+}
+
+/// Run a local-only multi-client listener until interrupted.
+pub(crate) async fn serve(
+    attached: Attached,
+    listen: SocketAddr,
+    plantcore: bool,
+    recording_fault: Option<crate::app_server::RecordingAppServerFault>,
+) -> Result<()> {
+    validate_listen(listen, plantcore)?;
     // The managing parent writes one fresh token then closes the inherited pipe. Reading to EOF
     // before `bind` makes an absent, malformed, or overlong capability fail without exposing a
     // listening socket, and `take` bounds a parent that violates the close contract.
@@ -188,8 +586,13 @@ pub(crate) async fn serve(attached: Attached, listen: SocketAddr) -> Result<()> 
         handle,
         task: server_task,
         facts,
+        machine_schema_version,
+        dispatch_gate,
+        interrupt,
+        drain,
         ..
     } = attached;
+    let session_id = facts.session_id.0.clone();
     let listener = TcpListener::bind(listen)
         .await
         .with_context(|| format!("bind headless App Server at {listen}"))?;
@@ -221,11 +624,20 @@ pub(crate) async fn serve(attached: Attached, listen: SocketAddr) -> Result<()> 
         cursor: AtomicU64::new(0),
         client_failures: AtomicU64::new(0),
         rollout_path: facts.rollout_path,
+        session_id,
+        plantcore,
+        machine_schema_version,
+        plantcore_commands: Mutex::new(std::collections::BTreeMap::new()),
+        dispatch_gate,
+        interrupt,
+        drain,
+        recording_fault: Mutex::new(recording_fault),
     });
     let mut events = handle.events;
     let pump_shared = shared.clone();
     let mut pump = tokio::spawn(async move {
         let mut turn = 0;
+        let mut assistant = output::V7AssistantStream::default();
         let mut last_seq = 0;
         while let Some(envelope) = events.recv().await {
             let seq = envelope.sequence();
@@ -250,8 +662,11 @@ pub(crate) async fn serve(attached: Attached, listen: SocketAddr) -> Result<()> 
                     break;
                 }
             };
-            match pump_shared.publish(event, turn).await {
-                Ok(next_turn) => turn = next_turn,
+            match pump_shared.publish(event, turn, assistant).await {
+                Ok((next_turn, next_assistant)) => {
+                    turn = next_turn;
+                    assistant = next_assistant;
+                }
                 Err(error) => {
                     log(json!({
                         "component": "app_server",
@@ -358,6 +773,17 @@ pub(crate) async fn serve(attached: Attached, listen: SocketAddr) -> Result<()> 
     Ok(())
 }
 
+fn session_identity_mismatch(
+    plantcore: bool,
+    resident_session_id: &str,
+    requested_session_id: Option<&str>,
+    resume_from: Option<u64>,
+) -> bool {
+    plantcore
+        && (requested_session_id.is_some_and(|requested| requested != resident_session_id)
+            || resume_from.is_some_and(|cursor| cursor > 0) && requested_session_id.is_none())
+}
+
 async fn serve_connection(
     socket: TcpStream,
     shared: &Shared,
@@ -376,12 +802,15 @@ async fn serve_connection(
         frame: hello,
         input_guard: hello_input_guard,
     } = parse_client_frame(hello).await?;
-    let (version, resume_from) = match hello {
+    let (version, resume_from, requested_session_id) = match hello {
         ClientFrame::Hello {
             bearer_token,
             protocol_version,
             resume_from,
-        } if shared.auth_token.authorizes(&bearer_token) => (protocol_version, resume_from),
+            session_id,
+        } if shared.auth_token.authorizes(&bearer_token) => {
+            (protocol_version, resume_from, session_id)
+        }
         ClientFrame::Hello { .. } | ClientFrame::Submit { .. } | ClientFrame::Control { .. } => {
             // Do not expose even the negotiated protocol version until the capability check has
             // succeeded. Missing/malformed tokens fail during bounded parsing on the same path.
@@ -400,6 +829,25 @@ async fn serve_connection(
                 &format!(
                     "unsupported SQ/EQ protocol version {version}; expected {PROTOCOL_VERSION}"
                 ),
+            ),
+        )
+        .await?;
+        return Ok(());
+    }
+    if session_identity_mismatch(
+        shared.plantcore,
+        &shared.session_id,
+        requested_session_id.as_deref(),
+        resume_from,
+    ) {
+        send_frame(
+            &mut writer,
+            &shared.outbound_budget,
+            &shared.frame_preparers,
+            &shared.fragment_encoders,
+            error_frame(
+                "session_mismatch",
+                "resume requires the same Run-local resident session identity",
             ),
         )
         .await?;
@@ -458,6 +906,7 @@ async fn serve_connection(
         &shared.fragment_encoders,
         ServerFrame::Hello {
             protocol_version: PROTOCOL_VERSION,
+            session_id: shared.session_id.clone(),
             cursor,
             replay_source: if fallback { "rollout" } else { "ring" },
         },
@@ -570,7 +1019,73 @@ async fn serve_connection(
                             .await?;
                             continue;
                         }
-                        let submission = shared.client.submit(op);
+                        if shared.plantcore {
+                            let mut recording_fault = shared.recording_fault.lock().await;
+                            if recording_fault.is_some() {
+                                match submit_plantcore_initial_input(
+                                    shared.dispatch_gate.as_ref(),
+                                    op,
+                                    |_| Ok::<_, std::convert::Infallible>(()),
+                                ) {
+                                    Ok(Ok(())) => {}
+                                    Ok(Err(never)) => match never {},
+                                    Err(reason) => {
+                                        drop(recording_fault);
+                                        drop(input_guard);
+                                        send_frame(
+                                            &mut writer,
+                                            &shared.outbound_budget,
+                                            &shared.frame_preparers,
+                                            &shared.fragment_encoders,
+                                            error_frame("submission_refused", reason),
+                                        )
+                                        .await?;
+                                        continue;
+                                    }
+                                }
+                                let fault = recording_fault
+                                    .take()
+                                    .expect("the recording fault was checked while locked");
+                                drop(recording_fault);
+                                drop(input_guard);
+                                send_recording_fault(
+                                    &mut writer,
+                                    &shared.outbound_budget,
+                                    &shared.frame_preparers,
+                                    &shared.fragment_encoders,
+                                    fault,
+                                    cursor
+                                        .checked_add(1)
+                                        .context("headless recording fault cursor exhausted")?,
+                                )
+                                .await?;
+                                return Ok(());
+                            }
+                            drop(recording_fault);
+                        }
+                        let submission = if shared.plantcore {
+                            match submit_plantcore_initial_input(
+                                shared.dispatch_gate.as_ref(),
+                                op,
+                                |op| shared.client.submit(op),
+                            ) {
+                                Ok(submission) => submission,
+                                Err(reason) => {
+                                    drop(input_guard);
+                                    send_frame(
+                                        &mut writer,
+                                        &shared.outbound_budget,
+                                        &shared.frame_preparers,
+                                        &shared.fragment_encoders,
+                                        error_frame("submission_refused", reason),
+                                    )
+                                    .await?;
+                                    continue;
+                                }
+                            }
+                        } else {
+                            shared.client.submit(op)
+                        };
                         // The parsed operation keeps the completed input-frame authority until the
                         // SQ has either acquired its own byte permit or refused the submission.
                         drop(input_guard);
@@ -608,11 +1123,43 @@ async fn serve_connection(
                             continue;
                         }
                         drop(input_guard);
-                        let sender = shared
-                            .control
-                            .upgrade()
-                            .context("headless App Server control channel closed")?;
-                        pending_control = Some(control::dispatch(sender, request_id, control));
+                        match control {
+                            control::WireControl::PlantcoreCommandV1 {
+                                command_id,
+                                command,
+                            } => {
+                                let prepared = shared
+                                    .submit_plantcore_command(command_id, command)
+                                    .await;
+                                let resume_activation = prepared.resume_activation;
+                                send_frame(
+                                    &mut writer,
+                                    &shared.outbound_budget,
+                                    &shared.frame_preparers,
+                                    &shared.fragment_encoders,
+                                    ServerFrame::ControlReply {
+                                        protocol_version: PROTOCOL_VERSION,
+                                        request_id,
+                                        reply: prepared.value,
+                                    },
+                                )
+                                .await?;
+                                if let (Some(gate), Some(activation)) =
+                                    (&shared.dispatch_gate, resume_activation)
+                                {
+                                    gate.activate_resume(activation)
+                                        .map_err(anyhow::Error::msg)?;
+                                }
+                            }
+                            control => {
+                                let sender = shared
+                                    .control
+                                    .upgrade()
+                                    .context("headless App Server control channel closed")?;
+                                pending_control =
+                                    Some(control::dispatch(sender, request_id, control));
+                            }
+                        }
                     }
                 }
             }
@@ -793,6 +1340,39 @@ fn log(value: Value) {
 mod boundary_tests {
     use super::*;
     use iteron_protocol::{input::MAX_TOTAL_IMAGE_BASE64_BYTES, task::MAX_TASK_TEXT_BYTES};
+    use std::cell::Cell;
+
+    #[test]
+    fn listener_validation_preserves_ordinary_loopback_addresses() {
+        assert!(validate_listen("127.0.0.1:4567".parse().unwrap(), false).is_ok());
+        assert!(validate_listen("[::1]:4567".parse().unwrap(), false).is_ok());
+        assert!(validate_listen("192.0.2.1:4567".parse().unwrap(), false).is_err());
+    }
+
+    #[test]
+    fn plantcore_listener_requires_ephemeral_ipv4_loopback() {
+        assert!(validate_listen("127.0.0.1:0".parse().unwrap(), true).is_ok());
+        assert!(validate_listen("127.0.0.1:4567".parse().unwrap(), true).is_err());
+        assert!(validate_listen("[::1]:0".parse().unwrap(), true).is_err());
+    }
+
+    #[test]
+    fn resident_session_identity_is_required_only_for_plantcore_resume() {
+        assert!(!session_identity_mismatch(false, "resident", None, Some(7)));
+        assert!(session_identity_mismatch(true, "resident", None, Some(7)));
+        assert!(session_identity_mismatch(
+            true,
+            "resident",
+            Some("different"),
+            Some(7)
+        ));
+        assert!(!session_identity_mismatch(
+            true,
+            "resident",
+            Some("resident"),
+            Some(7)
+        ));
+    }
 
     /// Kept in this orchestration module because the client-evidence boundary names this selector.
     #[test]
@@ -806,5 +1386,189 @@ mod boundary_tests {
             assert!(input::MAX_HELLO_FRAME_BYTES < input::MAX_CLIENT_FRAME_BYTES);
             assert!(framing::MAX_SERVER_FRAME_BYTES == 1024 * 1024);
         }
+    }
+
+    #[test]
+    fn repeated_plantcore_command_id_never_reapplies() {
+        let mut recorded = std::collections::BTreeMap::new();
+        let applications = Cell::new(0_u32);
+        let command = PlantcoreCommand::Interrupt;
+        let first =
+            admit_plantcore_command(&mut recorded, "command-1".into(), command.clone(), |_| {
+                applications.set(applications.get() + 1);
+                Ok(iteron_protocol::SubmissionId(11))
+            });
+        let replay = admit_plantcore_command(&mut recorded, "command-1".into(), command, |_| {
+            applications.set(applications.get() + 1);
+            Ok(iteron_protocol::SubmissionId(12))
+        });
+        assert_eq!(applications.get(), 1);
+        assert_eq!(first, replay);
+
+        let conflict = admit_plantcore_command(
+            &mut recorded,
+            "command-1".into(),
+            PlantcoreCommand::Drain,
+            |_| panic!("a conflicting replay must not reach the SQ"),
+        );
+        assert_eq!(conflict["reason"], "command_conflict");
+    }
+
+    #[tokio::test]
+    async fn command_completion_signal_retains_an_early_reply_notification() {
+        let completed = tokio::sync::watch::channel(false).0;
+        let mut replay = completed.subscribe();
+        completed.send_replace(true);
+
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            replay.wait_for(|finished| *finished),
+        )
+        .await
+        .expect("a concurrent replay must not lose an already-published completion")
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn dispatch_gate_commands_report_only_effective_safe_points() {
+        let gate = crate::runtime::DispatchGate::new();
+        let second_client_gate = gate.clone();
+        let second_client = tokio::spawn(async move {
+            submit_sq_plantcore_command(
+                Some(&second_client_gate),
+                "steer-before-bootstrap",
+                &PlantcoreCommand::Steer {
+                    text: "early".into(),
+                },
+                |_| panic!("a second connection must not queue steer before bootstrap"),
+            )
+        });
+        let early_steer = second_client.await.unwrap();
+        assert_eq!(early_steer["status"], "rejected");
+        assert_eq!(early_steer["reason"], "run_not_admitted");
+        let before_bootstrap = dispatch_gate_command_reply(
+            Some(&gate),
+            "pause-before-bootstrap",
+            &PlantcoreCommand::PauseDispatchAfterSafePoint,
+        )
+        .await
+        .unwrap();
+        assert_eq!(before_bootstrap.value["status"], "rejected");
+        assert_eq!(before_bootstrap.value["reason"], "run_not_admitted");
+
+        gate.admit().unwrap();
+        let paused = dispatch_gate_command_reply(
+            Some(&gate),
+            "pause-1",
+            &PlantcoreCommand::PauseDispatchAfterSafePoint,
+        )
+        .await
+        .unwrap();
+        assert_eq!(paused.value["status"], "accepted");
+        assert_eq!(paused.value["safe_point"], "dispatch_gate_active");
+        assert!(paused.value.get("submission_id").is_none());
+
+        let resumed =
+            dispatch_gate_command_reply(Some(&gate), "resume-1", &PlantcoreCommand::ResumeDispatch)
+                .await
+                .unwrap();
+        assert_eq!(resumed.value["status"], "accepted");
+        assert_eq!(resumed.value["safe_point"], "dispatch_gate_open");
+        gate.activate_resume(resumed.resume_activation.unwrap())
+            .unwrap();
+
+        gate.terminal();
+        let terminal = dispatch_gate_command_reply(
+            Some(&gate),
+            "resume-after-terminal",
+            &PlantcoreCommand::ResumeDispatch,
+        )
+        .await
+        .unwrap();
+        assert_eq!(terminal.value["status"], "rejected");
+        assert_eq!(terminal.value["reason"], "session_terminal");
+        let terminal_steer = submit_sq_plantcore_command(
+            Some(&gate),
+            "steer-after-terminal",
+            &PlantcoreCommand::Steer {
+                text: "late".into(),
+            },
+            |_| panic!("a terminal session must not queue steer"),
+        );
+        assert_eq!(terminal_steer["status"], "rejected");
+        assert_eq!(terminal_steer["reason"], "session_terminal");
+    }
+
+    #[tokio::test]
+    async fn plantcore_generic_submit_is_initial_input_only() {
+        let rejected = [
+            iteron_protocol::Op::ApprovalResponse {
+                id: iteron_protocol::SubmissionId(1),
+                approved: true,
+                remember: false,
+            },
+            iteron_protocol::Op::Steer {
+                text: "bypass".into(),
+            },
+            iteron_protocol::Op::Interrupt,
+            iteron_protocol::Op::ForceCancel,
+            iteron_protocol::Op::Drain,
+            iteron_protocol::Op::Unknown,
+        ];
+        let gate = crate::runtime::DispatchGate::new();
+        assert_eq!(
+            submit_plantcore_initial_input(
+                Some(&gate),
+                rejected[1].clone(),
+                |_| -> Result<(), ()> {
+                    panic!("pre-bootstrap generic control must not reach the SQ")
+                }
+            ),
+            Err("plantcore_initial_input_required")
+        );
+        gate.admit().unwrap();
+        gate.pause_after_safe_point().await.unwrap();
+        for op in rejected {
+            assert_eq!(
+                submit_plantcore_initial_input(Some(&gate), op, |_| -> Result<(), ()> {
+                    panic!("generic PlantCore control must not reach the SQ")
+                }),
+                Err("plantcore_initial_input_required")
+            );
+        }
+        assert_eq!(
+            submit_plantcore_initial_input(
+                Some(&gate),
+                iteron_protocol::Op::UserInput {
+                    text: "initial".into(),
+                },
+                |_| Ok::<_, ()>(17),
+            ),
+            Ok(Ok(17))
+        );
+        assert_eq!(
+            submit_plantcore_initial_input(
+                Some(&gate),
+                iteron_protocol::Op::UserInput {
+                    text: "second connection".into(),
+                },
+                |_| -> Result<(), ()> { panic!("a second generic input must not reach the SQ") },
+            ),
+            Err("initial_input_already_submitted")
+        );
+
+        let terminal = crate::runtime::DispatchGate::new();
+        terminal.admit().unwrap();
+        terminal.terminal();
+        assert_eq!(
+            submit_plantcore_initial_input(
+                Some(&terminal),
+                iteron_protocol::Op::UserInput {
+                    text: "late".into(),
+                },
+                |_| -> Result<(), ()> { panic!("post-terminal input must not reach the SQ") },
+            ),
+            Err("session_terminal")
+        );
     }
 }

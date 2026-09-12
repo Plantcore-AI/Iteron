@@ -28,6 +28,7 @@
 /requirements-docs.lock @fr0m-scratch
 /.github/ISSUE_TEMPLATE/** @fr0m-scratch
 /.github/workflows/** @fr0m-scratch
+/contracts/plantcore/** @fr0m-scratch
 /crates/agents/** @fr0m-scratch
 /crates/changeset/** @fr0m-scratch
 /crates/ctx/** @fr0m-scratch
@@ -71,7 +72,13 @@
 /docs/repository-enforcement.md @fr0m-scratch
 /docs/roadmap.md @fr0m-scratch
 /scripts/cross_harness_qualification.py @fr0m-scratch
+/scripts/plantcore-recording-driver @fr0m-scratch
+/scripts/plantcore_recording_action.py @fr0m-scratch
+/scripts/plantcore_recording_common.py @fr0m-scratch
+/scripts/plantcore_recording_driver.py @fr0m-scratch
+/scripts/plantcore_recording_evidence.py @fr0m-scratch
 /scripts/test_cross_harness_qualification.py @fr0m-scratch
+/scripts/test_plantcore_recording_driver.py @fr0m-scratch
 /xtask/Cargo.toml @fr0m-scratch
 /crates/agents/tests/** @fr0m-scratch
 /crates/cli/tests/** @fr0m-scratch
@@ -107,6 +114,7 @@
 /crates/cli/src/config/** @fr0m-scratch
 /crates/cli/src/image_input/** @fr0m-scratch
 /crates/cli/src/mcp/** @fr0m-scratch
+/crates/cli/src/output/** @fr0m-scratch
 /crates/cli/src/plugin_runtime/** @fr0m-scratch
 /crates/cli/src/prompt_history/** @fr0m-scratch
 /crates/cli/src/providers/** @fr0m-scratch
@@ -144,9 +152,11 @@
 /crates/cli/src/file_input.rs @fr0m-scratch
 /crates/cli/src/highlight.rs @fr0m-scratch
 /crates/cli/src/image_input.rs @fr0m-scratch
+/crates/cli/src/iteron_workspace_hook.rs @fr0m-scratch
 /crates/cli/src/keymap.rs @fr0m-scratch
 /crates/cli/src/keymap_tests.rs @fr0m-scratch
 /crates/cli/src/keyword_trigger.rs @fr0m-scratch
+/crates/cli/src/machine_contract.rs @fr0m-scratch
 /crates/cli/src/main.rs @fr0m-scratch
 /crates/cli/src/maintenance.rs @fr0m-scratch
 /crates/cli/src/markdown.rs @fr0m-scratch
@@ -158,6 +168,7 @@
 /crates/cli/src/pricing.rs @fr0m-scratch
 /crates/cli/src/prompt_history.rs @fr0m-scratch
 /crates/cli/src/providers.rs @fr0m-scratch
+/crates/cli/src/recording_provider.rs @fr0m-scratch
 /crates/cli/src/render.rs @fr0m-scratch
 /crates/cli/src/route.rs @fr0m-scratch
 /crates/cli/src/runtime.rs @fr0m-scratch
@@ -227,6 +238,7 @@
 /crates/provider/src/governor_snapshot.rs @fr0m-scratch
 /crates/provider/src/lib.rs @fr0m-scratch
 /crates/provider/src/openai.rs @fr0m-scratch
+/crates/provider/src/recording_transport.rs @fr0m-scratch
 /crates/provider/src/responses.rs @fr0m-scratch
 /crates/provider/src/sse.rs @fr0m-scratch
 /crates/provider/src/static_metadata.rs @fr0m-scratch
@@ -269,6 +281,7 @@
 /crates/tools/src/multi_file_patch_error.rs @fr0m-scratch
 /crates/tools/src/multi_file_patch_input.rs @fr0m-scratch
 /crates/tools/src/multi_file_patch_tests.rs @fr0m-scratch
+/crates/tools/src/plantcore.rs @fr0m-scratch
 /crates/tools/src/repair_evidence.rs @fr0m-scratch
 /crates/tools/src/schema.rs @fr0m-scratch
 /crates/tools/src/schema_error.rs @fr0m-scratch
@@ -317,6 +330,7 @@
 /crates/cli/src/runtime/orchestration_route.rs @fr0m-scratch
 /crates/cli/src/runtime/orchestration_run.rs @fr0m-scratch
 /crates/cli/src/runtime/permission_policy.rs @fr0m-scratch
+/crates/cli/src/runtime/plantcore.rs @fr0m-scratch
 /crates/cli/src/runtime/policy_evidence.rs @fr0m-scratch
 /crates/cli/src/runtime/policy_evidence_recorder.rs @fr0m-scratch
 /crates/cli/src/runtime/pricing.rs @fr0m-scratch

@@ -1166,8 +1166,10 @@ jobs:
         run: |
           set -euo pipefail
           binary="$CARGO_TARGET_DIR/${{ matrix.target }}/release/${{ matrix.binary }}"
+          workspace_hook="$CARGO_TARGET_DIR/${{ matrix.target }}/release/iteron-workspace-hook${{ matrix.tool-suffix }}"
           target=${{ matrix.target }}
           test -x "$binary"
+          test -x "$workspace_hook"
           test "$("$binary" -V)" = "iteron ${{ needs.validate.outputs.version }}"
           long_version=$("$binary" --version)
           grep -q "${{ needs.validate.outputs.commit }}" <<<"$long_version"
@@ -1175,7 +1177,7 @@ jobs:
           "$binary" --help >/dev/null
           "$binary" --machine-contract > "$RUNNER_TEMP/MACHINE-CONTRACT.json"
           jq -e '
-            .schema_version == 2
+            .schema_version == 3
             and .type == "machine_contract"
             and (.cli_stream_versions | index(4)) != null
             and (.default_cli_stream_version | type) == "number"
@@ -1240,7 +1242,7 @@ jobs:
             throw "--machine-contract exited with $($contractRun.ExitCode)"
           }
           $contract = Get-Content -LiteralPath $contractPath -Raw | ConvertFrom-Json
-          if ($contract.schema_version -ne 2 -or $contract.type -ne 'machine_contract') {
+          if ($contract.schema_version -ne 3 -or $contract.type -ne 'machine_contract') {
             throw 'release binary returned the wrong capability schema'
           }
           if (-not ($contract.cli_stream_versions -contains 4)) {
@@ -1327,16 +1329,18 @@ jobs:
                 native_conpty_rejects_version_skew_before_terminal_takeover \
                 -- --exact
           fi
-      - name: Generate and normalize the binary SBOM
+      - name: Generate and normalize the release payload SBOM
         shell: bash
         run: |
           set -euo pipefail
           binary="$CARGO_TARGET_DIR/${{ matrix.target }}/release/${{ matrix.binary }}"
+          workspace_hook="$CARGO_TARGET_DIR/${{ matrix.target }}/release/iteron-workspace-hook${{ matrix.tool-suffix }}"
           mkdir -p dist
           syft scan "$binary" -o "spdx-json=$RUNNER_TEMP/raw.spdx.json"
           "${{ matrix.python }}" release-tools/sbom.py \
             --input "$RUNNER_TEMP/raw.spdx.json" \
             --binary "$binary" \
+            --workspace-hook "$workspace_hook" \
             --output "$RUNNER_TEMP/SBOM.spdx.json" \
             --version "${{ needs.validate.outputs.version }}" \
             --target "${{ matrix.target }}" \
@@ -1347,6 +1351,7 @@ jobs:
         run: |
           set -euo pipefail
           binary="$CARGO_TARGET_DIR/${{ matrix.target }}/release/${{ matrix.binary }}"
+          workspace_hook="$CARGO_TARGET_DIR/${{ matrix.target }}/release/iteron-workspace-hook${{ matrix.tool-suffix }}"
           "${{ matrix.python }}" release-tools/manifest.py build-info \
             --version "${{ needs.validate.outputs.version }}" \
             --target "${{ matrix.target }}" \
@@ -1356,12 +1361,14 @@ jobs:
             --output "$RUNNER_TEMP/BUILD-INFO.json"
           "${{ matrix.python }}" release-tools/package.py \
             --binary "$binary" \
+            --workspace-hook "$workspace_hook" \
             --license LICENSE \
             --readme README.md \
             --licenses "$RUNNER_TEMP/legal/THIRD_PARTY_LICENSES.html" \
             --notices "$RUNNER_TEMP/legal/THIRD_PARTY_NOTICES.txt" \
             --sbom "$RUNNER_TEMP/SBOM.spdx.json" \
             --build-info "$RUNNER_TEMP/BUILD-INFO.json" \
+            --plantcore-contracts contracts/plantcore \
             --version "${{ needs.validate.outputs.version }}" \
             --target "${{ matrix.target }}" \
             --source-date-epoch "$SOURCE_DATE_EPOCH" \

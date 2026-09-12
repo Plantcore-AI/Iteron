@@ -35,8 +35,8 @@ debug text.
 is locally resized when needed and normalized to JPEG before it reaches the provider. Iteron
 streams each file through a hard limit, checks its magic bytes and container
 minimums, and refuses extension spoofing before constructing the SQ submission.
-The limits are 6 MiB raw / 8 MiB base64 per image and 24 MiB raw / 32 MiB base64
-in aggregate. A text-only provider receives the unchanged prompt, emits one clear
+The limits are 24 MiB raw / 32 MiB base64 per image and in aggregate. A text-only
+provider receives the unchanged prompt, emits one clear
 degradation notice, and still completes; image bytes and paths never enter that
 provider request.
 

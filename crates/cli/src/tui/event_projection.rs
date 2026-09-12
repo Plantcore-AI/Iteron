@@ -69,6 +69,7 @@ pub(super) fn apply_event(app: &mut App, ev: UiEvent) {
             app.turns = app.turns.saturating_add(1);
             app.status = "answer complete · finalizing run record…".into();
         }
+        UiEvent::PlantcoreUsage(_) | UiEvent::PlantcoreRunAdmitted { .. } => {}
         UiEvent::Workflow(event) => app.workflow_event(event),
         UiEvent::SteerApplied { count } => {
             for _ in 0..count {

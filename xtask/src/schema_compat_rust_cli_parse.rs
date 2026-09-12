@@ -272,6 +272,17 @@ pub(super) fn collect_direct_return_json_objects(
                 if !arm.attrs.is_empty() || arm.guard.is_some() {
                     bail!("CLI machine producer match arms cannot carry attributes or guards");
                 }
+                match exact_pattern_variant(&arm.pat, "UiEvent").as_deref() {
+                    Ok("PlantcoreUsage") => {
+                        validate_plantcore_usage_projection(&arm.body)?;
+                        continue;
+                    }
+                    Ok("PlantcoreRunAdmitted") => {
+                        validate_plantcore_admitted_projection(&arm.body)?;
+                        continue;
+                    }
+                    _ => {}
+                }
                 collect_direct_return_json_objects(&arm.body, objects)?;
             }
         }
@@ -376,6 +387,14 @@ fn validate_stream_event_patterns(function: &syn::ItemFn) -> Result<()> {
     let mut observed = BTreeMap::new();
     for arm in &top.arms {
         let variant = exact_pattern_variant(&arm.pat, "UiEvent")?;
+        if variant == "PlantcoreUsage" {
+            validate_plantcore_usage_projection(&arm.body)?;
+            continue;
+        }
+        if variant == "PlantcoreRunAdmitted" {
+            validate_plantcore_admitted_projection(&arm.body)?;
+            continue;
+        }
         if variant == "Workflow" {
             let syn::Expr::Match(workflow) = peel_expression(&arm.body) else {
                 bail!("CLI Workflow UiEvent must directly match its nested event");
@@ -417,6 +436,58 @@ fn validate_stream_event_patterns(function: &syn::ItemFn) -> Result<()> {
     ]);
     if observed != expected {
         bail!("CLI UiEvent/WorkflowUiEvent pattern-to-record mapping changed: {observed:?}");
+    }
+    Ok(())
+}
+
+fn validate_plantcore_usage_projection(body: &syn::Expr) -> Result<()> {
+    let body = match peel_expression(body) {
+        syn::Expr::Block(block)
+            if block.attrs.is_empty() && block.label.is_none() && block.block.stmts.len() == 1 =>
+        {
+            let syn::Stmt::Expr(expression, None) = &block.block.stmts[0] else {
+                bail!("CLI PlantcoreUsage arm is not one direct expression");
+            };
+            peel_expression(expression)
+        }
+        expression => expression,
+    };
+    let syn::Expr::MethodCall(expect) = body else {
+        bail!("CLI PlantcoreUsage arm does not validate its typed v7 projection");
+    };
+    let syn::Expr::Call(call) = expect.receiver.as_ref() else {
+        bail!("CLI PlantcoreUsage arm does not call the v7 usage projector directly");
+    };
+    if expect.method != "expect"
+        || expect.args.len() != 1
+        || !expression_path_exact(&call.func, &["v7", "usage_value"])
+        || call.args.len() != 1
+        || !matches!(&call.args[0], syn::Expr::Reference(reference)
+            if reference.mutability.is_none()
+                && expression_path_exact(&reference.expr, &["usage"]))
+    {
+        bail!("CLI PlantcoreUsage arm can substitute or bypass its typed v7 projection");
+    }
+    Ok(())
+}
+
+fn validate_plantcore_admitted_projection(body: &syn::Expr) -> Result<()> {
+    let mut objects = Vec::new();
+    collect_direct_return_json_objects(body, &mut objects)?;
+    let [object] = objects.as_slice() else {
+        bail!("CLI PlantcoreRunAdmitted arm does not produce exactly one record");
+    };
+    let close = balanced_rust_object_end(object, 0, object.len())?;
+    let (record, fields) = outer_json_object_shape(object, 0, close, "type")?;
+    if record != "plantcore_run_admitted"
+        || fields
+            != BTreeSet::from([
+                "profile_digest_sha256".to_owned(),
+                "schema_version".to_owned(),
+                "type".to_owned(),
+            ])
+    {
+        bail!("CLI PlantcoreRunAdmitted arm changed its fixed v7 record shape");
     }
     Ok(())
 }

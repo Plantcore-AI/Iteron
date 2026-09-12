@@ -3322,18 +3322,9 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     }
 
     fn one_shot_terminal_result(summary: &app_server::TerminalSummary) -> serde_json::Value {
-        // This is the exact constructor used by the one-shot client after it receives RunEnded.
-        // Do not route this leg through TerminalSummary::current_result: an accidental sibling-client
-        // normalizer must remain observable to this parity proof.
-        crate::output::final_result(
-            &summary.outcome,
-            &summary.assistant_text,
-            &summary.run_id,
-            &summary.cost,
-            summary.turns,
-            summary.kernel_tax,
-            summary.error.as_deref(),
-        )
+        summary
+            .result_for_schema(crate::output::SCHEMA_VERSION)
+            .expect("v6 terminal facts must project")
     }
 
     fn tui_terminal_result(summary: &app_server::TerminalSummary) -> (serde_json::Value, String) {
@@ -3346,7 +3337,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 mode: PermissionMode::default(),
                 effort: Effort::default(),
                 model: "test-model".into(),
-            provider_id: "test-provider".into(),
+                provider_id: "test-provider".into(),
                 cost: summary.cost.clone(),
                 last_turn_usage: None,
                 unadmitted_steers: Vec::new(),
@@ -3374,8 +3365,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             &mut notification_bytes,
             &interrupt,
             &drain,
-        
-            None,);
+            None,
+        );
 
         (
             app.last_result
@@ -3401,10 +3392,26 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         }
     }
 
-    #[test]
-    fn three_client_production_paths_are_pairwise_identical_for_every_terminal_outcome() {
-        let cases = [
-            (iteron_protocol::Outcome::Done, "done", 0_u64),
+    fn capture_v7_machine_parity(summary: &app_server::TerminalSummary) -> ClientParityCapture {
+        let one_shot = summary
+            .result_for_schema(crate::output::V7_SCHEMA_VERSION)
+            .expect("v7 terminal facts must project");
+        let (protocol_version, seq, headless) =
+            headless::capture_plantcore_terminal_result_frame(41, summary);
+        assert_eq!(protocol_version, iteron_protocol::PROTOCOL_VERSION);
+        assert_eq!(seq, 41);
+        let (tui, tui_status) = tui_terminal_result(summary);
+        ClientParityCapture {
+            one_shot,
+            headless,
+            tui,
+            tui_status,
+        }
+    }
+
+    fn parity_cases() -> [(iteron_protocol::Outcome, &'static str, u64); 7] {
+        [
+            (iteron_protocol::Outcome::Done, "done", 0),
             (iteron_protocol::Outcome::Drained, "drained", 0),
             (
                 iteron_protocol::Outcome::BudgetExhausted("max_turns"),
@@ -3414,65 +3421,73 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             (iteron_protocol::Outcome::Interrupted, "interrupted", 130),
             (iteron_protocol::Outcome::Stuck, "stuck", 4),
             (iteron_protocol::Outcome::HarnessError, "harness_error", 2),
-        ];
+            (
+                iteron_protocol::Outcome::UsageUnavailable,
+                "usage_unavailable",
+                5,
+            ),
+        ]
+    }
 
-        for (outcome, expected_outcome, expected_exit_code) in cases {
-            let summary = app_server::TerminalSummary {
-                error: matches!(&outcome, iteron_protocol::Outcome::HarnessError)
-                    .then(|| "synthetic harness failure".into()),
-                outcome,
+    fn parity_summary(outcome: iteron_protocol::Outcome) -> app_server::TerminalSummary {
+        let product_result = matches!(&outcome, iteron_protocol::Outcome::Done).then(|| {
+            iteron_protocol::ProductResult::Completed {
                 assistant_text: "parity reply".into(),
-                run_id: "run-client-parity".into(),
-                cost: CostState::default(),
-                turns: 1,
-                kernel_tax: iteron_obs::KernelTax::default(),
-                memo_hits: 0,
-                memo_misses: 0,
-            };
-            let capture = capture_client_parity(&summary);
-
-            assert_eq!(
-                pairwise_result_equality(&capture),
-                [true, true, true],
-                "{expected_outcome} diverged across production client projections"
-            );
-            for result in [&capture.one_shot, &capture.headless, &capture.tui] {
-                assert_eq!(result["outcome"], expected_outcome);
-                assert_eq!(
-                    result["exit_code"].as_u64(),
-                    Some(expected_exit_code),
-                    "{expected_outcome} changed its process contract"
-                );
+                artifacts: Vec::new(),
             }
+        });
+        app_server::TerminalSummary {
+            error: matches!(&outcome, iteron_protocol::Outcome::HarnessError)
+                .then(|| "synthetic harness failure".into()),
+            terminal: app_server::TerminalAuthority::Plantcore(
+                iteron_protocol::PlantcoreTerminalOutcome::from_runtime(outcome, product_result)
+                    .unwrap(),
+            ),
+            assistant_text: "parity reply".into(),
+            v7_assistant_text: None,
+            run_id: "run-client-parity".into(),
+            cost: CostState::default(),
+            turns: 1,
+            kernel_tax: iteron_obs::KernelTax::default(),
+            memo_hits: 0,
+            memo_misses: 0,
+        }
+    }
+
+    #[test]
+    fn three_client_production_paths_are_pairwise_identical_for_every_terminal_outcome() {
+        for (outcome, expected_outcome, expected_exit_code) in parity_cases() {
+            let capture = capture_client_parity(&parity_summary(outcome));
+            assert_eq!(pairwise_result_equality(&capture), [true, true, true]);
+            assert_eq!(capture.one_shot["schema_version"], 6);
+            assert_eq!(capture.one_shot["outcome"], expected_outcome);
+            assert_eq!(
+                capture.one_shot["exit_code"].as_u64(),
+                Some(expected_exit_code)
+            );
+        }
+    }
+
+    #[test]
+    fn machine_clients_share_v7_while_tui_retains_its_v6_presentation_state() {
+        for (outcome, expected_outcome, expected_exit_code) in parity_cases() {
+            let capture = capture_v7_machine_parity(&parity_summary(outcome));
+
+            assert_eq!(capture.one_shot, capture.headless);
+            assert_eq!(capture.one_shot["schema_version"], 7);
+            assert_eq!(capture.one_shot["outcome"], expected_outcome);
+            assert!(capture.one_shot.get("exit_code").is_none());
+            assert_eq!(capture.tui["schema_version"], 6);
+            assert_eq!(capture.tui["outcome"], expected_outcome);
+            assert_eq!(
+                capture.tui["exit_code"].as_u64(),
+                Some(expected_exit_code),
+                "{expected_outcome} changed its process contract"
+            );
             assert_eq!(
                 capture.tui_status,
                 format!("idle · last: {expected_outcome}"),
                 "native TUI presentation is checked separately from machine-object parity"
-            );
-
-            // Normalizer canary: a substantive field changed in only one captured result must not
-            // be erased by envelope handling or a presentation-oriented comparison.
-            let mut divergent = capture.clone();
-            divergent.headless["assistant_text"] =
-                serde_json::Value::String("headless-only mutation".into());
-            assert_eq!(
-                pairwise_result_equality(&divergent),
-                [false, false, true],
-                "raw pairwise equality must expose a one-client result mutation"
-            );
-
-            // Source-mutation canary: changing the shared authority must move all three production
-            // outputs together and preserve parity, proving the assertion is not three literals.
-            let mut changed_summary = summary.clone();
-            changed_summary.assistant_text = "parity reply after summary mutation".into();
-            let changed = capture_client_parity(&changed_summary);
-            assert_eq!(pairwise_result_equality(&changed), [true, true, true]);
-            assert_ne!(changed.one_shot, capture.one_shot);
-            assert_ne!(changed.headless, capture.headless);
-            assert_ne!(changed.tui, capture.tui);
-            assert_eq!(
-                changed.one_shot["assistant_text"],
-                "parity reply after summary mutation"
             );
         }
     }
@@ -3484,8 +3499,16 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         let (sq, _rx) = tokio::sync::mpsc::channel(1);
         let mut session = Session::for_test(sq);
         let summary = app_server::TerminalSummary {
-            outcome: iteron_protocol::Outcome::Done,
+            terminal: app_server::TerminalAuthority::Plantcore(
+                iteron_protocol::PlantcoreTerminalOutcome::Done(
+                iteron_protocol::ProductResult::Completed {
+                    assistant_text: "the typed answer".into(),
+                    artifacts: Vec::new(),
+                },
+                ),
+            ),
             assistant_text: "the typed answer".into(),
+            v7_assistant_text: None,
             run_id: "run-tui-parity".into(),
             cost: CostState::default(),
             turns: 3,
@@ -3494,8 +3517,9 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             memo_hits: 0,
             memo_misses: 0,
         };
+        let outcome = summary.terminal.outcome();
         let expected = crate::output::final_result(
-            &summary.outcome,
+            &outcome,
             &summary.assistant_text,
             &summary.run_id,
             &summary.cost,
@@ -3572,8 +3596,11 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 mcp_health: Vec::new(),
             }),
             summary: Box::new(app_server::TerminalSummary {
-                outcome: iteron_protocol::Outcome::Interrupted,
+                terminal: app_server::TerminalAuthority::Plantcore(
+                    iteron_protocol::PlantcoreTerminalOutcome::Interrupted,
+                ),
                 assistant_text: String::new(),
+                v7_assistant_text: None,
                 run_id: "run-interrupt-handoff".into(),
                 cost: CostState::default(),
                 turns: 1,
@@ -3634,8 +3661,13 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 mcp_health: Vec::new(),
             }),
             summary: Box::new(app_server::TerminalSummary {
-                outcome: iteron_protocol::Outcome::BudgetExhausted("max_turns"),
+                terminal: app_server::TerminalAuthority::Plantcore(
+                    iteron_protocol::PlantcoreTerminalOutcome::BudgetExhausted(
+                        iteron_protocol::PlantcoreBudgetLimit::MaxTurns,
+                    ),
+                ),
                 assistant_text: String::new(),
+                v7_assistant_text: None,
                 run_id: "run-budget-remedy".into(),
                 cost: CostState::default(),
                 turns: 40,

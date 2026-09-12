@@ -1,0 +1,656 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://iteron.dev/contracts/plantcore/app-server-v4.schema.json",
+  "title": "Iteron resident App Server protocol v4",
+  "oneOf": [
+    { "$ref": "#/$defs/listeningRecord" },
+    { "$ref": "#/$defs/clientHello" },
+    { "$ref": "#/$defs/clientSubmit" },
+    { "$ref": "#/$defs/clientControl" },
+    { "$ref": "#/$defs/serverHello" },
+    { "$ref": "#/$defs/serverEvent" },
+    { "$ref": "#/$defs/serverResult" },
+    { "$ref": "#/$defs/serverRollout" },
+    { "$ref": "#/$defs/controlReply" },
+    { "$ref": "#/$defs/error" },
+    { "$ref": "#/$defs/frameChunk" }
+  ],
+  "$defs": {
+    "protocolVersion": { "const": 4 },
+    "nonempty": { "type": "string", "minLength": 1 },
+    "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "safeId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9._:/-]+$"
+    },
+    "portableUint": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+    "positivePortableUint": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+    "relativePath": { "type": "string", "minLength": 1, "maxLength": 1024 },
+    "sessionId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "commandId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_.:-]+$"
+    },
+    "listeningRecord": {
+      "type": "object",
+      "required": ["component", "event", "protocol_version", "listen", "transport", "authentication"],
+      "properties": {
+        "component": { "const": "app_server" },
+        "event": { "const": "listening" },
+        "protocol_version": { "$ref": "#/$defs/protocolVersion" },
+        "listen": { "type": "string", "pattern": "^127\\.0\\.0\\.1:[1-9][0-9]{0,4}$" },
+        "transport": { "const": "loopback_tcp_jsonl" },
+        "authentication": { "const": "stdin_bearer_hello" }
+      },
+      "additionalProperties": false
+    },
+    "clientHello": {
+      "type": "object",
+      "required": ["type", "bearer_token", "protocol_version"],
+      "properties": {
+        "type": { "const": "hello" },
+        "bearer_token": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "protocol_version": { "$ref": "#/$defs/protocolVersion" },
+        "resume_from": { "type": "integer", "minimum": 0 },
+        "session_id": { "$ref": "#/$defs/sessionId" }
+      },
+      "additionalProperties": false
+    },
+    "clientSubmit": {
+      "type": "object",
+      "required": ["type", "protocol_version", "op"],
+      "properties": {
+        "type": { "const": "submit" },
+        "protocol_version": { "$ref": "#/$defs/protocolVersion" },
+        "op": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["op", "text"],
+              "properties": {
+                "op": { "const": "user_input" },
+                "text": { "type": "string", "maxLength": 1048576 }
+              },
+              "additionalProperties": true
+            },
+            {
+              "type": "object",
+              "required": ["op", "segments"],
+              "properties": {
+                "op": { "const": "user_input_v2" },
+                "segments": { "type": "array", "minItems": 2, "maxItems": 9 }
+              },
+              "additionalProperties": true
+            },
+            {
+              "type": "object",
+              "required": ["op", "text", "files"],
+              "properties": {
+                "op": { "const": "user_input_v3" },
+                "text": { "type": "string", "maxLength": 1048576 },
+                "images": { "type": "array", "maxItems": 8 },
+                "files": { "type": "array", "minItems": 1, "maxItems": 8 }
+              },
+              "additionalProperties": true
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "agentRuntimeProfile": {
+      "type": "object",
+      "required": [
+        "agent_definition_id", "agent_definition_version", "instructions_utf8",
+        "instructions_sha256", "capability_policy_digest_sha256", "profile_digest_sha256"
+      ],
+      "properties": {
+        "agent_definition_id": { "$ref": "#/$defs/safeId" },
+        "agent_definition_version": { "$ref": "#/$defs/safeId" },
+        "instructions_utf8": { "type": "string", "minLength": 1, "maxLength": 131072 },
+        "instructions_sha256": { "$ref": "#/$defs/digest" },
+        "capability_policy_digest_sha256": { "$ref": "#/$defs/digest" },
+        "profile_digest_sha256": { "$ref": "#/$defs/digest" }
+      },
+      "additionalProperties": false
+    },
+    "engine": {
+      "type": "object",
+      "required": [
+        "provider", "model", "effort", "allow_code", "builtin_workspace_posture",
+        "external_mcp_posture"
+      ],
+      "properties": {
+        "provider": { "$ref": "#/$defs/safeId" },
+        "model": { "$ref": "#/$defs/safeId" },
+        "effort": { "enum": ["low", "medium", "high", "xhigh", "max", "ultracode"] },
+        "allow_code": { "const": false },
+        "builtin_workspace_posture": { "enum": ["read_only", "read_write"] },
+        "external_mcp_posture": { "enum": ["disabled", "run_gateway"] }
+      },
+      "additionalProperties": false
+    },
+    "providerBootstrap": {
+      "type": "object",
+      "required": [
+        "api_origin", "policy_version", "policy_digest_sha256", "credential_env_name",
+        "credential_projected_file"
+      ],
+      "properties": {
+        "api_origin": { "type": "string", "format": "uri", "maxLength": 2048 },
+        "policy_version": { "$ref": "#/$defs/safeId" },
+        "policy_digest_sha256": { "$ref": "#/$defs/digest" },
+        "credential_env_name": { "const": "ITERON_PROVIDER_API_KEY" },
+        "credential_projected_file": { "const": "/var/run/secrets/plantcore/provider/api-key" }
+      },
+      "additionalProperties": false
+    },
+    "runGateway": {
+      "type": "object",
+      "required": [
+        "mcp_url", "run_io_base_url", "auth_header_name", "token_env_name",
+        "mcp_config_version", "mcp_config_digest_sha256", "catalog_snapshot_digest_sha256",
+        "catalog_snapshot_revision", "external_mcp_posture", "run_io_token_projected_file"
+      ],
+      "properties": {
+        "mcp_url": { "const": "http://127.0.0.1:43171/mcp" },
+        "run_io_base_url": { "const": "http://127.0.0.1:43171/run-io/v1" },
+        "auth_header_name": { "const": "Authorization" },
+        "token_env_name": { "const": "PLANTCORE_RUN_GATEWAY_AUTHORIZATION" },
+        "mcp_config_version": { "const": "plantcore.mcp-config.v1" },
+        "mcp_config_digest_sha256": { "$ref": "#/$defs/digest" },
+        "catalog_snapshot_digest_sha256": { "$ref": "#/$defs/digest" },
+        "catalog_snapshot_revision": { "$ref": "#/$defs/safeId" },
+        "external_mcp_posture": { "enum": ["disabled", "run_gateway"] },
+        "run_io_token_projected_file": { "const": "/var/run/secrets/plantcore/run-io/client-token" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "external_mcp_posture": { "const": "disabled" } } },
+          "then": {
+            "properties": {
+              "catalog_snapshot_revision": { "const": "disabled" },
+              "catalog_snapshot_digest_sha256": { "const": "cff03895af81c746e543cb48d2d3ccccdb74f59b4e1bb7796faf168f01cb6af6" }
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "limits": {
+      "type": "object",
+      "required": ["max_turns", "max_wall_secs", "limits_digest_sha256"],
+      "properties": {
+        "max_turns": { "type": "integer", "minimum": 1, "maximum": 64 },
+        "max_tokens": { "$ref": "#/$defs/positivePortableUint" },
+        "max_usd_micros": { "$ref": "#/$defs/positivePortableUint" },
+        "max_wall_secs": { "type": "integer", "minimum": 30, "maximum": 3600 },
+        "metering_policy_version": { "$ref": "#/$defs/safeId" },
+        "limits_digest_sha256": { "$ref": "#/$defs/digest" }
+      },
+      "additionalProperties": false
+    },
+    "fiveClassCeilV1": {
+      "type": "object",
+      "required": [
+        "input_units_per_million", "output_units_per_million",
+        "cache_creation_units_per_million", "cache_read_units_per_million",
+        "thinking_units_per_million"
+      ],
+      "properties": {
+        "input_units_per_million": { "$ref": "#/$defs/portableUint" },
+        "output_units_per_million": { "$ref": "#/$defs/portableUint" },
+        "cache_creation_units_per_million": { "$ref": "#/$defs/portableUint" },
+        "cache_read_units_per_million": { "$ref": "#/$defs/portableUint" },
+        "thinking_units_per_million": { "$ref": "#/$defs/portableUint" }
+      },
+      "additionalProperties": false
+    },
+    "meteringPolicy": {
+      "type": "object",
+      "required": [
+        "version", "provider", "model", "effective_from_unix_ms", "effective_until_unix_ms",
+        "calculator_contract_version", "metering_unit", "policy_digest_sha256",
+        "five_class_ceil_v1"
+      ],
+      "properties": {
+        "version": { "$ref": "#/$defs/safeId" },
+        "provider": { "$ref": "#/$defs/safeId" },
+        "model": { "$ref": "#/$defs/safeId" },
+        "effective_from_unix_ms": { "type": "integer" },
+        "effective_until_unix_ms": { "type": "integer" },
+        "calculator_contract_version": { "const": "plantcore.metering.five-class-ceil.v1" },
+        "metering_unit": { "const": "USD_MICRO" },
+        "policy_digest_sha256": { "$ref": "#/$defs/digest" },
+        "five_class_ceil_v1": { "$ref": "#/$defs/fiveClassCeilV1" }
+      },
+      "additionalProperties": false
+    },
+    "workspace": {
+      "type": "object",
+      "required": ["input", "work", "output"],
+      "properties": {
+        "input": { "const": "/workspace/input" },
+        "work": { "const": "/workspace/work" },
+        "output": { "const": "/workspace/output" }
+      },
+      "additionalProperties": false
+    },
+    "artifactRequirement": {
+      "type": "object",
+      "required": ["logical_name", "relative_path", "allowed_media_types", "max_size_bytes"],
+      "properties": {
+        "logical_name": { "$ref": "#/$defs/safeId" },
+        "relative_path": { "$ref": "#/$defs/relativePath" },
+        "allowed_media_types": {
+          "type": "array", "minItems": 1, "maxItems": 16, "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+$" }
+        },
+        "max_size_bytes": { "type": "integer", "minimum": 1, "maximum": 104857600 }
+      },
+      "additionalProperties": false
+    },
+    "artifactPolicy": {
+      "type": "object",
+      "required": [
+        "output_root", "max_artifact_bytes", "max_artifact_count", "max_total_artifact_bytes",
+        "max_upload_chunk_bytes", "required_artifacts", "policy_digest_sha256"
+      ],
+      "properties": {
+        "output_root": { "const": "/workspace/output" },
+        "max_artifact_bytes": { "type": "integer", "minimum": 1, "maximum": 104857600 },
+        "max_artifact_count": { "type": "integer", "minimum": 1, "maximum": 50 },
+        "max_total_artifact_bytes": { "type": "integer", "minimum": 1, "maximum": 524288000 },
+        "max_upload_chunk_bytes": { "type": "integer", "minimum": 1, "maximum": 8388608 },
+        "required_artifacts": { "type": "array", "maxItems": 50, "items": { "$ref": "#/$defs/artifactRequirement" } },
+        "policy_digest_sha256": { "$ref": "#/$defs/digest" }
+      },
+      "additionalProperties": false
+    },
+    "conversationFact": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["kind", "content_utf8", "content_sha256", "source_message_id"],
+          "properties": {
+            "kind": { "enum": ["user_message", "assistant_message"] },
+            "content_utf8": { "type": "string", "maxLength": 524288 },
+            "content_sha256": { "$ref": "#/$defs/digest" },
+            "source_message_id": { "$ref": "#/$defs/safeId" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "question_id", "question_digest_sha256", "answer_utf8", "answer_sha256", "answered_by_actor_id", "answered_at_unix_ms"],
+          "properties": {
+            "kind": { "const": "question_answer" },
+            "question_id": { "$ref": "#/$defs/safeId" },
+            "question_digest_sha256": { "$ref": "#/$defs/digest" },
+            "answer_utf8": { "type": "string", "maxLength": 524288 },
+            "answer_sha256": { "$ref": "#/$defs/digest" },
+            "answered_by_actor_id": { "$ref": "#/$defs/safeId" },
+            "answered_at_unix_ms": { "type": "integer" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "action_review_id", "action_digest_sha256", "decision", "decided_at_unix_ms"],
+          "properties": {
+            "kind": { "const": "action_decision" },
+            "action_review_id": { "$ref": "#/$defs/safeId" },
+            "action_digest_sha256": { "$ref": "#/$defs/digest" },
+            "decision": { "enum": ["approved", "rejected", "expired"] },
+            "decided_by_actor_id": { "$ref": "#/$defs/safeId" },
+            "decided_at_unix_ms": { "type": "integer" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "action_review_id", "action_digest_sha256", "status", "safe_summary_utf8", "result_digest_sha256", "connector_journal_id", "completed_at_unix_ms"],
+          "properties": {
+            "kind": { "const": "action_result" },
+            "action_review_id": { "$ref": "#/$defs/safeId" },
+            "action_digest_sha256": { "$ref": "#/$defs/digest" },
+            "status": { "enum": ["succeeded", "failed", "unknown_effect"] },
+            "safe_summary_utf8": { "type": "string", "maxLength": 524288 },
+            "result_digest_sha256": { "$ref": "#/$defs/digest" },
+            "connector_journal_id": { "$ref": "#/$defs/safeId" },
+            "completed_at_unix_ms": { "type": "integer" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "conversationSegment": {
+      "type": "object",
+      "required": ["sequence", "source_run_id", "fact_digest_sha256", "fact"],
+      "properties": {
+        "sequence": { "$ref": "#/$defs/positivePortableUint" },
+        "source_run_id": { "$ref": "#/$defs/safeId" },
+        "fact_digest_sha256": { "$ref": "#/$defs/digest" },
+        "fact": { "$ref": "#/$defs/conversationFact" }
+      },
+      "additionalProperties": false
+    },
+    "currentUserInput": {
+      "type": "object",
+      "required": ["conversation_sequence", "source_run_id", "source_message_id", "content_sha256"],
+      "properties": {
+        "conversation_sequence": { "$ref": "#/$defs/positivePortableUint" },
+        "source_run_id": { "$ref": "#/$defs/safeId" },
+        "source_message_id": { "$ref": "#/$defs/safeId" },
+        "content_sha256": { "$ref": "#/$defs/digest" }
+      },
+      "additionalProperties": false
+    },
+    "inputAsset": {
+      "type": "object",
+      "required": ["asset_handle", "relative_path", "media_type", "size_bytes", "content_sha256", "materialization"],
+      "properties": {
+        "asset_handle": { "$ref": "#/$defs/safeId" },
+        "relative_path": { "$ref": "#/$defs/relativePath" },
+        "media_type": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "size_bytes": { "$ref": "#/$defs/portableUint" },
+        "content_sha256": { "$ref": "#/$defs/digest" },
+        "materialization": { "enum": ["text_attachment", "image_attachment", "workspace_read_only"] }
+      },
+      "additionalProperties": false
+    },
+    "bootstrapPayload": {
+      "type": "object",
+      "required": [
+        "contract_version", "run_id", "agent_runtime_profile", "engine",
+        "provider_bootstrap", "run_gateway", "limits", "output_schema_version",
+        "output_schema_digest_sha256", "workspace", "artifact_policy", "conversation_segments",
+        "current_user_input", "input_assets"
+      ],
+      "properties": {
+        "contract_version": { "const": "plantcore.iteron-run-bootstrap.v1" },
+        "run_id": { "$ref": "#/$defs/safeId" },
+        "agent_runtime_profile": { "$ref": "#/$defs/agentRuntimeProfile" },
+        "engine": { "$ref": "#/$defs/engine" },
+        "provider_bootstrap": { "$ref": "#/$defs/providerBootstrap" },
+        "run_gateway": { "$ref": "#/$defs/runGateway" },
+        "limits": { "$ref": "#/$defs/limits" },
+        "metering_policy": { "$ref": "#/$defs/meteringPolicy" },
+        "output_schema_version": { "const": 7 },
+        "output_schema_digest_sha256": { "$ref": "#/$defs/digest" },
+        "workspace": { "$ref": "#/$defs/workspace" },
+        "artifact_policy": { "$ref": "#/$defs/artifactPolicy" },
+        "conversation_segments": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/conversationSegment" } },
+        "current_user_input": { "$ref": "#/$defs/currentUserInput" },
+        "input_assets": {
+          "type": "array",
+          "maxItems": 16,
+          "items": { "$ref": "#/$defs/inputAsset" },
+          "allOf": [
+            {
+              "contains": { "properties": { "materialization": { "const": "text_attachment" } }, "required": ["materialization"] },
+              "minContains": 0,
+              "maxContains": 8
+            },
+            {
+              "contains": { "properties": { "materialization": { "const": "image_attachment" } }, "required": ["materialization"] },
+              "minContains": 0,
+              "maxContains": 8
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "plantcoreCommand": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["type", "text"],
+          "properties": {
+            "type": { "const": "steer" },
+            "text": { "type": "string", "minLength": 1, "maxLength": 1048576 }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["type"],
+          "properties": {
+            "type": {
+              "enum": [
+                "interrupt", "drain", "pause_dispatch_after_safe_point", "resume_dispatch"
+              ]
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "clientControl": {
+      "type": "object",
+      "required": ["type", "protocol_version", "request_id", "control"],
+      "properties": {
+        "type": { "const": "control" },
+        "protocol_version": { "$ref": "#/$defs/protocolVersion" },
+        "request_id": { "type": "integer", "minimum": 0 },
+        "control": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["type", "payload"],
+              "properties": {
+                "type": { "const": "plantcore_run_bootstrap_v1" },
+                "payload": { "$ref": "#/$defs/bootstrapPayload" }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": ["type", "command_id", "command"],
+              "properties": {
+                "type": { "const": "plantcore_command_v1" },
+                "command_id": { "$ref": "#/$defs/commandId" },
+                "command": { "$ref": "#/$defs/plantcoreCommand" }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": ["type"],
+              "properties": {
+                "type": {
+                  "enum": [
+                    "set_effort", "set_permission_mode", "set_capability_rule", "compact",
+                    "turn_budget", "jobs_list", "jobs_attach", "jobs_write", "jobs_stop"
+                  ]
+                }
+              },
+              "additionalProperties": true
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "serverHello": {
+      "type": "object",
+      "required": ["type", "protocol_version", "session_id", "cursor", "replay_source"],
+      "properties": {
+        "type": { "const": "hello" },
+        "protocol_version": { "$ref": "#/$defs/protocolVersion" },
+        "session_id": { "$ref": "#/$defs/sessionId" },
+        "cursor": { "type": "integer", "minimum": 0 },
+        "replay_source": { "enum": ["ring", "rollout"] }
+      },
+      "additionalProperties": false
+    },
+    "serverEvent": {
+      "type": "object",
+      "required": ["type", "protocol_version", "seq", "event"],
+      "properties": {
+        "type": { "const": "event" },
+        "protocol_version": { "$ref": "#/$defs/protocolVersion" },
+        "seq": { "type": "integer", "minimum": 1 },
+        "event": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "serverResult": {
+      "type": "object",
+      "required": ["type", "protocol_version", "seq", "result"],
+      "properties": {
+        "type": { "const": "result" },
+        "protocol_version": { "$ref": "#/$defs/protocolVersion" },
+        "seq": { "type": "integer", "minimum": 1 },
+        "result": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "serverRollout": {
+      "type": "object",
+      "required": ["type", "protocol_version", "rollout_seq", "event"],
+      "properties": {
+        "type": { "const": "rollout" },
+        "protocol_version": { "$ref": "#/$defs/protocolVersion" },
+        "rollout_seq": { "type": "integer", "minimum": 1 },
+        "event": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "bootstrapAccepted": {
+      "type": "object",
+      "required": ["type", "run_id", "payload_digest_sha256"],
+      "properties": {
+        "type": { "const": "plantcore_run_bootstrap_accepted_v1" },
+        "run_id": { "$ref": "#/$defs/nonempty" },
+        "payload_digest_sha256": { "$ref": "#/$defs/digest" }
+      },
+      "additionalProperties": false
+    },
+    "commandReply": {
+      "type": "object",
+      "required": ["type", "command_id", "status"],
+      "properties": {
+        "type": { "const": "plantcore_command_reply_v1" },
+        "command_id": { "$ref": "#/$defs/commandId" },
+        "status": { "enum": ["accepted", "rejected"] },
+        "safe_point": {
+          "enum": ["kernel_submission_queue", "dispatch_gate_active", "dispatch_gate_open"]
+        },
+        "submission_id": { "type": "integer", "minimum": 1 },
+        "reason": {
+          "enum": [
+            "command_conflict", "command_window_exhausted", "busy", "runtime_disconnected",
+            "dispatch_gate_unavailable", "run_not_admitted", "dispatch_gate_not_paused",
+            "session_terminal"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": { "const": "accepted" },
+              "safe_point": { "const": "kernel_submission_queue" }
+            },
+            "required": ["status", "safe_point"]
+          },
+          "then": { "required": ["submission_id"], "not": { "required": ["reason"] } }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": { "const": "accepted" },
+              "safe_point": { "enum": ["dispatch_gate_active", "dispatch_gate_open"] }
+            },
+            "required": ["status", "safe_point"]
+          },
+          "then": {
+            "not": { "anyOf": [{ "required": ["reason"] }, { "required": ["submission_id"] }] }
+          }
+        },
+        {
+          "if": { "properties": { "status": { "const": "rejected" } }, "required": ["status"] },
+          "then": { "required": ["reason"], "not": { "anyOf": [{ "required": ["safe_point"] }, { "required": ["submission_id"] }] } }
+        },
+        {
+          "if": { "properties": { "status": { "const": "accepted" } }, "required": ["status"] },
+          "then": { "required": ["safe_point"], "not": { "required": ["reason"] } }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "controlReply": {
+      "type": "object",
+      "required": ["type", "protocol_version", "request_id", "reply"],
+      "properties": {
+        "type": { "const": "control_reply" },
+        "protocol_version": { "$ref": "#/$defs/protocolVersion" },
+        "request_id": { "type": "integer", "minimum": 0 },
+        "reply": {
+          "oneOf": [
+            { "$ref": "#/$defs/bootstrapAccepted" },
+            { "$ref": "#/$defs/commandReply" },
+            {
+              "type": "object",
+              "required": ["type"],
+              "properties": {
+                "type": {
+                  "allOf": [
+                    { "$ref": "#/$defs/nonempty" },
+                    { "not": { "enum": ["plantcore_run_bootstrap_accepted_v1", "plantcore_command_reply_v1"] } }
+                  ]
+                }
+              },
+              "additionalProperties": true
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "error": {
+      "type": "object",
+      "required": ["type", "protocol_version", "code", "message"],
+      "properties": {
+        "type": { "const": "error" },
+        "protocol_version": { "$ref": "#/$defs/protocolVersion" },
+        "code": {
+          "enum": [
+            "authentication", "protocol_version_mismatch", "bootstrap_invalid", "bootstrap_conflict",
+            "input_invalid", "cursor_ahead", "cursor_expired", "session_mismatch", "chunk_conflict",
+            "busy", "command_not_accepted", "duplicate_handshake", "slow_client", "submission_refused"
+          ]
+        },
+        "message": { "type": "string", "maxLength": 1024 }
+      },
+      "additionalProperties": false
+    },
+    "frameChunk": {
+      "type": "object",
+      "required": [
+        "type", "protocol_version", "stream", "logical_type", "logical_bytes",
+        "chunk_index", "chunk_count", "encoding", "data"
+      ],
+      "properties": {
+        "type": { "const": "frame_chunk" },
+        "protocol_version": { "$ref": "#/$defs/protocolVersion" },
+        "stream": { "enum": ["live", "rollout", "control"] },
+        "logical_type": { "enum": ["event", "result", "rollout", "hello", "control_reply", "error"] },
+        "seq": { "type": "integer", "minimum": 1 },
+        "rollout_seq": { "type": "integer", "minimum": 1 },
+        "logical_bytes": { "type": "integer", "minimum": 1 },
+        "chunk_index": { "type": "integer", "minimum": 0 },
+        "chunk_count": { "type": "integer", "minimum": 1 },
+        "encoding": { "const": "base64_json_utf8" },
+        "data": { "type": "string", "contentEncoding": "base64" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

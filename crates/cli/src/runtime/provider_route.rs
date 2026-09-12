@@ -329,10 +329,10 @@ impl Agent {
                 }
                 return Err(refusal);
             }
-            let mut emitted = false;
+            let mut semantic_output_observed = false;
             let mut observed_rate_limit = None;
             let mut guarded = |item: StreamItem| {
-                emitted = true;
+                semantic_output_observed |= stream_item_has_semantic_output(&item);
                 if let StreamItem::RateLimit(snapshot) = &item {
                     observed_rate_limit = Some(*snapshot);
                 }
@@ -369,7 +369,18 @@ impl Agent {
                 } else {
                     self.admit_governed_route_attempt(turn, &route_id).await?
                 };
+                let dispatch_permit = match self.enter_plantcore_external_dispatch().await {
+                    Ok(permit) => permit,
+                    Err(()) => {
+                        drop(route_permit);
+                        if let Some(budget) = &self.usd_budget {
+                            budget.settle_not_dispatched();
+                        }
+                        return Err(iteron_provider::ProviderError::Interrupted.into());
+                    }
+                };
                 if let Some(refusal) = self.provider_dispatch_refusal() {
+                    drop(dispatch_permit);
                     drop(route_permit);
                     if let Some(budget) = &self.usd_budget {
                         budget.settle_not_dispatched();
@@ -445,6 +456,7 @@ impl Agent {
                         force_cancel: self.force_cancel.clone(),
                         drain: self.drain.clone(),
                         attempt: None,
+                        allow_in_flight_past_deadline: self.plantcore_runtime_enabled(),
                     },
                     &governed_request,
                     &mut guarded,
@@ -464,17 +476,21 @@ impl Agent {
                     ticket,
                     provider_settlement(turn, ordinal, &result, accounting.clone()),
                 )?;
+                self.observe_plantcore_provider_attempt(turn, &accounting)
+                    .map_err(|reason| KernelError::ContextResolution(reason.into()))?;
                 self.commit_provider_route_charge(turn, &accounting)?;
                 self.ledger
                     .record_broker_latency_us(elapsed_us(broker_started));
                 self.observe_governed_route_attempt(turn, &route_id, &result, observed_rate_limit)?;
                 drop(route_permit);
+                drop(dispatch_permit);
                 (result, monetary_followup_safe)
             };
             first_attempt = false;
             transition_reason = None;
 
-            if let Some(error) = retryable_pre_stream_provider_error(&result, emitted)
+            if let Some(error) =
+                retryable_before_semantic_output_provider_error(&result, semantic_output_observed)
                 && retry_index.saturating_add(1) < self.retry_policy.max_attempts
             {
                 self.admit_followup_after_route_attempt_set(monetary_followup_safe)?;
@@ -546,7 +562,8 @@ impl Agent {
             let Some(error) = result.as_ref().err() else {
                 return result;
             };
-            let Some(failover_class) = self.admitted_failover(error, emitted) else {
+            let Some(failover_class) = self.admitted_failover(error, semantic_output_observed)
+            else {
                 return result;
             };
             let Some(index) = super::provider_governor_state::next_admitted_fallback_index(
@@ -611,13 +628,14 @@ impl Agent {
 ///
 /// Route identity, budget, pricing, and the durable provider intent are validated by
 /// [`Agent::admit_provider_effect`] immediately before the caller snapshots these fields. Nothing
-/// in the callback can replace the provider or extend the deadline, so repeating those checks here
-/// would add no authority; the single-attempt assertion remains defense in depth at dispatch.
+/// in the callback can replace the provider, so repeating those checks here would add no authority;
+/// the single-attempt assertion remains defense in depth at dispatch.
 pub(super) struct ProviderCancellation {
     pub(super) interrupt: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     pub(super) force_cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub(super) drain: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub(super) attempt: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    pub(super) allow_in_flight_past_deadline: bool,
 }
 
 pub(super) async fn execute_admitted_provider_turn(
@@ -630,8 +648,7 @@ pub(super) async fn execute_admitted_provider_turn(
     if provider.attempt_semantics() != ProviderAttemptSemantics::Single {
         return Err(KernelError::OpaqueProviderRetries);
     }
-    let remaining = deadline.saturating_duration_since(Instant::now());
-    if remaining.is_zero() {
+    if deadline.saturating_duration_since(Instant::now()).is_zero() {
         return Err(iteron_provider::ProviderError::DeadlineExceeded.into());
     }
     let mut cancels = vec![
@@ -654,10 +671,15 @@ pub(super) async fn execute_admitted_provider_turn(
             PROVIDER_INTERRUPT_POLL_INTERVAL,
         ),
     );
-    tokio::time::timeout(remaining, turn)
-        .await
-        .map_err(|_| KernelError::Provider(iteron_provider::ProviderError::DeadlineExceeded))?
-        .map_err(KernelError::Provider)
+    if cancellation.allow_in_flight_past_deadline {
+        turn.await.map_err(KernelError::Provider)
+    } else {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        tokio::time::timeout(remaining, turn)
+            .await
+            .map_err(|_| KernelError::Provider(iteron_provider::ProviderError::DeadlineExceeded))?
+            .map_err(KernelError::Provider)
+    }
 }
 
 /// Classify one paid physical attempt after it crosses the effect boundary.
@@ -733,11 +755,18 @@ pub(super) fn provider_failure_stage(error: &KernelError) -> &'static str {
     }
 }
 
-pub(super) fn retryable_pre_stream_provider_error(
+pub(super) fn stream_item_has_semantic_output(item: &StreamItem) -> bool {
+    matches!(
+        item,
+        StreamItem::TextDelta(_) | StreamItem::ToolUseComplete(_)
+    )
+}
+
+pub(super) fn retryable_before_semantic_output_provider_error(
     result: &Result<iteron_provider::TurnResult, KernelError>,
-    emitted: bool,
+    semantic_output_observed: bool,
 ) -> Option<&iteron_provider::ProviderError> {
-    if emitted {
+    if semantic_output_observed {
         return None;
     }
     let Err(KernelError::Provider(error)) = result else {

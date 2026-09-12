@@ -32,6 +32,7 @@ pub mod intent;
 pub mod lifecycle;
 pub mod message;
 pub mod permission;
+pub mod plantcore;
 pub mod policy_bundle_checkpoint;
 pub mod policy_evidence;
 pub mod pricing;
@@ -95,6 +96,17 @@ pub use message::{
     StopReason, StopReasonCode, Usage,
 };
 pub use permission::{PermissionMode, PermissionRules, Verdict, gate};
+pub use plantcore::{
+    AgentRuntimeProfile, ArtifactDeclaration, ArtifactPolicy, ArtifactRequirement,
+    BuiltinWorkspacePosture, ConversationFact, ConversationSegment, CurrentUserInputSource,
+    EffectiveRunLimits, EngineEffort, ExternalMcpPosture, FiveClassCeilPolicyV1, FiveClassUsage,
+    HexSha256, InputAssetRef, InputMaterialization, MAX_ARTIFACT_BYTES, MAX_ARTIFACTS,
+    MAX_ASSISTANT_TEXT_BYTES, MAX_QUESTION_PROMPT_BYTES, MAX_TOTAL_ARTIFACT_BYTES,
+    MAX_UPLOAD_CHUNK_BYTES, Metering, MeteringPolicySnapshot, PlantcoreBudgetLimit,
+    PlantcoreEngineSpec, PlantcoreRunBootstrapV1, PlantcoreTerminalOutcome, ProductResult,
+    ProviderBootstrap, Question, RunGatewayBootstrap, TurnUsage, UsageUnavailableReason,
+    WorkspaceRoots,
+};
 pub use policy_bundle_checkpoint::{
     MAX_POLICY_IMPLEMENTATION_ID_BYTES, PolicyBundleCoverage, PolicySlotApplicationStatus,
     RUN_GENESIS_POLICY_BUNDLE_CANONICALIZATION, RUN_GENESIS_POLICY_BUNDLE_SLOT_COUNT,
@@ -540,6 +552,9 @@ pub enum Outcome {
     Stuck,
     /// An unrecoverable error in the harness itself.
     HarnessError,
+    /// At least one dispatched Provider attempt could not provide authoritative usage, so a
+    /// token or native-metering budget can no longer be enforced safely.
+    UsageUnavailable,
 }
 
 #[cfg(test)]

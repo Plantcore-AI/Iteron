@@ -395,7 +395,14 @@ fn validate_targets_and_internal_paths(root: &Path) -> Result<()> {
     for (member, package_name) in workspace_member_identities(root)? {
         validate_member_target(root, &member, &package_name)?;
     }
-    validate_bin_targets(root, "crates/cli/Cargo.toml", &[("iteron", "src/main.rs")])?;
+    validate_bin_targets(
+        root,
+        "crates/cli/Cargo.toml",
+        &[
+            ("iteron", "src/main.rs"),
+            ("iteron-workspace-hook", "src/iteron_workspace_hook.rs"),
+        ],
+    )?;
     validate_bin_targets(
         root,
         "crates/eval/Cargo.toml",

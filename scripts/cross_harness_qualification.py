@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import selectors
@@ -12,6 +13,7 @@ import signal
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -28,6 +30,10 @@ MAX_PROCESS_OUTPUT_BYTES = 32 * 1024 * 1024
 MAX_RESULT_BYTES = 2 * 1024 * 1024
 MAX_TEXT_BYTES = 4096
 PROCESS_TIMEOUT_SECS = 30
+MACHINE_CONTRACT_CHECKER = (
+    Path(__file__).resolve().parents[1]
+    / "contracts/plantcore/check_machine_contract.py"
+)
 
 MODULES = (
     "prompt.system",
@@ -306,26 +312,29 @@ def probe_iteron(pin: dict[str, Any]) -> dict[str, Any]:
         raise QualificationError("installed Iteron --machine-contract wrote stderr")
     if hashlib.sha256(contract_stdout).hexdigest() != pin["machine_contract_sha256"]:
         raise QualificationError("installed Iteron machine contract digest drifted from the pin")
-    contract = exact_keys(
-        strict_json_bytes(contract_stdout, "machine contract"),
-        {
-            "schema_version",
-            "type",
-            "cli_stream_versions",
-            "default_cli_stream_version",
-            "resident_protocol_version",
-        },
-        "machine contract",
+    spec = importlib.util.spec_from_file_location(
+        "iteron_machine_contract_checker", MACHINE_CONTRACT_CHECKER
     )
+    if spec is None or spec.loader is None:
+        raise QualificationError("machine contract checker is unavailable")
+    checker = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(checker)
+        with tempfile.NamedTemporaryFile() as report:
+            report.write(contract_stdout)
+            report.flush()
+            checker.validate_contract(Path(report.name))
+    except (OSError, ValueError) as error:
+        raise QualificationError("installed Iteron machine contract is invalid") from error
+    contract = strict_json_bytes(contract_stdout, "machine contract")
+    capabilities = contract.get("plantcore_capabilities")
     if (
-        contract["schema_version"] != 1
-        or contract["type"] != "machine_contract"
-        or contract["default_cli_stream_version"] != 5
-        or not isinstance(contract["cli_stream_versions"], list)
-        or 5 not in contract["cli_stream_versions"]
+        contract.get("default_cli_stream_version") != 7
+        or 7 not in contract.get("cli_stream_versions", [])
+        or not isinstance(capabilities, dict)
+        or capabilities.get("supported_operating_systems") != ["linux"]
     ):
-        raise QualificationError("installed Iteron machine contract is not the required v5 surface")
-    bounded_text(contract["resident_protocol_version"], "resident_protocol_version", 256)
+        raise QualificationError("installed Iteron machine contract is not the required v7 Linux surface")
     return {
         **pin,
         "version_output": version,

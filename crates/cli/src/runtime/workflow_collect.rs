@@ -331,6 +331,12 @@ impl Agent {
                 Some("child_tool_error_limit".into()),
                 Some("direct investigator reached the tool-error limit".into()),
             ),
+            Ok(Outcome::UsageUnavailable) => (
+                Err("subagent usage became unavailable".into()),
+                iteron_protocol::WorkflowChildOutcome::Failed,
+                Some("child_usage_unavailable".into()),
+                Some("direct investigator lacked authoritative Provider usage".into()),
+            ),
             Ok(Outcome::HarnessError) => (
                 Err("subagent stopped on a harness error".into()),
                 iteron_protocol::WorkflowChildOutcome::Failed,

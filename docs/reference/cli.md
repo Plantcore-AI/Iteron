@@ -24,7 +24,7 @@ This page is generated from the argument parser, so every shipped flag and subco
 | `-p`, `--print` | One-shot / non-interactive: run the task, stream text, exit (like `claude -p`). Requires a task. Without -p, iteron opens the interactive TUI (the default). |
 | `--image <PATH>` | Attach a local PNG, JPEG, GIF, or WebP to a one-shot task. On macOS, HEIC/HEIF is locally normalized to bounded JPEG. Repeat up to the attachment limit; bytes are sniffed before SQ. Repeatable. |
 | `--output-format <OUTPUT_FORMAT>` | One-shot stdout contract: text \| json \| stream-json. Machine formats keep stdout as valid JSON/JSONL; diagnostics continue on stderr. Only valid in one-shot mode. Default `text`. |
-| `--output-schema-version <VERSION>` | Pin a published machine stdout schema. Supported versions are reported by `--machine-contract`; omission keeps the current v6 default. |
+| `--output-schema-version <VERSION>` | Pin a published machine stdout schema. Supported versions are reported by `--machine-contract`; omission keeps the current v7 default. |
 | `--machine-contract` | Print the bounded, provider-free CLI capability report as JSON and exit. |
 | `-C`, `--repo <REPO>` | The repository to work in (defaults to the current directory). Default `.`. |
 | `--model <MODEL>` | Model id (overrides config / default). |
@@ -86,7 +86,7 @@ This page is generated from the argument parser, so every shipped flag and subco
 | --- | --- |
 | `iteron reindex` | Rebuild session metadata and the sessions index from hash-chained rollout truth. |
 | `iteron prune [--older-than-days <DAYS>] [--keep-last <N>] [--dry-run]` | Delete old run journals under the runs dir according to an explicit retention policy. Journals are append-only and nothing else ever removes them. |
-| `iteron serve [--listen <LISTEN>]` | Run a local-only versioned App Server for headless clients. |
+| `iteron serve [--listen <LISTEN>] [--plantcore] [--recording-provider-ca-file <ABSOLUTE_CA_PEM>] [--recording-inject-harness-error]` | Run a local-only versioned App Server for headless clients. |
 | `iteron workflow <SUBCOMMAND>` | Run a bounded JavaScript workflow end-to-end, streaming progress to stdout. |
 | `iteron workflow run <SCRIPT> [--args <ARGS>]` | Execute a workflow script now (agent()/parallel()/pipeline()/phase()/log()). |
 | `iteron workflow list` | List persisted workflow runs (id, status, agents, model) under the workflows dir. |

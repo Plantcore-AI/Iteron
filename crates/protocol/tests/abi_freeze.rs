@@ -1356,19 +1356,21 @@ fn the_declared_ceilings_are_part_of_the_frozen_contract() {
         (
             "MAX_IMAGE_BASE64_BYTES",
             MAX_IMAGE_BASE64_BYTES,
-            8 * 1024 * 1024,
+            32 * 1024 * 1024,
         ),
         (
             "MAX_TOTAL_IMAGE_BASE64_BYTES",
             MAX_TOTAL_IMAGE_BASE64_BYTES,
             32 * 1024 * 1024,
         ),
-        // Appended with `Op::UserInputV3` (UX-6). These bound a tag no older producer emits and no
-        // older reader accepts, so pinning them here starts their history rather than moving one:
-        // the four image bounds above are untouched, and `MAX_INPUT_SEGMENTS` still describes the
-        // frozen `ContentSegments`, which this feature deliberately did not widen.
+        // PlantCore v7 admits up to eight images with a 32 MiB aggregate base64 ceiling and up to
+        // eight text attachments with a 512 KiB aggregate ceiling. Raising each per-item ceiling
+        // to its unchanged aggregate ceiling preserves those legal public inputs. Peers re-checked
+        // in the same change: CLI image admission, `Op::UserInputV3`, the App Server bridge, record
+        // fixtures, docs, and the digest-pinned Platform v7 schema. Counts and aggregate ceilings
+        // remain unchanged.
         ("MAX_INPUT_FILES", MAX_INPUT_FILES, 8),
-        ("MAX_FILE_TEXT_BYTES", MAX_FILE_TEXT_BYTES, 262_144),
+        ("MAX_FILE_TEXT_BYTES", MAX_FILE_TEXT_BYTES, 524_288),
         (
             "MAX_TOTAL_FILE_TEXT_BYTES",
             MAX_TOTAL_FILE_TEXT_BYTES,

@@ -1,0 +1,43 @@
+{
+  "contract_version": "plantcore.iteron.workspace-tools.v1",
+  "fixed_timeout_seconds": 2,
+  "roots": {
+    "input": "/workspace/input",
+    "work": "/workspace/work",
+    "output": "/workspace/output",
+    "forbidden_component": ".plantcore-staging"
+  },
+  "tools": {
+    "read_file": { "access": "read", "path_fields": ["path"] },
+    "list_dir": { "access": "read", "path_fields": ["path"] },
+    "glob": { "access": "read", "path_fields": ["path"] },
+    "grep": { "access": "read", "path_fields": ["path"] },
+    "git_diff": { "access": "read", "path_fields": ["path"] },
+    "lsp_query": { "access": "read", "path_fields": ["path"] },
+    "edit": { "access": "write", "path_fields": ["path"] },
+    "write_file": { "access": "write", "path_fields": ["path"] },
+    "apply_patch": { "access": "write", "path_fields": ["files[].path"] },
+    "publish_artifact": { "access": "write_output", "path_fields": ["relative_path"] },
+    "bash": { "access": "deny_unprovable", "path_fields": [] },
+    "process_start": { "access": "deny_unprovable", "path_fields": [] },
+    "process_list": { "access": "deny_unprovable", "path_fields": [] },
+    "process_poll": { "access": "deny_unprovable", "path_fields": [] },
+    "process_write": { "access": "deny_unprovable", "path_fields": [] },
+    "process_stop": { "access": "deny_unprovable", "path_fields": [] },
+    "process_resize": { "access": "deny_unprovable", "path_fields": [] },
+    "git_status": { "access": "read_work_root", "path_fields": [] },
+    "git_log": { "access": "read_work_root", "path_fields": [] },
+    "repo_map": { "access": "read_work_root", "path_fields": [] },
+    "read_memory": { "access": "deny_unprovable", "path_fields": [] },
+    "use_skill": { "access": "deny_unprovable", "path_fields": [] },
+    "web_fetch": { "access": "deny_unprovable", "path_fields": [] },
+    "web_search": { "access": "deny_unprovable", "path_fields": [] },
+    "dispatch_agent": { "access": "deny_unprovable", "path_fields": [] },
+    "Workflow": { "access": "deny_unprovable", "path_fields": [] },
+    "tool_search": { "access": "deny_unprovable", "path_fields": [] },
+    "submit_repair_evidence": { "access": "deny_unprovable", "path_fields": [] },
+    "request_user_input": { "access": "terminal_intercept", "path_fields": [] },
+    "plantcore-run-gateway__tool_search": { "access": "external_mcp_proxy", "path_fields": [] },
+    "plantcore-run-gateway__tool_call": { "access": "external_mcp_proxy", "path_fields": [] }
+  }
+}

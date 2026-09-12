@@ -1,0 +1,10 @@
+{
+  "type": "control_reply",
+  "protocol_version": 4,
+  "request_id": 1,
+  "reply": {
+    "type": "plantcore_run_bootstrap_accepted_v1",
+    "run_id": "run-1",
+    "payload_digest_sha256": "9ff676eeff6c9871fe2c0825bd526a69074c612c31baac8a0e564f39317f97a9"
+  }
+}

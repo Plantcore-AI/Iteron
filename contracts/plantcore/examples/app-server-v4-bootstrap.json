@@ -1,0 +1,89 @@
+{
+  "type": "control",
+  "protocol_version": 4,
+  "request_id": 1,
+  "control": {
+    "type": "plantcore_run_bootstrap_v1",
+    "payload": {
+      "contract_version": "plantcore.iteron-run-bootstrap.v1",
+      "run_id": "run-1",
+      "agent_runtime_profile": {
+        "agent_definition_id": "agent-1",
+        "agent_definition_version": "v1",
+        "instructions_utf8": "system",
+        "instructions_sha256": "bbc5e661e106c6dcd8dc6dd186454c2fcba3c710fb4d8e71a60c93eaf077f073",
+        "capability_policy_digest_sha256": "38a5be91af79d7e5ba9809bf383c699b6864ee50446239fe56a45e32b84638fe",
+        "profile_digest_sha256": "d72f9fc85a6d4a8baa4e32f558de83106f031f20c6edc9c5b5cf98d49d5492f5"
+      },
+      "engine": {
+        "provider": "plantcore",
+        "model": "qwen",
+        "effort": "high",
+        "allow_code": false,
+        "builtin_workspace_posture": "read_write",
+        "external_mcp_posture": "disabled"
+      },
+      "provider_bootstrap": {
+        "api_origin": "https://provider.example/",
+        "policy_version": "policy-v1",
+        "policy_digest_sha256": "f7da844f246387d8a207b7f9355dab69907923f9e8bddfa4331202b566946706",
+        "credential_env_name": "ITERON_PROVIDER_API_KEY",
+        "credential_projected_file": "/var/run/secrets/plantcore/provider/api-key"
+      },
+      "run_gateway": {
+        "mcp_url": "http://127.0.0.1:43171/mcp",
+        "run_io_base_url": "http://127.0.0.1:43171/run-io/v1",
+        "auth_header_name": "Authorization",
+        "token_env_name": "PLANTCORE_RUN_GATEWAY_AUTHORIZATION",
+        "mcp_config_version": "plantcore.mcp-config.v1",
+        "mcp_config_digest_sha256": "451b735285a7b1939475bc9d62b4a94a11fdc269712e2782656ece8d8910be40",
+        "catalog_snapshot_digest_sha256": "cff03895af81c746e543cb48d2d3ccccdb74f59b4e1bb7796faf168f01cb6af6",
+        "catalog_snapshot_revision": "disabled",
+        "external_mcp_posture": "disabled",
+        "run_io_token_projected_file": "/var/run/secrets/plantcore/run-io/client-token"
+      },
+      "limits": {
+        "max_turns": 8,
+        "max_tokens": 1000,
+        "max_wall_secs": 300,
+        "limits_digest_sha256": "726c13074f1c4484eac0799d49200faa2f8fca535cf71503d38ab30d3b1da657"
+      },
+      "output_schema_version": 7,
+      "output_schema_digest_sha256": "83ef558efc9c72b375d9f981a73285831b1936ae1e547cef0a67d9ce1d6c30bc",
+      "workspace": {
+        "input": "/workspace/input",
+        "work": "/workspace/work",
+        "output": "/workspace/output"
+      },
+      "artifact_policy": {
+        "output_root": "/workspace/output",
+        "max_artifact_bytes": 104857600,
+        "max_artifact_count": 50,
+        "max_total_artifact_bytes": 524288000,
+        "max_upload_chunk_bytes": 8388608,
+        "required_artifacts": [],
+        "policy_digest_sha256": "bd17ed445ce2abe98b108efb055375d581a99ee5abd3fb7700ca5b928d17acdf"
+      },
+      "conversation_segments": [
+        {
+          "sequence": 1,
+          "source_run_id": "source-run",
+          "fact_digest_sha256": "5bf171bef8a01c57127d621bb5868ba832d7f5e2675c5d7e83458ea1e2771638",
+          "fact": {
+            "kind": "user_message",
+            "content_utf8": "hello",
+            "content_sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+            "source_message_id": "message-1"
+          }
+        }
+      ],
+      "current_user_input": {
+        "conversation_sequence": 1,
+        "source_run_id": "source-run",
+        "source_message_id": "message-1",
+        "content_sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+      },
+      "input_assets": []
+    }
+  }
+}

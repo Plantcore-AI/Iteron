@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import argparse
-import json
+import importlib.util
 import re
 from pathlib import Path
 
@@ -55,16 +55,13 @@ def parser() -> argparse.ArgumentParser:
 PROTOCOL_VERSION_PATTERN = re.compile(
     r"^pub const PROTOCOL_VERSION: u32 = (?P<value>\d{1,9});$", re.MULTILINE
 )
-MAX_CAPABILITY_REPORT_BYTES = 64 * 1024
-CLI_MACHINE_CONTRACT_SCHEMA_VERSION = 2
+MAX_CAPABILITY_REPORT_BYTES = 1024 * 1024
+CLI_MACHINE_CONTRACT_SCHEMA_VERSION = 3
 
-CAPABILITY_REPORT_KEYS = {
-    "cli_stream_versions",
-    "default_cli_stream_version",
-    "resident_protocol_version",
-    "schema_version",
-    "type",
-}
+MACHINE_CONTRACT_CHECKER = (
+    Path(__file__).resolve().parents[1]
+    / "contracts/plantcore/check_machine_contract.py"
+)
 
 
 def read_protocol_version(source: Path) -> int:
@@ -94,33 +91,28 @@ def digest_entry(path: Path) -> dict[str, object]:
     }
 
 
-def reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
-    result = {}
-    for key, value in pairs:
-        if key in result:
-            raise ReleaseToolError(f"capability report repeats field {key!r}")
-        result[key] = value
-    return result
-
-
 def read_capability_report(path: Path) -> dict[str, object]:
     """Read the bounded report emitted by the exact binary being packaged."""
     require_regular_file(path, max_bytes=MAX_CAPABILITY_REPORT_BYTES)
+    spec = importlib.util.spec_from_file_location(
+        "iteron_release_machine_contract_checker", MACHINE_CONTRACT_CHECKER
+    )
+    if spec is None or spec.loader is None:
+        raise ReleaseToolError("machine capability checker is unavailable")
+    checker = importlib.util.module_from_spec(spec)
     try:
-        document = json.loads(
-            path.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicate_keys
-        )
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        spec.loader.exec_module(checker)
+        checker.validate_contract(path)
+        _, document = checker.load_bounded(path)
+    except (OSError, ValueError) as error:
         raise ReleaseToolError(f"invalid machine capability report: {path}") from error
-    if not isinstance(document, dict) or set(document) != CAPABILITY_REPORT_KEYS:
-        raise ReleaseToolError("machine capability report fields do not match schema v1")
+    if not isinstance(document, dict):
+        raise ReleaseToolError("machine capability report must be an object")
     versions = document["cli_stream_versions"]
     default = document["default_cli_stream_version"]
     resident = document["resident_protocol_version"]
     # The envelope version the CLI emits around this list, not this file's own format
-    # version. It advanced to 2 when `--machine-contract` began advertising CLI stream
-    # v6; asserting the old value here refused a perfectly valid report and failed the
-    # release after every target had already built. Tied to the source by
+    # version. Tied to the source by
     # `MachineContractSmokeTest`, so the next bump moves both or fails at review.
     if (
         document["schema_version"] != CLI_MACHINE_CONTRACT_SCHEMA_VERSION
@@ -194,6 +186,10 @@ def create_release(arguments: argparse.Namespace) -> None:
         archive = arguments.dist / base
         capability_path = arguments.dist / f"{base}.machine-contract.json"
         capability = read_capability_report(capability_path)
+        if capability["release_id"] != f"iteron-v{version}":
+            raise ReleaseToolError(
+                f"release target {target!r} reports a different release identity"
+            )
         capability_reports.append((target, capability))
         target_documents[target] = {
             "target": target,
@@ -208,18 +204,8 @@ def create_release(arguments: argparse.Namespace) -> None:
 
     protocol_version = read_protocol_version(arguments.protocol_source)
     first_target, first_capability = capability_reports[0]
-    capability_identity = (
-        first_capability["cli_stream_versions"],
-        first_capability["default_cli_stream_version"],
-        first_capability["resident_protocol_version"],
-    )
     for target, capability in capability_reports[1:]:
-        candidate = (
-            capability["cli_stream_versions"],
-            capability["default_cli_stream_version"],
-            capability["resident_protocol_version"],
-        )
-        if candidate != capability_identity:
+        if capability != first_capability:
             raise ReleaseToolError(
                 f"release targets {first_target!r} and {target!r} disagree on machine capabilities"
             )

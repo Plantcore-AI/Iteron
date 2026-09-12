@@ -84,6 +84,7 @@ impl Agent {
                     attempt.projected_at_unix_secs(),
                     StreamTiming::default(),
                 )?;
+                self.emit_plantcore_turn_usage(turn)?;
                 if complete.is_some() {
                     attempt.complete();
                 }
@@ -94,6 +95,7 @@ impl Agent {
             Err(error) => {
                 // Physical cost truth is committed inside `brokered_provider_turn` before return.
                 self.emit(turn, EventKind::Phase { phase: Phase::Idle });
+                self.emit_plantcore_turn_usage(turn)?;
                 self.advance_turn().await?;
                 Err(error)
             }

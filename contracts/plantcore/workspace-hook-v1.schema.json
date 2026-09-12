@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.plantcore.local/iteron/workspace-hook/v1",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["event", "tool", "input", "posture", "workspace"],
+      "properties": {
+        "event": { "const": "PreToolUse" },
+        "tool": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "input": { "type": "object" },
+        "posture": { "enum": ["read-only", "read-write"] },
+        "workspace": {
+          "type": "object",
+          "required": ["input", "work", "output"],
+          "properties": {
+            "input": { "const": "/workspace/input" },
+            "work": { "const": "/workspace/work" },
+            "output": { "const": "/workspace/output" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "required": ["decision", "reason"],
+      "properties": {
+        "decision": { "enum": ["allow", "deny"] },
+        "reason": {
+          "enum": [
+            "workspace_path_allowed",
+            "posture_invalid",
+            "input_unreadable",
+            "input_too_large",
+            "input_invalid",
+            "path_not_proven",
+            "path_invalid",
+            "path_escape",
+            "path_outside_workspace",
+            "path_unresolvable",
+            "mount_escape",
+            "staging_forbidden",
+            "read_only_write",
+            "input_write_forbidden",
+            "unknown_tool",
+            "platform_unsupported"
+          ]
+        }
+      },
+      "additionalProperties": false
+    }
+  ]
+}

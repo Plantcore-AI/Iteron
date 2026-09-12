@@ -17,6 +17,7 @@ mod highlight;
 mod image_input;
 mod keymap;
 mod keyword_trigger;
+mod machine_contract;
 mod maintenance;
 mod markdown;
 mod mcp;
@@ -27,6 +28,7 @@ mod plugin_runtime;
 mod pricing;
 mod prompt_history;
 mod providers;
+mod recording_provider;
 mod render;
 // The published client-event vocabulary. Nothing in this binary consumes it yet: it is the
 // payload contract #44 will put on a socket, landed first so the transport does not get to
@@ -149,6 +151,32 @@ enum LocalCommand {
         /// Loopback TCP address for bounded JSONL frames. Port 0 asks the OS to choose one.
         #[arg(long, default_value = "127.0.0.1:0")]
         listen: std::net::SocketAddr,
+        /// Require one digest-verified PlantCore bootstrap before the first user input.
+        #[arg(long)]
+        plantcore: bool,
+        /// Install one case-local CA only for the selected recording Provider route.
+        #[arg(
+            long,
+            value_name = "ABSOLUTE_CA_PEM",
+            hide = true,
+            requires = "plantcore"
+        )]
+        recording_provider_ca_file: Option<PathBuf>,
+        /// Arm the deterministic pre-dispatch harness fault used by release recording.
+        #[arg(
+            long,
+            hide = true,
+            requires_all = ["plantcore", "recording_provider_ca_file"]
+        )]
+        recording_inject_harness_error: bool,
+        /// Emit one fixed malformed App Server sequence for Worker parser release recording.
+        #[arg(
+            long,
+            hide = true,
+            value_enum,
+            requires_all = ["plantcore", "recording_provider_ca_file"]
+        )]
+        recording_app_server_fault: Option<app_server::RecordingAppServerFault>,
     },
     /// Run a bounded JavaScript workflow end-to-end, streaming progress to stdout.
     Workflow {
@@ -580,6 +608,56 @@ fn assemble_system_prompt(
     }
 }
 
+fn load_project_config(
+    repo: &std::path::Path,
+    plantcore_serve: bool,
+) -> anyhow::Result<(FileConfig, Vec<String>)> {
+    if plantcore_serve {
+        Ok((FileConfig::default(), Vec::new()))
+    } else {
+        FileConfig::load_with_warnings(repo)
+    }
+}
+
+fn validate_serve_listen(listen: std::net::SocketAddr, plantcore: bool) -> anyhow::Result<()> {
+    if plantcore {
+        let required = std::net::SocketAddr::from(([127, 0, 0, 1], 0));
+        if listen != required {
+            anyhow::bail!(
+                "PlantCore App Server requires the ephemeral IPv4 loopback address {required}"
+            );
+        }
+    } else if !listen.ip().is_loopback() {
+        anyhow::bail!("headless App Server refuses non-loopback listen address {listen}");
+    }
+    Ok(())
+}
+
+fn validate_plantcore_provider_credentials(
+    configured_providers: &[config::ProviderConfig],
+    eager_provider_ids: &[String],
+) -> anyhow::Result<()> {
+    const REQUIRED_ENV: &str = "ITERON_PROVIDER_API_KEY";
+
+    for provider_id in eager_provider_ids {
+        let provider = configured_providers
+            .iter()
+            .find(|provider| provider.id == *provider_id)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "PlantCore provider `{provider_id}` must be operator-configured with credential env `{REQUIRED_ENV}`"
+                )
+            })?;
+        let credential = provider.resolved_credential().map_err(anyhow::Error::msg)?;
+        if credential.env_name() != Some(REQUIRED_ENV) {
+            anyhow::bail!(
+                "PlantCore provider `{provider_id}` must use credential env `{REQUIRED_ENV}`"
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Build identity, stamped by the release build (`.github/workflows/release.yml` exports both
 /// before `cargo build`). Two artifacts cut from different commits both reported `iteron 0.0.1`,
 /// and there is no self-update or staleness hint, so a user had no way to learn which binary
@@ -706,7 +784,7 @@ struct Cli {
     output_format: OutputFormat,
 
     /// Pin a published machine stdout schema. Supported versions are reported by
-    /// `--machine-contract`; omission keeps the current v6 default.
+    /// `--machine-contract`; omission keeps the current v7 default.
     #[arg(long, value_name = "VERSION")]
     output_schema_version: Option<u32>,
 
@@ -1223,10 +1301,12 @@ async fn run_cli() -> anyhow::Result<u8> {
         }
     }
 
-    let machine_schema_version = cli.output_schema_version.unwrap_or(output::SCHEMA_VERSION);
+    let machine_schema_version = cli
+        .output_schema_version
+        .unwrap_or(output::DEFAULT_SCHEMA_VERSION);
     if !output::SUPPORTED_SCHEMA_VERSIONS.contains(&machine_schema_version) {
         anyhow::bail!(
-            "unsupported --output-schema-version {machine_schema_version}; supported versions: 4, 5, 6"
+            "unsupported --output-schema-version {machine_schema_version}; supported versions: 4, 5, 6, 7"
         );
     }
     if cli.output_schema_version.is_some()
@@ -1240,6 +1320,29 @@ async fn run_cli() -> anyhow::Result<u8> {
         anyhow::bail!(
             "--output-schema-version applies to agent runs and schema-selected session operations"
         );
+    }
+    if cli.machine_contract {
+        if cli.task.is_some()
+            || cli.command.is_some()
+            || cli.sessions
+            || cli.transcript.is_some()
+            || cli.otel_export.is_some()
+            || cli.timeline.is_some()
+            || cli.fork.is_some()
+            || cli.resume.is_some()
+            || cli.continue_recent
+            || cli.tunables_export
+            || cli.tunables_explain
+            || cli.tunables_profile.is_some()
+            || cli.tunables_profile_json.is_some()
+            || cli.tunables_profile_digest.is_some()
+            || !cli.set_tunable.is_empty()
+            || cli.emit_tunables_profile.is_some()
+        {
+            anyhow::bail!("--machine-contract is a standalone capability query");
+        }
+        println!("{}", machine_contract::render()?);
+        return Ok(output::EXIT_SUCCESS);
     }
     if let Some(tag) = cli.agent_definition_tag.as_deref() {
         session_view::validate_agent_definition_tag(tag)?;
@@ -1354,45 +1457,6 @@ async fn run_cli() -> anyhow::Result<u8> {
             iteron_tunables::document_digest(&rendered)
         );
     }
-    if cli.machine_contract {
-        if cli.task.is_some()
-            || cli.command.is_some()
-            || cli.sessions
-            || cli.transcript.is_some()
-            || cli.otel_export.is_some()
-            || cli.timeline.is_some()
-            || cli.fork.is_some()
-            || cli.resume.is_some()
-            || cli.continue_recent
-        {
-            anyhow::bail!("--machine-contract is a standalone capability query");
-        }
-        // Pretty, two-space, sorted keys — the canonical form, not a style choice.
-        //
-        // `release.yml` pipes this straight into the release's `machine-contract.json`
-        // sidecar, and the internal installer parses BOTH that sidecar and this live
-        // output with a hand-written awk reader that accepts only one key per line at
-        // an even indent. It is written that way on purpose: it runs on a fresh factory
-        // machine and must not depend on python. Compact output made it reject the
-        // capability report of every real release, and the fixture in
-        // `core-internal/internal/test-install-record.sh` hid that by piping its stub
-        // through a canonicaliser.
-        //
-        // `to_string_pretty` already emits two-space indent, and `serde_json`'s map is
-        // a `BTreeMap` here, so the keys are sorted by construction.
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "schema_version": 2,
-                "type": "machine_contract",
-                "cli_stream_versions": output::SUPPORTED_SCHEMA_VERSIONS,
-                "default_cli_stream_version": output::SCHEMA_VERSION,
-                "resident_protocol_version": iteron_protocol::PROTOCOL_VERSION,
-            }))?
-        );
-        return Ok(output::EXIT_SUCCESS);
-    }
-
     // Local maintenance subcommands predate the machine contract and keep human output. Session
     // list/transcript reads and fork now have explicit typed machine frames; no client needs to
     // couple to the private `.iteron/runs` layout (#77/#179).
@@ -1479,6 +1543,34 @@ async fn run_cli() -> anyhow::Result<u8> {
         .repo
         .canonicalize()
         .map_err(|e| anyhow::anyhow!("repo {:?}: {e}", cli.repo))?;
+    let plantcore_serve = matches!(
+        cli.command.as_ref(),
+        Some(LocalCommand::Serve {
+            plantcore: true,
+            ..
+        })
+    );
+    let recording_provider_ca_file = match cli.command.as_ref() {
+        Some(LocalCommand::Serve {
+            recording_provider_ca_file,
+            ..
+        }) => recording_provider_ca_file.as_deref(),
+        _ => None,
+    };
+    let recording_inject_harness_error = matches!(
+        cli.command.as_ref(),
+        Some(LocalCommand::Serve {
+            recording_inject_harness_error: true,
+            ..
+        })
+    );
+    let recording_app_server_fault = match cli.command.as_ref() {
+        Some(LocalCommand::Serve {
+            recording_app_server_fault,
+            ..
+        }) => *recording_app_server_fault,
+        _ => None,
+    };
     // Resolved ONCE, against `-C`, not against the process working directory. Every reader and
     // writer below shares this value; the workflow branch resolved it correctly while nine other
     // call sites used the raw default, so `iteron -C /elsewhere` wrote its audit record next to
@@ -1547,7 +1639,7 @@ async fn run_cli() -> anyhow::Result<u8> {
     // Load repository-safe run knobs. Routing-sensitive fields are resolved later from trusted
     // origins only; same schema, different trust-by-origin policy (config.rs).
     let mut config_warnings = Vec::new();
-    let (file, file_warnings) = FileConfig::load_with_warnings(&repo)?;
+    let (file, file_warnings) = load_project_config(&repo, plantcore_serve)?;
     config_warnings.extend(file_warnings);
 
     let tenant = TenantId::default();
@@ -1782,6 +1874,11 @@ async fn run_cli() -> anyhow::Result<u8> {
     }
     let (user_file, user_warnings) = FileConfig::load_user_with_warnings()?;
     config_warnings.extend(user_warnings);
+    if plantcore_serve
+        && (cli.implementation_candidate.is_some() || cli.implementation_candidate_digest.is_some())
+    {
+        anyhow::bail!("PlantCore resident mode does not admit implementation plugins");
+    }
     let implementation_candidate = match (
         cli.implementation_candidate.as_deref(),
         cli.implementation_candidate_digest.as_deref(),
@@ -1798,7 +1895,9 @@ async fn run_cli() -> anyhow::Result<u8> {
             iteron_protocol::Capability::TrustMutating,
             iteron_protocol::Capability::IrreversibleExternal,
         ]);
-    let mut runtime_plugins = if let Some(candidate) = implementation_candidate {
+    let mut runtime_plugins = if plantcore_serve {
+        plugin_runtime::RuntimePlugins::default()
+    } else if let Some(candidate) = implementation_candidate {
         // Research activation is intentionally independent of HOME, ITERON_CONFIG_HOME, and the
         // installed plugin store. The paired CLI path/digest is its operator-intent boundary.
         plugin_runtime::RuntimePlugins::research(candidate, plugin_host_ceiling)?
@@ -1984,6 +2083,12 @@ async fn run_cli() -> anyhow::Result<u8> {
     {
         eager_providers.push(qualifier.to_owned());
     }
+    if plantcore_serve {
+        validate_plantcore_provider_credentials(&configured_providers, &eager_providers)?;
+    }
+    let recording_provider_transport = recording_provider_ca_file
+        .map(|path| recording_provider::prepare(path, &configured_providers, &provider_name))
+        .transpose()?;
     let mut provider_directory =
         providers::ProviderDirectory::discover_eagerly(&configured_providers, &eager_providers)
             .await?;
@@ -2086,10 +2191,11 @@ async fn run_cli() -> anyhow::Result<u8> {
     use std::io::IsTerminal;
     let has_tty = std::io::stdout().is_terminal() && std::io::stdin().is_terminal();
     let headless_serve = matches!(cli.command.as_ref(), Some(LocalCommand::Serve { .. }));
-    if let Some(LocalCommand::Serve { listen }) = &cli.command
-        && !listen.ip().is_loopback()
+    if let Some(LocalCommand::Serve {
+        listen, plantcore, ..
+    }) = &cli.command
     {
-        anyhow::bail!("headless App Server refuses non-loopback listen address {listen}");
+        validate_serve_listen(*listen, *plantcore)?;
     }
     // One-shot only with -p/--print (which requires a task), or when there is no TTY and a task was
     // given (pipeline use). Otherwise the interactive TUI is the default (user: 默认 TUI 打开).
@@ -2385,18 +2491,24 @@ async fn run_cli() -> anyhow::Result<u8> {
     };
 
     let (selection, provider_arc) = match selection_result {
-        Ok(selection) => match provider_directory.build(&selection) {
-            Ok(provider) => (selection, provider),
-            Err(error) if one_shot => {
-                anyhow::bail!("selected provider/model is unavailable: {error}")
+        Ok(selection) => {
+            let built = match recording_provider_transport.as_ref() {
+                Some(transport) => provider_directory.build_with_transport(&selection, transport),
+                None => provider_directory.build(&selection),
+            };
+            match built {
+                Ok(provider) => (selection, provider),
+                Err(error) if one_shot => {
+                    anyhow::bail!("selected provider/model is unavailable: {error}")
+                }
+                Err(error) => {
+                    eprintln!("provider unavailable: {error}");
+                    let provider = provider_directory
+                        .unavailable_provider(selection.provider_id.clone(), error);
+                    (selection, provider)
+                }
             }
-            Err(error) => {
-                eprintln!("provider unavailable: {error}");
-                let provider =
-                    provider_directory.unavailable_provider(selection.provider_id.clone(), error);
-                (selection, provider)
-            }
-        },
+        }
         Err(error) if one_shot => anyhow::bail!("cannot resolve provider/model: {error}"),
         Err(error) => {
             eprintln!("provider unavailable: {error}");
@@ -2485,14 +2597,18 @@ async fn run_cli() -> anyhow::Result<u8> {
     let fresh_created_at = fresh_clock.map(|duration| duration.as_secs());
     // Capture Git/clock-derived facts only for a fresh run. Resume and fork reuse the durable
     // ContextInjection and therefore do not even invoke the live collector before discarding it.
-    let environment_context = match fresh_created_at {
-        // Scrub once before both resolution and runtime installation. `Agent` repeats the scrub
-        // defensively at its trust boundary; using the already-scrubbed bytes here makes the
-        // immutable environment_snapshot identity and the durable RunStart payload one truth.
-        Some(created_at) => Some(iteron_record::redact::scrub(
-            &environment::capture_at(&repo, created_at).await,
-        )),
-        None => None,
+    let environment_context = if plantcore_serve {
+        None
+    } else {
+        match fresh_created_at {
+            // Scrub once before both resolution and runtime installation. `Agent` repeats the scrub
+            // defensively at its trust boundary; using the already-scrubbed bytes here makes the
+            // immutable environment_snapshot identity and the durable RunStart payload one truth.
+            Some(created_at) => Some(iteron_record::redact::scrub(
+                &environment::capture_at(&repo, created_at).await,
+            )),
+            None => None,
+        }
     };
     let (max_consecutive_tool_errors, max_consecutive_tool_errors_origin) = cli
         .max_consecutive_tool_errors
@@ -2552,7 +2668,9 @@ async fn run_cli() -> anyhow::Result<u8> {
         agent_catalog_snapshot_path(home_core.as_deref(), &repo, &runtime_plugins.agents);
     let refresh_agent_catalog_after_paint =
         !one_shot && !headless_serve && agent_snapshot_path.is_some();
-    let agent_catalog = if refresh_agent_catalog_after_paint {
+    let agent_catalog = if plantcore_serve {
+        iteron_agents::AgentCatalog::builtin_only()
+    } else if refresh_agent_catalog_after_paint {
         agent_snapshot_path
             .as_deref()
             .and_then(|path| {
@@ -2566,7 +2684,13 @@ async fn run_cli() -> anyhow::Result<u8> {
         discover_agent_catalog(&repo, &runtime_plugins.agents)
     };
     startup.mark(startup::StartupPhase::AgentDiscovery);
-    let (mut configured_hooks, configured_telemetry) = if config::config_home().is_some() {
+    let (mut configured_hooks, configured_telemetry) = if plantcore_serve {
+        // PlantCore installs its release-owned PreToolUse gate only after the immutable bootstrap
+        // is admitted. Starting the App Server with user/plugin hooks or telemetry would leave
+        // session/input lifecycle copies alive beside that gate even after Agent hooks were
+        // replaced, giving ordinary configuration an unreviewed execution path inside the Run.
+        (runtime::hooks::Hooks::default(), None)
+    } else if config::config_home().is_some() {
         // `user_file` is the one immutable operator-config snapshot for this launch. Hooks and
         // telemetry project typed views from it instead of reopening/parsing the same file.
         let mut hooks = runtime::hooks::Hooks::from_user_config(user_file.hooks.as_ref());
@@ -2784,15 +2908,24 @@ async fn run_cli() -> anyhow::Result<u8> {
         instruction_bytes,
         instruction_trust,
         bundle: instruction_bundle,
-    } = assemble_system_prompt(
-        home_core.as_deref(),
-        &repo,
-        &repo,
-        effective_settings
-            .context_materialization
-            .instruction_discovery,
-        tunables_profile_document.as_ref(),
-    );
+    } = if plantcore_serve {
+        SystemPromptAssembly {
+            base_system: String::new(),
+            instruction_bytes: String::new(),
+            instruction_trust: iteron_protocol::Trust::Trusted,
+            bundle: iteron_ctx::InstructionBundle::default(),
+        }
+    } else {
+        assemble_system_prompt(
+            home_core.as_deref(),
+            &repo,
+            &repo,
+            effective_settings
+                .context_materialization
+                .instruction_discovery,
+            tunables_profile_document.as_ref(),
+        )
+    };
     for source in instruction_bundle.sources() {
         eprintln!(
             "instructions: loaded `{}` (untrusted guidance)",
@@ -3214,10 +3347,23 @@ async fn run_cli() -> anyhow::Result<u8> {
         );
     }
     agent.telemetry = configured_telemetry;
+    if recording_inject_harness_error {
+        agent.arm_recording_harness_error();
+    }
 
-    if let Some(LocalCommand::Serve { listen }) = &cli.command {
-        let attached = app_server::attach(agent, false, true)?;
-        tui::headless::serve(attached, *listen).await?;
+    if let Some(LocalCommand::Serve {
+        listen, plantcore, ..
+    }) = &cli.command
+    {
+        if let Some(fault) = recording_app_server_fault {
+            fault.consume_marker()?;
+        }
+        let attached = if *plantcore {
+            app_server::attach_plantcore(agent, false, true, selected_api_root.clone())?
+        } else {
+            app_server::attach(agent, false, true)?
+        };
+        tui::headless::serve(attached, *listen, *plantcore, recording_app_server_fault).await?;
         diagnostic_drain.flush();
         return Ok(output::EXIT_SUCCESS);
     }
@@ -3497,24 +3643,9 @@ async fn run_cli() -> anyhow::Result<u8> {
     }
     diagnostic_drain.flush();
 
-    let outcome: Outcome = summary.outcome;
+    let outcome: Outcome = summary.terminal.outcome();
     let run_error = summary.error.as_deref().map(iteron_record::redact::scrub);
-    let cost = summary.cost;
-    let turns = summary.turns;
-    let kernel_tax = summary.kernel_tax;
-    // UiEvent text is scrubbed at the live UI seam. Scrub the complete terminal text again so a
-    // secret split across streaming deltas cannot bypass the machine-output contract.
-    let assistant_text = iteron_record::redact::scrub(&summary.assistant_text);
-    let run_id = summary.run_id;
-    let result = output::final_result(
-        &outcome,
-        &assistant_text,
-        &run_id,
-        &cost,
-        turns,
-        kernel_tax,
-        run_error.as_deref(),
-    );
+    let result = summary.result_for_schema(machine_schema_version)?;
     if output_error.is_none()
         && let Err(error) = emitter.result(&result)
     {
@@ -5124,6 +5255,115 @@ mod tests {
         assert!(resumed.instruction_bytes.contains("home guidance"));
         assert!(!resumed.instruction_bytes.contains("root agents guidance"));
         std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn plantcore_serve_does_not_read_project_config() {
+        let base = std::env::temp_dir().join(format!(
+            "iteron-plantcore-project-config-{}-{:?}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(base.join(".iteron")).unwrap();
+        std::fs::write(base.join(".iteron/config.json"), "not valid json").unwrap();
+
+        let (file, warnings) = load_project_config(&base, true).unwrap();
+        assert_eq!(file.model, None);
+        assert!(warnings.is_empty());
+        assert!(load_project_config(&base, false).is_err());
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn plantcore_provider_credentials_are_fixed_before_discovery() {
+        let provider = |id: &str, credential: config::ProviderCredential| config::ProviderConfig {
+            id: id.into(),
+            display_name: None,
+            adapter: "openai_chat".into(),
+            error_profile: None,
+            api_root: "https://provider.fixture.invalid/v1".into(),
+            key_env: None,
+            credential: Some(credential),
+            enabled: true,
+            catalog: false,
+            models: vec!["fixture-model".into()],
+            model_capabilities: std::collections::BTreeMap::new(),
+        };
+        let required = provider(
+            "plantcore",
+            config::ProviderCredential::Env {
+                name: "ITERON_PROVIDER_API_KEY".into(),
+            },
+        );
+        assert!(
+            validate_plantcore_provider_credentials(
+                std::slice::from_ref(&required),
+                &["plantcore".into()]
+            )
+            .is_ok()
+        );
+
+        for rejected in [
+            provider(
+                "plantcore",
+                config::ProviderCredential::Env {
+                    name: "OPENAI_API_KEY".into(),
+                },
+            ),
+            provider(
+                "plantcore",
+                config::ProviderCredential::File {
+                    path: "/run/credential".into(),
+                },
+            ),
+        ] {
+            let error = validate_plantcore_provider_credentials(
+                std::slice::from_ref(&rejected),
+                &["plantcore".into()],
+            )
+            .unwrap_err();
+            assert!(
+                error.to_string().contains("ITERON_PROVIDER_API_KEY"),
+                "{error}"
+            );
+        }
+        assert!(
+            validate_plantcore_provider_credentials(&[], &["glm".into()]).is_err(),
+            "a built-in provider's unrelated credential source must be rejected"
+        );
+    }
+
+    #[test]
+    fn plantcore_listener_accepts_only_ephemeral_ipv4_loopback() {
+        assert!(validate_serve_listen("127.0.0.1:0".parse().unwrap(), true).is_ok());
+        for address in ["127.0.0.1:43123", "[::1]:0", "0.0.0.0:0"] {
+            let error = validate_serve_listen(address.parse().unwrap(), true).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("requires the ephemeral IPv4 loopback address 127.0.0.1:0"),
+                "{address}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_listener_retains_fixed_ipv4_and_ipv6_loopback_addresses() {
+        for address in ["127.0.0.1:43123", "[::1]:43123"] {
+            assert!(
+                validate_serve_listen(address.parse().unwrap(), false).is_ok(),
+                "ordinary headless listener must retain {address}"
+            );
+        }
+        let error = validate_serve_listen("0.0.0.0:43123".parse().unwrap(), false).unwrap_err();
+        assert!(
+            error.to_string().contains("refuses non-loopback"),
+            "{error}"
+        );
     }
 
     #[test]

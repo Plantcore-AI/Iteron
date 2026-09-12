@@ -56,10 +56,15 @@ mod control;
 mod mcp_control;
 mod mcp_input;
 mod operator_status;
+mod plantcore;
+mod recording_fault;
 
 pub(crate) use backpressure::{AppServerQueuePolicy, AuthoritativeOverflow, CosmeticOverflow};
 
-use self::control::{apply_control, apply_immediate_control, is_immediate_control, snapshot_of};
+use self::control::{
+    apply_control, apply_immediate_control, is_immediate_control, is_plantcore_admitted_control,
+    snapshot_of,
+};
 #[cfg(test)]
 use self::control::{apply_immediate_workflow_control, apply_side};
 use self::mcp_control::apply_mcp_control;
@@ -71,6 +76,8 @@ use self::operator_status::OperatorStatusSources;
 pub(crate) use self::operator_status::{
     LanguageServerStatus, OperatorStatusSnapshot, WorkflowHealth,
 };
+use self::plantcore::PlantcoreAdmission;
+pub(crate) use self::recording_fault::RecordingAppServerFault;
 use crate::runtime::{Agent, UiEvent};
 use iteron_protocol::{
     Capability, ContentSegments, LifecyclePayload, LifecycleState, Op, Outcome, PROTOCOL_VERSION,
@@ -174,8 +181,11 @@ pub(crate) const EQ_CAPACITY: usize = 1024;
 /// boundary.
 #[derive(Debug, Clone)]
 pub(crate) struct TerminalSummary {
-    pub(crate) outcome: Outcome,
+    pub(crate) terminal: TerminalAuthority,
+    /// Most recent assistant turn, retained for the frozen v4-v6 projections.
     pub(crate) assistant_text: String,
+    /// Run-wide schema-v7 assistant message when it differs from the final turn.
+    pub(crate) v7_assistant_text: Option<String>,
     pub(crate) run_id: String,
     pub(crate) cost: iteron_obs::CostState,
     pub(crate) turns: u32,
@@ -185,12 +195,44 @@ pub(crate) struct TerminalSummary {
     pub(crate) memo_misses: u64,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) enum TerminalAuthority {
+    Runtime(Outcome),
+    Plantcore(iteron_protocol::PlantcoreTerminalOutcome),
+}
+
+impl TerminalAuthority {
+    pub(crate) fn outcome(&self) -> Outcome {
+        match self {
+            Self::Runtime(outcome) => outcome.clone(),
+            Self::Plantcore(terminal) => terminal.outcome(),
+        }
+    }
+}
+
 impl TerminalSummary {
+    pub(crate) fn assistant_text_for_v7(&self) -> &str {
+        self.v7_assistant_text
+            .as_deref()
+            .unwrap_or(&self.assistant_text)
+    }
+
+    pub(crate) fn completes_assistant_stream_for_v7(&self) -> bool {
+        match &self.terminal {
+            TerminalAuthority::Plantcore(iteron_protocol::PlantcoreTerminalOutcome::Done(
+                iteron_protocol::ProductResult::Completed { .. },
+            )) => true,
+            TerminalAuthority::Plantcore(_) => false,
+            TerminalAuthority::Runtime(outcome) => matches!(outcome, Outcome::Done),
+        }
+    }
+
     /// Project the one terminal authority into the versioned object consumed by every sibling
     /// client. Presentation remains client-owned; outcome, exit status, and result fields do not.
     pub(crate) fn current_result(&self) -> serde_json::Value {
+        let outcome = self.terminal.outcome();
         crate::output::final_result(
-            &self.outcome,
+            &outcome,
             &self.assistant_text,
             &self.run_id,
             &self.cost,
@@ -198,6 +240,52 @@ impl TerminalSummary {
             self.kernel_tax,
             self.error.as_deref(),
         )
+    }
+
+    pub(crate) fn v7_result(&self) -> anyhow::Result<serde_json::Value> {
+        match &self.terminal {
+            TerminalAuthority::Plantcore(terminal) => Ok(crate::output::v7_result(terminal)?),
+            TerminalAuthority::Runtime(outcome) => {
+                let product_result = matches!(outcome, Outcome::Done).then(|| {
+                    iteron_protocol::ProductResult::Completed {
+                        assistant_text: self.assistant_text_for_v7().to_owned(),
+                        artifacts: Vec::new(),
+                    }
+                });
+                let terminal = match outcome {
+                    Outcome::BudgetExhausted("verify_attempts") => {
+                        iteron_protocol::PlantcoreTerminalOutcome::Stuck
+                    }
+                    _ => iteron_protocol::PlantcoreTerminalOutcome::from_runtime(
+                        outcome.clone(),
+                        product_result,
+                    )
+                    .map_err(anyhow::Error::msg)?,
+                };
+                Ok(crate::output::v7_result(&terminal)?)
+            }
+        }
+    }
+
+    pub(crate) fn result_for_schema(
+        &self,
+        schema_version: u32,
+    ) -> anyhow::Result<serde_json::Value> {
+        if schema_version == crate::output::V7_SCHEMA_VERSION {
+            return self.v7_result();
+        }
+        let assistant_text = iteron_record::redact::scrub(&self.assistant_text);
+        let error = self.error.as_deref().map(iteron_record::redact::scrub);
+        let outcome = self.terminal.outcome();
+        Ok(crate::output::final_result(
+            &outcome,
+            &assistant_text,
+            &self.run_id,
+            &self.cost,
+            self.turns,
+            self.kernel_tax,
+            error.as_deref(),
+        ))
     }
 }
 
@@ -334,6 +422,7 @@ fn event_heap_bytes(event: &ServerEvent) -> usize {
         ServerEvent::RunEnded { snapshot, summary } => summary
             .assistant_text
             .len()
+            .saturating_add(summary.v7_assistant_text.as_ref().map_or(0, String::len))
             .saturating_add(summary.error.as_ref().map_or(0, String::len))
             .saturating_add(snapshot.model.len())
             .saturating_add(snapshot.ledger_summary.len())
@@ -389,6 +478,8 @@ fn event_heap_bytes(event: &ServerEvent) -> usize {
 /// **Folding these into the SQ is a WS1 protocol change, not a WS6 one.** When `Op` grows the
 /// variants, each arm here becomes a `route()` case and this enum shrinks to nothing.
 pub(crate) enum Control {
+    /// One-time immutable PlantCore Run admission on the existing versioned control channel.
+    PlantcoreRunBootstrapV1(Box<iteron_protocol::PlantcoreRunBootstrapV1>),
     /// `/status` — one content-free snapshot from the exact runtime-owned authorities.
     OperatorStatus,
     /// `/effort`
@@ -534,6 +625,8 @@ pub(crate) struct ModelSelection {
 /// What a control request answers with.
 #[derive(Debug)]
 pub(crate) enum ControlReply {
+    PlantcoreBootstrapAccepted(plantcore::PlantcoreBootstrapAccepted),
+    PlantcoreProtocolError(plantcore::PlantcoreProtocolError),
     /// The current runtime state. Answers `Snapshot` and every successful mutation.
     State(Box<SessionSnapshot>),
     /// `/status` — runtime policy identity plus live bounded owner health.
@@ -1313,6 +1406,9 @@ pub(crate) struct Attached {
     pub(crate) interrupt: Arc<AtomicBool>,
     /// Ctrl-D: quiesce active work and settle the session record.
     pub(crate) drain: Arc<AtomicBool>,
+    /// Present only for `serve --plantcore`; shared with the loopback command transport.
+    pub(crate) dispatch_gate: Option<Arc<crate::runtime::DispatchGate>>,
+    pub(crate) machine_schema_version: u32,
 }
 
 /// **The composition root.** The one place an `Agent` is handed to an App Server, and the one place
@@ -1329,12 +1425,49 @@ pub(crate) struct Attached {
 /// require the call to be written in the composition root's file; it requires there to be exactly
 /// one of it, which is what this is.
 pub(crate) fn attach(
-    mut agent: Agent,
+    agent: Agent,
     interactive_approvals: bool,
     lossless_events: bool,
 ) -> Result<Attached, ProtocolVersionError> {
+    attach_with_plantcore(
+        agent,
+        interactive_approvals,
+        lossless_events,
+        PlantcoreAdmission::disabled(),
+    )
+}
+
+pub(crate) fn attach_plantcore(
+    agent: Agent,
+    interactive_approvals: bool,
+    lossless_events: bool,
+    provider_api_origin: String,
+) -> Result<Attached, ProtocolVersionError> {
+    attach_with_plantcore(
+        agent,
+        interactive_approvals,
+        lossless_events,
+        PlantcoreAdmission::required(provider_api_origin),
+    )
+}
+
+fn attach_with_plantcore(
+    mut agent: Agent,
+    interactive_approvals: bool,
+    lossless_events: bool,
+    plantcore: PlantcoreAdmission,
+) -> Result<Attached, ProtocolVersionError> {
+    // Machine-facing clients default to the current public schema. Older projections remain
+    // available only through the explicit one-shot output-schema selector; native TUI rendering
+    // is a separate human presentation surface.
+    let machine_schema_version = crate::output::V7_SCHEMA_VERSION;
+    let dispatch_gate = plantcore.dispatch_gate();
+    if let Some(gate) = &dispatch_gate {
+        agent.install_plantcore_dispatch_gate(gate.clone());
+    }
     let queue_policy = agent.app_server_queue_policy();
-    let (mut handle, ends) = wire_with_queue_policy(lossless_events, queue_policy)?;
+    let (mut handle, mut ends) = wire_with_queue_policy(lossless_events, queue_policy)?;
+    ends.plantcore = plantcore;
 
     let interrupt = Arc::new(AtomicBool::new(false));
     agent.set_interrupt(interrupt.clone());
@@ -1390,6 +1523,8 @@ pub(crate) fn attach(
         initial_state,
         interrupt,
         drain,
+        dispatch_gate,
+        machine_schema_version,
     })
 }
 
@@ -1496,7 +1631,9 @@ impl PendingCosmetic {
             | (
                 Some(ServerEvent::Ui(UiEvent::Thinking(existing))),
                 ServerEvent::Ui(UiEvent::Thinking(delta)),
-            ) => {
+            ) if existing.len().saturating_add(delta.len())
+                <= crate::output::MAX_STREAM_UI_DELTA_BYTES =>
+            {
                 existing.push_str(delta);
                 self.bytes = self.bytes.saturating_add(bytes);
                 return None;
@@ -1904,6 +2041,7 @@ pub(crate) struct ServerEnds {
     pub(crate) hook_health: crate::runtime::lifecycle_hooks::LifecycleHookHealth,
     pub(crate) activity: mpsc::Receiver<iteron_protocol::ActivityEvent>,
     mcp_input: mcp_input::ServerPort,
+    plantcore: PlantcoreAdmission,
 }
 
 /// The protocol version the in-process runtime advertises to a connecting frontend.
@@ -1992,6 +2130,7 @@ fn wire_with_queue_policy(
             hook_health,
             activity: activity_rx,
             mcp_input,
+            plantcore: PlantcoreAdmission::disabled(),
         },
     ))
 }
@@ -2063,12 +2202,15 @@ pub(crate) struct AppServer {
     hook_journal: Option<crate::runtime::hooks::journal::HookEffectJournal>,
     stop_hooks: Option<crate::runtime::hooks::StopHookObserverRuntime>,
     lifecycle_hook_runtime: crate::runtime::lifecycle_hooks::LifecycleHookRuntime,
-    /// Forwarded to the kernel's inbound queue. The kernel drains it at its own safe points; the
-    /// server never reaches into a running turn.
+    /// Forwarded to the kernel's inbound queue. Every resident App Server installs the receiver;
+    /// the separate interactive-approval posture decides whether `Ask` may wait for a human.
+    /// The kernel drains commands at its own safe points; the server never reaches into a running
+    /// turn.
     to_kernel: mpsc::Sender<SqEnvelope>,
     activity: mpsc::Receiver<iteron_protocol::ActivityEvent>,
     mcp_input_requests: mpsc::Receiver<mcp_input::McpInputRequestEnvelope>,
     mcp_input_responses: mpsc::Receiver<McpInputResponse>,
+    plantcore: PlantcoreAdmission,
 }
 
 impl AppServer {
@@ -2095,10 +2237,13 @@ impl AppServer {
         );
         if interactive_approvals {
             agent.set_approvals(kernel_rx);
+        } else {
+            agent.set_inbound_control(kernel_rx);
         }
         let lifecycle_gate_hooks = agent.hooks.clone();
+        let requires_hook_journal = !lifecycle_gate_hooks.is_empty() || ends.plantcore.is_enabled();
         let mut recovered_unknown = 0;
-        let hook_journal = if lifecycle_gate_hooks.is_empty() {
+        let hook_journal = if !requires_hook_journal {
             None
         } else {
             match crate::runtime::hooks::journal::HookEffectJournal::open(
@@ -2181,6 +2326,7 @@ impl AppServer {
             activity: ends.activity,
             mcp_input_requests: ends.mcp_input.requests,
             mcp_input_responses: ends.mcp_input.responses,
+            plantcore: ends.plantcore,
         }
     }
 
@@ -2225,6 +2371,7 @@ impl AppServer {
             mut activity,
             mut mcp_input_requests,
             mut mcp_input_responses,
+            mut plantcore,
         } = self;
         let mut pending_mcp_inputs = std::collections::BTreeMap::new();
 
@@ -2478,6 +2625,7 @@ impl AppServer {
                                     &operator_status,
                                     &mut side,
                                     &mut started,
+                                    &mut plantcore,
                                     &mut events,
                                     request,
                                 ).await;
@@ -2585,6 +2733,19 @@ impl AppServer {
                         None,
                     )
                     .await;
+                    if let Err(error) = plantcore.admit_input(&op) {
+                        publish_submission(
+                            &mut events,
+                            submission_id,
+                            SubmissionLifecycleState::Rejected,
+                            Some(error.code),
+                        )
+                        .await;
+                        let _ = events
+                            .publish(ServerEvent::Notice(error.message.to_owned()))
+                            .await;
+                        continue;
+                    }
                     if !preprocessed
                         && let Some(context) = legacy_user_prompt_context(&op, submission_id)
                     {
@@ -2888,7 +3049,10 @@ impl AppServer {
                             }
                         }
                         Some(request) = control.recv() => {
-                            if is_immediate_control(&request.control) {
+                            if is_immediate_control(&request.control)
+                                && (!plantcore.is_enabled()
+                                    || is_plantcore_admitted_control(&request.control))
+                            {
                                 apply_immediate_control(
                                     &workflows,
                                     processes.as_ref(),
@@ -3055,7 +3219,6 @@ impl AppServer {
                                     ),
                                     Op::Drain => {
                                         drain_admission_closed = true;
-                                        drain_signal.store(true, Ordering::SeqCst);
                                         events.record_lifecycle(
                                             "drain.requested",
                                             Some(live_turn_id),
@@ -3144,10 +3307,17 @@ impl AppServer {
                                             // session-owned signal only after the receipt reaches
                                             // the kernel queue so headless clients get the same
                                             // bounded wake-up as the TUI's eager keyboard path.
-                                            if matches!(kind, KernelSubmissionKind::Interrupt)
-                                                && let Some(interrupt) = &hook_cancel
-                                            {
-                                                interrupt.store(true, Ordering::SeqCst);
+                                            match kind {
+                                                KernelSubmissionKind::Interrupt => {
+                                                    if let Some(interrupt) = &hook_cancel {
+                                                        interrupt.store(true, Ordering::SeqCst);
+                                                    }
+                                                }
+                                                KernelSubmissionKind::Drain => {
+                                                    drain_signal.store(true, Ordering::SeqCst);
+                                                }
+                                                KernelSubmissionKind::Steer
+                                                | KernelSubmissionKind::Approval => {}
                                             }
                                             match kind {
                                                 KernelSubmissionKind::Steer => events.record_lifecycle(
@@ -3245,6 +3415,7 @@ impl AppServer {
                     &operator_status,
                     &mut side,
                     &mut started,
+                    &mut plantcore,
                     &mut events,
                     request,
                 )
@@ -3289,6 +3460,10 @@ impl AppServer {
                     (Outcome::HarnessError, Some(error))
                 }
             };
+            // A PlantCore result ends its one admitted Run. Close the reversible dispatch gate
+            // before any terminal projection so a concurrent resume can never reopen execution
+            // after the runtime has already decided the terminal outcome.
+            agent.terminalize_plantcore_dispatch_gate();
             let drain_cleanup_failures = if matches!(outcome, Outcome::Drained) {
                 clean_session_owned_tools(processes.as_ref(), language_servers.as_ref()).await
             } else {
@@ -3359,7 +3534,10 @@ impl AppServer {
                         .and_then(|state| state.transition(TurnLifecycleState::Interrupted))
                         .expect("a drained turn interrupts exactly once")
                 }
-                Outcome::Stuck | Outcome::BudgetExhausted(_) | Outcome::HarnessError => {
+                Outcome::Stuck
+                | Outcome::BudgetExhausted(_)
+                | Outcome::UsageUnavailable
+                | Outcome::HarnessError => {
                     if cancel_forwarded {
                         events.record_lifecycle(
                             "cancel.failed",
@@ -3387,7 +3565,10 @@ impl AppServer {
                     .transition(RunLifecycleState::Cancelling)
                     .and_then(|state| state.transition(RunLifecycleState::Interrupted))
                     .expect("active run interrupts once"),
-                Outcome::Stuck | Outcome::BudgetExhausted(_) | Outcome::HarnessError => {
+                Outcome::Stuck
+                | Outcome::BudgetExhausted(_)
+                | Outcome::UsageUnavailable
+                | Outcome::HarnessError => {
                     if cancel_forwarded {
                         run_lifecycle = run_lifecycle
                             .transition(RunLifecycleState::Cancelling)
@@ -3417,9 +3598,32 @@ impl AppServer {
                 .ledger
                 .kernel_tax()
                 .with_failed_run(!matches!(outcome, Outcome::Done | Outcome::Drained));
+            let plantcore_runtime = agent.plantcore_runtime_enabled();
+            let plantcore_harness_error =
+                plantcore_runtime && matches!(outcome, Outcome::HarnessError);
+            let runtime_product_result = agent.take_product_result();
+            // Product data can be prepared before the durability/presentation tail finishes. If
+            // that tail changes a would-be success into a harness failure, the typed candidate is
+            // no longer terminal truth and must not survive beside a non-done outcome.
+            let product_result = matches!(outcome, Outcome::Done)
+                .then_some(runtime_product_result)
+                .flatten();
+            let terminal = if plantcore_runtime {
+                TerminalAuthority::Plantcore(
+                    iteron_protocol::PlantcoreTerminalOutcome::from_runtime(
+                        outcome,
+                        product_result,
+                    )
+                    .expect("runtime terminal truth is a valid closed PlantCore outcome"),
+                )
+            } else {
+                TerminalAuthority::Runtime(outcome)
+            };
             let summary = TerminalSummary {
-                outcome,
+                terminal,
                 assistant_text: agent.last_assistant_text().to_owned(),
+                v7_assistant_text: (agent.run_assistant_text() != agent.last_assistant_text())
+                    .then(|| agent.run_assistant_text().to_owned()),
                 run_id: agent.rollout.run_id().to_string(),
                 cost: agent.ledger.cost_state(),
                 turns: agent.ledger.turns,
@@ -3447,6 +3651,9 @@ impl AppServer {
                 );
                 break;
             }
+            if plantcore_harness_error {
+                break;
+            }
             // Input is genuinely ready only after the authoritative terminal crossed the EQ.
             // Provider admission used to emit this semantic before a request even started, which
             // made a busy session look idle and erased the finalization tail.
@@ -3455,7 +3662,7 @@ impl AppServer {
                 .await;
         }
 
-        // SESSION EXIT WITH A RUN STILL LIVE.
+        // SESSION EXIT, POSSIBLY WITH A RUN STILL LIVE.
         //
         // The three candidate policies were: refuse to exit, kill, or let it finish alone. The
         // third is not available and saying otherwise would be a lie — a workflow run is an OS
@@ -3699,6 +3906,7 @@ fn outcome_name(outcome: &Outcome) -> &'static str {
         Outcome::Interrupted => "interrupted",
         Outcome::Stuck => "stuck",
         Outcome::BudgetExhausted(_) => "budget_exhausted",
+        Outcome::UsageUnavailable => "usage_unavailable",
         Outcome::HarnessError => "harness_error",
     }
 }
@@ -4639,8 +4847,11 @@ mod tests {
 
     fn terminal_summary() -> Box<TerminalSummary> {
         Box::new(TerminalSummary {
-            outcome: Outcome::HarnessError,
+            terminal: TerminalAuthority::Plantcore(
+                iteron_protocol::PlantcoreTerminalOutcome::HarnessError,
+            ),
             assistant_text: String::new(),
+            v7_assistant_text: None,
             run_id: "test-run".into(),
             cost: iteron_obs::CostState::Zero,
             turns: 0,
@@ -4680,8 +4891,16 @@ mod tests {
     #[test]
     fn parity_transcript_done_capture_matches_terminal_summary_projection() {
         let summary = TerminalSummary {
-            outcome: Outcome::Done,
+            terminal: TerminalAuthority::Plantcore(
+                iteron_protocol::PlantcoreTerminalOutcome::Done(
+                    iteron_protocol::ProductResult::Completed {
+                        assistant_text: "parity reply".into(),
+                        artifacts: Vec::new(),
+                    },
+                ),
+            ),
             assistant_text: "parity reply".into(),
+            v7_assistant_text: None,
             run_id: "run-client-parity".into(),
             cost: iteron_obs::CostState::default(),
             turns: 1,
@@ -4873,9 +5092,12 @@ mod tests {
                 iteron_obs::lifecycle::LifecycleBus::default(),
             ),
         );
-        for i in 0..64 {
+        let chunks = (0..64)
+            .map(|i| format!("{i:02}:{}", "x".repeat(4 * 1024)))
+            .collect::<Vec<_>>();
+        for chunk in &chunks {
             publisher
-                .publish(ServerEvent::Ui(UiEvent::Text(format!("chunk {i}"))))
+                .publish(ServerEvent::Ui(UiEvent::Text(chunk.clone())))
                 .await
                 .expect("cosmetic deltas never fail");
         }
@@ -4898,7 +5120,15 @@ mod tests {
                     break;
                 }
                 ServerEvent::Lagged { dropped } => panic!("coalesced bytes were lost: {dropped}"),
-                ServerEvent::Ui(UiEvent::Text(delta)) => text.push_str(&delta),
+                ServerEvent::Ui(UiEvent::Text(delta)) => {
+                    crate::output::stream_event_for_schema(
+                        UiEvent::Text(delta.clone()),
+                        &mut 0,
+                        crate::output::V7_SCHEMA_VERSION,
+                    )
+                    .expect("every coalesced stream segment fits one canonical v7 event");
+                    text.push_str(&delta);
+                }
                 ServerEvent::Ui(_)
                 | ServerEvent::Notice(_)
                 | ServerEvent::Submission { .. }
@@ -4909,10 +5139,7 @@ mod tests {
         }
         publish.await.expect("publisher task").expect("delivered");
         assert!(saw_terminal, "the terminal event was dropped");
-        assert_eq!(
-            text,
-            (0..64).map(|i| format!("chunk {i}")).collect::<String>()
-        );
+        assert_eq!(text, chunks.concat());
     }
 
     #[tokio::test]
@@ -5007,6 +5234,48 @@ mod tests {
                 .map(|i| format!("delta {i}"))
                 .collect::<String>()
         );
+    }
+
+    #[test]
+    fn ordinary_done_summary_derives_v7_product_data_only_at_the_projection_boundary() {
+        let summary = TerminalSummary {
+            terminal: TerminalAuthority::Runtime(Outcome::Done),
+            assistant_text: "ordinary reply".into(),
+            v7_assistant_text: Some("tool preamble; ordinary reply".into()),
+            run_id: "ordinary-run".into(),
+            cost: iteron_obs::CostState::default(),
+            turns: 1,
+            kernel_tax: iteron_obs::KernelTax::default(),
+            error: None,
+            memo_hits: 0,
+            memo_misses: 0,
+        };
+
+        assert_eq!(summary.current_result()["outcome"], "done");
+        assert_eq!(
+            summary.v7_result().unwrap()["product_result_candidate"]["assistant_text_utf8"],
+            "tool preamble; ordinary reply"
+        );
+    }
+
+    #[test]
+    fn ordinary_verify_attempt_exhaustion_has_a_closed_v7_terminal() {
+        let summary = TerminalSummary {
+            terminal: TerminalAuthority::Runtime(Outcome::BudgetExhausted("verify_attempts")),
+            assistant_text: String::new(),
+            v7_assistant_text: None,
+            run_id: "ordinary-verify-run".into(),
+            cost: iteron_obs::CostState::default(),
+            turns: 1,
+            kernel_tax: iteron_obs::KernelTax::default(),
+            error: None,
+            memo_hits: 0,
+            memo_misses: 0,
+        };
+
+        let value = summary.v7_result().unwrap();
+        assert_eq!(value["outcome"], "stuck");
+        assert!(value.get("budget_limit").is_none());
     }
 
     #[tokio::test]
@@ -5201,6 +5470,73 @@ mod tests {
             Ok(iteron_provider::TurnResult {
                 blocks: vec![iteron_protocol::Block::Text {
                     text: "side reply".into(),
+                }],
+                stop_reason: iteron_protocol::StopReason::EndTurn,
+                usage: iteron_provider::UsageReport::complete(iteron_protocol::Usage::default()),
+            })
+        }
+    }
+
+    #[derive(Default)]
+    struct BlockingSteerProvider {
+        calls: std::sync::atomic::AtomicUsize,
+        started: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+    }
+
+    #[async_trait::async_trait]
+    impl iteron_provider::Provider for BlockingSteerProvider {
+        async fn turn(
+            &self,
+            _request: &iteron_provider::TurnRequest,
+            _on_item: &mut (dyn FnMut(iteron_provider::StreamItem) + Send),
+        ) -> Result<iteron_provider::TurnResult, iteron_provider::ProviderError> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                self.started.notify_one();
+                self.release.notified().await;
+            }
+            Ok(iteron_provider::TurnResult {
+                blocks: vec![iteron_protocol::Block::Text {
+                    text: "done".into(),
+                }],
+                stop_reason: iteron_protocol::StopReason::EndTurn,
+                usage: iteron_provider::UsageReport::complete(iteron_protocol::Usage::default()),
+            })
+        }
+    }
+
+    #[derive(Default)]
+    struct ToolThenPauseProvider {
+        calls: std::sync::atomic::AtomicUsize,
+        first_started: tokio::sync::Notify,
+        first_release: tokio::sync::Notify,
+    }
+
+    #[async_trait::async_trait]
+    impl iteron_provider::Provider for ToolThenPauseProvider {
+        async fn turn(
+            &self,
+            _request: &iteron_provider::TurnRequest,
+            on_item: &mut (dyn FnMut(iteron_provider::StreamItem) + Send),
+        ) -> Result<iteron_provider::TurnResult, iteron_provider::ProviderError> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                self.first_started.notify_one();
+                self.first_release.notified().await;
+                let call = iteron_protocol::ToolUse {
+                    id: "pause-boundary-tool".into(),
+                    name: "missing_fixture_tool".into(),
+                    input: serde_json::json!({}),
+                };
+                on_item(iteron_provider::StreamItem::ToolUseComplete(call.clone()));
+                return Ok(iteron_provider::TurnResult {
+                    blocks: vec![iteron_protocol::Block::ToolUse(call)],
+                    stop_reason: iteron_protocol::StopReason::ToolUse,
+                    usage: iteron_provider::UsageReport::complete(iteron_protocol::Usage::default()),
+                });
+            }
+            Ok(iteron_provider::TurnResult {
+                blocks: vec![iteron_protocol::Block::Text {
+                    text: "must not dispatch".into(),
                 }],
                 stop_reason: iteron_protocol::StopReason::EndTurn,
                 usage: iteron_provider::UsageReport::complete(iteron_protocol::Usage::default()),
@@ -5542,6 +5878,18 @@ mod tests {
         directory
     }
 
+    fn enable_plantcore_fixture(agent: &mut Agent, gate: Arc<crate::runtime::DispatchGate>) {
+        let document: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../contracts/plantcore/examples/app-server-v4-bootstrap.json"
+        ))
+        .unwrap();
+        let payload = serde_json::from_value(document["control"]["payload"].clone()).unwrap();
+        agent.install_plantcore_dispatch_gate(gate.clone());
+        agent.enable_plantcore_runtime(&payload).unwrap();
+        agent.set_resume(Vec::new()).unwrap();
+        gate.admit().unwrap();
+    }
+
     #[test]
     fn session_snapshot_exposes_the_exact_ordered_runtime_policy_overlay() {
         let workspace = temp_workspace("runtime-policy-overlay");
@@ -5725,6 +6073,16 @@ mod tests {
         assert!(is_immediate_control(&Control::Mcp(McpControl::Cancel {
             server: "docs".into(),
         })));
+        assert!(is_plantcore_admitted_control(&Control::OperatorStatus));
+        assert!(!is_plantcore_admitted_control(&Control::Compact {
+            focus: None,
+        }));
+        assert!(!is_plantcore_admitted_control(&Control::Job(
+            JobControl::Inventory,
+        )));
+        assert!(!is_plantcore_admitted_control(&Control::Mcp(
+            McpControl::Status,
+        )));
 
         let (settled_tx, _settled_rx) = tokio::sync::mpsc::channel(16);
         let owner = crate::workflow::WorkflowSupervisor::new(settled_tx);
@@ -5780,6 +6138,8 @@ mod tests {
             initial_state: _,
             interrupt: _,
             drain: _,
+            dispatch_gate: _,
+            machine_schema_version: _,
         } = attach(agent, true, true).unwrap();
         let AppServerHandle {
             client,
@@ -5836,6 +6196,456 @@ mod tests {
                 .value,
             serde_json::json!(42)
         );
+
+        drop(control);
+        drop(client);
+        drop(events);
+        tokio::time::timeout(std::time::Duration::from_secs(10), task)
+            .await
+            .expect("the server stops after its clients close")
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&workspace);
+    }
+
+    #[tokio::test]
+    async fn noninteractive_app_server_delivers_active_steer_to_the_runtime() {
+        let workspace = temp_workspace("active-steer");
+        let rollout = iteron_record::Rollout::open(
+            &workspace.join(".iteron/runs"),
+            &iteron_protocol::RunId("active-steer".into()),
+            iteron_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let provider = Arc::new(BlockingSteerProvider::default());
+        let mut agent = Agent::new(
+            provider.clone(),
+            iteron_tools::Registry::coding_agent(&workspace).unwrap(),
+            rollout,
+            "m".into(),
+            "system".into(),
+            iteron_protocol::Budget {
+                max_turns: 4,
+                max_usd: None,
+                max_tokens: None,
+                max_wall_secs: 30,
+                max_consecutive_tool_errors: 3,
+            },
+        );
+        agent.workspace = workspace.clone();
+        pin_test_tunables(&mut agent, false, "provider-a", "m");
+        agent
+            .record_genesis(workspace.display().to_string(), 1, String::new(), None)
+            .unwrap();
+        agent
+            .record_model_selection(
+                "provider-a".into(),
+                "m".into(),
+                String::new(),
+                String::new(),
+            )
+            .unwrap();
+
+        let Attached {
+            handle,
+            task,
+            facts: _,
+            initial_state: _,
+            interrupt: _,
+            drain: _,
+            dispatch_gate: _,
+            machine_schema_version: _,
+        } = attach(agent, false, true).unwrap();
+        let AppServerHandle {
+            client,
+            mut events,
+            lifecycle: _,
+            lifecycle_otel: _,
+            hook_health: _,
+            activity: _,
+            mcp_input: _,
+            control,
+        } = handle;
+        client
+            .submit(Op::UserInput {
+                text: "wait for steer".into(),
+            })
+            .unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            provider.started.notified(),
+        )
+        .await
+        .expect("the first provider turn starts");
+        let steer_id = client
+            .submit_identified(Op::Steer {
+                text: "apply once".into(),
+            })
+            .unwrap();
+        provider.release.notify_one();
+
+        let mut steer_events = 0;
+        let mut applied = 0;
+        loop {
+            let event = tokio::time::timeout(std::time::Duration::from_secs(10), events.recv())
+                .await
+                .expect("the run settles")
+                .expect("the event channel stays open")
+                .into_current()
+                .unwrap();
+            match event {
+                ServerEvent::Ui(UiEvent::SteerApplied { count }) => steer_events += count,
+                ServerEvent::Submission {
+                    id,
+                    state: SubmissionLifecycleState::Applied,
+                    ..
+                } if id == steer_id => applied += 1,
+                ServerEvent::RunEnded { .. } => break,
+                _ => {}
+            }
+        }
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(steer_events, 1);
+        assert_eq!(applied, 1);
+
+        drop(control);
+        drop(client);
+        drop(events);
+        tokio::time::timeout(std::time::Duration::from_secs(10), task)
+            .await
+            .expect("the server stops after its clients close")
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&workspace);
+    }
+
+    #[tokio::test]
+    async fn rejected_drain_does_not_raise_the_runtime_drain_signal() {
+        let workspace = temp_workspace("rejected-drain-signal");
+        let rollout = iteron_record::Rollout::open(
+            &workspace.join(".iteron/runs"),
+            &iteron_protocol::RunId("rejected-drain-signal".into()),
+            iteron_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let provider = Arc::new(BlockingSteerProvider::default());
+        let mut agent = Agent::new(
+            provider.clone(),
+            iteron_tools::Registry::coding_agent(&workspace).unwrap(),
+            rollout,
+            "m".into(),
+            "system".into(),
+            iteron_protocol::Budget::default(),
+        );
+        agent.workspace = workspace.clone();
+        pin_test_tunables(&mut agent, false, "provider-a", "m");
+        agent
+            .record_genesis(workspace.display().to_string(), 1, String::new(), None)
+            .unwrap();
+        agent
+            .record_model_selection(
+                "provider-a".into(),
+                "m".into(),
+                String::new(),
+                String::new(),
+            )
+            .unwrap();
+
+        let Attached {
+            handle,
+            task,
+            drain,
+            ..
+        } = attach(agent, false, true).unwrap();
+        let AppServerHandle {
+            client,
+            mut events,
+            control,
+            ..
+        } = handle;
+        client
+            .submit(Op::UserInput {
+                text: "hold the Provider".into(),
+            })
+            .unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            provider.started.notified(),
+        )
+        .await
+        .expect("the Provider request starts");
+
+        for index in 0..KERNEL_INBOUND_CAPACITY {
+            let id = client
+                .submit_identified(Op::Steer {
+                    text: format!("queued-{index}"),
+                })
+                .unwrap();
+            loop {
+                let event = tokio::time::timeout(std::time::Duration::from_secs(10), events.recv())
+                    .await
+                    .expect("the App Server forwards the submission")
+                    .expect("the event channel stays open")
+                    .into_current()
+                    .unwrap();
+                match event {
+                    ServerEvent::Submission {
+                        id: observed,
+                        state: SubmissionLifecycleState::Admitted,
+                        ..
+                    } if observed == id => break,
+                    ServerEvent::Submission {
+                        id: observed,
+                        state: SubmissionLifecycleState::Rejected,
+                        reason_code,
+                    } if observed == id => {
+                        panic!(
+                            "submission {index} was rejected before the kernel queue filled: {reason_code:?}"
+                        )
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        let drain_id = client.submit_identified(Op::Drain).unwrap();
+        loop {
+            let event = tokio::time::timeout(std::time::Duration::from_secs(10), events.recv())
+                .await
+                .expect("the saturated kernel queue rejects drain")
+                .expect("the event channel stays open")
+                .into_current()
+                .unwrap();
+            if let ServerEvent::Submission {
+                id,
+                state: SubmissionLifecycleState::Rejected,
+                reason_code,
+            } = event
+                && id == drain_id
+            {
+                assert_eq!(reason_code, Some("runtime_queue_saturated"));
+                break;
+            }
+        }
+        assert!(!drain.load(Ordering::SeqCst));
+
+        task.abort();
+        let _ = task.await;
+        drop(control);
+        drop(client);
+        drop(events);
+        let _ = std::fs::remove_dir_all(&workspace);
+    }
+
+    #[tokio::test]
+    async fn plantcore_done_publishes_run_ended_from_plain_workspace() {
+        let workspace = temp_workspace("plantcore-done-plain-workspace");
+        let mut agent = agent_in(&workspace);
+        agent
+            .record_genesis(workspace.display().to_string(), 1, String::new(), None)
+            .unwrap();
+        agent
+            .record_model_selection(
+                "provider-a".into(),
+                "m".into(),
+                String::new(),
+                String::new(),
+            )
+            .unwrap();
+        let gate = crate::runtime::DispatchGate::new();
+        enable_plantcore_fixture(&mut agent, gate);
+        let Attached { handle, task, .. } = attach(agent, false, true).unwrap();
+        let AppServerHandle {
+            client,
+            mut events,
+            control,
+            ..
+        } = handle;
+        client
+            .submit(Op::UserInput {
+                text: "complete this Run".into(),
+            })
+            .unwrap();
+        let summary = loop {
+            let event = tokio::time::timeout(std::time::Duration::from_secs(10), events.recv())
+                .await
+                .expect("the completed Run publishes its terminal")
+                .expect("the event channel stays open")
+                .into_current()
+                .unwrap();
+            if let ServerEvent::RunEnded { summary, .. } = event {
+                break summary;
+            }
+        };
+        let result = summary.v7_result().unwrap();
+        assert_eq!(result["outcome"], "done", "{summary:?}");
+        assert_eq!(
+            result["product_result_candidate"]["status"], "completed",
+            "{result}"
+        );
+        assert_eq!(
+            result["product_result_candidate"]["assistant_text_utf8"], "side reply",
+            "{result}"
+        );
+
+        drop(control);
+        drop(client);
+        drop(events);
+        tokio::time::timeout(std::time::Duration::from_secs(10), task)
+            .await
+            .expect("the server stops after its clients close")
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&workspace);
+    }
+
+    #[tokio::test]
+    async fn plantcore_harness_error_stops_the_resident_session_after_run_ended() {
+        let workspace = temp_workspace("plantcore-harness-error-exit");
+        let mut agent = agent_in(&workspace);
+        agent
+            .record_genesis(workspace.display().to_string(), 1, String::new(), None)
+            .unwrap();
+        agent
+            .record_model_selection(
+                "provider-a".into(),
+                "m".into(),
+                String::new(),
+                String::new(),
+            )
+            .unwrap();
+        let gate = crate::runtime::DispatchGate::new();
+        enable_plantcore_fixture(&mut agent, gate);
+        agent.arm_recording_harness_error();
+        let Attached { handle, task, .. } = attach(agent, false, true).unwrap();
+        let AppServerHandle {
+            client,
+            mut events,
+            control,
+            ..
+        } = handle;
+        client
+            .submit(Op::UserInput {
+                text: "reach the deterministic harness fault".into(),
+            })
+            .unwrap();
+
+        let summary = loop {
+            let event = tokio::time::timeout(std::time::Duration::from_secs(10), events.recv())
+                .await
+                .expect("the failed Run publishes its terminal")
+                .expect("the event channel stays open through RunEnded")
+                .into_current()
+                .unwrap();
+            if let ServerEvent::RunEnded { summary, .. } = event {
+                break summary;
+            }
+        };
+        assert_eq!(summary.v7_result().unwrap()["outcome"], "harness_error");
+        tokio::time::timeout(std::time::Duration::from_secs(10), task)
+            .await
+            .expect("the PlantCore session stops after harness_error")
+            .unwrap();
+
+        drop(control);
+        drop(client);
+        drop(events);
+        let _ = std::fs::remove_dir_all(&workspace);
+    }
+
+    #[tokio::test]
+    async fn paused_next_provider_dispatch_drained_by_worker_publishes_run_ended() {
+        let workspace = temp_workspace("paused-next-dispatch-drain");
+        let rollout = iteron_record::Rollout::open(
+            &workspace.join(".iteron/runs"),
+            &iteron_protocol::RunId("paused-next-dispatch-drain".into()),
+            iteron_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let provider = Arc::new(ToolThenPauseProvider::default());
+        let mut agent = Agent::new(
+            provider.clone(),
+            iteron_tools::Registry::coding_agent(&workspace).unwrap(),
+            rollout,
+            "m".into(),
+            "system".into(),
+            iteron_protocol::Budget {
+                max_turns: 4,
+                max_usd: None,
+                max_tokens: None,
+                max_wall_secs: 30,
+                max_consecutive_tool_errors: 3,
+            },
+        );
+        agent.workspace = workspace.clone();
+        pin_test_tunables(&mut agent, false, "provider-a", "m");
+        agent
+            .record_genesis(workspace.display().to_string(), 1, String::new(), None)
+            .unwrap();
+        agent
+            .record_model_selection(
+                "provider-a".into(),
+                "m".into(),
+                String::new(),
+                String::new(),
+            )
+            .unwrap();
+        let gate = crate::runtime::DispatchGate::new();
+        enable_plantcore_fixture(&mut agent, gate.clone());
+
+        let Attached {
+            handle,
+            task,
+            facts: _,
+            initial_state: _,
+            interrupt: _,
+            drain: _,
+            dispatch_gate: _,
+            machine_schema_version: _,
+        } = attach(agent, false, true).unwrap();
+        let AppServerHandle {
+            client,
+            mut events,
+            lifecycle: _,
+            lifecycle_otel: _,
+            hook_health: _,
+            activity: _,
+            mcp_input: _,
+            control,
+        } = handle;
+        client
+            .submit(Op::UserInput {
+                text: "pause before the next Provider dispatch".into(),
+            })
+            .unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            provider.first_started.notified(),
+        )
+        .await
+        .expect("the first Provider request starts");
+        let pausing_gate = gate.clone();
+        let paused = tokio::spawn(async move { pausing_gate.pause_after_safe_point().await });
+        provider.first_release.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(10), paused)
+            .await
+            .expect("the dispatch gate reaches its safe point")
+            .unwrap()
+            .unwrap();
+        gate.terminalize_if_accepted(|| client.submit_identified(Op::Drain))
+            .unwrap()
+            .unwrap();
+
+        let summary = loop {
+            let event = tokio::time::timeout(std::time::Duration::from_secs(10), events.recv())
+                .await
+                .expect("the drained Run publishes its terminal")
+                .expect("the event channel stays open")
+                .into_current()
+                .unwrap();
+            if let ServerEvent::RunEnded { summary, .. } = event {
+                break summary;
+            }
+        };
+        assert_eq!(summary.v7_result().unwrap()["outcome"], "drained");
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
 
         drop(control);
         drop(client);

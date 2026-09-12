@@ -204,6 +204,27 @@ pub(super) fn source_invariant_disposition(
     let value = value.to_ascii_lowercase();
     let invariant = |kind, rationale| SourceInvariantDisposition { kind, rationale };
 
+    if (identity.contains("crates/cli/src/app_server/plantcore.rs")
+        || identity.contains("cli.app.server.plantcore"))
+        && identity.contains("plantcoreadmission::disabled")
+        && identity.contains("field::state")
+    {
+        return Some(invariant(
+            InvariantKind::Authority,
+            "the ordinary-client constructor fixes PlantCore admission off and cannot grant bootstrap authority",
+        ));
+    }
+    if (identity.contains("crates/cli/src/machine_contract.rs")
+        || identity.contains("cli.machine.contract"))
+        && identity.contains("machinecontract::current")
+        && (identity.contains("logical_v7_event_max_bytes")
+            || identity.contains("logical.v7.event.max.bytes"))
+    {
+        return Some(invariant(
+            InvariantKind::WireCompatibility,
+            "the advertised logical v7 event ceiling is fixed by the digest-pinned output contract",
+        ));
+    }
     if identity.contains("crates/cli/src/providers.rs")
         && identity.contains("eager_discovery_budget")
     {

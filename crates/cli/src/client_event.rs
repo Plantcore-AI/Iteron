@@ -125,6 +125,12 @@ pub enum ClientEvent {
         compaction_trigger_tokens: usize,
         effort: ClientEffortApplication,
     },
+    PlantcoreUsage {
+        event: serde_json::Value,
+    },
+    PlantcoreRunAdmitted {
+        event: serde_json::Value,
+    },
     Workflow {
         event: ClientWorkflowEvent,
     },
@@ -583,6 +589,16 @@ impl From<&UiEvent> for ClientEvent {
                 reserved_output_tokens: *reserved_output_tokens,
                 compaction_trigger_tokens: *compaction_trigger_tokens,
                 effort: effort.into(),
+            },
+            UiEvent::PlantcoreUsage(usage) => Self::PlantcoreUsage {
+                event: crate::output::v7_usage(usage)
+                    .expect("runtime admitted an invalid typed PlantCore usage fact"),
+            },
+            UiEvent::PlantcoreRunAdmitted {
+                profile_digest_sha256,
+            } => Self::PlantcoreRunAdmitted {
+                event: crate::output::v7_plantcore_run_admitted(*profile_digest_sha256)
+                    .expect("runtime admitted an invalid PlantCore profile digest fact"),
             },
             UiEvent::Workflow(event) => Self::Workflow {
                 event: event.into(),

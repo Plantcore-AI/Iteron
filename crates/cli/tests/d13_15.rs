@@ -109,6 +109,8 @@ fn run_budget(scratch: &Scratch, format: &str) -> Output {
         .arg("return the deterministic fixture response")
         .arg("--output-format")
         .arg(format)
+        .arg("--output-schema-version")
+        .arg("6")
         .arg("--repo")
         .arg(scratch.repo())
         .arg("--runs-dir")

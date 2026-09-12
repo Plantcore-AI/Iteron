@@ -61,21 +61,49 @@ $ErrorActionPreference = 'Stop'
 $IteronReleaseRoot = 'https://github.com/Plantcore-AI/Iteron/releases'
 $IteronTarget = 'x86_64-pc-windows-msvc'
 $IteronBinaryName = 'iteron.exe'
+$IteronWorkspaceHookName = 'iteron-workspace-hook.exe'
 $IteronMaxManifestBytes = 1048576
 $IteronMaxArchiveBytes = 268435456
 $IteronMaxUnpackedBytes = 134217728
-$IteronArchiveMemberCount = 8
+$IteronArchiveMemberCount = 35
 $IteronTagPattern = '^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$'
 $IteronArchiveNamePattern =
     '^iteron-(v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))-x86_64-pc-windows-msvc\.zip$'
 $IteronArchiveMemberNames = @(
     'iteron.exe',
+    'iteron-workspace-hook.exe',
     'LICENSE',
     'README.md',
     'THIRD_PARTY_LICENSES.html',
     'THIRD_PARTY_NOTICES.txt',
     'SBOM.spdx.json',
-    'BUILD-INFO.json'
+    'BUILD-INFO.json',
+    'contracts/plantcore/README.md',
+    'contracts/plantcore/app-server-v4.schema.json',
+    'contracts/plantcore/check-app-server-v4.py',
+    'contracts/plantcore/check-workspace-hook.py',
+    'contracts/plantcore/check_machine_contract.py',
+    'contracts/plantcore/examples/app-server-v4-bootstrap-reply.json',
+    'contracts/plantcore/examples/app-server-v4-bootstrap.json',
+    'contracts/plantcore/examples/app-server-v4-command-reply.json',
+    'contracts/plantcore/examples/app-server-v4-command.json',
+    'contracts/plantcore/examples/app-server-v4-invalid-bootstrap.json',
+    'contracts/plantcore/examples/app-server-v4-invalid-session.json',
+    'contracts/plantcore/examples/app-server-v4-listening.json',
+    'contracts/plantcore/examples/app-server-v4-pause-command-reply.json',
+    'contracts/plantcore/examples/app-server-v4-pause-command.json',
+    'contracts/plantcore/examples/app-server-v4-resume-command-reply.json',
+    'contracts/plantcore/examples/app-server-v4-resume-command.json',
+    'contracts/plantcore/examples/app-server-v4-resume-terminal-command-reply.json',
+    'contracts/plantcore/examples/app-server-v4-resume-terminal-command.json',
+    'contracts/plantcore/examples/machine-contract-v1.json',
+    'contracts/plantcore/examples/workspace-hook-allow.json',
+    'contracts/plantcore/examples/workspace-hook-deny.json',
+    'contracts/plantcore/iteron-output-v7.schema.json',
+    'contracts/plantcore/machine-contract.schema.json',
+    'contracts/plantcore/test-vectors/portable-canonical-json-v1.json',
+    'contracts/plantcore/workspace-hook-v1.schema.json',
+    'contracts/plantcore/workspace-tools-v1.json'
 )
 
 # Fail the whole installation with one consistent, prefixed message.
@@ -562,6 +590,64 @@ function Install-IteronBinary {
     return $target
 }
 
+# Install the fixed workspace Hook before replacing the main command. This keeps a newly
+# installed Iteron from ever observing an absent sibling if the main replacement fails.
+function Install-IteronWorkspaceHook {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SourcePath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$BinDirectory
+    )
+
+    if (-not (Test-Path -LiteralPath $BinDirectory -PathType Container)) {
+        $null = New-Item -ItemType Directory -Path $BinDirectory -Force
+    }
+    $BinDirectory = (Get-Item -LiteralPath $BinDirectory).FullName
+    $target = Join-Path -Path $BinDirectory -ChildPath $IteronWorkspaceHookName
+    if (Test-Path -LiteralPath $target -PathType Container) {
+        Write-IteronFailure "installation destination is a directory: $target"
+    }
+    Get-ChildItem -LiteralPath $BinDirectory -Filter '.iteron-workspace-hook.exe.*' -File -Force -ErrorAction SilentlyContinue |
+        ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
+
+    $staged = Join-Path -Path $BinDirectory -ChildPath ('.iteron-workspace-hook.exe.new.' + [System.IO.Path]::GetRandomFileName())
+    $retired = $null
+    try {
+        Copy-Item -LiteralPath $SourcePath -Destination $staged -Force
+        if (-not (Test-Path -LiteralPath $staged -PathType Leaf)) {
+            Write-IteronFailure 'staged workspace Hook is not a regular file'
+        }
+        if (Test-Path -LiteralPath $target -PathType Leaf) {
+            try {
+                [System.IO.File]::Replace($staged, $target, $null)
+            } catch {
+                $retired = Join-Path -Path $BinDirectory -ChildPath ('.iteron-workspace-hook.exe.old.' + [System.IO.Path]::GetRandomFileName())
+                try {
+                    [System.IO.File]::Move($target, $retired)
+                } catch {
+                    Write-IteronFailure "could not replace $target. Close any running iteron-workspace-hook.exe and try again."
+                }
+                [System.IO.File]::Move($staged, $target)
+            }
+        } else {
+            [System.IO.File]::Move($staged, $target)
+        }
+    } finally {
+        if (Test-Path -LiteralPath $staged -PathType Leaf) {
+            Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue
+        }
+    }
+    if ($null -ne $retired -and (Test-Path -LiteralPath $retired -PathType Leaf)) {
+        Remove-Item -LiteralPath $retired -Force -ErrorAction SilentlyContinue
+    }
+    if (-not (Test-Path -LiteralPath $target -PathType Leaf)) {
+        Write-IteronFailure 'installation did not produce a regular workspace Hook file'
+    }
+    return $target
+}
+
 # Add the destination to the user PATH once, without corrupting the existing
 # value. Windows stores the default user PATH as REG_EXPAND_SZ containing
 # %USERPROFILE% references, and [Environment]::SetEnvironmentVariable writes a
@@ -723,8 +809,13 @@ function Invoke-IteronInstall {
     $null = New-Item -ItemType Directory -Path $extractPath
     $binary = Expand-IteronArchive -ArchivePath $archivePath -RootName $archiveRoot -DestinationPath $extractPath
     $null = Assert-IteronReportedVersion -Path $binary -VersionNumber $versionNumber -Stage 'downloaded'
+    $workspaceHook = Join-Path -Path (Split-Path -Path $binary -Parent) -ChildPath $IteronWorkspaceHookName
+    if (-not (Test-Path -LiteralPath $workspaceHook -PathType Leaf)) {
+        Write-IteronFailure 'archive iteron-workspace-hook.exe entry is not a regular file'
+    }
 
     $binDirectory = Resolve-IteronBinDirectory -Requested $BinDir
+    $null = Install-IteronWorkspaceHook -SourcePath $workspaceHook -BinDirectory $binDirectory
     $installed = Install-IteronBinary -SourcePath $binary -BinDirectory $binDirectory -VersionNumber $versionNumber
     $reported = Assert-IteronReportedVersion -Path $installed -VersionNumber $versionNumber -Stage 'installed'
 

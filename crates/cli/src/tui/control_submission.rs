@@ -231,6 +231,7 @@ pub(super) fn side_outcome_label(outcome: &iteron_protocol::Outcome) -> &'static
         Outcome::Interrupted => "interrupted before answering",
         Outcome::Stuck => "stuck before answering",
         Outcome::BudgetExhausted(_) => "the side conversation's own budget is exhausted",
+        Outcome::UsageUnavailable => "the side conversation's usage is unavailable",
         Outcome::HarnessError => "the side conversation failed",
     }
 }

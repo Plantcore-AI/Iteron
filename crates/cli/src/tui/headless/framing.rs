@@ -2,6 +2,7 @@ use anyhow::{Context, Result, bail};
 use base64::Engine as _;
 use serde::Serialize;
 use serde_json::Value;
+use sha2::Digest as _;
 use std::collections::VecDeque;
 use std::io;
 use std::sync::Arc;
@@ -17,6 +18,7 @@ const MAX_ASSEMBLED_PROVIDER_OUTPUT_BYTES: usize = 32 * 1024 * 1024;
 const MAX_LOGICAL_SERVER_FRAME_BYTES: usize =
     (MAX_ASSEMBLED_PROVIDER_OUTPUT_BYTES * 6) + MAX_SERVER_FRAME_BYTES;
 const FRAME_CHUNK_SOURCE_BYTES: usize = 512 * 1024;
+const RECORDING_CHUNK_EVENT_BYTES: usize = MAX_SERVER_FRAME_BYTES + 1;
 const FRAME_CHUNK_CHANNEL_CAPACITY: usize = 2;
 const FRAME_CHUNK_OVERHEAD_CHARGE: usize = 1024;
 pub(super) const REPLAY_CAPACITY: usize = 4096;
@@ -89,6 +91,7 @@ pub(super) fn max_pinned_replay_bytes() -> usize {
 pub(super) enum ServerFrame {
     Hello {
         protocol_version: u32,
+        session_id: String,
         cursor: u64,
         replay_source: &'static str,
     },
@@ -498,6 +501,213 @@ pub(super) async fn send_encoded_frame<W: AsyncWrite + Unpin>(
     .await
 }
 
+/// Emit one fixed malformed sequence for the release recording Worker parser.
+///
+/// The caller owns the one-shot admission gate. This seam accepts no bytes, paths, sizes, or
+/// ordinals from the environment or wire.
+pub(super) async fn send_recording_fault<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    outbound_budget: &Arc<Semaphore>,
+    frame_preparers: &Arc<Semaphore>,
+    fragment_encoders: &Arc<Semaphore>,
+    fault: crate::app_server::RecordingAppServerFault,
+    next_live_seq: u64,
+) -> Result<()> {
+    use crate::app_server::RecordingAppServerFault;
+
+    if matches!(
+        fault,
+        RecordingAppServerFault::RawV7AtLimit | RecordingAppServerFault::RawV7OverLimit
+    ) {
+        let raw_bytes = if fault == RecordingAppServerFault::RawV7AtLimit {
+            65_536
+        } else {
+            65_537
+        };
+        send_frame(
+            writer,
+            outbound_budget,
+            frame_preparers,
+            fragment_encoders,
+            raw_v7_recording_frame(next_live_seq, raw_bytes)?,
+        )
+        .await?;
+        if fault == RecordingAppServerFault::RawV7AtLimit {
+            let empty_sha256 = format!("sha256:{:x}", sha2::Sha256::digest(b""));
+            send_frame(
+                writer,
+                outbound_budget,
+                frame_preparers,
+                fragment_encoders,
+                ServerFrame::Event {
+                    protocol_version: iteron_protocol::PROTOCOL_VERSION,
+                    seq: next_live_seq
+                        .checked_add(1)
+                        .context("headless recording fault sequence exhausted")?,
+                    event: serde_json::json!({
+                        "schema_version": 7,
+                        "type": "assistant_delta",
+                        "message_id": "assistant-recording-fault",
+                        "ordinal": 0,
+                        "text_utf8": "",
+                        "text_sha256": empty_sha256.clone(),
+                    }),
+                },
+            )
+            .await?;
+            send_frame(
+                writer,
+                outbound_budget,
+                frame_preparers,
+                fragment_encoders,
+                ServerFrame::Event {
+                    protocol_version: iteron_protocol::PROTOCOL_VERSION,
+                    seq: next_live_seq
+                        .checked_add(2)
+                        .context("headless recording fault sequence exhausted")?,
+                    event: serde_json::json!({
+                        "schema_version": 7,
+                        "type": "assistant_completed",
+                        "message_id": "assistant-recording-fault",
+                        "final_ordinal": 0,
+                        "assistant_text_sha256": empty_sha256,
+                    }),
+                },
+            )
+            .await?;
+            send_frame(
+                writer,
+                outbound_budget,
+                frame_preparers,
+                fragment_encoders,
+                recording_success_result(
+                    next_live_seq
+                        .checked_add(3)
+                        .context("headless recording fault sequence exhausted")?,
+                ),
+            )
+            .await?;
+        }
+        return Ok(());
+    }
+
+    let logical = serde_json::to_vec(&ServerFrame::Rollout {
+        protocol_version: iteron_protocol::PROTOCOL_VERSION,
+        rollout_seq: 1,
+        event: recording_chunk_event()?,
+    })
+    .context("encode fixed recording rollout fault frame")?;
+    if logical.len() <= MAX_SERVER_FRAME_BYTES {
+        bail!("fixed recording rollout fault frame did not require fragmentation");
+    }
+    let chunk_count = u32::try_from(logical.len().div_ceil(FRAME_CHUNK_SOURCE_BYTES))
+        .context("fixed recording rollout fault chunk count")?;
+    let encode_chunk = |index: u32, data: &[u8]| {
+        encode_physical(&ServerFrame::FrameChunk {
+            protocol_version: iteron_protocol::PROTOCOL_VERSION,
+            stream: "rollout",
+            logical_type: "rollout",
+            seq: None,
+            rollout_seq: Some(1),
+            logical_bytes: logical.len(),
+            chunk_index: index,
+            chunk_count,
+            encoding: "base64_json_utf8",
+            data: base64::engine::general_purpose::STANDARD.encode(data),
+        })
+    };
+    let first = &logical[..FRAME_CHUNK_SOURCE_BYTES];
+    let first_frame = encode_chunk(0, first)?;
+    send_physical_bytes(writer, outbound_budget, &first_frame).await?;
+    match fault {
+        RecordingAppServerFault::FrameChunkMissing => {
+            send_frame(
+                writer,
+                outbound_budget,
+                frame_preparers,
+                fragment_encoders,
+                ServerFrame::Rollout {
+                    protocol_version: iteron_protocol::PROTOCOL_VERSION,
+                    rollout_seq: 2,
+                    event: serde_json::json!({"recording_probe": "missing_chunk_terminal"}),
+                },
+            )
+            .await
+        }
+        RecordingAppServerFault::FrameChunkOutOfOrder => {
+            let third = &logical[FRAME_CHUNK_SOURCE_BYTES * 2..];
+            let frame = encode_chunk(2, third)?;
+            send_physical_bytes(writer, outbound_budget, &frame).await
+        }
+        RecordingAppServerFault::FrameChunkConflict => {
+            let mut conflicting = first.to_vec();
+            conflicting[0] ^= 1;
+            let frame = encode_chunk(0, &conflicting)?;
+            send_physical_bytes(writer, outbound_budget, &frame).await
+        }
+        RecordingAppServerFault::RawV7AtLimit | RecordingAppServerFault::RawV7OverLimit => {
+            unreachable!("handled above")
+        }
+    }
+}
+
+fn recording_chunk_event() -> Result<Value> {
+    let mut event = serde_json::json!({"recording_probe": ""});
+    let base = serde_json::to_vec(&event).context("measure fixed recording chunk event")?;
+    let filler_bytes = RECORDING_CHUNK_EVENT_BYTES
+        .checked_sub(base.len())
+        .context("fixed recording chunk event envelope exceeds its target")?;
+    event["recording_probe"] = Value::String("x".repeat(filler_bytes));
+    if serde_json::to_vec(&event)?.len() != RECORDING_CHUNK_EVENT_BYTES {
+        bail!("fixed recording chunk event does not have the declared size");
+    }
+    Ok(event)
+}
+
+fn raw_v7_recording_frame(seq: u64, raw_bytes: usize) -> Result<ServerFrame> {
+    let mut event = serde_json::json!({
+        "schema_version": 7,
+        "type": "recording_frame_boundary",
+        "padding_utf8": "",
+    });
+    let base = serde_json::to_vec(&event).context("measure fixed raw-v7 recording fault")?;
+    let text_bytes = raw_bytes
+        .checked_sub(base.len())
+        .context("fixed raw-v7 recording fault envelope exceeds its target")?;
+    event["padding_utf8"] = serde_json::Value::String("x".repeat(text_bytes));
+    if serde_json::to_vec(&event)?.len() != raw_bytes {
+        bail!("fixed raw-v7 recording fault does not have the declared size");
+    }
+    match (raw_bytes, crate::output::canonical_v7_event_bytes(&event)) {
+        (65_536, Ok(bytes)) if bytes.len() == raw_bytes => {}
+        (65_537, Err(_)) => {}
+        _ => bail!("fixed raw-v7 recording fault disagrees with the v7 canonicalizer"),
+    }
+    Ok(ServerFrame::Event {
+        protocol_version: iteron_protocol::PROTOCOL_VERSION,
+        seq,
+        event,
+    })
+}
+
+fn recording_success_result(seq: u64) -> ServerFrame {
+    ServerFrame::Result {
+        protocol_version: iteron_protocol::PROTOCOL_VERSION,
+        seq,
+        result: serde_json::json!({
+            "schema_version": 7,
+            "type": "result",
+            "outcome": "done",
+            "product_result_candidate": {
+                "status": "completed",
+                "assistant_text_utf8": "",
+                "assistant_text_sha256": format!("sha256:{:x}", sha2::Sha256::digest(b"")),
+                "artifacts": [],
+            },
+        }),
+    }
+}
+
 async fn send_payload<W: AsyncWrite + Unpin>(
     writer: &mut W,
     outbound_budget: &Arc<Semaphore>,
@@ -715,6 +925,91 @@ mod tests {
         }
     }
 
+    async fn recording_fault_wire(fault: crate::app_server::RecordingAppServerFault) -> Vec<Value> {
+        let (mut writer, mut reader) = tokio::io::duplex(2 * MAX_SERVER_FRAME_BYTES);
+        let budget = Arc::new(Semaphore::new(MAX_IN_FLIGHT_SERVER_BYTES));
+        let preparers = Arc::new(Semaphore::new(1));
+        let fragments = Arc::new(Semaphore::new(1));
+        send_recording_fault(&mut writer, &budget, &preparers, &fragments, fault, 7)
+            .await
+            .unwrap();
+        drop(writer);
+        let mut wire = Vec::new();
+        reader.read_to_end(&mut wire).await.unwrap();
+        wire.split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_slice(line).unwrap())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn recording_faults_are_closed_fixed_sequences() {
+        use crate::app_server::RecordingAppServerFault;
+
+        for (fault, bytes) in [
+            (RecordingAppServerFault::RawV7AtLimit, 65_536),
+            (RecordingAppServerFault::RawV7OverLimit, 65_537),
+        ] {
+            let raw = recording_fault_wire(fault).await;
+            assert_eq!(raw.len(), if bytes == 65_536 { 4 } else { 1 });
+            assert_eq!(raw[0]["type"], "event");
+            assert_eq!(raw[0]["seq"], 7);
+            assert_eq!(serde_json::to_vec(&raw[0]["event"]).unwrap().len(), bytes);
+            if bytes == 65_536 {
+                let schema: Value = serde_json::from_slice(include_bytes!(
+                    "../../../../../contracts/plantcore/iteron-output-v7.schema.json"
+                ))
+                .unwrap();
+                let validator = jsonschema::options()
+                    .with_draft(jsonschema::Draft::Draft202012)
+                    .build(&schema)
+                    .unwrap();
+                validator.validate(&raw[0]["event"]).unwrap();
+                assert_eq!(raw[1]["event"]["type"], "assistant_delta");
+                assert_eq!(raw[2]["event"]["type"], "assistant_completed");
+                assert_eq!(raw[3]["type"], "result");
+                assert_eq!(raw[3]["seq"], 10);
+                validator.validate(&raw[3]["result"]).unwrap();
+            }
+        }
+
+        let missing = recording_fault_wire(RecordingAppServerFault::FrameChunkMissing).await;
+        assert_eq!(missing.len(), 2);
+        assert_eq!(missing[0]["chunk_index"], 0);
+        assert_eq!(missing[1]["type"], "rollout");
+        let event = recording_chunk_event().unwrap();
+        assert_eq!(
+            serde_json::to_vec(&event).unwrap().len(),
+            RECORDING_CHUNK_EVENT_BYTES
+        );
+        let logical = serde_json::to_vec(&ServerFrame::Rollout {
+            protocol_version: iteron_protocol::PROTOCOL_VERSION,
+            rollout_seq: 1,
+            event,
+        })
+        .unwrap();
+        assert_eq!(
+            missing[0]["logical_bytes"].as_u64().unwrap(),
+            logical.len() as u64
+        );
+        assert!(logical.len() > MAX_SERVER_FRAME_BYTES);
+
+        let out_of_order =
+            recording_fault_wire(RecordingAppServerFault::FrameChunkOutOfOrder).await;
+        assert_eq!(
+            out_of_order
+                .iter()
+                .map(|frame| frame["chunk_index"].as_u64().unwrap())
+                .collect::<Vec<_>>(),
+            [0, 2]
+        );
+
+        let conflict = recording_fault_wire(RecordingAppServerFault::FrameChunkConflict).await;
+        assert_eq!(conflict[0]["chunk_index"], 0);
+        assert_eq!(conflict[1]["chunk_index"], 0);
+        assert_ne!(conflict[0]["data"], conflict[1]["data"]);
+    }
+
     #[test]
     fn oversized_live_frame_is_fragmented_and_ring_entries_are_atomic_and_byte_bounded() {
         let large = EncodedServerFrame::from_live(event(
@@ -803,14 +1098,60 @@ mod tests {
             assert_eq!(frame["chunk_index"], expected_index);
             assert_eq!(frame["encoding"], "base64_json_utf8");
             expected_index += 1;
-            rebuilt.extend(
-                base64::engine::general_purpose::STANDARD
-                    .decode(frame["data"].as_str().unwrap())
-                    .unwrap(),
-            );
+            let source = base64::engine::general_purpose::STANDARD
+                .decode(frame["data"].as_str().unwrap())
+                .unwrap();
+            assert!(source.len() <= FRAME_CHUNK_SOURCE_BYTES);
+            rebuilt.extend(source);
         }
         assert!(expected_index >= 2);
         assert_eq!(rebuilt, expected);
+    }
+
+    #[tokio::test]
+    async fn retained_v7_object_bytes_are_identical_on_live_replay() {
+        let event_value = json!({
+            "schema_version": 7,
+            "type": "tool_result",
+            "payload": {"z": "\u{0000}", "a": [1, 2, 3]},
+        });
+        let canonical = serde_json::to_vec(&event_value).unwrap();
+        assert!(canonical.len() <= 65_536);
+        let encoded = Arc::new(
+            EncodedServerFrame::from_live(ServerFrame::Event {
+                protocol_version: iteron_protocol::PROTOCOL_VERSION,
+                seq: 23,
+                event: event_value,
+            })
+            .unwrap(),
+        );
+        let PreparedPayload::Single(expected_wire) = &encoded.payload else {
+            panic!("a valid v7 event must fit one physical App Server frame");
+        };
+        let expected_wire = expected_wire.clone();
+
+        let mut ring = ReplayRing::with_limits(4, REPLAY_BYTE_CAPACITY);
+        ring.push(encoded);
+        let retention = Arc::new(Semaphore::new(MAX_PINNED_REPLAY_BYTES));
+        let replay = ring.try_lease(23, &retention).unwrap();
+        let outbound = Arc::new(Semaphore::new(MAX_IN_FLIGHT_SERVER_BYTES));
+        let fragment_encoders = Arc::new(Semaphore::new(1));
+        let (mut writer, mut reader) = tokio::io::duplex(MAX_SERVER_FRAME_BYTES);
+        send_encoded_frame(&mut writer, &outbound, &fragment_encoders, replay)
+            .await
+            .unwrap();
+        drop(writer);
+        let mut replay_wire = Vec::new();
+        reader.read_to_end(&mut replay_wire).await.unwrap();
+
+        assert_eq!(replay_wire, expected_wire.as_ref());
+        let marker = b"\"event\":";
+        let start = replay_wire
+            .windows(marker.len())
+            .position(|window| window == marker)
+            .unwrap()
+            + marker.len();
+        assert_eq!(&replay_wire[start..replay_wire.len() - 2], canonical);
     }
 
     #[test]

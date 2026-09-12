@@ -10,7 +10,7 @@ use crate::app_server::{
 };
 use anyhow::{Context, Result};
 use iteron_protocol::{Capability, Effort, PermissionMode, Verdict, task::MAX_TASK_TEXT_BYTES};
-use serde::{Deserialize, Deserializer, de};
+use serde::{Deserialize, Deserializer, Serialize, de};
 use serde_json::{Value, json};
 use std::future::Future;
 use std::pin::Pin;
@@ -18,10 +18,43 @@ use tokio::sync::mpsc;
 
 const MAX_JOB_ID_BYTES: usize = 128;
 const MAX_JOB_INPUT_BYTES: usize = 64 * 1024;
+const MAX_COMMAND_ID_BYTES: usize = 128;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub(super) enum PlantcoreCommand {
+    Steer {
+        #[serde(deserialize_with = "deserialize_command_text")]
+        text: String,
+    },
+    Interrupt,
+    Drain,
+    PauseDispatchAfterSafePoint,
+    ResumeDispatch,
+}
+
+impl PlantcoreCommand {
+    pub(super) fn into_op(self) -> Option<iteron_protocol::Op> {
+        match self {
+            Self::Steer { text } => Some(iteron_protocol::Op::Steer { text }),
+            Self::Interrupt => Some(iteron_protocol::Op::Interrupt),
+            Self::Drain => Some(iteron_protocol::Op::Drain),
+            Self::PauseDispatchAfterSafePoint | Self::ResumeDispatch => None,
+        }
+    }
+}
 
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum WireControl {
+    PlantcoreRunBootstrapV1 {
+        payload: Box<iteron_protocol::PlantcoreRunBootstrapV1>,
+    },
+    PlantcoreCommandV1 {
+        #[serde(deserialize_with = "deserialize_command_id")]
+        command_id: String,
+        command: PlantcoreCommand,
+    },
     SetEffort {
         effort: Effort,
     },
@@ -61,6 +94,29 @@ pub(super) enum WireControl {
         #[serde(deserialize_with = "deserialize_job_id")]
         job_id: String,
     },
+}
+
+fn deserialize_command_id<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = deserialize_bounded_nonempty(deserializer, "command_id", MAX_COMMAND_ID_BYTES)?;
+    if !value
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
+    {
+        return Err(de::Error::custom(
+            "command_id contains characters outside [A-Za-z0-9_.:-]",
+        ));
+    }
+    Ok(value)
+}
+
+fn deserialize_command_text<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_bounded_nonempty(deserializer, "command text", MAX_TASK_TEXT_BYTES)
 }
 
 fn deserialize_optional_focus<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
@@ -134,6 +190,10 @@ where
 impl WireControl {
     pub(super) fn into_app_server(self) -> Control {
         match self {
+            Self::PlantcoreRunBootstrapV1 { payload } => Control::PlantcoreRunBootstrapV1(payload),
+            Self::PlantcoreCommandV1 { .. } => {
+                unreachable!("PlantCore commands are admitted by the transport deduplicator")
+            }
             Self::SetEffort { effort } => Control::SetEffort(effort),
             Self::SetPermissionMode { mode } => Control::SetPermissionMode(mode),
             Self::SetCapabilityRule {
@@ -196,6 +256,16 @@ pub(super) async fn receive(pending: &mut Option<Pending>) -> Result<(u64, Contr
 
 pub(super) fn reply_value(reply: ControlReply) -> Value {
     match reply {
+        ControlReply::PlantcoreBootstrapAccepted(accepted) => json!({
+            "type": "plantcore_run_bootstrap_accepted_v1",
+            "run_id": accepted.run_id,
+            "payload_digest_sha256": accepted.payload_digest_sha256,
+        }),
+        ControlReply::PlantcoreProtocolError(error) => json!({
+            "type": "error",
+            "code": error.code,
+            "message": error.message,
+        }),
         ControlReply::State(snapshot) => json!({
             "type": "state",
             "state": snapshot_value(&snapshot),
@@ -293,6 +363,38 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn reversible_dispatch_gate_commands_are_closed_and_not_sq_operations() {
+        for (wire_type, expected) in [
+            (
+                "pause_dispatch_after_safe_point",
+                PlantcoreCommand::PauseDispatchAfterSafePoint,
+            ),
+            ("resume_dispatch", PlantcoreCommand::ResumeDispatch),
+        ] {
+            let wire: WireControl = serde_json::from_value(json!({
+                "type": "plantcore_command_v1",
+                "command_id": "gate-command-1",
+                "command": {"type": wire_type},
+            }))
+            .unwrap();
+            let WireControl::PlantcoreCommandV1 { command, .. } = wire else {
+                panic!("gate command must retain the PlantCore envelope");
+            };
+            assert_eq!(command, expected);
+            assert!(command.into_op().is_none());
+        }
+
+        assert!(
+            serde_json::from_value::<WireControl>(json!({
+                "type": "plantcore_command_v1",
+                "command_id": "gate-command-1",
+                "command": {"type": "pause_dispatch"},
+            }))
+            .is_err()
+        );
     }
 
     #[test]

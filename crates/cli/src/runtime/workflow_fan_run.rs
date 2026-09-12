@@ -391,6 +391,10 @@ impl Agent {
                         "child_tool_error_limit",
                         Some("investigator reached the consecutive tool-error limit".into()),
                     ),
+                    Some(Ok(Outcome::UsageUnavailable)) => (
+                        "child_usage_unavailable",
+                        Some("investigator lacked authoritative Provider usage".into()),
+                    ),
                     Some(Ok(Outcome::HarnessError)) => (
                         "child_harness_error",
                         Some("investigator stopped on a harness error".into()),

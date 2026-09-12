@@ -1187,7 +1187,7 @@
     },
     {
       "id": "cli.machine-contract",
-      "current_version": 2,
+      "current_version": 3,
       "version_field": "schema_version",
       "selector": { "field": "type", "value": "machine_contract" },
       "fixtures": [
@@ -1200,6 +1200,11 @@
           "path": "governance/schema-compat/fixtures/cli/machine-contract-v2.json",
           "format": "json",
           "schema_version": 2
+        },
+        {
+          "path": "governance/schema-compat/fixtures/cli/machine-contract-v3.json",
+          "format": "json",
+          "schema_version": 3
         }
       ],
       "fields": [
@@ -1207,7 +1212,13 @@
         { "name": "default_cli_stream_version", "introduced_release": 1 },
         { "name": "resident_protocol_version", "introduced_release": 1 },
         { "name": "schema_version", "introduced_release": 1 },
-        { "name": "type", "introduced_release": 1 }
+        { "name": "type", "introduced_release": 1 },
+        { "name": "canonical_json", "introduced_release": 6 },
+        { "name": "contract_artifacts", "introduced_release": 6 },
+        { "name": "contract_version", "introduced_release": 6 },
+        { "name": "limits", "introduced_release": 6 },
+        { "name": "plantcore_capabilities", "introduced_release": 6 },
+        { "name": "release_id", "introduced_release": 6 }
       ],
       "compatibility_shims": []
     },

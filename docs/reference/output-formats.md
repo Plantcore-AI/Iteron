@@ -2,12 +2,10 @@
 
 Machine output is available for one-shot runs and the bounded session operations below.
 
-The current default is schema v6. A client can pin a retained contract with
-`--output-schema-version 4` or `--output-schema-version 5`, together with `--output-format json`
-or `stream-json`. On one-shot task, continue, and resume operations, v4 projects every stdout
-record onto the frozen v4 shape; in particular, the v5 `kernel_tax` terminal field and
-`input_attachment` stream record are not emitted. V5 keeps those fields but projects out v6
-source-separated context components.
+The current default is schema v7. A client can pin a retained contract with
+`--output-schema-version 4`, `--output-schema-version 5`, or `--output-schema-version 6`, together
+with `--output-format json` or `stream-json`. On one-shot task, continue, and resume operations,
+older versions project every stdout record onto their published shape.
 Unsupported selectors fail before a rollout is opened.
 
 `iteron --machine-contract` is a provider-free capability query. Its JSON reports

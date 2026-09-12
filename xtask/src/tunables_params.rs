@@ -1649,6 +1649,39 @@ fn row_for(
         && owner_symbol.contains("Mcp")
         && owner_symbol.contains("BindingId"));
     let derived_object = ty_text.trim() == "Limits";
+    let plantcore_contract_invariant = matches!(
+        (krate, relative, name),
+        ("protocol", "crates/protocol/src/plantcore.rs", _)
+            | ("tools", "crates/tools/src/plantcore.rs", _)
+            | ("cli", "crates/cli/src/machine_contract.rs", _)
+            | ("cli", "crates/cli/src/iteron_workspace_hook.rs", _)
+            | (
+                "cli",
+                "crates/cli/src/output.rs",
+                "MAX_STREAM_UI_DELTA_BYTES"
+            )
+            | ("cli", "crates/cli/src/output/v7.rs", "MAX_EVENT_BYTES")
+            | (
+                "cli",
+                "crates/cli/src/recording_provider.rs",
+                "MAX_CA_BYTES"
+            )
+            | (
+                "cli",
+                "crates/cli/src/app_server/plantcore.rs",
+                "MAX_FACT_TEXT_BYTES" | "MAX_PORTABLE_UINT",
+            )
+            | (
+                "cli",
+                "crates/cli/src/tui/headless/control.rs",
+                "MAX_COMMAND_ID_BYTES"
+            )
+            | (
+                "cli",
+                "crates/cli/src/tui/headless.rs",
+                "MAX_RECORDED_COMMANDS"
+            )
+    );
     let platform_identity_invariant = name == "NULL_DEVICE"
         || matches!(
             (krate, relative, name),
@@ -1789,6 +1822,7 @@ fn row_for(
         || exact_schema_cardinality
         || wire_compatibility_invariant
         || derived_object
+        || plantcore_contract_invariant
         || platform_identity_invariant
         || hard_budget_invariant
     {
@@ -1867,6 +1901,27 @@ fn invariant_reason_for(
     wire_compatibility: bool,
     hard_budget: bool,
 ) -> InvariantReason {
+    if relative == "crates/cli/src/iteron_workspace_hook.rs" {
+        return InvariantReason::Security;
+    }
+    if relative == "crates/cli/src/recording_provider.rs" && name == "MAX_CA_BYTES" {
+        return InvariantReason::Security;
+    }
+    if relative == "crates/tools/src/plantcore.rs" {
+        return InvariantReason::CapabilityAuthority;
+    }
+    if relative == "crates/cli/src/tui/headless.rs" && name == "MAX_RECORDED_COMMANDS" {
+        return InvariantReason::DurabilityReplay;
+    }
+    if relative == "crates/protocol/src/plantcore.rs"
+        || relative == "crates/cli/src/machine_contract.rs"
+        || (relative == "crates/cli/src/output.rs" && name == "MAX_STREAM_UI_DELTA_BYTES")
+        || relative == "crates/cli/src/output/v7.rs"
+        || relative == "crates/cli/src/app_server/plantcore.rs"
+        || (relative == "crates/cli/src/tui/headless/control.rs" && name == "MAX_COMMAND_ID_BYTES")
+    {
+        return InvariantReason::WireCompatibility;
+    }
     if cryptographic_shape
         || name.contains("SIGNATURE")
         || name.contains("HMAC")

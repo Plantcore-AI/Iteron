@@ -381,6 +381,7 @@ pub enum PolicyHarnessErrorCode {
     BudgetVerifyAttempts,
     OperatorInterrupted,
     ConsecutiveToolErrors,
+    UsageUnavailable,
     HarnessFailure,
 }
 
@@ -418,12 +419,13 @@ impl PolicyHarnessErrorCode {
             Self::BudgetVerifyAttempts => "budget_verify_attempts",
             Self::OperatorInterrupted => "operator_interrupted",
             Self::ConsecutiveToolErrors => "consecutive_tool_errors",
+            Self::UsageUnavailable => "usage_unavailable",
             Self::HarnessFailure => "harness_failure",
         }
     }
 
     fn parse(value: &str) -> Option<Self> {
-        const CODES: [PolicyHarnessErrorCode; 32] = [
+        const CODES: [PolicyHarnessErrorCode; 33] = [
             PolicyHarnessErrorCode::ProviderError,
             PolicyHarnessErrorCode::RecordError,
             PolicyHarnessErrorCode::RouteError,
@@ -455,6 +457,7 @@ impl PolicyHarnessErrorCode {
             PolicyHarnessErrorCode::BudgetVerifyAttempts,
             PolicyHarnessErrorCode::OperatorInterrupted,
             PolicyHarnessErrorCode::ConsecutiveToolErrors,
+            PolicyHarnessErrorCode::UsageUnavailable,
             PolicyHarnessErrorCode::HarnessFailure,
         ];
         CODES.into_iter().find(|code| code.as_str() == value)

@@ -12,12 +12,102 @@ pub(super) fn validate_cli_writer_dataflow(root: &Path, source: &[u8]) -> Result
     super::cli_exact::validate(&file)?;
     validate_json_line_writer(&file)?;
     validate_stream_writer(&file)?;
+    validate_v7_stream_writer(&file)?;
     validate_result_writer(&file)?;
+    validate_terminal_summary_projection(root)?;
 
     let main = read_bounded(root, "crates/cli/src/main.rs", MAX_SOURCE_BYTES)?;
     let main = std::str::from_utf8(&main).context("CLI main source is not UTF-8")?;
     super::cli_main::validate(main)?;
     validate_final_result_call(main)
+}
+
+fn validate_terminal_summary_projection(root: &Path) -> Result<()> {
+    let source = read_bounded(root, "crates/cli/src/app_server.rs", MAX_SOURCE_BYTES)?;
+    let source = std::str::from_utf8(&source).context("CLI App Server source is not UTF-8")?;
+    let file = syn::parse_file(source).context("CLI App Server source does not parse as Rust")?;
+    super::runtime::require_method(
+        &file,
+        "TerminalSummary",
+        "assistant_text_for_v7",
+        r#"pub(crate) fn assistant_text_for_v7(&self) -> &str {
+            self.v7_assistant_text
+                .as_deref()
+                .unwrap_or(&self.assistant_text)
+        }"#,
+    )?;
+    super::runtime::require_method(
+        &file,
+        "TerminalSummary",
+        "current_result",
+        r#"pub(crate) fn current_result(&self) -> serde_json::Value {
+            let outcome = self.terminal.outcome();
+            crate::output::final_result(
+                &outcome,
+                &self.assistant_text,
+                &self.run_id,
+                &self.cost,
+                self.turns,
+                self.kernel_tax,
+                self.error.as_deref(),
+            )
+        }"#,
+    )?;
+    super::runtime::require_method(
+        &file,
+        "TerminalSummary",
+        "v7_result",
+        r#"pub(crate) fn v7_result(&self) -> anyhow::Result<serde_json::Value> {
+            match &self.terminal {
+                TerminalAuthority::Plantcore(terminal) => Ok(crate::output::v7_result(terminal)?),
+                TerminalAuthority::Runtime(outcome) => {
+                    let product_result = matches!(outcome, Outcome::Done).then(|| {
+                        iteron_protocol::ProductResult::Completed {
+                            assistant_text: self.assistant_text_for_v7().to_owned(),
+                            artifacts: Vec::new(),
+                        }
+                    });
+                    let terminal = match outcome {
+                        Outcome::BudgetExhausted("verify_attempts") => {
+                            iteron_protocol::PlantcoreTerminalOutcome::Stuck
+                        }
+                        _ => iteron_protocol::PlantcoreTerminalOutcome::from_runtime(
+                            outcome.clone(),
+                            product_result,
+                        )
+                        .map_err(anyhow::Error::msg)?,
+                    };
+                    Ok(crate::output::v7_result(&terminal)?)
+                }
+            }
+        }"#,
+    )?;
+    super::runtime::require_method(
+        &file,
+        "TerminalSummary",
+        "result_for_schema",
+        r#"pub(crate) fn result_for_schema(
+            &self,
+            schema_version: u32,
+        ) -> anyhow::Result<serde_json::Value> {
+            if schema_version == crate::output::V7_SCHEMA_VERSION {
+                return self.v7_result();
+            }
+            let assistant_text = iteron_record::redact::scrub(&self.assistant_text);
+            let error = self.error.as_deref().map(iteron_record::redact::scrub);
+            let outcome = self.terminal.outcome();
+            Ok(crate::output::final_result(
+                &outcome,
+                &assistant_text,
+                &self.run_id,
+                &self.cost,
+                self.turns,
+                self.kernel_tax,
+                error.as_deref(),
+            ))
+        }"#,
+    )?;
+    Ok(())
 }
 
 fn validate_json_line_writer(file: &syn::File) -> Result<()> {
@@ -105,6 +195,24 @@ fn validate_stream_writer(file: &syn::File) -> Result<()> {
         true,
     )
     .context("CLI stream writer sink changed")
+}
+
+fn validate_v7_stream_writer(file: &syn::File) -> Result<()> {
+    let method = emitter_method(file, "write_v7_stream_value")?;
+    if !matches!(method.vis, syn::Visibility::Inherited)
+        || !method.attrs.is_empty()
+        || method.block.stmts.len() != 2
+        || !has_shared_value_parameter(&method.sig, "value")
+    {
+        bail!("CLI v7 stream writer no longer accepts one immutable producer Value");
+    }
+    validate_schema_projection_binding(&method.block.stmts[0], true)?;
+    validate_write_json_line_call(
+        statement_expression(&method.block.stmts[1], false)?,
+        "value",
+        true,
+    )
+    .context("CLI v7 stream writer sink changed")
 }
 
 fn validate_result_writer(file: &syn::File) -> Result<()> {
@@ -205,7 +313,7 @@ fn validate_result_prelude(expression: &syn::Expr) -> Result<()> {
         };
         match variant.as_str() {
             "Text" => validate_single_flush(&body.block, "flush_text_output", true)?,
-            "StreamJson" => validate_single_flush(&body.block, "flush_stream_text", false)?,
+            "StreamJson" => validate_single_value_call(&body.block, "finish_stream_output")?,
             "Json" if body.block.stmts.is_empty() => {}
             _ => bail!("CLI final writer has an unknown or transformed format arm"),
         }
@@ -218,6 +326,24 @@ fn validate_result_prelude(expression: &syn::Expr) -> Result<()> {
         ])
     {
         bail!("CLI final writer format arms are incomplete");
+    }
+    Ok(())
+}
+
+fn validate_single_value_call(block: &syn::Block, method: &str) -> Result<()> {
+    if block.stmts.len() != 1 {
+        bail!("CLI final writer '{method}' arm has extra operations");
+    }
+    let expression = try_expression(&block.stmts[0])?;
+    let syn::Expr::MethodCall(call) = expression else {
+        bail!("CLI final writer '{method}' arm is not one method call");
+    };
+    if call.method != method
+        || !expression_path_is(&call.receiver, &["self"])
+        || call.args.len() != 1
+        || !expression_path_is(&call.args[0], &["value"])
+    {
+        bail!("CLI final writer '{method}' arm changed");
     }
     Ok(())
 }
@@ -256,10 +382,16 @@ fn validate_final_result_call(source: &str) -> Result<()> {
         let Some(initializer) = &local.init else {
             continue;
         };
-        let syn::Expr::Call(call) = initializer.expr.as_ref() else {
+        let syn::Expr::Try(result) = initializer.expr.as_ref() else {
             continue;
         };
-        if expression_path_is(&call.func, &["output", "final_result"])
+        let syn::Expr::MethodCall(call) = result.expr.as_ref() else {
+            continue;
+        };
+        if call.method == "result_for_schema"
+            && expression_path_is(&call.receiver, &["summary"])
+            && call.args.len() == 1
+            && expression_path_is(&call.args[0], &["machine_schema_version"])
             && (binding_index.replace(index).is_some()
                 || binding.ident != "result"
                 || binding.mutability.is_some()
@@ -267,10 +399,10 @@ fn validate_final_result_call(source: &str) -> Result<()> {
                 || binding.subpat.is_some()
                 || initializer.diverge.is_some())
         {
-            bail!("CLI main final_result binding is mutable or ambiguous");
+            bail!("CLI main typed result binding is mutable or ambiguous");
         }
     }
-    let index = binding_index.context("CLI main lacks one direct final_result binding")?;
+    let index = binding_index.context("CLI main lacks one direct typed result binding")?;
     let emitter_index = function
         .block
         .stmts
@@ -278,7 +410,7 @@ fn validate_final_result_call(source: &str) -> Result<()> {
         .position(is_emitter_binding)
         .context("CLI main lacks its one-shot Emitter binding")?;
     if emitter_index >= index {
-        bail!("CLI main constructs its Emitter after the final result");
+        bail!("CLI main constructs its Emitter after the typed result");
     }
     let mut bypass = StdoutBypassProbe::default();
     for statement in function
@@ -297,14 +429,14 @@ fn validate_final_result_call(source: &str) -> Result<()> {
         .block
         .stmts
         .get(index + 1)
-        .context("CLI main does not immediately forward final_result")?;
+        .context("CLI main does not immediately forward the typed result")?;
     validate_final_sink_statement(sink)?;
     let mut later = ResultPathProbe::default();
     for statement in function.block.stmts.iter().skip(index + 2) {
         later.visit_stmt(statement);
     }
     if later.result_paths != 0 {
-        bail!("CLI main reuses final_result after its direct sink");
+        bail!("CLI main reuses the typed result after its direct sink");
     }
     Ok(())
 }

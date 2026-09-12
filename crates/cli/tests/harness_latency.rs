@@ -229,8 +229,7 @@ fn one_replay(scratch: &Scratch) -> u64 {
         output
             .stdout
             .split(|byte| *byte == b'\n')
-            .filter(|line| !line.is_empty())
-            .next_back()
+            .rfind(|line| !line.is_empty())
             .unwrap_or_else(|| {
                 panic!(
                     "the run produced no machine result; stderr:\n{}",

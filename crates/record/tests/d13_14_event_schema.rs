@@ -864,21 +864,11 @@ fn event_kind_tag(kind: &EventKind) -> Option<&'static str> {
             workspace: _,
             provider_route_attempt: _,
         } => "effect_intent",
-        EventKind::EffectUnknown {
-            id: _,
-            tool: _,
-            reason: _,
-            ..
-        } => "effect_unknown",
-        EventKind::EffectDone { id: _, tool: _, .. } => "effect_done",
+        EventKind::EffectUnknown { .. } => "effect_unknown",
+        EventKind::EffectDone { .. } => "effect_done",
         EventKind::ArtifactProduced { artifact: _ } => "artifact_produced",
-        EventKind::EffectFailed {
-            id: _,
-            tool: _,
-            reason: _,
-            ..
-        } => "effect_failed",
-        EventKind::TurnEnd { usage: _, .. } => "turn_end",
+        EventKind::EffectFailed { .. } => "effect_failed",
+        EventKind::TurnEnd { .. } => "turn_end",
         EventKind::Notice { text: _ } => "notice",
         EventKind::SubmissionRejected { reason: _ } => "submission_rejected",
         EventKind::Approval {

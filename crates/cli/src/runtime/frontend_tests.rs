@@ -1,6 +1,29 @@
 use super::*;
 
 #[test]
+fn oversized_stream_delta_is_split_into_v7_safe_utf8_events_without_data_loss() {
+    let health = FrontendChannelHealth::default();
+    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+    let original = "🙂\\".repeat(3_000);
+
+    assert!(health.try_send_ui(&tx, UiEvent::Text(original.clone())));
+    drop(tx);
+
+    let mut reassembled = String::new();
+    let mut turn = 0;
+    while let Ok(event) = rx.try_recv() {
+        let UiEvent::Text(fragment) = &event else {
+            panic!("stream splitter must preserve the event kind")
+        };
+        assert!(fragment.len() <= crate::output::MAX_STREAM_UI_DELTA_BYTES);
+        reassembled.push_str(fragment);
+        crate::output::stream_event_for_schema(event, &mut turn, crate::output::V7_SCHEMA_VERSION)
+            .expect("every emitted fragment fits one canonical v7 logical object");
+    }
+    assert_eq!(reassembled, original);
+}
+
+#[test]
 fn saturation_preserves_structural_order_and_only_omits_stream_bytes() {
     let health = FrontendChannelHealth::default();
     let (tx, mut rx) = tokio::sync::mpsc::channel(1);

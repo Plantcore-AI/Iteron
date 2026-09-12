@@ -14,6 +14,7 @@ import zipfile
 from pathlib import Path
 
 from common import (
+    PLANTCORE_CONTRACT_FILES,
     ReleaseToolError,
     WINDOWS_TARGET,
     archive_filename,
@@ -23,6 +24,7 @@ from common import (
     sha256_file,
     validate_target,
     validate_version,
+    workspace_hook_filename,
 )
 
 MAX_UNPACKED_TAR_BYTES = 128 * 1024 * 1024
@@ -43,12 +45,14 @@ def ustar_size(file_sizes: list[int]) -> int:
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("--binary", required=True, type=Path)
+    result.add_argument("--workspace-hook", required=True, type=Path)
     result.add_argument("--license", required=True, type=Path)
     result.add_argument("--readme", required=True, type=Path)
     result.add_argument("--licenses", required=True, type=Path)
     result.add_argument("--notices", required=True, type=Path)
     result.add_argument("--sbom", required=True, type=Path)
     result.add_argument("--build-info", required=True, type=Path)
+    result.add_argument("--plantcore-contracts", required=True, type=Path)
     result.add_argument("--version", required=True)
     result.add_argument("--target", required=True)
     result.add_argument("--source-date-epoch", required=True, type=int)
@@ -113,14 +117,23 @@ def build_archive(arguments: argparse.Namespace) -> Path:
     output = arguments.output_dir / archive_filename(version, target)
     arguments.output_dir.mkdir(parents=True, exist_ok=True)
 
-    entries = (
+    entries = [
         (arguments.binary, binary_filename(target), 0o755),
+        (arguments.workspace_hook, workspace_hook_filename(target), 0o755),
         (arguments.license, "LICENSE", 0o644),
         (arguments.readme, "README.md", 0o644),
         (arguments.licenses, "THIRD_PARTY_LICENSES.html", 0o644),
         (arguments.notices, "THIRD_PARTY_NOTICES.txt", 0o644),
         (arguments.sbom, "SBOM.spdx.json", 0o644),
         (arguments.build_info, "BUILD-INFO.json", 0o644),
+    ]
+    entries.extend(
+        (
+            arguments.plantcore_contracts / relative,
+            f"contracts/plantcore/{relative}",
+            0o644,
+        )
+        for relative in PLANTCORE_CONTRACT_FILES
     )
     file_sizes = []
     for source, _, _ in entries:

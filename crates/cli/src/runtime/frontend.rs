@@ -9,7 +9,6 @@ const AUTHORITATIVE_UI_BACKLOG_CAPACITY: usize = 256;
 /// its own equal-sized budget; this one prevents the bridge *before* the EQ from multiplying that
 /// bound by two variable-sized queues.
 const FRONTEND_UI_BYTE_CAPACITY: usize = 64 * 1024 * 1024;
-
 fn authoritative_ui_backlog_capacity() -> usize {
     iteron_tunables::param_integer(
         "cli.runtime.frontend.authoritative_ui_backlog_capacity",
@@ -61,7 +60,11 @@ fn ui_event_heap_bytes(event: &UiEvent) -> usize {
             .saturating_add(reason.len())
             .saturating_add(workspace.len())
             .saturating_add(serde_json::to_vec(arguments).map_or(0, |bytes| bytes.len())),
-        UiEvent::Phase(_) | UiEvent::TurnEnd { .. } | UiEvent::SteerApplied { .. } => 4 * 1024,
+        UiEvent::Phase(_)
+        | UiEvent::TurnEnd { .. }
+        | UiEvent::PlantcoreUsage(_)
+        | UiEvent::PlantcoreRunAdmitted { .. }
+        | UiEvent::SteerApplied { .. } => 4 * 1024,
     })
 }
 
@@ -138,6 +141,8 @@ fn is_authoritative_ui_event(event: &UiEvent) -> bool {
         | UiEvent::ToolEnd { .. }
         | UiEvent::Phase(_)
         | UiEvent::TurnEnd { .. }
+        | UiEvent::PlantcoreUsage(_)
+        | UiEvent::PlantcoreRunAdmitted { .. }
         | UiEvent::Workflow(_)
         | UiEvent::SteerApplied { .. }
         | UiEvent::Notice(_)
@@ -158,6 +163,8 @@ fn refusal_must_fail_run(event: &UiEvent) -> bool {
         | UiEvent::ToolEnd { .. }
         | UiEvent::Phase(_)
         | UiEvent::TurnEnd { .. }
+        | UiEvent::PlantcoreUsage(_)
+        | UiEvent::PlantcoreRunAdmitted { .. }
         | UiEvent::Workflow(_)
         | UiEvent::SteerApplied { .. }
         | UiEvent::Notice(_)
@@ -247,6 +254,46 @@ impl FrontendChannelHealth {
         tx: &tokio::sync::mpsc::Sender<UiEvent>,
         event: UiEvent,
     ) -> bool {
+        match event {
+            UiEvent::Text(text) if text.len() > crate::output::MAX_STREAM_UI_DELTA_BYTES => {
+                self.try_send_stream_delta(tx, text, false)
+            }
+            UiEvent::Thinking(text) if text.len() > crate::output::MAX_STREAM_UI_DELTA_BYTES => {
+                self.try_send_stream_delta(tx, text, true)
+            }
+            event => self.try_send_bounded_ui(tx, event),
+        }
+    }
+
+    fn try_send_stream_delta(
+        &self,
+        tx: &tokio::sync::mpsc::Sender<UiEvent>,
+        text: String,
+        thinking: bool,
+    ) -> bool {
+        let mut remaining = text.as_str();
+        while !remaining.is_empty() {
+            let mut split = remaining
+                .len()
+                .min(crate::output::MAX_STREAM_UI_DELTA_BYTES);
+            while !remaining.is_char_boundary(split) {
+                split -= 1;
+            }
+            let fragment = remaining[..split].to_owned();
+            remaining = &remaining[split..];
+            let event = if thinking {
+                UiEvent::Thinking(fragment)
+            } else {
+                UiEvent::Text(fragment)
+            };
+            if !self.try_send_bounded_ui(tx, event) {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn try_send_bounded_ui(&self, tx: &tokio::sync::mpsc::Sender<UiEvent>, event: UiEvent) -> bool {
         let _routing = self
             .routing
             .lock()
@@ -455,7 +502,7 @@ impl Agent {
         self.activity.sender()
     }
 
-    pub(super) fn ui(&self, e: UiEvent) -> bool {
+    pub(crate) fn ui(&self, e: UiEvent) -> bool {
         if let Some(tx) = &self.ui_tx {
             let before = self.frontend_saturation.ui_saturation_count();
             let sent = self.frontend_saturation.try_send_ui(tx, e);
@@ -536,6 +583,12 @@ impl Agent {
     /// read-only view to build an authoritative terminal result without parsing streamed deltas.
     pub fn last_assistant_text(&self) -> &str {
         &self.last_assistant_text
+    }
+
+    /// Assistant text streamed during the current submitted Run, including text emitted before
+    /// intermediate tool calls.
+    pub(crate) fn run_assistant_text(&self) -> &str {
+        &self.run_assistant_text
     }
 
     /// Continue an already-run agent with a new operator message (TUI follow-up). The prior

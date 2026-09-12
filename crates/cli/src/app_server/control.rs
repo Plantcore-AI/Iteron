@@ -12,6 +12,13 @@ pub(super) fn is_immediate_control(control: &Control) -> bool {
     )
 }
 
+pub(super) fn is_plantcore_admitted_control(control: &Control) -> bool {
+    matches!(
+        control,
+        Control::PlantcoreRunBootstrapV1(_) | Control::OperatorStatus
+    )
+}
+
 fn workflow_inventory_reply(
     workflows: &crate::workflow::WorkflowSupervisor,
     notice: Option<String>,
@@ -407,10 +414,31 @@ pub(super) async fn apply_control(
     operator_status: &OperatorStatusSources,
     side: &mut Option<crate::runtime::SideConversation>,
     started: &mut bool,
+    plantcore: &mut super::plantcore::PlantcoreAdmission,
     events: &mut EventPublisher,
     request: ControlRequest,
 ) {
+    if plantcore.is_enabled() && !is_plantcore_admitted_control(&request.control) {
+        let _ = request.reply.send(ControlReply::Refused(
+            "PlantCore resident mode reserves the ordinary control surface for this Run".into(),
+        ));
+        return;
+    }
     let reply = match request.control {
+        Control::PlantcoreRunBootstrapV1(payload) => {
+            if *started {
+                ControlReply::PlantcoreProtocolError(super::plantcore::PlantcoreProtocolError {
+                    code: "bootstrap_conflict",
+                    message: "PlantCore bootstrap cannot change after a turn has started",
+                })
+            } else {
+                let mcp_runtime = agent.mcp_runtime_control();
+                match plantcore.admit(*payload, agent, mcp_runtime.as_ref()) {
+                    Ok(accepted) => ControlReply::PlantcoreBootstrapAccepted(accepted),
+                    Err(error) => ControlReply::PlantcoreProtocolError(error),
+                }
+            }
+        }
         Control::OperatorStatus => {
             ControlReply::OperatorStatus(Box::new(operator_status.snapshot().await))
         }

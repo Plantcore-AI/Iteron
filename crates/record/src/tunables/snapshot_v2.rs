@@ -230,6 +230,9 @@ fn invalid<T>(reason: &'static str) -> Result<T, TunablesSnapshotError> {
 }
 
 fn validate_projection_text(value: &str) -> Result<(), TunablesSnapshotError> {
+    if iteron_protocol::is_extension_server_binding_id(value) {
+        return Ok(());
+    }
     if value.len() > iteron_tunables::RESOLUTION_INPUT_MAX_BYTES
         || value
             .chars()
@@ -634,4 +637,25 @@ pub(super) fn snapshot_v2_from_report(
     snapshot.snapshot_digest_sha256 = digest_json(&payload(&snapshot))?;
     validate_tunables_snapshot_v2(&snapshot)?;
     Ok(snapshot)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_projection_text;
+
+    #[test]
+    fn extension_server_binding_is_a_typed_projection_identifier() {
+        let binding = format!(
+            "mcp-server-v1:{}:{}",
+            hex::encode("plantcore-run-gateway"),
+            "b".repeat(64)
+        );
+        assert!(validate_projection_text(&binding).is_ok());
+        assert!(
+            validate_projection_text(
+                "mcp-server-v1:not-hex:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            )
+            .is_err()
+        );
+    }
 }

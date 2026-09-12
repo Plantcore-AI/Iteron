@@ -26,6 +26,35 @@ SUPPORTED_TARGETS = (
 
 WINDOWS_TARGET = "x86_64-pc-windows-msvc"
 
+PLANTCORE_CONTRACT_FILES = (
+    "README.md",
+    "app-server-v4.schema.json",
+    "check-app-server-v4.py",
+    "check-workspace-hook.py",
+    "check_machine_contract.py",
+    "examples/app-server-v4-bootstrap-reply.json",
+    "examples/app-server-v4-bootstrap.json",
+    "examples/app-server-v4-command-reply.json",
+    "examples/app-server-v4-command.json",
+    "examples/app-server-v4-invalid-bootstrap.json",
+    "examples/app-server-v4-invalid-session.json",
+    "examples/app-server-v4-listening.json",
+    "examples/app-server-v4-pause-command-reply.json",
+    "examples/app-server-v4-pause-command.json",
+    "examples/app-server-v4-resume-command-reply.json",
+    "examples/app-server-v4-resume-command.json",
+    "examples/app-server-v4-resume-terminal-command-reply.json",
+    "examples/app-server-v4-resume-terminal-command.json",
+    "examples/machine-contract-v1.json",
+    "examples/workspace-hook-allow.json",
+    "examples/workspace-hook-deny.json",
+    "iteron-output-v7.schema.json",
+    "machine-contract.schema.json",
+    "test-vectors/portable-canonical-json-v1.json",
+    "workspace-hook-v1.schema.json",
+    "workspace-tools-v1.json",
+)
+
 
 class ReleaseToolError(RuntimeError):
     """A deterministic, user-facing release-tool failure."""
@@ -65,6 +94,15 @@ def archive_filename(version: str, target: str) -> str:
 def binary_filename(target: str) -> str:
     """Return the shipped command name for a release target."""
     return "iteron.exe" if validate_target(target) == WINDOWS_TARGET else "iteron"
+
+
+def workspace_hook_filename(target: str) -> str:
+    """Return the fixed PlantCore workspace Hook name for a release target."""
+    return (
+        "iteron-workspace-hook.exe"
+        if validate_target(target) == WINDOWS_TARGET
+        else "iteron-workspace-hook"
+    )
 
 
 def require_regular_file(path: Path, *, max_bytes: int | None = None) -> Path:

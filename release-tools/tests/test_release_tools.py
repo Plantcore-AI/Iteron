@@ -20,6 +20,7 @@ TOOLS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TOOLS))
 
 import checksums  # noqa: E402
+import common  # noqa: E402
 import dependency_audit  # noqa: E402
 import fetch_advisory_db  # noqa: E402
 import fetch_tool  # noqa: E402
@@ -32,6 +33,21 @@ import schema_release  # noqa: E402
 import verify_pe  # noqa: E402
 import verify_release  # noqa: E402
 from common import ReleaseToolError, sha256_file  # noqa: E402
+
+
+def machine_contract_report(
+    cli_stream_versions: list[int] | None = None,
+    default_cli_stream_version: int = 5,
+) -> dict[str, object]:
+    document = json.loads(
+        (TOOLS.parent / "contracts/plantcore/examples/machine-contract-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    document["release_id"] = "iteron-v0.0.1"
+    document["cli_stream_versions"] = cli_stream_versions or [4, 5]
+    document["default_cli_stream_version"] = default_cli_stream_version
+    return document
 
 
 class ReleaseToolsTest(unittest.TestCase):
@@ -52,14 +68,21 @@ class ReleaseToolsTest(unittest.TestCase):
     def package_arguments(
         self, output: Path, target: str = "aarch64-apple-darwin"
     ) -> argparse.Namespace:
+        contracts = self.root / "contracts" / "plantcore"
+        for relative in common.PLANTCORE_CONTRACT_FILES:
+            self.write(f"contracts/plantcore/{relative}", f"{relative}\n")
         return argparse.Namespace(
             binary=self.write("iteron", "#!/bin/sh\nprintf 'iteron 0.0.1\\n'\n", 0o755),
+            workspace_hook=self.write(
+                "iteron-workspace-hook", "#!/bin/sh\nexit 0\n", 0o755
+            ),
             license=self.write("LICENSE", "Apache-2.0\n"),
             readme=self.write("README.md", "# Iteron\n"),
             licenses=self.write("THIRD_PARTY_LICENSES.html", "<html>licenses</html>\n"),
             notices=self.write("THIRD_PARTY_NOTICES.txt", "notices\n"),
             sbom=self.write("SBOM.spdx.json", "{}\n"),
             build_info=self.write("BUILD-INFO.json", "{}\n"),
+            plantcore_contracts=contracts,
             version="0.0.1",
             target=target,
             source_date_epoch=1_700_000_000,
@@ -121,12 +144,17 @@ class ReleaseToolsTest(unittest.TestCase):
                 [
                     root,
                     f"{root}/iteron",
+                    f"{root}/iteron-workspace-hook",
                     f"{root}/LICENSE",
                     f"{root}/README.md",
                     f"{root}/THIRD_PARTY_LICENSES.html",
                     f"{root}/THIRD_PARTY_NOTICES.txt",
                     f"{root}/SBOM.spdx.json",
                     f"{root}/BUILD-INFO.json",
+                    *[
+                        f"{root}/contracts/plantcore/{relative}"
+                        for relative in common.PLANTCORE_CONTRACT_FILES
+                    ],
                 ],
             )
             self.assertTrue(members[0].isdir())
@@ -135,12 +163,17 @@ class ReleaseToolsTest(unittest.TestCase):
             self.assertTrue(all(member.mtime == 1_700_000_000 for member in members))
         sources = (
             first_arguments.binary,
+            first_arguments.workspace_hook,
             first_arguments.license,
             first_arguments.readme,
             first_arguments.licenses,
             first_arguments.notices,
             first_arguments.sbom,
             first_arguments.build_info,
+            *[
+                first_arguments.plantcore_contracts / relative
+                for relative in common.PLANTCORE_CONTRACT_FILES
+            ],
         )
         with gzip.open(first, "rb") as uncompressed:
             actual_size = len(uncompressed.read())
@@ -180,12 +213,17 @@ class ReleaseToolsTest(unittest.TestCase):
                 [
                     f"{root}/",
                     f"{root}/iteron.exe",
+                    f"{root}/iteron-workspace-hook.exe",
                     f"{root}/LICENSE",
                     f"{root}/README.md",
                     f"{root}/THIRD_PARTY_LICENSES.html",
                     f"{root}/THIRD_PARTY_NOTICES.txt",
                     f"{root}/SBOM.spdx.json",
                     f"{root}/BUILD-INFO.json",
+                    *[
+                        f"{root}/contracts/plantcore/{relative}"
+                        for relative in common.PLANTCORE_CONTRACT_FILES
+                    ],
                 ],
             )
             self.assertTrue(all(not member.is_dir() for member in archive.infolist()[1:]))
@@ -1232,11 +1270,39 @@ exit 1
             "spdxVersion": "SPDX-2.3",
         }
         normalized = sbom.normalize(
-            document, "0.0.1", "x86_64-unknown-linux-musl", 1_700_000_000, digest
+            document,
+            "0.0.1",
+            "x86_64-unknown-linux-musl",
+            1_700_000_000,
+            digest,
+            additional_files=(("iteron-workspace-hook", "b" * 64),),
         )
         self.assertEqual(normalized["name"], "Iteron-0.0.1-x86_64-unknown-linux-musl")
         self.assertEqual(normalized["creationInfo"]["created"], "2023-11-14T22:13:20Z")
         self.assertEqual(normalized["packages"][0]["name"], "a")
+        self.assertEqual(
+            normalized["files"],
+            [
+                {
+                    "SPDXID": "SPDXRef-File-iteron-workspace-hook",
+                    "checksums": [
+                        {"algorithm": "SHA256", "checksumValue": "b" * 64}
+                    ],
+                    "copyrightText": "NOASSERTION",
+                    "fileName": "iteron-workspace-hook",
+                    "fileTypes": ["BINARY"],
+                    "licenseConcluded": "NOASSERTION",
+                }
+            ],
+        )
+        self.assertIn(
+            {
+                "spdxElementId": "SPDXRef-root",
+                "relationshipType": "CONTAINS",
+                "relatedSpdxElement": "SPDXRef-File-iteron-workspace-hook",
+            },
+            normalized["relationships"],
+        )
 
     def test_release_manifest_requires_complete_target_evidence(self) -> None:
         dist = self.root / "dist"
@@ -1257,22 +1323,14 @@ exit 1
             if name.endswith(".machine-contract.json"):
                 self.write(
                     f"dist/{name}",
-                    json.dumps(
-                        {
-                            "cli_stream_versions": [4, 5],
-                            "default_cli_stream_version": 5,
-                            "resident_protocol_version": 7,
-                            "schema_version": 2,
-                            "type": "machine_contract",
-                        }
-                    ),
+                    json.dumps(machine_contract_report()),
                 )
             else:
                 self.write(f"dist/{name}", f"{name}\n")
         output = dist / "release-manifest.json"
         receipt = dist / "release-manifest.receipt.json"
         protocol = self.write(
-            "protocol/wire.rs", "pub const PROTOCOL_VERSION: u32 = 7;\n"
+            "protocol/wire.rs", "pub const PROTOCOL_VERSION: u32 = 4;\n"
         )
         manifest.create_release(
             argparse.Namespace(
@@ -1312,7 +1370,7 @@ exit 1
         installer_arguments.posix.write_bytes(original)
         # A client pins on the protocol the binary speaks, so the manifest must carry the number
         # the crate declares rather than one restated here.
-        self.assertEqual(result["protocol_version"], 7)
+        self.assertEqual(result["protocol_version"], 4)
         self.assertEqual(result["schema_version"], 3)
         receipt_document = json.loads(receipt.read_text(encoding="utf-8"))
         self.assertEqual(receipt_document["manifest"]["sha256"], sha256_file(output))
@@ -1321,15 +1379,7 @@ exit 1
     def test_release_manifest_rejects_capability_field_substitution(self) -> None:
         report = self.write(
             "capability.json",
-            json.dumps(
-                {
-                    "cli_stream_versions": [4, 5],
-                    "default_cli_stream_version": 5,
-                    "resident_protocol_version": 1,
-                    "schema_version": 2,
-                    "type": "machine_contract",
-                }
-            ),
+            json.dumps(machine_contract_report()),
         )
         self.assertEqual(manifest.read_capability_report(report)["cli_stream_versions"], [4, 5])
         report.write_text(
@@ -1337,7 +1387,7 @@ exit 1
             '"resident_protocol_version":1,"schema_version":1,"type":"machine_contract"}',
             encoding="utf-8",
         )
-        with self.assertRaisesRegex(ReleaseToolError, "fields"):
+        with self.assertRaisesRegex(ReleaseToolError, "invalid machine capability report"):
             manifest.read_capability_report(report)
 
     def test_release_manifest_rejects_target_capability_disagreement(self) -> None:
@@ -1362,16 +1412,10 @@ exit 1
             self.write(
                 f"disagree-dist/{base}.machine-contract.json",
                 json.dumps(
-                    {
-                        "cli_stream_versions": [4, 5] if index == 0 else [5],
-                        "default_cli_stream_version": 5,
-                        "resident_protocol_version": 1,
-                        "schema_version": 2,
-                        "type": "machine_contract",
-                    }
+                    machine_contract_report([4, 5] if index == 0 else [5])
                 ),
             )
-        protocol = self.write("disagree-protocol/wire.rs", "pub const PROTOCOL_VERSION: u32 = 1;\n")
+        protocol = self.write("disagree-protocol/wire.rs", "pub const PROTOCOL_VERSION: u32 = 4;\n")
         with self.assertRaisesRegex(ReleaseToolError, "disagree"):
             manifest.create_release(
                 argparse.Namespace(
@@ -1448,17 +1492,9 @@ exit 1
             self.write(f"verified-dist/{name}", content)
         report = self.write(
             f"verified-dist/{archive.name}.machine-contract.json",
-            json.dumps(
-                {
-                    "cli_stream_versions": [4, 5],
-                    "default_cli_stream_version": 5,
-                    "resident_protocol_version": 1,
-                    "schema_version": 2,
-                    "type": "machine_contract",
-                }
-            ),
+            json.dumps(machine_contract_report()),
         )
-        protocol = self.write("verified-protocol/wire.rs", "pub const PROTOCOL_VERSION: u32 = 1;\n")
+        protocol = self.write("verified-protocol/wire.rs", "pub const PROTOCOL_VERSION: u32 = 4;\n")
         manifest_path = dist / "release-manifest.json"
         receipt_path = dist / "release-manifest.receipt.json"
         manifest.create_release(
@@ -1711,20 +1747,27 @@ class MachineContractSmokeTest(unittest.TestCase):
     build. The tag was already pushed by then, and a tag's workflow is frozen with
     it, so v0.0.15 could not produce artifacts at all.
 
-    Reading the literal out of `main.rs` rather than restating it here is the point:
+    Reading the typed contract module's constant rather than restating it here is the point:
     a future bump has to move both or fail in this test, at PR time, instead of on
     a tag that cannot be re-cut.
     """
 
     ROOT = Path(__file__).resolve().parents[2]
 
-    def test_the_workflow_asserts_the_version_the_cli_emits(self) -> None:
-        emitted = re.search(
-            r'"schema_version":\s*(\d+),\s*\n\s*"type":\s*"machine_contract"',
-            (self.ROOT / "crates/cli/src/main.rs").read_text(encoding="utf-8"),
+    def emitted_schema_version(self) -> re.Match[str] | None:
+        return re.search(
+            r"^const MACHINE_CONTRACT_SCHEMA_VERSION: u32 = (\d+);$",
+            (self.ROOT / "crates/cli/src/machine_contract.rs").read_text(
+                encoding="utf-8"
+            ),
+            re.M,
         )
+
+    def test_the_workflow_asserts_the_version_the_cli_emits(self) -> None:
+        emitted = self.emitted_schema_version()
         self.assertIsNotNone(
-            emitted, "could not find the machine-contract envelope in crates/cli/src/main.rs"
+            emitted,
+            "could not find MACHINE_CONTRACT_SCHEMA_VERSION in machine_contract.rs",
         )
         asserted = re.search(
             r"\.schema_version == (\d+)",
@@ -1750,10 +1793,7 @@ class MachineContractSmokeTest(unittest.TestCase):
         approved. Fixing only `release.yml` left this one, so v0.0.17 failed one step
         past where v0.0.15 did.
         """
-        emitted = re.search(
-            r'"schema_version":\s*(\d+),\s*\n\s*"type":\s*"machine_contract"',
-            (self.ROOT / "crates/cli/src/main.rs").read_text(encoding="utf-8"),
-        )
+        emitted = self.emitted_schema_version()
         self.assertIsNotNone(emitted)
         declared = re.search(
             r"^CLI_MACHINE_CONTRACT_SCHEMA_VERSION = (\d+)$",

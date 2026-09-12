@@ -172,6 +172,45 @@ fn d9_10_g1_reindex_subcommand_repairs_corrupt_cache_and_sessions_listing() {
 }
 
 #[test]
+fn machine_contract_probe_is_bounded_and_ignores_local_authority() {
+    let scratch = Scratch::new();
+    let project_config = scratch.repo().join(".iteron/config.json");
+    let user_config = scratch.home().join(".iteron/config.json");
+    let credential = scratch.home().join(".iteron/credentials/provider");
+    for path in [&project_config, &user_config, &credential] {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    }
+    std::fs::write(&project_config, b"not-json-project-secret").unwrap();
+    std::fs::write(&user_config, b"not-json-user-secret").unwrap();
+    std::fs::write(&credential, b"credential-must-not-be-read").unwrap();
+
+    let started = Instant::now();
+    let (status, stdout, stderr) =
+        run_core(&scratch.home(), &scratch.repo(), &["--machine-contract"]);
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "machine contract probe exceeded five seconds"
+    );
+    assert!(status.success(), "stdout={stdout}\nstderr={stderr}");
+    assert!(
+        stdout.len() <= 1024 * 1024,
+        "machine contract exceeded 1 MiB"
+    );
+    for secret in [
+        "not-json-project-secret",
+        "not-json-user-secret",
+        "credential-must-not-be-read",
+    ] {
+        assert!(
+            !stderr.contains(secret),
+            "probe disclosed local authority: {stderr}"
+        );
+    }
+    let contract: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(contract["type"], "machine_contract");
+}
+
+#[test]
 fn schema_v4_session_argv_is_typed_provider_free_and_tag_preserving() {
     let scratch = Scratch::new();
     let parent = RunId("tagged-parent".into());
@@ -202,12 +241,12 @@ fn schema_v4_session_argv_is_typed_provider_free_and_tag_preserving() {
         run_core(&scratch.home(), &scratch.repo(), &["--machine-contract"]);
     assert!(status.success(), "stdout={contract}\nstderr={stderr}");
     let contract: serde_json::Value = serde_json::from_str(contract.trim()).unwrap();
-    assert_eq!(contract["schema_version"], 2);
+    assert_eq!(contract["schema_version"], 3);
     assert_eq!(
         contract["cli_stream_versions"],
-        serde_json::json!([4, 5, 6])
+        serde_json::json!([4, 5, 6, 7])
     );
-    assert_eq!(contract["default_cli_stream_version"], 6);
+    assert_eq!(contract["default_cli_stream_version"], 7);
     assert_eq!(
         contract["resident_protocol_version"],
         iteron_protocol::wire::PROTOCOL_VERSION
