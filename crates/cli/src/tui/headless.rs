@@ -117,7 +117,7 @@ struct Shared {
 #[derive(Clone)]
 struct RecordedCommand {
     command: PlantcoreCommand,
-    reply: Option<PreparedPlantcoreReply>,
+    reply: Option<Value>,
     completed: tokio::sync::watch::Sender<bool>,
 }
 
@@ -125,6 +125,13 @@ struct RecordedCommand {
 struct PreparedPlantcoreReply {
     value: Value,
     resume_activation: Option<crate::runtime::ResumeActivation>,
+}
+
+fn replayed_plantcore_reply(value: Value) -> PreparedPlantcoreReply {
+    PreparedPlantcoreReply {
+        value,
+        resume_activation: None,
+    }
 }
 
 #[cfg(test)]
@@ -139,18 +146,14 @@ fn admit_plantcore_command(
     const MAX_RECORDED_COMMANDS: usize = 4096;
     if let Some(previous) = recorded.get(&command_id) {
         if previous.command == command {
-            return previous
-                .reply
-                .as_ref()
-                .map(|reply| reply.value.clone())
-                .unwrap_or_else(|| {
-                    json!({
-                        "type": "plantcore_command_reply_v1",
-                        "command_id": command_id,
-                        "status": "rejected",
-                        "reason": "busy",
-                    })
-                });
+            return previous.reply.clone().unwrap_or_else(|| {
+                json!({
+                    "type": "plantcore_command_reply_v1",
+                    "command_id": command_id,
+                    "status": "rejected",
+                    "reason": "busy",
+                })
+            });
         }
         return json!({
             "type": "plantcore_command_reply_v1",
@@ -172,10 +175,7 @@ fn admit_plantcore_command(
         command_id,
         RecordedCommand {
             command,
-            reply: Some(PreparedPlantcoreReply {
-                value: reply.clone(),
-                resume_activation: None,
-            }),
+            reply: Some(reply.clone()),
             completed: tokio::sync::watch::channel(true).0,
         },
     );
@@ -248,7 +248,7 @@ fn submit_plantcore_initial_input<T, E>(
     }
     dispatch_gate
         .ok_or("dispatch_gate_unavailable")?
-        .submit_initial_input_if_admitted(|| submit(op))
+        .submit_if_admitted(|| submit(op))
 }
 
 impl Shared {
@@ -268,7 +268,7 @@ impl Shared {
                     };
                 }
                 if let Some(reply) = &previous.reply {
-                    return reply.clone();
+                    return replayed_plantcore_reply(reply.clone());
                 }
                 Some(previous.completed.subscribe())
             } else {
@@ -295,6 +295,7 @@ impl Shared {
             return recorded
                 .get(&command_id)
                 .and_then(|recorded| recorded.reply.clone())
+                .map(replayed_plantcore_reply)
                 .unwrap_or_else(|| PreparedPlantcoreReply {
                     value: plantcore_command_rejection(&command_id, "runtime_disconnected"),
                     resume_activation: None,
@@ -335,9 +336,9 @@ impl Shared {
             .get_mut(&command_id)
             .expect("the bounded command record was inserted before execution");
         if let Some(existing) = &entry.reply {
-            return existing.clone();
+            return replayed_plantcore_reply(existing.clone());
         }
-        entry.reply = Some(prepared.clone());
+        entry.reply = Some(prepared.value.clone());
         entry.completed.send_replace(true);
         prepared
     }
@@ -1500,7 +1501,26 @@ mod boundary_tests {
     }
 
     #[tokio::test]
-    async fn plantcore_generic_submit_is_initial_input_only() {
+    async fn replayed_resume_does_not_reapply_its_activation() {
+        let gate = crate::runtime::DispatchGate::new();
+        gate.admit().unwrap();
+        gate.pause_after_safe_point().await.unwrap();
+        let first =
+            dispatch_gate_command_reply(Some(&gate), "resume-1", &PlantcoreCommand::ResumeDispatch)
+                .await
+                .unwrap();
+        let replay = replayed_plantcore_reply(first.value.clone());
+
+        assert!(first.resume_activation.is_some());
+        assert!(replay.resume_activation.is_none());
+        gate.activate_resume(first.resume_activation.unwrap())
+            .unwrap();
+        gate.pause_after_safe_point().await.unwrap();
+        assert!(gate.prepare_resume().is_ok());
+    }
+
+    #[tokio::test]
+    async fn plantcore_generic_submit_accepts_only_user_input_ops() {
         let rejected = [
             iteron_protocol::Op::ApprovalResponse {
                 id: iteron_protocol::SubmissionId(1),
@@ -1552,9 +1572,9 @@ mod boundary_tests {
                 iteron_protocol::Op::UserInput {
                     text: "second connection".into(),
                 },
-                |_| -> Result<(), ()> { panic!("a second generic input must not reach the SQ") },
+                |_| Ok::<_, ()>(18),
             ),
-            Err("initial_input_already_submitted")
+            Ok(Ok(18))
         );
 
         let terminal = crate::runtime::DispatchGate::new();

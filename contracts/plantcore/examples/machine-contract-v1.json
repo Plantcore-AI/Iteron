@@ -64,7 +64,7 @@
     "app_server_v4_schema": {
       "id": "plantcore.iteron.app-server.v4",
       "path": "contracts/plantcore/app-server-v4.schema.json",
-      "canonical_sha256": "0d16a644fe7d9175cd2b5c9ec20d64cbd853a3a361ce55681e39d90c408db426"
+      "canonical_sha256": "2390a5536b9299a3f86004d5fbe976549665f50e6b274801d889ef04de9ef384"
     },
     "output_v7_target_schema": {
       "id": "plantcore.iteron-output.v7.target",

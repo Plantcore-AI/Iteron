@@ -547,6 +547,8 @@
           "enum": [
             "command_conflict", "command_window_exhausted", "busy", "runtime_disconnected",
             "dispatch_gate_unavailable", "run_not_admitted", "dispatch_gate_not_paused",
+            "dispatch_resume_pending", "recording_pause_checkpoint_failed",
+            "recording_pause_checkpoint_invalid", "dispatch_resume_generation_exhausted",
             "session_terminal"
           ]
         }

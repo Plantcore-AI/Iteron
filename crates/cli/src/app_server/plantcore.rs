@@ -1373,6 +1373,48 @@ mod tests {
     }
 
     #[test]
+    fn invalid_initial_input_does_not_consume_the_valid_retry() {
+        let payload = payload();
+        let mut admission = PlantcoreAdmission {
+            state: State::Admitted {
+                provider_api_origin: "https://provider.example/v1".into(),
+                payload: Box::new(payload),
+                accepted: PlantcoreBootstrapAccepted {
+                    run_id: "run-1".into(),
+                    payload_digest_sha256: HexSha256::digest(b"bootstrap").to_lower_hex(),
+                },
+                input_consumed: false,
+            },
+            dispatch_gate: None,
+        };
+
+        assert_eq!(
+            admission
+                .admit_input(&Op::UserInput {
+                    text: "wrong".into(),
+                })
+                .unwrap_err()
+                .code,
+            "input_invalid"
+        );
+        assert_eq!(
+            admission.admit_input(&Op::UserInput {
+                text: "hello".into(),
+            }),
+            Ok(())
+        );
+        assert_eq!(
+            admission
+                .admit_input(&Op::UserInput {
+                    text: "hello".into(),
+                })
+                .unwrap_err()
+                .code,
+            "input_invalid"
+        );
+    }
+
+    #[test]
     fn late_bootstrap_apply_failure_terminalizes_the_shared_gate() {
         let workspace = std::env::temp_dir().join(format!(
             "iteron-plantcore-bootstrap-failure-{}-{:x}",
@@ -1839,5 +1881,27 @@ mod tests {
         ))
         .unwrap();
         assert!(validator.validate(&invalid_session).is_ok());
+
+        for reason in [
+            "dispatch_resume_pending",
+            "recording_pause_checkpoint_failed",
+            "recording_pause_checkpoint_invalid",
+            "dispatch_resume_generation_exhausted",
+        ] {
+            let reply = serde_json::json!({
+                "type": "control_reply",
+                "protocol_version": 4,
+                "request_id": 11,
+                "reply": {
+                    "type": "plantcore_command_reply_v1",
+                    "command_id": "command-rejected-0001",
+                    "status": "rejected",
+                    "reason": reason,
+                },
+            });
+            if let Err(error) = validator.validate(&reply) {
+                panic!("published command rejection violates the App Server schema: {error}");
+            }
+        }
     }
 }

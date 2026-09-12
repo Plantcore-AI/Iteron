@@ -50,7 +50,6 @@ struct DispatchGateState {
     phase: DispatchGatePhase,
     in_flight: usize,
     next_resume_generation: u64,
-    initial_input_submitted: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,7 +71,6 @@ impl DispatchGate {
                 phase: DispatchGatePhase::NotAdmitted,
                 in_flight: 0,
                 next_resume_generation: 0,
-                initial_input_submitted: false,
             }),
             changed: Notify::new(),
             recording_pause_checkpoint: std::env::var_os("ITERON_RECORDING_PAUSE_CHECKPOINT")
@@ -281,29 +279,6 @@ impl DispatchGate {
             | DispatchGatePhase::ResumePending(_) => {}
         }
         Ok(submit())
-    }
-
-    pub(crate) fn submit_initial_input_if_admitted<T, E>(
-        &self,
-        submit: impl FnOnce() -> Result<T, E>,
-    ) -> Result<Result<T, E>, &'static str> {
-        let mut state = self.state.lock().expect("dispatch gate mutex poisoned");
-        match state.phase {
-            DispatchGatePhase::NotAdmitted => return Err("run_not_admitted"),
-            DispatchGatePhase::Terminal => return Err("session_terminal"),
-            DispatchGatePhase::Open
-            | DispatchGatePhase::PauseRequested
-            | DispatchGatePhase::Paused
-            | DispatchGatePhase::ResumePending(_) => {}
-        }
-        if state.initial_input_submitted {
-            return Err("initial_input_already_submitted");
-        }
-        let result = submit();
-        if result.is_ok() {
-            state.initial_input_submitted = true;
-        }
-        Ok(result)
     }
 
     pub(super) async fn enter(self: &Arc<Self>) -> Option<DispatchPermit> {
@@ -1384,59 +1359,17 @@ mod tests {
         assert_eq!(submitted.get(), 1);
     }
 
-    #[tokio::test]
-    async fn initial_input_submission_is_single_across_connections_while_paused() {
-        let gate = DispatchGate::new();
-        gate.admit().unwrap();
-        gate.pause_after_safe_point().await.unwrap();
-        let barrier = Arc::new(std::sync::Barrier::new(3));
-        let submitted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let mut clients = Vec::new();
-        for submission in [11_u32, 12_u32] {
-            let gate = gate.clone();
-            let barrier = barrier.clone();
-            let submitted = submitted.clone();
-            clients.push(std::thread::spawn(move || {
-                barrier.wait();
-                gate.submit_initial_input_if_admitted(|| {
-                    submitted.fetch_add(1, Ordering::SeqCst);
-                    Ok::<_, ()>(submission)
-                })
-            }));
-        }
-        barrier.wait();
-        let results = clients
-            .into_iter()
-            .map(|client| client.join().unwrap())
-            .collect::<Vec<_>>();
-        assert_eq!(submitted.load(Ordering::SeqCst), 1);
-        assert_eq!(
-            results
-                .iter()
-                .filter(|result| matches!(result, Ok(Ok(11 | 12))))
-                .count(),
-            1
-        );
-        assert_eq!(
-            results
-                .iter()
-                .filter(|result| **result == Err("initial_input_already_submitted"))
-                .count(),
-            1
-        );
-    }
-
     #[test]
-    fn initial_input_submission_rejects_prebootstrap_and_terminal_sessions() {
+    fn submission_rejects_prebootstrap_and_terminal_sessions() {
         let gate = DispatchGate::new();
         assert_eq!(
-            gate.submit_initial_input_if_admitted(|| Ok::<_, ()>(())),
+            gate.submit_if_admitted(|| Ok::<_, ()>(())),
             Err("run_not_admitted")
         );
         gate.admit().unwrap();
         gate.terminal();
         assert_eq!(
-            gate.submit_initial_input_if_admitted(|| Ok::<_, ()>(())),
+            gate.submit_if_admitted(|| Ok::<_, ()>(())),
             Err("session_terminal")
         );
     }
