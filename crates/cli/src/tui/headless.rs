@@ -1076,7 +1076,7 @@ async fn serve_connection(
                                     &shared.frame_preparers,
                                     &shared.fragment_encoders,
                                     fault,
-                                    cursor
+                                    delivered
                                         .checked_add(1)
                                         .context("headless recording fault cursor exhausted")?,
                                 )
