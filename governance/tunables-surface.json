@@ -2,9 +2,9 @@
   "schema_version": 3,
   "registry_id": "iteron-tunables",
   "registry_revision": 24,
-  "registry_digest": "a8439500a335e0086a326dbfd88222fc1501373d333aa7bb2315779f220bd663",
+  "registry_digest": "dc46c5a2f21c77ae289c3c6169cc372230b5080110694d51bd39d4709bdc88fd",
   "param_registry_id": "iteron-params",
-  "param_registry_digest": "cc6795c333cb19344768e91a3f53491e9128b1d643510821d939fcd570c1013a",
+  "param_registry_digest": "08c7eb2807b29a9cbe0ba0e40a3c64df2d653f7cc9632cd757b411e1a447936f",
   "tool_text_registry_id": "iteron-builtin-tool-descriptions",
   "tool_text_registry_digest": "7da44a496e668c86c4456291e0e8178955ae7b99f473e69e1804d7742ae9738d",
   "counts": {
@@ -12,11 +12,11 @@
     "families_full": 137,
     "families_fixed_hidden": 23,
     "families_profile_addressable": 119,
-    "params": 2258,
+    "params": 2312,
     "params_searchable": 588,
-    "params_bounded": 887,
-    "params_structural": 783,
-    "params_applied": 1475,
+    "params_bounded": 888,
+    "params_structural": 836,
+    "params_applied": 1476,
     "modules": 28,
     "prompt_artifacts": 10,
     "prompt_artifacts_overridable": 10,
@@ -129,7 +129,7 @@
       "id": "tool.arguments",
       "kind": "structured",
       "families": 0,
-      "params": 164,
+      "params": 166,
       "artifacts": 0
     },
     {
@@ -150,7 +150,7 @@
       "id": "provider.routing",
       "kind": "structured",
       "families": 12,
-      "params": 111,
+      "params": 113,
       "artifacts": 0
     },
     {
@@ -178,7 +178,7 @@
       "id": "scheduler.parallelism",
       "kind": "structured",
       "families": 2,
-      "params": 367,
+      "params": 404,
       "artifacts": 0
     },
     {
@@ -199,14 +199,14 @@
       "id": "budget.allocation",
       "kind": "structured",
       "families": 11,
-      "params": 253,
+      "params": 263,
       "artifacts": 0
     },
     {
       "id": "session.stop",
       "kind": "structured",
       "families": 3,
-      "params": 213,
+      "params": 216,
       "artifacts": 0
     },
     {
@@ -6261,7 +6261,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 1949,
+          "line": 2091,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -6289,12 +6289,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 319,
+          "line": 409,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime/frontend.rs",
-          "line": 35,
+          "line": 34,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/cli/src/runtime/frontend.rs",
+          "line": 70,
           "evidence": "Rust path reference"
         }
       ]
@@ -6320,7 +6325,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 1447,
+          "line": 1586,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -6374,7 +6379,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 2090,
+          "line": 2236,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -6404,7 +6409,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 1482,
+          "line": 1621,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -6434,7 +6439,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 1520,
+          "line": 1661,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -6464,7 +6469,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 1695,
+          "line": 1836,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -6522,7 +6527,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 689,
+          "line": 785,
           "evidence": "Rust path reference"
         }
       ]
@@ -6556,6 +6561,397 @@
       "behavior_oracle": "installed profile id cli.app_server.operator_status.lsp_status_deadline is resolved at every listed production helper call"
     },
     {
+      "id": "cli.app_server.plantcore.disabled_catalog_json",
+      "module": "scheduler_parallelism",
+      "class": "structural",
+      "type": "array",
+      "rust_type": "&[u8]",
+      "default": "br#\"{\"revision\":\"disabled\",\"tools\":[]}\"#",
+      "domain": {},
+      "krate": "cli",
+      "decl": "crates/cli/src/app_server/plantcore.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "wire_compatibility",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/app_server/plantcore.rs",
+        "symbol": "DISABLED_CATALOG_JSON"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/app_server/plantcore.rs",
+          "line": 435,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "cli.app_server.plantcore.max_fact_text_bytes",
+      "module": "scheduler_parallelism",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "512 * 1024",
+      "domain": {},
+      "krate": "cli",
+      "decl": "crates/cli/src/app_server/plantcore.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "wire_compatibility",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/app_server/plantcore.rs",
+        "symbol": "MAX_FACT_TEXT_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/app_server/plantcore.rs",
+          "line": 627,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "cli.app_server.plantcore.max_portable_uint",
+      "module": "scheduler_parallelism",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "u64",
+      "default": "(1_u64 << 53) - 1",
+      "domain": {},
+      "krate": "cli",
+      "decl": "crates/cli/src/app_server/plantcore.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "wire_compatibility",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/app_server/plantcore.rs",
+        "symbol": "MAX_PORTABLE_UINT"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/app_server/plantcore.rs",
+          "line": 334,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/cli/src/app_server/plantcore.rs",
+          "line": 338,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/cli/src/app_server/plantcore.rs",
+          "line": 381,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/cli/src/app_server/plantcore.rs",
+          "line": 665,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "cli.app_server.plantcore.mcp_config_version",
+      "module": "scheduler_parallelism",
+      "class": "structural",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"plantcore.mcp-config.v1\"",
+      "domain": {},
+      "krate": "cli",
+      "decl": "crates/cli/src/app_server/plantcore.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "wire_compatibility",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/app_server/plantcore.rs",
+        "symbol": "MCP_CONFIG_VERSION"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/app_server/plantcore.rs",
+          "line": 407,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/cli/src/app_server/plantcore.rs",
+          "line": 417,
+          "evidence": "macro token reference"
+        }
+      ]
+    },
+    {
+      "id": "cli.app_server.plantcore.mcp_token_env",
+      "module": "scheduler_parallelism",
+      "class": "structural",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"PLANTCORE_RUN_GATEWAY_AUTHORIZATION\"",
+      "domain": {},
+      "krate": "cli",
+      "decl": "crates/cli/src/app_server/plantcore.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "wire_compatibility",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/app_server/plantcore.rs",
+        "symbol": "MCP_TOKEN_ENV"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/app_server/plantcore.rs",
+          "line": 406,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/cli/src/app_server/plantcore.rs",
+          "line": 419,
+          "evidence": "macro token reference"
+        },
+        {
+          "path": "crates/cli/src/app_server/plantcore.rs",
+          "line": 740,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "cli.app_server.plantcore.mcp_url",
+      "module": "scheduler_parallelism",
+      "class": "structural",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"http://127.0.0.1:43171/mcp\"",
+      "domain": {},
+      "krate": "cli",
+      "decl": "crates/cli/src/app_server/plantcore.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "wire_compatibility",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/app_server/plantcore.rs",
+        "symbol": "MCP_URL"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/app_server/plantcore.rs",
+          "line": 403,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/cli/src/app_server/plantcore.rs",
+          "line": 421,
+          "evidence": "macro token reference"
+        },
+        {
+          "path": "crates/cli/src/app_server/plantcore.rs",
+          "line": 740,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "cli.app_server.plantcore.output_schema_digest",
+      "module": "scheduler_parallelism",
+      "class": "structural",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"83ef558efc9c72b375d9f981a73285831b1936ae1e547cef0a67d9ce1d6c30bc\"",
+      "domain": {},
+      "krate": "cli",
+      "decl": "crates/cli/src/app_server/plantcore.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "wire_compatibility",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/app_server/plantcore.rs",
+        "symbol": "OUTPUT_SCHEMA_DIGEST"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/app_server/plantcore.rs",
+          "line": 282,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "cli.app_server.plantcore.output_schema_version",
+      "module": "scheduler_parallelism",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "u32",
+      "default": "7",
+      "domain": {},
+      "krate": "cli",
+      "decl": "crates/cli/src/app_server/plantcore.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "wire_compatibility",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/app_server/plantcore.rs",
+        "symbol": "OUTPUT_SCHEMA_VERSION"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/app_server/plantcore.rs",
+          "line": 281,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "cli.app_server.plantcore.provider_credential_env",
+      "module": "scheduler_parallelism",
+      "class": "structural",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"ITERON_PROVIDER_API_KEY\"",
+      "domain": {},
+      "krate": "cli",
+      "decl": "crates/cli/src/app_server/plantcore.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "wire_compatibility",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/app_server/plantcore.rs",
+        "symbol": "PROVIDER_CREDENTIAL_ENV"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/app_server/plantcore.rs",
+          "line": 303,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "cli.app_server.plantcore.provider_credential_file",
+      "module": "scheduler_parallelism",
+      "class": "structural",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"/var/run/secrets/plantcore/provider/api-key\"",
+      "domain": {},
+      "krate": "cli",
+      "decl": "crates/cli/src/app_server/plantcore.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "wire_compatibility",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/app_server/plantcore.rs",
+        "symbol": "PROVIDER_CREDENTIAL_FILE"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/app_server/plantcore.rs",
+          "line": 304,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "cli.app_server.plantcore.run_io_token_file",
+      "module": "scheduler_parallelism",
+      "class": "structural",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"/var/run/secrets/plantcore/run-io/client-token\"",
+      "domain": {},
+      "krate": "cli",
+      "decl": "crates/cli/src/app_server/plantcore.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "wire_compatibility",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/app_server/plantcore.rs",
+        "symbol": "RUN_IO_TOKEN_FILE"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/app_server/plantcore.rs",
+          "line": 409,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "cli.app_server.plantcore.run_io_url",
+      "module": "scheduler_parallelism",
+      "class": "structural",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"http://127.0.0.1:43171/run-io/v1\"",
+      "domain": {},
+      "krate": "cli",
+      "decl": "crates/cli/src/app_server/plantcore.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "wire_compatibility",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/app_server/plantcore.rs",
+        "symbol": "RUN_IO_URL"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/app_server/plantcore.rs",
+          "line": 404,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "cli.app_server.recording_fault.control_bridge_env",
+      "module": "scheduler_parallelism",
+      "class": "structural",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"CONTROL_BRIDGE\"",
+      "domain": {},
+      "krate": "cli",
+      "decl": "crates/cli/src/app_server/recording_fault.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "identity",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/app_server/recording_fault.rs",
+        "symbol": "CONTROL_BRIDGE_ENV"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/app_server/recording_fault.rs",
+          "line": 46,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
       "id": "cli.app_server.runtime_ui_capacity",
       "module": "scheduler_parallelism",
       "class": "searchable",
@@ -6576,7 +6972,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 2235,
+          "line": 2387,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -6603,7 +6999,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 160,
+          "line": 167,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -6657,7 +7053,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 135,
+          "line": 142,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -6684,12 +7080,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 153,
+          "line": 160,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 1250,
+          "line": 1346,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -6753,7 +7149,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 893,
+          "line": 989,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -6780,7 +7176,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 2253,
+          "line": 2405,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -6807,7 +7203,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 2270,
+          "line": 2422,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -7629,12 +8025,12 @@
         },
         {
           "path": "crates/cli/src/tui.rs",
-          "line": 4000,
+          "line": 4001,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/tui.rs",
-          "line": 4724,
+          "line": 4725,
           "evidence": "Rust path reference"
         },
         {
@@ -7903,7 +8299,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/config.rs",
-          "line": 1795,
+          "line": 1804,
           "evidence": "param_bool runtime resolution"
         }
       ],
@@ -7930,7 +8326,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/config.rs",
-          "line": 1394,
+          "line": 1403,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -7958,7 +8354,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/config.rs",
-          "line": 1411,
+          "line": 1420,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -7985,7 +8381,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/config.rs",
-          "line": 1398,
+          "line": 1407,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -8012,7 +8408,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/config.rs",
-          "line": 1403,
+          "line": 1412,
           "evidence": "param_bool runtime resolution"
         }
       ],
@@ -8042,32 +8438,32 @@
       "use_sites": [
         {
           "path": "crates/cli/src/config.rs",
-          "line": 1568,
-          "evidence": "param_integer runtime resolution"
-        },
-        {
-          "path": "crates/cli/src/config.rs",
-          "line": 1573,
-          "evidence": "param_integer runtime resolution in macro"
-        },
-        {
-          "path": "crates/cli/src/config.rs",
           "line": 1577,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/config.rs",
-          "line": 1580,
-          "evidence": "param_integer runtime resolution"
+          "line": 1582,
+          "evidence": "param_integer runtime resolution in macro"
         },
         {
           "path": "crates/cli/src/config.rs",
-          "line": 1584,
+          "line": 1586,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/config.rs",
           "line": 1589,
+          "evidence": "param_integer runtime resolution"
+        },
+        {
+          "path": "crates/cli/src/config.rs",
+          "line": 1593,
+          "evidence": "param_integer runtime resolution"
+        },
+        {
+          "path": "crates/cli/src/config.rs",
+          "line": 1598,
           "evidence": "param_integer runtime resolution in macro"
         }
       ],
@@ -8611,7 +9007,7 @@
         },
         {
           "path": "crates/cli/src/config.rs",
-          "line": 1527,
+          "line": 1536,
           "evidence": "Rust path reference"
         },
         {
@@ -8678,12 +9074,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/config.rs",
-          "line": 1321,
+          "line": 1330,
           "evidence": "macro token reference"
         },
         {
           "path": "crates/cli/src/config.rs",
-          "line": 1364,
+          "line": 1373,
           "evidence": "Rust path reference"
         }
       ]
@@ -8709,7 +9105,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/config.rs",
-          "line": 1479,
+          "line": 1488,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -10025,7 +10421,7 @@
       "default": "(MAX_IMAGE_BASE64_BYTES / 4) * 3",
       "domain": {
         "min": 0,
-        "max": 6291456
+        "max": 25165824
       },
       "krate": "cli",
       "decl": "crates/cli/src/image_input.rs",
@@ -10251,6 +10647,468 @@
       "behavior_oracle": "installed profile id cli.image_input.types.max_display_chars is resolved at every listed production helper call"
     },
     {
+      "id": "cli.iteron_workspace_hook.max_input_bytes",
+      "module": "scheduler_parallelism",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "u64",
+      "default": "1_048_576",
+      "domain": {},
+      "krate": "cli",
+      "decl": "crates/cli/src/iteron_workspace_hook.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "security",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/iteron_workspace_hook.rs",
+        "symbol": "MAX_INPUT_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/iteron_workspace_hook.rs",
+          "line": 72,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/cli/src/iteron_workspace_hook.rs",
+          "line": 75,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "cli.iteron_workspace_hook.resolve_beneath",
+      "module": "scheduler_parallelism",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "u64",
+      "default": "0x08",
+      "domain": {},
+      "krate": "cli",
+      "decl": "crates/cli/src/iteron_workspace_hook.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "security",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/iteron_workspace_hook.rs",
+        "symbol": "verify_beneath::RESOLVE_BENEATH"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/iteron_workspace_hook.rs",
+          "line": 411,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "cli.iteron_workspace_hook.resolve_no_magiclinks",
+      "module": "scheduler_parallelism",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "u64",
+      "default": "0x02",
+      "domain": {},
+      "krate": "cli",
+      "decl": "crates/cli/src/iteron_workspace_hook.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "security",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/iteron_workspace_hook.rs",
+        "symbol": "verify_beneath::RESOLVE_NO_MAGICLINKS"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/iteron_workspace_hook.rs",
+          "line": 413,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "cli.iteron_workspace_hook.resolve_no_symlinks",
+      "module": "scheduler_parallelism",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "u64",
+      "default": "0x04",
+      "domain": {},
+      "krate": "cli",
+      "decl": "crates/cli/src/iteron_workspace_hook.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "security",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/iteron_workspace_hook.rs",
+        "symbol": "verify_beneath::RESOLVE_NO_SYMLINKS"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/iteron_workspace_hook.rs",
+          "line": 412,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "cli.iteron_workspace_hook.resolve_no_xdev",
+      "module": "scheduler_parallelism",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "u64",
+      "default": "0x01",
+      "domain": {},
+      "krate": "cli",
+      "decl": "crates/cli/src/iteron_workspace_hook.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "security",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/iteron_workspace_hook.rs",
+        "symbol": "verify_beneath::RESOLVE_NO_XDEV"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/iteron_workspace_hook.rs",
+          "line": 414,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "cli.machine_contract.machine_contract_schema_version",
+      "module": "scheduler_parallelism",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "u32",
+      "default": "3",
+      "domain": {},
+      "krate": "cli",
+      "decl": "crates/cli/src/machine_contract.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "wire_compatibility",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/machine_contract.rs",
+        "symbol": "MACHINE_CONTRACT_SCHEMA_VERSION"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/machine_contract.rs",
+          "line": 130,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "cli.machine_contract.machine_contract_type",
+      "module": "scheduler_parallelism",
+      "class": "structural",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"machine_contract\"",
+      "domain": {},
+      "krate": "cli",
+      "decl": "crates/cli/src/machine_contract.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "wire_compatibility",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/machine_contract.rs",
+        "symbol": "MACHINE_CONTRACT_TYPE"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/machine_contract.rs",
+          "line": 131,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "cli.machine_contract.machine_contract_version",
+      "module": "scheduler_parallelism",
+      "class": "structural",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"plantcore.iteron.machine-contract.v1\"",
+      "domain": {},
+      "krate": "cli",
+      "decl": "crates/cli/src/machine_contract.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "wire_compatibility",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/machine_contract.rs",
+        "symbol": "MACHINE_CONTRACT_VERSION"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/machine_contract.rs",
+          "line": 132,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/cli/src/machine_contract.rs",
+          "line": 200,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "cli.machine_contract.max_canonical_depth",
+      "module": "scheduler_parallelism",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "32",
+      "domain": {},
+      "krate": "cli",
+      "decl": "crates/cli/src/machine_contract.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "wire_compatibility",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/machine_contract.rs",
+        "symbol": "MAX_CANONICAL_DEPTH"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/machine_contract.rs",
+          "line": 140,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/cli/src/machine_contract.rs",
+          "line": 304,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "cli.machine_contract.max_probe_bytes",
+      "module": "scheduler_parallelism",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "u64",
+      "default": "1_048_576",
+      "domain": {},
+      "krate": "cli",
+      "decl": "crates/cli/src/machine_contract.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "wire_compatibility",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/machine_contract.rs",
+        "symbol": "MAX_PROBE_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/machine_contract.rs",
+          "line": 195,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/cli/src/machine_contract.rs",
+          "line": 234,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "cli.machine_contract.max_safe_integer",
+      "module": "scheduler_parallelism",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "u64",
+      "default": "(1_u64 << 53) - 1",
+      "domain": {},
+      "krate": "cli",
+      "decl": "crates/cli/src/machine_contract.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "wire_compatibility",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/machine_contract.rs",
+        "symbol": "MAX_SAFE_INTEGER"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/machine_contract.rs",
+          "line": 141,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/cli/src/machine_contract.rs",
+          "line": 340,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/cli/src/machine_contract.rs",
+          "line": 352,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "cli.machine_contract.portable_canonical_json_algorithm",
+      "module": "scheduler_parallelism",
+      "class": "structural",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"utf8-sorted-compact-integer-only-v1\"",
+      "domain": {},
+      "krate": "cli",
+      "decl": "crates/cli/src/machine_contract.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "wire_compatibility",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/machine_contract.rs",
+        "symbol": "PORTABLE_CANONICAL_JSON_ALGORITHM"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/machine_contract.rs",
+          "line": 139,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "cli.machine_contract.portable_canonical_json_version",
+      "module": "scheduler_parallelism",
+      "class": "structural",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"plantcore.portable-canonical-json.v1\"",
+      "domain": {},
+      "krate": "cli",
+      "decl": "crates/cli/src/machine_contract.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "wire_compatibility",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/machine_contract.rs",
+        "symbol": "PORTABLE_CANONICAL_JSON_VERSION"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/machine_contract.rs",
+          "line": 138,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "cli.machine_contract.v7_schema_bytes",
+      "module": "scheduler_parallelism",
+      "class": "structural",
+      "type": "array",
+      "rust_type": "&[u8]",
+      "default": "include_bytes!(\"../../../contracts/plantcore/iteron-output-v7.schema.json\")",
+      "domain": {},
+      "krate": "cli",
+      "decl": "crates/cli/src/machine_contract.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "wire_compatibility",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/machine_contract.rs",
+        "symbol": "V7_SCHEMA_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/machine_contract.rs",
+          "line": 121,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "cli.machine_contract.v7_schema_canonical_sha256",
+      "module": "scheduler_parallelism",
+      "class": "structural",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"83ef558efc9c72b375d9f981a73285831b1936ae1e547cef0a67d9ce1d6c30bc\"",
+      "domain": {},
+      "krate": "cli",
+      "decl": "crates/cli/src/machine_contract.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "wire_compatibility",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/machine_contract.rs",
+        "symbol": "V7_SCHEMA_CANONICAL_SHA256"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/machine_contract.rs",
+          "line": 123,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "cli.machine_contract.v7_schema_id",
+      "module": "scheduler_parallelism",
+      "class": "structural",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"plantcore.iteron-output.v7.target\"",
+      "domain": {},
+      "krate": "cli",
+      "decl": "crates/cli/src/machine_contract.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "wire_compatibility",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/machine_contract.rs",
+        "symbol": "V7_SCHEMA_ID"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/machine_contract.rs",
+          "line": 214,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
       "id": "cli.main.build_commit",
       "module": "scheduler_parallelism",
       "class": "searchable",
@@ -10271,17 +11129,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 606,
+          "line": 685,
           "evidence": "param_str runtime resolution in macro"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1529,
+          "line": 1625,
           "evidence": "param_str runtime resolution"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1541,
+          "line": 1637,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -10308,22 +11166,22 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 607,
+          "line": 686,
           "evidence": "param_str runtime resolution in macro"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 651,
+          "line": 730,
           "evidence": "param_str runtime resolution"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1530,
+          "line": 1626,
           "evidence": "param_str runtime resolution"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1542,
+          "line": 1638,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -10350,7 +11208,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 638,
+          "line": 717,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -10377,17 +11235,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1896,
+          "line": 1999,
           "evidence": "param_str runtime resolution"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3856,
+          "line": 4008,
           "evidence": "param_str runtime resolution"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 4069,
+          "line": 4221,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -10415,22 +11273,22 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1934,
+          "line": 2037,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1952,
+          "line": 2055,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 2264,
+          "line": 2374,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 2603,
+          "line": 2731,
           "evidence": "Rust path reference"
         }
       ]
@@ -10456,7 +11314,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3726,
+          "line": 3878,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -10484,7 +11342,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 962,
+          "line": 1041,
           "evidence": "Rust path reference"
         }
       ]
@@ -10511,7 +11369,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 602,
+          "line": 681,
           "evidence": "Rust path reference"
         }
       ]
@@ -10540,11 +11398,38 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3715,
+          "line": 3867,
           "evidence": "param_integer runtime resolution"
         }
       ],
       "behavior_oracle": "installed profile id cli.main.max_bytes is resolved at every listed production helper call"
+    },
+    {
+      "id": "cli.main.required_env",
+      "module": "scheduler_parallelism",
+      "class": "structural",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"ITERON_PROVIDER_API_KEY\"",
+      "domain": {},
+      "krate": "cli",
+      "decl": "crates/cli/src/main.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "runtime_state_not_a_value",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/main.rs",
+        "symbol": "validate_plantcore_provider_credentials::REQUIRED_ENV"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/main.rs",
+          "line": 653,
+          "evidence": "Rust path reference"
+        }
+      ]
     },
     {
       "id": "cli.main.run_id_nanos_without_fresh_clock",
@@ -10568,7 +11453,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 2470,
+          "line": 2586,
           "evidence": "Rust path reference"
         }
       ]
@@ -10594,7 +11479,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 425,
+          "line": 454,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -10621,7 +11506,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3728,
+          "line": 3880,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -10648,7 +11533,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1011,
+          "line": 1090,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -10675,7 +11560,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3975,
+          "line": 4127,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -10702,17 +11587,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 2428,
+          "line": 2544,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 4117,
+          "line": 4269,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 4522,
+          "line": 4674,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -11040,7 +11925,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/mcp/session.rs",
-          "line": 1424,
+          "line": 1458,
           "evidence": "Rust path reference"
         }
       ]
@@ -11069,7 +11954,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/mcp/session.rs",
-          "line": 1531,
+          "line": 1566,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -11096,11 +11981,43 @@
       "use_sites": [
         {
           "path": "crates/cli/src/mcp.rs",
-          "line": 746,
+          "line": 792,
           "evidence": "param_integer runtime resolution"
         }
       ],
       "behavior_oracle": "installed profile id cli.mcp.unmeasured_dispatch_latency_ms is resolved at every listed production helper call"
+    },
+    {
+      "id": "cli.output.default_schema_version",
+      "module": "scheduler_parallelism",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "u32",
+      "default": "SCHEMA_VERSION",
+      "domain": {},
+      "krate": "cli",
+      "decl": "crates/cli/src/output.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "identity",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/output.rs",
+        "symbol": "DEFAULT_SCHEMA_VERSION"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/machine_contract.rs",
+          "line": 135,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/cli/src/main.rs",
+          "line": 1310,
+          "evidence": "Rust path reference"
+        }
+      ]
     },
     {
       "id": "cli.output.exit_budget",
@@ -11124,7 +12041,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/output.rs",
-          "line": 63,
+          "line": 84,
           "evidence": "Rust path reference"
         }
       ]
@@ -11151,7 +12068,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1176,
+          "line": 1258,
           "evidence": "Rust path reference"
         },
         {
@@ -11186,7 +12103,7 @@
         },
         {
           "path": "crates/cli/src/output.rs",
-          "line": 62,
+          "line": 83,
           "evidence": "Rust path reference"
         },
         {
@@ -11253,7 +12170,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/output.rs",
-          "line": 65,
+          "line": 86,
           "evidence": "Rust path reference"
         },
         {
@@ -11290,7 +12207,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/output.rs",
-          "line": 64,
+          "line": 85,
           "evidence": "Rust path reference"
         }
       ]
@@ -11322,107 +12239,107 @@
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1033,
+          "line": 1112,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1097,
+          "line": 1176,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1166,
+          "line": 1245,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1257,
+          "line": 1349,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1320,
+          "line": 1364,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1327,
+          "line": 1427,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1393,
+          "line": 1434,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1499,
+          "line": 1595,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1569,
+          "line": 1665,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1581,
+          "line": 1677,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1594,
+          "line": 1690,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1622,
+          "line": 1718,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1635,
+          "line": 1731,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1644,
+          "line": 1740,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1675,
+          "line": 1771,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1702,
+          "line": 1798,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3222,
+          "line": 3372,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3353,
+          "line": 3503,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3889,
+          "line": 4041,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3919,
+          "line": 4071,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3955,
+          "line": 4107,
           "evidence": "Rust path reference"
         },
         {
@@ -11482,7 +12399,7 @@
         },
         {
           "path": "crates/cli/src/output.rs",
-          "line": 61,
+          "line": 82,
           "evidence": "Rust path reference"
         },
         {
@@ -11586,17 +12503,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/output.rs",
-          "line": 22,
+          "line": 28,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/output.rs",
-          "line": 563,
+          "line": 623,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/output.rs",
-          "line": 655,
+          "line": 715,
           "evidence": "Rust path reference"
         }
       ]
@@ -11623,7 +12540,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/output.rs",
-          "line": 209,
+          "line": 230,
           "evidence": "Rust path reference"
         }
       ]
@@ -11652,11 +12569,41 @@
       "use_sites": [
         {
           "path": "crates/cli/src/output.rs",
-          "line": 574,
+          "line": 634,
           "evidence": "param_integer runtime resolution"
         }
       ],
       "behavior_oracle": "installed profile id cli.output.max_stderr_notice_bytes is resolved at every listed production helper call"
+    },
+    {
+      "id": "cli.output.max_stream_ui_delta_bytes",
+      "module": "scheduler_parallelism",
+      "class": "bounded",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "8 * 1024",
+      "domain": {
+        "min": 0,
+        "max": 8192
+      },
+      "krate": "cli",
+      "decl": "crates/cli/src/output.rs",
+      "applied": true,
+      "candidate_kind": "const",
+      "disposition": "runtime_settable",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/output.rs",
+        "symbol": "MAX_STREAM_UI_DELTA_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/output.rs",
+          "line": 53,
+          "evidence": "param_usize runtime resolution"
+        }
+      ],
+      "behavior_oracle": "installed profile id cli.output.max_stream_ui_delta_bytes is resolved at every listed production helper call"
     },
     {
       "id": "cli.output.previous_schema_version",
@@ -11680,7 +12627,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/output.rs",
-          "line": 23,
+          "line": 29,
           "evidence": "Rust path reference"
         }
       ]
@@ -11706,14 +12653,9 @@
       },
       "use_sites": [
         {
-          "path": "crates/cli/src/main.rs",
-          "line": 1226,
+          "path": "crates/cli/src/app_server.rs",
+          "line": 1466,
           "evidence": "Rust path reference"
-        },
-        {
-          "path": "crates/cli/src/main.rs",
-          "line": 1389,
-          "evidence": "macro token reference"
         },
         {
           "path": "crates/cli/src/output.rs",
@@ -11722,102 +12664,107 @@
         },
         {
           "path": "crates/cli/src/output.rs",
-          "line": 232,
+          "line": 30,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/cli/src/output.rs",
+          "line": 253,
           "evidence": "macro token reference"
         },
         {
           "path": "crates/cli/src/output.rs",
-          "line": 237,
+          "line": 258,
           "evidence": "macro token reference"
         },
         {
           "path": "crates/cli/src/output.rs",
-          "line": 242,
+          "line": 263,
           "evidence": "macro token reference"
         },
         {
           "path": "crates/cli/src/output.rs",
-          "line": 255,
+          "line": 276,
           "evidence": "macro token reference"
         },
         {
           "path": "crates/cli/src/output.rs",
-          "line": 264,
+          "line": 285,
           "evidence": "macro token reference"
         },
         {
           "path": "crates/cli/src/output.rs",
-          "line": 279,
+          "line": 300,
           "evidence": "macro token reference"
         },
         {
           "path": "crates/cli/src/output.rs",
-          "line": 310,
+          "line": 331,
           "evidence": "macro token reference"
         },
         {
           "path": "crates/cli/src/output.rs",
-          "line": 328,
+          "line": 349,
           "evidence": "macro token reference"
         },
         {
           "path": "crates/cli/src/output.rs",
-          "line": 344,
+          "line": 365,
           "evidence": "macro token reference"
         },
         {
           "path": "crates/cli/src/output.rs",
-          "line": 355,
+          "line": 376,
           "evidence": "macro token reference"
         },
         {
           "path": "crates/cli/src/output.rs",
-          "line": 367,
+          "line": 388,
           "evidence": "macro token reference"
         },
         {
           "path": "crates/cli/src/output.rs",
-          "line": 384,
+          "line": 405,
           "evidence": "macro token reference"
         },
         {
           "path": "crates/cli/src/output.rs",
-          "line": 408,
+          "line": 429,
           "evidence": "macro token reference"
         },
         {
           "path": "crates/cli/src/output.rs",
-          "line": 423,
+          "line": 444,
           "evidence": "macro token reference"
         },
         {
           "path": "crates/cli/src/output.rs",
-          "line": 428,
+          "line": 449,
           "evidence": "macro token reference"
         },
         {
           "path": "crates/cli/src/output.rs",
-          "line": 440,
+          "line": 461,
           "evidence": "macro token reference"
         },
         {
           "path": "crates/cli/src/output.rs",
-          "line": 452,
+          "line": 473,
           "evidence": "macro token reference"
         },
         {
           "path": "crates/cli/src/output.rs",
-          "line": 469,
+          "line": 529,
           "evidence": "macro token reference"
         },
         {
           "path": "crates/cli/src/output.rs",
-          "line": 515,
+          "line": 575,
           "evidence": "macro token reference"
         },
         {
           "path": "crates/cli/src/output.rs",
-          "line": 557,
+          "line": 617,
           "evidence": "Rust path reference"
         }
       ]
@@ -11843,18 +12790,139 @@
       },
       "use_sites": [
         {
-          "path": "crates/cli/src/main.rs",
-          "line": 1227,
+          "path": "crates/cli/src/machine_contract.rs",
+          "line": 134,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 1388,
-          "evidence": "macro token reference"
+          "line": 1311,
+          "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/output.rs",
-          "line": 544,
+          "line": 604,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "cli.output.v7.hex",
+      "module": "scheduler_parallelism",
+      "class": "structural",
+      "type": "array",
+      "rust_type": "&[u8; 16]",
+      "default": "b\"0123456789abcdef\"",
+      "domain": {},
+      "krate": "cli",
+      "decl": "crates/cli/src/output/v7.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "wire_compatibility",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/output/v7.rs",
+        "symbol": "prefixed_sha256::HEX"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/output/v7.rs",
+          "line": 365,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/cli/src/output/v7.rs",
+          "line": 366,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/cli/src/runtime/plantcore.rs",
+          "line": 1171,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/cli/src/runtime/plantcore.rs",
+          "line": 1172,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "cli.output.v7.max_event_bytes",
+      "module": "scheduler_parallelism",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "65_536",
+      "domain": {},
+      "krate": "cli",
+      "decl": "crates/cli/src/output/v7.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "wire_compatibility",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/output/v7.rs",
+        "symbol": "MAX_EVENT_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/output/v7.rs",
+          "line": 80,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/cli/src/output/v7.rs",
+          "line": 258,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "cli.output.v7_schema_version",
+      "module": "scheduler_parallelism",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "u32",
+      "default": "7",
+      "domain": {},
+      "krate": "cli",
+      "decl": "crates/cli/src/output.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "identity",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/output.rs",
+        "symbol": "V7_SCHEMA_VERSION"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/app_server.rs",
+          "line": 274,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/cli/src/app_server.rs",
+          "line": 1464,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/cli/src/output.rs",
+          "line": 485,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/cli/src/tui/headless.rs",
+          "line": 389,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/cli/src/tui/headless.rs",
+          "line": 425,
           "evidence": "Rust path reference"
         }
       ]
@@ -12545,17 +13613,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 3561,
+          "line": 3587,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 3868,
+          "line": 3894,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 3888,
+          "line": 3914,
           "evidence": "Rust path reference"
         }
       ]
@@ -12947,12 +14015,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 3527,
+          "line": 3553,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 3783,
+          "line": 3809,
           "evidence": "Rust path reference"
         }
       ]
@@ -13006,7 +14074,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 3170,
+          "line": 3196,
           "evidence": "Rust path reference"
         }
       ]
@@ -13033,7 +14101,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 3169,
+          "line": 3195,
           "evidence": "Rust path reference"
         }
       ]
@@ -13523,12 +14591,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 3541,
+          "line": 3567,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 3800,
+          "line": 3826,
           "evidence": "Rust path reference"
         }
       ]
@@ -13555,12 +14623,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 3520,
+          "line": 3546,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 3802,
+          "line": 3828,
           "evidence": "Rust path reference"
         }
       ]
@@ -13587,17 +14655,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 3183,
+          "line": 3209,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 3190,
+          "line": 3216,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 3197,
+          "line": 3223,
           "evidence": "Rust path reference"
         }
       ]
@@ -13624,17 +14692,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 3182,
+          "line": 3208,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 3189,
+          "line": 3215,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/providers.rs",
-          "line": 3196,
+          "line": 3222,
           "evidence": "Rust path reference"
         }
       ]
@@ -14329,6 +15397,65 @@
       ]
     },
     {
+      "id": "cli.recording_provider.max_ca_bytes",
+      "module": "provider_routing",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "u64",
+      "default": "65_536",
+      "domain": {},
+      "krate": "cli",
+      "decl": "crates/cli/src/recording_provider.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "security",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/recording_provider.rs",
+        "symbol": "MAX_CA_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/recording_provider.rs",
+          "line": 87,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/cli/src/recording_provider.rs",
+          "line": 91,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "cli.recording_provider.required_credential_env",
+      "module": "provider_routing",
+      "class": "structural",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"ITERON_PROVIDER_API_KEY\"",
+      "domain": {},
+      "krate": "cli",
+      "decl": "crates/cli/src/recording_provider.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "runtime_state_not_a_value",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/recording_provider.rs",
+        "symbol": "REQUIRED_CREDENTIAL_ENV"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/recording_provider.rs",
+          "line": 33,
+          "evidence": "macro token reference"
+        }
+      ]
+    },
+    {
       "id": "cli.render.empty_row_has_trailing_space",
       "module": "scheduler_parallelism",
       "class": "searchable",
@@ -14411,7 +15538,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/compaction.rs",
-          "line": 507,
+          "line": 509,
           "evidence": "param_bool runtime resolution"
         }
       ],
@@ -14438,7 +15565,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 3238,
+          "line": 3310,
           "evidence": "param_bool runtime resolution"
         }
       ],
@@ -14902,12 +16029,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/agent_config.rs",
-          "line": 227,
+          "line": 228,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/runtime/agent_config.rs",
-          "line": 232,
+          "line": 234,
           "evidence": "param_integer runtime resolution"
         },
         {
@@ -15071,7 +16198,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 1162,
+          "line": 1178,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -15138,7 +16265,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 291,
+          "line": 293,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -15195,7 +16322,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/frontend.rs",
-          "line": 14,
+          "line": 13,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -15223,12 +16350,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 319,
+          "line": 409,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime/frontend.rs",
-          "line": 35,
+          "line": 34,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/cli/src/runtime/frontend.rs",
+          "line": 70,
           "evidence": "Rust path reference"
         }
       ]
@@ -15254,7 +16386,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/frontend.rs",
-          "line": 22,
+          "line": 21,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -15284,7 +16416,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/frontend.rs",
-          "line": 369,
+          "line": 534,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -15311,12 +16443,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/hooks.rs",
-          "line": 158,
+          "line": 160,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/runtime/hooks.rs",
-          "line": 458,
+          "line": 508,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -15344,7 +16476,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/hooks.rs",
-          "line": 1524,
+          "line": 1723,
           "evidence": "param_duration runtime resolution in macro"
         }
       ],
@@ -15371,7 +16503,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/hooks.rs",
-          "line": 1273,
+          "line": 1438,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -15398,17 +16530,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/hooks.rs",
-          "line": 1282,
+          "line": 1447,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/runtime/hooks.rs",
-          "line": 1290,
+          "line": 1455,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/runtime/hooks.rs",
-          "line": 1302,
+          "line": 1467,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -15435,7 +16567,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/hooks.rs",
-          "line": 1357,
+          "line": 1522,
           "evidence": "param_integer runtime resolution in macro"
         }
       ],
@@ -15535,7 +16667,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/hooks.rs",
-          "line": 842,
+          "line": 939,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -15563,7 +16695,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/hooks.rs",
-          "line": 847,
+          "line": 944,
           "evidence": "param_duration runtime resolution"
         },
         {
@@ -15598,17 +16730,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/hooks.rs",
-          "line": 503,
+          "line": 555,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/runtime/hooks.rs",
-          "line": 1130,
+          "line": 1262,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/runtime/hooks.rs",
-          "line": 1146,
+          "line": 1278,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -15638,7 +16770,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/hooks.rs",
-          "line": 1171,
+          "line": 1303,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -15668,12 +16800,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/hooks.rs",
-          "line": 512,
+          "line": 564,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/runtime/hooks.rs",
-          "line": 1141,
+          "line": 1273,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -15703,7 +16835,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/hooks.rs",
-          "line": 948,
+          "line": 1045,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -15766,7 +16898,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/hooks.rs",
-          "line": 1505,
+          "line": 1704,
           "evidence": "Rust path reference"
         }
       ]
@@ -15984,7 +17116,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 7702,
+          "line": 8008,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -16011,7 +17143,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 4626,
+          "line": 4752,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -16039,7 +17171,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 1107,
+          "line": 1123,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -16067,7 +17199,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 357,
+          "line": 359,
           "evidence": "production declaration"
         }
       ]
@@ -17165,7 +18297,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 1725,
+          "line": 1741,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -17194,6 +18326,75 @@
         {
           "path": "crates/cli/src/runtime/inbound_control.rs",
           "line": 188,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "cli.runtime.plantcore.hex",
+      "module": "scheduler_parallelism",
+      "class": "structural",
+      "type": "array",
+      "rust_type": "&[u8; 16]",
+      "default": "b\"0123456789abcdef\"",
+      "domain": {},
+      "krate": "cli",
+      "decl": "crates/cli/src/runtime/plantcore.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "runtime_state_not_a_value",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/runtime/plantcore.rs",
+        "symbol": "lower_hex::HEX"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/output/v7.rs",
+          "line": 365,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/cli/src/output/v7.rs",
+          "line": 366,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/cli/src/runtime/plantcore.rs",
+          "line": 1171,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/cli/src/runtime/plantcore.rs",
+          "line": 1172,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "cli.runtime.plantcore.next_snapshot",
+      "module": "scheduler_parallelism",
+      "class": "structural",
+      "type": "object",
+      "rust_type": "AtomicU64",
+      "default": "AtomicU64::new(0)",
+      "domain": {},
+      "krate": "cli",
+      "decl": "crates/cli/src/runtime/plantcore.rs",
+      "applied": false,
+      "candidate_kind": "static",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "runtime_state_not_a_value",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/runtime/plantcore.rs",
+        "symbol": "NEXT_SNAPSHOT"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/runtime/plantcore.rs",
+          "line": 1035,
           "evidence": "Rust path reference"
         }
       ]
@@ -17477,17 +18678,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 3936,
+          "line": 4026,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 3956,
+          "line": 4046,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 3968,
+          "line": 4058,
           "evidence": "Rust path reference"
         },
         {
@@ -17881,7 +19082,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/provider_hedge.rs",
-          "line": 347,
+          "line": 387,
           "evidence": "param_usize runtime resolution"
         }
       ],
@@ -17908,7 +19109,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/provider_hedge.rs",
-          "line": 328,
+          "line": 368,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -17938,12 +19139,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/provider_hedge.rs",
-          "line": 334,
+          "line": 374,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/runtime/provider_hedge.rs",
-          "line": 678,
+          "line": 751,
           "evidence": "param_usize runtime resolution"
         }
       ],
@@ -17973,7 +19174,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/provider_hedge.rs",
-          "line": 341,
+          "line": 381,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -18001,12 +19202,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/provider_route.rs",
-          "line": 599,
+          "line": 616,
           "evidence": "param_duration runtime resolution"
         },
         {
           "path": "crates/cli/src/runtime/provider_route.rs",
-          "line": 652,
+          "line": 669,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -18221,12 +19422,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 3278,
+          "line": 3523,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 4308,
+          "line": 4588,
           "evidence": "macro token reference"
         },
         {
@@ -18260,7 +19461,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 298,
+          "line": 300,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -18763,7 +19964,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 5441,
+          "line": 5663,
           "evidence": "param_bool runtime resolution"
         }
       ],
@@ -18822,7 +20023,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 7793,
+          "line": 8099,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -18878,7 +20079,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 7718,
+          "line": 8024,
           "evidence": "Rust path reference"
         },
         {
@@ -19849,12 +21050,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 2081,
+          "line": 2190,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 4298,
+          "line": 4450,
           "evidence": "Rust path reference"
         },
         {
@@ -20623,7 +21824,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime_tunables/route.rs",
-          "line": 106,
+          "line": 110,
           "evidence": "Rust path reference"
         }
       ]
@@ -21292,7 +22493,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui.rs",
-          "line": 3683,
+          "line": 3684,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -21455,7 +22656,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui.rs",
-          "line": 2848,
+          "line": 2849,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -21764,7 +22965,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui.rs",
-          "line": 2234,
+          "line": 2236,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -21792,7 +22993,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui.rs",
-          "line": 2269,
+          "line": 2271,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -22023,7 +23224,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui.rs",
-          "line": 2430,
+          "line": 2432,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -22051,7 +23252,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui.rs",
-          "line": 2239,
+          "line": 2241,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -22447,26 +23648,53 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui/headless.rs",
-          "line": 519,
+          "line": 990,
           "evidence": "param_duration runtime resolution"
         },
         {
           "path": "crates/cli/src/tui/headless.rs",
-          "line": 535,
+          "line": 1006,
           "evidence": "param_duration runtime resolution in macro"
         },
         {
           "path": "crates/cli/src/tui/headless.rs",
-          "line": 634,
+          "line": 1203,
           "evidence": "param_duration runtime resolution in macro"
         },
         {
           "path": "crates/cli/src/tui/headless.rs",
-          "line": 671,
+          "line": 1240,
           "evidence": "param_duration runtime resolution in macro"
         }
       ],
       "behavior_oracle": "installed profile id cli.tui.headless.authenticated_idle_timeout is resolved at every listed production helper call"
+    },
+    {
+      "id": "cli.tui.headless.control.max_command_id_bytes",
+      "module": "session_stop",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "128",
+      "domain": {},
+      "krate": "cli",
+      "decl": "crates/cli/src/tui/headless/control.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "wire_compatibility",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/tui/headless/control.rs",
+        "symbol": "MAX_COMMAND_ID_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/tui/headless/control.rs",
+          "line": 103,
+          "evidence": "Rust path reference"
+        }
+      ]
     },
     {
       "id": "cli.tui.headless.control.max_job_id_bytes",
@@ -22492,7 +23720,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui/headless/control.rs",
-          "line": 89,
+          "line": 145,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -22522,7 +23750,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui/headless/control.rs",
-          "line": 122,
+          "line": 178,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -22550,7 +23778,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui/headless/framing.rs",
-          "line": 519,
+          "line": 729,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -22577,7 +23805,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui/headless/framing.rs",
-          "line": 556,
+          "line": 766,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -22604,7 +23832,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui/headless/framing.rs",
-          "line": 391,
+          "line": 394,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -22631,27 +23859,27 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui/headless/framing.rs",
-          "line": 383,
+          "line": 386,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/tui/headless/framing.rs",
-          "line": 623,
+          "line": 833,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/tui/headless/framing.rs",
-          "line": 636,
+          "line": 846,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/tui/headless/framing.rs",
-          "line": 660,
+          "line": 870,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/tui/headless/framing.rs",
-          "line": 668,
+          "line": 878,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -22681,7 +23909,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui/headless/framing.rs",
-          "line": 49,
+          "line": 51,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -22711,7 +23939,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui/headless/framing.rs",
-          "line": 42,
+          "line": 44,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -22741,7 +23969,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui/headless/framing.rs",
-          "line": 73,
+          "line": 75,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -22771,12 +23999,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui/headless/framing.rs",
-          "line": 56,
+          "line": 58,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/tui/headless/framing.rs",
-          "line": 431,
+          "line": 434,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -22806,7 +24034,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui/headless/framing.rs",
-          "line": 81,
+          "line": 83,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -22836,21 +24064,53 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui/headless/framing.rs",
-          "line": 35,
+          "line": 37,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/tui/headless/framing.rs",
-          "line": 373,
+          "line": 376,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/tui/headless/framing.rs",
-          "line": 451,
+          "line": 454,
           "evidence": "param_integer runtime resolution"
         }
       ],
       "behavior_oracle": "installed profile id cli.tui.headless.framing.max_server_frame_bytes is resolved at every listed production helper call"
+    },
+    {
+      "id": "cli.tui.headless.framing.recording_chunk_event_bytes",
+      "module": "session_stop",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "MAX_SERVER_FRAME_BYTES + 1",
+      "domain": {},
+      "krate": "cli",
+      "decl": "crates/cli/src/tui/headless/framing.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "wire_compatibility",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/tui/headless/framing.rs",
+        "symbol": "RECORDING_CHUNK_EVENT_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/tui/headless/framing.rs",
+          "line": 657,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/cli/src/tui/headless/framing.rs",
+          "line": 661,
+          "evidence": "Rust path reference"
+        }
+      ]
     },
     {
       "id": "cli.tui.headless.framing.replay_byte_capacity",
@@ -22873,12 +24133,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui/headless/framing.rs",
-          "line": 65,
+          "line": 67,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/tui/headless/framing.rs",
-          "line": 277,
+          "line": 280,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -22905,7 +24165,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui/headless/framing.rs",
-          "line": 273,
+          "line": 276,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -22933,7 +24193,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui/headless/framing.rs",
-          "line": 696,
+          "line": 906,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -22961,7 +24221,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui/headless.rs",
-          "line": 369,
+          "line": 817,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -22991,7 +24251,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui/headless.rs",
-          "line": 408,
+          "line": 878,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -23021,7 +24281,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui/headless/input.rs",
-          "line": 105,
+          "line": 107,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -23051,7 +24311,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui/headless.rs",
-          "line": 271,
+          "line": 708,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -23078,7 +24338,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui/headless.rs",
-          "line": 206,
+          "line": 631,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -23108,11 +24368,38 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui/headless.rs",
-          "line": 267,
+          "line": 704,
           "evidence": "param_integer runtime resolution"
         }
       ],
       "behavior_oracle": "installed profile id cli.tui.headless.max_connections is resolved at every listed production helper call"
+    },
+    {
+      "id": "cli.tui.headless.max_recorded_commands",
+      "module": "session_stop",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "4096",
+      "domain": {},
+      "krate": "cli",
+      "decl": "crates/cli/src/tui/headless.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "durability_replay",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/tui/headless.rs",
+        "symbol": "Shared::submit_plantcore_command::MAX_RECORDED_COMMANDS"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/tui/headless.rs",
+          "line": 289,
+          "evidence": "Rust path reference"
+        }
+      ]
     },
     {
       "id": "cli.tui.headless.partial_frame_timeout",
@@ -23136,7 +24423,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui/headless.rs",
-          "line": 528,
+          "line": 999,
           "evidence": "param_duration runtime resolution in macro"
         }
       ],
@@ -23164,7 +24451,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui/headless.rs",
-          "line": 723,
+          "line": 1292,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -23644,7 +24931,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui.rs",
-          "line": 5038,
+          "line": 5039,
           "evidence": "Rust path reference"
         }
       ]
@@ -23671,7 +24958,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui.rs",
-          "line": 4171,
+          "line": 4172,
           "evidence": "Rust path reference"
         }
       ]
@@ -23728,7 +25015,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui.rs",
-          "line": 3480,
+          "line": 3481,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -23877,7 +25164,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui.rs",
-          "line": 3833,
+          "line": 3834,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -24389,7 +25676,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui.rs",
-          "line": 3462,
+          "line": 3463,
           "evidence": "param_str runtime resolution in macro"
         }
       ],
@@ -27904,7 +29191,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/app_server.rs",
-          "line": 3503,
+          "line": 3783,
           "evidence": "param_duration runtime resolution"
         },
         {
@@ -46613,12 +47900,12 @@
       "use_sites": [
         {
           "path": "crates/mcp/src/supervisor/catalog.rs",
-          "line": 400,
+          "line": 406,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/mcp/src/supervisor/catalog.rs",
-          "line": 407,
+          "line": 413,
           "evidence": "param_integer runtime resolution"
         },
         {
@@ -47806,12 +49093,12 @@
       "use_sites": [
         {
           "path": "crates/mcp/src/supervisor/catalog.rs",
-          "line": 334,
+          "line": 340,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/mcp/src/supervisor/catalog.rs",
-          "line": 341,
+          "line": 347,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -47841,12 +49128,12 @@
       "use_sites": [
         {
           "path": "crates/mcp/src/supervisor/catalog.rs",
-          "line": 239,
+          "line": 245,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/mcp/src/supervisor/catalog.rs",
-          "line": 246,
+          "line": 252,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -47876,12 +49163,12 @@
       "use_sites": [
         {
           "path": "crates/mcp/src/supervisor/catalog.rs",
-          "line": 273,
+          "line": 279,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/mcp/src/supervisor/catalog.rs",
-          "line": 281,
+          "line": 287,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -47911,12 +49198,12 @@
       "use_sites": [
         {
           "path": "crates/mcp/src/supervisor/catalog.rs",
-          "line": 287,
+          "line": 293,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/mcp/src/supervisor/catalog.rs",
-          "line": 295,
+          "line": 301,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -47946,7 +49233,7 @@
       "use_sites": [
         {
           "path": "crates/mcp/src/supervisor/catalog.rs",
-          "line": 362,
+          "line": 368,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -47976,12 +49263,12 @@
       "use_sites": [
         {
           "path": "crates/mcp/src/supervisor/catalog.rs",
-          "line": 367,
+          "line": 373,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/mcp/src/supervisor/catalog.rs",
-          "line": 425,
+          "line": 431,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -48008,7 +49295,7 @@
       "use_sites": [
         {
           "path": "crates/mcp/src/supervisor/catalog.rs",
-          "line": 232,
+          "line": 238,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -48036,17 +49323,17 @@
       "use_sites": [
         {
           "path": "crates/mcp/src/supervisor/catalog.rs",
-          "line": 345,
+          "line": 351,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/mcp/src/supervisor/catalog.rs",
-          "line": 350,
+          "line": 356,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/mcp/src/supervisor/catalog.rs",
-          "line": 352,
+          "line": 358,
           "evidence": "Rust path reference"
         }
       ]
@@ -50838,7 +52125,7 @@
         },
         {
           "path": "crates/record/src/erasure.rs",
-          "line": 565,
+          "line": 562,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -51208,7 +52495,7 @@
       "use_sites": [
         {
           "path": "crates/protocol/src/input.rs",
-          "line": 250,
+          "line": 254,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -51238,7 +52525,7 @@
       "use_sites": [
         {
           "path": "crates/protocol/src/input.rs",
-          "line": 143,
+          "line": 147,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -51250,10 +52537,10 @@
       "class": "bounded",
       "type": "integer",
       "rust_type": "usize",
-      "default": "256 * 1024",
+      "default": "512 * 1024",
       "domain": {
         "min": 0,
-        "max": 262144
+        "max": 524288
       },
       "krate": "protocol",
       "decl": "crates/protocol/src/input.rs",
@@ -51268,7 +52555,7 @@
       "use_sites": [
         {
           "path": "crates/protocol/src/input.rs",
-          "line": 173,
+          "line": 177,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -51280,10 +52567,10 @@
       "class": "bounded",
       "type": "integer",
       "rust_type": "usize",
-      "default": "8 * 1024 * 1024",
+      "default": "32 * 1024 * 1024",
       "domain": {
         "min": 0,
-        "max": 8388608
+        "max": 33554432
       },
       "krate": "protocol",
       "decl": "crates/protocol/src/input.rs",
@@ -51298,7 +52585,7 @@
       "use_sites": [
         {
           "path": "crates/protocol/src/input.rs",
-          "line": 365,
+          "line": 369,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -51328,7 +52615,7 @@
       "use_sites": [
         {
           "path": "crates/protocol/src/input.rs",
-          "line": 228,
+          "line": 232,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -51356,12 +52643,12 @@
       "use_sites": [
         {
           "path": "crates/protocol/src/input.rs",
-          "line": 210,
+          "line": 214,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/protocol/src/input.rs",
-          "line": 340,
+          "line": 344,
           "evidence": "Rust path reference"
         }
       ]
@@ -51388,7 +52675,7 @@
       "use_sites": [
         {
           "path": "crates/protocol/src/input.rs",
-          "line": 304,
+          "line": 308,
           "evidence": "Rust path reference"
         }
       ]
@@ -51417,7 +52704,7 @@
       "use_sites": [
         {
           "path": "crates/protocol/src/input.rs",
-          "line": 258,
+          "line": 262,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -51445,12 +52732,12 @@
       "use_sites": [
         {
           "path": "crates/protocol/src/input.rs",
-          "line": 220,
+          "line": 224,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/protocol/src/input.rs",
-          "line": 343,
+          "line": 347,
           "evidence": "Rust path reference"
         }
       ]
@@ -51873,6 +53160,291 @@
       ]
     },
     {
+      "id": "protocol.plantcore.five_class_calculator_version",
+      "module": "budget_allocation",
+      "class": "structural",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"plantcore.metering.five-class-ceil.v1\"",
+      "domain": {},
+      "krate": "protocol",
+      "decl": "crates/protocol/src/plantcore.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "wire_compatibility",
+      "owner": {
+        "krate": "protocol",
+        "path": "crates/protocol/src/plantcore.rs",
+        "symbol": "FIVE_CLASS_CALCULATOR_VERSION"
+      },
+      "use_sites": [
+        {
+          "path": "crates/protocol/src/plantcore.rs",
+          "line": 14,
+          "evidence": "production declaration"
+        }
+      ]
+    },
+    {
+      "id": "protocol.plantcore.hex",
+      "module": "budget_allocation",
+      "class": "structural",
+      "type": "array",
+      "rust_type": "&[u8; 16]",
+      "default": "b\"0123456789abcdef\"",
+      "domain": {},
+      "krate": "protocol",
+      "decl": "crates/protocol/src/plantcore.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "wire_compatibility",
+      "owner": {
+        "krate": "protocol",
+        "path": "crates/protocol/src/plantcore.rs",
+        "symbol": "HexSha256::to_lower_hex::HEX"
+      },
+      "use_sites": [
+        {
+          "path": "crates/protocol/src/plantcore.rs",
+          "line": 46,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/protocol/src/plantcore.rs",
+          "line": 47,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/protocol/src/policy_evidence.rs",
+          "line": 706,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/protocol/src/policy_evidence.rs",
+          "line": 707,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "protocol.plantcore.max_artifact_bytes",
+      "module": "budget_allocation",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "u64",
+      "default": "100 * 1024 * 1024",
+      "domain": {},
+      "krate": "protocol",
+      "decl": "crates/protocol/src/plantcore.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "wire_compatibility",
+      "owner": {
+        "krate": "protocol",
+        "path": "crates/protocol/src/plantcore.rs",
+        "symbol": "MAX_ARTIFACT_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/protocol/src/plantcore.rs",
+          "line": 376,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "protocol.plantcore.max_artifacts",
+      "module": "budget_allocation",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "50",
+      "domain": {},
+      "krate": "protocol",
+      "decl": "crates/protocol/src/plantcore.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "wire_compatibility",
+      "owner": {
+        "krate": "protocol",
+        "path": "crates/protocol/src/plantcore.rs",
+        "symbol": "MAX_ARTIFACTS"
+      },
+      "use_sites": [
+        {
+          "path": "crates/protocol/src/plantcore.rs",
+          "line": 441,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "protocol.plantcore.max_assistant_text_bytes",
+      "module": "budget_allocation",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "65_536",
+      "domain": {},
+      "krate": "protocol",
+      "decl": "crates/protocol/src/plantcore.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "wire_compatibility",
+      "owner": {
+        "krate": "protocol",
+        "path": "crates/protocol/src/plantcore.rs",
+        "symbol": "MAX_ASSISTANT_TEXT_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/protocol/src/plantcore.rs",
+          "line": 438,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "protocol.plantcore.max_question_prompt_bytes",
+      "module": "budget_allocation",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "usize",
+      "default": "65_536",
+      "domain": {},
+      "krate": "protocol",
+      "decl": "crates/protocol/src/plantcore.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "wire_compatibility",
+      "owner": {
+        "krate": "protocol",
+        "path": "crates/protocol/src/plantcore.rs",
+        "symbol": "MAX_QUESTION_PROMPT_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/protocol/src/plantcore.rs",
+          "line": 396,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "protocol.plantcore.max_total_artifact_bytes",
+      "module": "budget_allocation",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "u64",
+      "default": "500 * 1024 * 1024",
+      "domain": {},
+      "krate": "protocol",
+      "decl": "crates/protocol/src/plantcore.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "wire_compatibility",
+      "owner": {
+        "krate": "protocol",
+        "path": "crates/protocol/src/plantcore.rs",
+        "symbol": "MAX_TOTAL_ARTIFACT_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/protocol/src/plantcore.rs",
+          "line": 18,
+          "evidence": "production declaration"
+        }
+      ]
+    },
+    {
+      "id": "protocol.plantcore.max_upload_chunk_bytes",
+      "module": "budget_allocation",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "u32",
+      "default": "8 * 1024 * 1024",
+      "domain": {},
+      "krate": "protocol",
+      "decl": "crates/protocol/src/plantcore.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "wire_compatibility",
+      "owner": {
+        "krate": "protocol",
+        "path": "crates/protocol/src/plantcore.rs",
+        "symbol": "MAX_UPLOAD_CHUNK_BYTES"
+      },
+      "use_sites": [
+        {
+          "path": "crates/protocol/src/plantcore.rs",
+          "line": 19,
+          "evidence": "production declaration"
+        }
+      ]
+    },
+    {
+      "id": "protocol.plantcore.native_metering_unit",
+      "module": "budget_allocation",
+      "class": "structural",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"USD_MICRO\"",
+      "domain": {},
+      "krate": "protocol",
+      "decl": "crates/protocol/src/plantcore.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "wire_compatibility",
+      "owner": {
+        "krate": "protocol",
+        "path": "crates/protocol/src/plantcore.rs",
+        "symbol": "NATIVE_METERING_UNIT"
+      },
+      "use_sites": [
+        {
+          "path": "crates/protocol/src/plantcore.rs",
+          "line": 15,
+          "evidence": "production declaration"
+        }
+      ]
+    },
+    {
+      "id": "protocol.plantcore.run_bootstrap_contract_version",
+      "module": "budget_allocation",
+      "class": "structural",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"plantcore.iteron-run-bootstrap.v1\"",
+      "domain": {},
+      "krate": "protocol",
+      "decl": "crates/protocol/src/plantcore.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "wire_compatibility",
+      "owner": {
+        "krate": "protocol",
+        "path": "crates/protocol/src/plantcore.rs",
+        "symbol": "RUN_BOOTSTRAP_CONTRACT_VERSION"
+      },
+      "use_sites": [
+        {
+          "path": "crates/protocol/src/plantcore.rs",
+          "line": 13,
+          "evidence": "production declaration"
+        }
+      ]
+    },
+    {
       "id": "protocol.policy_bundle_checkpoint.max_policy_implementation_id_bytes",
       "module": "budget_allocation",
       "class": "bounded",
@@ -51988,8 +53560,8 @@
       "module": "budget_allocation",
       "class": "structural",
       "type": "array",
-      "rust_type": "[PolicyHarnessErrorCode; 32]",
-      "default": "[\n            PolicyHarnessErrorCode::ProviderError,\n            PolicyHarnessErrorCode::RecordError,\n            PolicyHarnessErrorCode::RouteError,\n            PolicyHarnessErrorCode::ProviderNoticeLimit,\n            PolicyHarnessErrorCode::BudgetError,\n            PolicyHarnessErrorCode::SubmissionError,\n            PolicyHarnessErrorCode::PricingError,\n            PolicyHarnessErrorCode::PermissionError,\n            PolicyHarnessErrorCode::RuntimePolicyError,\n            PolicyHarnessErrorCode::EffectUnknown,\n            PolicyHarnessErrorCode::EffectError,\n            PolicyHarnessErrorCode::IdentityExhausted,\n            PolicyHarnessErrorCode::OpaqueProviderRetries,\n            PolicyHarnessErrorCode::ContextError,\n            PolicyHarnessErrorCode::AgentCatalogError,\n            PolicyHarnessErrorCode::TunablesError,\n            PolicyHarnessErrorCode::ToolingPolicyError,\n            PolicyHarnessErrorCode::ExecutionPolicyError,\n            PolicyHarnessErrorCode::ToolOutputSpillError,\n            PolicyHarnessErrorCode::McpLifecycleError,\n            PolicyHarnessErrorCode::PolicyEvidenceError,\n            PolicyHarnessErrorCode::DelegationError,\n            PolicyHarnessErrorCode::WorkflowError,\n            PolicyHarnessErrorCode::OperatorDrain,\n            PolicyHarnessErrorCode::BudgetMaxTurns,\n            PolicyHarnessErrorCode::BudgetMaxTokens,\n            PolicyHarnessErrorCode::BudgetMaxUsd,\n            PolicyHarnessErrorCode::BudgetMaxWallSecs,\n            PolicyHarnessErrorCode::BudgetVerifyAttempts,\n            PolicyHarnessErrorCode::OperatorInterrupted,\n            PolicyHarnessErrorCode::ConsecutiveToolErrors,\n            PolicyHarnessErrorCode::HarnessFailure,\n        ]",
+      "rust_type": "[PolicyHarnessErrorCode; 33]",
+      "default": "[\n            PolicyHarnessErrorCode::ProviderError,\n            PolicyHarnessErrorCode::RecordError,\n            PolicyHarnessErrorCode::RouteError,\n            PolicyHarnessErrorCode::ProviderNoticeLimit,\n            PolicyHarnessErrorCode::BudgetError,\n            PolicyHarnessErrorCode::SubmissionError,\n            PolicyHarnessErrorCode::PricingError,\n            PolicyHarnessErrorCode::PermissionError,\n            PolicyHarnessErrorCode::RuntimePolicyError,\n            PolicyHarnessErrorCode::EffectUnknown,\n            PolicyHarnessErrorCode::EffectError,\n            PolicyHarnessErrorCode::IdentityExhausted,\n            PolicyHarnessErrorCode::OpaqueProviderRetries,\n            PolicyHarnessErrorCode::ContextError,\n            PolicyHarnessErrorCode::AgentCatalogError,\n            PolicyHarnessErrorCode::TunablesError,\n            PolicyHarnessErrorCode::ToolingPolicyError,\n            PolicyHarnessErrorCode::ExecutionPolicyError,\n            PolicyHarnessErrorCode::ToolOutputSpillError,\n            PolicyHarnessErrorCode::McpLifecycleError,\n            PolicyHarnessErrorCode::PolicyEvidenceError,\n            PolicyHarnessErrorCode::DelegationError,\n            PolicyHarnessErrorCode::WorkflowError,\n            PolicyHarnessErrorCode::OperatorDrain,\n            PolicyHarnessErrorCode::BudgetMaxTurns,\n            PolicyHarnessErrorCode::BudgetMaxTokens,\n            PolicyHarnessErrorCode::BudgetMaxUsd,\n            PolicyHarnessErrorCode::BudgetMaxWallSecs,\n            PolicyHarnessErrorCode::BudgetVerifyAttempts,\n            PolicyHarnessErrorCode::OperatorInterrupted,\n            PolicyHarnessErrorCode::ConsecutiveToolErrors,\n            PolicyHarnessErrorCode::UsageUnavailable,\n            PolicyHarnessErrorCode::HarnessFailure,\n        ]",
       "domain": {},
       "krate": "protocol",
       "decl": "crates/protocol/src/policy_evidence.rs",
@@ -52005,7 +53577,7 @@
       "use_sites": [
         {
           "path": "crates/protocol/src/policy_evidence.rs",
-          "line": 460,
+          "line": 463,
           "evidence": "Rust path reference"
         }
       ]
@@ -52031,13 +53603,23 @@
       },
       "use_sites": [
         {
-          "path": "crates/protocol/src/policy_evidence.rs",
-          "line": 703,
+          "path": "crates/protocol/src/plantcore.rs",
+          "line": 46,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/protocol/src/plantcore.rs",
+          "line": 47,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/protocol/src/policy_evidence.rs",
-          "line": 704,
+          "line": 706,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/protocol/src/policy_evidence.rs",
+          "line": 707,
           "evidence": "Rust path reference"
         }
       ]
@@ -52076,7 +53658,7 @@
         },
         {
           "path": "crates/protocol/src/policy_evidence.rs",
-          "line": 616,
+          "line": 619,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -52106,12 +53688,12 @@
       "use_sites": [
         {
           "path": "crates/protocol/src/policy_evidence.rs",
-          "line": 515,
+          "line": 518,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/protocol/src/policy_evidence.rs",
-          "line": 552,
+          "line": 555,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -52141,7 +53723,7 @@
       "use_sites": [
         {
           "path": "crates/protocol/src/policy_evidence.rs",
-          "line": 687,
+          "line": 690,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -52169,12 +53751,12 @@
       "use_sites": [
         {
           "path": "crates/protocol/src/policy_evidence.rs",
-          "line": 543,
+          "line": 546,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/protocol/src/policy_evidence.rs",
-          "line": 560,
+          "line": 563,
           "evidence": "Rust path reference"
         }
       ]
@@ -52287,7 +53869,7 @@
       "use_sites": [
         {
           "path": "crates/protocol/src/policy_evidence.rs",
-          "line": 604,
+          "line": 607,
           "evidence": "Rust path reference"
         }
       ]
@@ -53232,17 +54814,17 @@
       "use_sites": [
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 3378,
-          "evidence": "Rust path reference"
-        },
-        {
-          "path": "crates/provider/src/catalog.rs",
-          "line": 3384,
-          "evidence": "Rust path reference"
-        },
-        {
-          "path": "crates/provider/src/catalog.rs",
           "line": 3390,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/provider/src/catalog.rs",
+          "line": 3396,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/provider/src/catalog.rs",
+          "line": 3402,
           "evidence": "Rust path reference"
         }
       ]
@@ -53269,7 +54851,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 3444,
+          "line": 3456,
           "evidence": "Rust path reference"
         }
       ]
@@ -53301,7 +54883,7 @@
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 3443,
+          "line": 3455,
           "evidence": "Rust path reference"
         },
         {
@@ -53332,7 +54914,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 1599,
+          "line": 1611,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -53359,7 +54941,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 2252,
+          "line": 2264,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -53386,12 +54968,12 @@
       "use_sites": [
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 1639,
+          "line": 1651,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 1641,
+          "line": 1653,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -53533,7 +55115,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 1030,
+          "line": 1042,
           "evidence": "Rust path reference"
         }
       ]
@@ -53586,22 +55168,22 @@
       "use_sites": [
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 1411,
+          "line": 1423,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 1920,
+          "line": 1932,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 1999,
+          "line": 2011,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 2101,
+          "line": 2113,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -53628,7 +55210,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 1750,
+          "line": 1762,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -53656,7 +55238,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 1749,
+          "line": 1761,
           "evidence": "Rust path reference"
         }
       ]
@@ -53737,12 +55319,12 @@
       "use_sites": [
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 3420,
+          "line": 3432,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 3426,
+          "line": 3438,
           "evidence": "Rust path reference"
         }
       ]
@@ -53769,7 +55351,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 3450,
+          "line": 3462,
           "evidence": "Rust path reference"
         }
       ]
@@ -53796,7 +55378,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 3449,
+          "line": 3461,
           "evidence": "Rust path reference"
         },
         {
@@ -53833,7 +55415,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 1033,
+          "line": 1045,
           "evidence": "Rust path reference"
         }
       ]
@@ -53862,7 +55444,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 1404,
+          "line": 1416,
           "evidence": "param_usize runtime resolution"
         }
       ],
@@ -53892,12 +55474,12 @@
       "use_sites": [
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 1313,
+          "line": 1325,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 1499,
+          "line": 1511,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -53927,7 +55509,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 1513,
+          "line": 1525,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -53957,7 +55539,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 1446,
+          "line": 1458,
           "evidence": "param_usize runtime resolution"
         }
       ],
@@ -53987,7 +55569,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 2304,
+          "line": 2316,
           "evidence": "param_usize runtime resolution"
         }
       ],
@@ -54017,7 +55599,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 1631,
+          "line": 1643,
           "evidence": "param_usize runtime resolution"
         }
       ],
@@ -54087,17 +55669,17 @@
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 2413,
+          "line": 2425,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 2438,
+          "line": 2450,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 2468,
+          "line": 2480,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -54127,7 +55709,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 2144,
+          "line": 2156,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -54157,22 +55739,22 @@
       "use_sites": [
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 1822,
+          "line": 1834,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 1906,
+          "line": 1918,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 1985,
+          "line": 1997,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 2087,
+          "line": 2099,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -54202,7 +55784,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 1858,
+          "line": 1870,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -54232,12 +55814,12 @@
       "use_sites": [
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 2867,
+          "line": 2879,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 2869,
+          "line": 2881,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -54272,17 +55854,17 @@
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 2954,
+          "line": 2966,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 3170,
+          "line": 3182,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 3206,
+          "line": 3218,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -54312,12 +55894,12 @@
       "use_sites": [
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 2886,
+          "line": 2898,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 2888,
+          "line": 2900,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -54347,32 +55929,32 @@
       "use_sites": [
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 1438,
+          "line": 1450,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 2407,
+          "line": 2419,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 2432,
+          "line": 2444,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 2462,
+          "line": 2474,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 2960,
+          "line": 2972,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 3212,
+          "line": 3224,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -54402,12 +55984,12 @@
       "use_sites": [
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 2267,
+          "line": 2279,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 2290,
+          "line": 2302,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -54437,7 +56019,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 2201,
+          "line": 2213,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -54467,12 +56049,12 @@
       "use_sites": [
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 5134,
+          "line": 5146,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 5136,
+          "line": 5148,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -54502,7 +56084,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 5173,
+          "line": 5185,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -54532,17 +56114,17 @@
       "use_sites": [
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 1836,
+          "line": 1848,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 2274,
+          "line": 2286,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 2292,
+          "line": 2304,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -54569,12 +56151,12 @@
       "use_sites": [
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 3496,
+          "line": 3508,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 3500,
+          "line": 3512,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -54655,12 +56237,12 @@
       "use_sites": [
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 2877,
+          "line": 2889,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 2879,
+          "line": 2891,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -54688,12 +56270,12 @@
       "use_sites": [
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 5111,
+          "line": 5123,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 5125,
+          "line": 5137,
           "evidence": "Rust path reference"
         }
       ]
@@ -54720,12 +56302,12 @@
       "use_sites": [
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 3402,
+          "line": 3414,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 3408,
+          "line": 3420,
           "evidence": "Rust path reference"
         }
       ]
@@ -54752,7 +56334,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 3447,
+          "line": 3459,
           "evidence": "Rust path reference"
         }
       ]
@@ -54784,7 +56366,7 @@
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 3446,
+          "line": 3458,
           "evidence": "Rust path reference"
         }
       ]
@@ -54811,17 +56393,17 @@
       "use_sites": [
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 1292,
+          "line": 1304,
           "evidence": "param_duration runtime resolution"
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 1485,
+          "line": 1497,
           "evidence": "param_duration runtime resolution"
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 2230,
+          "line": 2242,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -54876,12 +56458,12 @@
       "use_sites": [
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 1253,
+          "line": 1265,
           "evidence": "param_duration runtime resolution"
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 1394,
+          "line": 1406,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -55161,7 +56743,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/lib.rs",
-          "line": 730,
+          "line": 731,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -55189,7 +56771,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/lib.rs",
-          "line": 736,
+          "line": 737,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -55219,12 +56801,12 @@
       "use_sites": [
         {
           "path": "crates/provider/src/lib.rs",
-          "line": 974,
+          "line": 975,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/provider/src/lib.rs",
-          "line": 979,
+          "line": 980,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -55254,22 +56836,22 @@
       "use_sites": [
         {
           "path": "crates/provider/src/lib.rs",
-          "line": 760,
+          "line": 761,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/provider/src/lib.rs",
-          "line": 785,
+          "line": 786,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/provider/src/lib.rs",
-          "line": 787,
+          "line": 788,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/provider/src/lib.rs",
-          "line": 802,
+          "line": 803,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -55299,7 +56881,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/lib.rs",
-          "line": 990,
+          "line": 991,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -55330,7 +56912,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/lib.rs",
-          "line": 88,
+          "line": 90,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -55360,7 +56942,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/lib.rs",
-          "line": 1201,
+          "line": 1202,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -55388,7 +56970,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/lib.rs",
-          "line": 619,
+          "line": 621,
           "evidence": "Rust path reference"
         }
       ]
@@ -55414,12 +56996,12 @@
       "use_sites": [
         {
           "path": "crates/provider/src/lib.rs",
-          "line": 117,
+          "line": 119,
           "evidence": "param_u64 runtime resolution"
         },
         {
           "path": "crates/provider/src/lib.rs",
-          "line": 119,
+          "line": 121,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -55446,12 +57028,12 @@
       "use_sites": [
         {
           "path": "crates/provider/src/lib.rs",
-          "line": 138,
+          "line": 140,
           "evidence": "param_u64 runtime resolution"
         },
         {
           "path": "crates/provider/src/lib.rs",
-          "line": 140,
+          "line": 142,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -55478,12 +57060,12 @@
       "use_sites": [
         {
           "path": "crates/provider/src/lib.rs",
-          "line": 124,
+          "line": 126,
           "evidence": "param_u64 runtime resolution"
         },
         {
           "path": "crates/provider/src/lib.rs",
-          "line": 126,
+          "line": 128,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -55510,12 +57092,12 @@
       "use_sites": [
         {
           "path": "crates/provider/src/lib.rs",
-          "line": 131,
+          "line": 133,
           "evidence": "param_u64 runtime resolution"
         },
         {
           "path": "crates/provider/src/lib.rs",
-          "line": 133,
+          "line": 135,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -55542,12 +57124,12 @@
       "use_sites": [
         {
           "path": "crates/provider/src/lib.rs",
-          "line": 145,
+          "line": 147,
           "evidence": "param_u64 runtime resolution"
         },
         {
           "path": "crates/provider/src/lib.rs",
-          "line": 147,
+          "line": 149,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -56918,7 +58500,7 @@
         },
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 3443,
+          "line": 3455,
           "evidence": "Rust path reference"
         },
         {
@@ -57127,7 +58709,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/catalog.rs",
-          "line": 3449,
+          "line": 3461,
           "evidence": "Rust path reference"
         },
         {
@@ -59908,22 +61490,22 @@
         },
         {
           "path": "crates/record/src/erasure.rs",
-          "line": 584,
+          "line": 581,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/record/src/erasure.rs",
-          "line": 598,
+          "line": 595,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/record/src/erasure.rs",
-          "line": 608,
+          "line": 605,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/record/src/erasure.rs",
-          "line": 618,
+          "line": 615,
           "evidence": "Rust path reference"
         }
       ]
@@ -59950,17 +61532,17 @@
       "use_sites": [
         {
           "path": "crates/record/src/erasure.rs",
-          "line": 586,
+          "line": 583,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/record/src/erasure.rs",
-          "line": 609,
+          "line": 606,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/record/src/erasure.rs",
-          "line": 618,
+          "line": 615,
           "evidence": "Rust path reference"
         }
       ]
@@ -60031,7 +61613,7 @@
       "use_sites": [
         {
           "path": "crates/record/src/erasure.rs",
-          "line": 640,
+          "line": 637,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -60064,12 +61646,12 @@
         },
         {
           "path": "crates/record/src/erasure.rs",
-          "line": 585,
+          "line": 582,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/record/src/erasure.rs",
-          "line": 599,
+          "line": 596,
           "evidence": "Rust path reference"
         }
       ]
@@ -61650,7 +63232,7 @@
         },
         {
           "path": "crates/record/src/tunables/snapshot_v2.rs",
-          "line": 281,
+          "line": 284,
           "evidence": "Rust path reference"
         }
       ]
@@ -61677,12 +63259,12 @@
       "use_sites": [
         {
           "path": "crates/record/src/tunables/snapshot_v2.rs",
-          "line": 284,
+          "line": 287,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/record/src/tunables/snapshot_v2.rs",
-          "line": 309,
+          "line": 312,
           "evidence": "Rust path reference"
         }
       ]
@@ -61709,7 +63291,7 @@
       "use_sites": [
         {
           "path": "crates/record/src/tunables/snapshot_v2.rs",
-          "line": 282,
+          "line": 285,
           "evidence": "Rust path reference"
         }
       ]
@@ -66031,7 +67613,7 @@
       "use_sites": [
         {
           "path": "crates/tools/src/lib.rs",
-          "line": 1370,
+          "line": 1376,
           "evidence": "Rust path reference"
         }
       ]
@@ -66060,7 +67642,7 @@
       "use_sites": [
         {
           "path": "crates/tools/src/lib.rs",
-          "line": 90,
+          "line": 92,
           "evidence": "param_usize runtime resolution"
         }
       ],
@@ -66090,7 +67672,7 @@
       "use_sites": [
         {
           "path": "crates/tools/src/lib.rs",
-          "line": 97,
+          "line": 99,
           "evidence": "param_usize runtime resolution"
         }
       ],
@@ -66117,7 +67699,7 @@
       "use_sites": [
         {
           "path": "crates/tools/src/lib.rs",
-          "line": 1337,
+          "line": 1343,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -67612,6 +69194,60 @@
         }
       ],
       "behavior_oracle": "installed profile id tools.multi_file_patch_input.max_total_hunks is resolved at every listed production helper call"
+    },
+    {
+      "id": "tools.plantcore.publish_artifact",
+      "module": "tool_arguments",
+      "class": "structural",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"publish_artifact\"",
+      "domain": {},
+      "krate": "tools",
+      "decl": "crates/tools/src/plantcore.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "capability_authority",
+      "owner": {
+        "krate": "tools",
+        "path": "crates/tools/src/plantcore.rs",
+        "symbol": "PUBLISH_ARTIFACT"
+      },
+      "use_sites": [
+        {
+          "path": "crates/tools/src/plantcore.rs",
+          "line": 35,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "tools.plantcore.request_user_input",
+      "module": "tool_arguments",
+      "class": "structural",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"request_user_input\"",
+      "domain": {},
+      "krate": "tools",
+      "decl": "crates/tools/src/plantcore.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "capability_authority",
+      "owner": {
+        "krate": "tools",
+        "path": "crates/tools/src/plantcore.rs",
+        "symbol": "REQUEST_USER_INPUT"
+      },
+      "use_sites": [
+        {
+          "path": "crates/tools/src/plantcore.rs",
+          "line": 10,
+          "evidence": "Rust path reference"
+        }
+      ]
     },
     {
       "id": "tools.process.mod.control_queue_capacity",
@@ -69381,7 +71017,7 @@
       "use_sites": [
         {
           "path": "crates/tools/src/lib.rs",
-          "line": 867,
+          "line": 873,
           "evidence": "Rust path reference"
         },
         {
@@ -70921,7 +72557,7 @@
       "class": "structural",
       "type": "text",
       "rust_type": "&str",
-      "default": "\"a8439500a335e0086a326dbfd88222fc1501373d333aa7bb2315779f220bd663\"",
+      "default": "\"dc46c5a2f21c77ae289c3c6169cc372230b5080110694d51bd39d4709bdc88fd\"",
       "domain": {},
       "krate": "tunables",
       "decl": "crates/tunables/src/lib.rs",
@@ -73483,7 +75119,7 @@
       "class": "structural",
       "type": "array",
       "rust_type": "[DefaultSpec; 85]",
-      "default": "[\n    literal_default!(enum_value!(\"glm\")), // 1 provider\n    model_default_with_value!(\"default_model\", enum_value!(\"glm-5.2\")), // 2 model\n    derived_default!(\"base_url\"),         // 3 base_url\n    literal_default!(enum_value!(\"low\")), // 4 effort\n    literal_default!(integer_value!(64)), // 5 max_turns\n    operator_default!(\"max_usd\"),         // 6 max_usd\n    operator_default!(\"max_tokens\"),      // 7 max_tokens\n    literal_default!(integer_value!(3_600)), // 8 max_wall_secs\n    literal_default!(boolean_value!(true)), // 9 allow_code\n    literal_default!(enum_value!(\"default\")), // 10 permission_mode\n    derived_default!(\"permission_rules\"), // 11 permission_rules\n    literal_default!(boolean_value!(true)), // 12 bypass_permissions\n    derived_default_with_value!(\n        \"compaction_trigger\",\n        object_value!(\n            \"mode\" => enum_value!(\"adaptive\"),\n            \"usable_window_ratio\" => decimal_value!(82, 2),\n            \"fallback_trigger_tokens\" => integer_value!(120_000),\n            \"output_reserve_tokens\" => integer_value!(8_192),\n        )\n    ), // 13 compaction_trigger\n    operator_default!(\"verify_command\"),  // 14 verify_command\n    literal_default!(integer_value!(500)), // 15 retry_backoff_base\n    literal_default!(integer_value!(30_000)), // 16 retry_backoff_cap\n    literal_default!(integer_value!(3)),  // 17 retry_max_attempts\n    literal_default!(list_value!()),      // 18 egress_allow\n    model_default_with_value!(\"max_output_tokens\", integer_value!(8_192)), // 19 request_output_cap\n    derived_default!(\"effort_reasoning_map\"), // 20 effort_reasoning_map\n    derived_default!(\"thinking_map\"),     // 21 thinking_map\n    derived_default!(\"orchestration_map\"), // 22 orchestration_map\n    literal_default!(boolean_value!(true)), // 23 prompt_cache\n    derived_default_with_value!(\n        \"compaction_adaptive\",\n        object_value!(\n            \"usable_window_ratio\" => decimal_value!(82, 2),\n            \"keep_recent_messages\" => integer_value!(0),\n            \"output_reserve_tokens\" => integer_value!(8_192),\n        )\n    ), // 24 compaction_adaptive\n    derived_default_with_value!(\"compaction_keep_recent\", integer_value!(0)), // 25 compaction_keep_recent\n    derived_default!(\"token_estimator\"),                                      // 26 token_estimator\n    derived_default!(\"summary_profile\"),                                      // 27 summary_profile\n    derived_default!(\"compaction_failure\"), // 28 compaction_failure\n    derived_default!(\"instruction_discovery_render\"), // 29 instruction_discovery_render\n    literal_default!(boolean_value!(true)), // 30 memory_enable\n    derived_default!(\"memory_budgets\"),     // 31 memory_budgets\n    derived_default!(\"bm25\"),               // 32 bm25\n    derived_default!(\"skill_listing_budget\"), // 33 skill_listing_budget\n    derived_default_with_value!(\"max_consecutive_tool_errors\", integer_value!(5)), // 34 max_consecutive_tool_errors\n    derived_default!(\"pure_overlap\"),        // 35 pure_overlap\n    derived_default!(\"pure_concurrency\"),    // 36 pure_concurrency\n    derived_default!(\"failed_action_dedup\"), // 37 failed_action_dedup\n    derived_default!(\"pure_memo_cache\"),     // 38 pure_memo_cache\n    derived_default_with_value!(\n        \"shell_timeout_output\",\n        object_value!(\n            \"timeout_seconds\" => integer_value!(120),\n            \"stdout_max_bytes\" => integer_value!(65_536),\n            \"stderr_max_bytes\" => integer_value!(65_536),\n        )\n    ), // 39 shell_timeout_output\n    derived_default!(\"read_file_limits\"),    // 40 read_file_limits\n    derived_default!(\"list_dir_limits\"),     // 41 list_dir_limits\n    derived_default!(\"glob_limits\"),         // 42 glob_limits\n    derived_default!(\"grep_limits\"),         // 43 grep_limits\n    derived_default!(\"repo_map\"),            // 44 repo_map\n    derived_default!(\"git_limits\"),          // 45 git_limits\n    derived_default!(\"web_fetch_limits\"),    // 46 web_fetch_limits\n    derived_default!(\"web_search_cap\"),      // 47 web_search_cap\n    derived_default!(\"verifier_attempts\"),   // 48 verifier_attempts\n    derived_default!(\"verifier_feedback_tails\"), // 49 verifier_feedback_tails\n    derived_default_with_value!(\"verifier_timeout\", integer_value!(180)), // 50 verifier_timeout\n    derived_default!(\"route_topology\"),      // 51 route_topology\n    derived_default!(\"decomposition_profile\"), // 52 decomposition_profile\n    derived_default!(\"fan_breadth\"),         // 53 fan_breadth\n    derived_default!(\"admission\"),           // 54 admission\n    derived_default!(\"writer_fan_turn_split\"), // 55 writer_fan_turn_split\n    derived_default!(\"worker_min_turns\"),    // 56 worker_min_turns\n    derived_default!(\"wall_split\"),          // 57 wall_split\n    derived_default!(\"token_split\"),         // 58 token_split\n    derived_default!(\"fan_concurrency\"),     // 59 fan_concurrency\n    derived_default!(\"child_ceiling\"),       // 60 child_ceiling\n    derived_default!(\"direct_child_allocation\"), // 61 direct_child_allocation\n    derived_default!(\"subagent_effort_inheritance\"), // 62 subagent_effort_inheritance\n    derived_default!(\"report_budget\"),       // 63 report_budget\n    derived_default!(\"join_reduce\"),         // 64 join_reduce\n    derived_default!(\"workflow_aggregate\"),  // 65 workflow_aggregate\n    derived_default!(\"schema_retry_jitter\"), // 66 schema_retry_jitter\n    derived_default_with_value!(\"provider_connect_tls_timeout\", integer_value!(10)), // 67 provider_connect_tls_timeout\n    literal_default!(object_value!(\n        \"max_images\" => integer_value!(8),\n        \"per_image_raw_bytes\" => integer_value!(6_291_456),\n        \"aggregate_raw_bytes\" => integer_value!(25_165_824),\n        \"max_dimension\" => integer_value!(8_192),\n        \"max_frames\" => integer_value!(256),\n    )), // 68 multimodal_input_admission_decode_envelope\n    derived_default_with_value!(\n        \"app_server_sq_eq_backpressure\",\n        object_value!(\n            \"submission_entries\" => integer_value!(256),\n            \"submission_bytes\" => integer_value!(34_866_176),\n            \"event_entries\" => integer_value!(1_024),\n            \"cosmetic_overflow\" => enum_value!(\"coalesce\"),\n            \"authoritative_overflow\" => enum_value!(\"wait\"),\n        )\n    ), // 69 app_server_sq_eq_backpressure\n    literal_default!(object_value!(\n        \"eager_budget_milliseconds\" => integer_value!(0),\n        \"positive_ttl_seconds\" => integer_value!(900),\n        \"failure_backoff_base_seconds\" => integer_value!(60),\n        \"failure_backoff_cap_seconds\" => integer_value!(86_400),\n    )), // 70 provider_discovery_account_probe_cache_policy\n    operator_default!(\"operator_prompt_stream\"), // 71 operator_prompt_stream\n    catalog_default!(\"builtin_prompt_corpus\"),   // 72 builtin_prompt_corpus\n    catalog_default!(\"instruction_bundle\"),      // 73 instruction_bundle\n    catalog_default!(\"memory_corpus\"),           // 74 memory_corpus\n    catalog_default!(\"skill_catalog\"),           // 75 skill_catalog\n    catalog_default!(\"agent_catalog\"),           // 76 agent_catalog\n    catalog_default!(\"provider_model_capability_catalog\"), // 77 provider_model_capability_catalog\n    catalog_default!(\"mcp_topology_tool_catalog\"), // 78 mcp_topology_tool_catalog\n    catalog_default!(\"hooks_map\"),               // 79 hooks_map\n    catalog_default!(\"workflow_graph\"),          // 80 workflow_graph\n    catalog_default!(\"tool_action_space\"),       // 81 tool_action_space\n    catalog_default!(\"rate_card_catalog\"),       // 82 rate_card_catalog\n    catalog_default!(\"router_lexicons\"),         // 83 router_lexicons\n    observation_default!(\"run_boundary.environment_snapshot\"), // 84 environment_snapshot\n    catalog_default!(\"web_search_backend_catalog\"), // 85 web_search_backend_catalog\n]",
+      "default": "[\n    literal_default!(enum_value!(\"glm\")), // 1 provider\n    model_default_with_value!(\"default_model\", enum_value!(\"glm-5.2\")), // 2 model\n    derived_default!(\"base_url\"),         // 3 base_url\n    literal_default!(enum_value!(\"low\")), // 4 effort\n    literal_default!(integer_value!(64)), // 5 max_turns\n    operator_default!(\"max_usd\"),         // 6 max_usd\n    operator_default!(\"max_tokens\"),      // 7 max_tokens\n    literal_default!(integer_value!(3_600)), // 8 max_wall_secs\n    literal_default!(boolean_value!(true)), // 9 allow_code\n    literal_default!(enum_value!(\"default\")), // 10 permission_mode\n    derived_default!(\"permission_rules\"), // 11 permission_rules\n    literal_default!(boolean_value!(true)), // 12 bypass_permissions\n    derived_default_with_value!(\n        \"compaction_trigger\",\n        object_value!(\n            \"mode\" => enum_value!(\"adaptive\"),\n            \"usable_window_ratio\" => decimal_value!(82, 2),\n            \"fallback_trigger_tokens\" => integer_value!(120_000),\n            \"output_reserve_tokens\" => integer_value!(8_192),\n        )\n    ), // 13 compaction_trigger\n    operator_default!(\"verify_command\"),  // 14 verify_command\n    literal_default!(integer_value!(500)), // 15 retry_backoff_base\n    literal_default!(integer_value!(30_000)), // 16 retry_backoff_cap\n    literal_default!(integer_value!(3)),  // 17 retry_max_attempts\n    literal_default!(list_value!()),      // 18 egress_allow\n    model_default_with_value!(\"max_output_tokens\", integer_value!(8_192)), // 19 request_output_cap\n    derived_default!(\"effort_reasoning_map\"), // 20 effort_reasoning_map\n    derived_default!(\"thinking_map\"),     // 21 thinking_map\n    derived_default!(\"orchestration_map\"), // 22 orchestration_map\n    literal_default!(boolean_value!(true)), // 23 prompt_cache\n    derived_default_with_value!(\n        \"compaction_adaptive\",\n        object_value!(\n            \"usable_window_ratio\" => decimal_value!(82, 2),\n            \"keep_recent_messages\" => integer_value!(0),\n            \"output_reserve_tokens\" => integer_value!(8_192),\n        )\n    ), // 24 compaction_adaptive\n    derived_default_with_value!(\"compaction_keep_recent\", integer_value!(0)), // 25 compaction_keep_recent\n    derived_default!(\"token_estimator\"),                                      // 26 token_estimator\n    derived_default!(\"summary_profile\"),                                      // 27 summary_profile\n    derived_default!(\"compaction_failure\"), // 28 compaction_failure\n    derived_default!(\"instruction_discovery_render\"), // 29 instruction_discovery_render\n    literal_default!(boolean_value!(true)), // 30 memory_enable\n    derived_default!(\"memory_budgets\"),     // 31 memory_budgets\n    derived_default!(\"bm25\"),               // 32 bm25\n    derived_default!(\"skill_listing_budget\"), // 33 skill_listing_budget\n    derived_default_with_value!(\"max_consecutive_tool_errors\", integer_value!(5)), // 34 max_consecutive_tool_errors\n    derived_default!(\"pure_overlap\"),        // 35 pure_overlap\n    derived_default!(\"pure_concurrency\"),    // 36 pure_concurrency\n    derived_default!(\"failed_action_dedup\"), // 37 failed_action_dedup\n    derived_default!(\"pure_memo_cache\"),     // 38 pure_memo_cache\n    derived_default_with_value!(\n        \"shell_timeout_output\",\n        object_value!(\n            \"timeout_seconds\" => integer_value!(120),\n            \"stdout_max_bytes\" => integer_value!(65_536),\n            \"stderr_max_bytes\" => integer_value!(65_536),\n        )\n    ), // 39 shell_timeout_output\n    derived_default!(\"read_file_limits\"),    // 40 read_file_limits\n    derived_default!(\"list_dir_limits\"),     // 41 list_dir_limits\n    derived_default!(\"glob_limits\"),         // 42 glob_limits\n    derived_default!(\"grep_limits\"),         // 43 grep_limits\n    derived_default!(\"repo_map\"),            // 44 repo_map\n    derived_default!(\"git_limits\"),          // 45 git_limits\n    derived_default!(\"web_fetch_limits\"),    // 46 web_fetch_limits\n    derived_default!(\"web_search_cap\"),      // 47 web_search_cap\n    derived_default!(\"verifier_attempts\"),   // 48 verifier_attempts\n    derived_default!(\"verifier_feedback_tails\"), // 49 verifier_feedback_tails\n    derived_default_with_value!(\"verifier_timeout\", integer_value!(180)), // 50 verifier_timeout\n    derived_default!(\"route_topology\"),      // 51 route_topology\n    derived_default!(\"decomposition_profile\"), // 52 decomposition_profile\n    derived_default!(\"fan_breadth\"),         // 53 fan_breadth\n    derived_default!(\"admission\"),           // 54 admission\n    derived_default!(\"writer_fan_turn_split\"), // 55 writer_fan_turn_split\n    derived_default!(\"worker_min_turns\"),    // 56 worker_min_turns\n    derived_default!(\"wall_split\"),          // 57 wall_split\n    derived_default!(\"token_split\"),         // 58 token_split\n    derived_default!(\"fan_concurrency\"),     // 59 fan_concurrency\n    derived_default!(\"child_ceiling\"),       // 60 child_ceiling\n    derived_default!(\"direct_child_allocation\"), // 61 direct_child_allocation\n    derived_default!(\"subagent_effort_inheritance\"), // 62 subagent_effort_inheritance\n    derived_default!(\"report_budget\"),       // 63 report_budget\n    derived_default!(\"join_reduce\"),         // 64 join_reduce\n    derived_default!(\"workflow_aggregate\"),  // 65 workflow_aggregate\n    derived_default!(\"schema_retry_jitter\"), // 66 schema_retry_jitter\n    derived_default_with_value!(\"provider_connect_tls_timeout\", integer_value!(10)), // 67 provider_connect_tls_timeout\n    literal_default!(object_value!(\n        \"max_images\" => integer_value!(8),\n        \"per_image_raw_bytes\" => integer_value!(25_165_824),\n        \"aggregate_raw_bytes\" => integer_value!(25_165_824),\n        \"max_dimension\" => integer_value!(8_192),\n        \"max_frames\" => integer_value!(256),\n    )), // 68 multimodal_input_admission_decode_envelope\n    derived_default_with_value!(\n        \"app_server_sq_eq_backpressure\",\n        object_value!(\n            \"submission_entries\" => integer_value!(256),\n            \"submission_bytes\" => integer_value!(34_866_176),\n            \"event_entries\" => integer_value!(1_024),\n            \"cosmetic_overflow\" => enum_value!(\"coalesce\"),\n            \"authoritative_overflow\" => enum_value!(\"wait\"),\n        )\n    ), // 69 app_server_sq_eq_backpressure\n    literal_default!(object_value!(\n        \"eager_budget_milliseconds\" => integer_value!(0),\n        \"positive_ttl_seconds\" => integer_value!(900),\n        \"failure_backoff_base_seconds\" => integer_value!(60),\n        \"failure_backoff_cap_seconds\" => integer_value!(86_400),\n    )), // 70 provider_discovery_account_probe_cache_policy\n    operator_default!(\"operator_prompt_stream\"), // 71 operator_prompt_stream\n    catalog_default!(\"builtin_prompt_corpus\"),   // 72 builtin_prompt_corpus\n    catalog_default!(\"instruction_bundle\"),      // 73 instruction_bundle\n    catalog_default!(\"memory_corpus\"),           // 74 memory_corpus\n    catalog_default!(\"skill_catalog\"),           // 75 skill_catalog\n    catalog_default!(\"agent_catalog\"),           // 76 agent_catalog\n    catalog_default!(\"provider_model_capability_catalog\"), // 77 provider_model_capability_catalog\n    catalog_default!(\"mcp_topology_tool_catalog\"), // 78 mcp_topology_tool_catalog\n    catalog_default!(\"hooks_map\"),               // 79 hooks_map\n    catalog_default!(\"workflow_graph\"),          // 80 workflow_graph\n    catalog_default!(\"tool_action_space\"),       // 81 tool_action_space\n    catalog_default!(\"rate_card_catalog\"),       // 82 rate_card_catalog\n    catalog_default!(\"router_lexicons\"),         // 83 router_lexicons\n    observation_default!(\"run_boundary.environment_snapshot\"), // 84 environment_snapshot\n    catalog_default!(\"web_search_backend_catalog\"), // 85 web_search_backend_catalog\n]",
       "domain": {},
       "krate": "tunables",
       "decl": "crates/tunables/src/resolution_metadata/current.rs",
@@ -75011,7 +76647,7 @@
       "class": "structural",
       "type": "array",
       "rust_type": "[ValueSchema; 25]",
-      "default": "[\n    object_schema!(\n        \"direct_child_allocation\",\n        [\n            scalar_field!(\n                \"writer_turn_numerator\",\n                true,\n                int_domain!(0, 1_000, \"parts\")\n            ),\n            scalar_field!(\n                \"writer_turn_denominator\",\n                true,\n                int_domain!(1, 1_000, \"parts\")\n            ),\n            scalar_field!(\"strictly_dominant_writer\", true, bool_domain!()),\n            scalar_field!(\n                \"child_token_numerator\",\n                true,\n                int_domain!(0, 1_000, \"parts\")\n            ),\n            scalar_field!(\n                \"child_token_denominator\",\n                true,\n                int_domain!(1, 1_000, \"parts\")\n            ),\n            scalar_field!(\"child_wall_numerator\", true, int_domain!(0, 1_000, \"parts\")),\n            scalar_field!(\n                \"child_wall_denominator\",\n                true,\n                int_domain!(1, 1_000, \"parts\")\n            ),\n            scalar_field!(\n                \"minimum_child_turns\",\n                true,\n                int_domain!(1, 1_000_000, \"turns\")\n            ),\n            scalar_field!(\n                \"minimum_remaining_wall_seconds\",\n                true,\n                int_domain!(1, 86_400, \"seconds\")\n            )\n        ],\n        [\n            less_equal_rule!(\"writer_turn_numerator\", \"writer_turn_denominator\"),\n            less_equal_rule!(\"child_token_numerator\", \"child_token_denominator\"),\n            less_equal_rule!(\"child_wall_numerator\", \"child_wall_denominator\"),\n            external_rule!(\"minimum_child_turns\", ParentTurns),\n            external_rule!(\"minimum_remaining_wall_seconds\", ParentWall)\n        ]\n    ),\n    scalar_schema!(\n        \"subagent_effort_inheritance\",\n        Enum,\n        finite_enum_domain!(\"low\", \"medium\", \"high\", \"xhigh\", \"max\", \"ultracode\"),\n        [external_rule!(\"$\", ProviderCapability)]\n    ),\n    scalar_schema!(\n        \"report_budget\",\n        Bytes,\n        int_domain!(1, 16_777_216, \"bytes\"),\n        [external_rule!(\"$\", ToolBudget)]\n    ),\n    object_schema!(\n        \"join_reduce\",\n        [\n            scalar_field!(\"join\", true, finite_enum_domain!(\"wait_all\", \"fail_fast\")),\n            scalar_field!(\n                \"order\",\n                true,\n                finite_enum_domain!(\"declaration\", \"completion\")\n            ),\n            scalar_field!(\"include_failed_evidence\", true, bool_domain!())\n        ],\n        [external_rule!(\"include_failed_evidence\", VerificationFloor)]\n    ),\n    object_schema!(\n        \"workflow_aggregate\",\n        [\n            scalar_field!(\"max_calls\", true, int_domain!(1, 1_000_000, \"calls\")),\n            scalar_field!(\"max_tokens\", false, int_domain!(1, 1_000_000_000, \"tokens\")),\n            scalar_field!(\"max_wall_seconds\", true, int_domain!(1, 86_400, \"seconds\")),\n            scalar_field!(\"max_concurrency\", true, int_domain!(1, 1024, \"tasks\"))\n        ],\n        [\n            external_rule!(\"max_calls\", RunBudget),\n            external_rule!(\"max_tokens\", ParentTokens),\n            external_rule!(\"max_wall_seconds\", ParentWall)\n        ]\n    ),\n    object_schema!(\n        \"schema_retry_jitter\",\n        [\n            scalar_field!(\"max_attempts\", true, int_domain!(0, 64, \"attempts\")),\n            scalar_field!(\n                \"base_milliseconds\",\n                true,\n                int_domain!(0, 60_000, \"milliseconds\")\n            ),\n            scalar_field!(\n                \"cap_milliseconds\",\n                true,\n                int_domain!(0, 60_000, \"milliseconds\")\n            )\n        ],\n        [\n            less_equal_rule!(\"base_milliseconds\", \"cap_milliseconds\"),\n            external_rule!(\"cap_milliseconds\", ParentWall)\n        ]\n    ),\n    scalar_schema!(\n        \"provider_connect_tls_timeout\",\n        Duration,\n        int_domain!(1, 86_400, \"seconds\"),\n        [external_rule!(\"$\", ParentWall)]\n    ),\n    object_schema!(\n        \"multimodal_input_admission_decode_envelope\",\n        [\n            scalar_field!(\"max_images\", true, int_domain!(0, 8, \"images\")),\n            scalar_field!(\n                \"per_image_raw_bytes\",\n                true,\n                int_domain!(1, 6_291_456, \"bytes\")\n            ),\n            scalar_field!(\n                \"aggregate_raw_bytes\",\n                true,\n                int_domain!(1, 25_165_824, \"bytes\")\n            ),\n            scalar_field!(\"max_dimension\", true, int_domain!(1, 8_192, \"pixels\")),\n            scalar_field!(\"max_frames\", true, int_domain!(1, 256, \"frames\"))\n        ],\n        [\n            less_equal_rule!(\"per_image_raw_bytes\", \"aggregate_raw_bytes\"),\n            external_rule!(\"aggregate_raw_bytes\", ToolBudget)\n        ]\n    ),\n    object_schema!(\n        \"app_server_sq_eq_backpressure\",\n        [\n            scalar_field!(\n                \"submission_entries\",\n                true,\n                int_domain!(1, 65_536, \"entries\")\n            ),\n            scalar_field!(\n                \"submission_bytes\",\n                true,\n                int_domain!(1, 268_435_456, \"bytes\")\n            ),\n            scalar_field!(\"event_entries\", true, int_domain!(1, 65_536, \"entries\")),\n            scalar_field!(\n                \"cosmetic_overflow\",\n                true,\n                finite_enum_domain!(\"drop\", \"coalesce\")\n            ),\n            scalar_field!(\n                \"authoritative_overflow\",\n                true,\n                finite_enum_domain!(\"wait\", \"reject\")\n            )\n        ],\n        [\n            external_rule!(\"submission_entries\", RunBudget),\n            external_rule!(\"event_entries\", RunBudget)\n        ]\n    ),\n    object_schema!(\n        \"provider_discovery_account_probe_cache_policy\",\n        [\n            scalar_field!(\n                \"eager_budget_milliseconds\",\n                true,\n                int_domain!(0, 60_000, \"milliseconds\")\n            ),\n            scalar_field!(\n                \"positive_ttl_seconds\",\n                true,\n                int_domain!(0, 86_400, \"seconds\")\n            ),\n            scalar_field!(\n                \"failure_backoff_base_seconds\",\n                true,\n                int_domain!(1, 86_400, \"seconds\")\n            ),\n            scalar_field!(\n                \"failure_backoff_cap_seconds\",\n                true,\n                int_domain!(1, 604_800, \"seconds\")\n            )\n        ],\n        [\n            less_equal_rule!(\n                \"failure_backoff_base_seconds\",\n                \"failure_backoff_cap_seconds\"\n            ),\n            external_rule!(\"eager_budget_milliseconds\", ParentWall)\n        ]\n    ),\n    object_schema!(\n        \"operator_prompt_stream\",\n        [\n            scalar_field!(\"digest_sha256\", true, text_domain!(64, 64, Sha256)),\n            scalar_field!(\"canonical_bytes\", true, int_domain!(1, 1_048_576, \"bytes\"))\n        ],\n        [\n            external_domain_rule!(\"$\", ContextWindow),\n            external_rule!(\"$\", OperatorAuthority)\n        ]\n    ),\n    catalog_schema!(\n        \"builtin_prompt_corpus\",\n        1024,\n        [\n            scalar_field!(\"id\", true, text_domain!(1, 96, NamespacedId)),\n            scalar_field!(\"version\", true, text_domain!(1, 64, Semver)),\n            scalar_field!(\"sha256\", true, text_domain!(64, 64, Sha256)),\n            scalar_field!(\"max_render_bytes\", true, int_domain!(1, 1_048_576, \"bytes\"))\n        ],\n        [external_catalog_rule!(\"max_render_bytes\", ContextWindow)]\n    ),\n    catalog_schema!(\n        \"instruction_bundle\",\n        4096,\n        [\n            scalar_field!(\"path\", true, text_domain!(1, 4096, Path)),\n            scalar_field!(\"trust\", true, finite_enum_domain!(\"operator\", \"repository\")),\n            scalar_field!(\"sha256\", true, text_domain!(64, 64, Sha256)),\n            scalar_field!(\"max_bytes\", true, int_domain!(1, 1_048_576, \"bytes\"))\n        ],\n        [external_catalog_rule!(\"max_bytes\", ContextWindow)]\n    ),\n    catalog_schema!(\n        \"memory_corpus\",\n        100_000,\n        [\n            scalar_field!(\"id\", true, text_domain!(1, 96, NamespacedId)),\n            scalar_field!(\n                \"scope\",\n                true,\n                finite_enum_domain!(\"session\", \"repository\", \"tenant\")\n            ),\n            scalar_field!(\"sha256\", true, text_domain!(64, 64, Sha256)),\n            scalar_field!(\"max_bytes\", true, int_domain!(1, 1_048_576, \"bytes\"))\n        ],\n        [\n            external_catalog_rule!(\"scope\", TenantScope),\n            external_catalog_rule!(\"max_bytes\", ContextWindow)\n        ]\n    ),\n    catalog_schema!(\n        \"skill_catalog\",\n        10_000,\n        [\n            scalar_field!(\"name\", true, text_domain!(1, 96, NamespacedId)),\n            scalar_field!(\"version\", true, text_domain!(1, 64, Semver)),\n            scalar_field!(\"sha256\", true, text_domain!(64, 64, Sha256)),\n            list_field!(\n                \"tools\",\n                true,\n                0,\n                256,\n                true,\n                text_domain!(1, 96, NamespacedId)\n            )\n        ],\n        [external_catalog_rule!(\"tools\", OperatorAuthority)]\n    ),\n    catalog_schema!(\n        \"agent_catalog\",\n        4096,\n        [\n            scalar_field!(\"name\", true, text_domain!(1, 96, NamespacedId)),\n            scalar_field!(\"version\", true, text_domain!(1, 64, Semver)),\n            scalar_field!(\"sha256\", true, text_domain!(64, 64, Sha256)),\n            list_field!(\n                \"requested_tools\",\n                true,\n                0,\n                256,\n                true,\n                text_domain!(1, 96, NamespacedId)\n            )\n        ],\n        [external_catalog_rule!(\"requested_tools\", OperatorAuthority)]\n    ),\n    catalog_schema!(\n        \"provider_model_capability_catalog\",\n        100_000,\n        [\n            scalar_field!(\"route_id\", true, text_domain!(1, 96, NamespacedId)),\n            scalar_field!(\"model_id\", true, text_domain!(1, 256, Identifier)),\n            scalar_field!(\"context_window\", true, int_domain!(1, 10_000_000, \"tokens\")),\n            scalar_field!(\n                \"max_output_tokens\",\n                true,\n                int_domain!(1, 1_000_000, \"tokens\")\n            ),\n            scalar_field!(\"image_input\", true, bool_domain!()),\n            scalar_field!(\"evidence_sha256\", true, text_domain!(64, 64, Sha256))\n        ],\n        [less_equal_rule!(\"max_output_tokens\", \"context_window\")]\n    ),\n    catalog_schema!(\n        \"mcp_topology_tool_catalog\",\n        10_000,\n        [\n            scalar_field!(\"server_id\", true, text_domain!(1, 96, NamespacedId)),\n            scalar_field!(\"transport\", true, finite_enum_domain!(\"stdio\", \"http\")),\n            scalar_field!(\"tool_name\", true, text_domain!(1, 96, NamespacedId)),\n            scalar_field!(\"schema_sha256\", true, text_domain!(64, 64, Sha256))\n        ],\n        [external_catalog_rule!(\"transport\", OperatorAuthority)]\n    ),\n    catalog_schema!(\n        \"hooks_map\",\n        256,\n        [\n            scalar_field!(\"event_id\", true, text_domain!(1, 96, NamespacedId)),\n            scalar_field!(\"command_sha256\", true, text_domain!(64, 64, Sha256)),\n            scalar_field!(\"command_bytes\", true, int_domain!(1, 4096, \"bytes\")),\n            scalar_field!(\"timeout_seconds\", true, int_domain!(1, 3600, \"seconds\"))\n        ],\n        [external_catalog_rule!(\"command_sha256\", OperatorAuthority)]\n    ),\n    catalog_schema!(\n        \"workflow_graph\",\n        64,\n        [\n            scalar_field!(\"component\", true, text_domain!(1, 96, NamespacedId)),\n            scalar_field!(\"digest_sha256\", true, text_domain!(64, 64, Sha256)),\n            scalar_field!(\"version\", true, text_domain!(1, 64, Semver))\n        ],\n        []\n    ),\n    catalog_schema!(\n        \"tool_action_space\",\n        10_000,\n        [\n            scalar_field!(\"name\", true, text_domain!(1, 96, NamespacedId)),\n            scalar_field!(\n                \"capability\",\n                true,\n                catalog_enum_domain!(\"tool-capabilities\")\n            ),\n            scalar_field!(\n                \"effect_class\",\n                true,\n                finite_enum_domain!(\n                    \"pure\",\n                    \"reversible_local\",\n                    \"code_executing\",\n                    \"trust_mutating\",\n                    \"irreversible_external\"\n                )\n            ),\n            scalar_field!(\"schema_sha256\", true, text_domain!(64, 64, Sha256))\n        ],\n        [external_catalog_rule!(\"capability\", OperatorAuthority)]\n    ),\n    catalog_schema!(\n        \"rate_card_catalog\",\n        100_000,\n        [\n            scalar_field!(\"route_id\", true, text_domain!(1, 96, NamespacedId)),\n            scalar_field!(\n                \"input_microusd_per_million\",\n                true,\n                int_domain!(0, 1_000_000_000, \"microusd\")\n            ),\n            scalar_field!(\n                \"output_microusd_per_million\",\n                true,\n                int_domain!(0, 1_000_000_000, \"microusd\")\n            ),\n            scalar_field!(\"signature_sha256\", true, text_domain!(64, 64, Sha256))\n        ],\n        [external_catalog_rule!(\n            \"signature_sha256\",\n            BenchmarkProtocol\n        )]\n    ),\n    catalog_schema!(\n        \"router_lexicons\",\n        100_000,\n        [\n            scalar_field!(\"phrase\", true, text_domain!(1, 1024, Utf8)),\n            scalar_field!(\"route\", true, text_domain!(1, 96, NamespacedId)),\n            scalar_field!(\"weight\", true, decimal_domain!(-1, 0, 1, 0, 6, \"weight\")),\n            scalar_field!(\"version\", true, text_domain!(1, 64, Semver))\n        ],\n        [external_catalog_rule!(\"version\", BenchmarkProtocol)]\n    ),\n    object_schema!(\n        \"environment_snapshot\",\n        [\n            scalar_field!(\"present\", true, bool_domain!()),\n            scalar_field!(\"digest_sha256\", true, text_domain!(64, 64, Sha256)),\n            scalar_field!(\"canonical_bytes\", true, int_domain!(0, 4096, \"bytes\")),\n            scalar_field!(\n                \"trust\",\n                true,\n                finite_enum_domain!(\"untrusted\", \"workspace\", \"trusted\")\n            )\n        ],\n        [external_rule!(\"$\", TenantScope)]\n    ),\n    catalog_schema!(\n        \"web_search_backend_catalog\",\n        1024,\n        [\n            scalar_field!(\"backend_id\", true, text_domain!(1, 96, NamespacedId)),\n            scalar_field!(\"endpoint\", true, text_domain!(1, 2048, Uri)),\n            scalar_field!(\"timeout_seconds\", true, int_domain!(1, 300, \"seconds\")),\n            scalar_field!(\"max_results\", true, int_domain!(1, 1000, \"results\"))\n        ],\n        [\n            external_catalog_rule!(\"endpoint\", OperatorAuthority),\n            external_catalog_rule!(\"timeout_seconds\", ParentWall)\n        ]\n    ),\n]",
+      "default": "[\n    object_schema!(\n        \"direct_child_allocation\",\n        [\n            scalar_field!(\n                \"writer_turn_numerator\",\n                true,\n                int_domain!(0, 1_000, \"parts\")\n            ),\n            scalar_field!(\n                \"writer_turn_denominator\",\n                true,\n                int_domain!(1, 1_000, \"parts\")\n            ),\n            scalar_field!(\"strictly_dominant_writer\", true, bool_domain!()),\n            scalar_field!(\n                \"child_token_numerator\",\n                true,\n                int_domain!(0, 1_000, \"parts\")\n            ),\n            scalar_field!(\n                \"child_token_denominator\",\n                true,\n                int_domain!(1, 1_000, \"parts\")\n            ),\n            scalar_field!(\"child_wall_numerator\", true, int_domain!(0, 1_000, \"parts\")),\n            scalar_field!(\n                \"child_wall_denominator\",\n                true,\n                int_domain!(1, 1_000, \"parts\")\n            ),\n            scalar_field!(\n                \"minimum_child_turns\",\n                true,\n                int_domain!(1, 1_000_000, \"turns\")\n            ),\n            scalar_field!(\n                \"minimum_remaining_wall_seconds\",\n                true,\n                int_domain!(1, 86_400, \"seconds\")\n            )\n        ],\n        [\n            less_equal_rule!(\"writer_turn_numerator\", \"writer_turn_denominator\"),\n            less_equal_rule!(\"child_token_numerator\", \"child_token_denominator\"),\n            less_equal_rule!(\"child_wall_numerator\", \"child_wall_denominator\"),\n            external_rule!(\"minimum_child_turns\", ParentTurns),\n            external_rule!(\"minimum_remaining_wall_seconds\", ParentWall)\n        ]\n    ),\n    scalar_schema!(\n        \"subagent_effort_inheritance\",\n        Enum,\n        finite_enum_domain!(\"low\", \"medium\", \"high\", \"xhigh\", \"max\", \"ultracode\"),\n        [external_rule!(\"$\", ProviderCapability)]\n    ),\n    scalar_schema!(\n        \"report_budget\",\n        Bytes,\n        int_domain!(1, 16_777_216, \"bytes\"),\n        [external_rule!(\"$\", ToolBudget)]\n    ),\n    object_schema!(\n        \"join_reduce\",\n        [\n            scalar_field!(\"join\", true, finite_enum_domain!(\"wait_all\", \"fail_fast\")),\n            scalar_field!(\n                \"order\",\n                true,\n                finite_enum_domain!(\"declaration\", \"completion\")\n            ),\n            scalar_field!(\"include_failed_evidence\", true, bool_domain!())\n        ],\n        [external_rule!(\"include_failed_evidence\", VerificationFloor)]\n    ),\n    object_schema!(\n        \"workflow_aggregate\",\n        [\n            scalar_field!(\"max_calls\", true, int_domain!(1, 1_000_000, \"calls\")),\n            scalar_field!(\"max_tokens\", false, int_domain!(1, 1_000_000_000, \"tokens\")),\n            scalar_field!(\"max_wall_seconds\", true, int_domain!(1, 86_400, \"seconds\")),\n            scalar_field!(\"max_concurrency\", true, int_domain!(1, 1024, \"tasks\"))\n        ],\n        [\n            external_rule!(\"max_calls\", RunBudget),\n            external_rule!(\"max_tokens\", ParentTokens),\n            external_rule!(\"max_wall_seconds\", ParentWall)\n        ]\n    ),\n    object_schema!(\n        \"schema_retry_jitter\",\n        [\n            scalar_field!(\"max_attempts\", true, int_domain!(0, 64, \"attempts\")),\n            scalar_field!(\n                \"base_milliseconds\",\n                true,\n                int_domain!(0, 60_000, \"milliseconds\")\n            ),\n            scalar_field!(\n                \"cap_milliseconds\",\n                true,\n                int_domain!(0, 60_000, \"milliseconds\")\n            )\n        ],\n        [\n            less_equal_rule!(\"base_milliseconds\", \"cap_milliseconds\"),\n            external_rule!(\"cap_milliseconds\", ParentWall)\n        ]\n    ),\n    scalar_schema!(\n        \"provider_connect_tls_timeout\",\n        Duration,\n        int_domain!(1, 86_400, \"seconds\"),\n        [external_rule!(\"$\", ParentWall)]\n    ),\n    object_schema!(\n        \"multimodal_input_admission_decode_envelope\",\n        [\n            scalar_field!(\"max_images\", true, int_domain!(0, 8, \"images\")),\n            scalar_field!(\n                \"per_image_raw_bytes\",\n                true,\n                int_domain!(1, 25_165_824, \"bytes\")\n            ),\n            scalar_field!(\n                \"aggregate_raw_bytes\",\n                true,\n                int_domain!(1, 25_165_824, \"bytes\")\n            ),\n            scalar_field!(\"max_dimension\", true, int_domain!(1, 8_192, \"pixels\")),\n            scalar_field!(\"max_frames\", true, int_domain!(1, 256, \"frames\"))\n        ],\n        [\n            less_equal_rule!(\"per_image_raw_bytes\", \"aggregate_raw_bytes\"),\n            external_rule!(\"aggregate_raw_bytes\", ToolBudget)\n        ]\n    ),\n    object_schema!(\n        \"app_server_sq_eq_backpressure\",\n        [\n            scalar_field!(\n                \"submission_entries\",\n                true,\n                int_domain!(1, 65_536, \"entries\")\n            ),\n            scalar_field!(\n                \"submission_bytes\",\n                true,\n                int_domain!(1, 268_435_456, \"bytes\")\n            ),\n            scalar_field!(\"event_entries\", true, int_domain!(1, 65_536, \"entries\")),\n            scalar_field!(\n                \"cosmetic_overflow\",\n                true,\n                finite_enum_domain!(\"drop\", \"coalesce\")\n            ),\n            scalar_field!(\n                \"authoritative_overflow\",\n                true,\n                finite_enum_domain!(\"wait\", \"reject\")\n            )\n        ],\n        [\n            external_rule!(\"submission_entries\", RunBudget),\n            external_rule!(\"event_entries\", RunBudget)\n        ]\n    ),\n    object_schema!(\n        \"provider_discovery_account_probe_cache_policy\",\n        [\n            scalar_field!(\n                \"eager_budget_milliseconds\",\n                true,\n                int_domain!(0, 60_000, \"milliseconds\")\n            ),\n            scalar_field!(\n                \"positive_ttl_seconds\",\n                true,\n                int_domain!(0, 86_400, \"seconds\")\n            ),\n            scalar_field!(\n                \"failure_backoff_base_seconds\",\n                true,\n                int_domain!(1, 86_400, \"seconds\")\n            ),\n            scalar_field!(\n                \"failure_backoff_cap_seconds\",\n                true,\n                int_domain!(1, 604_800, \"seconds\")\n            )\n        ],\n        [\n            less_equal_rule!(\n                \"failure_backoff_base_seconds\",\n                \"failure_backoff_cap_seconds\"\n            ),\n            external_rule!(\"eager_budget_milliseconds\", ParentWall)\n        ]\n    ),\n    object_schema!(\n        \"operator_prompt_stream\",\n        [\n            scalar_field!(\"digest_sha256\", true, text_domain!(64, 64, Sha256)),\n            scalar_field!(\"canonical_bytes\", true, int_domain!(1, 1_048_576, \"bytes\"))\n        ],\n        [\n            external_domain_rule!(\"$\", ContextWindow),\n            external_rule!(\"$\", OperatorAuthority)\n        ]\n    ),\n    catalog_schema!(\n        \"builtin_prompt_corpus\",\n        1024,\n        [\n            scalar_field!(\"id\", true, text_domain!(1, 96, NamespacedId)),\n            scalar_field!(\"version\", true, text_domain!(1, 64, Semver)),\n            scalar_field!(\"sha256\", true, text_domain!(64, 64, Sha256)),\n            scalar_field!(\"max_render_bytes\", true, int_domain!(1, 1_048_576, \"bytes\"))\n        ],\n        [external_catalog_rule!(\"max_render_bytes\", ContextWindow)]\n    ),\n    catalog_schema!(\n        \"instruction_bundle\",\n        4096,\n        [\n            scalar_field!(\"path\", true, text_domain!(1, 4096, Path)),\n            scalar_field!(\"trust\", true, finite_enum_domain!(\"operator\", \"repository\")),\n            scalar_field!(\"sha256\", true, text_domain!(64, 64, Sha256)),\n            scalar_field!(\"max_bytes\", true, int_domain!(1, 1_048_576, \"bytes\"))\n        ],\n        [external_catalog_rule!(\"max_bytes\", ContextWindow)]\n    ),\n    catalog_schema!(\n        \"memory_corpus\",\n        100_000,\n        [\n            scalar_field!(\"id\", true, text_domain!(1, 96, NamespacedId)),\n            scalar_field!(\n                \"scope\",\n                true,\n                finite_enum_domain!(\"session\", \"repository\", \"tenant\")\n            ),\n            scalar_field!(\"sha256\", true, text_domain!(64, 64, Sha256)),\n            scalar_field!(\"max_bytes\", true, int_domain!(1, 1_048_576, \"bytes\"))\n        ],\n        [\n            external_catalog_rule!(\"scope\", TenantScope),\n            external_catalog_rule!(\"max_bytes\", ContextWindow)\n        ]\n    ),\n    catalog_schema!(\n        \"skill_catalog\",\n        10_000,\n        [\n            scalar_field!(\"name\", true, text_domain!(1, 96, NamespacedId)),\n            scalar_field!(\"version\", true, text_domain!(1, 64, Semver)),\n            scalar_field!(\"sha256\", true, text_domain!(64, 64, Sha256)),\n            list_field!(\n                \"tools\",\n                true,\n                0,\n                256,\n                true,\n                text_domain!(1, 96, NamespacedId)\n            )\n        ],\n        [external_catalog_rule!(\"tools\", OperatorAuthority)]\n    ),\n    catalog_schema!(\n        \"agent_catalog\",\n        4096,\n        [\n            scalar_field!(\"name\", true, text_domain!(1, 96, NamespacedId)),\n            scalar_field!(\"version\", true, text_domain!(1, 64, Semver)),\n            scalar_field!(\"sha256\", true, text_domain!(64, 64, Sha256)),\n            list_field!(\n                \"requested_tools\",\n                true,\n                0,\n                256,\n                true,\n                text_domain!(1, 96, NamespacedId)\n            )\n        ],\n        [external_catalog_rule!(\"requested_tools\", OperatorAuthority)]\n    ),\n    catalog_schema!(\n        \"provider_model_capability_catalog\",\n        100_000,\n        [\n            scalar_field!(\"route_id\", true, text_domain!(1, 96, NamespacedId)),\n            scalar_field!(\"model_id\", true, text_domain!(1, 256, Identifier)),\n            scalar_field!(\"context_window\", true, int_domain!(1, 10_000_000, \"tokens\")),\n            scalar_field!(\n                \"max_output_tokens\",\n                true,\n                int_domain!(1, 1_000_000, \"tokens\")\n            ),\n            scalar_field!(\"image_input\", true, bool_domain!()),\n            scalar_field!(\"evidence_sha256\", true, text_domain!(64, 64, Sha256))\n        ],\n        [less_equal_rule!(\"max_output_tokens\", \"context_window\")]\n    ),\n    catalog_schema!(\n        \"mcp_topology_tool_catalog\",\n        10_000,\n        [\n            scalar_field!(\"server_id\", true, text_domain!(1, 96, NamespacedId)),\n            scalar_field!(\"transport\", true, finite_enum_domain!(\"stdio\", \"http\")),\n            scalar_field!(\"tool_name\", true, text_domain!(1, 96, NamespacedId)),\n            scalar_field!(\"schema_sha256\", true, text_domain!(64, 64, Sha256))\n        ],\n        [external_catalog_rule!(\"transport\", OperatorAuthority)]\n    ),\n    catalog_schema!(\n        \"hooks_map\",\n        256,\n        [\n            scalar_field!(\"event_id\", true, text_domain!(1, 96, NamespacedId)),\n            scalar_field!(\"command_sha256\", true, text_domain!(64, 64, Sha256)),\n            scalar_field!(\"command_bytes\", true, int_domain!(1, 4096, \"bytes\")),\n            scalar_field!(\"timeout_seconds\", true, int_domain!(1, 3600, \"seconds\"))\n        ],\n        [external_catalog_rule!(\"command_sha256\", OperatorAuthority)]\n    ),\n    catalog_schema!(\n        \"workflow_graph\",\n        64,\n        [\n            scalar_field!(\"component\", true, text_domain!(1, 96, NamespacedId)),\n            scalar_field!(\"digest_sha256\", true, text_domain!(64, 64, Sha256)),\n            scalar_field!(\"version\", true, text_domain!(1, 64, Semver))\n        ],\n        []\n    ),\n    catalog_schema!(\n        \"tool_action_space\",\n        10_000,\n        [\n            scalar_field!(\"name\", true, text_domain!(1, 96, NamespacedId)),\n            scalar_field!(\n                \"capability\",\n                true,\n                catalog_enum_domain!(\"tool-capabilities\")\n            ),\n            scalar_field!(\n                \"effect_class\",\n                true,\n                finite_enum_domain!(\n                    \"pure\",\n                    \"reversible_local\",\n                    \"code_executing\",\n                    \"trust_mutating\",\n                    \"irreversible_external\"\n                )\n            ),\n            scalar_field!(\"schema_sha256\", true, text_domain!(64, 64, Sha256))\n        ],\n        [external_catalog_rule!(\"capability\", OperatorAuthority)]\n    ),\n    catalog_schema!(\n        \"rate_card_catalog\",\n        100_000,\n        [\n            scalar_field!(\"route_id\", true, text_domain!(1, 96, NamespacedId)),\n            scalar_field!(\n                \"input_microusd_per_million\",\n                true,\n                int_domain!(0, 1_000_000_000, \"microusd\")\n            ),\n            scalar_field!(\n                \"output_microusd_per_million\",\n                true,\n                int_domain!(0, 1_000_000_000, \"microusd\")\n            ),\n            scalar_field!(\"signature_sha256\", true, text_domain!(64, 64, Sha256))\n        ],\n        [external_catalog_rule!(\n            \"signature_sha256\",\n            BenchmarkProtocol\n        )]\n    ),\n    catalog_schema!(\n        \"router_lexicons\",\n        100_000,\n        [\n            scalar_field!(\"phrase\", true, text_domain!(1, 1024, Utf8)),\n            scalar_field!(\"route\", true, text_domain!(1, 96, NamespacedId)),\n            scalar_field!(\"weight\", true, decimal_domain!(-1, 0, 1, 0, 6, \"weight\")),\n            scalar_field!(\"version\", true, text_domain!(1, 64, Semver))\n        ],\n        [external_catalog_rule!(\"version\", BenchmarkProtocol)]\n    ),\n    object_schema!(\n        \"environment_snapshot\",\n        [\n            scalar_field!(\"present\", true, bool_domain!()),\n            scalar_field!(\"digest_sha256\", true, text_domain!(64, 64, Sha256)),\n            scalar_field!(\"canonical_bytes\", true, int_domain!(0, 4096, \"bytes\")),\n            scalar_field!(\n                \"trust\",\n                true,\n                finite_enum_domain!(\"untrusted\", \"workspace\", \"trusted\")\n            )\n        ],\n        [external_rule!(\"$\", TenantScope)]\n    ),\n    catalog_schema!(\n        \"web_search_backend_catalog\",\n        1024,\n        [\n            scalar_field!(\"backend_id\", true, text_domain!(1, 96, NamespacedId)),\n            scalar_field!(\"endpoint\", true, text_domain!(1, 2048, Uri)),\n            scalar_field!(\"timeout_seconds\", true, int_domain!(1, 300, \"seconds\")),\n            scalar_field!(\"max_results\", true, int_domain!(1, 1000, \"results\"))\n        ],\n        [\n            external_catalog_rule!(\"endpoint\", OperatorAuthority),\n            external_catalog_rule!(\"timeout_seconds\", ParentWall)\n        ]\n    ),\n]",
       "domain": {},
       "krate": "tunables",
       "decl": "crates/tunables/src/value_schemas/current/third.rs",
@@ -78883,7 +80519,7 @@
       "use_sites": [
         {
           "path": "crates/workflow/src/task_dag/types.rs",
-          "line": 722,
+          "line": 717,
           "evidence": "param_integer runtime resolution"
         }
       ],

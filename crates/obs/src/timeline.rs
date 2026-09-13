@@ -344,18 +344,15 @@ where
         .input_tokens
         .saturating_add(timeline.token_economy.cache_creation_tokens)
         .saturating_add(timeline.token_economy.cache_read_tokens);
-    timeline.token_economy.cache_hit_ratio_ppm = if cache_denominator == 0 {
-        0
-    } else {
-        u32::try_from(
-            timeline
-                .token_economy
-                .cache_read_tokens
-                .saturating_mul(1_000_000)
-                / cache_denominator,
-        )
-        .unwrap_or(1_000_000)
-    };
+    timeline.token_economy.cache_hit_ratio_ppm = u32::try_from(
+        timeline
+            .token_economy
+            .cache_read_tokens
+            .saturating_mul(1_000_000)
+            .checked_div(cache_denominator)
+            .unwrap_or(0),
+    )
+    .unwrap_or(1_000_000);
 
     // Wall time is the sum of the segments only. The gap BETWEEN segments is a process that was
     // not running, or was running unobserved; either way it is unknown, and adding it would be

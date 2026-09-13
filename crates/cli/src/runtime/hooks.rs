@@ -30,7 +30,7 @@ use futures_util::stream::{self, StreamExt};
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 use std::collections::{BTreeMap, VecDeque};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -140,6 +140,8 @@ pub struct Hooks {
     by_event: BTreeMap<String, Vec<String>>,
     timeout_secs: u64,
     sensitive_env_names: Vec<String>,
+    plantcore_workspace_posture: Option<&'static str>,
+    plantcore_workspace_executable: Option<PathBuf>,
     /// One process-wide-for-this-config permit pool shared by every clone. Tool-call batches may
     /// invoke independent hook chains concurrently, so a per-chain `buffer_unordered(4)` alone
     /// would multiply the process count by the number of tools in the batch.
@@ -160,6 +162,8 @@ impl Default for Hooks {
                 DEFAULT_HOOK_TIMEOUT_SECS,
             ),
             sensitive_env_names: Vec::new(),
+            plantcore_workspace_posture: None,
+            plantcore_workspace_executable: None,
             parallelism: std::sync::Arc::new(tokio::sync::Semaphore::new(max_parallel_hooks())),
             stop_observer: None,
         }
@@ -449,7 +453,53 @@ const SIGNAL_TERMINATED_EXIT_CODE: i32 = -1;
 /// without busy-waiting on the child.
 const HOOK_CANCEL_POLL: Duration = Duration::from_millis(25);
 
+fn validate_plantcore_workspace_executable(path: &Path) -> Result<(), &'static str> {
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|_| "PlantCore workspace Hook executable is unavailable")?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err("PlantCore workspace Hook executable is not a regular file");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o111 == 0 {
+            return Err("PlantCore workspace Hook executable is not executable");
+        }
+    }
+    Ok(())
+}
+
 impl Hooks {
+    pub(crate) fn preflight_plantcore_workspace_gate() -> Result<(), &'static str> {
+        let _ = resolve_plantcore_workspace_executable()?;
+        Ok(())
+    }
+
+    /// Replace every configurable hook with the release-owned PlantCore workspace gate.
+    pub(crate) fn install_plantcore_workspace_gate(
+        &mut self,
+        posture: iteron_protocol::BuiltinWorkspacePosture,
+    ) -> Result<(), &'static str> {
+        let executable = resolve_plantcore_workspace_executable()?;
+        let posture = match posture {
+            iteron_protocol::BuiltinWorkspacePosture::ReadOnly => "read-only",
+            iteron_protocol::BuiltinWorkspacePosture::ReadWrite => "read-write",
+        };
+        self.by_event.clear();
+        self.by_event.insert(
+            HookEvent::PreToolUse.key().into(),
+            vec![format!("{} --posture {posture}", executable.display())],
+        );
+        self.timeout_secs = 2;
+        self.sensitive_env_names = vec![
+            "ITERON_PROVIDER_API_KEY".into(),
+            "PLANTCORE_RUN_GATEWAY_AUTHORIZATION".into(),
+        ];
+        self.plantcore_workspace_posture = Some(posture);
+        self.plantcore_workspace_executable = Some(executable);
+        Ok(())
+    }
+
     /// Build from the immutable operator config snapshot already parsed by the composition root.
     /// This is the production path: hooks must not reopen and reparse `config.json` independently.
     pub(crate) fn from_user_config(commands: Option<&BTreeMap<String, Vec<String>>>) -> Hooks {
@@ -460,6 +510,8 @@ impl Hooks {
                 DEFAULT_HOOK_TIMEOUT_SECS,
             ),
             sensitive_env_names: Vec::new(),
+            plantcore_workspace_posture: None,
+            plantcore_workspace_executable: None,
             parallelism: std::sync::Arc::new(tokio::sync::Semaphore::new(max_parallel_hooks())),
             stop_observer: None,
         }
@@ -657,6 +709,26 @@ impl Hooks {
             failed: 0,
             timed_out: 0,
         };
+        let fixed_context;
+        let context_json = if event == HookEvent::PreToolUse {
+            if let Some(posture) = self.plantcore_workspace_posture {
+                fixed_context = match plantcore_workspace_context(context_json, posture) {
+                    Ok(context) => context,
+                    Err(()) => {
+                        report.failed = report.matched;
+                        report.decision = HookDecision::Deny(
+                            "PlantCore PreToolUse gate input could not be encoded".into(),
+                        );
+                        return report;
+                    }
+                };
+                fixed_context.as_str()
+            } else {
+                context_json
+            }
+        } else {
+            context_json
+        };
         let mut prepared = Vec::with_capacity(commands.len());
         for (index, cmd) in commands.iter().enumerate() {
             let ticket = match journal.map(|journal| journal.begin(event.key())) {
@@ -697,6 +769,20 @@ impl Hooks {
                     || drain.is_some_and(|flag| flag.load(Ordering::Acquire))
                 {
                     HookRun::Cancelled
+                } else if let (Some(executable), Some(posture)) = (
+                    self.plantcore_workspace_executable.as_deref(),
+                    self.plantcore_workspace_posture,
+                ) {
+                    run_plantcore_workspace_hook(
+                        executable,
+                        posture,
+                        context_json,
+                        Duration::from_secs(self.timeout_secs),
+                        &self.sensitive_env_names,
+                        cancel,
+                        drain,
+                    )
+                    .await
                 } else {
                     run_one_cancellable(
                         &cmd,
@@ -736,6 +822,17 @@ impl Hooks {
                 HookRun::Completed(out) => {
                     report.completed = report.completed.saturating_add(1);
                     if event == HookEvent::PreToolUse
+                        && self.plantcore_workspace_posture.is_some()
+                        && out.code == 0
+                        && !valid_plantcore_workspace_allow(&out)
+                    {
+                        report.failed = report.failed.saturating_add(1);
+                        if matches!(report.decision, HookDecision::Allow) {
+                            report.decision = HookDecision::Deny(
+                                "PlantCore PreToolUse gate returned an invalid allow record".into(),
+                            );
+                        }
+                    } else if event == HookEvent::PreToolUse
                         && out.code == 2
                         && matches!(report.decision, HookDecision::Allow)
                     {
@@ -1022,6 +1119,41 @@ impl Hooks {
     }
 }
 
+fn resolve_plantcore_workspace_executable() -> Result<PathBuf, &'static str> {
+    let current_executable =
+        std::env::current_exe().map_err(|_| "current executable path is unavailable")?;
+    #[cfg(test)]
+    {
+        validate_plantcore_workspace_executable(&current_executable)?;
+        return Ok(current_executable);
+    }
+    #[cfg(not(test))]
+    let executable_dir = current_executable
+        .parent()
+        .ok_or("current executable directory is unavailable")?
+        .to_owned();
+    #[cfg(not(test))]
+    let executable_name = if cfg!(windows) {
+        "iteron-workspace-hook.exe"
+    } else {
+        "iteron-workspace-hook"
+    };
+    #[cfg(not(test))]
+    let executable = if executable_dir.file_name().and_then(std::ffi::OsStr::to_str) == Some("deps")
+    {
+        executable_dir
+            .parent()
+            .ok_or("current executable directory is unavailable")?
+            .join(executable_name)
+    } else {
+        executable_dir.join(executable_name)
+    };
+    #[cfg(not(test))]
+    validate_plantcore_workspace_executable(&executable)?;
+    #[cfg(not(test))]
+    Ok(executable)
+}
+
 async fn run_stop_hook_observer(
     hooks: Hooks,
     journal: HookEffectJournal,
@@ -1254,6 +1386,39 @@ struct HookRunOutput {
     stderr: String,
 }
 
+fn plantcore_workspace_context(context: &str, posture: &str) -> Result<String, ()> {
+    let mut value: serde_json::Value = serde_json::from_str(context).map_err(|_| ())?;
+    let object = value.as_object_mut().ok_or(())?;
+    if object.contains_key("posture") || object.contains_key("workspace") {
+        return Err(());
+    }
+    object.insert("posture".into(), serde_json::Value::from(posture));
+    object.insert(
+        "workspace".into(),
+        serde_json::json!({
+            "input": "/workspace/input",
+            "work": "/workspace/work",
+            "output": "/workspace/output",
+        }),
+    );
+    serde_json::to_string(&value).map_err(|_| ())
+}
+
+fn valid_plantcore_workspace_allow(output: &HookRunOutput) -> bool {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Reply {
+        decision: String,
+        reason: String,
+    }
+
+    if !output.stderr.is_empty() {
+        return false;
+    }
+    serde_json::from_str::<Reply>(output.stdout.trim())
+        .is_ok_and(|reply| reply.decision == "allow" && reply.reason == "workspace_path_allowed")
+}
+
 /// Fixed-memory head/tail capture. Bytes between the two windows are drained and counted but never
 /// retained, so a hook can flood either pipe without growing the parent process.
 #[derive(Debug, Default)]
@@ -1440,14 +1605,48 @@ async fn run_one_with_shell(
     cancel: Option<&std::sync::atomic::AtomicBool>,
     drain: Option<&std::sync::atomic::AtomicBool>,
 ) -> HookRun {
-    use tokio::io::AsyncWriteExt;
-
     let mut command = tokio::process::Command::new(shell);
     iteron_sandbox::clear_to_safe_child_env_with_exact(&mut command, sensitive_env_names);
     iteron_sandbox::configure_process_group(&mut command);
+    command.arg("-c").arg(cmd);
+    run_prepared_hook(command, format!("{shell} -c"), ctx, timeout, cancel, drain).await
+}
+
+async fn run_plantcore_workspace_hook(
+    executable: &Path,
+    posture: &str,
+    ctx: &str,
+    timeout: Duration,
+    sensitive_env_names: &[String],
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+    drain: Option<&std::sync::atomic::AtomicBool>,
+) -> HookRun {
+    let mut command = tokio::process::Command::new(executable);
+    iteron_sandbox::clear_to_safe_child_env_with_exact(&mut command, sensitive_env_names);
+    iteron_sandbox::configure_process_group(&mut command);
+    command.arg("--posture").arg(posture);
+    run_prepared_hook(
+        command,
+        "fixed PlantCore workspace hook".into(),
+        ctx,
+        timeout,
+        cancel,
+        drain,
+    )
+    .await
+}
+
+async fn run_prepared_hook(
+    mut command: tokio::process::Command,
+    spawn_label: String,
+    ctx: &str,
+    timeout: Duration,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+    drain: Option<&std::sync::atomic::AtomicBool>,
+) -> HookRun {
+    use tokio::io::AsyncWriteExt;
+
     let spawned = command
-        .arg("-c")
-        .arg(cmd)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -1455,7 +1654,7 @@ async fn run_one_with_shell(
         .spawn();
     let mut child = match spawned {
         Ok(child) => child,
-        Err(error) => return HookRun::NotStarted(format!("{shell} -c: {error}")),
+        Err(error) => return HookRun::NotStarted(format!("{spawn_label}: {error}")),
     };
     let mut group_guard = HookProcessGroupDropGuard::new(
         #[cfg(unix)]
@@ -1672,6 +1871,8 @@ mod tests {
             )]),
             timeout_secs: 2,
             sensitive_env_names: Vec::new(),
+            plantcore_workspace_posture: None,
+            plantcore_workspace_executable: None,
             parallelism: std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_PARALLEL_HOOKS)),
             stop_observer: None,
         };
@@ -1684,6 +1885,91 @@ mod tests {
         assert!(
             matches!(decision, HookDecision::Deny(reason) if reason == "first"),
             "the first configured denial must win even when it completes later"
+        );
+    }
+
+    #[tokio::test]
+    async fn plantcore_gate_rejects_exit_zero_without_exact_allow_record() {
+        let mut hooks = Hooks::default();
+        hooks.by_event.insert(
+            HookEvent::PreToolUse.key().to_owned(),
+            vec!["printf '%s' '{\"decision\":\"allow\"}'".to_owned()],
+        );
+        hooks.timeout_secs = 2;
+        hooks.plantcore_workspace_posture = Some("read-write");
+        assert!(matches!(
+            hooks.run(HookEvent::PreToolUse, "{}").await,
+            HookDecision::Deny(reason)
+                if reason == "PlantCore PreToolUse gate returned an invalid allow record"
+        ));
+
+        hooks.by_event.insert(
+            HookEvent::PreToolUse.key().to_owned(),
+            vec![
+                "printf '%s\\n' '{\"decision\":\"allow\",\"reason\":\"workspace_path_allowed\"}'"
+                    .to_owned(),
+            ],
+        );
+        assert_eq!(
+            hooks.run(HookEvent::PreToolUse, "{}").await,
+            HookDecision::Allow
+        );
+    }
+
+    #[test]
+    fn plantcore_gate_has_fixed_timeout_posture_and_secret_boundary() {
+        let mut hooks = Hooks::from_user_config(Some(&BTreeMap::from([(
+            HookEvent::PreToolUse.key().to_owned(),
+            vec!["exit 0".to_owned()],
+        )])));
+        hooks
+            .install_plantcore_workspace_gate(iteron_protocol::BuiltinWorkspacePosture::ReadOnly)
+            .unwrap();
+        assert_eq!(hooks.timeout_secs, 2);
+        assert_eq!(hooks.plantcore_workspace_posture, Some("read-only"));
+        assert_eq!(
+            hooks.plantcore_workspace_executable,
+            Some(std::env::current_exe().unwrap())
+        );
+        assert_eq!(
+            hooks.sensitive_env_names,
+            vec![
+                "ITERON_PROVIDER_API_KEY".to_owned(),
+                "PLANTCORE_RUN_GATEWAY_AUTHORIZATION".to_owned(),
+            ]
+        );
+        assert_eq!(hooks.commands(HookEvent::PreToolUse).len(), 1);
+        assert!(hooks.commands(HookEvent::PostToolUse).is_empty());
+    }
+
+    #[test]
+    fn plantcore_gate_rejects_a_missing_release_owned_executable() {
+        let missing = std::env::temp_dir().join(format!(
+            "iteron-missing-workspace-hook-{}",
+            std::process::id()
+        ));
+        assert_eq!(
+            validate_plantcore_workspace_executable(&missing),
+            Err("PlantCore workspace Hook executable is unavailable")
+        );
+    }
+
+    #[tokio::test]
+    async fn plantcore_gate_starts_its_fixed_executable_without_a_shell() {
+        let executable = std::env::current_exe().unwrap();
+        let outcome = run_plantcore_workspace_hook(
+            &executable,
+            "read-only",
+            "{}",
+            Duration::from_secs(2),
+            &[],
+            None,
+            None,
+        )
+        .await;
+        assert!(
+            matches!(outcome, HookRun::Completed(_)),
+            "the direct executable path must start without /bin/sh: {outcome:?}"
         );
     }
 

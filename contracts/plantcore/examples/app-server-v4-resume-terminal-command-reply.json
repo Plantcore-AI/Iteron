@@ -1,0 +1,1 @@
+{"protocol_version":4,"reply":{"command_id":"resume-terminal-0001","reason":"session_terminal","status":"rejected","type":"plantcore_command_reply_v1"},"request_id":10,"type":"control_reply"}

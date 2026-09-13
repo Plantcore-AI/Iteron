@@ -114,6 +114,7 @@ impl Agent {
                     usd_attempt.projected_at_unix_secs(),
                     stream_timing,
                 )?;
+                self.emit_plantcore_turn_usage(turn_id)?;
                 if complete_usage.is_some() {
                     usd_attempt.complete();
                 }
@@ -150,6 +151,7 @@ impl Agent {
                         ),
                     },
                 );
+                self.emit_plantcore_turn_usage(turn_id)?;
                 self.emit(turn_id, EventKind::Phase { phase: Phase::Idle });
                 self.advance_turn().await?;
                 return Ok(Vec::new());

@@ -165,16 +165,47 @@ iteron_validate_archive() {
     {
         printf '%s/\n' "$iteron_root"
         printf '%s/%s\n' "$iteron_root" iteron
+        printf '%s/%s\n' "$iteron_root" iteron-workspace-hook
         printf '%s/%s\n' "$iteron_root" LICENSE
         printf '%s/%s\n' "$iteron_root" README.md
         printf '%s/%s\n' "$iteron_root" THIRD_PARTY_LICENSES.html
         printf '%s/%s\n' "$iteron_root" THIRD_PARTY_NOTICES.txt
         printf '%s/%s\n' "$iteron_root" SBOM.spdx.json
         printf '%s/%s\n' "$iteron_root" BUILD-INFO.json
+        for iteron_contract in \
+            README.md \
+            app-server-v4.schema.json \
+            check-app-server-v4.py \
+            check-workspace-hook.py \
+            check_machine_contract.py \
+            examples/app-server-v4-bootstrap-reply.json \
+            examples/app-server-v4-bootstrap.json \
+            examples/app-server-v4-command-reply.json \
+            examples/app-server-v4-command.json \
+            examples/app-server-v4-invalid-bootstrap.json \
+            examples/app-server-v4-invalid-session.json \
+            examples/app-server-v4-listening.json \
+            examples/app-server-v4-pause-command-reply.json \
+            examples/app-server-v4-pause-command.json \
+            examples/app-server-v4-resume-command-reply.json \
+            examples/app-server-v4-resume-command.json \
+            examples/app-server-v4-resume-terminal-command-reply.json \
+            examples/app-server-v4-resume-terminal-command.json \
+            examples/machine-contract-v1.json \
+            examples/workspace-hook-allow.json \
+            examples/workspace-hook-deny.json \
+            iteron-output-v7.schema.json \
+            machine-contract.schema.json \
+            test-vectors/portable-canonical-json-v1.json \
+            workspace-hook-v1.schema.json \
+            workspace-tools-v1.json
+        do
+            printf '%s/contracts/plantcore/%s\n' "$iteron_root" "$iteron_contract"
+        done
     } > "$iteron_expected"
 
     iteron_member_count=$(wc -l < "$iteron_members" | tr -d '[:space:]')
-    [ "$iteron_member_count" = 8 ] \
+    [ "$iteron_member_count" = 35 ] \
         || iteron_die 'release archive has an unexpected member count'
 
     LC_ALL=C sort "$iteron_members" > "$iteron_sorted_members"
@@ -281,9 +312,13 @@ iteron_main() {
     iteron_work_dir=$(mktemp -d "${TMPDIR:-/tmp}/iteron.XXXXXXXX") \
         || iteron_die 'could not create a temporary directory'
     iteron_install_tmp=
+    iteron_hook_install_tmp=
     iteron_cleanup() {
         if [ -n "${iteron_install_tmp:-}" ]; then
             rm -f -- "$iteron_install_tmp"
+        fi
+        if [ -n "${iteron_hook_install_tmp:-}" ]; then
+            rm -f -- "$iteron_hook_install_tmp"
         fi
         rm -rf -- "$iteron_work_dir"
     }
@@ -346,10 +381,15 @@ iteron_main() {
     tar -xf "$iteron_unpacked" -C "$iteron_work_dir/extract" \
         || iteron_die 'release archive extraction failed'
     iteron_binary="$iteron_work_dir/extract/$iteron_archive_root/iteron"
+    iteron_workspace_hook="$iteron_work_dir/extract/$iteron_archive_root/iteron-workspace-hook"
     if [ ! -f "$iteron_binary" ] || [ -L "$iteron_binary" ]; then
         iteron_die 'archive iteron entry is not a regular file'
     fi
+    if [ ! -f "$iteron_workspace_hook" ] || [ -L "$iteron_workspace_hook" ]; then
+        iteron_die 'archive iteron-workspace-hook entry is not a regular file'
+    fi
     chmod 0755 "$iteron_binary"
+    chmod 0755 "$iteron_workspace_hook"
 
     # `-V` is the bare `iteron <semver>`; `--version` additionally carries the commit and build date,
     # so the exact-match smoke tests below deliberately use the short form.
@@ -364,7 +404,25 @@ iteron_main() {
         || iteron_die "installation path is not a directory: $iteron_bin_dir"
     [ ! -d "$iteron_bin_dir/iteron" ] \
         || iteron_die 'installation destination is a directory'
+    [ ! -d "$iteron_bin_dir/iteron-workspace-hook" ] \
+        || iteron_die 'workspace Hook installation destination is a directory'
     iteron_note 'installing verified binary'
+    # Install the support binary before the main command. If the later atomic main-command
+    # replacement fails, no newly installed `iteron` can observe a missing Hook sibling.
+    iteron_hook_install_tmp=$(mktemp "$iteron_bin_dir/.iteron-workspace-hook.new.XXXXXXXX") \
+        || iteron_die 'could not create a workspace Hook installation staging file'
+    install -m 0755 "$iteron_workspace_hook" "$iteron_hook_install_tmp" \
+        || iteron_die 'could not stage the workspace Hook binary'
+    if [ ! -f "$iteron_hook_install_tmp" ] || [ -L "$iteron_hook_install_tmp" ]; then
+        iteron_die 'staged workspace Hook is not a regular file'
+    fi
+    mv -f -- "$iteron_hook_install_tmp" "$iteron_bin_dir/iteron-workspace-hook" \
+        || iteron_die 'could not atomically install iteron-workspace-hook'
+    iteron_hook_install_tmp=
+    if [ ! -f "$iteron_bin_dir/iteron-workspace-hook" ] \
+        || [ -L "$iteron_bin_dir/iteron-workspace-hook" ]; then
+        iteron_die 'atomic install did not produce a regular workspace Hook file'
+    fi
     iteron_install_tmp=$(mktemp "$iteron_bin_dir/.iteron.new.XXXXXXXX") \
         || iteron_die 'could not create an atomic installation staging file'
     install -m 0755 "$iteron_binary" "$iteron_install_tmp" \

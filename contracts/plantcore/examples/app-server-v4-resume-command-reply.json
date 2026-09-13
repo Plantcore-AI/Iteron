@@ -1,0 +1,1 @@
+{"protocol_version":4,"reply":{"command_id":"resume-0001","safe_point":"dispatch_gate_open","status":"accepted","type":"plantcore_command_reply_v1"},"request_id":9,"type":"control_reply"}

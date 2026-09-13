@@ -9,7 +9,6 @@ const AUTHORITATIVE_UI_BACKLOG_CAPACITY: usize = 256;
 /// its own equal-sized budget; this one prevents the bridge *before* the EQ from multiplying that
 /// bound by two variable-sized queues.
 const FRONTEND_UI_BYTE_CAPACITY: usize = 64 * 1024 * 1024;
-
 fn authoritative_ui_backlog_capacity() -> usize {
     iteron_tunables::param_integer(
         "cli.runtime.frontend.authoritative_ui_backlog_capacity",
@@ -63,6 +62,13 @@ fn ui_event_heap_bytes(event: &UiEvent) -> usize {
             .saturating_add(serde_json::to_vec(arguments).map_or(0, |bytes| bytes.len())),
         UiEvent::Phase(_) | UiEvent::TurnEnd { .. } | UiEvent::SteerApplied { .. } => 4 * 1024,
     })
+}
+
+fn runtime_frontend_event_heap_bytes(event: &super::RuntimeFrontendEvent) -> usize {
+    match event {
+        super::RuntimeFrontendEvent::Ui(event) => ui_event_heap_bytes(event),
+        super::RuntimeFrontendEvent::Plantcore(_) => ENVELOPE.0.saturating_add(64 * 1024),
+    }
 }
 
 #[derive(Debug)]
@@ -167,7 +173,7 @@ fn refusal_must_fail_run(event: &UiEvent) -> bool {
 
 #[derive(Debug)]
 struct AuthoritativeUiBacklog {
-    events: std::sync::Mutex<std::collections::VecDeque<UiEvent>>,
+    events: std::sync::Mutex<std::collections::VecDeque<super::RuntimeFrontendEvent>>,
     available: tokio::sync::Notify,
 }
 
@@ -247,6 +253,161 @@ impl FrontendChannelHealth {
         tx: &tokio::sync::mpsc::Sender<UiEvent>,
         event: UiEvent,
     ) -> bool {
+        match event {
+            UiEvent::Text(text) if text.len() > crate::output::max_stream_ui_delta_bytes() => {
+                self.try_send_stream_delta(tx, text, false)
+            }
+            UiEvent::Thinking(text) if text.len() > crate::output::max_stream_ui_delta_bytes() => {
+                self.try_send_stream_delta(tx, text, true)
+            }
+            event => self.try_send_bounded_ui(tx, event),
+        }
+    }
+
+    pub(super) fn try_send_runtime(
+        &self,
+        tx: &tokio::sync::mpsc::Sender<super::RuntimeFrontendEvent>,
+        event: super::RuntimeFrontendEvent,
+    ) -> bool {
+        match event {
+            super::RuntimeFrontendEvent::Ui(UiEvent::Text(text))
+                if text.len() > crate::output::max_stream_ui_delta_bytes() =>
+            {
+                self.try_send_runtime_delta(tx, text, false)
+            }
+            super::RuntimeFrontendEvent::Ui(UiEvent::Thinking(text))
+                if text.len() > crate::output::max_stream_ui_delta_bytes() =>
+            {
+                self.try_send_runtime_delta(tx, text, true)
+            }
+            event => self.try_send_bounded_runtime(tx, event),
+        }
+    }
+
+    pub(super) fn try_send_frontend(
+        &self,
+        resident_tx: Option<&tokio::sync::mpsc::Sender<super::RuntimeFrontendEvent>>,
+        ui_tx: Option<&tokio::sync::mpsc::Sender<UiEvent>>,
+        event: UiEvent,
+    ) -> bool {
+        if let Some(tx) = resident_tx {
+            self.try_send_runtime(tx, super::RuntimeFrontendEvent::Ui(event))
+        } else if let Some(tx) = ui_tx {
+            self.try_send_ui(tx, event)
+        } else {
+            true
+        }
+    }
+
+    fn try_send_runtime_delta(
+        &self,
+        tx: &tokio::sync::mpsc::Sender<super::RuntimeFrontendEvent>,
+        text: String,
+        thinking: bool,
+    ) -> bool {
+        let mut remaining = text.as_str();
+        while !remaining.is_empty() {
+            let mut split = remaining
+                .len()
+                .min(crate::output::max_stream_ui_delta_bytes());
+            while !remaining.is_char_boundary(split) {
+                split -= 1;
+            }
+            let fragment = remaining[..split].to_owned();
+            remaining = &remaining[split..];
+            let event = if thinking {
+                UiEvent::Thinking(fragment)
+            } else {
+                UiEvent::Text(fragment)
+            };
+            if !self.try_send_bounded_runtime(tx, super::RuntimeFrontendEvent::Ui(event)) {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn try_send_bounded_runtime(
+        &self,
+        tx: &tokio::sync::mpsc::Sender<super::RuntimeFrontendEvent>,
+        event: super::RuntimeFrontendEvent,
+    ) -> bool {
+        let _routing = self
+            .routing
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (authoritative, fail_run) = match &event {
+            super::RuntimeFrontendEvent::Ui(event) => (
+                is_authoritative_ui_event(event),
+                refusal_must_fail_run(event),
+            ),
+            super::RuntimeFrontendEvent::Plantcore(_) => (true, true),
+        };
+        if self.has_authoritative_pending() {
+            let bytes = runtime_frontend_event_heap_bytes(&event);
+            if !self.ui_bytes.try_reserve(bytes) {
+                self.ui_saturated();
+                return self.refuse(fail_run);
+            }
+            if self.try_enqueue_runtime_authoritative(event) {
+                return true;
+            }
+            self.ui_bytes.release(bytes);
+            self.ui_saturated();
+            return self.refuse(fail_run);
+        }
+        let bytes = runtime_frontend_event_heap_bytes(&event);
+        if !self.ui_bytes.try_reserve(bytes) {
+            self.ui_saturated();
+            return self.refuse(fail_run);
+        }
+        match tx.try_send(event) {
+            Ok(()) => true,
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                self.ui_bytes.release(bytes);
+                self.refuse(fail_run)
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Full(event)) => {
+                self.ui_saturated();
+                if authoritative && self.try_enqueue_runtime_authoritative(event) {
+                    true
+                } else {
+                    self.ui_bytes.release(bytes);
+                    self.refuse(fail_run)
+                }
+            }
+        }
+    }
+
+    fn try_send_stream_delta(
+        &self,
+        tx: &tokio::sync::mpsc::Sender<UiEvent>,
+        text: String,
+        thinking: bool,
+    ) -> bool {
+        let mut remaining = text.as_str();
+        while !remaining.is_empty() {
+            let mut split = remaining
+                .len()
+                .min(crate::output::max_stream_ui_delta_bytes());
+            while !remaining.is_char_boundary(split) {
+                split -= 1;
+            }
+            let fragment = remaining[..split].to_owned();
+            remaining = &remaining[split..];
+            let event = if thinking {
+                UiEvent::Thinking(fragment)
+            } else {
+                UiEvent::Text(fragment)
+            };
+            if !self.try_send_bounded_ui(tx, event) {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn try_send_bounded_ui(&self, tx: &tokio::sync::mpsc::Sender<UiEvent>, event: UiEvent) -> bool {
         let _routing = self
             .routing
             .lock()
@@ -312,6 +473,10 @@ impl FrontendChannelHealth {
     /// bounds both dimensions. Exhaustion is reported to the caller rather than silently dropping
     /// or synchronously waiting on the same AppServer task.
     fn try_enqueue_authoritative(&self, event: UiEvent) -> bool {
+        self.try_enqueue_runtime_authoritative(super::RuntimeFrontendEvent::Ui(event))
+    }
+
+    fn try_enqueue_runtime_authoritative(&self, event: super::RuntimeFrontendEvent) -> bool {
         let mut events = self
             .authoritative
             .events
@@ -326,7 +491,7 @@ impl FrontendChannelHealth {
         true
     }
 
-    pub(crate) fn try_pop_authoritative(&self) -> Option<UiEvent> {
+    pub(crate) fn try_pop_authoritative(&self) -> Option<super::RuntimeFrontendEvent> {
         self.authoritative
             .events
             .lock()
@@ -334,7 +499,7 @@ impl FrontendChannelHealth {
             .pop_front()
     }
 
-    pub(crate) async fn recv_authoritative(&self) -> UiEvent {
+    pub(crate) async fn recv_authoritative(&self) -> super::RuntimeFrontendEvent {
         loop {
             let available = self.authoritative.available.notified();
             if let Some(event) = self.try_pop_authoritative() {
@@ -346,8 +511,8 @@ impl FrontendChannelHealth {
 
     /// Retain the charge across the App Server's awaited EQ publication even after the payload is
     /// moved into an envelope.
-    pub(crate) fn ui_event_bytes(&self, event: &UiEvent) -> usize {
-        ui_event_heap_bytes(event)
+    pub(crate) fn runtime_event_bytes(&self, event: &super::RuntimeFrontendEvent) -> usize {
+        runtime_frontend_event_heap_bytes(event)
     }
 
     pub(crate) fn release_ui_bytes(&self, bytes: usize) {
@@ -356,7 +521,7 @@ impl FrontendChannelHealth {
 
     #[cfg(test)]
     fn release_ui_event(&self, event: &UiEvent) {
-        self.release_ui_bytes(self.ui_event_bytes(event));
+        self.release_ui_bytes(ui_event_heap_bytes(event));
     }
 }
 
@@ -434,6 +599,13 @@ impl Agent {
         self.ui_tx = Some(tx);
     }
 
+    pub(crate) fn set_resident_ui(
+        &mut self,
+        tx: tokio::sync::mpsc::Sender<super::RuntimeFrontendEvent>,
+    ) {
+        self.resident_ui_tx = Some(tx);
+    }
+
     pub(crate) fn set_activity(
         &mut self,
         tx: tokio::sync::mpsc::Sender<super::turn_activity::ActivityEvent>,
@@ -455,25 +627,33 @@ impl Agent {
         self.activity.sender()
     }
 
-    pub(super) fn ui(&self, e: UiEvent) -> bool {
-        if let Some(tx) = &self.ui_tx {
-            let before = self.frontend_saturation.ui_saturation_count();
-            let sent = self.frontend_saturation.try_send_ui(tx, e);
-            let after = self.frontend_saturation.ui_saturation_count();
-            if after != before && after.is_power_of_two() {
-                self.lifecycle_event(
-                    "queue.overflow",
-                    Some(self.current_turn_id()),
-                    iteron_protocol::LifecyclePayload {
-                        count: Some(after),
-                        reason_code: Some("runtime_ui".into()),
-                        ..Default::default()
-                    },
-                );
-            }
-            return sent;
+    pub(crate) fn ui(&self, e: UiEvent) -> bool {
+        let before = self.frontend_saturation.ui_saturation_count();
+        let sent = self.frontend_saturation.try_send_frontend(
+            self.resident_ui_tx.as_ref(),
+            self.ui_tx.as_ref(),
+            e,
+        );
+        let after = self.frontend_saturation.ui_saturation_count();
+        if after != before && after.is_power_of_two() {
+            self.lifecycle_event(
+                "queue.overflow",
+                Some(self.current_turn_id()),
+                iteron_protocol::LifecyclePayload {
+                    count: Some(after),
+                    reason_code: Some("runtime_ui".into()),
+                    ..Default::default()
+                },
+            );
         }
-        true
+        sent
+    }
+
+    pub(crate) fn plantcore_ui(&self, event: super::PlantcoreUiEvent) -> bool {
+        self.resident_ui_tx.as_ref().is_none_or(|tx| {
+            self.frontend_saturation
+                .try_send_runtime(tx, super::RuntimeFrontendEvent::Plantcore(event))
+        })
     }
 
     /// Route QuickJS workflow-script progress to a frontend that renders the live phase→agent tree
@@ -536,6 +716,12 @@ impl Agent {
     /// read-only view to build an authoritative terminal result without parsing streamed deltas.
     pub fn last_assistant_text(&self) -> &str {
         &self.last_assistant_text
+    }
+
+    /// Assistant text streamed during the current submitted Run, including text emitted before
+    /// intermediate tool calls.
+    pub(crate) fn run_assistant_text(&self) -> &str {
+        &self.run_assistant_text
     }
 
     /// Continue an already-run agent with a new operator message (TUI follow-up). The prior

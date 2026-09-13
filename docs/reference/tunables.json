@@ -1,7 +1,7 @@
 {
   "digest": {
     "algorithm": "sha256",
-    "value": "a8439500a335e0086a326dbfd88222fc1501373d333aa7bb2315779f220bd663"
+    "value": "dc46c5a2f21c77ae289c3c6169cc372230b5080110694d51bd39d4709bdc88fd"
   },
   "payload": {
     "schema_version": 4,
@@ -8705,7 +8705,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "53838d70b271ad03b33dd6b22f366cdc3b2555971e929c437b97fdc147d9c307"
+          "value": "52bd6c5deb3045caadb142ab2121ac181fac944f7ef8860a9fd0de3bc73d2b85"
         },
         "schema_version": 3,
         "ordinal": 68,
@@ -8750,7 +8750,7 @@
                 "name": "per_image_raw_bytes",
                 "value": {
                   "type": "integer",
-                  "value": 6291456
+                  "value": 25165824
                 }
               },
               {
@@ -8815,7 +8815,7 @@
                   "domain": {
                     "type": "integer",
                     "min": 1,
-                    "max": 6291456,
+                    "max": 25165824,
                     "unit": "bytes"
                   }
                 }

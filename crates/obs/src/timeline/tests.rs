@@ -42,7 +42,7 @@ fn phase(seq: u64, phase: Phase) -> Event {
 /// and it is what stops the timeline from quietly becoming a second measurement site.
 #[test]
 fn the_fold_is_pure_and_repeatable() {
-    let events = vec![
+    let events = [
         effect_done(0, "provider", Some(1200)),
         effect_done(1, "hook", Some(30)),
     ];

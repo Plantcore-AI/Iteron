@@ -836,6 +836,26 @@ fn core_command_with_effort(
     task: &str,
     effort: Option<&str>,
 ) -> Command {
+    core_command_with_schema(
+        scratch,
+        format,
+        max_turns,
+        extra_args,
+        task,
+        effort,
+        Some("6"),
+    )
+}
+
+fn core_command_with_schema(
+    scratch: &Scratch,
+    format: &str,
+    max_turns: u32,
+    extra_args: &[&str],
+    task: &str,
+    effort: Option<&str>,
+    schema_version: Option<&str>,
+) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_iteron"));
     // Never inherit a developer credential, proxy, user config, or launcher. The only credential
     // visible to the child is the inert placeholder consumed by the loopback-only provider.
@@ -866,6 +886,11 @@ fn core_command_with_effort(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if format != "text"
+        && let Some(schema_version) = schema_version
+    {
+        command.arg("--output-schema-version").arg(schema_version);
+    }
     if let Some(effort) = effort {
         command.arg("--effort").arg(effort);
     }
@@ -963,6 +988,9 @@ fn glm_core_command(scratch: &Scratch, format: &str, proxy_url: &str) -> Command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .process_group(0);
+    if format != "text" {
+        command.arg("--output-schema-version").arg("6");
+    }
     command
 }
 
@@ -1423,6 +1451,47 @@ fn json_one_shot_process_contract_matches_golden() {
             "one_shot_json_success_v6.json",
             include_str!("golden/one_shot_json_success_v6.json")
         )
+    );
+}
+
+#[test]
+fn omitted_schema_version_uses_v6() {
+    let server = MockProvider::spawn(Reply::Success);
+    let scratch = Scratch::new("json-default-v6", &server.api_root);
+    let output = collect_core(
+        core_command_with_schema(&scratch, "json", 1, &[], DEFAULT_TASK, Some("low"), None)
+            .spawn()
+            .expect("spawn the real default-schema one-shot client"),
+    );
+    server.finish();
+
+    assert_eq!(output.status.code(), Some(0));
+    let frames = json_lines(&output.stdout);
+    assert_eq!(frames.len(), 1);
+    assert_eq!(frames[0]["schema_version"], 6);
+}
+
+#[test]
+fn one_shot_schema_v7_is_rejected_before_provider_contact() {
+    let scratch = Scratch::new("json-reject-v7", "http://127.0.0.1:9");
+    let output = collect_core(
+        core_command_with_schema(
+            &scratch,
+            "json",
+            1,
+            &[],
+            DEFAULT_TASK,
+            Some("low"),
+            Some("7"),
+        )
+        .spawn()
+        .expect("spawn the real unsupported-schema one-shot client"),
+    );
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("unsupported --output-schema-version 7; supported versions: 4, 5, 6")
     );
 }
 

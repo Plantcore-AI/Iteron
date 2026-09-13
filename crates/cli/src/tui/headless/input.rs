@@ -28,6 +28,8 @@ pub(super) enum ClientFrame {
         protocol_version: u32,
         #[serde(default)]
         resume_from: Option<u64>,
+        #[serde(default)]
+        session_id: Option<String>,
     },
     Submit {
         protocol_version: u32,

@@ -1,0 +1,13 @@
+{
+  "type": "control",
+  "protocol_version": 4,
+  "request_id": 2,
+  "control": {
+    "type": "plantcore_run_bootstrap_v1",
+    "payload": {
+      "contract_version": "plantcore.iteron-run-bootstrap.v1",
+      "run_id": "run-1",
+      "unknown_security_switch": true
+    }
+  }
+}

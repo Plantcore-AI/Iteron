@@ -3083,12 +3083,37 @@ impl ProviderDirectory {
     /// transport attempt so the kernel can durably journal it before dispatch; transparent retry
     /// decorators are intentionally excluded until they expose a per-attempt WAL callback.
     pub fn build(&self, selection: &ModelSelection) -> Result<Arc<dyn Provider>, String> {
+        self.build_inner(selection, None)
+    }
+
+    /// Build the selected route with a fixed host transport. Only the cloned selected
+    /// `ProviderInstance` receives it; every other provider and HTTP subsystem remains unchanged.
+    pub fn build_with_transport(
+        &self,
+        selection: &ModelSelection,
+        transport: &dyn iteron_provider::catalog::HttpTransport,
+    ) -> Result<Arc<dyn Provider>, String> {
+        self.build_inner(selection, Some(transport))
+    }
+
+    fn build_inner(
+        &self,
+        selection: &ModelSelection,
+        transport: Option<&dyn iteron_provider::catalog::HttpTransport>,
+    ) -> Result<Arc<dyn Provider>, String> {
         self.validate_selection(selection, true)?;
         let entry = self
             .entry(&selection.provider_id)
             .ok_or_else(|| format!("unknown provider `{}`", selection.provider_id))?;
-        let provider = entry
-            .instance
+        let instance = match transport {
+            Some(transport) => entry
+                .instance
+                .clone()
+                .with_fixed_http_transport(transport)
+                .map_err(|error| error.to_string())?,
+            None => entry.instance.clone(),
+        };
+        let provider = instance
             .build_turn_provider()
             .map_err(|error| error.to_string())?;
         let image_input = self.selection_capabilities(selection).image_input;
@@ -3102,6 +3127,7 @@ impl ProviderDirectory {
                 entry.instance.error_profile() == ErrorProfile::Fireworks,
             )
             .with_image_input_support(image_input)
+            .with_idempotent_request_support(transport.is_some())
             .with_static_metadata_notice(
                 entry.instance.static_metadata_handle(),
                 entry.instance.adapter(),

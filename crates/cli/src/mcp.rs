@@ -488,58 +488,76 @@ async fn connect_configured_server_with_policies(
                     limit: iteron_mcp::http::MAX_MCP_HTTP_URL_BYTES,
                 },
             )?)?;
+            let plantcore_gateway_token_env = plantcore_run_gateway_access_token_env(server);
             let policy = iteron_mcp::http::McpHttpHeaderPolicy::new(
-                server.header_env.keys().cloned().collect(),
+                if plantcore_gateway_token_env.is_some() {
+                    Vec::new()
+                } else {
+                    server.header_env.keys().cloned().collect()
+                },
             )?;
             let mut headers = Vec::with_capacity(server.header_env.len());
-            for (name, env_name) in &server.header_env {
-                let value =
-                    std::env::var(env_name).map_err(|_| iteron_mcp::McpError::InvalidEndpoint {
-                        field: "header_env_value",
-                        limit: 8192,
+            if plantcore_gateway_token_env.is_none() {
+                for (name, env_name) in &server.header_env {
+                    let value = std::env::var(env_name).map_err(|_| {
+                        iteron_mcp::McpError::InvalidEndpoint {
+                            field: "header_env_value",
+                            limit: 8192,
+                        }
                     })?;
-                headers.push((name.clone(), iteron_mcp::http::McpHeaderValue::new(value)?));
+                    headers.push((name.clone(), iteron_mcp::http::McpHeaderValue::new(value)?));
+                }
             }
             let external = server
                 .oauth
                 .as_ref()
                 .and_then(|oauth| oauth.access_token_env.as_ref());
-            let stored = if external.is_none() {
+            let stored = if external.is_none() && plantcore_gateway_token_env.is_none() {
                 credential_store::load(server).map_err(|_| {
                     iteron_mcp::McpError::Protocol("stored MCP credential is invalid".into())
                 })?
             } else {
                 None
             };
-            let credential =
-                if let Some((oauth, access_token_env)) = server.oauth.as_ref().zip(external) {
-                    Some({
-                        let secret = std::env::var(access_token_env).map_err(|_| {
-                            iteron_mcp::McpError::Credential(iteron_mcp::token::TokenError::Absent)
-                        })?;
-                        let expires_at = oauth
-                            .expires_at_env
-                            .as_ref()
-                            .map(|name| {
-                                std::env::var(name)
-                                    .ok()
-                                    .and_then(|value| value.parse::<u64>().ok())
-                                    .ok_or(iteron_mcp::McpError::Credential(
-                                        iteron_mcp::token::TokenError::Expired { skew: 30 },
-                                    ))
-                            })
-                            .transpose()?
-                            .unwrap_or(u64::MAX);
-                        iteron_mcp::token::Token::new(secret, expires_at)
-                    })
-                } else {
-                    stored.as_ref().map(|credential| {
-                        iteron_mcp::token::Token::new(
-                            credential.access_token.clone(),
-                            credential.expires_at_unix,
-                        )
-                    })
-                };
+            let credential = if let Some(access_token_env) = plantcore_gateway_token_env {
+                let header = std::env::var(access_token_env).map_err(|_| {
+                    iteron_mcp::McpError::Credential(iteron_mcp::token::TokenError::Absent)
+                })?;
+                let secret = header
+                    .strip_prefix("Bearer ")
+                    .filter(|value| !value.is_empty())
+                    .ok_or(iteron_mcp::McpError::Credential(
+                        iteron_mcp::token::TokenError::Absent,
+                    ))?;
+                Some(iteron_mcp::token::Token::new(secret.to_owned(), u64::MAX))
+            } else if let Some((oauth, access_token_env)) = server.oauth.as_ref().zip(external) {
+                Some({
+                    let secret = std::env::var(access_token_env).map_err(|_| {
+                        iteron_mcp::McpError::Credential(iteron_mcp::token::TokenError::Absent)
+                    })?;
+                    let expires_at = oauth
+                        .expires_at_env
+                        .as_ref()
+                        .map(|name| {
+                            std::env::var(name)
+                                .ok()
+                                .and_then(|value| value.parse::<u64>().ok())
+                                .ok_or(iteron_mcp::McpError::Credential(
+                                    iteron_mcp::token::TokenError::Expired { skew: 30 },
+                                ))
+                        })
+                        .transpose()?
+                        .unwrap_or(u64::MAX);
+                    iteron_mcp::token::Token::new(secret, expires_at)
+                })
+            } else {
+                stored.as_ref().map(|credential| {
+                    iteron_mcp::token::Token::new(
+                        credential.access_token.clone(),
+                        credential.expires_at_unix,
+                    )
+                })
+            };
             let manual_source_zone = if server.oauth.as_ref().is_some_and(|oauth| {
                 oauth.access_token_env.is_some()
                     && oauth.refresh_url.is_some()
@@ -649,22 +667,50 @@ async fn connect_configured_server_with_policies(
                     })
                     .transpose()?
             };
-            let elicitation = mrtr_handler.map(iteron_mcp::elicitation_handler_from_mrtr);
-            let client = iteron_mcp::McpRemoteClient::connect_auto_with_policies_and_elicitation(
-                endpoint,
-                server.name.clone(),
-                credential,
-                policy,
-                headers,
-                oauth_grant,
-                elicitation,
-                deadlines.http(),
-                result_policy,
-            )
-            .await?;
+            let client = if plantcore_gateway_token_env.is_some() {
+                iteron_mcp::McpRemoteClient::connect_with_policies(
+                    endpoint,
+                    server.name.clone(),
+                    credential,
+                    policy,
+                    headers,
+                    oauth_grant,
+                    deadlines.http(),
+                    result_policy,
+                )
+                .await?
+            } else {
+                let elicitation = mrtr_handler.map(iteron_mcp::elicitation_handler_from_mrtr);
+                iteron_mcp::McpRemoteClient::connect_auto_with_policies_and_elicitation(
+                    endpoint,
+                    server.name.clone(),
+                    credential,
+                    policy,
+                    headers,
+                    oauth_grant,
+                    elicitation,
+                    deadlines.http(),
+                    result_policy,
+                )
+                .await?
+            };
             Ok(ConfiguredMcpClient::Http(Arc::new(client)))
         }
     }
+}
+
+fn plantcore_run_gateway_access_token_env(server: &McpServerConfig) -> Option<&str> {
+    (server.name == "plantcore-run-gateway"
+        && server.transport == McpTransportConfig::Http
+        && server.command.is_none()
+        && server.args.is_empty()
+        && server.env_names.is_empty()
+        && server.url.as_deref() == Some("http://127.0.0.1:43171/mcp")
+        && server.oauth.is_none()
+        && server.header_env.len() == 1)
+        .then(|| server.header_env.get("Authorization").map(String::as_str))
+        .flatten()
+        .filter(|name| *name == "PLANTCORE_RUN_GATEWAY_AUTHORIZATION")
 }
 
 /// The authority this composition root is willing to admit for any MCP server, before that
@@ -796,6 +842,28 @@ mod tests {
             "tools": filter,
             "policy": policy
         })
+    }
+
+    #[test]
+    fn fixed_plantcore_gateway_uses_the_bearer_credential_channel() {
+        let document = json!({
+            "schema_version": FILE_CONFIG_SCHEMA_VERSION,
+            "mcp_servers": [{
+                "name": "plantcore-run-gateway",
+                "transport": "http",
+                "url": "http://127.0.0.1:43171/mcp",
+                "header_env": {
+                    "Authorization": "PLANTCORE_RUN_GATEWAY_AUTHORIZATION"
+                }
+            }]
+        });
+        let trusted_user = FileConfig::parse(&document.to_string()).unwrap();
+        let server = &trusted_user.mcp_servers.as_ref().unwrap()[0];
+
+        assert_eq!(
+            plantcore_run_gateway_access_token_env(server),
+            Some("PLANTCORE_RUN_GATEWAY_AUTHORIZATION")
+        );
     }
 
     #[tokio::test]

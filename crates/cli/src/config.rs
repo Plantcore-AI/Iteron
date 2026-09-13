@@ -1024,10 +1024,19 @@ impl FileConfig {
                         })?;
                         iteron_mcp::http::McpHttpEndpoint::parse(url)
                             .map_err(|error| format!("mcp_servers[{index}].url: {error}"))?;
-                        iteron_mcp::http::McpHttpHeaderPolicy::new(
-                            server.header_env.keys().cloned().collect(),
-                        )
-                        .map_err(|error| format!("mcp_servers[{index}].header_env: {error}"))?;
+                        let plantcore_run_gateway = server.name == "plantcore-run-gateway"
+                            && url == "http://127.0.0.1:43171/mcp"
+                            && server.header_env.len() == 1
+                            && server
+                                .header_env
+                                .get("Authorization")
+                                .is_some_and(|name| name == "PLANTCORE_RUN_GATEWAY_AUTHORIZATION");
+                        if !plantcore_run_gateway {
+                            iteron_mcp::http::McpHttpHeaderPolicy::new(
+                                server.header_env.keys().cloned().collect(),
+                            )
+                            .map_err(|error| format!("mcp_servers[{index}].header_env: {error}"))?;
+                        }
                         for env_name in server.header_env.values() {
                             validate_upper_env_name(env_name).map_err(|reason| {
                                 format!("mcp_servers[{index}].header_env: {reason}")
@@ -2342,6 +2351,18 @@ mod tests {
             }]
         });
         assert!(FileConfig::parse(&oversized.to_string()).is_err());
+    }
+
+    #[test]
+    fn plantcore_run_gateway_accepts_only_its_fixed_authorization_binding() {
+        let exact = r#"{"schema_version":2,"mcp_servers":[{"name":"plantcore-run-gateway","transport":"http","url":"http://127.0.0.1:43171/mcp","header_env":{"Authorization":"PLANTCORE_RUN_GATEWAY_AUTHORIZATION"}}]}"#;
+        assert!(FileConfig::parse(exact).is_ok());
+        for invalid in [
+            r#"{"schema_version":2,"mcp_servers":[{"name":"remote","transport":"http","url":"https://example.com/mcp","header_env":{"Authorization":"PLANTCORE_RUN_GATEWAY_AUTHORIZATION"}}]}"#,
+            r#"{"schema_version":2,"mcp_servers":[{"name":"plantcore-run-gateway","transport":"http","url":"http://127.0.0.1:43171/mcp","header_env":{"Authorization":"OTHER_TOKEN"}}]}"#,
+        ] {
+            assert!(FileConfig::parse(invalid).is_err(), "accepted {invalid}");
+        }
     }
 
     #[test]

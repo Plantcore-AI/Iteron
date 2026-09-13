@@ -18,13 +18,17 @@ pub const MAX_INPUT_SEGMENTS: usize = 9;
 /// Maximum number of image attachments in one multimodal submission.
 pub const MAX_INPUT_IMAGES: usize = 8;
 /// Maximum encoded bytes in one image's canonical RFC 4648 base64 payload.
-pub const MAX_IMAGE_BASE64_BYTES: usize = 8 * 1024 * 1024;
+///
+/// The aggregate bound below is the effective limit for both one image and a submission. Keeping
+/// the per-image ceiling equal to it lets the PlantCore bridge preserve every image shape admitted
+/// by its frozen eight-image/32 MiB aggregate contract.
+pub const MAX_IMAGE_BASE64_BYTES: usize = 32 * 1024 * 1024;
 /// Maximum encoded image bytes across one submission.
 pub const MAX_TOTAL_IMAGE_BASE64_BYTES: usize = 32 * 1024 * 1024;
 /// Maximum number of file attachments in one `Op::UserInputV3` submission.
 pub const MAX_INPUT_FILES: usize = 8;
 /// Maximum UTF-8 bytes in one attached file's text.
-pub const MAX_FILE_TEXT_BYTES: usize = 256 * 1024;
+pub const MAX_FILE_TEXT_BYTES: usize = 512 * 1024;
 /// Maximum attached-file text across one submission.
 pub const MAX_TOTAL_FILE_TEXT_BYTES: usize = 512 * 1024;
 /// Maximum bytes in one attachment's workspace-relative path.

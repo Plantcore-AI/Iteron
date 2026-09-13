@@ -122,7 +122,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 25] = [
             scalar_field!(
                 "per_image_raw_bytes",
                 true,
-                int_domain!(1, 6_291_456, "bytes")
+                int_domain!(1, 25_165_824, "bytes")
             ),
             scalar_field!(
                 "aggregate_raw_bytes",

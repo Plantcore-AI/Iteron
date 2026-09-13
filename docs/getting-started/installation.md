@@ -1,7 +1,9 @@
 # Installation
 
 The v0.0.20 distribution matrix covers macOS arm64, Linux arm64, Linux x86-64,
-and Windows x86-64. Consult the selected release's asset list before installing;
+and Windows x86-64. The Windows artifact remains outside the fully supported
+product matrix because it has no code-execution sandbox and no supported
+interactive TUI. Consult the selected release's asset list before installing;
 source versioning alone does not prove that an archive exists for a host.
 
 !!! warning "Pre-alpha release"
@@ -83,10 +85,11 @@ The POSIX installer:
 - smoke-tests the downloaded binary before replacing an existing installation;
 - installs atomically without `sudo` and never edits a shell profile.
 
-It installs only the `iteron` command. `iteron-harness` is a repository-only research executable;
-it is not included in an archive or installed by this script. Its source-build instructions and
-language-neutral client contract are documented in the
-[research harness protocol](../reference/research-harness-protocol.md).
+It installs the `iteron` command and its fixed `iteron-workspace-hook` sibling.
+`iteron-harness` is a repository-only research executable; it is not included
+in an archive or installed by this script. Its source-build instructions and
+language-neutral client contract are documented in the [research harness
+protocol](../reference/research-harness-protocol.md).
 
 After installation, follow [Setup and BYOK](setup-and-byok.md) to validate and
 store a provider credential outside the repository.
@@ -118,7 +121,7 @@ operator-authority mode runs commands unconfined. See
 | macOS, Apple Silicon | `aarch64-apple-darwin` | `macos-15` | verify on the release page |
 | Linux, arm64 | `aarch64-unknown-linux-musl` | `dgx` | verify on the release page |
 | Linux, x86-64 | `x86_64-unknown-linux-musl` | `dgx` | verify on the release page |
-| Windows, x86-64 | `x86_64-pc-windows-msvc` | `windows-2025` | published in v0.0.20 |
+| Windows, x86-64 | `x86_64-pc-windows-msvc` | `windows-2025` or configured self-hosted runner | published in v0.0.20 |
 
 The v0.0.20 release publishes all four targets above. Release notes remain
 authoritative for the archives a particular tag actually contains. A Windows
@@ -197,14 +200,16 @@ Run the installer again to upgrade to the latest release, or pass `--version` to
 install a specific release. The existing executable is preserved if download,
 verification, extraction, or smoke testing fails.
 
-To uninstall, remove only the executable from the destination you selected:
+To uninstall, remove the command and its fixed workspace Hook from the
+destination you selected:
 
 ```sh
-rm "$HOME/.local/bin/iteron"
+rm "$HOME/.local/bin/iteron" "$HOME/.local/bin/iteron-workspace-hook"
 ```
 
-On Windows, remove `%LOCALAPPDATA%\Iteron\bin\iteron.exe` (or your selected
-`-BinDir` copy) and remove that directory from the user `PATH` if desired.
+On Windows, remove `%LOCALAPPDATA%\Iteron\bin\iteron.exe` and
+`iteron-workspace-hook.exe` (or the copies in your selected `-BinDir`) and
+remove that directory from the user `PATH` if desired.
 
 Iteron does not remove `.iteron/` session and recovery data automatically.
 Review that evidence before deleting it.

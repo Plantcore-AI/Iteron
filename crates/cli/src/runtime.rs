@@ -189,6 +189,8 @@ mod mcp_control;
 mod operator_status;
 mod orchestration_route;
 mod permission_policy;
+mod plantcore;
+pub(crate) use plantcore::{DispatchGate, ResumeActivation};
 mod policy_evidence;
 pub(crate) mod policy_evidence_recorder;
 mod pricing;
@@ -440,6 +442,22 @@ pub enum UiEvent {
     },
     /// The run ended.
     Done(String),
+}
+
+/// PlantCore-only runtime facts carried beside the frozen CLI `UiEvent` vocabulary.
+#[derive(Debug, Clone)]
+pub(crate) enum PlantcoreUiEvent {
+    Usage(iteron_protocol::TurnUsage),
+    RunAdmitted {
+        profile_digest_sha256: iteron_protocol::HexSha256,
+    },
+}
+
+/// Ordered ingress from the resident runtime into App Server presentation.
+#[derive(Debug, Clone)]
+pub(crate) enum RuntimeFrontendEvent {
+    Ui(UiEvent),
+    Plantcore(PlantcoreUiEvent),
 }
 
 /// A bounded, presentation-safe task declared by a workflow plan.
@@ -699,16 +717,14 @@ fn parse_bash_operator_output(content: &str) -> Option<BashOperatorOutput> {
             .filter(|job_id| !job_id.is_empty())
             .map(str::to_owned);
         (BashOperatorState::Running, job_id, None)
-    } else if let Some(state_json) = header
-        .strip_prefix("[failed state=")
-        .and_then(|header| header.strip_suffix(']'))
-    {
+    } else {
+        let state_json = header
+            .strip_prefix("[failed state=")
+            .and_then(|header| header.strip_suffix(']'))?;
         let failure_kind = serde_json::from_str::<serde_json::Value>(state_json)
             .ok()
             .and_then(|state| state.get("kind")?.as_str().map(str::to_owned));
         (BashOperatorState::Failed, None, failure_kind)
-    } else {
-        return None;
     };
 
     let mut parsed = BashOperatorOutput {
@@ -2119,6 +2135,32 @@ fn control_refusal(tool: &ToolUse, control: InboundControl) -> ToolResult {
     }
 }
 
+fn settle_consecutive_tool_errors(current: u32, had_error_tool_result: bool) -> u32 {
+    if had_error_tool_result {
+        current.saturating_add(1)
+    } else {
+        0
+    }
+}
+
+#[cfg(test)]
+mod plantcore_stuck_tests {
+    use super::settle_consecutive_tool_errors;
+
+    #[test]
+    fn logical_turn_error_streak_counts_once_and_clean_turn_resets() {
+        let mut streak = 3;
+        // `had_error_tool_result` is the OR across built-in, MCP, Hook, timeout, and mixed-batch
+        // ToolResults; the number of failures and any successes in that turn do not change it.
+        streak = settle_consecutive_tool_errors(streak, true);
+        assert_eq!(streak, 4);
+        streak = settle_consecutive_tool_errors(streak, true);
+        assert_eq!(streak, 5);
+        assert_eq!(settle_consecutive_tool_errors(streak, false), 0);
+        assert_eq!(settle_consecutive_tool_errors(u32::MAX, true), u32::MAX);
+    }
+}
+
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DurableAppendFault {
@@ -2391,6 +2433,9 @@ pub struct Agent {
     /// Set if a durable record append failed. Checked at turn admission so the run halts at a
     /// safe point rather than proceeding with an audit gap / forked chain (code review).
     record_failed: bool,
+    /// Internal release-recording seam. The CLI can arm it only for PlantCore recording, and the
+    /// first admitted logical turn consumes it before any Provider dispatch.
+    recording_harness_error_armed: bool,
     /// Live at-most-once ledger for effect identities (#16). Consulted by the boundary BEFORE the
     /// write-ahead append, so a repeated identity never reaches an executor. Seeded from the
     /// replayed journal on recovery so a resumed process cannot re-mint what the previous one
@@ -2420,12 +2465,15 @@ pub struct Agent {
     /// on the same governor. The fixed default mirrors the workflow concurrency default.
     pub max_tool_concurrency: usize,
     pure_overlap_enabled: bool,
+    plantcore: plantcore::PlantcoreRuntime,
     pure_tool_concurrency: usize,
     /// One non-refilling child-spawn ceiling for the resident session. Workflow-local RunLimits
     /// remain a second, narrower guard and never replace this owner.
     session_spawn_ledger: std::sync::Arc<SessionSpawnLedger>,
     /// Optional frontend event sink. The kernel never renders model content directly.
     ui_tx: Option<tokio::sync::mpsc::Sender<UiEvent>>,
+    /// Ordered App Server ingress for CLI and PlantCore resident events.
+    resident_ui_tx: Option<tokio::sync::mpsc::Sender<RuntimeFrontendEvent>>,
     frontend_saturation: frontend::FrontendChannelHealth,
     /// Compile-local typed activity plane. The protocol owner bridges this sink into the additive
     /// versioned frontend event without making runtime timing depend on renderer work.
@@ -2552,10 +2600,14 @@ pub struct Agent {
     observed_trust: Trust,
     /// The most recent assistant text — a subagent's return value to the single writer.
     last_assistant_text: String,
+    /// Exact assistant text streamed during the current submitted Run, across logical turns.
+    /// v4-v6 retain `last_assistant_text`; schema-v7 has one message lifecycle per Run.
+    run_assistant_text: String,
     seq_turn: u32,
     /// Operator permission posture (ADR-007 §3, R5). Every effecting tool is gated by
     /// `gate(mode, rules, tool, cap)` — a pure function the model cannot influence. `Ask` verdicts
-    /// await an operator answer on `approvals_rx`; with no channel (one-shot), `Ask` fails closed.
+    /// await an operator answer only when interactive approvals are enabled; otherwise they fail
+    /// closed.
     permission_mode: PermissionMode,
     permission_rules: PermissionRules,
     /// Authority admitted by the task envelope. It starts at the built-in product surface for
@@ -2564,9 +2616,11 @@ pub struct Agent {
     /// Capabilities declared by the immutable selected policy manifest. Loading a candidate can
     /// only intersect this set; it cannot refill authority absent from the task ceiling.
     policy_capabilities: CapabilitySet,
-    /// Inbound operator channel for approval answers (the SQ seed, ADR-010). Set by a frontend
-    /// (the TUI) via `set_approvals`; None in one-shot mode.
+    /// Inbound operator channel for safe-point commands and approval answers (the SQ seed,
+    /// ADR-010). Resident frontends install it even when human approval prompts are disabled.
     approvals_rx: Option<tokio::sync::mpsc::Receiver<SqEnvelope>>,
+    /// Whether an `Ask` verdict may wait for an operator response on `approvals_rx`.
+    interactive_approvals: bool,
     /// Steering received while a provider/tool/approval was active. It is admitted only at a
     /// turn-atomic safe point and in submission order.
     pending_steers: std::collections::VecDeque<String>,
@@ -2664,6 +2718,7 @@ impl Agent {
         allow_orchestration: bool,
         input_file_evidence: Option<file_submission::InputFileEvidence>,
     ) -> Result<Outcome, KernelError> {
+        self.run_assistant_text.clear();
         let mut outcome = self
             .run_with_images_mode_inner(
                 task,
@@ -3055,6 +3110,20 @@ impl Agent {
         let mut context_budget_recovery = context_runtime::ContextBudgetRecoveryGuard::default();
 
         loop {
+            // Order each new logical turn against a concurrent PlantCore pause. The permit is
+            // intentionally released immediately: pause waits only for already-issued external
+            // calls, while this atomic crossing proves no turn began after its accepted reply.
+            if self.cross_plantcore_logical_turn_gate().await.is_err() {
+                if let Some(outcome) = self
+                    .collect_and_finish_requested_control(TurnId(self.seq_turn))
+                    .await?
+                {
+                    return Ok(outcome);
+                }
+                return self
+                    .finish(TurnId(self.seq_turn), Outcome::Interrupted)
+                    .await;
+            }
             let mut agent_loop = agent_loop::AgentLoopGuard::begin(TurnId(self.seq_turn));
             // Steering is a real submission, not a post-run local queue. Admit it only here, at a
             // turn boundary, before the next request projection is built.
@@ -3067,6 +3136,9 @@ impl Agent {
                 Some(turn_id),
                 LifecyclePayload::default(),
             );
+            if std::mem::take(&mut self.recording_harness_error_armed) {
+                return self.finish(turn_id, Outcome::HarnessError).await;
+            }
             if self.record_failed {
                 // The audit record could not be durably written; halt rather than run un-recorded.
                 return Ok(Outcome::HarnessError);
@@ -3517,6 +3589,15 @@ impl Agent {
                 .position(|route| route.id() == active_provider_route)
                 .map_or(0, |index| index.saturating_add(1));
             let use_hedge = admission.use_hedge;
+            let mut provider_dispatch_permit = None;
+            if provider_refusal.is_none() && !use_hedge {
+                match self.enter_plantcore_external_dispatch().await {
+                    Ok(permit) => provider_dispatch_permit = permit,
+                    Err(()) => {
+                        provider_refusal = Some(iteron_provider::ProviderError::Interrupted.into());
+                    }
+                }
+            }
             let mut physical_attempt = if use_hedge { 0 } else { 1 };
             let mut route_transition_reason: Option<&'static str> = None;
             let mut provider_route_permit = admission.primary_route_permit;
@@ -3647,6 +3728,7 @@ impl Agent {
             let tool_policy = self.tool_policy.clone();
             let argument_trust = self.governing_turn_trust(messages);
             let ui_tx = self.ui_tx.clone();
+            let resident_ui_tx = self.resident_ui_tx.clone();
             let frontend_saturation = self.frontend_saturation.clone();
             let tool_interrupt = self.interrupt.clone();
             let tool_force_cancel = self.force_cancel.clone();
@@ -3705,6 +3787,7 @@ impl Agent {
             // rather than consuming an average this layer pre-computed.
             let mut first_item_at: Option<Instant> = None;
             let mut first_byte_observed = false;
+            let mut semantic_output_observed = false;
             let mut stream_items: u32 = 0;
             // I-39: what the model has already said. A mid-stream failure used to return before
             // the assistant message was appended, so a connection reset destroyed every token the
@@ -3733,6 +3816,7 @@ impl Agent {
                     .checked_add(Duration::from_secs(self.budget.max_wall_secs))
                     .unwrap_or_else(Instant::now)
             });
+            let allow_in_flight_past_deadline = self.plantcore_runtime_enabled();
             let provider_interrupt = self.interrupt.clone();
             let provider_force_cancel = self.force_cancel.clone();
             let provider_drain = self.drain.clone();
@@ -3797,10 +3881,11 @@ impl Agent {
                             return;
                         }
                         if let StreamItem::CompatibilityNotice(message) = item {
-                            if let Some(tx) = &ui_tx {
-                                let _ = frontend_saturation
-                                    .try_send_ui(tx, UiEvent::Notice(message.to_string()));
-                            }
+                            let _ = frontend_saturation.try_send_frontend(
+                                resident_ui_tx.as_ref(),
+                                ui_tx.as_ref(),
+                                UiEvent::Notice(message.to_string()),
+                            );
                             self.lifecycle_event(
                                 "model.compatibility_notice",
                                 Some(turn_id),
@@ -3871,25 +3956,29 @@ impl Agent {
                             emit_model_lifecycle("model.first_token", payload);
                         }
                         stream_items = stream_items.saturating_add(1);
+                        semantic_output_observed |=
+                            provider_route::stream_item_has_semantic_output(&item);
                         match item {
                             StreamItem::TextDelta(t) => {
                                 streamed_text.push_str(&t);
-                                if !hedge_ui_pre_forwarded && let Some(tx) = &ui_tx {
+                                if !hedge_ui_pre_forwarded {
                                     // Scrub secrets before the assistant text crosses the UI seam (ADR-015 R1):
                                     // the record already masks the committed Block::Text, but the live UI / /export
                                     // are the same exfiltration surfaces as tool output, which we scrub here too.
                                     // The frontend adds a stateful cross-delta scrubber before rendering.
-                                    let _ = frontend_saturation.try_send_ui(
-                                        tx,
+                                    let _ = frontend_saturation.try_send_frontend(
+                                        resident_ui_tx.as_ref(),
+                                        ui_tx.as_ref(),
                                         UiEvent::Text(iteron_record::redact::scrub(&t)),
                                     );
                                 }
                             }
                             StreamItem::ThinkingDelta(t) => {
                                 streamed_thinking.push_str(&t);
-                                if !hedge_ui_pre_forwarded && let Some(tx) = &ui_tx {
-                                    let _ = frontend_saturation.try_send_ui(
-                                        tx,
+                                if !hedge_ui_pre_forwarded {
+                                    let _ = frontend_saturation.try_send_frontend(
+                                        resident_ui_tx.as_ref(),
+                                        ui_tx.as_ref(),
                                         UiEvent::Thinking(iteron_record::redact::scrub(&t)),
                                     );
                                 }
@@ -3904,12 +3993,13 @@ impl Agent {
                                     tool_contract_error = Some(error);
                                     return;
                                 }
-                                if let Some(tx) = &ui_tx {
+                                {
                                     // Scrub secret-shaped values out of the args BEFORE they cross the UI seam
                                     // (ADR-015 R1: the UI/ /export / scrollback are new exfiltration surfaces the
                                     // record's redaction does not cover).
-                                    let _ = frontend_saturation.try_send_ui(
-                                        tx,
+                                    let _ = frontend_saturation.try_send_frontend(
+                                        resident_ui_tx.as_ref(),
+                                        ui_tx.as_ref(),
                                         UiEvent::ToolStart {
                                             id: tu.id.clone(),
                                             name: tu.name.clone(),
@@ -4179,6 +4269,7 @@ impl Agent {
                                 force_cancel: provider_force_cancel.clone(),
                                 drain: provider_drain.clone(),
                                 attempt: None,
+                                allow_in_flight_past_deadline,
                             },
                             &req,
                             &mut on_item,
@@ -4223,6 +4314,8 @@ impl Agent {
                     );
                     let broker_started = Instant::now();
                     self.settle_kernel_effect(ticket, settlement)?;
+                    self.observe_plantcore_provider_attempt(turn_id, &accounting)
+                        .map_err(|reason| KernelError::ContextResolution(reason.into()))?;
                     self.commit_provider_route_charge(turn_id, &accounting)?;
                     self.ledger
                         .record_broker_latency_us(elapsed_us(broker_started));
@@ -4236,14 +4329,15 @@ impl Agent {
                     )?;
                 }
                 drop(provider_route_permit.take());
+                drop(provider_dispatch_permit.take());
                 route_transition_reason = None;
                 if let Some(error) = tool_policy_record_error.take() {
                     break Err(error);
                 }
-                let emitted = first_byte_observed || stream_items > 0;
-                if let Some(error) =
-                    provider_route::retryable_pre_stream_provider_error(&result, emitted)
-                    && retry_index.saturating_add(1) < self.retry_policy.max_attempts
+                if let Some(error) = provider_route::retryable_before_semantic_output_provider_error(
+                    &result,
+                    semantic_output_observed,
+                ) && retry_index.saturating_add(1) < self.retry_policy.max_attempts
                 {
                     if let Err(error) =
                         self.admit_followup_after_route_attempt_set(monetary_followup_safe)
@@ -4321,7 +4415,8 @@ impl Agent {
                     );
                     retry_index = retry_index.saturating_add(1);
                 } else if let Some(error) = result.as_ref().err()
-                    && let Some(failover_class) = self.admitted_failover(error, emitted)
+                    && let Some(failover_class) =
+                        self.admitted_failover(error, semantic_output_observed)
                     && let Some(index) = provider_governor_state::next_admitted_fallback_index(
                         &self.fallback_provider_routes,
                         fallback_index,
@@ -4358,7 +4453,18 @@ impl Agent {
                     provider_route_permit = self
                         .admit_governed_route_attempt(turn_id, &active_provider_route)
                         .await?;
+                    match self.enter_plantcore_external_dispatch().await {
+                        Ok(permit) => provider_dispatch_permit = permit,
+                        Err(()) => {
+                            drop(provider_route_permit.take());
+                            if let Some(budget) = &self.usd_budget {
+                                budget.settle_not_dispatched();
+                            }
+                            break Err(iteron_provider::ProviderError::Interrupted.into());
+                        }
+                    }
                     if let Some(refusal) = self.provider_dispatch_refusal() {
+                        drop(provider_dispatch_permit.take());
                         drop(provider_route_permit.take());
                         if let Some(budget) = &self.usd_budget {
                             budget.settle_not_dispatched();
@@ -4496,10 +4602,21 @@ impl Agent {
                         &streamed_text,
                         &streamed_thinking,
                     );
+                    self.emit_plantcore_turn_usage(turn_id)?;
                     if let Some(outcome) =
                         self.collect_and_finish_requested_control(turn_id).await?
                     {
                         return Ok(outcome);
+                    }
+                    if let Some(terminal) = self.plantcore_terminal() {
+                        return match terminal {
+                            plantcore::PlantcoreTerminal::Budget(reason) => {
+                                self.finish(turn_id, Outcome::BudgetExhausted(reason)).await
+                            }
+                            plantcore::PlantcoreTerminal::UsageUnavailable => {
+                                self.finish(turn_id, Outcome::HarnessError).await
+                            }
+                        };
                     }
                     if matches!(
                         error,
@@ -4508,6 +4625,13 @@ impl Agent {
                         return self
                             .finish(turn_id, Outcome::BudgetExhausted("max_wall_secs"))
                             .await;
+                    }
+                    if let KernelError::InferenceBudgetExhausted(reason) = error {
+                        return if reason == "usage_unavailable" {
+                            self.finish(turn_id, Outcome::HarnessError).await
+                        } else {
+                            self.finish(turn_id, Outcome::BudgetExhausted(reason)).await
+                        };
                     }
                     return Err(error);
                 }
@@ -4580,6 +4704,7 @@ impl Agent {
                 None => StreamTiming::default(),
             };
             self.last_assistant_text = turn_res.text();
+            self.run_assistant_text.push_str(&self.last_assistant_text);
 
             let complete_usage = self.record_provider_usage(
                 turn_id,
@@ -4588,6 +4713,7 @@ impl Agent {
                 usd_attempt.projected_at_unix_secs(),
                 stream_timing,
             )?;
+            self.emit_plantcore_turn_usage(turn_id)?;
             if let Some(usage) = complete_usage {
                 usd_attempt.complete();
                 self.lifecycle_event(
@@ -4638,6 +4764,28 @@ impl Agent {
                 content: turn_res.blocks.clone(),
             };
             self.commit_message(turn_id, messages, assistant)?;
+
+            // Recording scenarios may hold this durable post-Provider boundary until their driver
+            // observes the Control command. No tool from this response has been dispatched yet.
+            if let Some(gate) = self.plantcore_dispatch_gate() {
+                gate.await_recording_provider_usage_settled()
+                    .await
+                    .map_err(|reason| KernelError::ContextResolution(reason.into()))?;
+                if let Some(outcome) = self.collect_and_finish_requested_control(turn_id).await? {
+                    return Ok(outcome);
+                }
+            }
+
+            if let Some(terminal) = self.plantcore_terminal() {
+                return match terminal {
+                    plantcore::PlantcoreTerminal::Budget(reason) => {
+                        self.finish(turn_id, Outcome::BudgetExhausted(reason)).await
+                    }
+                    plantcore::PlantcoreTerminal::UsageUnavailable => {
+                        self.finish(turn_id, Outcome::HarnessError).await
+                    }
+                };
+            }
 
             // ---- collect tool results in DETERMINISTIC tool_use order (ADR-006 R7) ----
             let tools_span = PhaseSpan::enter(Phase::Tools);
@@ -4728,6 +4876,76 @@ impl Agent {
             if total_tools > 0 {
                 agent_loop.transition(AgentLoopState::AwaitingTool)?;
             }
+            if self.plantcore_runtime_enabled()
+                && returned_tools
+                    .iter()
+                    .any(|tool| tool.name == iteron_tools::REQUEST_USER_INPUT)
+            {
+                self.abort_early_pure_tools(turn_id, &mut pure).await?;
+                let terminal = if total_tools == 1 {
+                    let tool = &returned_tools[0];
+                    self.request_plantcore_input_from_value(&tool.id, tool.input.clone())
+                } else {
+                    Err(
+                        "request_user_input must be the only tool call in the model response"
+                            .into(),
+                    )
+                };
+                match terminal {
+                    Ok(()) => {
+                        let tool = &returned_tools[0];
+                        self.ui(UiEvent::ToolEnd {
+                            id: tool.id.clone(),
+                            ok: true,
+                            exit_code: None,
+                            output: String::new(),
+                            diff: None,
+                        });
+                        self.ledger.phase_tools(tools_span.elapsed_ms());
+                        return self.finish(turn_id, Outcome::Done).await;
+                    }
+                    Err(reason) => {
+                        let content = serde_json::json!({
+                            "status": "error",
+                            "reason": "sole_call_required",
+                            "message": reason,
+                        })
+                        .to_string();
+                        let mut blocks = Vec::with_capacity(returned_tools.len());
+                        for tool in &returned_tools {
+                            let result = ToolResult {
+                                tool_use_id: tool.id.clone(),
+                                content: content.clone(),
+                                is_error: true,
+                                trust: Trust::Trusted,
+                                latency_ms: 0,
+                            };
+                            self.commit_refused_tool_result(turn_id, &tool.name, &result)?;
+                            self.ui(tool_end_ui(tool, &result));
+                            blocks.push(Block::ToolResult(result));
+                        }
+                        self.ledger.phase_tools(tools_span.elapsed_ms());
+                        self.commit_message(
+                            turn_id,
+                            messages,
+                            Message {
+                                role: Role::User,
+                                content: blocks,
+                            },
+                        )?;
+                        consecutive_errors =
+                            settle_consecutive_tool_errors(consecutive_errors, true);
+                        if consecutive_errors >= self.budget.max_consecutive_tool_errors {
+                            return self.finish(turn_id, Outcome::Stuck).await;
+                        }
+                        if let Some(reason) = self.completed_turn_budget_exhaustion() {
+                            return self.finish(turn_id, Outcome::BudgetExhausted(reason)).await;
+                        }
+                        self.advance_turn().await?;
+                        continue;
+                    }
+                }
+            }
             if total_tools > 0
                 && matches!(
                     turn_res.stop_reason,
@@ -4809,7 +5027,7 @@ impl Agent {
                         if let Some(reason) = self.completed_turn_budget_exhaustion() {
                             return self.finish(turn_id, Outcome::BudgetExhausted(reason)).await;
                         }
-                        let promised_immediate_candidate = self.approvals_rx.is_none()
+                        let promised_immediate_candidate = !self.interactive_approvals
                             && completion_semantics::task_requests_candidate_action(relevance_task)
                             && completion_semantics::commits_to_immediate_candidate_action(
                                 &self.last_assistant_text,
@@ -4886,7 +5104,7 @@ impl Agent {
                                     },
                                 );
                             } else {
-                                let interactive = self.approvals_rx.is_some();
+                                let interactive = self.interactive_approvals;
                                 let notice = if interactive {
                                     "provider ended the turn without an answer; completion was not accepted"
                                 } else {
@@ -5386,9 +5604,13 @@ impl Agent {
                     let ctx =
                         serde_json::json!({"event":"PreToolUse","tool":tu.name,"input":tu.input})
                             .to_string();
-                    if let HookDecision::Deny(reason) = self
-                        .brokered_hook(turn_id, HookEvent::PreToolUse, &ctx)
-                        .await?
+                    // External MCP effects are brokered by the admitted gateway contract. The
+                    // fixed workspace hook only understands Iteron's built-in filesystem tools
+                    // and must not reinterpret an MCP tool name as an unprovable local path.
+                    if !self.registry.is_mcp_effect(&tu.name)
+                        && let HookDecision::Deny(reason) = self
+                            .brokered_hook(turn_id, HookEvent::PreToolUse, &ctx)
+                            .await?
                     {
                         hook_activity.complete();
                         self.emit(
@@ -5525,6 +5747,65 @@ impl Agent {
                     self.ui(tool_end_ui(&tu, &r));
                     results[idx] = Some(r);
                     any_error = true;
+                    continue;
+                }
+                let mcp_dispatch_permit = if self.is_plantcore_mcp_dispatch(&tu.name) {
+                    match self.enter_plantcore_external_dispatch().await {
+                        Ok(permit) => permit,
+                        Err(()) => {
+                            let _ = self.collect_inbound_ops(turn_id);
+                            let control = self.requested_control();
+                            let r = if control == InboundControl::None {
+                                ToolResult {
+                                    tool_use_id: tu.id.clone(),
+                                    content:
+                                        "MCP dispatch refused because the resident Run is terminal"
+                                            .into(),
+                                    is_error: true,
+                                    trust: Trust::Workspace,
+                                    latency_ms: 0,
+                                }
+                            } else {
+                                control_refusal(&tu, control)
+                            };
+                            self.commit_refused_tool_result(turn_id, &tu.name, &r)?;
+                            self.ui(tool_end_ui(&tu, &r));
+                            results[idx] = Some(r);
+                            any_error = true;
+                            continue;
+                        }
+                    }
+                } else {
+                    None
+                };
+                if self.plantcore_runtime_enabled() && tu.name == iteron_tools::PUBLISH_ARTIFACT {
+                    let ticket = self.open_tool_call_effect(turn_id, idx, &tu, cap)?;
+                    let started = Instant::now();
+                    let snapshot = self.snapshot_plantcore_artifact(tu.input.clone()).await;
+                    let (content, is_error) = match snapshot {
+                        Ok(artifact) => (plantcore::artifact_result_content(&artifact), false),
+                        Err(error) => (
+                            serde_json::json!({
+                                "status": "error",
+                                "reason": "artifact_snapshot_failed",
+                                "message": iteron_protocol::text::head(&error, 512),
+                            })
+                            .to_string(),
+                            true,
+                        ),
+                    };
+                    let result = ToolResult {
+                        tool_use_id: tu.id.clone(),
+                        content,
+                        is_error,
+                        trust: Trust::Workspace,
+                        latency_ms: started.elapsed().as_millis() as u64,
+                    };
+                    self.commit_admitted_tool_result(ticket, &tu.name, &result, result.latency_ms)?;
+                    self.ledger.tool(result.latency_ms, 0, result.is_error);
+                    any_error |= result.is_error;
+                    self.ui(tool_end_ui(&tu, &result));
+                    results[idx] = Some(result);
                     continue;
                 }
                 // Intercept subagent dispatch only AFTER the ordinary capability gate and
@@ -5721,6 +6002,7 @@ impl Agent {
                 let interrupt = self.interrupt.clone();
                 let force_cancel = self.force_cancel.clone();
                 let drain = self.drain.clone();
+                let settle_mcp_on_drain = mcp_dispatch_permit.is_some();
                 self.observe_process_tool_started(turn_id, registry_effect_id.clone(), &tu);
                 let tool_use_id = intent.call.id.clone();
                 let started = Instant::now();
@@ -5728,7 +6010,7 @@ impl Agent {
                     registry.run_admitted_intent(intent),
                     interrupt.as_deref(),
                     Some(force_cancel.as_ref()),
-                    Some(drain.as_ref()),
+                    (!settle_mcp_on_drain).then_some(drain.as_ref()),
                 )
                 .await
                 {
@@ -5880,7 +6162,7 @@ impl Agent {
             }
             self.ledger.phase_tools(tools_span.elapsed_ms());
 
-            consecutive_errors = if any_error { consecutive_errors + 1 } else { 0 };
+            consecutive_errors = settle_consecutive_tool_errors(consecutive_errors, any_error);
 
             let attempted_workspace_candidate_change = !workspace_candidate_changes.is_empty();
             let completed_workspace_candidate_change =
@@ -6162,6 +6444,14 @@ impl Agent {
             // Both fan out real children and spend provider budget through their own effect
             // classes; neither is a registry dispatch, so neither can join a registry group.
             if call.name == iteron_tools::DISPATCH_AGENT || call.name == iteron_tools::WORKFLOW_TOOL
+            {
+                break;
+            }
+            // PlantCore's reversible gate is per external dispatch. Keep MCP calls on the ordered
+            // executor so each one acquires and retains its exact gate permit through terminal
+            // accounting; ordinary built-ins may still use the independent batch.
+            if self.plantcore_dispatch_gate().is_some()
+                && self.is_plantcore_mcp_dispatch(&call.name)
             {
                 break;
             }
@@ -7429,13 +7719,17 @@ impl Agent {
     }
 
     async fn finish_drained(&mut self, turn: TurnId) -> Result<Outcome, KernelError> {
-        if !self.verification_policy.checkpoint.before_drain {
-            return Err(KernelError::ContextResolution(
-                "resolved verification checkpoint policy attempted to disable the mandatory drain recovery point"
-                    .into(),
-            ));
+        // PlantCore's Run workspace is an emptyDir and its Worker owns the durable outbox used to
+        // reconcile a cooperative drain. Ordinary Iteron sessions retain their Git recovery point.
+        if !self.plantcore_runtime_enabled() {
+            if !self.verification_policy.checkpoint.before_drain {
+                return Err(KernelError::ContextResolution(
+                    "resolved verification checkpoint policy attempted to disable the mandatory drain recovery point"
+                        .into(),
+                ));
+            }
+            self.checkpoint_at_turn_end(turn, true)?;
         }
-        self.checkpoint_at_turn_end(turn, true)?;
         let outcome = self.finish(turn, Outcome::Drained).await?;
         // Drain is absorbing only until the durable checkpoint + terminal pair completes. The
         // interactive frontend intentionally reuses this Agent for follow-ups; leaving the latch
@@ -7450,6 +7744,9 @@ impl Agent {
 
     async fn finish(&mut self, turn: TurnId, outcome: Outcome) -> Result<Outcome, KernelError> {
         let mut outcome = outcome;
+        if outcome == Outcome::Done && self.complete_plantcore_product().is_err() {
+            outcome = Outcome::HarnessError;
+        }
         // The final provider answer is authoritative before any checkpoint, policy-terminal fsync,
         // or record finalization below. Expose that boundary so frontend latency never attributes
         // the durability tail to the model or leaves its final token looking stalled.
@@ -7480,8 +7777,9 @@ impl Agent {
             // Ordinary turns already have an authoritative append-only conversation record. A
             // best-effort workspace snapshot can fail on a large, full, or unusual Git worktree;
             // that must not retroactively turn a successfully streamed and recorded answer into a
-            // harness failure. Explicit Drain remains fail-closed in `finish_drained` because its
-            // promise is specifically a resumable workspace checkpoint.
+            // harness failure. Explicit ordinary Iteron Drain remains fail-closed in
+            // `finish_drained` because its promise is specifically a resumable workspace
+            // checkpoint.
             if self.checkpoint_at_turn_end(turn, false).is_err() {
                 // Not the operator's problem and not their decision: nothing they can do differs
                 // whether this snapshot exists, and every comparator harness is silent here. It is
@@ -7548,7 +7846,15 @@ impl Agent {
             ),
             Outcome::HarnessError => (
                 iteron_protocol::PolicyTerminalOutcome::Failed,
-                Some(iteron_protocol::PolicyHarnessErrorCode::HarnessFailure),
+                Some(
+                    if self.plantcore_terminal()
+                        == Some(plantcore::PlantcoreTerminal::UsageUnavailable)
+                    {
+                        iteron_protocol::PolicyHarnessErrorCode::UsageUnavailable
+                    } else {
+                        iteron_protocol::PolicyHarnessErrorCode::HarnessFailure
+                    },
+                ),
             ),
         };
         self.append_policy_turn_outcome(
@@ -7627,7 +7933,7 @@ impl Agent {
             },
         )?;
         // No interactive channel (one-shot / non-interactive): fail closed.
-        if self.approvals_rx.is_none() {
+        if !self.interactive_approvals {
             self.emit_durable(
                 turn,
                 EventKind::Approval {

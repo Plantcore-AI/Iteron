@@ -2284,6 +2284,7 @@ mod gate_integration_tests {
 
     struct DelayedDoneProvider {
         delay: Duration,
+        calls: std::sync::Arc<AtomicUsize>,
     }
 
     #[async_trait::async_trait]
@@ -2293,6 +2294,7 @@ mod gate_integration_tests {
             _req: &TurnRequest,
             _on_item: &mut (dyn FnMut(StreamItem) + Send),
         ) -> Result<TurnResult, ProviderError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
             tokio::time::sleep(self.delay).await;
             Ok(TurnResult {
                 blocks: vec![Block::Text {
@@ -4694,6 +4696,14 @@ mod gate_integration_tests {
         }
     }
 
+    fn plantcore_bootstrap_fixture() -> iteron_protocol::PlantcoreRunBootstrapV1 {
+        let document: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../contracts/plantcore/examples/app-server-v4-bootstrap.json"
+        ))
+        .unwrap();
+        serde_json::from_value(document["control"]["payload"].clone()).unwrap()
+    }
+
     fn concurrency_agent(
         ws: &std::path::Path,
         run: &iteron_protocol::RunId,
@@ -6298,7 +6308,7 @@ mod gate_integration_tests {
                     ),
                     (
                         "per_image_raw_bytes".into(),
-                        iteron_tunables::ResolutionValue::Integer { value: 6_291_456 },
+                        iteron_tunables::ResolutionValue::Integer { value: 25_165_824 },
                     ),
                     (
                         "aggregate_raw_bytes".into(),
@@ -6650,6 +6660,47 @@ mod gate_integration_tests {
             RuntimePolicyObservation::ResumeReplay
         );
         drop(resumed);
+        let _ = std::fs::remove_dir_all(ws);
+    }
+
+    #[test]
+    fn harness_turn_ceiling_survives_resume_with_harness_provenance() {
+        let ws = temp_ws("resume-harness-turn-ceiling");
+        let path;
+        {
+            let mut original = agent_for(&ws);
+            original
+                .record_genesis(ws.display().to_string(), 1, String::new(), None)
+                .unwrap();
+            original
+                .transition_turn_ceiling(2, RuntimePolicySource::Harness)
+                .unwrap();
+            path = original.rollout.path().to_path_buf();
+        }
+
+        let messages = Agent::messages_from_rollout(&path).unwrap();
+        let mut resumed = agent_for(&ws);
+        resumed.set_resume(messages).unwrap();
+
+        assert_eq!(resumed.turn_budget().max_turns, 2);
+        let overlay = resumed
+            .runtime_policy_overlay()
+            .expect("verified replay restores the harness turn ceiling");
+        assert_eq!(overlay.max_turns.value, 2);
+        assert_eq!(overlay.max_turns.source, RuntimePolicySource::Harness);
+        let _ = std::fs::remove_dir_all(ws);
+    }
+
+    #[test]
+    fn completed_turn_budget_check_includes_an_expired_wall_deadline() {
+        let ws = temp_ws("completed-turn-wall-budget");
+        let mut agent = agent_for(&ws);
+        agent.run_deadline = Some(Instant::now());
+
+        assert_eq!(
+            agent.completed_turn_budget_exhaustion(),
+            Some("max_wall_secs")
+        );
         let _ = std::fs::remove_dir_all(ws);
     }
 
@@ -7108,6 +7159,8 @@ mod gate_integration_tests {
             initial_state: _,
             interrupt: _,
             drain: _,
+            dispatch_gate: _,
+            machine_schema_version: _,
         } = crate::app_server::attach(live, true, true).unwrap();
         let crate::app_server::AppServerHandle {
             client,
@@ -9792,6 +9845,7 @@ ant-api03-SuperSecretModelToken12345"
         let mut agent = Agent::new(
             std::sync::Arc::new(DelayedDoneProvider {
                 delay: Duration::from_millis(40),
+                calls: std::sync::Arc::new(AtomicUsize::new(0)),
             }),
             Registry::coding_agent(&ws).unwrap(),
             rollout,
@@ -11582,9 +11636,57 @@ ant-api03-SuperSecretModelToken12345"
     }
 
     #[tokio::test]
+    async fn plantcore_wall_deadline_waits_for_an_admitted_provider_turn() {
+        let ws = temp_ws("plantcore-run-deadline");
+        let rollout = Rollout::open(
+            &ws.join(".iteron/runs"),
+            &iteron_protocol::RunId("plantcore-run-deadline".into()),
+            iteron_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let mut agent = Agent::new(
+            std::sync::Arc::new(DelayedDoneProvider {
+                delay: Duration::from_millis(1_100),
+                calls: calls.clone(),
+            }),
+            Registry::coding_agent(&ws).unwrap(),
+            rollout,
+            "m".into(),
+            "sys".into(),
+            Budget {
+                max_turns: 2,
+                max_usd: None,
+                max_tokens: None,
+                max_wall_secs: 30,
+                max_consecutive_tool_errors: 2,
+            },
+        );
+        agent.workspace = ws.clone();
+        agent
+            .enable_plantcore_runtime(&plantcore_bootstrap_fixture())
+            .unwrap();
+        agent.seq_turn = 1;
+        agent.run_deadline = Some(Instant::now() + Duration::from_secs(1));
+
+        let began = Instant::now();
+        assert_eq!(
+            agent.run("finish the admitted request").await.unwrap(),
+            Outcome::BudgetExhausted("max_wall_secs")
+        );
+        let elapsed = began.elapsed();
+        assert!(
+            elapsed >= Duration::from_secs(1),
+            "the admitted Provider request must complete after the one-second deadline; elapsed={elapsed:?}"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let _ = std::fs::remove_dir_all(ws);
+    }
+
+    #[tokio::test]
     async fn one_shot_ask_fails_closed_without_an_approvals_channel() {
-        // Default mode: ReversibleLocal -> Ask. With NO approvals channel (one-shot), Ask must
-        // fail CLOSED (deny), so the edit is refused rather than silently auto-approved.
+        // Default mode: ReversibleLocal -> Ask. A direct one-shot Agent has no approval frontend,
+        // so the edit is refused rather than silently auto-approved.
         let ws = temp_ws("closed");
         let mut agent = agent_for(&ws);
         agent.permission_mode = PermissionMode::Default; // no set_approvals -> no channel
@@ -11594,6 +11696,19 @@ ant-api03-SuperSecretModelToken12345"
             !ws.join("f.txt").exists(),
             "Ask with no channel must fail closed (deny), not apply the edit"
         );
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[tokio::test]
+    async fn noninteractive_control_channel_does_not_enable_approval_prompts() {
+        let ws = temp_ws("noninteractive-control");
+        let mut agent = agent_for(&ws);
+        agent.permission_mode = PermissionMode::Default;
+        let (_tx, rx) = tokio::sync::mpsc::channel::<SqEnvelope>(64);
+        agent.set_inbound_control(rx);
+
+        assert_eq!(agent.run("please edit f.txt").await.unwrap(), Outcome::Done);
+        assert!(!ws.join("f.txt").exists());
         let _ = std::fs::remove_dir_all(&ws);
     }
 
@@ -14387,6 +14502,312 @@ ant-api03-SuperSecretModelToken12345"
     }
 
     #[tokio::test]
+    async fn recording_harness_error_is_terminal_before_provider_dispatch() {
+        struct CountingProvider(std::sync::Arc<std::sync::atomic::AtomicU32>);
+
+        #[async_trait::async_trait]
+        impl Provider for CountingProvider {
+            async fn turn(
+                &self,
+                _request: &TurnRequest,
+                _on_item: &mut (dyn FnMut(StreamItem) + Send),
+            ) -> Result<iteron_provider::TurnResult, iteron_provider::ProviderError> {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Err(iteron_provider::ProviderError::Http("must not dispatch".into()))
+            }
+        }
+
+        let ws = temp_ws("recording-harness-error");
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let rollout = Rollout::open(
+            &ws.join(".iteron/runs"),
+            &iteron_protocol::RunId("recording-harness-error".into()),
+            iteron_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let mut agent = Agent::new(
+            std::sync::Arc::new(CountingProvider(calls.clone())),
+            Registry::coding_agent(&ws).unwrap(),
+            rollout,
+            "m".into(),
+            "sys".into(),
+            Budget::default(),
+        );
+        agent.workspace = ws.clone();
+        record_test_genesis(&mut agent, &ws);
+        agent.arm_recording_harness_error();
+
+        assert_eq!(
+            agent.run("reach the deterministic harness fault").await.unwrap(),
+            Outcome::HarnessError
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(agent.ledger.provider_attempts, 0);
+        let _ = std::fs::remove_dir_all(ws);
+    }
+
+    #[tokio::test]
+    async fn plantcore_dispatch_gate_waits_for_provider_then_blocks_retry_until_resume() {
+        struct PausableRetryProvider {
+            started: tokio::sync::Notify,
+            release: tokio::sync::Notify,
+            calls: AtomicUsize,
+        }
+
+        #[async_trait::async_trait]
+        impl Provider for PausableRetryProvider {
+            async fn turn(
+                &self,
+                _request: &TurnRequest,
+                _on_item: &mut (dyn FnMut(StreamItem) + Send),
+            ) -> Result<TurnResult, ProviderError> {
+                if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    self.started.notify_one();
+                    self.release.notified().await;
+                    return Err(ProviderError::Api {
+                        status: 429,
+                        body: "controlled transient failure".into(),
+                    });
+                }
+                Ok(TurnResult {
+                    blocks: vec![Block::Text {
+                        text: "done after resume".into(),
+                    }],
+                    stop_reason: StopReason::EndTurn,
+                    usage: UsageReport::complete(Usage::default()),
+                })
+            }
+        }
+
+        let ws = temp_ws("plantcore-pause-provider-retry");
+        let provider = std::sync::Arc::new(PausableRetryProvider {
+            started: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+            calls: AtomicUsize::new(0),
+        });
+        let run = iteron_protocol::RunId("plantcore-pause-provider-retry".into());
+        let rollout = Rollout::open(
+            &ws.join(".iteron/runs"),
+            &run,
+            iteron_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let mut agent = Agent::new(
+            provider.clone(),
+            Registry::read_only(&ws).unwrap(),
+            rollout,
+            "model-a".into(),
+            "sys".into(),
+            Budget::default(),
+        );
+        pin_test_tunables(&mut agent);
+        agent.workspace = ws.clone();
+        agent.set_retry_policy(iteron_sched::BackoffPolicy {
+            base_ms: 1,
+            cap_ms: 1,
+            max_attempts: 2,
+        });
+        let gate = DispatchGate::new();
+        gate.admit().unwrap();
+        agent.install_plantcore_dispatch_gate(gate.clone());
+
+        let running = tokio::spawn(async move { agent.run("retry only after resume").await });
+        await_signal(&provider.started, "the controlled Provider dispatch").await;
+        let pause_gate = gate.clone();
+        let mut pausing = tokio::spawn(async move { pause_gate.pause_after_safe_point().await });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut pausing)
+                .await
+                .is_err(),
+            "pause must not acknowledge while the Provider call is in flight"
+        );
+
+        provider.release.notify_one();
+        tokio::time::timeout(Duration::from_secs(5), pausing)
+            .await
+            .expect("pause acknowledges after Provider accounting reaches its safe point")
+            .unwrap()
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            provider.calls.load(Ordering::SeqCst),
+            1,
+            "the scheduled retry must remain behind the active gate"
+        );
+        assert!(
+            recorded_events(&ws, &run)
+                .iter()
+                .any(|event| matches!(event.kind, EventKind::EffectFailed { .. })),
+            "pause acknowledges only after the failed attempt has its durable terminal"
+        );
+
+        let activation = gate.prepare_resume().unwrap();
+        gate.activate_resume(activation).unwrap();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), running)
+                .await
+                .expect("the resident run resumes")
+                .unwrap()
+                .unwrap(),
+            Outcome::Done
+        );
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+        let _ = std::fs::remove_dir_all(ws);
+    }
+
+    #[tokio::test]
+    async fn plantcore_dispatch_gate_waits_for_mcp_then_drain_prevents_the_next_turn() {
+        struct McpThenDone {
+            calls: AtomicUsize,
+        }
+
+        #[async_trait::async_trait]
+        impl Provider for McpThenDone {
+            async fn turn(
+                &self,
+                _request: &TurnRequest,
+                on_item: &mut (dyn FnMut(StreamItem) + Send),
+            ) -> Result<TurnResult, ProviderError> {
+                if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    let call = ToolUse {
+                        id: "controlled-mcp-call".into(),
+                        name: "control__wait".into(),
+                        input: serde_json::json!({}),
+                    };
+                    on_item(StreamItem::ToolUseComplete(call.clone()));
+                    return Ok(TurnResult {
+                        blocks: vec![Block::ToolUse(call)],
+                        stop_reason: StopReason::ToolUse,
+                        usage: UsageReport::complete(Usage::default()),
+                    });
+                }
+                Ok(TurnResult {
+                    blocks: vec![Block::Text {
+                        text: "must not dispatch after drain".into(),
+                    }],
+                    stop_reason: StopReason::EndTurn,
+                    usage: UsageReport::complete(Usage::default()),
+                })
+            }
+        }
+
+        let ws = temp_ws("plantcore-pause-mcp-drain");
+        init_git_workspace(&ws);
+        let mcp_started = std::sync::Arc::new(tokio::sync::Notify::new());
+        let mcp_release = std::sync::Arc::new(tokio::sync::Notify::new());
+        let mcp_calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let mut registry = Registry::read_only(&ws).unwrap();
+        let controlled_started = mcp_started.clone();
+        let controlled_release = mcp_release.clone();
+        let controlled_calls = mcp_calls.clone();
+        registry
+            .register_mcp_effect(
+                ToolSpec {
+                    name: "control__wait".into(),
+                    description: "controlled MCP server call".into(),
+                    input_schema: serde_json::json!({"type":"object"}),
+                    purity: Purity::Effecting,
+                    capability: Capability::ReadOnly,
+                },
+                iteron_tools::McpEffectAttribution::new("control", "wait"),
+                move |call, _root, dispatch_clock| {
+                    let started = controlled_started.clone();
+                    let release = controlled_release.clone();
+                    let calls = controlled_calls.clone();
+                    iteron_tools::effectfut::box_it(async move {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        dispatch_clock.mark_dispatched();
+                        started.notify_one();
+                        release.notified().await;
+                        iteron_tools::ToolExecution::Definite(ToolResult {
+                            tool_use_id: call.id,
+                            content: "controlled MCP reply".into(),
+                            is_error: false,
+                            trust: Trust::Untrusted,
+                            latency_ms: 0,
+                        })
+                    })
+                },
+            )
+            .unwrap();
+        let provider = std::sync::Arc::new(McpThenDone {
+            calls: AtomicUsize::new(0),
+        });
+        let run = iteron_protocol::RunId("plantcore-pause-mcp-drain".into());
+        let rollout = Rollout::open(
+            &ws.join(".iteron/runs"),
+            &run,
+            iteron_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let mut agent = Agent::new(
+            provider.clone(),
+            registry,
+            rollout,
+            "model-a".into(),
+            "sys".into(),
+            Budget::default(),
+        );
+        pin_test_tunables(&mut agent);
+        agent.workspace = ws.clone();
+        let (control_tx, control_rx) = tokio::sync::mpsc::channel(64);
+        agent.set_approvals(control_rx);
+        let drain = std::sync::Arc::new(AtomicBool::new(false));
+        agent.set_drain(drain.clone());
+        let gate = DispatchGate::new();
+        gate.admit().unwrap();
+        agent.install_plantcore_dispatch_gate(gate.clone());
+
+        let running = tokio::spawn(async move { agent.run("call controlled MCP").await });
+        await_signal(&mcp_started, "the controlled MCP server dispatch").await;
+        let pause_gate = gate.clone();
+        let mut pausing = tokio::spawn(async move { pause_gate.pause_after_safe_point().await });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut pausing)
+                .await
+                .is_err(),
+            "pause must not acknowledge while the MCP call is in flight"
+        );
+
+        mcp_release.notify_one();
+        tokio::time::timeout(Duration::from_secs(5), pausing)
+            .await
+            .expect("pause acknowledges after the MCP result is committed")
+            .unwrap()
+            .unwrap();
+        assert_eq!(mcp_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+        assert!(
+            recorded_events(&ws, &run).iter().any(|event| matches!(
+                &event.kind,
+                EventKind::ToolDone { result, .. } if result.content == "controlled MCP reply"
+            )),
+            "pause acknowledges only after the MCP result has its durable terminal"
+        );
+
+        gate.terminalize_if_accepted(|| control_tx.try_send(Op::Drain.into()))
+            .unwrap()
+            .unwrap();
+        drain.store(true, Ordering::SeqCst);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), running)
+                .await
+                .expect("Worker drain closes the paused resident run")
+                .unwrap()
+                .unwrap(),
+            Outcome::Drained
+        );
+        assert_eq!(mcp_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            provider.calls.load(Ordering::SeqCst),
+            1,
+            "drain wins over resume and no next logical turn reaches the Provider"
+        );
+        assert_eq!(gate.prepare_resume(), Err("session_terminal"));
+        let _ = std::fs::remove_dir_all(ws);
+    }
+
+    #[tokio::test]
     async fn typed_pre_stream_retry_has_one_durable_effect_per_physical_attempt() {
         struct TransientThenDone(std::sync::Arc<std::sync::atomic::AtomicU32>);
 
@@ -14471,6 +14892,95 @@ ant-api03-SuperSecretModelToken12345"
                 .iter()
                 .all(|event| event.event_id.as_str() != "model.retry_cancelled")
         );
+        let _ = std::fs::remove_dir_all(ws);
+    }
+
+    #[test]
+    fn retry_boundary_closes_after_assistant_text_or_tool_use() {
+        let failure = Err(KernelError::Provider(iteron_provider::ProviderError::Api {
+            status: 429,
+            body: "typed fixture".into(),
+        }));
+        assert!(
+            super::provider_route::retryable_before_semantic_output_provider_error(&failure, false)
+                .is_some(),
+            "thinking and transport metadata do not start the assistant message lifecycle"
+        );
+        assert!(
+            super::provider_route::retryable_before_semantic_output_provider_error(&failure, true)
+                .is_none(),
+            "semantic output permanently closes retry for that logical turn"
+        );
+        assert!(super::provider_route::stream_item_has_semantic_output(
+            &StreamItem::TextDelta("answer".into())
+        ));
+        assert!(super::provider_route::stream_item_has_semantic_output(
+            &StreamItem::ToolUseComplete(ToolUse {
+                id: "tool-1".into(),
+                name: "read_file".into(),
+                input: serde_json::json!({"path": "input.txt"}),
+            })
+        ));
+        assert!(!super::provider_route::stream_item_has_semantic_output(
+            &StreamItem::ThinkingDelta("private reasoning".into())
+        ));
+    }
+
+    #[tokio::test]
+    async fn tool_use_before_transient_error_is_not_dispatched_again() {
+        struct ToolThenTransient {
+            calls: AtomicUsize,
+        }
+
+        #[async_trait::async_trait]
+        impl Provider for ToolThenTransient {
+            async fn turn(
+                &self,
+                _request: &TurnRequest,
+                on_item: &mut (dyn FnMut(StreamItem) + Send),
+            ) -> Result<TurnResult, ProviderError> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                on_item(StreamItem::ToolUseComplete(ToolUse {
+                    id: "read-1".into(),
+                    name: "read_file".into(),
+                    input: serde_json::json!({"path": "input.txt"}),
+                }));
+                Err(ProviderError::Api {
+                    status: 429,
+                    body: "transient after tool use".into(),
+                })
+            }
+        }
+
+        let ws = temp_ws("tool-use-closes-retry");
+        std::fs::write(ws.join("input.txt"), "fixture").unwrap();
+        let provider = std::sync::Arc::new(ToolThenTransient {
+            calls: AtomicUsize::new(0),
+        });
+        let rollout = Rollout::open(
+            &ws.join(".iteron/runs"),
+            &iteron_protocol::RunId("tool-use-closes-retry".into()),
+            iteron_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let mut agent = Agent::new(
+            provider.clone(),
+            Registry::read_only(&ws).unwrap(),
+            rollout,
+            "model-a".into(),
+            "sys".into(),
+            Budget::default(),
+        );
+        pin_test_tunables(&mut agent);
+        agent.workspace = ws.clone();
+        agent.set_retry_policy(iteron_sched::BackoffPolicy {
+            base_ms: 1,
+            cap_ms: 1,
+            max_attempts: 2,
+        });
+
+        assert!(agent.run("read once").await.is_err());
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
         let _ = std::fs::remove_dir_all(ws);
     }
 
@@ -14994,7 +15504,7 @@ ant-api03-SuperSecretModelToken12345"
     }
 
     #[tokio::test]
-    async fn hedged_attempts_are_separately_journaled_and_losing_delay_is_suppressed() {
+    async fn unadmitted_hedge_is_journaled_as_not_dispatched() {
         struct ImmediateWinner(std::sync::Arc<std::sync::atomic::AtomicU32>);
 
         #[async_trait::async_trait]
@@ -15062,21 +15572,6 @@ ant-api03-SuperSecretModelToken12345"
                 ["unbound:model-a".into()],
             )
             .unwrap();
-        agent
-            .provider_governor
-            .as_ref()
-            .unwrap()
-            .observe_rate_limit(
-                "unbound:model-a",
-                iteron_provider::RateLimitSnapshot {
-                    requests_remaining: Some(100),
-                    tokens_remaining: Some(100_000),
-                    requests_reset: None,
-                    tokens_reset: None,
-                },
-                Instant::now(),
-            );
-
         assert_eq!(agent.run("one winner only").await.unwrap(), Outcome::Done);
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
         let events = iteron_record::replay(&runs.join(format!("{run}.jsonl"))).unwrap();
@@ -18558,10 +19053,11 @@ ant-api03-SuperSecretModelToken12345"
             max_usd: None,
             max_tokens: None,
             max_wall_secs: 30,
-            max_consecutive_tool_errors: 9,
+            max_consecutive_tool_errors: 1,
         };
+        let provider = std::sync::Arc::new(ScriptedRead::default());
         let mut a = Agent::new(
-            std::sync::Arc::new(ScriptedRead::default()),
+            provider.clone(),
             registry,
             rollout,
             "m".into(),
@@ -18570,13 +19066,222 @@ ant-api03-SuperSecretModelToken12345"
         );
         a.workspace = ws.clone();
         install_test_hooks(&mut a, &home);
-        a.run("read secret.txt").await.unwrap();
+        assert_eq!(a.run("read secret.txt").await.unwrap(), Outcome::Stuck);
+        assert_eq!(
+            provider.turn.load(Ordering::SeqCst),
+            1,
+            "the Hook error reaches the streak ceiling before another Provider turn"
+        );
         let events = iteron_record::replay(&runs.join(format!("{run}.jsonl"))).unwrap();
         let blocked = events.iter().any(|e| matches!(&e.kind, EventKind::ToolDone { result, .. } if result.content.contains("blocked by a PreToolUse hook")));
         assert!(blocked, "the read must be blocked by the PreToolUse hook");
         let leaked = events.iter().any(|e| matches!(&e.kind, EventKind::ToolDone { result, .. } if result.content.contains("TOP-SECRET-CONTENT")));
         assert!(!leaked, "a blocked read must NOT return the file content");
         let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[tokio::test]
+    async fn mcp_error_reaches_the_consecutive_tool_error_stuck_rule() {
+        let ws = temp_ws("mcp-error-stuck");
+        let run = iteron_protocol::RunId("mcp-error-stuck".into());
+        let mcp_calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let mut registry = Registry::read_only(&ws).unwrap();
+        let observed_calls = mcp_calls.clone();
+        registry
+            .register_mcp_effect(
+                ToolSpec {
+                    name: "control__fail".into(),
+                    description: "deterministic failing MCP call".into(),
+                    input_schema: serde_json::json!({"type":"object"}),
+                    purity: Purity::Effecting,
+                    capability: Capability::ReadOnly,
+                },
+                iteron_tools::McpEffectAttribution::new("control", "fail"),
+                move |call, _root, dispatch_clock| {
+                    let calls = observed_calls.clone();
+                    iteron_tools::effectfut::box_it(async move {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        dispatch_clock.mark_dispatched();
+                        iteron_tools::ToolExecution::Definite(ToolResult {
+                            tool_use_id: call.id,
+                            content: "deterministic MCP failure".into(),
+                            is_error: true,
+                            trust: Trust::Untrusted,
+                            latency_ms: 0,
+                        })
+                    })
+                },
+            )
+            .unwrap();
+        let provider = std::sync::Arc::new(ScriptedBurst::new(vec![ToolUse {
+            id: "mcp-failure".into(),
+            name: "control__fail".into(),
+            input: serde_json::json!({}),
+        }]));
+        let rollout = Rollout::open(
+            &ws.join(".iteron/runs"),
+            &run,
+            iteron_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let mut agent = Agent::new(
+            provider,
+            registry,
+            rollout,
+            "model-a".into(),
+            "sys".into(),
+            Budget {
+                max_turns: 4,
+                max_usd: None,
+                max_tokens: None,
+                max_wall_secs: 30,
+                max_consecutive_tool_errors: 1,
+            },
+        );
+        pin_test_tunables(&mut agent);
+        agent.workspace = ws.clone();
+
+        assert_eq!(agent.run("call failing MCP").await.unwrap(), Outcome::Stuck);
+        assert_eq!(mcp_calls.load(Ordering::SeqCst), 1);
+        assert!(recorded_events(&ws, &run).iter().any(|event| matches!(
+            &event.kind,
+            EventKind::ToolDone { result, .. }
+                if result.is_error && result.content == "deterministic MCP failure"
+        )));
+        let _ = std::fs::remove_dir_all(ws);
+    }
+
+    #[tokio::test]
+    async fn sole_request_user_input_creates_the_typed_terminal_without_another_turn() {
+        let ws = temp_ws("request-user-input-terminal");
+        let run = iteron_protocol::RunId("run-1".into());
+        let mut registry = Registry::read_only(&ws).unwrap();
+        registry.register_plantcore_tools().unwrap();
+        let provider = std::sync::Arc::new(ScriptedBurst::new(vec![ToolUse {
+            id: "question-tool-1".into(),
+            name: iteron_tools::REQUEST_USER_INPUT.into(),
+            input: serde_json::json!({"prompt_utf8":"Which target?"}),
+        }]));
+        let rollout = Rollout::open(
+            &ws.join(".iteron/runs"),
+            &run,
+            iteron_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let mut agent = Agent::new(
+            provider.clone(),
+            registry,
+            rollout,
+            "model-a".into(),
+            "sys".into(),
+            Budget::default(),
+        );
+        pin_test_tunables(&mut agent);
+        agent.workspace = ws.clone();
+        agent
+            .enable_plantcore_runtime(&plantcore_bootstrap_fixture())
+            .unwrap();
+        agent.seq_turn = 1;
+
+        assert_eq!(agent.run("ask one question").await.unwrap(), Outcome::Done);
+        assert_eq!(provider.turn.load(Ordering::SeqCst), 1);
+        let Some(iteron_protocol::ProductResult::NeedsInput {
+            assistant_text,
+            question,
+            artifacts,
+        }) = agent.take_product_result()
+        else {
+            panic!("sole request_user_input did not create NeedsInput")
+        };
+        assert!(assistant_text.is_empty());
+        assert!(artifacts.is_empty());
+        assert_eq!(question.prompt_utf8, "Which target?");
+        let expected_prompt_sha256: [u8; 32] = sha2::Sha256::digest(b"Which target?").into();
+        assert_eq!(question.prompt_sha256, expected_prompt_sha256);
+        let mut identity = Vec::new();
+        identity.extend_from_slice(b"plantcore.iteron.question.v1\0");
+        identity.extend_from_slice(&("run-1".len() as u32).to_be_bytes());
+        identity.extend_from_slice(b"run-1");
+        identity.extend_from_slice(&("question-tool-1".len() as u32).to_be_bytes());
+        identity.extend_from_slice(b"question-tool-1");
+        assert_eq!(
+            question.question_id,
+            format!(
+                "iteron-question-{:x}",
+                sha2::Sha256::digest(identity)
+            )
+        );
+        let _ = std::fs::remove_dir_all(ws);
+    }
+
+    #[tokio::test]
+    async fn mixed_request_user_input_batch_executes_nothing_and_counts_one_error_turn() {
+        let ws = temp_ws("request-user-input-mixed");
+        let target = ws.join("protected.txt");
+        std::fs::write(&target, "before").unwrap();
+        let run = iteron_protocol::RunId("run-1".into());
+        let mut registry = Registry::coding_agent(&ws).unwrap();
+        registry.register_plantcore_tools().unwrap();
+        let provider = std::sync::Arc::new(ScriptedBurst::new(vec![
+            ToolUse {
+                id: "question-mixed".into(),
+                name: iteron_tools::REQUEST_USER_INPUT.into(),
+                input: serde_json::json!({"prompt_utf8":"Which target?"}),
+            },
+            ToolUse {
+                id: "edit-mixed".into(),
+                name: "edit".into(),
+                input: serde_json::json!({
+                    "path":"protected.txt",
+                    "old":"before",
+                    "new":"after"
+                }),
+            },
+        ]));
+        let rollout = Rollout::open(
+            &ws.join(".iteron/runs"),
+            &run,
+            iteron_protocol::TenantId::default(),
+        )
+        .unwrap();
+        let mut agent = Agent::new(
+            provider.clone(),
+            registry,
+            rollout,
+            "model-a".into(),
+            "sys".into(),
+            Budget {
+                max_turns: 4,
+                max_usd: None,
+                max_tokens: None,
+                max_wall_secs: 30,
+                max_consecutive_tool_errors: 1,
+            },
+        );
+        pin_test_tunables(&mut agent);
+        agent.workspace = ws.clone();
+        agent
+            .enable_plantcore_runtime(&plantcore_bootstrap_fixture())
+            .unwrap();
+        agent.seq_turn = 1;
+
+        assert_eq!(agent.run("invalid mixed batch").await.unwrap(), Outcome::Stuck);
+        assert_eq!(provider.turn.load(Ordering::SeqCst), 1);
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "before");
+        assert!(agent.take_product_result().is_none());
+        let refused = recorded_events(&ws, &run)
+            .into_iter()
+            .filter_map(|event| match event.kind {
+                EventKind::ToolDone { result, .. } if result.is_error => Some(result),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(refused.len(), 2);
+        assert!(refused.iter().all(|result| {
+            result.content.contains("sole_call_required")
+                && result.content.contains("request_user_input must be the only tool call")
+        }));
+        let _ = std::fs::remove_dir_all(ws);
     }
 
     #[tokio::test]
