@@ -1471,7 +1471,7 @@ class RecordingDriverTest(unittest.TestCase):
     def test_platform_checkout_must_contain_the_complete_recording_baseline(self) -> None:
         self.assertEqual(
             driver.PLATFORM_BASELINE_COMMIT,
-            "01e0d4bfd5504c9e06d565477229d7954772cb7d",
+            "df0ef637549ce4d69fab14379188785a72599ccb",
         )
         inputs = driver.Inputs(
             registry=Path("/platform/scenarios.json"),
