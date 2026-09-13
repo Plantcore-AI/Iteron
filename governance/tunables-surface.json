@@ -4,7 +4,7 @@
   "registry_revision": 24,
   "registry_digest": "dc46c5a2f21c77ae289c3c6169cc372230b5080110694d51bd39d4709bdc88fd",
   "param_registry_id": "iteron-params",
-  "param_registry_digest": "08c7eb2807b29a9cbe0ba0e40a3c64df2d653f7cc9632cd757b411e1a447936f",
+  "param_registry_digest": "bdfb96ae72f46879397f8ccae1a823f9717afcbad4161e1f4364ca3fc362bfe2",
   "tool_text_registry_id": "iteron-builtin-tool-descriptions",
   "tool_text_registry_digest": "7da44a496e668c86c4456291e0e8178955ae7b99f473e69e1804d7742ae9738d",
   "counts": {
@@ -10792,7 +10792,7 @@
       "class": "structural",
       "type": "integer",
       "rust_type": "u32",
-      "default": "3",
+      "default": "4",
       "domain": {},
       "krate": "cli",
       "decl": "crates/cli/src/machine_contract.rs",
@@ -54290,7 +54290,7 @@
       "class": "structural",
       "type": "integer",
       "rust_type": "u32",
-      "default": "4",
+      "default": "5",
       "domain": {},
       "krate": "protocol",
       "decl": "crates/protocol/src/wire.rs",
@@ -54311,27 +54311,27 @@
         },
         {
           "path": "crates/protocol/src/wire.rs",
-          "line": 71,
+          "line": 72,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/protocol/src/wire.rs",
-          "line": 75,
+          "line": 76,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/protocol/src/wire.rs",
-          "line": 99,
+          "line": 100,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/protocol/src/wire.rs",
-          "line": 107,
+          "line": 108,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/protocol/src/wire.rs",
-          "line": 156,
+          "line": 157,
           "evidence": "Rust path reference"
         }
       ]

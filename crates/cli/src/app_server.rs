@@ -5954,7 +5954,7 @@ mod tests {
 
     fn enable_plantcore_fixture(agent: &mut Agent, gate: Arc<crate::runtime::DispatchGate>) {
         let document: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../contracts/plantcore/examples/app-server-v4-bootstrap.json"
+            "../../../contracts/plantcore/examples/app-server-v5-bootstrap.json"
         ))
         .unwrap();
         let payload = serde_json::from_value(document["control"]["payload"].clone()).unwrap();

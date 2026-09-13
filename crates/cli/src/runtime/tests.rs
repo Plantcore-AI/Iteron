@@ -4698,7 +4698,7 @@ mod gate_integration_tests {
 
     fn plantcore_bootstrap_fixture() -> iteron_protocol::PlantcoreRunBootstrapV1 {
         let document: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../../contracts/plantcore/examples/app-server-v4-bootstrap.json"
+            "../../../../contracts/plantcore/examples/app-server-v5-bootstrap.json"
         ))
         .unwrap();
         serde_json::from_value(document["control"]["payload"].clone()).unwrap()

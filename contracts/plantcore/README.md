@@ -4,23 +4,23 @@ These artifacts are public, deterministic implementation inputs for the PlantCor
 They contain no credentials, session data, or deployment state.
 
 The G1 v7 implementation is reviewed against `Plantcore-AI/plantcore-platform` commit
-`df0ef637549ce4d69fab14379188785a72599ccb`. The content digests below identify the exact
+`8c76b16b271a4560241ee6569467f29457937eba`. The content digests below identify the exact
 implementation inputs without depending on that repository remaining at the same checkout:
 
 | Upstream path | Raw file SHA-256 |
 | --- | --- |
 | `contracts/proto/plantcore/control/worker/v1/worker_control.proto` | `7655fab84407333a0b3b28d912b902690cf9ade1598a674bba8006e41f138b0d` |
-| `contracts/worker-control-v1-semantics.md` | `030155b1ad3a0ad23e2b505f24a868f801a29bd07cfdcf481eb05be5c6b6122c` |
-| `contracts/iteron-app-server-bridge-v1.md` | `a38fe151e997c2c91fd423372905c83a615b3028a0fd8991daf141850dd6c33b` |
+| `contracts/worker-control-v1-semantics-v2.md` | `718a5ea284e3128a60c264ef8a31b64be99f0f12f8d72886820b0c3c566ed597` |
+| `contracts/iteron-app-server-bridge-v2.md` | `b3fcf5b01d3532662d77c3da184124eec2ced2c516b0ec948b2e1414ec5f0c2a` |
 | `contracts/schema/iteron-output-v7/target.schema.json` | `72e7188e425999f55367646d68f1a75b7c96f052ddeeb66feaaabe6f5a3a9d8a` |
 | `contracts/schema/iteron-output-v7/README.md` | `44a9fe3d966efee65a7971e3eaa7f274f7fefc1d343e92e045339b854c72e62f` |
 | `contracts/run-io-v1.md` | `fca7971a13078895c8da99aee49d56d90d5a0d2956a6b56f9ae02e3d69901737` |
 | `contracts/run-pod-v1.md` | `33a86cdaca66e66b625ae714f88563f05ff09cdd0bccc57c5409297868febc74` |
-| `e2e/recording/g1-v7/README.md` | `a3307b6431cad3b1dd52275ec5b5842ea5511bf9436064c2533923e3b052b77d` |
+| `e2e/recording/g1-v7/README.md` | `4fbe0303dff4d538d197cdce03d228eacf19daed1261ae7703f7521b9e631968` |
 | `e2e/recording/g1-v7/scenarios.json` | `0584605abcceddd6ba6e7e3be1b41cd16e33a226318b6d925a52bd2891423b73` |
-| `e2e/recording/g1-v7/recipes.json` | `43b5f6c7b83c64f6146622e076719ec4d02816b12b57ae845da2b870c477f66d` |
-| `e2e/recording/g1-v7/actions.json` | `949300ac381ae0d1b28810377d97fd294b5210e9861fc8db1596b3678e85a7f7` |
-| `e2e/recording/g1-v7/check.py` | `7eb2a3315317718c4654f6c166ad7c3d8e9dc036cc7e8acb29b5c4eb83711104` |
+| `e2e/recording/g1-v7/recipes.json` | `ffa3c49854982565cfc785618b183de59bdc49210462eda0936fa80d87af09a9` |
+| `e2e/recording/g1-v7/actions.json` | `520511acb3373aaff6836bf2f5799dc88dbd5f2b8ca97acce8ac9ca54817725b` |
+| `e2e/recording/g1-v7/check.py` | `1fe5a9497bec0f02e80311d624c87d0a631f29eecb56c88715a7451b89424b19` |
 | `e2e/recording/g1-v7/fake-provider/scripts.json` | `1cefaef441ddd5fdfe9d360e37f59bb0d8cf9282efed529233e19d30448496e0` |
 | `e2e/recording/g1-v7/fake-gateway/gateway-simulator` | `0361717045d84e9526b8c520c1840373be902a43719b01eb08f5b5f5582a62eb` |
 | `e2e/vectors/portable-canonical-json-v1.json` | `7ce7683acb86d9c4b8248eab42c4b1b4d569a2ec64dc6b4f9072035234083bf4` |

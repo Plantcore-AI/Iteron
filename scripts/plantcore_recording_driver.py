@@ -992,12 +992,12 @@ def drive_action(
     frames: list[bytes] = []
     with socket.create_connection((host, port), timeout=READY_TIMEOUT_SECONDS) as connection:
         reader = connection.makefile("rb")
-        send_frame(connection, {"type": "hello", "bearer_token": app_token, "protocol_version": 4, "resume_from": 0})
+        send_frame(connection, {"type": "hello", "bearer_token": app_token, "protocol_version": 5, "resume_from": 0})
         hello = json.loads(receive_line(reader, connection, deadline))
-        if hello.get("type") != "hello" or hello.get("protocol_version") != 4:
+        if hello.get("type") != "hello" or hello.get("protocol_version") != 5:
             raise DriverError("recording_iteron_hello_invalid")
         send_frame(connection, {
-            "type": "control", "protocol_version": 4, "request_id": 1,
+            "type": "control", "protocol_version": 5, "request_id": 1,
             "control": {
                 "type": "plantcore_run_bootstrap_v1",
                 "payload": build_bootstrap(
@@ -1019,7 +1019,7 @@ def drive_action(
         run_started = time.monotonic()
         send_frame(connection, {
             "type": "submit",
-            "protocol_version": 4,
+            "protocol_version": 5,
             "op": submission_for_action(action, prompt),
         })
         barrier_observations = execute_action_barriers(action, run_started)

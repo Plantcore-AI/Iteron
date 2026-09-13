@@ -1330,7 +1330,7 @@ exit 1
         output = dist / "release-manifest.json"
         receipt = dist / "release-manifest.receipt.json"
         protocol = self.write(
-            "protocol/wire.rs", "pub const PROTOCOL_VERSION: u32 = 4;\n"
+            "protocol/wire.rs", "pub const PROTOCOL_VERSION: u32 = 5;\n"
         )
         manifest.create_release(
             argparse.Namespace(
@@ -1370,7 +1370,7 @@ exit 1
         installer_arguments.posix.write_bytes(original)
         # A client pins on the protocol the binary speaks, so the manifest must carry the number
         # the crate declares rather than one restated here.
-        self.assertEqual(result["protocol_version"], 4)
+        self.assertEqual(result["protocol_version"], 5)
         self.assertEqual(result["schema_version"], 3)
         receipt_document = json.loads(receipt.read_text(encoding="utf-8"))
         self.assertEqual(receipt_document["manifest"]["sha256"], sha256_file(output))
@@ -1415,7 +1415,7 @@ exit 1
                     machine_contract_report([4, 5] if index == 0 else [5])
                 ),
             )
-        protocol = self.write("disagree-protocol/wire.rs", "pub const PROTOCOL_VERSION: u32 = 4;\n")
+        protocol = self.write("disagree-protocol/wire.rs", "pub const PROTOCOL_VERSION: u32 = 5;\n")
         with self.assertRaisesRegex(ReleaseToolError, "disagree"):
             manifest.create_release(
                 argparse.Namespace(
@@ -1494,7 +1494,7 @@ exit 1
             f"verified-dist/{archive.name}.machine-contract.json",
             json.dumps(machine_contract_report()),
         )
-        protocol = self.write("verified-protocol/wire.rs", "pub const PROTOCOL_VERSION: u32 = 4;\n")
+        protocol = self.write("verified-protocol/wire.rs", "pub const PROTOCOL_VERSION: u32 = 5;\n")
         manifest_path = dist / "release-manifest.json"
         receipt_path = dist / "release-manifest.receipt.json"
         manifest.create_release(

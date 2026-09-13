@@ -332,7 +332,7 @@ def probe_iteron(pin: dict[str, Any]) -> dict[str, Any]:
     if (
         contract.get("default_cli_stream_version") != 6
         or contract.get("cli_stream_versions") != [4, 5, 6]
-        or contract.get("resident_protocol_version") != 4
+        or contract.get("resident_protocol_version") != 5
         or not isinstance(artifacts, dict)
         or not isinstance(artifacts.get("output_v7_target_schema"), dict)
         or not isinstance(capabilities, dict)

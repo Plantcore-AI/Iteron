@@ -5956,7 +5956,7 @@
       "class": "structural",
       "type": "integer",
       "rust_type": "u32",
-      "default": "3",
+      "default": "4",
       "krate": "cli",
       "decl": "crates/cli/src/machine_contract.rs",
       "applied": false,
@@ -48624,7 +48624,7 @@
       "class": "structural",
       "type": "integer",
       "rust_type": "u32",
-      "default": "4",
+      "default": "5",
       "krate": "protocol",
       "decl": "crates/protocol/src/wire.rs",
       "applied": false,
@@ -48644,27 +48644,27 @@
         },
         {
           "path": "crates/protocol/src/wire.rs",
-          "line": 71,
+          "line": 72,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/protocol/src/wire.rs",
-          "line": 75,
+          "line": 76,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/protocol/src/wire.rs",
-          "line": 99,
+          "line": 100,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/protocol/src/wire.rs",
-          "line": 107,
+          "line": 108,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/protocol/src/wire.rs",
-          "line": 156,
+          "line": 157,
           "evidence": "Rust path reference"
         }
       ]

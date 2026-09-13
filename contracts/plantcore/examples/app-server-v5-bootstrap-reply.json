@@ -1,6 +1,6 @@
 {
   "type": "control_reply",
-  "protocol_version": 4,
+  "protocol_version": 5,
   "request_id": 1,
   "reply": {
     "type": "plantcore_run_bootstrap_accepted_v1",

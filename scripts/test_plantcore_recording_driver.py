@@ -137,7 +137,7 @@ class RecordingDriverTest(unittest.TestCase):
 
     def test_logical_frame_bytes_are_extracted_without_reserialization(self) -> None:
         line = (
-            b'{"type":"event","protocol_version":4,"seq":1,'
+            b'{"type":"event","protocol_version":5,"seq":1,'
             b'"event":{"z":1,"a":"preserve order"}}\n'
         )
         wrapper = json.loads(line)
@@ -172,19 +172,19 @@ class RecordingDriverTest(unittest.TestCase):
                     self.assertEqual(json.loads(reader.readline())["type"], "hello")
                     send_wire(
                         connection,
-                        {"type": "hello", "protocol_version": 4, "session_id": "fixture"},
+                        {"type": "hello", "protocol_version": 5, "session_id": "fixture"},
                     )
                     control = json.loads(reader.readline())
                     self.assertEqual(control["request_id"], 1)
                     send_wire(
                         connection,
-                        {"type": "event", "protocol_version": 4, "seq": 1, "event": admitted},
+                        {"type": "event", "protocol_version": 5, "seq": 1, "event": admitted},
                     )
                     send_wire(
                         connection,
                         {
                             "type": "control_reply",
-                            "protocol_version": 4,
+                            "protocol_version": 5,
                             "request_id": 1,
                             "reply": {"type": "plantcore_run_bootstrap_accepted_v1"},
                         },
@@ -192,7 +192,7 @@ class RecordingDriverTest(unittest.TestCase):
                     self.assertEqual(json.loads(reader.readline())["type"], "submit")
                     send_wire(
                         connection,
-                        {"type": "result", "protocol_version": 4, "seq": 2, "result": result},
+                        {"type": "result", "protocol_version": 5, "seq": 2, "result": result},
                     )
             except BaseException as error:
                 failures.put(error)
@@ -1471,7 +1471,7 @@ class RecordingDriverTest(unittest.TestCase):
     def test_platform_checkout_must_contain_the_complete_recording_baseline(self) -> None:
         self.assertEqual(
             driver.PLATFORM_BASELINE_COMMIT,
-            "df0ef637549ce4d69fab14379188785a72599ccb",
+            "8c76b16b271a4560241ee6569467f29457937eba",
         )
         inputs = driver.Inputs(
             registry=Path("/platform/scenarios.json"),

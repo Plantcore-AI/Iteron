@@ -8650,10 +8650,10 @@
       "applied": false
     },
     {
-      "id": "cli.machine.contract.machinecontract.current.include.bytes.contracts.plantcore.app.server.v4.schema.json.1",
+      "id": "cli.machine.contract.machinecontract.current.include.bytes.contracts.plantcore.app.server.v5.schema.json.1",
       "candidate_kind": "include_bytes_asset",
       "rust_type": "&[u8]",
-      "value": "include_bytes ! (\"../../../contracts/plantcore/app-server-v4.schema.json\")",
+      "value": "include_bytes ! (\"../../../contracts/plantcore/app-server-v5.schema.json\")",
       "owner": {
         "krate": "cli",
         "path": "crates/cli/src/machine_contract.rs",
@@ -8663,7 +8663,7 @@
         {
           "path": "crates/cli/src/machine_contract.rs",
           "line": 209,
-          "evidence": "production include_bytes! embedded asset `../../../contracts/plantcore/app-server-v4.schema.json`"
+          "evidence": "production include_bytes! embedded asset `../../../contracts/plantcore/app-server-v5.schema.json`"
         }
       ],
       "disposition": "invariant_read_only",
@@ -8749,7 +8749,7 @@
       "id": "cli.machine_contract.machine_contract_schema_version",
       "candidate_kind": "const",
       "rust_type": "u32",
-      "value": "3",
+      "value": "4",
       "owner": {
         "krate": "cli",
         "path": "crates/cli/src/machine_contract.rs",
@@ -67914,7 +67914,7 @@
       "id": "protocol.wire.protocol_version",
       "candidate_kind": "const",
       "rust_type": "u32",
-      "value": "4",
+      "value": "5",
       "owner": {
         "krate": "protocol",
         "path": "crates/protocol/src/wire.rs",
@@ -67928,27 +67928,27 @@
         },
         {
           "path": "crates/protocol/src/wire.rs",
-          "line": 71,
+          "line": 72,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/protocol/src/wire.rs",
-          "line": 75,
+          "line": 76,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/protocol/src/wire.rs",
-          "line": 99,
+          "line": 100,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/protocol/src/wire.rs",
-          "line": 107,
+          "line": 108,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/protocol/src/wire.rs",
-          "line": 156,
+          "line": 157,
           "evidence": "Rust path reference"
         }
       ],
@@ -67973,7 +67973,7 @@
       "use_sites": [
         {
           "path": "crates/protocol/src/wire.rs",
-          "line": 89,
+          "line": 90,
           "evidence": "serde(default) production parser/deserializer default"
         }
       ],

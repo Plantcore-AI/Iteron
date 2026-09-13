@@ -1229,7 +1229,7 @@ mod tests {
 
     fn app_server_schema() -> jsonschema::Validator {
         let schema = serde_json::from_slice(include_bytes!(
-            "../../../../contracts/plantcore/app-server-v4.schema.json"
+            "../../../../contracts/plantcore/app-server-v5.schema.json"
         ))
         .unwrap();
         jsonschema::options()
@@ -1824,42 +1824,42 @@ mod tests {
     fn published_app_server_examples_match_the_draft_2020_12_contract() {
         let validator = app_server_schema();
         for bytes in [
-            include_bytes!("../../../../contracts/plantcore/examples/app-server-v4-listening.json")
+            include_bytes!("../../../../contracts/plantcore/examples/app-server-v5-listening.json")
                 .as_slice(),
-            include_bytes!("../../../../contracts/plantcore/examples/app-server-v4-bootstrap.json")
-                .as_slice(),
-            include_bytes!(
-                "../../../../contracts/plantcore/examples/app-server-v4-bootstrap-reply.json"
-            )
-            .as_slice(),
-            include_bytes!("../../../../contracts/plantcore/examples/app-server-v4-command.json")
+            include_bytes!("../../../../contracts/plantcore/examples/app-server-v5-bootstrap.json")
                 .as_slice(),
             include_bytes!(
-                "../../../../contracts/plantcore/examples/app-server-v4-command-reply.json"
+                "../../../../contracts/plantcore/examples/app-server-v5-bootstrap-reply.json"
+            )
+            .as_slice(),
+            include_bytes!("../../../../contracts/plantcore/examples/app-server-v5-command.json")
+                .as_slice(),
+            include_bytes!(
+                "../../../../contracts/plantcore/examples/app-server-v5-command-reply.json"
             )
             .as_slice(),
             include_bytes!(
-                "../../../../contracts/plantcore/examples/app-server-v4-pause-command.json"
+                "../../../../contracts/plantcore/examples/app-server-v5-pause-command.json"
             )
             .as_slice(),
             include_bytes!(
-                "../../../../contracts/plantcore/examples/app-server-v4-pause-command-reply.json"
+                "../../../../contracts/plantcore/examples/app-server-v5-pause-command-reply.json"
             )
             .as_slice(),
             include_bytes!(
-                "../../../../contracts/plantcore/examples/app-server-v4-resume-command.json"
+                "../../../../contracts/plantcore/examples/app-server-v5-resume-command.json"
             )
             .as_slice(),
             include_bytes!(
-                "../../../../contracts/plantcore/examples/app-server-v4-resume-command-reply.json"
+                "../../../../contracts/plantcore/examples/app-server-v5-resume-command-reply.json"
             )
             .as_slice(),
             include_bytes!(
-                "../../../../contracts/plantcore/examples/app-server-v4-resume-terminal-command.json"
+                "../../../../contracts/plantcore/examples/app-server-v5-resume-terminal-command.json"
             )
             .as_slice(),
             include_bytes!(
-                "../../../../contracts/plantcore/examples/app-server-v4-resume-terminal-command-reply.json"
+                "../../../../contracts/plantcore/examples/app-server-v5-resume-terminal-command-reply.json"
             )
             .as_slice(),
         ] {
@@ -1869,7 +1869,7 @@ mod tests {
             }
         }
         let invalid_bootstrap = serde_json::from_slice(include_bytes!(
-            "../../../../contracts/plantcore/examples/app-server-v4-invalid-bootstrap.json"
+            "../../../../contracts/plantcore/examples/app-server-v5-invalid-bootstrap.json"
         ))
         .unwrap();
         assert!(validator.validate(&invalid_bootstrap).is_err());
@@ -1877,7 +1877,7 @@ mod tests {
         // A mismatched resume session is structurally valid and is rejected against live process
         // state by the protocol implementation, not by the release's frame-shape schema.
         let invalid_session = serde_json::from_slice(include_bytes!(
-            "../../../../contracts/plantcore/examples/app-server-v4-invalid-session.json"
+            "../../../../contracts/plantcore/examples/app-server-v5-invalid-session.json"
         ))
         .unwrap();
         assert!(validator.validate(&invalid_session).is_ok());
@@ -1890,7 +1890,7 @@ mod tests {
         ] {
             let reply = serde_json::json!({
                 "type": "control_reply",
-                "protocol_version": 4,
+                "protocol_version": 5,
                 "request_id": 11,
                 "reply": {
                     "type": "plantcore_command_reply_v1",

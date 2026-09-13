@@ -1,6 +1,6 @@
 {
   "type": "control",
-  "protocol_version": 4,
+  "protocol_version": 5,
   "request_id": 2,
   "control": {
     "type": "plantcore_run_bootstrap_v1",

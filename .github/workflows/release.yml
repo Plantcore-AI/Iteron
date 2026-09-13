@@ -1180,7 +1180,7 @@ jobs:
           "$binary" --help >/dev/null
           "$binary" --machine-contract > "$RUNNER_TEMP/MACHINE-CONTRACT.json"
           jq -e '
-            .schema_version == 3
+            .schema_version == 4
             and .type == "machine_contract"
             and (.cli_stream_versions | index(4)) != null
             and (.default_cli_stream_version | type) == "number"
@@ -1245,7 +1245,7 @@ jobs:
             throw "--machine-contract exited with $($contractRun.ExitCode)"
           }
           $contract = Get-Content -LiteralPath $contractPath -Raw | ConvertFrom-Json
-          if ($contract.schema_version -ne 3 -or $contract.type -ne 'machine_contract') {
+          if ($contract.schema_version -ne 4 -or $contract.type -ne 'machine_contract') {
             throw 'release binary returned the wrong capability schema'
           }
           if (-not ($contract.cli_stream_versions -contains 4)) {

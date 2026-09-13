@@ -4,7 +4,7 @@ use serde::{Serialize, de};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
-const MACHINE_CONTRACT_SCHEMA_VERSION: u32 = 3;
+const MACHINE_CONTRACT_SCHEMA_VERSION: u32 = 4;
 const MACHINE_CONTRACT_TYPE: &str = "machine_contract";
 const MACHINE_CONTRACT_VERSION: &str = "plantcore.iteron.machine-contract.v1";
 const PORTABLE_CANONICAL_JSON_VERSION: &str = "plantcore.portable-canonical-json.v1";
@@ -52,7 +52,7 @@ struct MachineContractLimits {
 #[derive(Debug, Serialize)]
 struct ContractArtifacts {
     machine_contract_schema: ContractArtifact,
-    app_server_v4_schema: ContractArtifact,
+    app_server_v5_schema: ContractArtifact,
     output_v7_target_schema: ContractArtifact,
     workspace_hook_v1_schema: ContractArtifact,
 }
@@ -203,11 +203,11 @@ impl MachineContract {
                         "../../../contracts/plantcore/machine-contract.schema.json"
                     ))?),
                 },
-                app_server_v4_schema: ContractArtifact {
-                    id: "plantcore.iteron.app-server.v4",
-                    path: "contracts/plantcore/app-server-v4.schema.json",
+                app_server_v5_schema: ContractArtifact {
+                    id: "plantcore.iteron.app-server.v5",
+                    path: "contracts/plantcore/app-server-v5.schema.json",
                     canonical_sha256: lower_sha256(&canonicalize_json(include_bytes!(
-                        "../../../contracts/plantcore/app-server-v4.schema.json"
+                        "../../../contracts/plantcore/app-server-v5.schema.json"
                     ))?),
                 },
                 output_v7_target_schema: ContractArtifact {
@@ -460,7 +460,7 @@ mod tests {
         let rendered = render().expect("render offline contract");
         assert!(rendered.len() < MAX_PROBE_BYTES as usize);
         let value: Value = serde_json::from_str(&rendered).expect("machine contract JSON");
-        assert_eq!(value["schema_version"], 3);
+        assert_eq!(value["schema_version"], 4);
         assert_eq!(value["type"], "machine_contract");
         assert_eq!(value["cli_stream_versions"], serde_json::json!([4, 5, 6]));
         assert_eq!(value["default_cli_stream_version"], 6);

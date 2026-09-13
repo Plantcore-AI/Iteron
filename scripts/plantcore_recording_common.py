@@ -15,7 +15,7 @@ from typing import Any
 
 MAX_JSON_BYTES = 4 * 1024 * 1024
 PROCESS_GRACE_SECONDS = 5.0
-PLATFORM_BASELINE_COMMIT = "df0ef637549ce4d69fab14379188785a72599ccb"
+PLATFORM_BASELINE_COMMIT = "8c76b16b271a4560241ee6569467f29457937eba"
 SOURCE_COMMIT = re.compile(r"\b[0-9a-f]{40}(?:[0-9a-f]{24})?\b")
 WORKER_CONTROL_PROTO = Path(
     "contracts/proto/plantcore/control/worker/v1/worker_control.proto"

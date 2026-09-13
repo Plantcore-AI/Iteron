@@ -145,7 +145,7 @@ def validate_contract(path: Path) -> tuple[str, str]:
     }
     if set(value) != required:
         raise ContractError("machine contract top-level keys do not match the published schema")
-    if value["schema_version"] != 3 or value["type"] != "machine_contract":
+    if value["schema_version"] != 4 or value["type"] != "machine_contract":
         raise ContractError("machine contract envelope mismatch")
     if value["contract_version"] != "plantcore.iteron.machine-contract.v1":
         raise ContractError("machine contract version mismatch")
@@ -160,8 +160,8 @@ def validate_contract(path: Path) -> tuple[str, str]:
         or value["default_cli_stream_version"] not in versions
     ):
         raise ContractError("CLI stream version declaration is inconsistent")
-    if value["resident_protocol_version"] != 4:
-        raise ContractError("resident protocol must be version 4")
+    if value["resident_protocol_version"] != 5:
+        raise ContractError("resident protocol must be version 5")
     canonical = exact_keys(
         "canonical_json",
         value["canonical_json"],
@@ -238,13 +238,13 @@ def validate_contract(path: Path) -> tuple[str, str]:
         value["contract_artifacts"],
         {
             "machine_contract_schema",
-            "app_server_v4_schema",
+            "app_server_v5_schema",
             "output_v7_target_schema",
             "workspace_hook_v1_schema",
         },
     )
     validate_artifact("machine_contract_schema", artifacts["machine_contract_schema"])
-    validate_artifact("app_server_v4_schema", artifacts["app_server_v4_schema"])
+    validate_artifact("app_server_v5_schema", artifacts["app_server_v5_schema"])
     validate_artifact("output_v7_target_schema", artifacts["output_v7_target_schema"])
     validate_artifact("workspace_hook_v1_schema", artifacts["workspace_hook_v1_schema"])
     return hashlib.sha256(canonical_json(value)).hexdigest(), hashlib.sha256(raw).hexdigest()

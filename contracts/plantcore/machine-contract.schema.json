@@ -17,7 +17,7 @@
     "contract_artifacts"
   ],
   "properties": {
-    "schema_version": { "const": 3 },
+    "schema_version": { "const": 4 },
     "type": { "const": "machine_contract" },
     "contract_version": { "const": "plantcore.iteron.machine-contract.v1" },
     "release_id": { "type": "string", "pattern": "^iteron-v[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$" },
@@ -28,7 +28,7 @@
       "items": { "type": "integer", "minimum": 1 }
     },
     "default_cli_stream_version": { "type": "integer", "minimum": 1 },
-    "resident_protocol_version": { "const": 4 },
+    "resident_protocol_version": { "const": 5 },
     "canonical_json": {
       "type": "object",
       "required": ["version", "algorithm", "maximum_depth", "maximum_safe_integer", "rejects_duplicate_keys"],
@@ -52,10 +52,10 @@
     },
     "contract_artifacts": {
       "type": "object",
-      "required": ["machine_contract_schema", "app_server_v4_schema", "output_v7_target_schema", "workspace_hook_v1_schema"],
+      "required": ["machine_contract_schema", "app_server_v5_schema", "output_v7_target_schema", "workspace_hook_v1_schema"],
       "properties": {
         "machine_contract_schema": { "$ref": "#/$defs/artifact" },
-        "app_server_v4_schema": { "$ref": "#/$defs/artifact" },
+        "app_server_v5_schema": { "$ref": "#/$defs/artifact" },
         "output_v7_target_schema": { "$ref": "#/$defs/artifact" },
         "workspace_hook_v1_schema": { "$ref": "#/$defs/artifact" }
       },

@@ -1,11 +1,11 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "type": "machine_contract",
   "contract_version": "plantcore.iteron.machine-contract.v1",
   "release_id": "iteron-v0.0.20",
   "cli_stream_versions": [4, 5, 6],
   "default_cli_stream_version": 6,
-  "resident_protocol_version": 4,
+  "resident_protocol_version": 5,
   "canonical_json": {
     "version": "plantcore.portable-canonical-json.v1",
     "algorithm": "utf8-sorted-compact-integer-only-v1",
@@ -59,12 +59,12 @@
     "machine_contract_schema": {
       "id": "plantcore.iteron.machine-contract.v1",
       "path": "contracts/plantcore/machine-contract.schema.json",
-      "canonical_sha256": "0d490b22b63ed5756904fce37da94f6f2717df293544667de71290a352280781"
+      "canonical_sha256": "d95fccb554ccfe62c0cc356867dbfcf339ef36be71e0c036caee56e4811329e1"
     },
-    "app_server_v4_schema": {
-      "id": "plantcore.iteron.app-server.v4",
-      "path": "contracts/plantcore/app-server-v4.schema.json",
-      "canonical_sha256": "2390a5536b9299a3f86004d5fbe976549665f50e6b274801d889ef04de9ef384"
+    "app_server_v5_schema": {
+      "id": "plantcore.iteron.app-server.v5",
+      "path": "contracts/plantcore/app-server-v5.schema.json",
+      "canonical_sha256": "1b44fe5b71b9ec6bfb87324d06a78828c7f997d79201dc18316edf68f592f7f3"
     },
     "output_v7_target_schema": {
       "id": "plantcore.iteron-output.v7.target",

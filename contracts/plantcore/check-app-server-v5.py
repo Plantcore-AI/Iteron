@@ -47,7 +47,7 @@ def canonical_json(value: Any) -> bytes:
 
 
 def validate() -> None:
-    schema = load(ROOT / "app-server-v4.schema.json")
+    schema = load(ROOT / "app-server-v5.schema.json")
     definitions = schema.get("$defs", {})
     required_defs = {
         "listeningRecord", "clientHello", "clientSubmit", "clientControl", "serverHello",
@@ -80,14 +80,14 @@ def validate() -> None:
             raise ContractError(f"bootstrap schema leaves {field} structurally open")
 
     listening = exact(
-        load(ROOT / "examples/app-server-v4-listening.json"),
+        load(ROOT / "examples/app-server-v5-listening.json"),
         {"component", "event", "protocol_version", "listen", "transport", "authentication"},
         "listening record",
     )
     if listening != {
         "component": "app_server",
         "event": "listening",
-        "protocol_version": 4,
+        "protocol_version": 5,
         "listen": "127.0.0.1:43123",
         "transport": "loopback_tcp_jsonl",
         "authentication": "stdin_bearer_hello",
@@ -97,16 +97,16 @@ def validate() -> None:
         raise ContractError("listening record must not contain bearer material")
 
     request = exact(
-        load(ROOT / "examples/app-server-v4-command.json"),
+        load(ROOT / "examples/app-server-v5-command.json"),
         {"type", "protocol_version", "request_id", "control"},
         "command request",
     )
     control = exact(request["control"], {"type", "command_id", "command"}, "command control")
-    if request["protocol_version"] != 4 or control["type"] != "plantcore_command_v1":
+    if request["protocol_version"] != 5 or control["type"] != "plantcore_command_v1":
         raise ContractError("command request envelope changed")
 
     response = exact(
-        load(ROOT / "examples/app-server-v4-command-reply.json"),
+        load(ROOT / "examples/app-server-v5-command-reply.json"),
         {"type", "protocol_version", "request_id", "reply"},
         "command reply",
     )
@@ -123,7 +123,7 @@ def validate() -> None:
         ("resume", "resume_dispatch", "dispatch_gate_open"),
     ]:
         gate_request = exact(
-            load(ROOT / f"examples/app-server-v4-{stem}-command.json"),
+            load(ROOT / f"examples/app-server-v5-{stem}-command.json"),
             {"type", "protocol_version", "request_id", "control"},
             f"{stem} command request",
         )
@@ -134,13 +134,13 @@ def validate() -> None:
         )
         gate_command = exact(gate_control["command"], {"type"}, f"{stem} command")
         if (
-            gate_request["protocol_version"] != 4
+            gate_request["protocol_version"] != 5
             or gate_control["type"] != "plantcore_command_v1"
             or gate_command["type"] != command_type
         ):
             raise ContractError(f"{stem} command request changed")
         gate_response = exact(
-            load(ROOT / f"examples/app-server-v4-{stem}-command-reply.json"),
+            load(ROOT / f"examples/app-server-v5-{stem}-command-reply.json"),
             {"type", "protocol_version", "request_id", "reply"},
             f"{stem} command reply",
         )
@@ -158,10 +158,10 @@ def validate() -> None:
             raise ContractError(f"{stem} command reply does not bind its safe point")
 
     terminal_resume_request = load(
-        ROOT / "examples/app-server-v4-resume-terminal-command.json"
+        ROOT / "examples/app-server-v5-resume-terminal-command.json"
     )
     terminal_resume_reply = load(
-        ROOT / "examples/app-server-v4-resume-terminal-command-reply.json"
+        ROOT / "examples/app-server-v5-resume-terminal-command-reply.json"
     )
     rejected = exact(
         terminal_resume_reply["reply"],
@@ -178,7 +178,7 @@ def validate() -> None:
         raise ContractError("terminal resume rejection changed")
 
     bootstrap = exact(
-        load(ROOT / "examples/app-server-v4-bootstrap.json"),
+        load(ROOT / "examples/app-server-v5-bootstrap.json"),
         {"type", "protocol_version", "request_id", "control"},
         "bootstrap request",
     )
@@ -194,14 +194,14 @@ def validate() -> None:
     }
     exact(payload, expected_payload_keys, "bootstrap payload")
     if (
-        bootstrap["protocol_version"] != 4
+        bootstrap["protocol_version"] != 5
         or bootstrap_control["type"] != "plantcore_run_bootstrap_v1"
         or payload["artifact_policy"]["output_root"] != "/workspace/output"
     ):
         raise ContractError("bootstrap positive vector changed")
 
     bootstrap_response = exact(
-        load(ROOT / "examples/app-server-v4-bootstrap-reply.json"),
+        load(ROOT / "examples/app-server-v5-bootstrap-reply.json"),
         {"type", "protocol_version", "request_id", "reply"},
         "bootstrap reply",
     )
@@ -218,12 +218,12 @@ def validate() -> None:
     ):
         raise ContractError("bootstrap accepted reply does not bind the exact payload")
 
-    invalid_bootstrap = load(ROOT / "examples/app-server-v4-invalid-bootstrap.json")
+    invalid_bootstrap = load(ROOT / "examples/app-server-v5-invalid-bootstrap.json")
     invalid_payload = invalid_bootstrap.get("control", {}).get("payload", {})
     if "unknown_security_switch" not in invalid_payload or set(invalid_payload) <= expected_payload_keys:
         raise ContractError("bootstrap negative vector no longer exercises unknown-field rejection")
 
-    negative = load(ROOT / "examples/app-server-v4-invalid-session.json")
+    negative = load(ROOT / "examples/app-server-v5-invalid-session.json")
     if negative.get("resume_from", 0) <= 0 or negative.get("session_id") != "different-session":
         raise ContractError("session mismatch negative vector no longer exercises resume")
 
@@ -232,6 +232,6 @@ if __name__ == "__main__":
     try:
         validate()
     except (ContractError, OSError, UnicodeError, json.JSONDecodeError) as exc:
-        print(f"app-server-v4: FAIL: {exc}", file=sys.stderr)
+        print(f"app-server-v5: FAIL: {exc}", file=sys.stderr)
         raise SystemExit(1)
-    print("app-server-v4: OK")
+    print("app-server-v5: OK")

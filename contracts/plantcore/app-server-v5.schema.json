@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://iteron.dev/contracts/plantcore/app-server-v4.schema.json",
-  "title": "Iteron resident App Server protocol v4",
+  "$id": "https://iteron.dev/contracts/plantcore/app-server-v5.schema.json",
+  "title": "Iteron resident App Server protocol v5",
   "oneOf": [
     { "$ref": "#/$defs/listeningRecord" },
     { "$ref": "#/$defs/clientHello" },
@@ -16,7 +16,7 @@
     { "$ref": "#/$defs/frameChunk" }
   ],
   "$defs": {
-    "protocolVersion": { "const": 4 },
+    "protocolVersion": { "const": 5 },
     "nonempty": { "type": "string", "minLength": 1 },
     "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "safeId": {
