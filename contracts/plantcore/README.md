@@ -4,7 +4,7 @@ These artifacts are public, deterministic implementation inputs for the PlantCor
 They contain no credentials, session data, or deployment state.
 
 The G1 v7 implementation is reviewed against `Plantcore-AI/plantcore-platform` commit
-`40fa652705b3b1bc1d21c63dd75ed46b03c6b32d`. The content digests below identify the exact
+`edfe829b7a3a539fe253a0db995244a58725fb5c`. The content digests below identify the exact
 implementation inputs without depending on that repository remaining at the same checkout:
 
 | Upstream path | Raw file SHA-256 |
