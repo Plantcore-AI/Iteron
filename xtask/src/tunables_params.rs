@@ -1655,11 +1655,6 @@ fn row_for(
             | ("tools", "crates/tools/src/plantcore.rs", _)
             | ("cli", "crates/cli/src/machine_contract.rs", _)
             | ("cli", "crates/cli/src/iteron_workspace_hook.rs", _)
-            | (
-                "cli",
-                "crates/cli/src/output.rs",
-                "MAX_STREAM_UI_DELTA_BYTES"
-            )
             | ("cli", "crates/cli/src/output/v7.rs", "MAX_EVENT_BYTES")
             | (
                 "cli",
@@ -1680,11 +1675,6 @@ fn row_for(
                 "cli",
                 "crates/cli/src/tui/headless.rs",
                 "MAX_RECORDED_COMMANDS"
-            )
-            | (
-                "cli",
-                "crates/cli/src/app_server/recording_fault.rs",
-                "MAX_MARKER_BYTES"
             )
             | (
                 "cli",
@@ -1925,11 +1915,8 @@ fn invariant_reason_for(
     }
     if relative == "crates/protocol/src/plantcore.rs"
         || relative == "crates/cli/src/machine_contract.rs"
-        || (relative == "crates/cli/src/output.rs" && name == "MAX_STREAM_UI_DELTA_BYTES")
         || relative == "crates/cli/src/output/v7.rs"
         || relative == "crates/cli/src/app_server/plantcore.rs"
-        || (relative == "crates/cli/src/app_server/recording_fault.rs"
-            && name == "MAX_MARKER_BYTES")
         || (relative == "crates/cli/src/tui/headless/framing.rs"
             && name == "RECORDING_CHUNK_EVENT_BYTES")
         || (relative == "crates/cli/src/tui/headless/control.rs" && name == "MAX_COMMAND_ID_BYTES")

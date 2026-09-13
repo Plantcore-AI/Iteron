@@ -4,7 +4,7 @@ These artifacts are public, deterministic implementation inputs for the PlantCor
 They contain no credentials, session data, or deployment state.
 
 The G1 v7 implementation is reviewed against `Plantcore-AI/plantcore-platform` commit
-`a3f8b02208b6fb1e1d130a9da1d3690ee5e39ae0`. The content digests below identify the exact
+`40fa652705b3b1bc1d21c63dd75ed46b03c6b32d`. The content digests below identify the exact
 implementation inputs without depending on that repository remaining at the same checkout:
 
 | Upstream path | Raw file SHA-256 |
@@ -17,10 +17,10 @@ implementation inputs without depending on that repository remaining at the same
 | `contracts/run-io-v1.md` | `fca7971a13078895c8da99aee49d56d90d5a0d2956a6b56f9ae02e3d69901737` |
 | `contracts/run-pod-v1.md` | `33a86cdaca66e66b625ae714f88563f05ff09cdd0bccc57c5409297868febc74` |
 | `e2e/recording/g1-v7/README.md` | `a3307b6431cad3b1dd52275ec5b5842ea5511bf9436064c2533923e3b052b77d` |
-| `e2e/recording/g1-v7/scenarios.json` | `6117c62973a5de561800f4d83690a05a887f43b80556110fbedc2ed0841cda04` |
-| `e2e/recording/g1-v7/recipes.json` | `71e9fd0a6934fa4882edb994081c4d2e5a010c992b52ca422f745a2dadbd292d` |
-| `e2e/recording/g1-v7/actions.json` | `7649775b4c531fce467985e0f33db886f6edfb158d4e721ffd27d90312789d6c` |
-| `e2e/recording/g1-v7/check.py` | `341ab6801aa593737f710a86ec432757d6c6d27665064fc74f90b3317ff40361` |
+| `e2e/recording/g1-v7/scenarios.json` | `0584605abcceddd6ba6e7e3be1b41cd16e33a226318b6d925a52bd2891423b73` |
+| `e2e/recording/g1-v7/recipes.json` | `43b5f6c7b83c64f6146622e076719ec4d02816b12b57ae845da2b870c477f66d` |
+| `e2e/recording/g1-v7/actions.json` | `e2333344c57d26663565fc131b5e422634d311663ef49067f0369f4f66b68368` |
+| `e2e/recording/g1-v7/check.py` | `eb87c0e40e05fdcee14029e1bccf16e617e839369441b8f4f5dcdbd419352b53` |
 | `e2e/recording/g1-v7/fake-provider/scripts.json` | `1cefaef441ddd5fdfe9d360e37f59bb0d8cf9282efed529233e19d30448496e0` |
 | `e2e/recording/g1-v7/fake-gateway/gateway-simulator` | `0361717045d84e9526b8c520c1840373be902a43719b01eb08f5b5f5582a62eb` |
 | `e2e/vectors/portable-canonical-json-v1.json` | `7ce7683acb86d9c4b8248eab42c4b1b4d569a2ec64dc6b4f9072035234083bf4` |
@@ -47,8 +47,8 @@ process-local agent state is not restored, repeated context may cost more, and w
 durable conversation or declared artifacts can be lost. This is the accepted G1 limitation pending
 a durable pause/resume contract.
 
-The fixed workspace Hook constrains paths used through model-visible Iteron tools. It does not
-claim gVisor, sidecar, Landlock, arbitrary-system-call, or compromised-process isolation.
+The fixed workspace Hook enforces path policy for model-visible Iteron tools. Process-level
+isolation remains a later hardening stage.
 
 ### Recording-only App Server fault ABI
 

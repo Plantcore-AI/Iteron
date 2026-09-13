@@ -328,9 +328,13 @@ def probe_iteron(pin: dict[str, Any]) -> dict[str, Any]:
         raise QualificationError("installed Iteron machine contract is invalid") from error
     contract = strict_json_bytes(contract_stdout, "machine contract")
     capabilities = contract.get("plantcore_capabilities")
+    artifacts = contract.get("contract_artifacts")
     if (
-        contract.get("default_cli_stream_version") != 7
-        or 7 not in contract.get("cli_stream_versions", [])
+        contract.get("default_cli_stream_version") != 6
+        or contract.get("cli_stream_versions") != [4, 5, 6]
+        or contract.get("resident_protocol_version") != 4
+        or not isinstance(artifacts, dict)
+        or not isinstance(artifacts.get("output_v7_target_schema"), dict)
         or not isinstance(capabilities, dict)
         or capabilities.get("supported_operating_systems") != ["linux"]
     ):

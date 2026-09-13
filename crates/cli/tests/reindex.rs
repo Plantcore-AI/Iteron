@@ -244,9 +244,9 @@ fn schema_v4_session_argv_is_typed_provider_free_and_tag_preserving() {
     assert_eq!(contract["schema_version"], 3);
     assert_eq!(
         contract["cli_stream_versions"],
-        serde_json::json!([4, 5, 6, 7])
+        serde_json::json!([4, 5, 6])
     );
-    assert_eq!(contract["default_cli_stream_version"], 7);
+    assert_eq!(contract["default_cli_stream_version"], 6);
     assert_eq!(
         contract["resident_protocol_version"],
         iteron_protocol::wire::PROTOCOL_VERSION

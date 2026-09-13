@@ -418,14 +418,6 @@ pub enum UiEvent {
         compaction_trigger_tokens: usize,
         effort: iteron_provider::EffortApplication,
     },
-    /// PlantCore's typed per-logical-turn accounting fact. It is independent of the legacy
-    /// `TurnEnd` presentation and is projected only at the public v7 seam.
-    PlantcoreUsage(iteron_protocol::TurnUsage),
-    /// First observable PlantCore fact after bootstrap admission. The Worker compares this digest
-    /// with the immutable AgentRuntimeProfile it supplied before accepting any turn output.
-    PlantcoreRunAdmitted {
-        profile_digest_sha256: iteron_protocol::HexSha256,
-    },
     /// A structured workflow lifecycle update. Frontends project these id-correlated events into
     /// one live card/tree instead of printing a line per worker (the Claude Code/Codex interaction
     /// model). Task labels are scrubbed and bounded before crossing this seam.
@@ -450,6 +442,22 @@ pub enum UiEvent {
     },
     /// The run ended.
     Done(String),
+}
+
+/// PlantCore-only runtime facts carried beside the frozen CLI `UiEvent` vocabulary.
+#[derive(Debug, Clone)]
+pub(crate) enum PlantcoreUiEvent {
+    Usage(iteron_protocol::TurnUsage),
+    RunAdmitted {
+        profile_digest_sha256: iteron_protocol::HexSha256,
+    },
+}
+
+/// Ordered ingress from the resident runtime into App Server presentation.
+#[derive(Debug, Clone)]
+pub(crate) enum RuntimeFrontendEvent {
+    Ui(UiEvent),
+    Plantcore(PlantcoreUiEvent),
 }
 
 /// A bounded, presentation-safe task declared by a workflow plan.
@@ -1277,12 +1285,6 @@ fn workflow_terminal(
             iteron_protocol::WorkflowOutcome::Stuck,
             Some("consecutive tool-error limit reached".into()),
             Some("tool_error_limit".into()),
-        ),
-        Ok(Outcome::UsageUnavailable) => (
-            WorkflowRunOutcomeUi::Failed,
-            iteron_protocol::WorkflowOutcome::Failed,
-            Some("authoritative Provider usage is unavailable".into()),
-            Some("usage_unavailable".into()),
         ),
         Ok(Outcome::HarnessError) => (
             WorkflowRunOutcomeUi::Failed,
@@ -2470,6 +2472,8 @@ pub struct Agent {
     session_spawn_ledger: std::sync::Arc<SessionSpawnLedger>,
     /// Optional frontend event sink. The kernel never renders model content directly.
     ui_tx: Option<tokio::sync::mpsc::Sender<UiEvent>>,
+    /// Ordered App Server ingress for CLI and PlantCore resident events.
+    resident_ui_tx: Option<tokio::sync::mpsc::Sender<RuntimeFrontendEvent>>,
     frontend_saturation: frontend::FrontendChannelHealth,
     /// Compile-local typed activity plane. The protocol owner bridges this sink into the additive
     /// versioned frontend event without making runtime timing depend on renderer work.
@@ -3724,6 +3728,7 @@ impl Agent {
             let tool_policy = self.tool_policy.clone();
             let argument_trust = self.governing_turn_trust(messages);
             let ui_tx = self.ui_tx.clone();
+            let resident_ui_tx = self.resident_ui_tx.clone();
             let frontend_saturation = self.frontend_saturation.clone();
             let tool_interrupt = self.interrupt.clone();
             let tool_force_cancel = self.force_cancel.clone();
@@ -3876,10 +3881,11 @@ impl Agent {
                             return;
                         }
                         if let StreamItem::CompatibilityNotice(message) = item {
-                            if let Some(tx) = &ui_tx {
-                                let _ = frontend_saturation
-                                    .try_send_ui(tx, UiEvent::Notice(message.to_string()));
-                            }
+                            let _ = frontend_saturation.try_send_frontend(
+                                resident_ui_tx.as_ref(),
+                                ui_tx.as_ref(),
+                                UiEvent::Notice(message.to_string()),
+                            );
                             self.lifecycle_event(
                                 "model.compatibility_notice",
                                 Some(turn_id),
@@ -3955,22 +3961,24 @@ impl Agent {
                         match item {
                             StreamItem::TextDelta(t) => {
                                 streamed_text.push_str(&t);
-                                if !hedge_ui_pre_forwarded && let Some(tx) = &ui_tx {
+                                if !hedge_ui_pre_forwarded {
                                     // Scrub secrets before the assistant text crosses the UI seam (ADR-015 R1):
                                     // the record already masks the committed Block::Text, but the live UI / /export
                                     // are the same exfiltration surfaces as tool output, which we scrub here too.
                                     // The frontend adds a stateful cross-delta scrubber before rendering.
-                                    let _ = frontend_saturation.try_send_ui(
-                                        tx,
+                                    let _ = frontend_saturation.try_send_frontend(
+                                        resident_ui_tx.as_ref(),
+                                        ui_tx.as_ref(),
                                         UiEvent::Text(iteron_record::redact::scrub(&t)),
                                     );
                                 }
                             }
                             StreamItem::ThinkingDelta(t) => {
                                 streamed_thinking.push_str(&t);
-                                if !hedge_ui_pre_forwarded && let Some(tx) = &ui_tx {
-                                    let _ = frontend_saturation.try_send_ui(
-                                        tx,
+                                if !hedge_ui_pre_forwarded {
+                                    let _ = frontend_saturation.try_send_frontend(
+                                        resident_ui_tx.as_ref(),
+                                        ui_tx.as_ref(),
                                         UiEvent::Thinking(iteron_record::redact::scrub(&t)),
                                     );
                                 }
@@ -3985,12 +3993,13 @@ impl Agent {
                                     tool_contract_error = Some(error);
                                     return;
                                 }
-                                if let Some(tx) = &ui_tx {
+                                {
                                     // Scrub secret-shaped values out of the args BEFORE they cross the UI seam
                                     // (ADR-015 R1: the UI/ /export / scrollback are new exfiltration surfaces the
                                     // record's redaction does not cover).
-                                    let _ = frontend_saturation.try_send_ui(
-                                        tx,
+                                    let _ = frontend_saturation.try_send_frontend(
+                                        resident_ui_tx.as_ref(),
+                                        ui_tx.as_ref(),
                                         UiEvent::ToolStart {
                                             id: tu.id.clone(),
                                             name: tu.name.clone(),
@@ -4605,7 +4614,7 @@ impl Agent {
                                 self.finish(turn_id, Outcome::BudgetExhausted(reason)).await
                             }
                             plantcore::PlantcoreTerminal::UsageUnavailable => {
-                                self.finish(turn_id, Outcome::UsageUnavailable).await
+                                self.finish(turn_id, Outcome::HarnessError).await
                             }
                         };
                     }
@@ -4619,7 +4628,7 @@ impl Agent {
                     }
                     if let KernelError::InferenceBudgetExhausted(reason) = error {
                         return if reason == "usage_unavailable" {
-                            self.finish(turn_id, Outcome::UsageUnavailable).await
+                            self.finish(turn_id, Outcome::HarnessError).await
                         } else {
                             self.finish(turn_id, Outcome::BudgetExhausted(reason)).await
                         };
@@ -4773,7 +4782,7 @@ impl Agent {
                         self.finish(turn_id, Outcome::BudgetExhausted(reason)).await
                     }
                     plantcore::PlantcoreTerminal::UsageUnavailable => {
-                        self.finish(turn_id, Outcome::UsageUnavailable).await
+                        self.finish(turn_id, Outcome::HarnessError).await
                     }
                 };
             }
@@ -7835,13 +7844,17 @@ impl Agent {
                 iteron_protocol::PolicyTerminalOutcome::Failed,
                 Some(iteron_protocol::PolicyHarnessErrorCode::ConsecutiveToolErrors),
             ),
-            Outcome::UsageUnavailable => (
-                iteron_protocol::PolicyTerminalOutcome::Failed,
-                Some(iteron_protocol::PolicyHarnessErrorCode::UsageUnavailable),
-            ),
             Outcome::HarnessError => (
                 iteron_protocol::PolicyTerminalOutcome::Failed,
-                Some(iteron_protocol::PolicyHarnessErrorCode::HarnessFailure),
+                Some(
+                    if self.plantcore_terminal()
+                        == Some(plantcore::PlantcoreTerminal::UsageUnavailable)
+                    {
+                        iteron_protocol::PolicyHarnessErrorCode::UsageUnavailable
+                    } else {
+                        iteron_protocol::PolicyHarnessErrorCode::HarnessFailure
+                    },
+                ),
             ),
         };
         self.append_policy_turn_outcome(

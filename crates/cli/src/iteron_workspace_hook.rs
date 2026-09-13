@@ -38,7 +38,16 @@ enum Access {
     WriteOutput,
 }
 
-fn main() {
+pub(crate) fn invoked_as_workspace_hook() -> bool {
+    std::env::current_exe()
+        .ok()
+        .as_deref()
+        .and_then(Path::file_stem)
+        .and_then(std::ffi::OsStr::to_str)
+        == Some("iteron-workspace-hook")
+}
+
+pub(crate) fn main() -> std::process::ExitCode {
     let decision = run();
     match decision {
         Ok(()) => {
@@ -46,11 +55,12 @@ fn main() {
                 "{}",
                 json!({"decision":"allow","reason":"workspace_path_allowed"})
             );
+            std::process::ExitCode::SUCCESS
         }
         Err(reason) => {
             println!("{}", json!({"decision":"deny","reason":reason}));
             eprintln!("{reason}");
-            std::process::exit(2);
+            std::process::ExitCode::from(2)
         }
     }
 }

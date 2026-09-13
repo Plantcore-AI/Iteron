@@ -3393,7 +3393,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     }
 
     fn capture_v7_machine_parity(summary: &app_server::TerminalSummary) -> ClientParityCapture {
-        let one_shot = summary
+        let plantcore_resident = summary
             .result_for_schema(crate::output::V7_SCHEMA_VERSION)
             .expect("v7 terminal facts must project");
         let (protocol_version, seq, headless) =
@@ -3402,14 +3402,14 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert_eq!(seq, 41);
         let (tui, tui_status) = tui_terminal_result(summary);
         ClientParityCapture {
-            one_shot,
+            one_shot: plantcore_resident,
             headless,
             tui,
             tui_status,
         }
     }
 
-    fn parity_cases() -> [(iteron_protocol::Outcome, &'static str, u64); 7] {
+    fn parity_cases() -> [(iteron_protocol::Outcome, &'static str, u64); 6] {
         [
             (iteron_protocol::Outcome::Done, "done", 0),
             (iteron_protocol::Outcome::Drained, "drained", 0),
@@ -3421,11 +3421,6 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             (iteron_protocol::Outcome::Interrupted, "interrupted", 130),
             (iteron_protocol::Outcome::Stuck, "stuck", 4),
             (iteron_protocol::Outcome::HarnessError, "harness_error", 2),
-            (
-                iteron_protocol::Outcome::UsageUnavailable,
-                "usage_unavailable",
-                5,
-            ),
         ]
     }
 
@@ -3469,7 +3464,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     }
 
     #[test]
-    fn machine_clients_share_v7_while_tui_retains_its_v6_presentation_state() {
+    fn plantcore_resident_uses_v7_while_tui_retains_its_v6_presentation_state() {
         for (outcome, expected_outcome, expected_exit_code) in parity_cases() {
             let capture = capture_v7_machine_parity(&parity_summary(outcome));
 

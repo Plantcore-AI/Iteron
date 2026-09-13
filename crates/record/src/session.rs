@@ -1048,7 +1048,6 @@ fn parse_outcome(s: &str) -> Option<Outcome> {
         "Interrupted" => Some(Outcome::Interrupted),
         "Stuck" => Some(Outcome::Stuck),
         "HarnessError" => Some(Outcome::HarnessError),
-        "UsageUnavailable" => Some(Outcome::UsageUnavailable),
         _ if s.starts_with("BudgetExhausted") => {
             let reason = if s.contains("max_turns") {
                 "max_turns"
@@ -3228,14 +3227,6 @@ mod tests {
                 "{reason}"
             );
         }
-    }
-
-    #[test]
-    fn usage_unavailable_survives_the_session_projection() {
-        assert_eq!(
-            parse_outcome("UsageUnavailable"),
-            Some(Outcome::UsageUnavailable)
-        );
     }
 
     fn tmpdir(tag: &str) -> PathBuf {

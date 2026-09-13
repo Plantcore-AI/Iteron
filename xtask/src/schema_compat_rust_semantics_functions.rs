@@ -51,9 +51,8 @@ const FREE_FUNCTIONS: &[FreeFunctions] = &[
         // writer authorities, which bind the direct UiEvent match, JSON producers, compatibility
         // projection, and stdout sink. The surrounding helpers remain frozen here.
         names: &[
-            // Outcome mappings evolve additively behind the exact AST witnesses in
-            // `schema_compat_rust_cli_exact`; a whole-body base fingerprint would make adding a
-            // new versioned terminal outcome impossible while protecting no older mapping.
+            "outcome_exit_code",
+            "outcome_name",
             "outcome_reason",
             "phase_name",
             "effort_application_json",
@@ -117,12 +116,14 @@ const METHODS: &[Methods] = &[
     Methods {
         path: "crates/cli/src/output.rs",
         target: "Emitter",
-        // The v7-aware lifecycle methods evolve behind the exact AST and writer dataflow
-        // authorities. Retain token freezes for the unchanged text and legacy stream sinks.
         names: &[
+            "new",
             "write_text_delta",
             "flush_text_output",
             "write_stream_event",
+            "flush_stream_text",
+            "event",
+            "result",
         ],
     },
     Methods {
@@ -237,9 +238,7 @@ pub(super) fn compare_critical_functions(
         for name in group.names {
             let old = named_type(base, name)?;
             let new = named_type(current, name)?;
-            if semantic_item(old) != semantic_item(new)
-                && !is_exact_plantcore_ui_event_addition(name, old, new)
-            {
+            if semantic_item(old) != semantic_item(new) {
                 bail!(
                     "critical schema type '{}::{name}' changed from the trusted base",
                     group.path
@@ -248,76 +247,6 @@ pub(super) fn compare_critical_functions(
         }
     }
     Ok(())
-}
-
-/// `stream_event`'s structural validators independently bind these two v7 projections. Admit only
-/// their exact typed carriers here; all pre-existing UiEvent variants and every other critical
-/// type remain token-frozen against the trusted base.
-fn is_exact_plantcore_ui_event_addition(name: &str, old: &syn::Item, new: &syn::Item) -> bool {
-    if name != "UiEvent" {
-        return false;
-    }
-    let (syn::Item::Enum(old), syn::Item::Enum(new)) = (old, new) else {
-        return false;
-    };
-    let additions = new
-        .variants
-        .iter()
-        .filter(|variant| {
-            matches!(
-                variant.ident.to_string().as_str(),
-                "PlantcoreUsage" | "PlantcoreRunAdmitted"
-            )
-        })
-        .collect::<Vec<_>>();
-    if additions.len() != 2
-        || !variant_matches(
-            additions[0],
-            "enum Witness { PlantcoreUsage(iteron_protocol::TurnUsage) }",
-        )
-        || !variant_matches(
-            additions[1],
-            "enum Witness { PlantcoreRunAdmitted { profile_digest_sha256: iteron_protocol::HexSha256, } }",
-        )
-    {
-        return false;
-    }
-
-    let mut old_header = old.clone();
-    old_header.variants.clear();
-    let mut new_header = new.clone();
-    new_header.variants.clear();
-    if old_header.to_token_stream().to_string() != new_header.to_token_stream().to_string() {
-        return false;
-    }
-    let retained = new
-        .variants
-        .iter()
-        .filter(|variant| {
-            !matches!(
-                variant.ident.to_string().as_str(),
-                "PlantcoreUsage" | "PlantcoreRunAdmitted"
-            )
-        })
-        .collect::<Vec<_>>();
-    old.variants.len() == retained.len()
-        && old.variants.iter().zip(retained).all(|(old, new)| {
-            old.to_token_stream().to_string() == new.to_token_stream().to_string()
-        })
-}
-
-fn variant_matches(actual: &syn::Variant, witness: &str) -> bool {
-    let Ok(witness) = syn::parse_str::<syn::ItemEnum>(witness) else {
-        return false;
-    };
-    let Some(witness) = witness.variants.first() else {
-        return false;
-    };
-    let mut actual = actual.clone();
-    actual
-        .attrs
-        .retain(|attribute| !attribute.path().is_ident("doc"));
-    actual.to_token_stream().to_string() == witness.to_token_stream().to_string()
 }
 
 /// Compare the file-scope bindings that can affect this file's frozen items.
@@ -597,57 +526,6 @@ fn strip_item_docs(item: &mut syn::Item) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn only_the_two_exact_plantcore_ui_events_are_admitted() {
-        let old: syn::Item = syn::parse_quote! {
-            pub enum UiEvent { Text(String), Done }
-        };
-        let exact: syn::Item = syn::parse_quote! {
-            pub enum UiEvent {
-                Text(String),
-                PlantcoreUsage(iteron_protocol::TurnUsage),
-                PlantcoreRunAdmitted {
-                    profile_digest_sha256: iteron_protocol::HexSha256,
-                },
-                Done,
-            }
-        };
-        assert!(is_exact_plantcore_ui_event_addition(
-            "UiEvent", &old, &exact
-        ));
-
-        let wrong_payload: syn::Item = syn::parse_quote! {
-            pub enum UiEvent {
-                Text(String),
-                PlantcoreUsage(String),
-                PlantcoreRunAdmitted {
-                    profile_digest_sha256: iteron_protocol::HexSha256,
-                },
-                Done,
-            }
-        };
-        let changed_old: syn::Item = syn::parse_quote! {
-            pub enum UiEvent {
-                Text(Vec<u8>),
-                PlantcoreUsage(iteron_protocol::TurnUsage),
-                PlantcoreRunAdmitted {
-                    profile_digest_sha256: iteron_protocol::HexSha256,
-                },
-                Done,
-            }
-        };
-        assert!(!is_exact_plantcore_ui_event_addition(
-            "UiEvent",
-            &old,
-            &wrong_payload
-        ));
-        assert!(!is_exact_plantcore_ui_event_addition(
-            "UiEvent",
-            &old,
-            &changed_old
-        ));
-    }
 
     fn referenced(tokens: &str) -> BTreeSet<String> {
         let mut names = BTreeSet::new();

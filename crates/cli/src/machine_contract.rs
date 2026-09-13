@@ -462,11 +462,8 @@ mod tests {
         let value: Value = serde_json::from_str(&rendered).expect("machine contract JSON");
         assert_eq!(value["schema_version"], 3);
         assert_eq!(value["type"], "machine_contract");
-        assert_eq!(
-            value["cli_stream_versions"],
-            serde_json::json!([4, 5, 6, 7])
-        );
-        assert_eq!(value["default_cli_stream_version"], 7);
+        assert_eq!(value["cli_stream_versions"], serde_json::json!([4, 5, 6]));
+        assert_eq!(value["default_cli_stream_version"], 6);
         assert_eq!(
             value["contract_artifacts"]["output_v7_target_schema"]["canonical_sha256"],
             V7_SCHEMA_CANONICAL_SHA256

@@ -1158,6 +1158,9 @@ jobs:
           cargo +"$RUST_VERSION" auditable build \
             --release --locked -p iteron-cli \
             --target "${{ matrix.target }}"
+          binary="$CARGO_TARGET_DIR/${{ matrix.target }}/release/${{ matrix.binary }}"
+          workspace_hook="$CARGO_TARGET_DIR/${{ matrix.target }}/release/iteron-workspace-hook${{ matrix.tool-suffix }}"
+          cp "$binary" "$workspace_hook"
       # `file`, `jq`, and ELF/Mach-O linkage vocabulary do not exist on Windows; the leg below
       # asserts the same properties against a PE image instead.
       - name: Verify architecture, linkage, and executable smoke tests

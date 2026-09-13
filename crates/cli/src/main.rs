@@ -15,6 +15,7 @@ mod external_editor;
 mod file_input;
 mod highlight;
 mod image_input;
+mod iteron_workspace_hook;
 mod keymap;
 mod keyword_trigger;
 mod machine_contract;
@@ -784,7 +785,7 @@ struct Cli {
     output_format: OutputFormat,
 
     /// Pin a published machine stdout schema. Supported versions are reported by
-    /// `--machine-contract`; omission keeps the current v7 default.
+    /// `--machine-contract`; omission keeps the current v6 default.
     #[arg(long, value_name = "VERSION")]
     output_schema_version: Option<u32>,
 
@@ -1246,6 +1247,9 @@ fn run_prune_command(
 
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
+    if iteron_workspace_hook::invoked_as_workspace_hook() {
+        return iteron_workspace_hook::main();
+    }
     match run_cli().await {
         Ok(code) => std::process::ExitCode::from(code),
         Err(error) => {
@@ -1306,7 +1310,7 @@ async fn run_cli() -> anyhow::Result<u8> {
         .unwrap_or(output::DEFAULT_SCHEMA_VERSION);
     if !output::SUPPORTED_SCHEMA_VERSIONS.contains(&machine_schema_version) {
         anyhow::bail!(
-            "unsupported --output-schema-version {machine_schema_version}; supported versions: 4, 5, 6, 7"
+            "unsupported --output-schema-version {machine_schema_version}; supported versions: 4, 5, 6"
         );
     }
     if cli.output_schema_version.is_some()
@@ -3583,6 +3587,7 @@ async fn run_cli() -> anyhow::Result<u8> {
                 "{dropped} streamed update(s) were dropped by the bounded App Server event queue"
             )),
             app_server::ServerEvent::Submission { .. } => continue,
+            app_server::ServerEvent::Plantcore(_) => continue,
             // Live activity is already projected by interactive/headless frontends. The frozen
             // one-shot stream-json schema has no activity record, so never forge one here.
             app_server::ServerEvent::Activity(_) => continue,
@@ -3620,6 +3625,7 @@ async fn run_cli() -> anyhow::Result<u8> {
                 "{dropped} streamed update(s) were dropped by the bounded App Server event queue"
             )),
             app_server::ServerEvent::Submission { .. } => continue,
+            app_server::ServerEvent::Plantcore(_) => continue,
             app_server::ServerEvent::Activity(_) => continue,
             app_server::ServerEvent::McpInputRequested(_) => continue,
             app_server::ServerEvent::RunEnded { .. } => continue,
@@ -3645,7 +3651,22 @@ async fn run_cli() -> anyhow::Result<u8> {
 
     let outcome: Outcome = summary.terminal.outcome();
     let run_error = summary.error.as_deref().map(iteron_record::redact::scrub);
-    let result = summary.result_for_schema(machine_schema_version)?;
+    let cost = summary.cost;
+    let turns = summary.turns;
+    let kernel_tax = summary.kernel_tax;
+    // UiEvent text is scrubbed at the live UI seam. Scrub the complete terminal text again so a
+    // secret split across streaming deltas cannot bypass the machine-output contract.
+    let assistant_text = iteron_record::redact::scrub(&summary.assistant_text);
+    let run_id = summary.run_id;
+    let result = output::final_result(
+        &outcome,
+        &assistant_text,
+        &run_id,
+        &cost,
+        turns,
+        kernel_tax,
+        run_error.as_deref(),
+    );
     if output_error.is_none()
         && let Err(error) = emitter.result(&result)
     {

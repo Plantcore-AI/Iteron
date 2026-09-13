@@ -204,6 +204,34 @@ pub(super) fn source_invariant_disposition(
     let value = value.to_ascii_lowercase();
     let invariant = |kind, rationale| SourceInvariantDisposition { kind, rationale };
 
+    if identity.contains("crates/cli/src/mcp/commands.rs")
+        && identity.contains("mcpserverconfig")
+        && identity.contains("field::transport")
+    {
+        return Some(invariant(
+            InvariantKind::Authority,
+            "the mutually exclusive URL and stdio command inputs select their fixed MCP transport",
+        ));
+    }
+    if identity.contains("crates/mcp/src/supervisor/config.rs")
+        && identity.contains("mcplaunchconfig::new")
+        && (identity.contains("field::advertises_elicitation")
+            || identity.contains("field::advertises::elicitation"))
+    {
+        return Some(invariant(
+            InvariantKind::Authority,
+            "a fresh MCP launch cannot advertise elicitation until its owner explicitly enables that capability",
+        ));
+    }
+    if identity.contains("crates/mcp/src/supervisor/config.rs")
+        && identity.contains("mcplaunchconfig::new")
+        && (identity.contains("field::protocol_mode") || identity.contains("field::protocol::mode"))
+    {
+        return Some(invariant(
+            InvariantKind::WireCompatibility,
+            "a fresh MCP launch starts in the established stateful protocol mode until its owner explicitly selects negotiation",
+        ));
+    }
     if (identity.contains("crates/cli/src/app_server/plantcore.rs")
         || identity.contains("cli.app.server.plantcore"))
         && identity.contains("plantcoreadmission::disabled")

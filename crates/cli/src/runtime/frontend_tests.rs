@@ -15,7 +15,7 @@ fn oversized_stream_delta_is_split_into_v7_safe_utf8_events_without_data_loss() 
         let UiEvent::Text(fragment) = &event else {
             panic!("stream splitter must preserve the event kind")
         };
-        assert!(fragment.len() <= crate::output::MAX_STREAM_UI_DELTA_BYTES);
+        assert!(fragment.len() <= crate::output::max_stream_ui_delta_bytes());
         reassembled.push_str(fragment);
         crate::output::stream_event_for_schema(event, &mut turn, crate::output::V7_SCHEMA_VERSION)
             .expect("every emitted fragment fits one canonical v7 logical object");
@@ -46,7 +46,7 @@ fn saturation_preserves_structural_order_and_only_omits_stream_bytes() {
     assert!(matches!(rx.try_recv(), Ok(UiEvent::Text(text)) if text == "before"));
     assert!(matches!(
         health.try_pop_authoritative(),
-        Some(UiEvent::ToolStart { id, .. }) if id == "tool-1"
+        Some(RuntimeFrontendEvent::Ui(UiEvent::ToolStart { id, .. })) if id == "tool-1"
     ));
     assert!(health.try_pop_authoritative().is_none());
     health.release_ui_event(&UiEvent::Text("before".into()));
@@ -57,6 +57,38 @@ fn saturation_preserves_structural_order_and_only_omits_stream_bytes() {
     });
     assert_eq!(health.ui_saturation_count(), 2);
     assert_eq!(health.ui_bytes.used(), 0);
+}
+
+#[test]
+fn resident_ingress_preserves_ui_and_plantcore_order_across_overflow() {
+    let health = FrontendChannelHealth::default();
+    let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+    assert!(health.try_send_runtime(
+        &tx,
+        RuntimeFrontendEvent::Ui(UiEvent::Text("before".into())),
+    ));
+    assert!(health.try_send_runtime(
+        &tx,
+        RuntimeFrontendEvent::Plantcore(PlantcoreUiEvent::RunAdmitted {
+            profile_digest_sha256: iteron_protocol::HexSha256::digest(b"profile"),
+        }),
+    ));
+    assert!(health.try_send_runtime(&tx, RuntimeFrontendEvent::Ui(UiEvent::Text("after".into())),));
+
+    assert!(matches!(
+        rx.try_recv(),
+        Ok(RuntimeFrontendEvent::Ui(UiEvent::Text(text))) if text == "before"
+    ));
+    assert!(matches!(
+        health.try_pop_authoritative(),
+        Some(RuntimeFrontendEvent::Plantcore(
+            PlantcoreUiEvent::RunAdmitted { .. }
+        ))
+    ));
+    assert!(matches!(
+        health.try_pop_authoritative(),
+        Some(RuntimeFrontendEvent::Ui(UiEvent::Text(text))) if text == "after"
+    ));
 }
 
 #[test]
@@ -83,7 +115,7 @@ fn one_byte_budget_bounds_both_runtime_ui_lanes_together() {
     let delivered = rx.try_recv().unwrap();
     health.release_ui_event(&delivered);
     let delivered = health.try_pop_authoritative().unwrap();
-    health.release_ui_event(&delivered);
+    health.release_ui_bytes(health.runtime_event_bytes(&delivered));
     assert_eq!(health.ui_bytes.used(), 0);
 }
 

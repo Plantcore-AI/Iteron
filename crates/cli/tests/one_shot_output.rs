@@ -498,7 +498,6 @@ enum Reply {
     Success,
     ParitySuccess,
     ReadReadme,
-    TextThenReadReadme,
     InvalidStream,
     FailingRead { index: u32 },
 }
@@ -771,13 +770,6 @@ fn write_reply(stream: &mut TcpStream, reply: Reply) {
             "data: {\"id\":\"chatcmpl-read-readme\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"id\":\"call-report-readme\",\"type\":\"function\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"README.md\\\"}\"}}]},\"finish_reason\":null}],\"usage\":null}\n\n",
             "data: {\"id\":\"chatcmpl-read-readme\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":null}\n\n",
             "data: {\"id\":\"chatcmpl-read-readme\",\"object\":\"chat.completion.chunk\",\"choices\":[],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":1,\"total_tokens\":12,\"prompt_tokens_details\":{\"cached_tokens\":0},\"completion_tokens_details\":{\"reasoning_tokens\":0}}}\n\n",
-            "data: [DONE]\n\n",
-        )
-        .to_string(),
-        Reply::TextThenReadReadme => concat!(
-            "data: {\"id\":\"chatcmpl-text-read\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"checking \",\"tool_calls\":[{\"index\":0,\"id\":\"call-text-readme\",\"type\":\"function\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"README.md\\\"}\"}}]},\"finish_reason\":null}],\"usage\":null}\n\n",
-            "data: {\"id\":\"chatcmpl-text-read\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":null}\n\n",
-            "data: {\"id\":\"chatcmpl-text-read\",\"object\":\"chat.completion.chunk\",\"choices\":[],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":2,\"total_tokens\":13,\"prompt_tokens_details\":{\"cached_tokens\":0},\"completion_tokens_details\":{\"reasoning_tokens\":0}}}\n\n",
             "data: [DONE]\n\n",
         )
         .to_string(),
@@ -1463,72 +1455,43 @@ fn json_one_shot_process_contract_matches_golden() {
 }
 
 #[test]
-fn omitted_schema_version_selects_v7_product_result() {
+fn omitted_schema_version_uses_v6() {
     let server = MockProvider::spawn(Reply::Success);
-    let scratch = Scratch::new("json-default-v7", &server.api_root);
+    let scratch = Scratch::new("json-default-v6", &server.api_root);
     let output = collect_core(
         core_command_with_schema(&scratch, "json", 1, &[], DEFAULT_TASK, Some("low"), None)
             .spawn()
-            .expect("spawn the real default-v7 one-shot client"),
+            .expect("spawn the real default-schema one-shot client"),
     );
     server.finish();
 
     assert_eq!(output.status.code(), Some(0));
     let frames = json_lines(&output.stdout);
     assert_eq!(frames.len(), 1);
-    assert_eq!(frames[0]["schema_version"], 7);
-    assert_eq!(frames[0]["type"], "result");
-    assert_eq!(frames[0]["outcome"], "done");
-    assert_eq!(
-        frames[0]["product_result_candidate"]["assistant_text_utf8"],
-        "golden reply"
-    );
-    assert!(frames[0].get("exit_code").is_none());
+    assert_eq!(frames[0]["schema_version"], 6);
 }
 
 #[test]
-fn default_v7_stream_keeps_text_emitted_before_an_intermediate_tool_call() {
-    let server = MockProvider::spawn_script(vec![Reply::TextThenReadReadme, Reply::Success]);
-    let scratch = Scratch::new("stream-v7-multi-turn-text", &server.api_root);
-    fs::write(scratch.repo().join("README.md"), "fixture").unwrap();
+fn one_shot_schema_v7_is_rejected_before_provider_contact() {
+    let scratch = Scratch::new("json-reject-v7", "http://127.0.0.1:9");
     let output = collect_core(
         core_command_with_schema(
             &scratch,
-            "stream-json",
-            2,
+            "json",
+            1,
             &[],
             DEFAULT_TASK,
             Some("low"),
-            None,
+            Some("7"),
         )
         .spawn()
-        .expect("spawn the real multi-turn default-v7 client"),
+        .expect("spawn the real unsupported-schema one-shot client"),
     );
-    server.finish();
 
-    assert_eq!(
-        output.status.code(),
-        Some(0),
-        "multi-turn v7 run failed: {}",
+    assert!(!output.status.success());
+    assert!(
         String::from_utf8_lossy(&output.stderr)
-    );
-    let frames = json_lines(&output.stdout);
-    let streamed = frames
-        .iter()
-        .filter(|frame| frame["type"] == "assistant_delta")
-        .filter_map(|frame| frame["text_utf8"].as_str())
-        .collect::<String>();
-    assert_eq!(streamed, "checking golden reply");
-    assert_eq!(
-        frames.last().unwrap()["product_result_candidate"]["assistant_text_utf8"],
-        streamed
-    );
-    assert_eq!(
-        frames
-            .iter()
-            .filter(|frame| frame["type"] == "assistant_completed")
-            .count(),
-        1
+            .contains("unsupported --output-schema-version 7; supported versions: 4, 5, 6")
     );
 }
 

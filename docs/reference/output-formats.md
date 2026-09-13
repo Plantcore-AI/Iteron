@@ -2,11 +2,13 @@
 
 Machine output is available for one-shot runs and the bounded session operations below.
 
-The current default is schema v7. A client can pin a retained contract with
-`--output-schema-version 4`, `--output-schema-version 5`, or `--output-schema-version 6`, together
-with `--output-format json` or `stream-json`. On one-shot task, continue, and resume operations,
-older versions project every stdout record onto their published shape.
+The current one-shot CLI default is schema v6. A client can pin schema v4, v5, or v6 with
+`--output-schema-version`, together with `--output-format json` or `stream-json`. On one-shot task,
+continue, and resume operations, each version projects every stdout record onto its published shape.
 Unsupported selectors fail before a rollout is opened.
+
+PlantCore resident runs select schema v7 through their admitted bootstrap. Schema v7 is emitted on
+the resident App Server event stream and is not a generic one-shot CLI projection.
 
 `iteron --machine-contract` is a provider-free capability query. Its JSON reports
 `cli_stream_versions`, `default_cli_stream_version`, and `resident_protocol_version` as distinct

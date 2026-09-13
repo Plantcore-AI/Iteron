@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "release_ordinal": 6,
+  "release_ordinal": 7,
   "minimum_deprecation_releases": 1,
   "surfaces": [
     {
@@ -1213,12 +1213,12 @@
         { "name": "resident_protocol_version", "introduced_release": 1 },
         { "name": "schema_version", "introduced_release": 1 },
         { "name": "type", "introduced_release": 1 },
-        { "name": "canonical_json", "introduced_release": 6 },
-        { "name": "contract_artifacts", "introduced_release": 6 },
-        { "name": "contract_version", "introduced_release": 6 },
-        { "name": "limits", "introduced_release": 6 },
-        { "name": "plantcore_capabilities", "introduced_release": 6 },
-        { "name": "release_id", "introduced_release": 6 }
+        { "name": "canonical_json", "introduced_release": 7 },
+        { "name": "contract_artifacts", "introduced_release": 7 },
+        { "name": "contract_version", "introduced_release": 7 },
+        { "name": "limits", "introduced_release": 7 },
+        { "name": "plantcore_capabilities", "introduced_release": 7 },
+        { "name": "release_id", "introduced_release": 7 }
       ],
       "compatibility_shims": []
     },

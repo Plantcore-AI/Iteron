@@ -430,21 +430,19 @@ impl Agent {
                             }
                         }
                         if selected_index == Some(live.index)
-                            && let Some(tx) = &self.ui_tx
+                            && (self.resident_ui_tx.is_some() || self.ui_tx.is_some())
                         {
                             match live.item {
                                 StreamItem::TextDelta(text) => {
-                                    let _ = self.frontend_saturation.try_send_ui(
-                                        tx,
-                                        UiEvent::Text(iteron_record::redact::scrub(&text)),
-                                    );
+                                    let _ = self.ui(UiEvent::Text(iteron_record::redact::scrub(
+                                        &text,
+                                    )));
                                     ui_deltas_forwarded = true;
                                 }
                                 StreamItem::ThinkingDelta(text) => {
-                                    let _ = self.frontend_saturation.try_send_ui(
-                                        tx,
-                                        UiEvent::Thinking(iteron_record::redact::scrub(&text)),
-                                    );
+                                    let _ = self.ui(UiEvent::Thinking(iteron_record::redact::scrub(
+                                        &text,
+                                    )));
                                     ui_deltas_forwarded = true;
                                 }
                                 StreamItem::Accepted
@@ -527,25 +525,19 @@ impl Agent {
                                 // Winner selection is the success terminal for this physical
                                 // stream. Rendering its already-validated deltas must not wait for
                                 // duplicate cancellation/accounting to settle.
-                                if let Some(tx) = &self.ui_tx {
+                                if self.resident_ui_tx.is_some() || self.ui_tx.is_some() {
                                     for item in &items {
                                         match item {
                                             StreamItem::TextDelta(text) => {
-                                                let _ = self.frontend_saturation.try_send_ui(
-                                                    tx,
-                                                    UiEvent::Text(iteron_record::redact::scrub(
-                                                        text,
-                                                    )),
-                                                );
+                                                let _ = self.ui(UiEvent::Text(
+                                                    iteron_record::redact::scrub(text),
+                                                ));
                                                 ui_deltas_forwarded = true;
                                             }
                                             StreamItem::ThinkingDelta(text) => {
-                                                let _ = self.frontend_saturation.try_send_ui(
-                                                    tx,
-                                                    UiEvent::Thinking(
-                                                        iteron_record::redact::scrub(text),
-                                                    ),
-                                                );
+                                                let _ = self.ui(UiEvent::Thinking(
+                                                    iteron_record::redact::scrub(text),
+                                                ));
                                                 ui_deltas_forwarded = true;
                                             }
                                             StreamItem::Accepted

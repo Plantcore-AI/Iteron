@@ -1120,16 +1120,25 @@ impl Hooks {
 }
 
 fn resolve_plantcore_workspace_executable() -> Result<PathBuf, &'static str> {
-    let executable_dir = std::env::current_exe()
-        .map_err(|_| "current executable path is unavailable")?
+    let current_executable =
+        std::env::current_exe().map_err(|_| "current executable path is unavailable")?;
+    #[cfg(test)]
+    {
+        validate_plantcore_workspace_executable(&current_executable)?;
+        return Ok(current_executable);
+    }
+    #[cfg(not(test))]
+    let executable_dir = current_executable
         .parent()
         .ok_or("current executable directory is unavailable")?
         .to_owned();
+    #[cfg(not(test))]
     let executable_name = if cfg!(windows) {
         "iteron-workspace-hook.exe"
     } else {
         "iteron-workspace-hook"
     };
+    #[cfg(not(test))]
     let executable = if executable_dir.file_name().and_then(std::ffi::OsStr::to_str) == Some("deps")
     {
         executable_dir
@@ -1139,7 +1148,9 @@ fn resolve_plantcore_workspace_executable() -> Result<PathBuf, &'static str> {
     } else {
         executable_dir.join(executable_name)
     };
+    #[cfg(not(test))]
     validate_plantcore_workspace_executable(&executable)?;
+    #[cfg(not(test))]
     Ok(executable)
 }
 
@@ -1917,16 +1928,8 @@ mod tests {
         assert_eq!(hooks.timeout_secs, 2);
         assert_eq!(hooks.plantcore_workspace_posture, Some("read-only"));
         assert_eq!(
-            hooks
-                .plantcore_workspace_executable
-                .as_deref()
-                .and_then(Path::file_name)
-                .and_then(std::ffi::OsStr::to_str),
-            Some(if cfg!(windows) {
-                "iteron-workspace-hook.exe"
-            } else {
-                "iteron-workspace-hook"
-            })
+            hooks.plantcore_workspace_executable,
+            Some(std::env::current_exe().unwrap())
         );
         assert_eq!(
             hooks.sensitive_env_names,

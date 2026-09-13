@@ -333,6 +333,8 @@ pub(crate) struct SessionSnapshot {
 pub(crate) enum ServerEvent {
     /// A kernel UI event, verbatim.
     Ui(UiEvent),
+    /// A PlantCore resident fact kept outside the frozen CLI UI vocabulary.
+    Plantcore(crate::runtime::PlantcoreUiEvent),
     /// A run reached a terminal state, with the runtime state the frontend mirrors.
     ///
     /// **Never dropped under backpressure** — this is the authoritative answer to "what happened",
@@ -419,6 +421,7 @@ fn event_heap_bytes(event: &ServerEvent) -> usize {
             .saturating_add(output.len())
             .saturating_add(serde_json::to_vec(diff).map_or(0, |bytes| bytes.len())),
         ServerEvent::Ui(_) => 4 * 1024,
+        ServerEvent::Plantcore(_) => 64 * 1024,
         ServerEvent::RunEnded { snapshot, summary } => summary
             .assistant_text
             .len()
@@ -1457,10 +1460,11 @@ fn attach_with_plantcore(
     lossless_events: bool,
     plantcore: PlantcoreAdmission,
 ) -> Result<Attached, ProtocolVersionError> {
-    // Machine-facing clients default to the current public schema. Older projections remain
-    // available only through the explicit one-shot output-schema selector; native TUI rendering
-    // is a separate human presentation surface.
-    let machine_schema_version = crate::output::V7_SCHEMA_VERSION;
+    let machine_schema_version = if plantcore.is_enabled() {
+        crate::output::V7_SCHEMA_VERSION
+    } else {
+        crate::output::SCHEMA_VERSION
+    };
     let dispatch_gate = plantcore.dispatch_gate();
     if let Some(gate) = &dispatch_gate {
         agent.install_plantcore_dispatch_gate(gate.clone());
@@ -1632,7 +1636,7 @@ impl PendingCosmetic {
                 Some(ServerEvent::Ui(UiEvent::Thinking(existing))),
                 ServerEvent::Ui(UiEvent::Thinking(delta)),
             ) if existing.len().saturating_add(delta.len())
-                <= crate::output::MAX_STREAM_UI_DELTA_BYTES =>
+                <= crate::output::max_stream_ui_delta_bytes() =>
             {
                 existing.push_str(delta);
                 self.bytes = self.bytes.saturating_add(bytes);
@@ -2378,14 +2382,15 @@ impl AppServer {
         // Runtime emitters never await presentation. The finite bridge makes a stopped frontend a
         // counted/coalesced presentation gap instead of an unbounded heap; terminal authority is
         // reconciled from `RunEnded` after the turn.
-        let (ui_tx, mut ui_rx) = mpsc::channel::<UiEvent>(
-            iteron_tunables::param_integer(
-                "cli.app_server.runtime_ui_capacity",
-                RUNTIME_UI_CAPACITY,
-            )
-            .clamp(1, RUNTIME_UI_CAPACITY),
-        );
-        agent.set_ui(ui_tx);
+        let (runtime_ui_tx, mut runtime_ui_rx) =
+            mpsc::channel::<crate::runtime::RuntimeFrontendEvent>(
+                iteron_tunables::param_integer(
+                    "cli.app_server.runtime_ui_capacity",
+                    RUNTIME_UI_CAPACITY,
+                )
+                .clamp(1, RUNTIME_UI_CAPACITY),
+            );
+        agent.set_resident_ui(runtime_ui_tx);
         // Shared with the runtime emitter so structural events that meet a full cosmetic lane have
         // a separately bounded, backpressured path the server can drain while `agent` is borrowed
         // by the running turn. Text/thinking alone may be omitted and later reconciled.
@@ -2645,6 +2650,42 @@ impl AppServer {
                     }
                     Some(activity_event) = activity.recv() => {
                         let _ = events.publish(ServerEvent::Activity(activity_event)).await;
+                        continue
+                    }
+                    Some(runtime_event) = runtime_ui_rx.recv() => {
+                        let runtime_bytes = frontend_channels.runtime_event_bytes(&runtime_event);
+                        match runtime_event {
+                            crate::runtime::RuntimeFrontendEvent::Ui(ui) => {
+                                settle_kernel_submission_events(
+                                    &mut events,
+                                    &mut pending_kernel_submissions,
+                                    &ui,
+                                ).await;
+                                let _ = events.publish(ServerEvent::Ui(ui)).await;
+                            }
+                            crate::runtime::RuntimeFrontendEvent::Plantcore(event) => {
+                                let _ = events.publish(ServerEvent::Plantcore(event)).await;
+                            }
+                        }
+                        frontend_channels.release_ui_bytes(runtime_bytes);
+                        continue
+                    }
+                    runtime_event = frontend_channels.recv_authoritative() => {
+                        let runtime_bytes = frontend_channels.runtime_event_bytes(&runtime_event);
+                        match runtime_event {
+                            crate::runtime::RuntimeFrontendEvent::Ui(ui) => {
+                                settle_kernel_submission_events(
+                                    &mut events,
+                                    &mut pending_kernel_submissions,
+                                    &ui,
+                                ).await;
+                                let _ = events.publish(ServerEvent::Ui(ui)).await;
+                            }
+                            crate::runtime::RuntimeFrontendEvent::Plantcore(event) => {
+                                let _ = events.publish(ServerEvent::Plantcore(event)).await;
+                            }
+                        }
+                        frontend_channels.release_ui_bytes(runtime_bytes);
                         continue
                     }
                     Some(request) = mcp_input_requests.recv() => {
@@ -2972,31 +3013,42 @@ impl AppServer {
                         // again: a burst of deltas must reach the frontend while the turn
                         // is still producing, not in one lump at the end.
                         biased;
-                        Some(ui) = ui_rx.recv() => {
-                            let ui_bytes = frontend_channels.ui_event_bytes(&ui);
-                            settle_kernel_submission_events(
-                                &mut events,
-                                &mut pending_kernel_submissions,
-                                &ui,
-                            ).await;
-                            if events.publish(ServerEvent::Ui(ui)).await.is_err() {
-                                // The frontend is gone. Keep the turn running to its own
-                                // safe point rather than dropping the future mid-effect.
+                        Some(runtime_event) = runtime_ui_rx.recv() => {
+                            let runtime_bytes = frontend_channels.runtime_event_bytes(&runtime_event);
+                            match runtime_event {
+                                crate::runtime::RuntimeFrontendEvent::Ui(ui) => {
+                                    settle_kernel_submission_events(
+                                        &mut events,
+                                        &mut pending_kernel_submissions,
+                                        &ui,
+                                    ).await;
+                                    if events.publish(ServerEvent::Ui(ui)).await.is_err() {
+                                        // The frontend is gone. Keep the turn running to its own
+                                        // safe point rather than dropping the future mid-effect.
+                                    }
+                                }
+                                crate::runtime::RuntimeFrontendEvent::Plantcore(event) => {
+                                    let _ = events.publish(ServerEvent::Plantcore(event)).await;
+                                }
                             }
-                            frontend_channels.release_ui_bytes(ui_bytes);
+                            frontend_channels.release_ui_bytes(runtime_bytes);
                         }
-                        ui = frontend_channels.recv_authoritative() => {
-                            let ui_bytes = frontend_channels.ui_event_bytes(&ui);
-                            settle_kernel_submission_events(
-                                &mut events,
-                                &mut pending_kernel_submissions,
-                                &ui,
-                            ).await;
-                            if events.publish(ServerEvent::Ui(ui)).await.is_err() {
-                                // The frontend is gone. Draining still releases bounded runtime
-                                // backpressure and lets the turn reach its own safe point.
+                        runtime_event = frontend_channels.recv_authoritative() => {
+                            let runtime_bytes = frontend_channels.runtime_event_bytes(&runtime_event);
+                            match runtime_event {
+                                crate::runtime::RuntimeFrontendEvent::Ui(ui) => {
+                                    settle_kernel_submission_events(
+                                        &mut events,
+                                        &mut pending_kernel_submissions,
+                                        &ui,
+                                    ).await;
+                                    let _ = events.publish(ServerEvent::Ui(ui)).await;
+                                }
+                                crate::runtime::RuntimeFrontendEvent::Plantcore(event) => {
+                                    let _ = events.publish(ServerEvent::Plantcore(event)).await;
+                                }
                             }
-                            frontend_channels.release_ui_bytes(ui_bytes);
+                            frontend_channels.release_ui_bytes(runtime_bytes);
                         }
                         Some(progress) = workflow_rx.recv() => {
                             // Same policy as the UI stream: a frontend that hung up never
@@ -3375,19 +3427,41 @@ impl AppServer {
             // sender, so deltas emitted between the last `select!` poll and the return are
             // still queued here. Draining before the terminal event is what keeps the
             // transcript ordered.
-            while let Ok(ui) = ui_rx.try_recv() {
-                let ui_bytes = frontend_channels.ui_event_bytes(&ui);
-                settle_kernel_submission_events(&mut events, &mut pending_kernel_submissions, &ui)
-                    .await;
-                let _ = events.publish(ServerEvent::Ui(ui)).await;
-                frontend_channels.release_ui_bytes(ui_bytes);
+            while let Ok(runtime_event) = runtime_ui_rx.try_recv() {
+                let runtime_bytes = frontend_channels.runtime_event_bytes(&runtime_event);
+                match runtime_event {
+                    crate::runtime::RuntimeFrontendEvent::Ui(ui) => {
+                        settle_kernel_submission_events(
+                            &mut events,
+                            &mut pending_kernel_submissions,
+                            &ui,
+                        )
+                        .await;
+                        let _ = events.publish(ServerEvent::Ui(ui)).await;
+                    }
+                    crate::runtime::RuntimeFrontendEvent::Plantcore(event) => {
+                        let _ = events.publish(ServerEvent::Plantcore(event)).await;
+                    }
+                }
+                frontend_channels.release_ui_bytes(runtime_bytes);
             }
-            while let Some(ui) = frontend_channels.try_pop_authoritative() {
-                let ui_bytes = frontend_channels.ui_event_bytes(&ui);
-                settle_kernel_submission_events(&mut events, &mut pending_kernel_submissions, &ui)
-                    .await;
-                let _ = events.publish(ServerEvent::Ui(ui)).await;
-                frontend_channels.release_ui_bytes(ui_bytes);
+            while let Some(runtime_event) = frontend_channels.try_pop_authoritative() {
+                let runtime_bytes = frontend_channels.runtime_event_bytes(&runtime_event);
+                match runtime_event {
+                    crate::runtime::RuntimeFrontendEvent::Ui(ui) => {
+                        settle_kernel_submission_events(
+                            &mut events,
+                            &mut pending_kernel_submissions,
+                            &ui,
+                        )
+                        .await;
+                        let _ = events.publish(ServerEvent::Ui(ui)).await;
+                    }
+                    crate::runtime::RuntimeFrontendEvent::Plantcore(event) => {
+                        let _ = events.publish(ServerEvent::Plantcore(event)).await;
+                    }
+                }
+                frontend_channels.release_ui_bytes(runtime_bytes);
             }
             // The workflow seam drains with it: an in-turn run settles inside the turn, so
             // its terminal rows and its `Finished` are queued here exactly like the last
@@ -3534,10 +3608,7 @@ impl AppServer {
                         .and_then(|state| state.transition(TurnLifecycleState::Interrupted))
                         .expect("a drained turn interrupts exactly once")
                 }
-                Outcome::Stuck
-                | Outcome::BudgetExhausted(_)
-                | Outcome::UsageUnavailable
-                | Outcome::HarnessError => {
+                Outcome::Stuck | Outcome::BudgetExhausted(_) | Outcome::HarnessError => {
                     if cancel_forwarded {
                         events.record_lifecycle(
                             "cancel.failed",
@@ -3565,10 +3636,7 @@ impl AppServer {
                     .transition(RunLifecycleState::Cancelling)
                     .and_then(|state| state.transition(RunLifecycleState::Interrupted))
                     .expect("active run interrupts once"),
-                Outcome::Stuck
-                | Outcome::BudgetExhausted(_)
-                | Outcome::UsageUnavailable
-                | Outcome::HarnessError => {
+                Outcome::Stuck | Outcome::BudgetExhausted(_) | Outcome::HarnessError => {
                     if cancel_forwarded {
                         run_lifecycle = run_lifecycle
                             .transition(RunLifecycleState::Cancelling)
@@ -3599,6 +3667,7 @@ impl AppServer {
                 .kernel_tax()
                 .with_failed_run(!matches!(outcome, Outcome::Done | Outcome::Drained));
             let plantcore_runtime = agent.plantcore_runtime_enabled();
+            let plantcore_usage_unavailable = agent.plantcore_usage_unavailable();
             let plantcore_harness_error =
                 plantcore_runtime && matches!(outcome, Outcome::HarnessError);
             let runtime_product_result = agent.take_product_result();
@@ -3608,7 +3677,11 @@ impl AppServer {
             let product_result = matches!(outcome, Outcome::Done)
                 .then_some(runtime_product_result)
                 .flatten();
-            let terminal = if plantcore_runtime {
+            let terminal = if plantcore_usage_unavailable {
+                TerminalAuthority::Plantcore(
+                    iteron_protocol::PlantcoreTerminalOutcome::UsageUnavailable,
+                )
+            } else if plantcore_runtime {
                 TerminalAuthority::Plantcore(
                     iteron_protocol::PlantcoreTerminalOutcome::from_runtime(
                         outcome,
@@ -3906,7 +3979,6 @@ fn outcome_name(outcome: &Outcome) -> &'static str {
         Outcome::Interrupted => "interrupted",
         Outcome::Stuck => "stuck",
         Outcome::BudgetExhausted(_) => "budget_exhausted",
-        Outcome::UsageUnavailable => "usage_unavailable",
         Outcome::HarnessError => "harness_error",
     }
 }
@@ -5130,6 +5202,7 @@ mod tests {
                     text.push_str(&delta);
                 }
                 ServerEvent::Ui(_)
+                | ServerEvent::Plantcore(_)
                 | ServerEvent::Notice(_)
                 | ServerEvent::Submission { .. }
                 | ServerEvent::WorkflowRun(_)
@@ -5208,6 +5281,7 @@ mod tests {
                     text.push_str(&delta);
                 }
                 ServerEvent::Ui(_)
+                | ServerEvent::Plantcore(_)
                 | ServerEvent::Submission { .. }
                 | ServerEvent::WorkflowRun(_)
                 | ServerEvent::Activity(_)

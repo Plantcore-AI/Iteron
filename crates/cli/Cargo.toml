@@ -9,10 +9,6 @@ publish.workspace = true
 name = "iteron"
 path = "src/main.rs"
 
-[[bin]]
-name = "iteron-workspace-hook"
-path = "src/iteron_workspace_hook.rs"
-
 [dependencies]
 iteron-protocol = { path = "../protocol" }
 iteron-record = { path = "../record" }

@@ -340,9 +340,13 @@ def assertions_for(
                     "canonical_sha256"
                 )
                 == observations.get("schema_digest"),
-                "default_v7": contract.get("default_cli_stream_version") == 7,
-                "legacy_projections_retained": contract.get("cli_stream_versions")
-                == [4, 5, 6, 7],
+                "resident_output_target_v7": artifacts.get("output_v7_target_schema", {}).get(
+                    "id"
+                )
+                == "plantcore.iteron-output.v7.target",
+                "cli_default_v6": contract.get("default_cli_stream_version") == 6,
+                "cli_stream_versions_v4_v5_v6": contract.get("cli_stream_versions")
+                == [4, 5, 6],
                 "metering_calculator": capabilities.get("usage", {}).get(
                     "calculator_contract_version"
                 )

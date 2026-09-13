@@ -552,9 +552,6 @@ pub enum Outcome {
     Stuck,
     /// An unrecoverable error in the harness itself.
     HarnessError,
-    /// At least one dispatched Provider attempt could not provide authoritative usage, so a
-    /// token or native-metering budget can no longer be enforced safely.
-    UsageUnavailable,
 }
 
 #[cfg(test)]

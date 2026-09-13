@@ -136,6 +136,7 @@ impl PlantcoreAdmission {
             run_id: payload.run_id.clone(),
             payload_digest_sha256: lower_sha256(&canonical),
         };
+        let profile_digest_sha256 = payload.agent_runtime_profile.profile_digest_sha256;
         if let State::Admitted {
             accepted: prior, ..
         } = &self.state
@@ -160,6 +161,12 @@ impl PlantcoreAdmission {
             .as_ref()
             .is_none_or(|gate| gate.admit().is_err())
         {
+            self.fail_closed();
+            return Err(admission_failed());
+        }
+        if !agent.plantcore_ui(crate::runtime::PlantcoreUiEvent::RunAdmitted {
+            profile_digest_sha256,
+        }) {
             self.fail_closed();
             return Err(admission_failed());
         }
@@ -817,13 +824,6 @@ fn apply_runtime(
     agent
         .set_resume(history)
         .map_err(|_| PlantcoreProtocolError::invalid("could not install typed conversation"))?;
-    if !agent.ui(crate::runtime::UiEvent::PlantcoreRunAdmitted {
-        profile_digest_sha256: payload.agent_runtime_profile.profile_digest_sha256,
-    }) {
-        return Err(PlantcoreProtocolError::invalid(
-            "could not publish the admitted Agent profile digest",
-        ));
-    }
     Ok(())
 }
 

@@ -26,8 +26,6 @@ fn workflow_child_activity(event: &UiEvent) -> Option<String> {
         UiEvent::Phase(Phase::Verify) => Some("checking evidence".into()),
         UiEvent::TurnEnd { .. } => Some("organizing findings".into()),
         UiEvent::ToolEnd { .. }
-        | UiEvent::PlantcoreUsage(_)
-        | UiEvent::PlantcoreRunAdmitted { .. }
         | UiEvent::Phase(Phase::Context | Phase::Idle)
         | UiEvent::Text(_)
         | UiEvent::Thinking(_)
@@ -168,9 +166,6 @@ impl KernelSpawner {
             },
             Ok(iteron_protocol::Outcome::Stuck) => AgentOutcome::Null {
                 reason: Some("subagent reached the tool-error limit".into()),
-            },
-            Ok(iteron_protocol::Outcome::UsageUnavailable) => AgentOutcome::Null {
-                reason: Some("subagent lacked authoritative Provider usage".into()),
             },
             Ok(iteron_protocol::Outcome::HarnessError) => AgentOutcome::Null {
                 reason: Some("subagent stopped on a harness error".into()),

@@ -951,8 +951,8 @@ fn drain_preserves_canonical_observers_through_real_headless_session_shutdown() 
     );
     let result = receive_result_within_timeout(&mut reader);
     assert_eq!(result["result"]["outcome"], "drained", "{result}");
-    assert_eq!(result["result"]["schema_version"], 7, "{result}");
-    assert!(result["result"].get("success").is_none(), "{result}");
+    assert_eq!(result["result"]["schema_version"], 6, "{result}");
+    assert_eq!(result["result"]["success"], true, "{result}");
 
     // Drain settles the active turn; the resident headless listener still owns the AppServer.
     // Its normal interrupt shutdown drops those owners and synchronously reaches session.stopped.
@@ -1112,7 +1112,6 @@ fn no_tty_skew_reconnect_and_current_result_share_one_headless_server() {
     assert_eq!(hello["replay_source"], "ring");
 
     let mut results = Vec::new();
-    let mut assistant_events = Vec::new();
     loop {
         let frame = receive(&mut resumed_reader);
         if let Some(seq) = frame.get("seq").and_then(Value::as_u64) {
@@ -1123,43 +1122,14 @@ fn no_tty_skew_reconnect_and_current_result_share_one_headless_server() {
             results.push(frame["result"].clone());
             break;
         }
-        if matches!(
-            frame["event"]["type"].as_str(),
-            Some("assistant_delta" | "assistant_completed")
-        ) {
-            assistant_events.push(frame["event"].clone());
-        }
     }
     assert_eq!(results.len(), 1);
     let result = &results[0];
-    assert_eq!(result["schema_version"], 7);
+    assert_eq!(result["schema_version"], 6);
     assert_eq!(result["type"], "result");
-    assert_eq!(
-        result["product_result_candidate"]["assistant_text_utf8"],
-        "parity reply"
-    );
+    assert_eq!(result["assistant_text"], "parity reply");
     assert_eq!(result["outcome"], "done");
-    assert!(result.get("exit_code").is_none());
-    let (completed, deltas) = assistant_events
-        .split_last()
-        .expect("done emits an assistant lifecycle");
-    assert_eq!(completed["type"], "assistant_completed");
-    let assistant_text = deltas
-        .iter()
-        .enumerate()
-        .map(|(ordinal, delta)| {
-            assert_eq!(delta["type"], "assistant_delta");
-            assert_eq!(delta["ordinal"], ordinal);
-            assert_eq!(delta["message_id"], completed["message_id"]);
-            delta["text_utf8"].as_str().unwrap()
-        })
-        .collect::<String>();
-    assert_eq!(assistant_text, "parity reply");
-    assert_eq!(completed["final_ordinal"], deltas.len() - 1);
-    assert_eq!(
-        completed["assistant_text_sha256"],
-        result["product_result_candidate"]["assistant_text_sha256"]
-    );
+    assert_eq!(result["exit_code"], 0);
 
     resumed_reader
         .get_mut()

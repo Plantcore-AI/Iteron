@@ -22,7 +22,7 @@ use self::input::{
 use crate::app_server::TerminalSummary;
 use crate::app_server::{AppServerClient, Attached, ControlRequest, ServerEvent};
 use crate::output;
-use crate::runtime::UiEvent;
+use crate::runtime::{PlantcoreUiEvent, UiEvent};
 use anyhow::{Context, Result, bail};
 use iteron_protocol::PROTOCOL_VERSION;
 use serde_json::{Value, json};
@@ -42,6 +42,20 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const PARTIAL_FRAME_TIMEOUT: Duration = Duration::from_secs(15);
 const AUTHENTICATED_IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const ROLLOUT_REPLAY_TIMEOUT: Duration = Duration::from_secs(30);
+
+fn project_v7_plantcore_event(
+    assistant: &mut output::V7AssistantStream,
+    event: PlantcoreUiEvent,
+) -> Result<Vec<Value>> {
+    let mut values = Vec::with_capacity(2);
+    if matches!(event, PlantcoreUiEvent::Usage(_))
+        && let Some(delta) = assistant.flush()?
+    {
+        values.push(delta);
+    }
+    values.push(output::v7_plantcore_event(event)?);
+    Ok(values)
+}
 
 #[cfg(test)]
 fn terminal_result_frame(
@@ -382,6 +396,13 @@ impl Shared {
                     false,
                     output::stream_event_for_schema(event, &mut next_turn, machine_schema_version)?,
                 )),
+                ServerEvent::Plantcore(event) => {
+                    logical.extend(
+                        project_v7_plantcore_event(&mut assistant, event)?
+                            .into_iter()
+                            .map(|event| (false, event)),
+                    );
+                }
                 ServerEvent::Notice(message) => logical.push((
                     false,
                     output::stream_event_for_schema(
@@ -1340,7 +1361,9 @@ fn log(value: Value) {
 #[cfg(test)]
 mod boundary_tests {
     use super::*;
-    use iteron_protocol::{input::MAX_TOTAL_IMAGE_BASE64_BYTES, task::MAX_TASK_TEXT_BYTES};
+    use iteron_protocol::{
+        FiveClassUsage, TurnUsage, input::MAX_TOTAL_IMAGE_BASE64_BYTES, task::MAX_TASK_TEXT_BYTES,
+    };
     use std::cell::Cell;
 
     #[test]
@@ -1387,6 +1410,28 @@ mod boundary_tests {
             assert!(input::MAX_HELLO_FRAME_BYTES < input::MAX_CLIENT_FRAME_BYTES);
             assert!(framing::MAX_SERVER_FRAME_BYTES == 1024 * 1024);
         }
+    }
+
+    #[test]
+    fn usage_follows_every_preceding_assistant_byte() {
+        let mut assistant = output::V7AssistantStream::default();
+        assert!(assistant.push("answer").unwrap().is_none());
+        let values = project_v7_plantcore_event(
+            &mut assistant,
+            PlantcoreUiEvent::Usage(TurnUsage::Complete {
+                turn: 1,
+                dispatched_attempt_count: 1,
+                counters: FiveClassUsage::default(),
+                cumulative_metering: None,
+            }),
+        )
+        .unwrap();
+        assert_eq!(values[0]["type"], "assistant_delta");
+        assert_eq!(values[0]["text_utf8"], "answer");
+        assert_eq!(values[1]["type"], "usage");
+
+        let completed = assistant.finish_run(true, Some("answer")).unwrap();
+        assert_eq!(completed[0]["type"], "assistant_completed");
     }
 
     #[test]

@@ -491,7 +491,6 @@ impl PlantcoreTerminalOutcome {
             Outcome::Interrupted => reject_product(product_result, Self::Interrupted),
             Outcome::Stuck => reject_product(product_result, Self::Stuck),
             Outcome::HarnessError => reject_product(product_result, Self::HarnessError),
-            Outcome::UsageUnavailable => reject_product(product_result, Self::UsageUnavailable),
         }
     }
 
@@ -504,7 +503,7 @@ impl PlantcoreTerminalOutcome {
             Self::Interrupted => Outcome::Interrupted,
             Self::Stuck => Outcome::Stuck,
             Self::HarnessError => Outcome::HarnessError,
-            Self::UsageUnavailable => Outcome::UsageUnavailable,
+            Self::UsageUnavailable => Outcome::HarnessError,
         }
     }
 }

@@ -476,6 +476,10 @@ impl Agent {
         self.plantcore.pending_terminal
     }
 
+    pub(crate) fn plantcore_usage_unavailable(&self) -> bool {
+        self.plantcore.pending_terminal == Some(PlantcoreTerminal::UsageUnavailable)
+    }
+
     pub(super) fn close_plantcore_turn_usage(
         &mut self,
         turn: iteron_protocol::TurnId,
@@ -498,7 +502,11 @@ impl Agent {
             .close_plantcore_turn_usage(turn)
             .map_err(|reason| super::KernelError::ContextResolution(reason.into()))?
         {
-            self.ui(super::UiEvent::PlantcoreUsage(usage));
+            if !self.plantcore_ui(super::PlantcoreUiEvent::Usage(usage)) {
+                return Err(super::KernelError::ContextResolution(
+                    "PlantCore event channel is unavailable".into(),
+                ));
+            }
         }
         Ok(())
     }

@@ -6,7 +6,6 @@ use std::io::Read as _;
 use std::path::Path;
 
 const CONTROL_BRIDGE_ENV: &str = "CONTROL_BRIDGE";
-const MAX_MARKER_BYTES: u64 = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 #[value(rename_all = "kebab-case")]
@@ -47,6 +46,7 @@ impl RecordingAppServerFault {
         if std::env::var_os(CONTROL_BRIDGE_ENV).as_deref() != Some(std::ffi::OsStr::new("1")) {
             bail!("recording_app_server_fault_requires_control_bridge");
         }
+        let expected = b"enabled\n";
         let path = self.marker_path();
         let file = std::fs::OpenOptions::new()
             .read(true)
@@ -56,14 +56,14 @@ impl RecordingAppServerFault {
         let metadata = file
             .metadata()
             .context("recording_app_server_fault_marker_metadata_failed")?;
-        if !metadata.file_type().is_file() || metadata.len() != MAX_MARKER_BYTES {
+        if !metadata.file_type().is_file() || metadata.len() != expected.len() as u64 {
             bail!("recording_app_server_fault_marker_invalid");
         }
-        let mut bytes = Vec::with_capacity(MAX_MARKER_BYTES as usize);
-        file.take(MAX_MARKER_BYTES + 1)
+        let mut bytes = Vec::with_capacity(expected.len());
+        file.take(expected.len() as u64 + 1)
             .read_to_end(&mut bytes)
             .context("recording_app_server_fault_marker_read_failed")?;
-        if bytes != b"enabled\n" {
+        if bytes != expected {
             bail!("recording_app_server_fault_marker_invalid");
         }
         std::fs::remove_file(path).context("recording_app_server_fault_marker_consume_failed")?;

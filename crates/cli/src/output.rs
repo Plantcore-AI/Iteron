@@ -21,14 +21,13 @@ pub(crate) type V7AssistantStream = v7::AssistantStream;
 /// Frozen pre-PlantCore stream schema used by the compatibility projector and its goldens.
 pub const SCHEMA_VERSION: u32 = 6;
 pub const V7_SCHEMA_VERSION: u32 = 7;
-pub const DEFAULT_SCHEMA_VERSION: u32 = V7_SCHEMA_VERSION;
+pub const DEFAULT_SCHEMA_VERSION: u32 = SCHEMA_VERSION;
 pub const PREVIOUS_SCHEMA_VERSION: u32 = 5;
 pub const LEGACY_SCHEMA_VERSION: u32 = 4;
-pub const SUPPORTED_SCHEMA_VERSIONS: [u32; 4] = [
+pub const SUPPORTED_SCHEMA_VERSIONS: [u32; 3] = [
     LEGACY_SCHEMA_VERSION,
     PREVIOUS_SCHEMA_VERSION,
     SCHEMA_VERSION,
-    V7_SCHEMA_VERSION,
 ];
 pub const EXIT_SUCCESS: u8 = 0;
 /// A workflow settled, but one or more fan-out agents failed. Kept distinct from cancellation 130.
@@ -36,7 +35,6 @@ pub const EXIT_WORKFLOW_FAILED: u8 = 1;
 pub const EXIT_HARNESS: u8 = 2;
 pub const EXIT_BUDGET: u8 = 3;
 pub const EXIT_STUCK: u8 = 4;
-pub const EXIT_USAGE_UNAVAILABLE: u8 = 5;
 pub const EXIT_INTERRUPTED: u8 = 130;
 
 pub(crate) fn canonical_v7_event_bytes(value: &Value) -> io::Result<Vec<u8>> {
@@ -50,6 +48,14 @@ const MAX_STDERR_NOTICE_BYTES: usize = 4 * 1024;
 /// Keep text/thinking deltas comfortably below the canonical v7 event ceiling after JSON escaping,
 /// envelope fields, and redaction markers are added.
 pub(crate) const MAX_STREAM_UI_DELTA_BYTES: usize = 8 * 1024;
+
+pub(crate) fn max_stream_ui_delta_bytes() -> usize {
+    iteron_tunables::param_usize(
+        "cli.output.max_stream_ui_delta_bytes",
+        MAX_STREAM_UI_DELTA_BYTES,
+    )
+    .clamp(1, MAX_STREAM_UI_DELTA_BYTES)
+}
 
 /// The stdout contract for a one-shot run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -77,7 +83,6 @@ pub fn outcome_exit_code(outcome: &Outcome) -> u8 {
         Outcome::HarnessError => EXIT_HARNESS,
         Outcome::BudgetExhausted(_) => EXIT_BUDGET,
         Outcome::Stuck => EXIT_STUCK,
-        Outcome::UsageUnavailable => EXIT_USAGE_UNAVAILABLE,
         Outcome::Interrupted => EXIT_INTERRUPTED,
     }
 }
@@ -89,7 +94,6 @@ fn outcome_name(outcome: &Outcome) -> &'static str {
         Outcome::HarnessError => "harness_error",
         Outcome::BudgetExhausted(_) => "budget_exhausted",
         Outcome::Stuck => "stuck",
-        Outcome::UsageUnavailable => "usage_unavailable",
         Outcome::Interrupted => "interrupted",
     }
 }
@@ -318,16 +322,6 @@ pub fn stream_event(event: UiEvent, turn: &mut u32) -> Value {
                 "effort": effort_application_json(effort),
             })
         }
-        UiEvent::PlantcoreUsage(usage) => {
-            v7::usage_value(&usage).expect("runtime admitted an invalid typed PlantCore usage fact")
-        }
-        UiEvent::PlantcoreRunAdmitted {
-            profile_digest_sha256,
-        } => json!({
-            "schema_version": SCHEMA_VERSION,
-            "type": "plantcore_run_admitted",
-            "profile_digest_sha256": format!("sha256:{profile_digest_sha256}"),
-        }),
         UiEvent::Workflow(event) => match event {
             WorkflowUiEvent::RunStarted {
                 run_id,
@@ -487,7 +481,12 @@ pub(crate) fn stream_event_for_schema(
     turn: &mut u32,
     schema_version: u32,
 ) -> io::Result<Value> {
-    project_schema(stream_event(event, turn), schema_version)
+    let value = stream_event(event, turn);
+    if schema_version == V7_SCHEMA_VERSION {
+        v7::opaque_value(value)
+    } else {
+        project_schema(value, schema_version)
+    }
 }
 
 pub(crate) fn v7_result(outcome: &iteron_protocol::PlantcoreTerminalOutcome) -> io::Result<Value> {
@@ -505,6 +504,15 @@ pub(crate) fn v7_plantcore_run_admitted(
         "type": "plantcore_run_admitted",
         "profile_digest_sha256": format!("sha256:{profile_digest_sha256}"),
     }))
+}
+
+pub(crate) fn v7_plantcore_event(event: crate::runtime::PlantcoreUiEvent) -> io::Result<Value> {
+    match event {
+        crate::runtime::PlantcoreUiEvent::Usage(usage) => v7_usage(&usage),
+        crate::runtime::PlantcoreUiEvent::RunAdmitted {
+            profile_digest_sha256,
+        } => v7_plantcore_run_admitted(profile_digest_sha256),
+    }
 }
 
 /// Build the metadata-only record emitted immediately before a multimodal SQ submission.
@@ -599,21 +607,12 @@ pub(crate) fn project_schema(mut value: Value, schema_version: u32) -> io::Resul
             format!("unsupported CLI output schema version {schema_version}"),
         ));
     }
-    if schema_version == V7_SCHEMA_VERSION {
-        return v7::opaque_value(value);
-    }
     let fields = value.as_object_mut().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
             "machine output record must be a JSON object",
         )
     })?;
-    if fields.get("type").and_then(Value::as_str) == Some("usage") {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "PlantCore usage has no v4-v6 projection",
-        ));
-    }
     fields.insert("schema_version".into(), Value::from(schema_version));
     if schema_version < SCHEMA_VERSION
         && fields.get("type").and_then(Value::as_str) == Some("turn_end")
@@ -649,7 +648,6 @@ pub struct Emitter {
     stream_turn: u32,
     assistant_scrubber: StreamingScrubber,
     thinking_scrubber: StreamingScrubber,
-    v7_assistant: V7AssistantStream,
     text_line_open: bool,
 }
 
@@ -661,7 +659,6 @@ impl Emitter {
             stream_turn: 0,
             assistant_scrubber: StreamingScrubber::default(),
             thinking_scrubber: StreamingScrubber::default(),
-            v7_assistant: V7AssistantStream::default(),
             text_line_open: false,
         }
     }
@@ -693,17 +690,8 @@ impl Emitter {
         write_json_line(std::io::stdout().lock(), &value)
     }
 
-    fn write_v7_stream_value(&mut self, value: &Value) -> io::Result<()> {
-        let value = project_schema(value.clone(), self.schema_version)?;
-        write_json_line(std::io::stdout().lock(), &value)
-    }
-
     fn flush_stream_text(&mut self) -> io::Result<()> {
-        if self.schema_version == V7_SCHEMA_VERSION {
-            if let Some(value) = self.v7_assistant.flush()? {
-                self.write_v7_stream_value(&value)?;
-            }
-        } else if let Some(delta) = self.assistant_scrubber.finish() {
+        if let Some(delta) = self.assistant_scrubber.finish() {
             self.write_stream_event(UiEvent::Text(delta))?;
         }
         if let Some(delta) = self.thinking_scrubber.finish() {
@@ -730,11 +718,7 @@ impl Emitter {
         if let Some(value) =
             input_attachment_record(self.format, ordinal, media_type, encoded_bytes)?
         {
-            let value = if self.schema_version == V7_SCHEMA_VERSION {
-                v7::opaque_value(value)?
-            } else {
-                project_schema(value, self.schema_version)?
-            };
+            let value = project_schema(value, self.schema_version)?;
             write_json_line(std::io::stdout().lock(), &value)?;
         }
         Ok(())
@@ -757,11 +741,6 @@ impl Emitter {
                 _ => {}
             },
             OutputFormat::StreamJson => match event {
-                UiEvent::Text(delta) if self.schema_version == V7_SCHEMA_VERSION => {
-                    if let Some(value) = self.v7_assistant.push(&delta)? {
-                        self.write_v7_stream_value(&value)?;
-                    }
-                }
                 UiEvent::Text(delta) => {
                     if let Some(delta) = self.assistant_scrubber.push(&delta) {
                         self.write_stream_event(UiEvent::Text(delta))?;
@@ -787,32 +766,6 @@ impl Emitter {
         Ok(())
     }
 
-    fn finish_stream_output(&mut self, value: &Value) -> io::Result<()> {
-        self.flush_stream_text()?;
-        if self.schema_version == V7_SCHEMA_VERSION {
-            let completes_assistant = value
-                .get("product_result_candidate")
-                .and_then(|product| product.get("status"))
-                .and_then(Value::as_str)
-                == Some("completed");
-            let assistant_text = value
-                .get("product_result_candidate")
-                .and_then(|product| product.get("assistant_text_utf8"))
-                .and_then(Value::as_str);
-            for event in self.v7_assistant.finish_run(
-                completes_assistant,
-                if completes_assistant {
-                    assistant_text
-                } else {
-                    None
-                },
-            )? {
-                self.write_v7_stream_value(&event)?;
-            }
-        }
-        Ok(())
-    }
-
     pub fn result(&mut self, value: &Value) -> io::Result<()> {
         match self.format {
             OutputFormat::Text => {
@@ -822,7 +775,7 @@ impl Emitter {
             OutputFormat::StreamJson => {
                 // Harness failures need not emit UiEvent::Done, so the result boundary is the
                 // final mandatory flush for any held partial token.
-                self.finish_stream_output(value)?;
+                self.flush_stream_text()?;
             }
             OutputFormat::Json => {}
         }
