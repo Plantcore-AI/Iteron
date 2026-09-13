@@ -4,7 +4,7 @@ These artifacts are public, deterministic implementation inputs for the PlantCor
 They contain no credentials, session data, or deployment state.
 
 The G1 v7 implementation is reviewed against `Plantcore-AI/plantcore-platform` commit
-`edfe829b7a3a539fe253a0db995244a58725fb5c`. The content digests below identify the exact
+`01e0d4bfd5504c9e06d565477229d7954772cb7d`. The content digests below identify the exact
 implementation inputs without depending on that repository remaining at the same checkout:
 
 | Upstream path | Raw file SHA-256 |
@@ -20,7 +20,7 @@ implementation inputs without depending on that repository remaining at the same
 | `e2e/recording/g1-v7/scenarios.json` | `0584605abcceddd6ba6e7e3be1b41cd16e33a226318b6d925a52bd2891423b73` |
 | `e2e/recording/g1-v7/recipes.json` | `43b5f6c7b83c64f6146622e076719ec4d02816b12b57ae845da2b870c477f66d` |
 | `e2e/recording/g1-v7/actions.json` | `e2333344c57d26663565fc131b5e422634d311663ef49067f0369f4f66b68368` |
-| `e2e/recording/g1-v7/check.py` | `eb87c0e40e05fdcee14029e1bccf16e617e839369441b8f4f5dcdbd419352b53` |
+| `e2e/recording/g1-v7/check.py` | `7eb2a3315317718c4654f6c166ad7c3d8e9dc036cc7e8acb29b5c4eb83711104` |
 | `e2e/recording/g1-v7/fake-provider/scripts.json` | `1cefaef441ddd5fdfe9d360e37f59bb0d8cf9282efed529233e19d30448496e0` |
 | `e2e/recording/g1-v7/fake-gateway/gateway-simulator` | `0361717045d84e9526b8c520c1840373be902a43719b01eb08f5b5f5582a62eb` |
 | `e2e/vectors/portable-canonical-json-v1.json` | `7ce7683acb86d9c4b8248eab42c4b1b4d569a2ec64dc6b4f9072035234083bf4` |
