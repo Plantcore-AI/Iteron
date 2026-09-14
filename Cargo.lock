@@ -1334,7 +1334,7 @@ checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
 
 [[package]]
 name = "iteron-agents"
-version = "0.0.20"
+version = "0.0.21"
 dependencies = [
  "iteron-ctx",
  "iteron-protocol",
@@ -1346,7 +1346,7 @@ dependencies = [
 
 [[package]]
 name = "iteron-changeset"
-version = "0.0.20"
+version = "0.0.21"
 dependencies = [
  "iteron-tunables",
  "thiserror 2.0.20",
@@ -1354,7 +1354,7 @@ dependencies = [
 
 [[package]]
 name = "iteron-cli"
-version = "0.0.20"
+version = "0.0.21"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1386,6 +1386,7 @@ dependencies = [
  "iteron-tunables",
  "iteron-verify",
  "iteron-workflow",
+ "jsonschema",
  "libc",
  "png",
  "portable-pty",
@@ -1408,7 +1409,7 @@ dependencies = [
 
 [[package]]
 name = "iteron-ctx"
-version = "0.0.20"
+version = "0.0.21"
 dependencies = [
  "iteron-protocol",
  "iteron-tunables",
@@ -1423,7 +1424,7 @@ dependencies = [
 
 [[package]]
 name = "iteron-eval"
-version = "0.0.20"
+version = "0.0.21"
 dependencies = [
  "clap",
  "ed25519-dalek",
@@ -1446,7 +1447,7 @@ dependencies = [
 
 [[package]]
 name = "iteron-evolve"
-version = "0.0.20"
+version = "0.0.21"
 dependencies = [
  "iteron-protocol",
  "iteron-record",
@@ -1460,7 +1461,7 @@ dependencies = [
 
 [[package]]
 name = "iteron-kernel"
-version = "0.0.20"
+version = "0.0.21"
 dependencies = [
  "async-trait",
  "iteron-protocol",
@@ -1474,7 +1475,7 @@ dependencies = [
 
 [[package]]
 name = "iteron-lsp"
-version = "0.0.20"
+version = "0.0.21"
 dependencies = [
  "iteron-tunables",
  "serde",
@@ -1486,7 +1487,7 @@ dependencies = [
 
 [[package]]
 name = "iteron-marketplace"
-version = "0.0.20"
+version = "0.0.21"
 dependencies = [
  "base64",
  "ed25519-dalek",
@@ -1501,7 +1502,7 @@ dependencies = [
 
 [[package]]
 name = "iteron-mcp"
-version = "0.0.20"
+version = "0.0.21"
 dependencies = [
  "base64",
  "futures-util",
@@ -1519,7 +1520,7 @@ dependencies = [
 
 [[package]]
 name = "iteron-obs"
-version = "0.0.20"
+version = "0.0.21"
 dependencies = [
  "hmac",
  "iteron-protocol",
@@ -1532,7 +1533,7 @@ dependencies = [
 
 [[package]]
 name = "iteron-protocol"
-version = "0.0.20"
+version = "0.0.21"
 dependencies = [
  "iteron-tunables",
  "serde",
@@ -1542,7 +1543,7 @@ dependencies = [
 
 [[package]]
 name = "iteron-provider"
-version = "0.0.20"
+version = "0.0.21"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -1551,18 +1552,22 @@ dependencies = [
  "iteron-protocol",
  "iteron-tunables",
  "libc",
+ "rcgen",
  "reqwest",
+ "rustls",
+ "rustls-pki-types",
  "serde",
  "serde_json",
  "sha2",
  "thiserror 2.0.20",
  "tokio",
+ "tokio-rustls",
  "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "iteron-record"
-version = "0.0.20"
+version = "0.0.21"
 dependencies = [
  "getrandom 0.4.3",
  "hex",
@@ -1580,7 +1585,7 @@ dependencies = [
 
 [[package]]
 name = "iteron-sandbox"
-version = "0.0.20"
+version = "0.0.21"
 dependencies = [
  "async-trait",
  "iteron-tunables",
@@ -1591,7 +1596,7 @@ dependencies = [
 
 [[package]]
 name = "iteron-sched"
-version = "0.0.20"
+version = "0.0.21"
 dependencies = [
  "async-trait",
  "iteron-protocol",
@@ -1604,7 +1609,7 @@ dependencies = [
 
 [[package]]
 name = "iteron-statusline"
-version = "0.0.20"
+version = "0.0.21"
 dependencies = [
  "iteron-tunables",
  "thiserror 2.0.20",
@@ -1612,7 +1617,7 @@ dependencies = [
 
 [[package]]
 name = "iteron-support"
-version = "0.0.20"
+version = "0.0.21"
 dependencies = [
  "iteron-record",
  "iteron-tunables",
@@ -1621,7 +1626,7 @@ dependencies = [
 
 [[package]]
 name = "iteron-tools"
-version = "0.0.20"
+version = "0.0.21"
 dependencies = [
  "futures-util",
  "getrandom 0.4.3",
@@ -1645,7 +1650,7 @@ dependencies = [
 
 [[package]]
 name = "iteron-tunables"
-version = "0.0.20"
+version = "0.0.21"
 dependencies = [
  "hex",
  "serde",
@@ -1656,7 +1661,7 @@ dependencies = [
 
 [[package]]
 name = "iteron-verify"
-version = "0.0.20"
+version = "0.0.21"
 dependencies = [
  "async-trait",
  "hex",
@@ -1671,7 +1676,7 @@ dependencies = [
 
 [[package]]
 name = "iteron-workflow"
-version = "0.0.20"
+version = "0.0.21"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1692,7 +1697,7 @@ dependencies = [
 
 [[package]]
 name = "iteron-xtask"
-version = "0.0.20"
+version = "0.0.21"
 dependencies = [
  "anyhow",
  "iteron-agents",
@@ -2133,6 +2138,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "pem"
+version = "3.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d30c53c26bc5b31a98cd02d20f25a7c8567146caf63ed593a9d87b2775291be"
+dependencies = [
+ "base64",
+ "serde_core",
+]
+
+[[package]]
 name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2547,6 +2562,19 @@ dependencies = [
  "time",
  "unicode-segmentation",
  "unicode-width 0.2.0",
+]
+
+[[package]]
+name = "rcgen"
+version = "0.13.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "75e669e5202259b5314d1ea5397316ad400819437857b90861765f24c4cf80a2"
+dependencies = [
+ "pem",
+ "ring",
+ "rustls-pki-types",
+ "time",
+ "yasna",
 ]
 
 [[package]]
@@ -3973,6 +4001,15 @@ name = "writeable"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
+
+[[package]]
+name = "yasna"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e17bb3549cc1321ae1296b9cdc2698e2b6cb1992adfa19a8c72e5b7a738f44cd"
+dependencies = [
+ "time",
+]
 
 [[package]]
 name = "yoke"

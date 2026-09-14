@@ -49,6 +49,7 @@ pub(crate) struct RouteFactInput<'a> {
     /// Trusted-user/plugin MCP declarations after composition. A declaration is considered live
     /// only when its namespaced tool or extension is present in `registry`.
     pub configured_mcp: &'a [McpServerConfig],
+    pub provider_control_capabilities: &'a iteron_provider::ProviderControlCapabilities,
 }
 
 /// Build one capability attestation for the exact selected route and executable tool surface.
@@ -92,6 +93,9 @@ pub(crate) fn collect_route_capabilities(
         .map(|spec| spec.name.as_str())
         .collect::<HashSet<_>>();
     let mut capabilities = provider_capabilities(entry, input.model_capabilities);
+    if input.provider_control_capabilities.idempotent_requests {
+        capabilities.insert(CapabilityRequirement::ProviderHedging);
+    }
     add_registry_capabilities(&mut capabilities, input.registry, &specs, &names);
     if input.agent_spawn_available {
         capabilities.insert(CapabilityRequirement::AgentSpawn);

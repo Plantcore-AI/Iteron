@@ -101,11 +101,11 @@ ReadOnly  <  ReversibleLocal  <  CodeExecuting  <  TrustMutating  <  Irreversibl
 
 #### K7 版本注册表 (version registry)
 
-**契约。** 内核 MUST 为每次运行钉死 (pin) 两组版本:(a) 提交队列/事件队列 (SQ/EQ) 的 **wire 协议版本** `PROTOCOL_VERSION`,一次运行钉死**恰好一个**值(现值为 `1`,`crates/protocol/src/wire.rs:40`);(b) 本次运行所激活的**策略束 (policy bundle) 的精确版本**。二者 MUST 在记录中可见 (Observable)。命令与事件信封 MUST 前向兼容:一个更新客户端发来的未知 tag,其不透明载荷 MUST 被安全丢弃而不得进入日志、错误、UI 或记录(参见 `Op::Unknown` 与 `EventKind::Unknown` 的 `#[serde(other)]` 前向兼容哨兵)。
+**契约。** 内核 MUST 为每次运行钉死 (pin) 两组版本:(a) 提交队列/事件队列 (SQ/EQ) 的 **wire 协议版本** `PROTOCOL_VERSION`,一次运行钉死**恰好一个**值(现值为 `5`,`crates/protocol/src/wire.rs:51`);(b) 本次运行所激活的**策略束 (policy bundle) 的精确版本**。二者 MUST 在记录中可见 (Observable)。命令与事件信封 MUST 前向兼容:一个更新客户端发来的未知 tag,其不透明载荷 MUST 被安全丢弃而不得进入日志、错误、UI 或记录(参见 `Op::Unknown` 与 `EventKind::Unknown` 的 `#[serde(other)]` 前向兼容哨兵)。
 
-**前向兼容的规范行为。** 反序列化遇到未知 `Op` / `EventKind` 变体时,MUST 把该未知 tag 连同其字段整体丢弃,MUST NOT 让不透明载荷落入证据面;MAY 追加一条封闭的 `Notice` 记录此事发生,但该 `Notice` MUST NOT 包含被丢弃的原始载荷。版本 skew MUST 被**硬拒**而非协商:`SqEnvelope::into_current` 对任何 `protocol_version != PROTOCOL_VERSION` 的信封返回 `ProtocolVersionError`(`crates/protocol/src/wire.rs:93-96`),该信封连解包成 `Op` 都做不到。系统里**没有**最小支持版本、没有版本区间、也没有能力交换;前向兼容只发生在同一个 wire 版本内部,由上述 `#[serde(other)]` 降级臂承载。
+**前向兼容的规范行为。** 反序列化遇到未知 `Op` / `EventKind` 变体时,MUST 把该未知 tag 连同其字段整体丢弃,MUST NOT 让不透明载荷落入证据面;MAY 追加一条封闭的 `Notice` 记录此事发生,但该 `Notice` MUST NOT 包含被丢弃的原始载荷。版本 skew MUST 被**硬拒**而非协商:`SqEnvelope::into_current` 对任何 `protocol_version != PROTOCOL_VERSION` 的信封返回 `ProtocolVersionError`(`crates/protocol/src/wire.rs:130-137`),该信封连解包成 `Op` 都做不到。系统里**没有**最小支持版本、没有版本区间、也没有能力交换;前向兼容只发生在同一个 wire 版本内部,由上述 `#[serde(other)]` 降级臂承载。
 
-**示例。** 运行开始时,内核记录「本次运行绑定策略束 `pack-db@v14`,SQ/EQ wire 版本 `1`」。一个 wire 版本不等于 `1` 的 GUI 客户端连上,它的每一条提交都在 `SqEnvelope::into_current` 处被拒为 `ProtocolVersionError`,既不降级也不协商;一个同版本但更新的客户端发来一个内核尚不认识的 `Op` 变体,反序列化把该未知 tag 连同其字段一并丢弃并落一条封闭的 `Notice`,而不是让不可信的不透明载荷污染证据面。因为策略束被钉死,同一次运行的可复现性 (Reproducible) 才有意义:重放时用的是同一个 `pack-db@v14`。
+**示例。** 运行开始时,内核记录「本次运行绑定策略束 `pack-db@v14`,SQ/EQ wire 版本 `5`」。一个 wire 版本不等于 `5` 的 GUI 客户端连上,它的每一条提交都在 `SqEnvelope::into_current` 处被拒为 `ProtocolVersionError`,既不降级也不协商;一个同版本但更新的客户端发来一个内核尚不认识的 `Op` 变体,反序列化把该未知 tag 连同其字段一并丢弃并落一条封闭的 `Notice`,而不是让不可信的不透明载荷污染证据面。因为策略束被钉死,同一次运行的可复现性 (Reproducible) 才有意义:重放时用的是同一个 `pack-db@v14`。
 
 #### K8 终止 / 回滚 (kill/rollback)
 

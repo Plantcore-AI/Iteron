@@ -53,6 +53,8 @@ impl Agent {
             Some("max_tokens")
         } else if self.usd_budget_exhausted() {
             Some("max_usd")
+        } else if self.run_deadline_exhausted() {
+            Some("max_wall_secs")
         } else {
             None
         }
@@ -110,6 +112,14 @@ impl Agent {
     /// tell why more turns were admitted than the run started with. A failed append leaves the old
     /// ceiling in force.
     pub fn set_turn_ceiling(&mut self, max_turns: u32) -> Result<TurnBudgetState, KernelError> {
+        self.transition_turn_ceiling(max_turns, RuntimePolicySource::Operator)
+    }
+
+    pub(crate) fn transition_turn_ceiling(
+        &mut self,
+        max_turns: u32,
+        source: RuntimePolicySource,
+    ) -> Result<TurnBudgetState, KernelError> {
         if max_turns == 0 {
             return Err(KernelError::InvalidBudget(
                 "max_turns must be >= 1 (0 would disable the turn budget)",
@@ -119,7 +129,7 @@ impl Agent {
         if max_turns != previous {
             let kind = EventKind::TurnCeilingChanged {
                 version: RuntimePolicyEventVersion::V1,
-                source: RuntimePolicySource::Operator,
+                source,
                 max_turns,
             };
             let sequence = self.emit_durable_seq(TurnId(self.seq_turn), kind.clone())?;
@@ -133,10 +143,16 @@ impl Agent {
         Ok(self.turn_budget())
     }
 
-    /// Install the inbound approvals channel (the TUI's answer path). When set, an `Ask` verdict
-    /// prompts the operator and blocks (interrupt-bounded) for the answer; without it, `Ask` denies.
-    pub fn set_approvals(&mut self, rx: tokio::sync::mpsc::Receiver<SqEnvelope>) {
+    /// Install the resident safe-point command channel without enabling human approval prompts.
+    pub(crate) fn set_inbound_control(&mut self, rx: tokio::sync::mpsc::Receiver<SqEnvelope>) {
         self.approvals_rx = Some(rx);
+    }
+
+    /// Install the TUI's command and approval-answer channel. An `Ask` verdict may then block
+    /// (interrupt-bounded) for the operator's answer.
+    pub fn set_approvals(&mut self, rx: tokio::sync::mpsc::Receiver<SqEnvelope>) {
+        self.interactive_approvals = true;
+        self.set_inbound_control(rx);
     }
 
     /// Install trusted provider credential-variable names without ever inspecting their values.

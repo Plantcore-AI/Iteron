@@ -27,6 +27,7 @@ mod memo;
 mod multi_file_patch;
 mod multi_file_patch_error;
 mod multi_file_patch_input;
+mod plantcore;
 mod process;
 mod repair_evidence;
 mod schema;
@@ -58,6 +59,7 @@ pub use lsp::{
 pub use mcp_timing::{McpDispatchClock, McpEffectAttribution};
 pub use memo::PureMemoCachePolicy;
 use memo::{Lookup, Memo};
+pub use plantcore::{PUBLISH_ARTIFACT, REQUEST_USER_INPUT};
 pub use process::{
     ChildProcessEnvironmentPolicy, InteractiveStdinWaitPolicy, MAX_BACKGROUND_JOBS,
     MAX_CHILD_ENV_BYTES, MAX_CHILD_ENV_ENTRIES, MAX_IDLE_STALL_MILLISECONDS,
@@ -418,6 +420,10 @@ impl TaskToolSpecSnapshot {
 }
 
 impl Registry {
+    pub fn register_plantcore_tools(&mut self) -> Result<(), ToolError> {
+        plantcore::register(self)
+    }
+
     /// Process-wide immutable owner of whether independent PURE calls may overlap. The instance
     /// method below delegates to this owner so resume admission can re-sample the same physical
     /// invariant without constructing a synthetic registry.

@@ -271,6 +271,12 @@ impl Agent {
         &self,
         monetary_followup_safe: bool,
     ) -> Result<(), KernelError> {
+        if let Some(terminal) = self.plantcore_terminal() {
+            return Err(KernelError::InferenceBudgetExhausted(match terminal {
+                plantcore::PlantcoreTerminal::Budget(reason) => reason,
+                plantcore::PlantcoreTerminal::UsageUnavailable => "usage_unavailable",
+            }));
+        }
         if self
             .usd_budget
             .as_ref()

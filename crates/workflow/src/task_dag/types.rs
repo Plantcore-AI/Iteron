@@ -479,9 +479,10 @@ pub struct AttemptSpec {
 /// Controller-owned assignment lineage for one physical attempt. This is deliberately separate
 /// from `retry_ordinal`: a replay can distinguish retrying the same assignee policy from selecting
 /// a fresh assignee without inferring intent from prompt text.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AttemptAssignment {
+    #[default]
     Initial,
     RetrySame,
     Reassigned,
@@ -493,12 +494,6 @@ pub enum AttemptRetryCause {
     NegativeTerminal,
     ChildFailure,
     SchemaValidation,
-}
-
-impl Default for AttemptAssignment {
-    fn default() -> Self {
-        Self::Initial
-    }
 }
 
 /// Why a physical attempt was (or was not) selected by the controller.

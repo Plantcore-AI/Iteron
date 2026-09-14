@@ -185,6 +185,12 @@ impl ManagedCatalog {
         self.entry(identity).map(|entry| &entry.spec)
     }
 
+    pub fn exact_identity(&self, namespaced_name: &str) -> Option<McpToolIdentity> {
+        self.entries
+            .get(namespaced_name)
+            .map(|entry| entry.identity.clone())
+    }
+
     fn entry(&self, identity: &McpToolIdentity) -> Option<&CatalogEntry> {
         let namespaced = format!("{}__{}", identity.server_name, identity.bare_name);
         self.entries

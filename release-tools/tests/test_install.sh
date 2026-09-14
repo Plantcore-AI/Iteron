@@ -28,6 +28,12 @@ esac
 EOF
 chmod +x "$temporary/fake-core"
 
+cat > "$temporary/fake-workspace-hook" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+chmod +x "$temporary/fake-workspace-hook"
+
 printf 'Apache License 2.0\n' > "$temporary/LICENSE"
 printf '# Iteron\n' > "$temporary/README.md"
 printf '<html><body>%0300d</body></html>\n' 0 > "$temporary/THIRD_PARTY_LICENSES.html"
@@ -37,12 +43,14 @@ printf '{}\n' > "$temporary/BUILD-INFO.json"
 
 python3 "$repo_root/release-tools/package.py" \
   --binary "$temporary/fake-core" \
+  --workspace-hook "$temporary/fake-workspace-hook" \
   --license "$temporary/LICENSE" \
   --readme "$temporary/README.md" \
   --licenses "$temporary/THIRD_PARTY_LICENSES.html" \
   --notices "$temporary/THIRD_PARTY_NOTICES.txt" \
   --sbom "$temporary/SBOM.spdx.json" \
   --build-info "$temporary/BUILD-INFO.json" \
+  --plantcore-contracts "$repo_root/contracts/plantcore" \
   --version 0.0.1 \
   --target "$target" \
   --source-date-epoch 1700000000 \
@@ -92,8 +100,10 @@ if [ "${ITERON_CODE_TEST_MV_RACE:-0}" = 1 ]; then
     iteron_destination=$iteron_argument
   done
   [ -n "${iteron_source:-}" ] && [ -n "${iteron_destination:-}" ]
-  rm -f -- "$iteron_destination"
-  mkdir "$iteron_destination"
+  if [ "${iteron_destination##*/}" = "${ITERON_CODE_TEST_MV_RACE_TARGET:-iteron}" ]; then
+    rm -f -- "$iteron_destination"
+    mkdir "$iteron_destination"
+  fi
 fi
 exec /bin/mv "$@"
 EOF
@@ -110,6 +120,7 @@ test ! -e "$install_dir/iteron"
 PATH="$temporary/fakebin:$PATH" TMPDIR="$temporary/tmp with spaces" ITERON_CODE_TEST_FIXTURE=$fixture \
   sh "$repo_root/install.sh" --version v0.0.1 --bin-dir "$install_dir" >/dev/null
 test -x "$install_dir/iteron"
+test -x "$install_dir/iteron-workspace-hook"
 test "$("$install_dir/iteron" -V)" = 'iteron 0.0.1'
 grep -q '0123456789abcdef' <<<"$("$install_dir/iteron" --version)"
 
@@ -303,5 +314,15 @@ if PATH="$temporary/fakebin:$PATH" ITERON_CODE_TEST_FIXTURE=$fixture ITERON_CODE
   exit 1
 fi
 test -d "$race_install/iteron"
+
+hook_race_install=$temporary/hook-race-install
+mkdir "$hook_race_install"
+if PATH="$temporary/fakebin:$PATH" ITERON_CODE_TEST_FIXTURE=$fixture ITERON_CODE_TEST_MV_RACE=1 \
+  ITERON_CODE_TEST_MV_RACE_TARGET=iteron-workspace-hook \
+  sh "$repo_root/install.sh" --version v0.0.1 --bin-dir "$hook_race_install" >/dev/null 2>&1; then
+  printf 'workspace Hook destination directory race unexpectedly reported success\n' >&2
+  exit 1
+fi
+test -d "$hook_race_install/iteron-workspace-hook"
 
 printf 'installer integration tests passed\n'

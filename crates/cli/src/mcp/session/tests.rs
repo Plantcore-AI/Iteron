@@ -1,5 +1,5 @@
 use super::*;
-use iteron_protocol::ToolUse;
+use iteron_protocol::{Capability, Purity, ToolSpec, ToolUse};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
@@ -54,6 +54,92 @@ fn http_fixture(oauth: Option<crate::config::McpOAuthConfig>) -> McpServerConfig
         tools: iteron_mcp::McpToolFilter::default(),
         policy: iteron_mcp::McpServerPolicy::default(),
     }
+}
+
+fn plantcore_gateway_fixture() -> McpServerConfig {
+    McpServerConfig {
+        name: "plantcore-run-gateway".into(),
+        url: Some("http://127.0.0.1:43171/mcp".into()),
+        header_env: BTreeMap::from([(
+            "Authorization".into(),
+            "PLANTCORE_RUN_GATEWAY_AUTHORIZATION".into(),
+        )]),
+        ..http_fixture(None)
+    }
+}
+
+#[test]
+fn fixed_plantcore_gateway_proxy_accepts_an_opaque_handle() {
+    let mut registry = Registry::read_only(std::env::temp_dir()).unwrap();
+    let _runtime = McpRuntimeControl::register(
+        &mut registry,
+        &[plantcore_gateway_fixture()],
+        &["PLANTCORE_RUN_GATEWAY_AUTHORIZATION".into()],
+    )
+    .unwrap();
+    let spec = registry
+        .specs()
+        .into_iter()
+        .find(|spec| spec.name == "plantcore-run-gateway__tool_call")
+        .unwrap();
+
+    assert_eq!(
+        spec.input_schema["required"],
+        json!(["handle", "arguments"])
+    );
+    assert_eq!(spec.input_schema["properties"]["handle"]["type"], "string");
+    assert!(spec.input_schema["properties"].get("name").is_none());
+}
+
+#[tokio::test]
+async fn only_fixed_plantcore_gateway_resolves_an_exact_catalog_handle_without_search() {
+    let fixed = ManagedHttpServer::new(
+        plantcore_gateway_fixture(),
+        Vec::new(),
+        Arc::new(OnceLock::new()),
+    )
+    .unwrap();
+    let mut fixed_state = fixed.state.lock().await;
+    fixed_state.catalog = ManagedCatalog::admit(
+        &fixed.config.name,
+        fixed.binding.clone(),
+        iteron_mcp::MODERN_PROTOCOL_VERSION,
+        vec![ToolSpec {
+            name: "plantcore-run-gateway__pc_fixture_handle".into(),
+            description: "fixture".into(),
+            input_schema: json!({"type":"object"}),
+            purity: Purity::Effecting,
+            capability: Capability::IrreversibleExternal,
+        }],
+    )
+    .unwrap();
+    assert!(
+        fixed
+            .resolve_call_identity(&fixed_state, "plantcore-run-gateway__pc_fixture_handle")
+            .is_some()
+    );
+
+    let ordinary =
+        ManagedHttpServer::new(http_fixture(None), Vec::new(), Arc::new(OnceLock::new())).unwrap();
+    let mut ordinary_state = ordinary.state.lock().await;
+    ordinary_state.catalog = ManagedCatalog::admit(
+        &ordinary.config.name,
+        ordinary.binding.clone(),
+        iteron_mcp::MODERN_PROTOCOL_VERSION,
+        vec![ToolSpec {
+            name: "alpha__pc_fixture_handle".into(),
+            description: "fixture".into(),
+            input_schema: json!({"type":"object"}),
+            purity: Purity::Effecting,
+            capability: Capability::IrreversibleExternal,
+        }],
+    )
+    .unwrap();
+    assert!(
+        ordinary
+            .resolve_call_identity(&ordinary_state, "alpha__pc_fixture_handle")
+            .is_none()
+    );
 }
 
 fn modern_fixture(marker: &Path) -> McpServerConfig {

@@ -17,6 +17,7 @@ from common import (
     sha256_file,
     validate_target,
     validate_version,
+    workspace_hook_filename,
 )
 
 MAX_SBOM_BYTES = 16 * 1024 * 1024
@@ -26,6 +27,7 @@ def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("--input", required=True, type=Path)
     result.add_argument("--binary", required=True, type=Path)
+    result.add_argument("--workspace-hook", required=True, type=Path)
     result.add_argument("--output", required=True, type=Path)
     result.add_argument("--version", required=True)
     result.add_argument("--target", required=True)
@@ -50,6 +52,7 @@ def normalize(
     epoch: int,
     binary_digest: str,
     binary_name: str = "iteron",
+    additional_files: tuple[tuple[str, str], ...] = (),
 ) -> dict:
     if document.get("spdxVersion") != "SPDX-2.3":
         raise ReleaseToolError("SBOM must use SPDX-2.3")
@@ -137,6 +140,30 @@ def normalize(
         for relationship in relationships
     ):
         raise ReleaseToolError("SBOM binary root does not contain the iteron-cli package")
+    for file_name, file_digest in additional_files:
+        file_id = f"SPDXRef-File-{file_name.replace('.', '-')}"
+        if file_id in known_ids:
+            raise ReleaseToolError("SBOM workspace Hook SPDXID collides with Syft output")
+        known_ids.add(file_id)
+        files.append(
+            {
+                "SPDXID": file_id,
+                "checksums": [
+                    {"algorithm": "SHA256", "checksumValue": file_digest}
+                ],
+                "copyrightText": "NOASSERTION",
+                "fileName": file_name,
+                "fileTypes": ["BINARY"],
+                "licenseConcluded": "NOASSERTION",
+            }
+        )
+        relationships.append(
+            {
+                "spdxElementId": root_id,
+                "relationshipType": "CONTAINS",
+                "relatedSpdxElement": file_id,
+            }
+        )
     if epoch < 0:
         raise ReleaseToolError("SOURCE_DATE_EPOCH must be non-negative")
 
@@ -161,6 +188,10 @@ def normalize(
             str(package.get("SPDXID", "")),
         ),
     )
+    document["files"] = sorted(
+        files,
+        key=lambda file: (str(file.get("fileName", "")), str(file.get("SPDXID", ""))),
+    )
     document["relationships"] = sorted(
         relationships,
         key=lambda relationship: (
@@ -178,6 +209,12 @@ def main() -> None:
     target = validate_target(arguments.target)
     require_regular_file(arguments.input, max_bytes=MAX_SBOM_BYTES)
     require_regular_file(arguments.binary, max_bytes=512 * 1024 * 1024)
+    require_regular_file(arguments.workspace_hook, max_bytes=512 * 1024 * 1024)
+    expected_hook_name = workspace_hook_filename(target)
+    if arguments.workspace_hook.name != expected_hook_name:
+        raise ReleaseToolError(
+            f"workspace Hook must be named {expected_hook_name!r} for {target}"
+        )
     try:
         document = json.loads(arguments.input.read_text(encoding="utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -192,6 +229,7 @@ def main() -> None:
             arguments.source_date_epoch,
             sha256_file(arguments.binary),
             arguments.binary.name,
+            ((arguments.workspace_hook.name, sha256_file(arguments.workspace_hook)),),
         )
     )
     if len(output.encode("utf-8")) > MAX_SBOM_BYTES:

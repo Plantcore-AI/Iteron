@@ -2525,17 +2525,26 @@ mod tests {
         server.await.unwrap();
 
         let requests = seen.lock().unwrap();
+        assert_eq!(requests.len(), 7);
+        assert!(
+            requests
+                .iter()
+                .all(|request| !request.contains("server/discover"))
+        );
+        assert!(requests[0].contains("\"method\":\"initialize\""));
+        assert!(!requests[0].contains("mcp-session-id:"));
+        assert!(requests[1].contains("\"method\":\"notifications/initialized\""));
         assert!(requests[0].contains(&format!(
             "\"protocolVersion\":\"{STATEFUL_REQUESTED_PROTOCOL_VERSION}\""
         )));
         assert!(requests[0].contains("\"capabilities\":{}"));
         assert!(
-            requests[2..]
+            requests[1..]
                 .iter()
                 .all(|request| request.contains("mcp-session-id: fixture-session"))
         );
         assert!(
-            requests[2..]
+            requests[1..]
                 .iter()
                 .all(|request| request.contains(&format!(
                     "mcp-protocol-version: {STATEFUL_REQUESTED_PROTOCOL_VERSION}"

@@ -132,6 +132,21 @@ impl Scratch {
             .insert("hooks".to_owned(), hooks);
         fs::write(path, serde_json::to_vec(&config).unwrap()).unwrap();
     }
+
+    fn configure_recording_provider(&self, api_root: &str) {
+        let path = self.home().join(".iteron/config.json");
+        let mut config: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let provider = config["providers"][0]
+            .as_object_mut()
+            .expect("recording fixture provider is an object");
+        provider.insert("api_root".into(), Value::String(api_root.into()));
+        provider.remove("key_env");
+        provider.insert(
+            "credential".into(),
+            json!({"type":"env","name":"ITERON_PROVIDER_API_KEY"}),
+        );
+        fs::write(path, serde_json::to_vec(&config).unwrap()).unwrap();
+    }
 }
 
 impl Drop for Scratch {
@@ -168,14 +183,15 @@ impl PausedProvider {
         let (seen_tx, request_seen) = sync_channel(1);
         let (release, release_rx) = sync_channel(1);
         let (completed_tx, completed) = sync_channel(1);
-        // The replay-fallback fixture must exceed the ring's aggregate byte bound even though
-        // production now coalesces adjacent deltas. Single-response parity keeps its exact text;
-        // the flood uses bounded 4 KiB chunks for a ~17 MiB logical answer, below the 32 MiB
-        // provider-output ceiling and above the 16 MiB replay-byte budget.
+        // The replay-fallback fixture must exceed the ring's aggregate byte bound. Single-response
+        // parity keeps its exact assistant text; the flood uses bounded 60 KiB thinking chunks for
+        // 18.75 MiB of diagnostic events, below the 32 MiB provider-output ceiling but above the
+        // 16 MiB replay-byte budget. Keeping the final assistant answer small also respects v7's
+        // independent 65,536-byte assistant-message ceiling.
         let content = if chunks == 1 {
             "parity reply".to_owned()
         } else {
-            "x".repeat(4 * 1024)
+            "x".repeat(60 * 1024)
         };
         let thread = thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("provider accepts one request");
@@ -250,23 +266,44 @@ fn read_http_request(stream: &mut TcpStream) {
 }
 
 fn write_success(stream: &mut TcpStream, chunks: usize, content: &str) {
-    let mut body = String::new();
-    for _ in 0..chunks {
-        body.push_str(&format!(
+    let event = if chunks == 1 {
+        format!(
             "data: {{\"id\":\"headless\",\"object\":\"chat.completion.chunk\",\"choices\":[{{\"index\":0,\"delta\":{{\"role\":\"assistant\",\"content\":\"{content}\"}},\"finish_reason\":null}}],\"usage\":null}}\n\n"
-        ));
-    }
-    body.push_str(concat!(
+        )
+    } else {
+        format!(
+            "data: {{\"id\":\"headless\",\"object\":\"chat.completion.chunk\",\"choices\":[{{\"index\":0,\"delta\":{{\"role\":\"assistant\",\"reasoning_content\":\"{content}\"}},\"finish_reason\":null}}],\"usage\":null}}\n\n"
+        )
+    };
+    let final_answer = (chunks > 1).then_some(
+        "data: {\"id\":\"headless\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"bounded replay flood complete\"},\"finish_reason\":null}],\"usage\":null}\n\n",
+    );
+    let tail = concat!(
         "data: {\"id\":\"headless\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":null}\n\n",
         "data: {\"id\":\"headless\",\"object\":\"chat.completion.chunk\",\"choices\":[],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":2,\"total_tokens\":13,\"prompt_tokens_details\":{\"cached_tokens\":0},\"completion_tokens_details\":{\"reasoning_tokens\":0}}}\n\n",
         "data: [DONE]\n\n",
-    ));
+    );
+    let body_len = event
+        .len()
+        .saturating_mul(chunks)
+        .saturating_add(final_answer.map_or(0, str::len))
+        .saturating_add(tail.len());
     write!(
         stream,
-        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.len()
+        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {body_len}\r\nConnection: close\r\n\r\n"
     )
     .unwrap();
+    for _ in 0..chunks {
+        stream.write_all(event.as_bytes()).unwrap();
+        stream.flush().unwrap();
+        if chunks > 1 {
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+    if let Some(final_answer) = final_answer {
+        stream.write_all(final_answer.as_bytes()).unwrap();
+    }
+    stream.write_all(tail.as_bytes()).unwrap();
     stream.flush().unwrap();
 }
 
@@ -468,6 +505,12 @@ fn hello(token: &str, protocol_version: u32, resume_from: u64) -> Value {
     })
 }
 
+fn resume_hello(token: &str, protocol_version: u32, resume_from: u64, session_id: &str) -> Value {
+    let mut value = hello(token, protocol_version, resume_from);
+    value["session_id"] = Value::String(session_id.to_owned());
+    value
+}
+
 fn control(request_id: u64, protocol_version: u32, control: Value) -> Value {
     json!({
         "type": "control",
@@ -550,6 +593,129 @@ fn wait_for_exit(mut process: CoreProcess) -> (std::process::ExitStatus, Vec<u8>
         }
         thread::sleep(Duration::from_millis(20));
     }
+}
+
+fn recording_startup(scratch: &Scratch, ca: &Path, plantcore: bool) -> std::process::Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_iteron"));
+    command
+        .env_clear()
+        .env("HOME", scratch.home())
+        .env("ITERON_CONFIG_HOME", scratch.home())
+        .env("LANG", "C.UTF-8")
+        .env("NO_PROXY", "127.0.0.1,localhost")
+        .env("ITERON_PROVIDER_API_KEY", "synthetic-recording-key")
+        .current_dir(scratch.repo())
+        .arg("--repo")
+        .arg(scratch.repo())
+        .arg("--runs-dir")
+        .arg(scratch.runs())
+        .arg("--provider")
+        .arg(PROVIDER_ID)
+        .arg("--model")
+        .arg(MODEL_ID)
+        .arg("serve");
+    if plantcore {
+        command.arg("--plantcore");
+    }
+    command
+        .arg("--recording-provider-ca-file")
+        .arg(ca)
+        .output()
+        .expect("run recording startup rejection")
+}
+
+#[test]
+fn recording_ca_argument_is_hidden_and_requires_plantcore_serve() {
+    let help = Command::new(env!("CARGO_BIN_EXE_iteron"))
+        .args(["serve", "--help"])
+        .output()
+        .unwrap();
+    assert!(help.status.success());
+    assert!(
+        !String::from_utf8(help.stdout.clone())
+            .unwrap()
+            .contains("recording-provider-ca-file")
+    );
+    assert!(
+        !String::from_utf8(help.stdout)
+            .unwrap()
+            .contains("recording-inject-harness-error")
+    );
+
+    let help = Command::new(env!("CARGO_BIN_EXE_iteron"))
+        .args(["serve", "--help"])
+        .output()
+        .unwrap();
+    assert!(
+        !String::from_utf8(help.stdout)
+            .unwrap()
+            .contains("recording-app-server-fault")
+    );
+
+    let missing_ca = Command::new(env!("CARGO_BIN_EXE_iteron"))
+        .args(["serve", "--plantcore", "--recording-inject-harness-error"])
+        .output()
+        .unwrap();
+    assert!(!missing_ca.status.success());
+    assert!(
+        String::from_utf8(missing_ca.stderr)
+            .unwrap()
+            .contains("--recording-provider-ca-file")
+    );
+
+    let missing_fault_ca = Command::new(env!("CARGO_BIN_EXE_iteron"))
+        .args([
+            "serve",
+            "--plantcore",
+            "--recording-app-server-fault",
+            "frame-chunk-missing",
+        ])
+        .output()
+        .unwrap();
+    assert!(!missing_fault_ca.status.success());
+    assert!(
+        String::from_utf8(missing_fault_ca.stderr)
+            .unwrap()
+            .contains("--recording-provider-ca-file")
+    );
+
+    let scratch = Scratch::new("https://127.0.0.1:443/v1");
+    let ca = scratch.root.join("ca.pem");
+    fs::write(&ca, "not a certificate").unwrap();
+    let output = recording_startup(&scratch, &ca, false);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("--plantcore"), "{stderr}");
+    assert!(!stderr.contains("\"event\":\"listening\""));
+}
+
+#[test]
+fn recording_route_and_pem_fail_before_the_listener_binds() {
+    let scratch = Scratch::new("https://127.0.0.1:443/v1");
+    let ca = scratch.root.join("ca.pem");
+    fs::write(&ca, "private-material-not-a-certificate").unwrap();
+
+    scratch.configure_recording_provider("https://localhost:443/v1");
+    let output = recording_startup(&scratch, &ca, true);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("recording_provider_route_invalid"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("private-material"));
+    assert!(!stderr.contains("\"event\":\"listening\""));
+
+    scratch.configure_recording_provider("https://127.0.0.1:443/v1");
+    let output = recording_startup(&scratch, &ca, true);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("recording_provider_ca_invalid_pem"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("private-material"));
+    assert!(!stderr.contains("\"event\":\"listening\""));
 }
 
 fn stop(mut process: CoreProcess) -> Vec<u8> {
@@ -785,6 +951,7 @@ fn drain_preserves_canonical_observers_through_real_headless_session_shutdown() 
     );
     let result = receive_result_within_timeout(&mut reader);
     assert_eq!(result["result"]["outcome"], "drained", "{result}");
+    assert_eq!(result["result"]["schema_version"], 6, "{result}");
     assert_eq!(result["result"]["success"], true, "{result}");
 
     // Drain settles the active turn; the resident headless listener still owns the AppServer.
@@ -897,7 +1064,12 @@ fn no_tty_skew_reconnect_and_current_result_share_one_headless_server() {
     let mut first = connect(address);
     send(&mut first, hello(&token, PROTOCOL_VERSION, 0));
     let mut first_reader = BufReader::new(first.try_clone().unwrap());
-    assert_eq!(receive(&mut first_reader)["type"], "hello");
+    let first_hello = receive(&mut first_reader);
+    assert_eq!(first_hello["type"], "hello");
+    let session_id = first_hello["session_id"]
+        .as_str()
+        .expect("server hello carries the Run-local session identity")
+        .to_owned();
     send(
         &mut first,
         json!({
@@ -930,7 +1102,10 @@ fn no_tty_skew_reconnect_and_current_result_share_one_headless_server() {
     provider.release.send(()).unwrap();
 
     let mut resumed = connect(address);
-    send(&mut resumed, hello(&token, PROTOCOL_VERSION, last_seq));
+    send(
+        &mut resumed,
+        resume_hello(&token, PROTOCOL_VERSION, last_seq, &session_id),
+    );
     let mut resumed_reader = BufReader::new(resumed);
     let hello = receive(&mut resumed_reader);
     assert_eq!(hello["type"], "hello");
@@ -984,7 +1159,7 @@ fn no_tty_skew_reconnect_and_current_result_share_one_headless_server() {
 fn a_cursor_older_than_the_live_ring_receives_rollout_fallback() {
     // More deltas than the production ring holds force the real fallback path without a
     // test-only capacity override.
-    let provider = PausedProvider::spawn_with_chunks(4200);
+    let provider = PausedProvider::spawn_with_chunks(320);
     let scratch = Scratch::new(&provider.api_root);
     let (child, token, address) = spawn_core(&scratch);
 
@@ -1007,14 +1182,43 @@ fn a_cursor_older_than_the_live_ring_receives_rollout_fallback() {
     drop(reader);
     drop(client);
     provider.release.send(()).unwrap();
-    provider.finish();
 
-    let deadline = Instant::now() + timeout();
+    // This fixture deliberately moves more than 16 MiB through the production byte-bounded ring.
+    // Give that volume its own bounded ceiling instead of treating the ordinary 10-second control
+    // timeout as a throughput guarantee on contended debug builders.
+    let deadline = Instant::now() + timeout().saturating_mul(3);
     let mut fallback_reader = loop {
         let mut candidate = connect(address);
         send(&mut candidate, hello(&token, PROTOCOL_VERSION, 0));
         let mut candidate = BufReader::new(candidate);
-        let hello = receive(&mut candidate);
+        let mut line = String::new();
+        match candidate.read_line(&mut line) {
+            Ok(0) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "the live cursor never advanced beyond the bounded replay ring"
+                );
+                thread::sleep(Duration::from_millis(20));
+                continue;
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::UnexpectedEof
+                ) =>
+            {
+                assert!(
+                    Instant::now() < deadline,
+                    "the live cursor never advanced beyond the bounded replay ring"
+                );
+                thread::sleep(Duration::from_millis(20));
+                continue;
+            }
+            Ok(_) => {}
+            Err(error) => panic!("read fallback handshake: {error}"),
+        }
+        assert!(line.len() <= 1024 * 1024 + 1);
+        let hello: Value = serde_json::from_str(&line).expect("fallback handshake is JSON");
         if hello["replay_source"] == "rollout" {
             break candidate;
         }
@@ -1029,6 +1233,7 @@ fn a_cursor_older_than_the_live_ring_receives_rollout_fallback() {
     assert_eq!(durable["protocol_version"], PROTOCOL_VERSION);
     assert!(durable["rollout_seq"].as_u64().is_some());
     assert!(durable["event"].is_object());
+    provider.finish();
 
     let stderr = stop(child);
     let stderr = String::from_utf8(stderr).unwrap();

@@ -1,0 +1,16 @@
+{
+  "fixture": "plantcore.portable-canonical-json.v1",
+  "algorithm": "utf8-sorted-compact-integer-only-v1",
+  "payload": {
+    "nested": {
+      "z": "last",
+      "unicode": "植物",
+      "control": "line\nfeed"
+    },
+    "a": [null, true, false, -9007199254740991, 9007199254740991]
+  },
+  "canonical_json": "{\"a\":[null,true,false,-9007199254740991,9007199254740991],\"nested\":{\"control\":\"line\\nfeed\",\"unicode\":\"植物\",\"z\":\"last\"}}",
+  "canonical_hex": "7b2261223a5b6e756c6c2c747275652c66616c73652c2d393030373139393235343734303939312c393030373139393235343734303939315d2c226e6573746564223a7b22636f6e74726f6c223a226c696e655c6e66656564222c22756e69636f6465223a22e6a48de789a9222c227a223a226c617374227d7d",
+  "sha256": "5862aca0419ca2547e8732adf140cd3f873b7faae44fdda8849034d7f4ccb55b",
+  "forbidden": ["float", "integer-outside-safe-range", "lone-surrogate", "non-string-key", "depth-over-32"]
+}

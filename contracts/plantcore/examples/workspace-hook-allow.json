@@ -1,0 +1,11 @@
+{
+  "event": "PreToolUse",
+  "tool": "read_file",
+  "input": { "path": "/workspace/input/context.txt" },
+  "posture": "read-only",
+  "workspace": {
+    "input": "/workspace/input",
+    "work": "/workspace/work",
+    "output": "/workspace/output"
+  }
+}

@@ -1238,7 +1238,7 @@ fn binary_media_inspection_policy() -> ResolutionValue {
             ),
             (
                 "max_input_bytes".to_owned(),
-                ResolutionValue::Integer { value: 6_291_456 },
+                ResolutionValue::Integer { value: 25_165_824 },
             ),
         ]
         .into_iter()

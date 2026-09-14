@@ -15,6 +15,7 @@ from pathlib import Path
 
 import manifest as release_manifest
 from common import (
+    PLANTCORE_CONTRACT_FILES,
     ReleaseToolError,
     WINDOWS_TARGET,
     archive_filename,
@@ -25,6 +26,7 @@ from common import (
     validate_commit,
     validate_target,
     validate_version,
+    workspace_hook_filename,
 )
 
 MAX_JSON_BYTES = 1024 * 1024
@@ -215,8 +217,15 @@ def verify_contract(document: dict[str, object], report_path: Path) -> None:
 
 
 def expected_members(root: str, target: str) -> set[str]:
-    names = {f"{root}/", f"{root}/{binary_filename(target)}"}
+    names = {
+        f"{root}/",
+        f"{root}/{binary_filename(target)}",
+        f"{root}/{workspace_hook_filename(target)}",
+    }
     names.update(f"{root}/{name}" for name in ARCHIVE_FILES)
+    names.update(
+        f"{root}/contracts/plantcore/{name}" for name in PLANTCORE_CONTRACT_FILES
+    )
     return names
 
 

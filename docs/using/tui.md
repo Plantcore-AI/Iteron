@@ -102,7 +102,7 @@ unsupported color escapes.
 The composer accepts at most eight sniffed PNG/JPEG/GIF/WebP attachments. On macOS, dropped or
 mentioned HEIC/HEIF photos are privately resized when needed and normalized to JPEG before they
 reach the provider. All formats retain
-the same 6 MiB per-file and 24 MiB aggregate raw-byte ceilings as one-shot mode.
+the same 24 MiB per-file and aggregate raw-byte ceiling as one-shot mode.
 Images travel beside the prompt as neutral SQ content segments; the kernel does
 not parse media. When the selected provider is text-only, the TUI shows one
 degradation notice and the text task continues.

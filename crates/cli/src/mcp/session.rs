@@ -265,6 +265,28 @@ impl McpRuntimeControl {
             .collect()
     }
 
+    pub(crate) fn is_exact_plantcore_run_gateway(
+        &self,
+        expected_url: &str,
+        expected_token_env: &str,
+    ) -> bool {
+        let Some(server) = self.servers.get("plantcore-run-gateway") else {
+            return false;
+        };
+        if self.servers.len() != 1 {
+            return false;
+        }
+        let config = server.config();
+        config.transport == McpTransportConfig::Http
+            && config.command.is_none()
+            && config.args.is_empty()
+            && config.url.as_deref() == Some(expected_url)
+            && config.oauth.is_none()
+            && config.header_env.len() == 1
+            && config.header_env.get("Authorization").map(String::as_str)
+                == Some(expected_token_env)
+    }
+
     pub(crate) fn cancel(&self, name: &str) -> bool {
         self.servers.get(name).is_some_and(|server| {
             if !server_identity_admitted(&self.exposure, server) {
@@ -1062,7 +1084,7 @@ impl ManagedHttpServer {
         } else {
             format!("{}__{name}", self.config.name)
         };
-        let Some(identity) = state.identities.get(&namespaced).cloned() else {
+        let Some(identity) = self.resolve_call_identity(&state, &namespaced) else {
             return definite_mcp_error(iteron_mcp::McpError::StaleToolIdentity);
         };
         let Some(spec) = state.catalog.spec(&identity) else {
@@ -1116,6 +1138,18 @@ impl ManagedHttpServer {
             self.note_http_healthy(&mut state, generation);
         }
         outcome
+    }
+
+    fn resolve_call_identity(
+        &self,
+        state: &ManagedHttpState,
+        namespaced: &str,
+    ) -> Option<McpToolIdentity> {
+        state.identities.get(namespaced).cloned().or_else(|| {
+            is_fixed_plantcore_run_gateway(&self.config)
+                .then(|| state.catalog.exact_identity(namespaced))
+                .flatten()
+        })
     }
 
     async fn extension<F>(
@@ -1486,6 +1520,7 @@ fn register_server_tools(
     mrtr_handler: Arc<OnceLock<Arc<dyn iteron_mcp::McpMrtrHandler>>>,
 ) -> Result<(), iteron_tools::ToolError> {
     let name = server.name().to_owned();
+    let uses_plantcore_handle = is_fixed_plantcore_run_gateway(server.config());
     let search_name = format!("{name}__tool_search");
     let search_server = server.clone();
     let search_exposure = exposure.clone();
@@ -1547,19 +1582,26 @@ fn register_server_tools(
     let call_server = server.clone();
     let call_exposure = exposure.clone();
     let call_mrtr_handler = mrtr_handler;
+    let identity_field = if uses_plantcore_handle {
+        "handle"
+    } else {
+        "name"
+    };
     registry.register_mcp_effect(
         ToolSpec {
             name: format!("{name}__tool_call"),
-            description: format!(
-                "Call one exact `{name}` MCP tool name returned by `{name}__tool_search`."
-            ),
+            description: if uses_plantcore_handle {
+                format!("Call one exact opaque handle returned by `{name}__tool_search`.")
+            } else {
+                format!("Call one exact `{name}` MCP tool name returned by `{name}__tool_search`.")
+            },
             input_schema: json!({
                 "type":"object",
                 "properties":{
-                    "name":{"type":"string"},
+                    (identity_field):{"type":"string"},
                     "arguments":{"type":"object"}
                 },
-                "required":["name", "arguments"]
+                "required":[identity_field, "arguments"]
             }),
             purity: Purity::Effecting,
             capability: Capability::IrreversibleExternal,
@@ -1578,7 +1620,11 @@ fn register_server_tools(
                         true,
                     );
                 }
-                let tool = call.input.get("name").and_then(Value::as_str).unwrap_or("");
+                let tool = call
+                    .input
+                    .get(identity_field)
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
                 let arguments = call
                     .input
                     .get("arguments")
@@ -1695,6 +1741,19 @@ fn register_server_tools(
         },
     )?;
     Ok(())
+}
+
+fn is_fixed_plantcore_run_gateway(config: &McpServerConfig) -> bool {
+    config.name == "plantcore-run-gateway"
+        && config.transport == McpTransportConfig::Http
+        && config.command.is_none()
+        && config.args.is_empty()
+        && config.env_names.is_empty()
+        && config.url.as_deref() == Some("http://127.0.0.1:43171/mcp")
+        && config.oauth.is_none()
+        && config.header_env.len() == 1
+        && config.header_env.get("Authorization").map(String::as_str)
+            == Some("PLANTCORE_RUN_GATEWAY_AUTHORIZATION")
 }
 
 fn server_identity_admitted(

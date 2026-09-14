@@ -133,9 +133,8 @@ fn unexpected_stream_close_crashes_every_live_protocol_phase() {
 fn restart_budget_and_backoff_are_both_enforced() {
     let mut session = ready(0);
     let mut now = 1u64;
-    let mut generation = 2u64;
     let mut delays = Vec::new();
-    for expected in [250u64, 500, 1_000] {
+    for (generation, expected) in (2u64..).zip([250u64, 500, 1_000]) {
         session.apply(Event::ProcessFailed, now).unwrap();
         let delay = session.plan_restart(now).unwrap();
         delays.push(delay);
@@ -148,7 +147,6 @@ fn restart_budget_and_backoff_are_both_enforced() {
         now += delay;
         session.apply(initialize(generation), now).unwrap();
         session.apply(initialized(generation), now).unwrap();
-        generation += 1;
         now += 1;
     }
     assert_eq!(delays, vec![250, 500, 1_000]);

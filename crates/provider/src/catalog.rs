@@ -905,6 +905,18 @@ impl ProviderInstance {
         self
     }
 
+    /// Install one host-provided transport on this exact configured route.
+    ///
+    /// The transport is fixed for the lifetime of the cloned instance and is never inherited by
+    /// another provider, MCP, telemetry, or update client.
+    pub fn with_fixed_http_transport(
+        mut self,
+        transport: &dyn HttpTransport,
+    ) -> Result<Self, ProviderError> {
+        self.http_client = RuntimeHttpClient::fixed(transport)?;
+        Ok(self)
+    }
+
     pub fn credential_source(&self) -> &CredentialSource {
         &self.credential
     }

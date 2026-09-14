@@ -1487,6 +1487,8 @@ pub async fn run(
         initial_state,
         interrupt,
         drain,
+        dispatch_gate: _,
+        machine_schema_version: _,
     } = attached;
     // History/content-store hydration is independent of input readiness. Resolve it on one bounded
     // worker and adopt the result only after the shell has painted; 10,000 sessions therefore cost
@@ -2468,16 +2470,15 @@ pub async fn run(
                 CEvent::Mouse(m) if app.mouse_capture.is_captured() => match m.kind {
                     MouseEventKind::ScrollUp => app.scroll_up(3),
                     MouseEventKind::ScrollDown => app.scroll_down(3),
-                    MouseEventKind::Down(MouseButton::Left) => {
+                    MouseEventKind::Down(MouseButton::Left)
                         if m.row >= app.view_top
-                            && m.row < app.view_top.saturating_add(app.view_h)
+                            && m.row < app.view_top.saturating_add(app.view_h) =>
+                    {
+                        let index = usize::from(m.row - app.view_top);
+                        if let Some(&block_index) = app.row_map.get(index)
+                            && block_index != usize::MAX
                         {
-                            let index = usize::from(m.row - app.view_top);
-                            if let Some(&block_index) = app.row_map.get(index)
-                                && block_index != usize::MAX
-                            {
-                                app.toggle_fold(block_index);
-                            }
+                            app.toggle_fold(block_index);
                         }
                     }
                     _ => {}

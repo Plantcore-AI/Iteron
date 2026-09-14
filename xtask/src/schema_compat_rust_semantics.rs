@@ -10,6 +10,7 @@ mod surface;
 use super::super::manifest::Contract;
 use anyhow::{Context, Result, bail};
 use graph::{ProtocolGraph, SourceView, TypeKind, identifier_occurrences};
+use quote::ToTokens;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -184,7 +185,10 @@ fn compare_reachable_protocol_types(
                     name.as_str(),
                     "Op" | "EventKind" | "Block" | "WorkflowEvent" | "CostAttribution"
                 ));
-        if !is_surface_item && old.fingerprint != current.fingerprint {
+        if !is_surface_item
+            && old.fingerprint != current.fingerprint
+            && !is_exact_usage_unavailable_outcome_append(base, candidate, &name)?
+        {
             bail!("reachable non-surfaced protocol type '{name}' changed from the trusted base");
         }
         pending.extend(old.references.iter().cloned());
@@ -192,9 +196,85 @@ fn compare_reachable_protocol_types(
     Ok(binding_references)
 }
 
+/// The PlantCore v7 contract adds one terminal state while the older outcome variants and their
+/// mappings remain frozen by the CLI exact witnesses. Keep this exception narrower than a generic
+/// additive-enum rule: exhaustive Rust enums are otherwise part of the trusted compatibility
+/// graph, and no other variant, payload, attribute, or reorder is admitted here.
+fn is_exact_usage_unavailable_outcome_append(
+    base: &ProtocolGraph,
+    candidate: &ProtocolGraph,
+    name: &str,
+) -> Result<bool> {
+    if name != "Outcome" {
+        return Ok(false);
+    }
+    let (syn::Item::Enum(base), syn::Item::Enum(candidate)) =
+        (base.item(name)?, candidate.item(name)?)
+    else {
+        return Ok(false);
+    };
+    exact_usage_unavailable_outcome_append(base, candidate)
+}
+
+fn exact_usage_unavailable_outcome_append(
+    base: &syn::ItemEnum,
+    candidate: &syn::ItemEnum,
+) -> Result<bool> {
+    let mut retained = candidate.clone();
+    let Some(added) = retained.variants.pop() else {
+        return Ok(false);
+    };
+    let added = added.into_value();
+    if added.ident != "UsageUnavailable"
+        || !matches!(added.fields, syn::Fields::Unit)
+        || added.discriminant.is_some()
+        || added
+            .attrs
+            .iter()
+            .any(|attribute| !attribute.path().is_ident("doc"))
+    {
+        return Ok(false);
+    }
+    let mut base_header = base.clone();
+    base_header.variants.clear();
+    let mut candidate_header = candidate.clone();
+    candidate_header.variants.clear();
+    Ok(
+        base_header.to_token_stream().to_string() == candidate_header.to_token_stream().to_string()
+            && base.variants.len() == retained.variants.len()
+            && base
+                .variants
+                .iter()
+                .zip(&retained.variants)
+                .all(|(old, new)| {
+                    old.to_token_stream().to_string() == new.to_token_stream().to_string()
+                }),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_exact_usage_unavailable_outcome_append_is_admitted() {
+        let base: syn::ItemEnum = syn::parse_str("pub enum Outcome { Done, Stuck }").unwrap();
+        let exact: syn::ItemEnum = syn::parse_str(
+            "pub enum Outcome { Done, Stuck, /// v7-only terminal truth\n UsageUnavailable }",
+        )
+        .unwrap();
+        assert!(exact_usage_unavailable_outcome_append(&base, &exact).unwrap());
+
+        for changed in [
+            "pub enum Outcome { Stuck, Done, UsageUnavailable }",
+            "pub enum Outcome { Done, Stuck, UsageUnavailable(String) }",
+            "pub enum Outcome { Done, Stuck, UsageUnavailable, Other }",
+            "pub enum Outcome { Done, Stuck, #[serde(other)] UsageUnavailable }",
+        ] {
+            let changed = syn::parse_str(changed).unwrap();
+            assert!(!exact_usage_unavailable_outcome_append(&base, &changed).unwrap());
+        }
+    }
 
     #[test]
     fn d13_14_semantic_compare_loads_the_candidate_protocol_graph() {

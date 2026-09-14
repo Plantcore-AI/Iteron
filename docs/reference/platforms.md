@@ -3,7 +3,8 @@
 Iteron is developed and tested primarily on macOS and Linux. Those remain the
 only platforms where the whole product is supported. Release v0.0.20 ships
 macOS arm64, Linux arm64, Linux x86-64, and Windows x86-64 assets. Windows
-remains a non-required CI surface and has no code-execution sandbox.
+remains a non-required CI surface, has no code-execution sandbox, and does not
+have a supported interactive TUI.
 
 | Platform | Build | Interactive TUI | Code-execution sandbox |
 | --- | --- | --- | --- |
@@ -15,8 +16,10 @@ remains a non-required CI surface and has no code-execution sandbox.
 
 ## Windows
 
-Windows can be installed from the v0.0.20 release or built from source and has a
-non-required CI lane. It does not have a code-execution sandbox.
+Windows can be installed from the v0.0.20 release or built from source, has a
+non-required CI lane, and is packaged as `x86_64-pc-windows-msvc` with a
+version-bound `install.ps1`. The release artifact does not imply full runtime
+support.
 
 What exists:
 
@@ -24,7 +27,7 @@ What exists:
   `x86_64-pc-windows-msvc` and runs the native ConPTY oracle.
 - `v0.0.20` publishes `install.ps1` and an
   `x86_64-pc-windows-msvc` archive with manifest, checksum, SBOM, and provenance
-  material.
+  material. Workflow releases render and verify the installer before publication.
 
 What does not exist, and is not implied by any of the above:
 
@@ -52,7 +55,8 @@ While that variable is unset, `windows.yml` is skipped outright. See
 
 `v0.0.20` is the first release in this project history to publish Windows
 artifacts. Verify the selected release's asset list because this does not imply a
-compatibility promise for every future pre-alpha tag.
+compatibility promise for every future pre-alpha tag; historical tags need not
+contain the Windows archive or installer.
 
 ## Linux requirements
 

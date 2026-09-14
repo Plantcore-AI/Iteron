@@ -318,7 +318,7 @@ ABI 的价值全在于它**稳定且可演化**：两者不矛盾，靠的是把
 
 | 版本量 | 作用域 | 现值 | 规则 |
 |---|---|---|---|
-| `PROTOCOL_VERSION`（`wire.rs`） | SQ/EQ 线格式，以及它钉死的那一代五契约形状 | `1` | 任何**改变已发布形状**的改动 **MUST** bump 它：删除或改写任一 surface 的字段、tag、`version_field`、`selector` 或 fixture 集，五契约自 freeze 起同受此约束（§4.3(c)）。**纯新增 MUST NOT** bump 它：一个全新的顶层 tag，或一个 `Option` + `skip_serializing_if` 的追加字段，§4.3(b) 第 2、3 条已保证这两者的线格式逐字节不变；W1 freeze 新增五契约 surface 即属此类。`iteron-xtask boundaries check-base` / `check-pr` 以受信基线的 surface 集比对判定，防止悄悄改形 |
+| `PROTOCOL_VERSION`（`wire.rs`） | SQ/EQ 线格式，以及它钉死的那一代五契约形状 | `5` | 任何**改变已发布形状**的改动 **MUST** bump 它：删除或改写任一 surface 的字段、tag、`version_field`、`selector` 或 fixture 集，五契约自 freeze 起同受此约束（§4.3(c)）。**纯新增 MUST NOT** bump 它：一个全新的顶层 tag，或一个 `Option` + `skip_serializing_if` 的追加字段，§4.3(b) 第 2、3 条已保证这两者的线格式逐字节不变；W1 freeze 新增五契约 surface 即属此类。`iteron-xtask boundaries check-base` / `check-pr` 以受信基线的 surface 集比对判定，防止悄悄改形 |
 | `EVOLUTION_SCHEMA_VERSION`（`evolve`） | PolicyManifest / dataset / trajectory 文档 | `3` | evolution 产物的 schema 版本；与运行时 ABI 解耦升级 |
 
 `SqEnvelope` / `EqEnvelope` 给每条跨接缝的消息盖 `protocol_version`。`into_current()` 对版本 skew **硬拒**（`ProtocolVersionError`）：一次 run 只接受**恰好一个** `PROTOCOL_VERSION` 的消息。这是"一次 run 钉死一个 ABI 版本"的机械实现。

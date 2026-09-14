@@ -12,13 +12,12 @@ class QualificationContractTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw_root:
             root = Path(raw_root)
             version = "iteron 0.0.5 (fixture-commit 2026-08-14)"
-            contract = {
-                "cli_stream_versions": [4, 5],
-                "default_cli_stream_version": 5,
-                "resident_protocol_version": "5",
-                "schema_version": 1,
-                "type": "machine_contract",
-            }
+            contract = json.loads(
+                (
+                    Path(__file__).resolve().parents[1]
+                    / "contracts/plantcore/examples/machine-contract-v1.json"
+                ).read_text(encoding="utf-8")
+            )
             contract_bytes = (json.dumps(contract, indent=2, sort_keys=True) + "\n").encode()
             iteron = root / "iteron"
             iteron.write_text(

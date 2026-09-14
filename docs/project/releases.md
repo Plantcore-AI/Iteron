@@ -43,6 +43,9 @@ The current distribution matrix is:
 - `aarch64-apple-darwin`;
 - `aarch64-unknown-linux-musl` and `x86_64-unknown-linux-musl`;
 - `x86_64-pc-windows-msvc`.
+The Windows archive is a distribution target, not a claim of full product
+support: Windows has no code-execution sandbox, and the interactive TUI remains
+unsupported there.
 
 An accepted release contains the targets named by its release notes and, for the
 complete supported matrix:
@@ -56,10 +59,12 @@ complete supported matrix:
 - per-target SPDX SBOMs;
 - GitHub build provenance, SBOM attestations, and offline bundles.
 
-The only executable payload is `iteron`. The repository research binary `iteron-harness`, its
-fixture optimizer, and its protocol development assets are not release or installer payloads.
-Researchers build that binary explicitly from a reviewed source checkout; see the
-[research harness protocol](../reference/research-harness-protocol.md).
+The executable payloads are `iteron` and the fixed `iteron-workspace-hook`; the
+archive also carries the public PlantCore contract bundle. The repository
+research binary `iteron-harness`, its fixture optimizer, and its protocol
+development assets are not release or installer payloads. Researchers build
+that binary explicitly from a reviewed source checkout; see the [research
+harness protocol](../reference/research-harness-protocol.md).
 
 Windows first became a release target in v0.0.20. That archive does not imply a
 code-execution sandbox or a supported interactive TUI. Published releases are

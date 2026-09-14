@@ -22,6 +22,7 @@ mod governor;
 mod governor_policy;
 mod governor_snapshot;
 pub mod openai;
+mod recording_transport;
 pub mod responses;
 pub mod sse;
 mod static_metadata;
@@ -53,6 +54,7 @@ pub use governor_snapshot::{
     ProviderGovernorSnapshot, RouteCircuitSnapshot, RouteGovernorSnapshot,
 };
 pub use openai::OpenAiCompat;
+pub use recording_transport::RecordingProviderTransport;
 pub use responses::OpenAiResponses;
 pub use sse::{StreamItem, parse_sse_stream};
 pub use static_metadata::{StaticModelCapabilities, StaticProviderMetadata};
@@ -658,7 +660,8 @@ fn parse_compact_duration(raw: &str) -> Option<Duration> {
         // Longest unit first: `ms` must not be read as `m` followed by a stray `s`.
         let (unit_len, seconds) = if remainder.starts_with("ms") {
             (2, value / 1_000.0)
-        } else if let Some(unit) = remainder.chars().next() {
+        } else {
+            let unit = remainder.chars().next()?;
             let scale = match unit {
                 's' => 1.0,
                 'm' => 60.0,
@@ -667,8 +670,6 @@ fn parse_compact_duration(raw: &str) -> Option<Duration> {
                 _ => return None,
             };
             (unit.len_utf8(), value * scale)
-        } else {
-            return None;
         };
         total = total.checked_add(Duration::try_from_secs_f64(seconds).ok()?)?;
         matched = true;
@@ -1639,6 +1640,7 @@ pub struct HealthReportingProvider {
     account_failures_are_model_scoped: bool,
     static_metadata_notice: Option<StaticMetadataNoticeRoute>,
     image_input_support: Option<bool>,
+    idempotent_request_support: bool,
 }
 
 impl HealthReportingProvider {
@@ -1654,6 +1656,7 @@ impl HealthReportingProvider {
             account_failures_are_model_scoped: false,
             static_metadata_notice: None,
             image_input_support: None,
+            idempotent_request_support: false,
         }
     }
 
@@ -1669,6 +1672,11 @@ impl HealthReportingProvider {
     /// catalog-backed routes pass an explicit model-level answer.
     pub fn with_image_input_support(mut self, supported: Option<bool>) -> Self {
         self.image_input_support = supported;
+        self
+    }
+
+    pub fn with_idempotent_request_support(mut self, supported: bool) -> Self {
+        self.idempotent_request_support = supported;
         self
     }
 
@@ -1714,7 +1722,9 @@ impl Provider for HealthReportingProvider {
     }
 
     fn control_capabilities(&self) -> ProviderControlCapabilities {
-        self.inner.control_capabilities()
+        let mut capabilities = self.inner.control_capabilities();
+        capabilities.idempotent_requests |= self.idempotent_request_support;
+        capabilities
     }
 
     fn effort_application(&self, request: &TurnRequest) -> EffortApplication {
@@ -2686,6 +2696,20 @@ mod guard_tests {
         let stream_debug = format!("{stream:?}");
         assert!(!stream_debug.contains("sk-secret-in-message"));
         assert!(stream_debug.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn explicit_idempotent_support_augments_inner_capabilities() {
+        let provider = HealthReportingProvider::new(
+            Box::new(BillingProvider {
+                calls: Arc::new(AtomicUsize::new(0)),
+            }),
+            "recording",
+            ProviderHealthStore::new(8),
+        )
+        .with_idempotent_request_support(true);
+
+        assert!(provider.control_capabilities().idempotent_requests);
     }
 
     #[tokio::test]

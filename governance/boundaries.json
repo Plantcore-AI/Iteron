@@ -299,6 +299,30 @@
           "path": "release-tools"
         },
         {
+          "kind": "file",
+          "path": "scripts/plantcore-recording-driver"
+        },
+        {
+          "kind": "file",
+          "path": "scripts/plantcore_recording_driver.py"
+        },
+        {
+          "kind": "file",
+          "path": "scripts/plantcore_recording_action.py"
+        },
+        {
+          "kind": "file",
+          "path": "scripts/plantcore_recording_common.py"
+        },
+        {
+          "kind": "file",
+          "path": "scripts/plantcore_recording_evidence.py"
+        },
+        {
+          "kind": "file",
+          "path": "scripts/test_plantcore_recording_driver.py"
+        },
+        {
           "kind": "tree",
           "path": "xtask"
         }
@@ -328,6 +352,10 @@
         {
           "kind": "tree",
           "path": "crates/protocol"
+        },
+        {
+          "kind": "tree",
+          "path": "contracts/plantcore"
         }
       ],
       "contracts": [
@@ -512,6 +540,10 @@
         {
           "kind": "tree",
           "path": "crates/cli/src/runtime/hooks"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/iteron_workspace_hook.rs"
         }
       ],
       "contracts": [
@@ -714,6 +746,10 @@
         {
           "kind": "file",
           "path": "crates/provider/src/lib.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/provider/src/recording_transport.rs"
         },
         {
           "kind": "file",
@@ -1328,6 +1364,10 @@
         {
           "kind": "file",
           "path": "crates/tools/tests/tool_exposure_profile.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/tools/src/plantcore.rs"
         }
       ],
       "contracts": [
@@ -1611,6 +1651,10 @@
           "path": "crates/cli/src/providers.rs"
         },
         {
+          "kind": "file",
+          "path": "crates/cli/src/recording_provider.rs"
+        },
+        {
           "kind": "tree",
           "path": "crates/cli/src/providers"
         },
@@ -1885,6 +1929,10 @@
         {
           "kind": "file",
           "path": "crates/cli/src/workspace_review.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/plantcore.rs"
         }
       ],
       "contracts": [
@@ -2055,6 +2103,14 @@
         {
           "kind": "file",
           "path": "crates/cli/src/session_view_tests.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/machine_contract.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/cli/src/output"
         }
       ],
       "contracts": [
@@ -2323,6 +2379,38 @@
         {
           "kind": "file",
           "path": "crates/cli/src/tui.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/recording_provider.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/provider/src/recording_transport.rs"
+        },
+        {
+          "kind": "file",
+          "path": "scripts/plantcore-recording-driver"
+        },
+        {
+          "kind": "file",
+          "path": "scripts/plantcore_recording_driver.py"
+        },
+        {
+          "kind": "file",
+          "path": "scripts/plantcore_recording_action.py"
+        },
+        {
+          "kind": "file",
+          "path": "scripts/plantcore_recording_common.py"
+        },
+        {
+          "kind": "file",
+          "path": "scripts/plantcore_recording_evidence.py"
+        },
+        {
+          "kind": "file",
+          "path": "scripts/test_plantcore_recording_driver.py"
         }
       ]
     },
@@ -2495,6 +2583,34 @@
         {
           "kind": "file",
           "path": "crates/cli/src/runtime/hooks.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/recording_provider.rs"
+        },
+        {
+          "kind": "file",
+          "path": "scripts/plantcore-recording-driver"
+        },
+        {
+          "kind": "file",
+          "path": "scripts/plantcore_recording_driver.py"
+        },
+        {
+          "kind": "file",
+          "path": "scripts/plantcore_recording_action.py"
+        },
+        {
+          "kind": "file",
+          "path": "scripts/plantcore_recording_common.py"
+        },
+        {
+          "kind": "file",
+          "path": "scripts/plantcore_recording_evidence.py"
+        },
+        {
+          "kind": "file",
+          "path": "scripts/test_plantcore_recording_driver.py"
         }
       ]
     },
@@ -2633,6 +2749,34 @@
         {
           "kind": "file",
           "path": "crates/cli/src/tui.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/recording_provider.rs"
+        },
+        {
+          "kind": "file",
+          "path": "scripts/plantcore-recording-driver"
+        },
+        {
+          "kind": "file",
+          "path": "scripts/plantcore_recording_driver.py"
+        },
+        {
+          "kind": "file",
+          "path": "scripts/plantcore_recording_action.py"
+        },
+        {
+          "kind": "file",
+          "path": "scripts/plantcore_recording_common.py"
+        },
+        {
+          "kind": "file",
+          "path": "scripts/plantcore_recording_evidence.py"
+        },
+        {
+          "kind": "file",
+          "path": "scripts/test_plantcore_recording_driver.py"
         }
       ]
     },
@@ -2699,6 +2843,34 @@
         {
           "kind": "file",
           "path": "crates/kernel/src/lib.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/recording_provider.rs"
+        },
+        {
+          "kind": "file",
+          "path": "scripts/plantcore-recording-driver"
+        },
+        {
+          "kind": "file",
+          "path": "scripts/plantcore_recording_driver.py"
+        },
+        {
+          "kind": "file",
+          "path": "scripts/plantcore_recording_action.py"
+        },
+        {
+          "kind": "file",
+          "path": "scripts/plantcore_recording_common.py"
+        },
+        {
+          "kind": "file",
+          "path": "scripts/plantcore_recording_evidence.py"
+        },
+        {
+          "kind": "file",
+          "path": "scripts/test_plantcore_recording_driver.py"
         }
       ]
     },
@@ -3121,6 +3293,30 @@
         {
           "kind": "tree",
           "path": "release-tools"
+        },
+        {
+          "kind": "file",
+          "path": "scripts/plantcore-recording-driver"
+        },
+        {
+          "kind": "file",
+          "path": "scripts/plantcore_recording_driver.py"
+        },
+        {
+          "kind": "file",
+          "path": "scripts/plantcore_recording_action.py"
+        },
+        {
+          "kind": "file",
+          "path": "scripts/plantcore_recording_common.py"
+        },
+        {
+          "kind": "file",
+          "path": "scripts/plantcore_recording_evidence.py"
+        },
+        {
+          "kind": "file",
+          "path": "scripts/test_plantcore_recording_driver.py"
         },
         {
           "kind": "file",

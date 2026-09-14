@@ -135,6 +135,7 @@ pub(crate) fn resolve_fresh(input: FreshCompositionInput<'_>) -> anyhow::Result<
         registry: input.registry,
         agent_spawn_available: input.agent_spawn_available,
         configured_mcp: input.configured_mcp,
+        provider_control_capabilities: input.provider_control_capabilities,
     })?;
 
     let token_estimators = CatalogObservation::observed(
@@ -658,7 +659,11 @@ mod tests {
         let provider_controls = iteron_provider::ProviderControlCapabilities::default();
         let registry = Registry::coding_agent(workspace).unwrap();
         let agent_catalog = AgentCatalog::builtin_only();
-        let budget = Budget::default();
+        // A small aggregate ceiling must not activate the unsupported provider thinking map.
+        let budget = Budget {
+            max_tokens: Some(100),
+            ..Budget::default()
+        };
         let compaction = iteron_ctx::CompactionPolicy::default();
         let retry = BackoffPolicy::default();
         let rules = PermissionRules::default();
@@ -713,7 +718,7 @@ mod tests {
             budget_origins: BudgetOrigins {
                 max_turns: ConfigOrigin::Builtin,
                 max_usd: None,
-                max_tokens: None,
+                max_tokens: Some(ConfigOrigin::Cli),
                 max_wall_secs: ConfigOrigin::Builtin,
                 max_consecutive_tool_errors: ConfigOrigin::Builtin,
             },
@@ -773,6 +778,7 @@ mod tests {
         );
         assert_eq!(fresh.fact_summary.active_full_gaps, 0);
         assert_eq!(fresh.settings.budget.max_turns, 10);
+        assert_eq!(fresh.settings.budget.max_tokens, Some(100));
         assert_eq!(fresh.settings.context_budget.multimodal_tokens, 1_024);
         assert!(
             fresh.settings.model_context_window.is_some(),

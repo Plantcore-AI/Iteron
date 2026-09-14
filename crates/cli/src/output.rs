@@ -15,7 +15,13 @@ use iteron_provider::EffortApplication;
 use serde_json::{Value, json};
 use std::io::{self, Write};
 
+mod v7;
+pub(crate) type V7AssistantStream = v7::AssistantStream;
+
+/// Frozen pre-PlantCore stream schema used by the compatibility projector and its goldens.
 pub const SCHEMA_VERSION: u32 = 6;
+pub const V7_SCHEMA_VERSION: u32 = 7;
+pub const DEFAULT_SCHEMA_VERSION: u32 = SCHEMA_VERSION;
 pub const PREVIOUS_SCHEMA_VERSION: u32 = 5;
 pub const LEGACY_SCHEMA_VERSION: u32 = 4;
 pub const SUPPORTED_SCHEMA_VERSIONS: [u32; 3] = [
@@ -30,11 +36,26 @@ pub const EXIT_HARNESS: u8 = 2;
 pub const EXIT_BUDGET: u8 = 3;
 pub const EXIT_STUCK: u8 = 4;
 pub const EXIT_INTERRUPTED: u8 = 130;
+
+pub(crate) fn canonical_v7_event_bytes(value: &Value) -> io::Result<Vec<u8>> {
+    v7::canonical_bytes(value)
+}
 /// A provider can split one credential-shaped token across arbitrarily many deltas. Hold the
 /// unfinished token until a delimiter arrives so per-delta scrubbing cannot leak its prefix. A
 /// malicious delimiter-free token is replaced at this ceiling rather than growing without bound.
 const MAX_PENDING_STREAM_TOKEN_BYTES: usize = 16 * 1024;
 const MAX_STDERR_NOTICE_BYTES: usize = 4 * 1024;
+/// Keep text/thinking deltas comfortably below the canonical v7 event ceiling after JSON escaping,
+/// envelope fields, and redaction markers are added.
+pub(crate) const MAX_STREAM_UI_DELTA_BYTES: usize = 8 * 1024;
+
+pub(crate) fn max_stream_ui_delta_bytes() -> usize {
+    iteron_tunables::param_usize(
+        "cli.output.max_stream_ui_delta_bytes",
+        MAX_STREAM_UI_DELTA_BYTES,
+    )
+    .clamp(1, MAX_STREAM_UI_DELTA_BYTES)
+}
 
 /// The stdout contract for a one-shot run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -455,6 +476,45 @@ pub fn stream_event(event: UiEvent, turn: &mut u32) -> Value {
     }
 }
 
+pub(crate) fn stream_event_for_schema(
+    event: UiEvent,
+    turn: &mut u32,
+    schema_version: u32,
+) -> io::Result<Value> {
+    let value = stream_event(event, turn);
+    if schema_version == V7_SCHEMA_VERSION {
+        v7::opaque_value(value)
+    } else {
+        project_schema(value, schema_version)
+    }
+}
+
+pub(crate) fn v7_result(outcome: &iteron_protocol::PlantcoreTerminalOutcome) -> io::Result<Value> {
+    v7::result_value(outcome)
+}
+
+pub(crate) fn v7_usage(usage: &iteron_protocol::TurnUsage) -> io::Result<Value> {
+    v7::usage_value(usage)
+}
+
+pub(crate) fn v7_plantcore_run_admitted(
+    profile_digest_sha256: iteron_protocol::HexSha256,
+) -> io::Result<Value> {
+    v7::opaque_value(json!({
+        "type": "plantcore_run_admitted",
+        "profile_digest_sha256": format!("sha256:{profile_digest_sha256}"),
+    }))
+}
+
+pub(crate) fn v7_plantcore_event(event: crate::runtime::PlantcoreUiEvent) -> io::Result<Value> {
+    match event {
+        crate::runtime::PlantcoreUiEvent::Usage(usage) => v7_usage(&usage),
+        crate::runtime::PlantcoreUiEvent::RunAdmitted {
+            profile_digest_sha256,
+        } => v7_plantcore_run_admitted(profile_digest_sha256),
+    }
+}
+
 /// Build the metadata-only record emitted immediately before a multimodal SQ submission.
 ///
 /// Bounds are enforced by [`input_attachment_record`] before this producer is reached. Keeping
@@ -658,6 +718,7 @@ impl Emitter {
         if let Some(value) =
             input_attachment_record(self.format, ordinal, media_type, encoded_bytes)?
         {
+            let value = project_schema(value, self.schema_version)?;
             write_json_line(std::io::stdout().lock(), &value)?;
         }
         Ok(())

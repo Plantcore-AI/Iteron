@@ -250,21 +250,27 @@ fn add_token_constraints(
         int(parent_token_ceiling),
     )?;
     if input
-        .budget
-        .max_tokens
-        .is_none_or(|tokens| tokens >= u64::from(Effort::Ultracode.thinking_budget()))
+        .route
+        .capabilities
+        .contains(&CapabilityRequirement::ProviderReasoningControl)
     {
-        domain_one(
-            builder,
-            "thinking_map",
-            "$",
-            ExternalCeiling::ParentTokens,
-            thinking_map(),
-        )?;
-    } else {
-        report
-            .gaps
-            .push(CoreFactGap::ParentTokenCeilingBelowThinkingMap);
+        if input
+            .budget
+            .max_tokens
+            .is_none_or(|tokens| tokens >= u64::from(Effort::Ultracode.thinking_budget()))
+        {
+            domain_one(
+                builder,
+                "thinking_map",
+                "$",
+                ExternalCeiling::ParentTokens,
+                thinking_map(),
+            )?;
+        } else {
+            report
+                .gaps
+                .push(CoreFactGap::ParentTokenCeilingBelowThinkingMap);
+        }
     }
     Ok(())
 }

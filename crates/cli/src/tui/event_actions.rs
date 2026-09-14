@@ -39,6 +39,7 @@ pub(super) fn apply_server_event<T: notification::NotificationTransport + ?Sized
 ) {
     match event {
         app_server::ServerEvent::Ui(event) => apply_live_event(app, event, notifier, writer),
+        app_server::ServerEvent::Plantcore(_) => {}
         app_server::ServerEvent::WorkflowRun(event) => app.workflow_run_ui_event(event),
         app_server::ServerEvent::Activity(event) => {
             if event.validate().is_err() {

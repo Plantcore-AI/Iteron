@@ -1066,8 +1066,11 @@ impl PtyHarness {
             })
             .expect("resize PTY and deliver SIGWINCH");
         self.wait_until(&format!("redraw at {cols}x{rows}"), |pty| {
+            let (cursor_row, cursor_col) = pty.parser.screen().cursor_position();
             pty.capture.len() > before
                 && pty.parser.screen().size() == (rows, cols)
+                && cursor_row < rows
+                && cursor_col < cols
                 && (pty.screen_text().contains("请检查")
                     || pty.screen_text().contains("Transcript")
                     || pty.screen_text().contains("Iteron")
@@ -1224,6 +1227,10 @@ impl Drop for PtyHarness {
 }
 
 fn wait_for_ready(pty: &mut PtyHarness) {
+    wait_for_ready_with_composer(pty, "ask about this codebase");
+}
+
+fn wait_for_ready_with_composer(pty: &mut PtyHarness, composer_text: &str) {
     pty.wait_until("the initial Core full-screen surface", |pty| {
         let screen = pty.parser.screen();
         let text = screen.contents();
@@ -1231,7 +1238,7 @@ fn wait_for_ready(pty: &mut PtyHarness) {
             && screen.bracketed_paste()
             && screen.mouse_protocol_mode() != vt100::MouseProtocolMode::None
             && text.contains("▄██")
-            && text.contains("ask about this codebase")
+            && text.contains(composer_text)
             && text.contains("glm-5.2")
             && text.contains("○ low")
             && !text.contains('�')
@@ -1581,7 +1588,7 @@ fn osc11_light_background_selects_the_light_truecolor_palette_without_colorfgbg(
     // Input arriving while the query is outstanding must be replayed into the normal TUI path.
     pty.send(b"preprobe42");
     pty.send(b"\x1b]11;rgb:ffff/ffff/ffff\x1b\\");
-    wait_for_ready(&mut pty);
+    wait_for_ready_with_composer(&mut pty, "preprobe42");
     pty.wait_until("startup input replay after OSC demultiplexing", |pty| {
         pty.screen_text().contains("preprobe42")
     });
@@ -2143,7 +2150,9 @@ fn startup_resume_projects_the_recorded_conversation_into_the_real_terminal() {
     let mut resumed = PtyHarness::spawn_resume_fixture(&scratch, &run_id, 96, 26);
     resumed.wait_until("the resumed first frame contains the prior answer", |pty| {
         let screen = pty.screen_text();
-        screen.contains("parity reply") && screen.contains(CLIENT_PARITY_TASK.trim())
+        screen.contains("parity reply")
+            && screen.contains(CLIENT_PARITY_TASK.trim())
+            && screen.contains("ready")
     });
     assert!(
         !resumed

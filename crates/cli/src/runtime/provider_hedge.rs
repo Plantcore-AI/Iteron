@@ -102,6 +102,8 @@ struct PreparedAttempt {
     attempt_cancel: Arc<AtomicBool>,
     ticket: effects::EffectTicket,
     permit: Option<AttemptPermit>,
+    dispatch_gate: Option<Arc<plantcore::DispatchGate>>,
+    allow_in_flight_past_deadline: bool,
 }
 
 #[allow(
@@ -122,6 +124,7 @@ enum AttemptTerminal {
         physical_attempt: u32,
         ticket: effects::EffectTicket,
         permit: Option<AttemptPermit>,
+        dispatch_permit: Option<plantcore::DispatchPermit>,
         items: Vec<StreamItem>,
         rate_limit: Option<iteron_provider::RateLimitSnapshot>,
         result: Result<iteron_provider::TurnResult, KernelError>,
@@ -245,6 +248,41 @@ impl Agent {
                     }
                 };
                 let Some(permit) = admitted else {
+                    let ordinal =
+                        self.next_effect_ordinal(turn, effect_class::EffectClass::Provider);
+                    let physical_attempt = physical_attempt_base
+                        .saturating_add(u32::from(index))
+                        .saturating_add(1);
+                    let (objective_score, objective_evidence) =
+                        self.objective_rank_evidence(route_id);
+                    let ticket = self.open_kernel_effect(
+                        turn,
+                        effect_class::EffectClass::Provider,
+                        ordinal,
+                        Capability::IrreversibleExternal,
+                        serde_json::json!({
+                            "model": request.model,
+                            "route_id": route_id,
+                            "route_transition": route_transition,
+                            "messages": request.messages.len(),
+                            "tools": request.tools.len(),
+                            "max_tokens": request.max_tokens,
+                            "physical_attempt": physical_attempt,
+                            "route_retry_index": route_retry_index,
+                            "hedge_attempt": index,
+                            "hedge_delay_ms": u64::try_from(hedge.delay.checked_mul(u32::from(index)).unwrap_or(Duration::MAX).as_millis()).unwrap_or(u64::MAX),
+                            "route_objective_score_millionths": objective_score,
+                            "route_objective_evidence": objective_evidence,
+                        }),
+                    )?;
+                    self.settle_not_dispatched_hedge(
+                        turn,
+                        route_id,
+                        ordinal,
+                        physical_attempt,
+                        ticket,
+                        "hedge duplicate was not admitted for provider dispatch",
+                    )?;
                     continue;
                 };
                 Some(permit)
@@ -252,7 +290,7 @@ impl Agent {
             let attempt_cancel = Arc::new(AtomicBool::new(false));
             let ordinal = self.next_effect_ordinal(turn, effect_class::EffectClass::Provider);
             let physical_attempt = physical_attempt_base
-                .saturating_add(u32::try_from(prepared.len()).unwrap_or(u32::MAX))
+                .saturating_add(u32::from(index))
                 .saturating_add(1);
             let delay = hedge
                 .delay
@@ -306,10 +344,12 @@ impl Agent {
                 attempt_cancel,
                 ticket,
                 permit,
+                dispatch_gate: self.plantcore_dispatch_gate(),
+                allow_in_flight_past_deadline: self.plantcore_runtime_enabled(),
             });
         }
 
-        let scheduled_attempts = u32::try_from(prepared.len()).unwrap_or(u32::MAX);
+        let scheduled_attempts = u32::from(total);
         if primary_admission_preacquired
             && let Err(error) = self.begin_provider_attempt_after_intent(turn)
         {
@@ -390,21 +430,19 @@ impl Agent {
                             }
                         }
                         if selected_index == Some(live.index)
-                            && let Some(tx) = &self.ui_tx
+                            && (self.resident_ui_tx.is_some() || self.ui_tx.is_some())
                         {
                             match live.item {
                                 StreamItem::TextDelta(text) => {
-                                    let _ = self.frontend_saturation.try_send_ui(
-                                        tx,
-                                        UiEvent::Text(iteron_record::redact::scrub(&text)),
-                                    );
+                                    let _ = self.ui(UiEvent::Text(iteron_record::redact::scrub(
+                                        &text,
+                                    )));
                                     ui_deltas_forwarded = true;
                                 }
                                 StreamItem::ThinkingDelta(text) => {
-                                    let _ = self.frontend_saturation.try_send_ui(
-                                        tx,
-                                        UiEvent::Thinking(iteron_record::redact::scrub(&text)),
-                                    );
+                                    let _ = self.ui(UiEvent::Thinking(iteron_record::redact::scrub(
+                                        &text,
+                                    )));
                                     ui_deltas_forwarded = true;
                                 }
                                 StreamItem::Accepted
@@ -428,24 +466,13 @@ impl Agent {
                     ticket,
                     permit,
                 } => {
-                    let accounting = route_attempt_accounting::not_dispatched_accounting(
+                    self.settle_not_dispatched_hedge(
+                        turn,
                         route_id,
+                        ordinal,
                         physical_attempt,
-                    )?;
-                    self.settle_kernel_effect(
                         ticket,
-                        effects::Settlement::Definite(EventKind::EffectFailed {
-                            id: effect_class::effect_id(
-                                turn,
-                                effect_class::EffectClass::Provider,
-                                ordinal,
-                            ),
-                            tool: effect_class_label(effect_class::EffectClass::Provider)
-                                .to_string(),
-                            reason: "hedge duplicate was cancelled before provider dispatch".into(),
-                            duration_ms: None,
-                            provider_route_attempt: Some(accounting),
-                        }),
+                        "hedge duplicate was cancelled before provider dispatch",
                     )?;
                     drop(permit);
                     let _ = index;
@@ -456,6 +483,7 @@ impl Agent {
                     physical_attempt,
                     ticket,
                     permit,
+                    dispatch_permit,
                     items,
                     rate_limit,
                     result,
@@ -478,9 +506,12 @@ impl Agent {
                             accounting.clone(),
                         ),
                     )?;
+                    self.observe_plantcore_provider_attempt(turn, &accounting)
+                        .map_err(|reason| KernelError::ContextResolution(reason.into()))?;
                     self.commit_provider_route_charge(turn, &accounting)?;
                     self.observe_governed_route_attempt(turn, route_id, &result, rate_limit)?;
                     drop(permit);
+                    drop(dispatch_permit);
                     match result {
                         Ok(result) => {
                             aggregate.observe_success(result.usage);
@@ -494,25 +525,19 @@ impl Agent {
                                 // Winner selection is the success terminal for this physical
                                 // stream. Rendering its already-validated deltas must not wait for
                                 // duplicate cancellation/accounting to settle.
-                                if let Some(tx) = &self.ui_tx {
+                                if self.resident_ui_tx.is_some() || self.ui_tx.is_some() {
                                     for item in &items {
                                         match item {
                                             StreamItem::TextDelta(text) => {
-                                                let _ = self.frontend_saturation.try_send_ui(
-                                                    tx,
-                                                    UiEvent::Text(iteron_record::redact::scrub(
-                                                        text,
-                                                    )),
-                                                );
+                                                let _ = self.ui(UiEvent::Text(
+                                                    iteron_record::redact::scrub(text),
+                                                ));
                                                 ui_deltas_forwarded = true;
                                             }
                                             StreamItem::ThinkingDelta(text) => {
-                                                let _ = self.frontend_saturation.try_send_ui(
-                                                    tx,
-                                                    UiEvent::Thinking(
-                                                        iteron_record::redact::scrub(text),
-                                                    ),
-                                                );
+                                                let _ = self.ui(UiEvent::Thinking(
+                                                    iteron_record::redact::scrub(text),
+                                                ));
                                                 ui_deltas_forwarded = true;
                                             }
                                             StreamItem::Accepted
@@ -577,27 +602,42 @@ impl Agent {
         reason: &'static str,
     ) -> Result<(), KernelError> {
         for attempt in prepared {
-            let accounting = route_attempt_accounting::not_dispatched_accounting(
+            self.settle_not_dispatched_hedge(
+                turn,
                 route_id,
+                attempt.ordinal,
                 attempt.physical_attempt,
-            )?;
-            self.settle_kernel_effect(
                 attempt.ticket,
-                effects::Settlement::Definite(EventKind::EffectFailed {
-                    id: effect_class::effect_id(
-                        turn,
-                        effect_class::EffectClass::Provider,
-                        attempt.ordinal,
-                    ),
-                    tool: effect_class_label(effect_class::EffectClass::Provider).to_string(),
-                    reason: reason.into(),
-                    duration_ms: None,
-                    provider_route_attempt: Some(accounting),
-                }),
+                reason,
             )?;
             drop(attempt.permit);
         }
         Ok(())
+    }
+
+    fn settle_not_dispatched_hedge(
+        &mut self,
+        turn: TurnId,
+        route_id: &str,
+        ordinal: usize,
+        physical_attempt: u32,
+        ticket: effects::EffectTicket,
+        reason: &'static str,
+    ) -> Result<(), KernelError> {
+        let accounting =
+            route_attempt_accounting::not_dispatched_accounting(route_id, physical_attempt)?;
+        self.settle_kernel_effect(
+            ticket,
+            effects::Settlement::Definite(EventKind::EffectFailed {
+                id: effect_class::effect_id(turn, effect_class::EffectClass::Provider, ordinal),
+                tool: effect_class_label(effect_class::EffectClass::Provider).to_string(),
+                reason: reason.into(),
+                duration_ms: None,
+                provider_route_attempt: Some(accounting.clone()),
+            }),
+        )?;
+        self.observe_plantcore_provider_attempt(turn, &accounting)
+            .map_err(|reason| KernelError::ContextResolution(reason.into()))
     }
 
     fn try_admit_optional_hedge(
@@ -672,6 +712,39 @@ async fn run_attempt(
         };
     }
 
+    let dispatch_permit = match &attempt.dispatch_gate {
+        Some(gate) => match gate.enter().await {
+            Some(permit) => Some(permit),
+            None => {
+                return AttemptTerminal::Suppressed {
+                    index: attempt.index,
+                    ordinal: attempt.ordinal,
+                    physical_attempt: attempt.physical_attempt,
+                    ticket: attempt.ticket,
+                    permit: attempt.permit,
+                };
+            }
+        },
+        None => None,
+    };
+    if attempt.attempt_cancel.load(Ordering::Acquire)
+        || attempt.drain.load(Ordering::Acquire)
+        || attempt.force_cancel.load(Ordering::Acquire)
+        || attempt
+            .interrupt
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Acquire))
+    {
+        drop(dispatch_permit);
+        return AttemptTerminal::Suppressed {
+            index: attempt.index,
+            ordinal: attempt.ordinal,
+            physical_attempt: attempt.physical_attempt,
+            ticket: attempt.ticket,
+            permit: attempt.permit,
+        };
+    }
+
     let mut items = Vec::new();
     let mut rate_limit = None;
     let mut buffer_overflow = None;
@@ -706,6 +779,7 @@ async fn run_attempt(
                 force_cancel: attempt.force_cancel,
                 drain: attempt.drain,
                 attempt: Some(attempt.attempt_cancel),
+                allow_in_flight_past_deadline: attempt.allow_in_flight_past_deadline,
             },
             &attempt.request,
             &mut on_item,
@@ -726,6 +800,7 @@ async fn run_attempt(
         physical_attempt: attempt.physical_attempt,
         ticket: attempt.ticket,
         permit: attempt.permit,
+        dispatch_permit,
         items,
         rate_limit,
         result,

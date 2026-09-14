@@ -92,7 +92,7 @@ pub(super) const DEFAULTS: [DefaultSpec; 85] = [
     derived_default_with_value!("provider_connect_tls_timeout", integer_value!(10)), // 67 provider_connect_tls_timeout
     literal_default!(object_value!(
         "max_images" => integer_value!(8),
-        "per_image_raw_bytes" => integer_value!(6_291_456),
+        "per_image_raw_bytes" => integer_value!(25_165_824),
         "aggregate_raw_bytes" => integer_value!(25_165_824),
         "max_dimension" => integer_value!(8_192),
         "max_frames" => integer_value!(256),

@@ -155,6 +155,29 @@ impl Agent {
         Ok(())
     }
 
+    /// Remove every preconfigured fallback that would change the immutable PlantCore engine
+    /// identity. Retry and hedge attempts remain on the selected route; a future alternate
+    /// transport instance may remain only when it advertises the exact same provider/model pair.
+    pub(crate) fn freeze_plantcore_provider_identity(
+        &mut self,
+        provider_id: &str,
+        model_id: &str,
+    ) -> Result<(), KernelError> {
+        if self.ledger.provider_attempts != 0
+            || self.provider.provider_instance_id() != Some(provider_id)
+            || self.model != model_id
+        {
+            return Err(KernelError::InvalidRouteMetadata {
+                field: "plantcore_provider_identity",
+                reason: "PlantCore provider identity must freeze before provider admission",
+            });
+        }
+        let fixed_route = format!("{provider_id}:{model_id}");
+        self.fallback_provider_routes
+            .retain(|route| route.id() == fixed_route);
+        Ok(())
+    }
+
     /// Freeze the objective order once, before the first provider admission. Unknown objective
     /// facts sort after proven routes and remain ineligible at the request gate; they are retained
     /// only so the durable abstention can distinguish an exhausted chain from an empty one.
@@ -319,7 +342,7 @@ impl Agent {
     pub(super) fn admitted_failover(
         &self,
         error: &KernelError,
-        emitted: bool,
+        semantic_output_observed: bool,
     ) -> Option<iteron_provider::FailoverClass> {
         let governor = self.provider_governor.as_ref()?;
         let KernelError::Provider(error) = error else {
@@ -332,7 +355,9 @@ impl Agent {
                 | iteron_provider::ProviderError::KnownAccountUnavailable { .. }
         ) {
             iteron_provider::FailurePoint::PreDispatch
-        } else if !emitted && !super::provider_route::provider_outcome_is_unobservable(error) {
+        } else if !semantic_output_observed
+            && !super::provider_route::provider_outcome_is_unobservable(error)
+        {
             iteron_provider::FailurePoint::ProvenTerminal
         } else {
             return None;
