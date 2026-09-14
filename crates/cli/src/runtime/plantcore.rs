@@ -1085,11 +1085,12 @@ fn snapshot_artifact(
             .map_err(|_| "artifact snapshot fsync failed".to_owned())?;
         let final_name = lower_hex(&digest);
         let final_c = c_string(OsStr::new(&final_name))?;
-        // Linux release artifacts use renameat2(RENAME_NOREPLACE), which publishes the fully
-        // synced temporary file under its digest name without an overwrite window.
+        // Linux release artifacts use the renameat2(RENAME_NOREPLACE) syscall directly. Some
+        // musl toolchains do not export a renameat2 wrapper, while the kernel ABI is stable.
         #[cfg(target_os = "linux")]
         let published = unsafe {
-            libc::renameat2(
+            libc::syscall(
+                libc::SYS_renameat2,
                 staging.as_raw_fd(),
                 temporary_c.as_ptr(),
                 staging.as_raw_fd(),
