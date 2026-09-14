@@ -7957,12 +7957,12 @@
         },
         {
           "path": "crates/cli/src/runtime/plantcore.rs",
-          "line": 1171,
+          "line": 1170,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime/plantcore.rs",
-          "line": 1172,
+          "line": 1171,
           "evidence": "Rust path reference"
         }
       ]
@@ -13349,12 +13349,12 @@
         },
         {
           "path": "crates/cli/src/runtime/plantcore.rs",
-          "line": 1171,
+          "line": 1170,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime/plantcore.rs",
-          "line": 1172,
+          "line": 1171,
           "evidence": "Rust path reference"
         }
       ]
@@ -13380,7 +13380,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/plantcore.rs",
-          "line": 1035,
+          "line": 1034,
           "evidence": "Rust path reference"
         }
       ]
