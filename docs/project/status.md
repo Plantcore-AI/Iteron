@@ -2,7 +2,7 @@
 
 Iteron is Apache-2.0 licensed and **pre-alpha**. The current `main` branch is the
 only development line; there is no stable compatibility or support promise.
-The current source workspace and latest public release declare version
+The current source workspace declares **v0.0.21**. The latest public release is
 **v0.0.20**.
 
 ## Delivered baseline
@@ -27,7 +27,7 @@ The repository currently contains:
   source interfaces and are deliberately absent from release archives and the installer;
 - nine published pre-alpha releases: `v0.0.1` through `v0.0.5`, plus `v0.0.7`,
   `v0.0.9`, `v0.0.19`, and `v0.0.20`. The first four are historical local macOS
-  builds; `v0.0.20` is current. The immutable `v0.0.6` tag has no release or
+  builds; `v0.0.20` is the latest published release. The immutable `v0.0.6` tag has no release or
   assets because its schema-chronology validation failed before publication.
   Each published release's manifest and GitHub asset list are authoritative for
   its exact targets and attestations;

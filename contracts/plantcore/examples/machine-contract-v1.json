@@ -2,7 +2,7 @@
   "schema_version": 4,
   "type": "machine_contract",
   "contract_version": "plantcore.iteron.machine-contract.v1",
-  "release_id": "iteron-v0.0.20",
+  "release_id": "iteron-v0.0.21",
   "cli_stream_versions": [4, 5, 6],
   "default_cli_stream_version": 6,
   "resident_protocol_version": 5,

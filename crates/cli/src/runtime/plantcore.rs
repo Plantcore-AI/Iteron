@@ -501,12 +501,11 @@ impl Agent {
         if let Some(usage) = self
             .close_plantcore_turn_usage(turn)
             .map_err(|reason| super::KernelError::ContextResolution(reason.into()))?
+            && !self.plantcore_ui(super::PlantcoreUiEvent::Usage(usage))
         {
-            if !self.plantcore_ui(super::PlantcoreUiEvent::Usage(usage)) {
-                return Err(super::KernelError::ContextResolution(
-                    "PlantCore event channel is unavailable".into(),
-                ));
-            }
+            return Err(super::KernelError::ContextResolution(
+                "PlantCore event channel is unavailable".into(),
+            ));
         }
         Ok(())
     }

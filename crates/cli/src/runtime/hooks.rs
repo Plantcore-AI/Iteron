@@ -1125,7 +1125,7 @@ fn resolve_plantcore_workspace_executable() -> Result<PathBuf, &'static str> {
     #[cfg(test)]
     {
         validate_plantcore_workspace_executable(&current_executable)?;
-        return Ok(current_executable);
+        Ok(current_executable)
     }
     #[cfg(not(test))]
     let executable_dir = current_executable
