@@ -4,7 +4,7 @@
   "registry_revision": 24,
   "registry_digest": "dc46c5a2f21c77ae289c3c6169cc372230b5080110694d51bd39d4709bdc88fd",
   "param_registry_id": "iteron-params",
-  "param_registry_digest": "43f56e09d87c6f525cd146c16258af54ed20a14228909b29c2c823576798c43a",
+  "param_registry_digest": "9415660ae28f756caad511fbbf3346f5659ec89390ee4981ba890e91832e8ddc",
   "tool_text_registry_id": "iteron-builtin-tool-descriptions",
   "tool_text_registry_digest": "7da44a496e668c86c4456291e0e8178955ae7b99f473e69e1804d7742ae9738d",
   "counts": {
@@ -12838,12 +12838,12 @@
         },
         {
           "path": "crates/cli/src/runtime/plantcore.rs",
-          "line": 1170,
+          "line": 1171,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime/plantcore.rs",
-          "line": 1171,
+          "line": 1172,
           "evidence": "Rust path reference"
         }
       ]
@@ -18362,12 +18362,12 @@
         },
         {
           "path": "crates/cli/src/runtime/plantcore.rs",
-          "line": 1170,
+          "line": 1171,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime/plantcore.rs",
-          "line": 1171,
+          "line": 1172,
           "evidence": "Rust path reference"
         }
       ]
