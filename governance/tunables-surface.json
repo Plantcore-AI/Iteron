@@ -4,7 +4,7 @@
   "registry_revision": 24,
   "registry_digest": "dc46c5a2f21c77ae289c3c6169cc372230b5080110694d51bd39d4709bdc88fd",
   "param_registry_id": "iteron-params",
-  "param_registry_digest": "9415660ae28f756caad511fbbf3346f5659ec89390ee4981ba890e91832e8ddc",
+  "param_registry_digest": "310c3f956b17e31b75d6567f654a040282aecfa60dc126d17652c5ad392599e4",
   "tool_text_registry_id": "iteron-builtin-tool-descriptions",
   "tool_text_registry_digest": "7da44a496e668c86c4456291e0e8178955ae7b99f473e69e1804d7742ae9738d",
   "counts": {
@@ -12,10 +12,10 @@
     "families_full": 137,
     "families_fixed_hidden": 23,
     "families_profile_addressable": 119,
-    "params": 2312,
+    "params": 2315,
     "params_searchable": 588,
     "params_bounded": 888,
-    "params_structural": 836,
+    "params_structural": 839,
     "params_applied": 1476,
     "modules": 28,
     "prompt_artifacts": 10,
@@ -129,7 +129,7 @@
       "id": "tool.arguments",
       "kind": "structured",
       "families": 0,
-      "params": 166,
+      "params": 169,
       "artifacts": 0
     },
     {
@@ -10700,7 +10700,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/iteron_workspace_hook.rs",
-          "line": 411,
+          "line": 417,
           "evidence": "Rust path reference"
         }
       ]
@@ -10727,7 +10727,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/iteron_workspace_hook.rs",
-          "line": 413,
+          "line": 419,
           "evidence": "Rust path reference"
         }
       ]
@@ -10754,7 +10754,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/iteron_workspace_hook.rs",
-          "line": 412,
+          "line": 418,
           "evidence": "Rust path reference"
         }
       ]
@@ -10781,7 +10781,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/iteron_workspace_hook.rs",
-          "line": 414,
+          "line": 420,
           "evidence": "Rust path reference"
         }
       ]
@@ -67619,6 +67619,33 @@
       ]
     },
     {
+      "id": "tools.lib.input_root",
+      "module": "tool_arguments",
+      "class": "structural",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"/workspace/input\"",
+      "domain": {},
+      "krate": "tools",
+      "decl": "crates/tools/src/lib.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "runtime_state_not_a_value",
+      "owner": {
+        "krate": "tools",
+        "path": "crates/tools/src/lib.rs",
+        "symbol": "plantcore_input_authority_path::INPUT_ROOT"
+      },
+      "use_sites": [
+        {
+          "path": "crates/tools/src/lib.rs",
+          "line": 1483,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
       "id": "tools.lib.max_observation_focus_files",
       "module": "tool_arguments",
       "class": "bounded",
@@ -67704,6 +67731,33 @@
         }
       ],
       "behavior_oracle": "installed profile id tools.lib.mcp_pre_dispatch_terminal_ms is resolved at every listed production helper call"
+    },
+    {
+      "id": "tools.lib.work_root",
+      "module": "tool_arguments",
+      "class": "structural",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"/workspace/work\"",
+      "domain": {},
+      "krate": "tools",
+      "decl": "crates/tools/src/lib.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "runtime_state_not_a_value",
+      "owner": {
+        "krate": "tools",
+        "path": "crates/tools/src/lib.rs",
+        "symbol": "plantcore_input_authority_path::WORK_ROOT"
+      },
+      "use_sites": [
+        {
+          "path": "crates/tools/src/lib.rs",
+          "line": 1479,
+          "evidence": "Rust path reference"
+        }
+      ]
     },
     {
       "id": "tools.lsp.capability.identity_unprovable",
@@ -69218,6 +69272,11 @@
         {
           "path": "crates/tools/src/plantcore.rs",
           "line": 35,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/tools/src/tool_search.rs",
+          "line": 122,
           "evidence": "Rust path reference"
         }
       ]
@@ -71142,7 +71201,7 @@
       "use_sites": [
         {
           "path": "crates/tools/src/tool_search.rs",
-          "line": 52,
+          "line": 53,
           "evidence": "param_str_list runtime resolution"
         }
       ],
@@ -71199,12 +71258,12 @@
       "use_sites": [
         {
           "path": "crates/tools/src/tool_search.rs",
-          "line": 214,
+          "line": 226,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/tools/src/tool_search.rs",
-          "line": 216,
+          "line": 228,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -71234,7 +71293,7 @@
       "use_sites": [
         {
           "path": "crates/tools/src/tool_search.rs",
-          "line": 137,
+          "line": 149,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -71264,12 +71323,12 @@
       "use_sites": [
         {
           "path": "crates/tools/src/tool_search.rs",
-          "line": 143,
+          "line": 155,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/tools/src/tool_search.rs",
-          "line": 145,
+          "line": 157,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -71297,7 +71356,34 @@
       "use_sites": [
         {
           "path": "crates/tools/src/tool_search.rs",
-          "line": 121,
+          "line": 133,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "tools.tool_search.plantcore_eager_tools",
+      "module": "tool_arguments",
+      "class": "structural",
+      "type": "array",
+      "rust_type": "&[&str]",
+      "default": "&[\"write_file\", \"publish_artifact\", \"request_user_input\"]",
+      "domain": {},
+      "krate": "tools",
+      "decl": "crates/tools/src/tool_search.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "runtime_state_not_a_value",
+      "owner": {
+        "krate": "tools",
+        "path": "crates/tools/src/tool_search.rs",
+        "symbol": "PLANTCORE_EAGER_TOOLS"
+      },
+      "use_sites": [
+        {
+          "path": "crates/tools/src/tool_search.rs",
+          "line": 123,
           "evidence": "Rust path reference"
         }
       ]
@@ -71323,27 +71409,27 @@
       "use_sites": [
         {
           "path": "crates/tools/src/tool_search.rs",
-          "line": 104,
+          "line": 105,
           "evidence": "param_str runtime resolution"
         },
         {
           "path": "crates/tools/src/tool_search.rs",
-          "line": 109,
+          "line": 110,
           "evidence": "param_str runtime resolution"
         },
         {
           "path": "crates/tools/src/tool_search.rs",
-          "line": 158,
+          "line": 170,
           "evidence": "param_str runtime resolution"
         },
         {
           "path": "crates/tools/src/tool_search.rs",
-          "line": 184,
+          "line": 196,
           "evidence": "param_str runtime resolution"
         },
         {
           "path": "crates/tools/src/tool_search.rs",
-          "line": 232,
+          "line": 244,
           "evidence": "param_str runtime resolution"
         }
       ],

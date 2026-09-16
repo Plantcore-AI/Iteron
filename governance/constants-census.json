@@ -93,7 +93,7 @@
     "tools": {
       "bounded": 130,
       "searchable": 68,
-      "structural": 22
+      "structural": 25
     },
     "tunables": {
       "bounded": 18,
@@ -113,6 +113,6 @@
   },
   "schema_version": 1,
   "settable": 1476,
-  "structural": 836,
-  "total": 2312
+  "structural": 839,
+  "total": 2315
 }
