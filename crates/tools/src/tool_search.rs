@@ -22,6 +22,7 @@ const MAX_SEARCH_RESULTS: usize = 32;
 /// Schemas that are useful as bounded fallbacks but too broad for automatic task projection.
 /// They remain authority-admitted and searchable through [`TOOL_SEARCH`].
 const ON_DEMAND_ONLY_TOOLS: &[&str] = &["repo_map"];
+const PLANTCORE_EAGER_TOOLS: &[&str] = &["write_file", "publish_artifact", "request_user_input"];
 /// The stable ordinary coding surface. Specialised schemas remain one `tool_search` away, while
 /// these authority-admitted primitives never disappear between tasks and invalidate prompt-cache
 /// identity merely because task-ranking changed.
@@ -113,6 +114,17 @@ impl DeferredToolCatalog {
             if admitted.contains(*name) {
                 state.exposed.insert((*name).to_owned());
                 visible.insert((*name).to_owned());
+            }
+        }
+        // A PlantCore Run Pod's workspace hook denies `tool_search`, so the tools a Run needs to
+        // deliver its result cannot depend on lazy discovery: without them the model can read its
+        // input but never write or publish, and spends the wall budget searching.
+        if admitted.contains(crate::plantcore::PUBLISH_ARTIFACT) {
+            for name in PLANTCORE_EAGER_TOOLS {
+                if admitted.contains(*name) {
+                    state.exposed.insert((*name).to_owned());
+                    visible.insert((*name).to_owned());
+                }
             }
         }
         let ranked = ranked_names(&state, admitted, task);
@@ -336,6 +348,34 @@ fn contains_term(terms: &[String], needle: &str) -> bool {
 mod tests {
     use super::*;
     use iteron_protocol::ToolUse;
+
+    #[test]
+    fn plantcore_delivery_tools_are_eager_without_tool_search() {
+        let mut registry = Registry::coding_agent(std::env::temp_dir()).unwrap();
+        let task = "summarize the attached quarterly notes";
+        let plain = registry.specs().into_iter().map(|spec| spec.name).collect();
+        let before =
+            registry.specs_for_task_snapshot(&plain, task, Some(DEFAULT_DEFERRED_TOOL_EAGER_LIMIT));
+        assert!(!before.iter().any(|spec| spec.name == "publish_artifact"));
+
+        registry.register_plantcore_tools().unwrap();
+        let admitted = registry
+            .specs()
+            .into_iter()
+            .map(|spec| spec.name)
+            .collect::<BTreeSet<_>>();
+        let visible = registry
+            .specs_for_task_snapshot(&admitted, task, Some(DEFAULT_DEFERRED_TOOL_EAGER_LIMIT))
+            .iter()
+            .map(|spec| spec.name.clone())
+            .collect::<BTreeSet<_>>();
+        for name in PLANTCORE_EAGER_TOOLS {
+            assert!(
+                visible.contains(*name),
+                "{name} must not require tool_search"
+            );
+        }
+    }
 
     #[tokio::test]
     async fn repo_map_stays_lazy_until_explicitly_discovered() {
