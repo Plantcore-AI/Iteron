@@ -101,7 +101,11 @@ fn run() -> Result<(), &'static str> {
 fn admit_fixed_gateway_proxy(tool: &str, input: &Value) -> Option<Result<(), &'static str>> {
     let object = input.as_object()?;
     let decision = match tool {
-        "plantcore-run-gateway__tool_search" => {
+        // `tool_search` only reads the already-admitted in-process registry.  It
+        // does not take a path or access the workspace; treating it as a path
+        // tool deadlocks a Run before it can discover an authority-admitted MCP
+        // operation.
+        "tool_search" | "plantcore-run-gateway__tool_search" => {
             if !object
                 .keys()
                 .all(|key| matches!(key.as_str(), "query" | "limit"))
@@ -314,7 +318,6 @@ fn tool_paths(tool: &str, input: &Value) -> Result<Vec<(Access, PathBuf)>, &'sta
         | "web_search"
         | "dispatch_agent"
         | "Workflow"
-        | "tool_search"
         | "submit_repair_evidence"
         | "request_user_input" => Err("path_not_proven"),
         _ => Err("unknown_tool"),
@@ -646,6 +649,10 @@ mod tests {
 
     #[test]
     fn fixed_gateway_proxy_is_pathless_but_strictly_shaped() {
+        assert_eq!(
+            admit_fixed_gateway_proxy("tool_search", &json!({"query":"customer", "limit":8})),
+            Some(Ok(()))
+        );
         assert_eq!(
             admit_fixed_gateway_proxy(
                 "plantcore-run-gateway__tool_search",
