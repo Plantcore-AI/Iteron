@@ -142,6 +142,70 @@ async fn only_fixed_plantcore_gateway_resolves_an_exact_catalog_handle_without_s
     );
 }
 
+#[tokio::test]
+async fn only_fixed_plantcore_gateway_falls_back_to_its_bounded_catalog() {
+    let fixed = ManagedHttpServer::new(
+        plantcore_gateway_fixture(),
+        Vec::new(),
+        Arc::new(OnceLock::new()),
+    )
+    .unwrap();
+    let mut lifecycle = iteron_mcp::reconnect::LifecycleCore::deferred(
+        iteron_mcp::reconnect::ReconnectPolicy::default(),
+    );
+    let generation = lifecycle.begin_connection().unwrap();
+    let catalog = ManagedCatalog::admit(
+        &fixed.config.name,
+        fixed.binding.clone(),
+        iteron_mcp::MODERN_PROTOCOL_VERSION,
+        vec![ToolSpec {
+            name: "plantcore-run-gateway__pc_fixture_handle".into(),
+            description: "read the published package file".into(),
+            input_schema: json!({"type":"object"}),
+            purity: Purity::Effecting,
+            capability: Capability::IrreversibleExternal,
+        }],
+    )
+    .unwrap();
+    let result = search_catalog_for_server(
+        &fixed.config,
+        &catalog,
+        generation,
+        "unrelated natural language",
+        8,
+    )
+    .unwrap();
+    assert_eq!(result.total_matches, 1);
+    assert_eq!(
+        result.matches[0].name,
+        "plantcore-run-gateway__pc_fixture_handle"
+    );
+
+    let ordinary = http_fixture(None);
+    let ordinary_catalog = ManagedCatalog::admit(
+        &ordinary.name,
+        Arc::from([0]),
+        iteron_mcp::MODERN_PROTOCOL_VERSION,
+        vec![ToolSpec {
+            name: "alpha__pc_fixture_handle".into(),
+            description: "read the published package file".into(),
+            input_schema: json!({"type":"object"}),
+            purity: Purity::Effecting,
+            capability: Capability::IrreversibleExternal,
+        }],
+    )
+    .unwrap();
+    let result = search_catalog_for_server(
+        &ordinary,
+        &ordinary_catalog,
+        generation,
+        "unrelated natural language",
+        8,
+    )
+    .unwrap();
+    assert_eq!(result.total_matches, 0);
+}
+
 fn modern_fixture(marker: &Path) -> McpServerConfig {
     let script = concat!(
         "printf 'spawned' > \"$1\"; ",

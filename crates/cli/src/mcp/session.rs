@@ -1030,7 +1030,8 @@ impl ManagedHttpServer {
         let generation = self
             .ensure_ready(&mut state, &cancellation, deadline)
             .await?;
-        let result = state.catalog.search(generation, query, limit)?;
+        let result =
+            search_catalog_for_server(&self.config, &state.catalog, generation, query, limit)?;
         for matched in &result.matches {
             state
                 .identities
@@ -1754,6 +1755,25 @@ fn is_fixed_plantcore_run_gateway(config: &McpServerConfig) -> bool {
         && config.header_env.len() == 1
         && config.header_env.get("Authorization").map(String::as_str)
             == Some("PLANTCORE_RUN_GATEWAY_AUTHORIZATION")
+}
+
+/// The Run Gateway is a per-Run, authority-pinned catalog with a deliberately small tool set.
+/// A model's natural-language query need not share vocabulary with an opaque Precise handle, so
+/// an empty search result would otherwise make every admitted tool undiscoverable.  Only this
+/// fixed local Gateway may fall back to its bounded catalog; ordinary MCP servers retain strict
+/// query matching.
+fn search_catalog_for_server(
+    config: &McpServerConfig,
+    catalog: &ManagedCatalog,
+    generation: iteron_mcp::reconnect::ServerGeneration,
+    query: &str,
+    limit: usize,
+) -> Result<iteron_mcp::supervisor::McpToolSearchResult, iteron_mcp::McpError> {
+    let result = catalog.search(generation, query, limit)?;
+    if result.total_matches == 0 && is_fixed_plantcore_run_gateway(config) {
+        return catalog.search(generation, "", limit);
+    }
+    Ok(result)
 }
 
 fn server_identity_admitted(
