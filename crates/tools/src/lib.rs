@@ -1432,6 +1432,8 @@ pub(crate) fn resolve_from_canonical_root(root: &Path, rel: &str) -> Result<Path
     let requested = Path::new(rel);
     let joined = if requested.is_absolute() {
         requested.to_path_buf()
+    } else if let Some(input) = plantcore_input_authority_path(root, requested) {
+        input
     } else {
         root.join(requested)
     };
@@ -1465,6 +1467,20 @@ pub(crate) fn resolve_from_canonical_root(root: &Path, rel: &str) -> Result<Path
             Ok(resolved)
         }
     }
+}
+
+/// PlantCore Run Pods admit attachments as the workspace-relative authority `input/<opaque>`, but
+/// mount them read-only at `/workspace/input` beside the `/workspace/work` root. The workspace
+/// hook already approves that mapping; the tools must open the same file, or an approved read
+/// resolves to `/workspace/work/input/...` and reports not-found. Only the fixed Pod root maps.
+fn plantcore_input_authority_path(root: &Path, requested: &Path) -> Option<PathBuf> {
+    const WORK_ROOT: &str = "/workspace/work";
+    const INPUT_ROOT: &str = "/workspace/input";
+    if root != Path::new(WORK_ROOT) {
+        return None;
+    }
+    let relative = requested.strip_prefix("input").ok()?;
+    Some(Path::new(INPUT_ROOT).join(relative))
 }
 
 /// Render a resolved path the way a tool result should show it: workspace-relative when it is
@@ -1516,6 +1532,28 @@ mod memo_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plantcore_input_authority_resolves_to_the_hook_approved_mount() {
+        let work = Path::new("/workspace/work");
+        assert_eq!(
+            resolve_from_canonical_root(work, "input/da3c.txt").unwrap(),
+            PathBuf::from("/workspace/input/da3c.txt")
+        );
+        assert_eq!(
+            resolve_from_canonical_root(work, "input").unwrap(),
+            PathBuf::from("/workspace/input")
+        );
+        assert_eq!(
+            resolve_from_canonical_root(work, "inputs/a.txt").unwrap(),
+            PathBuf::from("/workspace/work/inputs/a.txt")
+        );
+        let other = std::env::temp_dir().canonicalize().unwrap();
+        assert_eq!(
+            resolve_from_canonical_root(&other, "input/a.txt").unwrap(),
+            other.join("input/a.txt")
+        );
+    }
 
     #[test]
     fn workspace_evidence_parser_is_typed_prefix_bound_and_fail_closed() {
