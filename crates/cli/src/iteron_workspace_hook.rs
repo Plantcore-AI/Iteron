@@ -351,6 +351,12 @@ fn authorize_path(
         // prefix stable for the model without accidentally resolving it beneath
         // the writable work root.
         Path::new("/workspace/input").join(relative)
+    } else if let Some(rest) = plantcore_authority_rest(supplied, "output") {
+        // The delivery prefix is symmetric with `input/`: artifacts are declared from
+        // `/workspace/output`, so `output/<name>` must not resolve beneath the work
+        // root (its `output/` subdirectory does not exist, and a blocked write there
+        // made real Runs burn the whole wall-clock budget).
+        Path::new("/workspace/output").join(rest)
     } else {
         Path::new("/workspace/work").join(supplied)
     };
@@ -368,6 +374,15 @@ fn authorize_path(
         Access::Write => {}
     }
     Ok((root, relative.to_path_buf()))
+}
+
+fn plantcore_authority_rest<'a>(supplied: &'a Path, prefix: &str) -> Option<&'a Path> {
+    let mut components = supplied.components();
+    match components.next() {
+        Some(Component::Normal(head)) if head == prefix => {}
+        _ => return None,
+    }
+    Some(components.as_path())
 }
 
 fn workspace_root(path: &Path) -> Option<(&'static Path, &Path)> {
@@ -785,6 +800,37 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[test]
+    fn plantcore_output_prefix_maps_to_the_output_mount() {
+        let (root, relative) = authorize_path(
+            Posture::ReadWrite,
+            Access::Write,
+            Path::new("output/answer.txt"),
+        )
+        .expect("output/answer.txt must resolve beneath the output mount");
+        assert_eq!(root, Path::new("/workspace/output"));
+        assert_eq!(relative, Path::new("answer.txt"));
+
+        // `outputs` (plural) is an ordinary work-root path, not the authority prefix.
+        let (root, relative) = authorize_path(
+            Posture::ReadWrite,
+            Access::Write,
+            Path::new("outputs/answer.txt"),
+        )
+        .expect("outputs/answer.txt stays an ordinary work path");
+        assert_eq!(root, Path::new("/workspace/work"));
+        assert_eq!(relative, Path::new("outputs/answer.txt"));
+
+        // The input authority prefix keeps mapping to the read-only input mount.
+        let (root, _) = authorize_path(
+            Posture::ReadWrite,
+            Access::Read,
+            Path::new("input/digest.txt"),
+        )
+        .expect("input/ keeps mapping to the input mount");
+        assert_eq!(root, Path::new("/workspace/input"));
+    }
+
     #[test]
     fn descriptor_walk_rejects_symlinks_and_distinguishes_missing_read_from_write() {
         use std::os::unix::fs::symlink;
