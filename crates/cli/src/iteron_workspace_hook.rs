@@ -345,6 +345,12 @@ fn authorize_path(
     }
     let absolute = if supplied.is_absolute() {
         supplied.to_path_buf()
+    } else if let Ok(relative) = supplied.strip_prefix("input") {
+        // PlantCore's admitted attachment identity is `input/<opaque>` while the
+        // read-only volume is mounted at `/workspace/input`.  Keep that authority
+        // prefix stable for the model without accidentally resolving it beneath
+        // the writable work root.
+        Path::new("/workspace/input").join(relative)
     } else {
         Path::new("/workspace/work").join(supplied)
     };
@@ -735,6 +741,22 @@ mod tests {
                 Path::new("/workspace/input/context.txt")
             ),
             Ok((Path::new("/workspace/input"), PathBuf::from("context.txt")))
+        );
+        assert_eq!(
+            authorize_path(
+                Posture::ReadWrite,
+                Access::Read,
+                Path::new("input/context.txt")
+            ),
+            Ok((Path::new("/workspace/input"), PathBuf::from("context.txt")))
+        );
+        assert_eq!(
+            authorize_path(
+                Posture::ReadWrite,
+                Access::Write,
+                Path::new("input/context.txt")
+            ),
+            Err("input_write_forbidden")
         );
         assert_eq!(
             authorize_path(Posture::ReadWrite, Access::Write, Path::new("output.txt")),
