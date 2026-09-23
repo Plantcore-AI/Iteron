@@ -281,6 +281,7 @@ impl Agent {
             authority_ceiling: all_capabilities,
             policy_capabilities: all_capabilities,
             approvals_rx: None,
+            active_product_turn_id: None,
             interactive_approvals: false,
             pending_steers: std::collections::VecDeque::new(),
             approval_seq: 0,

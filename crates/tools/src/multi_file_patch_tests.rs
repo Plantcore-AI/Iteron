@@ -48,6 +48,7 @@ fn patch_only_registry(root: &Path) -> Registry {
         memo: std::sync::Arc::new(Memo::default()),
         sensitive_env_names: Default::default(),
         confine_execution: Default::default(),
+        test_helper_thread: Default::default(),
         egress_allow_policy: Default::default(),
         observation_tool_policy: Default::default(),
         observation_focus: Default::default(),
@@ -81,6 +82,86 @@ fn patch_call(id: &str, files: Vec<Value>) -> ToolUse {
         name: "apply_patch".into(),
         input: json!({"files": files}),
     }
+}
+
+#[tokio::test]
+async fn ordinary_coding_patch_refuses_parent_and_absolute_escape_atomically() {
+    let root = TestRoot::new("confined-root");
+    let outside = TestRoot::new("confined-outside");
+    root.write("inside.txt", "inside old\n");
+    outside.write("outside.txt", "outside old\n");
+    let outside_name = outside.0.file_name().unwrap().to_string_lossy();
+    let parent_path = format!("../{outside_name}/outside.txt");
+    let absolute_path = outside.0.join("outside.txt").to_string_lossy().into_owned();
+    let mut registry = patch_only_registry(&root.0);
+    registry.set_confine_execution(true);
+
+    for path in [&parent_path, &absolute_path] {
+        let result = registry
+            .run(patch_call(
+                "escape",
+                vec![
+                    file_patch("inside.txt", "inside old", "inside new"),
+                    file_patch(path, "outside old", "outside new"),
+                ],
+            ))
+            .await;
+        assert!(result.is_error, "{path}: {}", result.content);
+        assert_eq!(root.read("inside.txt"), b"inside old\n");
+        assert_eq!(outside.read("outside.txt"), b"outside old\n");
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn ordinary_coding_patch_refuses_symlink_escape_atomically() {
+    let root = TestRoot::new("confined-link-root");
+    let outside = TestRoot::new("confined-link-outside");
+    root.write("inside.txt", "inside old\n");
+    outside.write("outside.txt", "outside old\n");
+    std::os::unix::fs::symlink(&outside.0, root.0.join("escape")).unwrap();
+    let mut registry = patch_only_registry(&root.0);
+    registry.set_confine_execution(true);
+
+    let result = registry
+        .dispatch(patch_call(
+            "escape",
+            vec![
+                file_patch("inside.txt", "inside old", "inside new"),
+                file_patch("escape/outside.txt", "outside old", "outside new"),
+            ],
+        ))
+        .await;
+    assert!(result.is_error, "{}", result.content);
+    assert_eq!(root.read("inside.txt"), b"inside old\n");
+    assert_eq!(outside.read("outside.txt"), b"outside old\n");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn confined_patch_rechecks_parent_changed_after_planning() {
+    let root = TestRoot::new("swap-patch-root");
+    let outside = TestRoot::new("swap-patch-outside");
+    root.write("subdir/file.txt", "inside old\n");
+    outside.write("file.txt", "outside old\n");
+    let requests = parse_requests(&json!({
+        "files": [file_patch("subdir/file.txt", "inside old", "inside new")]
+    }))
+    .unwrap();
+    let mut stats = PatchIoStats::default();
+    let plans = plan_patch(&root.0, requests, &mut stats, true)
+        .await
+        .unwrap();
+    std::fs::rename(root.0.join("subdir"), root.0.join("moved")).unwrap();
+    std::os::unix::fs::symlink(&outside.0, root.0.join("subdir")).unwrap();
+
+    let failure = commit_patch(&root.0, &plans, &mut stats, true)
+        .await
+        .unwrap_err();
+    assert!(failure.model_json().contains("outside workspace"));
+    assert_eq!(stats.file_writes, 0);
+    assert_eq!(root.read("moved/file.txt"), b"inside old\n");
+    assert_eq!(outside.read("file.txt"), b"outside old\n");
 }
 
 fn byte_hash(bytes: &[u8]) -> u64 {
@@ -316,7 +397,7 @@ async fn d3_03_g2_missing_anchor_leaves_single_file_byte_identical() {
     });
     let mut stats = PatchIoStats::default();
 
-    let failure = execute_patch(&root.0, &input, &mut stats)
+    let failure = execute_patch(&root.0, &input, &mut stats, false)
         .await
         .unwrap_err();
 
@@ -342,7 +423,7 @@ async fn byte_identical_patch_is_not_a_candidate_change() {
     });
     let mut stats = PatchIoStats::default();
 
-    let failure = execute_patch(&root.0, &input, &mut stats)
+    let failure = execute_patch(&root.0, &input, &mut stats, false)
         .await
         .unwrap_err();
 
@@ -365,7 +446,7 @@ async fn d3_03_g2_ambiguous_anchor_leaves_single_file_byte_identical() {
     });
     let mut stats = PatchIoStats::default();
 
-    let failure = execute_patch(&root.0, &input, &mut stats)
+    let failure = execute_patch(&root.0, &input, &mut stats, false)
         .await
         .unwrap_err();
 
@@ -393,7 +474,7 @@ async fn d3_03_g3_instrumentation_records_one_content_read_and_one_destination_w
     });
     let mut stats = PatchIoStats::default();
 
-    let result = execute_patch(&root.0, &input, &mut stats).await;
+    let result = execute_patch(&root.0, &input, &mut stats, false).await;
 
     assert_eq!(result.unwrap(), (1, 3));
     assert_eq!(stats.file_reads, 1, "content snapshot reads");
@@ -468,7 +549,7 @@ async fn d3_04_g2_two_normalized_candidates_are_refused_with_zero_writes() {
     });
     let mut stats = PatchIoStats::default();
 
-    let failure = execute_patch(&root.0, &input, &mut stats)
+    let failure = execute_patch(&root.0, &input, &mut stats, false)
         .await
         .unwrap_err();
 
@@ -499,7 +580,7 @@ async fn d3_04_g3_no_candidate_reports_structured_nearest_line_without_write() {
     });
     let mut stats = PatchIoStats::default();
 
-    let failure = execute_patch(&root.0, &input, &mut stats)
+    let failure = execute_patch(&root.0, &input, &mut stats, false)
         .await
         .unwrap_err();
 
@@ -525,7 +606,7 @@ async fn d3_04_g4_bidi_is_rejected_before_normalization_with_zero_writes() {
     });
     let mut stats = PatchIoStats::default();
 
-    let failure = execute_patch(&root.0, &input, &mut stats)
+    let failure = execute_patch(&root.0, &input, &mut stats, false)
         .await
         .unwrap_err();
 
@@ -547,7 +628,7 @@ async fn d3_04_g5_normalization_line_work_is_bounded_and_fail_closed() {
     });
     let mut stats = PatchIoStats::default();
 
-    let failure = execute_patch(&root.0, &input, &mut stats)
+    let failure = execute_patch(&root.0, &input, &mut stats, false)
         .await
         .unwrap_err();
 

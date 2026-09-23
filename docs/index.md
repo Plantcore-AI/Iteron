@@ -13,8 +13,9 @@
 </div>
 
 !!! warning "Pre-alpha software"
-    Code execution is unconfined by default. Use `--ask-permissions` for the
-    capability gate and `--confine` for macOS Seatbelt or Linux bubblewrap.
+    The ordinary permission gate and macOS/Linux execution sandbox are enabled
+    by default. File-write confinement still has an unresolved symlink race;
+    do not use this pre-alpha build unattended on sensitive repositories.
     Windows has no code-execution sandbox.
 
 ## What works today

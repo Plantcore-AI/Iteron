@@ -1855,7 +1855,11 @@ pub(super) mod tests {
         context.deferred_tool_eager_limit = effective.deferred_tool_eager_limit;
         context.model_context_window = effective.model_context_window;
         context.model_max_output_tokens = effective.request_output_cap;
-        context.context_budget_policy = effective.context_budget;
+        context.context_budget_policy =
+            effective.context_budget.with_elastic_task_context(matches!(
+                effective.task_context_budget_source,
+                crate::runtime_tunables::effective_core::TaskContextBudgetSource::DefaultDerived
+            ));
         context.context_materialization_policy = effective.context_materialization;
         context.compaction_policy = effective.compaction;
         context.permission_mode = effective.permission_mode;

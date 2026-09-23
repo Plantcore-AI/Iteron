@@ -82,6 +82,8 @@ but remains distinct from ordinary `done`.
 - `phase` and `turn_end` lifecycle events;
 - `tool_start`, `tool_end`, and `approval_request`;
 - `notice`, `steer_applied`, and `run_done`;
+- in v6, `approval_resolved`, `steer_submission_applied`,
+  `control_submission_applied`, and `submission_rejected` with exact submission IDs;
 - `workflow_start`, `workflow_plan`, `workflow_phase`;
 - `workflow_agent_start`, `workflow_agent_activity`, `workflow_agent_end`;
 - `workflow_end`;
@@ -93,6 +95,12 @@ they do not need and use the final result as the authoritative terminal outcome.
 never carries image bytes, a filename, or a path. Historical v4 event fixtures
 and their terminal result remain unchanged; consumers should skip this v5+ tag
 when they do not need attachment metadata.
+
+The four exact submission lifecycle records are declared only for v6. When an
+operator selects v4 or v5, each projects to a bounded, scrubbed `notice` without
+an ID or an `Applied` claim; clients needing authoritative receipts should use
+v6 or the Product V1 App Server contract. An approval request is not itself an
+approval resolution, and a queued submission is not proof of application.
 
 Schema v6 adds `turn_end.context.components`, a non-overlapping vector of
 `stable_prefix_tokens`, `instruction_tokens`, `task_context_tokens`, `memory_tokens`,

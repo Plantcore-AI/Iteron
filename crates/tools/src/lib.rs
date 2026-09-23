@@ -10,6 +10,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
+#[cfg(unix)]
+mod confined_fs;
+mod confined_helper;
 mod edit;
 mod egress;
 mod execution_policy;
@@ -44,6 +47,8 @@ mod write_file;
 
 pub use tool_search::DEFAULT_DEFERRED_TOOL_EAGER_LIMIT;
 pub use web::WEB_SEARCH_RESULT_CAP;
+
+pub use confined_helper::confined_helper_entry;
 
 pub use edit::apply_unique_edit;
 pub use egress::{EgressAllowPolicy, EgressPolicyError, MAX_EGRESS_HOST_BYTES, MAX_EGRESS_HOSTS};
@@ -360,6 +365,8 @@ pub struct Registry {
     /// Shared exactly like `sensitive_env_names`, so it can be answered after the specs are built
     /// without rebuilding them and invalidating prompt-cache identity.
     confine_execution: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Instance-local fixture mode; no production setter exists.
+    test_helper_thread: std::sync::Arc<std::sync::atomic::AtomicBool>,
     egress_allow_policy: std::sync::Arc<std::sync::OnceLock<Option<EgressAllowPolicy>>>,
     observation_tool_policy: std::sync::Arc<std::sync::OnceLock<ObservationToolPolicy>>,
     observation_focus: std::sync::Arc<ObservationFocus>,
@@ -455,6 +462,17 @@ impl Registry {
         Self::coding_agent_with_lsp_routes(root, Vec::new())
     }
 
+    /// CLI unit fixtures run inside libtest rather than the real `iteron` entry point.
+    /// Explicitly retain Landlock in a dedicated test thread without self-executing libtest.
+    #[cfg(feature = "test-helper")]
+    pub fn coding_agent_for_tests(root: impl Into<PathBuf>) -> Result<Self, ToolError> {
+        let registry = Self::coding_agent(root)?;
+        registry
+            .test_helper_thread
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        Ok(registry)
+    }
+
     /// Build the coding-agent registry with exact operator-admitted language-server overrides.
     pub fn coding_agent_with_lsp_routes(
         root: impl Into<PathBuf>,
@@ -469,7 +487,8 @@ impl Registry {
             root,
             memo: Default::default(),
             sensitive_env_names: Default::default(),
-            confine_execution: Default::default(),
+            confine_execution: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            test_helper_thread: Default::default(),
             egress_allow_policy: Default::default(),
             observation_tool_policy: Default::default(),
             observation_focus: Default::default(),
@@ -525,7 +544,8 @@ impl Registry {
             root,
             memo: Default::default(),
             sensitive_env_names: Default::default(),
-            confine_execution: Default::default(),
+            confine_execution: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            test_helper_thread: Default::default(),
             egress_allow_policy: Default::default(),
             observation_tool_policy: Default::default(),
             observation_focus: Default::default(),
@@ -560,6 +580,7 @@ impl Registry {
             memo: Default::default(),
             sensitive_env_names: Default::default(),
             confine_execution: Default::default(),
+            test_helper_thread: Default::default(),
             egress_allow_policy: Default::default(),
             observation_tool_policy: Default::default(),
             observation_focus: Default::default(),
@@ -946,8 +967,9 @@ impl Registry {
         self.sensitive_env_names.clone()
     }
 
-    /// Put `bash` back inside the egress-off platform sandbox (`--confine`). This is the whole
-    /// opt-out: the confined backends are unchanged, and this selects them.
+    /// One explicit execution posture for the coding registry: the sandbox confines shell and
+    /// the same bit rejects filesystem mutators whose targets escape the workspace. Only the
+    /// operator's dangerous bypass may turn both off; `--confine` keeps both on under bypass.
     pub fn set_confine_execution(&mut self, confine: bool) {
         self.confine_execution
             .store(confine, std::sync::atomic::Ordering::Relaxed);
@@ -955,6 +977,12 @@ impl Registry {
 
     pub(crate) fn confine_execution_handle(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
         self.confine_execution.clone()
+    }
+
+    pub(crate) fn test_helper_thread_handle(
+        &self,
+    ) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        self.test_helper_thread.clone()
     }
 
     /// Install the immutable first-party egress policy before tool activation.
@@ -1072,6 +1100,14 @@ impl Registry {
         if let Err(error) = schema::validate_arguments(&tool.spec.input_schema, &call.input) {
             return ToolExecution::Definite(err_result(id, error.model_json(&tool.spec.name)));
         }
+        if self
+            .confine_execution
+            .load(std::sync::atomic::Ordering::Relaxed)
+            && matches!(call.name.as_str(), "write_file" | "edit" | "apply_patch")
+            && let Err(reason) = workspace_boundary::validate_coding_write_call(&self.root, &call)
+        {
+            return ToolExecution::Definite(err_result(id, reason));
+        }
         if self.workspace_boundary
             && let Err(reason) = workspace_boundary::validate_call(&self.root, &call)
         {
@@ -1140,6 +1176,21 @@ impl Registry {
         };
         if let Err(error) = schema::validate_arguments(&tool.spec.input_schema, &call.input) {
             let result = err_result(call.id.clone(), error.model_json(&tool.spec.name));
+            return boxfut::box_it(async move { result });
+        }
+        if self
+            .confine_execution
+            .load(std::sync::atomic::Ordering::Relaxed)
+            && matches!(call.name.as_str(), "write_file" | "edit" | "apply_patch")
+            && let Err(reason) = workspace_boundary::validate_coding_write_call(&self.root, &call)
+        {
+            let result = err_result(call.id.clone(), reason);
+            return boxfut::box_it(async move { result });
+        }
+        if self.workspace_boundary
+            && let Err(reason) = workspace_boundary::validate_call(&self.root, &call)
+        {
+            let result = err_result(call.id.clone(), reason);
             return boxfut::box_it(async move { result });
         }
 
@@ -1227,6 +1278,33 @@ impl Registry {
         run: impl Fn(ToolUse, PathBuf) -> boxfut::BoxFut + Send + Sync + 'static,
     ) -> Result<(), ToolError> {
         self.push_tool_with_origin_and_purpose(spec, run, ToolOrigin::BuiltIn, ToolPurpose::General)
+    }
+
+    /// Native candidate changes may have an unknown outcome if their isolated helper exits
+    /// after receiving the request but before returning its authoritative result.
+    pub(crate) fn push_candidate_change_effect_tool(
+        &mut self,
+        spec: ToolSpec,
+        run: impl Fn(ToolUse, PathBuf) -> effectfut::BoxFut + Send + Sync + 'static,
+    ) -> Result<(), ToolError> {
+        let adapted = move |call, root| {
+            let future = run(call, root);
+            registeredfut::box_it(async move {
+                RegisteredExecution {
+                    outcome: future.await,
+                    dispatch_to_terminal_ms: None,
+                }
+            })
+        };
+        self.register_with_origin(
+            Tool {
+                spec,
+                run: Box::new(adapted),
+                output_owner: ToolOutputOwner::Runtime,
+                purpose: ToolPurpose::CandidateChange,
+            },
+            ToolOrigin::BuiltIn,
+        )
     }
 
     fn push_external_tool(
@@ -1402,24 +1480,12 @@ fn register_dispatch_agent(r: &mut Registry) -> Result<(), ToolError> {
 
 /// Resolve a caller-supplied path to an absolute host path.
 ///
-/// **This function no longer confines (owner-directed, 2026-08-05).** It used to reject three
-/// things: an absolute path, a lexical `..` escape, and a symlink whose destination canonicalized
-/// outside the workspace root. All three are now resolved and returned. A relative path is still
-/// resolved against `root`, so every existing caller keeps its meaning; an absolute path addresses
-/// the host directly, which is the case that made the agent unusable — the model naturally emits
-/// `/Users/me/project/src/main.rs`, and `absolute path not allowed` was the single largest source
-/// of tool errors, three of which in a row tripped the consecutive-error floor and killed the run.
-///
-/// What is surrendered is stated plainly rather than implied: an fs tool can now read and write
-/// anywhere the operator's own account can, including `~/.ssh`, and a symlink committed to an
-/// untrusted repository is a working pointer out of that repository. The corresponding execution
-/// surrender is `Confinement::unconfined`. Path containment is not available behind a flag,
-/// because a boundary that only some callers honour is not a boundary.
-///
-/// Canonicalization is retained, and for a not-yet-existing path (a new file to write) the nearest
-/// existing ancestor is canonicalized and the remainder appended. That is no longer a containment
-/// check — it is what keeps a returned path stable and comparable for the memo cache and for the
-/// symlink-target checks `write_file` performs before it truncates anything.
+/// This resolver only normalizes paths; it is not a permission decision. It accepts absolute paths,
+/// lexical parent traversal and symlink targets because read-only observations and an explicit
+/// dangerous bypass may address the host. Ordinary coding file mutations are separately checked
+/// at registry dispatch and their transaction boundary; isolated writers have a stricter contract.
+/// For a not-yet-existing path, the nearest existing ancestor is canonicalized and the remainder
+/// appended so write targets can be checked before they are created.
 pub fn resolve_in_root(root: &Path, rel: &str) -> Result<PathBuf, String> {
     let root = root
         .canonicalize()
@@ -1611,6 +1677,7 @@ mod tests {
             memo: Default::default(),
             sensitive_env_names: Default::default(),
             confine_execution: Default::default(),
+            test_helper_thread: Default::default(),
             egress_allow_policy: Default::default(),
             observation_tool_policy: Default::default(),
             observation_focus: Default::default(),
@@ -1649,6 +1716,12 @@ mod tests {
     #[test]
     fn candidate_change_semantics_are_registered_not_inferred_from_authority() {
         let registry = Registry::coding_agent(".").unwrap();
+        assert!(
+            registry
+                .confine_execution
+                .load(std::sync::atomic::Ordering::Relaxed),
+            "ordinary coding registry must start with workspace confinement"
+        );
         for tool in ["edit", "apply_patch", "write_file"] {
             assert!(registry.is_candidate_change_tool(tool), "{tool}");
         }
@@ -1710,6 +1783,36 @@ mod tests {
                 "{reopened_discovery}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn ordinary_coding_workspace_write_boundary_does_not_block_read_only_paths() {
+        let root = std::env::temp_dir().join(format!(
+            "core-read-boundary-root-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let outside = root.with_extension("outside");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&outside, "read-only evidence\n").unwrap();
+        let registry = Registry::coding_agent(&root).unwrap();
+        registry
+            .install_observation_tool_policy(ObservationToolPolicy::default())
+            .unwrap();
+        let result = registry
+            .run(ToolUse {
+                id: "outside-read".into(),
+                name: "read_file".into(),
+                input: serde_json::json!({"path": outside}),
+            })
+            .await;
+        assert!(!result.is_error, "{}", result.content);
+        assert!(result.content.contains("read-only evidence"));
+        std::fs::remove_file(outside).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

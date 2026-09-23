@@ -259,6 +259,8 @@
 /crates/record/src/session_private_cache.rs @fr0m-scratch
 /crates/record/src/tunables.rs @fr0m-scratch
 /crates/record/src/tunables_tests.rs @fr0m-scratch
+/crates/tools/src/confined_fs.rs @fr0m-scratch
+/crates/tools/src/confined_helper.rs @fr0m-scratch
 /crates/tools/src/edit.rs @fr0m-scratch
 /crates/tools/src/egress.rs @fr0m-scratch
 /crates/tools/src/execution_policy.rs @fr0m-scratch
@@ -350,6 +352,7 @@
 /crates/cli/src/runtime/strategy_runtime.rs @fr0m-scratch
 /crates/cli/src/runtime/subagent_control.rs @fr0m-scratch
 /crates/cli/src/runtime/telemetry.rs @fr0m-scratch
+/crates/cli/src/runtime/terminal_diagnostics.rs @fr0m-scratch
 /crates/cli/src/runtime/tests.rs @fr0m-scratch
 /crates/cli/src/runtime/tool_interrupt.rs @fr0m-scratch
 /crates/cli/src/runtime/tool_output_spill.rs @fr0m-scratch

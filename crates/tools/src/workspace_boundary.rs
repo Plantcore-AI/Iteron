@@ -1,7 +1,7 @@
-//! Dispatch-time path containment for the host-provisioned isolated-writer registry.
+//! Dispatch-time path containment for ordinary coding writes and isolated-writer calls.
 //!
-//! The ordinary coding registry intentionally accepts host-wide absolute paths. That posture must
-//! not leak into a workflow writer merely because both registries reuse the same file executors.
+//! Ordinary coding permits host-wide reads but confines built-in file mutations to its workspace
+//! unless the operator explicitly selects the dangerous bypass. Isolated writers remain stricter.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -29,6 +29,51 @@ pub(super) fn validate_call(root: &Path, call: &ToolUse) -> Result<(), String> {
     Ok(())
 }
 
+/// The ordinary coding posture is workspace-*write*, not a blanket read sandbox. Canonicalized
+/// absolute paths inside the workspace remain usable; every file mutation target outside is
+/// refused before executor construction. The isolated writer above retains its stricter rules.
+pub(super) fn validate_coding_write_call(root: &Path, call: &ToolUse) -> Result<(), String> {
+    let canonical_root = root
+        .canonicalize()
+        .map_err(|error| format!("workspace write root is unavailable: {error}"))?;
+    let mut paths = Vec::new();
+    collect_paths(None, &call.input, &mut paths)?;
+    if paths.is_empty() {
+        return Err(format!(
+            "workspace write refused `{}`: no target path",
+            call.name
+        ));
+    }
+    for path in paths {
+        let resolved = crate::resolve_in_root(&canonical_root, path)?;
+        validate_coding_write_target(&canonical_root, &resolved)
+            .map_err(|reason| format!("workspace write refused `{}`: {reason}", call.name))?;
+    }
+    Ok(())
+}
+
+/// Revalidate the resolved destination at the file transaction's final commit boundary. This
+/// catches parent swaps made while content is being staged, before the destination is replaced.
+pub(super) fn validate_coding_write_target(root: &Path, target: &Path) -> Result<(), String> {
+    let canonical_root = root
+        .canonicalize()
+        .map_err(|error| format!("workspace write root is unavailable: {error}"))?;
+    let requested = target.to_str().ok_or("non-UTF-8 write target")?;
+    let resolved = crate::resolve_in_root(&canonical_root, requested)?;
+    let relative = resolved
+        .strip_prefix(&canonical_root)
+        .map_err(|_| "target resolves outside workspace".to_owned())?;
+    if relative.components().any(|component| match component {
+        Component::Normal(name) => name
+            .to_str()
+            .is_some_and(|name| name.eq_ignore_ascii_case(".git")),
+        _ => false,
+    }) {
+        return Err("Git administration paths require separate authority".into());
+    }
+    Ok(())
+}
+
 fn collect_paths<'a>(
     key: Option<&str>,
     value: &'a serde_json::Value,
@@ -40,14 +85,17 @@ fn collect_paths<'a>(
             "tools.workspace_boundary.max_boundary_paths_per_call",
             MAX_BOUNDARY_PATHS_PER_CALL,
         ),
-    );
-    if paths.len() > max_boundary_paths {
-        return Err(format!(
-            "isolated writer path count exceeds {max_boundary_paths}"
-        ));
-    }
+    )
+    .clamp(1, MAX_BOUNDARY_PATHS_PER_CALL);
     match value {
-        serde_json::Value::String(path) if key == Some("path") => paths.push(path),
+        serde_json::Value::String(path) if key == Some("path") => {
+            if paths.len() >= max_boundary_paths {
+                return Err(format!(
+                    "workspace boundary path count exceeds {max_boundary_paths}"
+                ));
+            }
+            paths.push(path);
+        }
         serde_json::Value::Array(values) => {
             for value in values {
                 collect_paths(None, value, paths)?;

@@ -39,6 +39,23 @@ pub(super) fn declare(
     Ok(())
 }
 
+/// A built-in route is selected from the admitted directory, not from one global model id.
+/// Keep CLI/environment/user selections as declarations so their precedence is visible.
+pub(super) fn route_default_or_override(
+    builder: &mut RuntimeResolutionBuilder,
+    family: &str,
+    origin: ConfigOrigin,
+    selected_id: &str,
+) -> Result<(), CoreFactError> {
+    let value = en(selected_id);
+    if origin == ConfigOrigin::Builtin {
+        builder.observe_default(family, value)?;
+    } else {
+        declare(builder, family, origin, value)?;
+    }
+    Ok(())
+}
+
 /// Sample the immutable embedded owner before admitting an authorized override. A non-Builtin
 /// source may narrow/replace according to its canonical merge policy; a Builtin value that differs
 /// from the literal is deliberately sent through `declare` so the builder rejects the drift.

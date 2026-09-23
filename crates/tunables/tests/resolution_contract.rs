@@ -1375,7 +1375,7 @@ fn offline_builtin_literal_candidates_cannot_override_registry_bytes() {
         (
             "effort",
             ResolutionValue::Enum {
-                value: "low".to_owned(),
+                value: "medium".to_owned(),
             },
         ),
         (
@@ -2773,59 +2773,17 @@ fn project_can_introduce_optional_cost_ceiling_and_revoke_but_not_grant_code() {
 }
 
 #[test]
-fn project_model_is_only_a_route_suggestion_below_operator_sources() {
-    let mut input = minimal_input();
-    input.declared_values = vec![
-        DeclaredValue {
-            family: "model".to_owned(),
-            source: SourceKind::UserConfig,
-            evidence_digest_sha256: DIGEST_A.to_owned(),
-            value: ResolutionValue::Enum {
-                value: "glm-5.2".to_owned(),
-            },
-        },
-        DeclaredValue {
-            family: "model".to_owned(),
-            source: SourceKind::ProjectConfig,
-            evidence_digest_sha256: DIGEST_B.to_owned(),
-            value: ResolutionValue::Enum {
-                value: "glm".to_owned(),
-            },
-        },
-    ];
-    input.constraint_evidence.push(ConstraintEvidence {
-        family: "model".to_owned(),
-        field: "$".to_owned(),
-        ceiling: ExternalCeiling::ProviderCapability,
-        subject: EvidenceSubject::Route {
-            route: input.runtime.selected_route.clone().unwrap(),
-        },
-        evidence_digest_sha256: DIGEST_A.to_owned(),
-        value: ConstraintValue::Domain {
-            minimum: None,
-            maximum: None,
-            allowed_values: Some(BTreeSet::from([ResolutionValue::Enum {
-                value: "glm-5.2".to_owned(),
-            }])),
-            required_values: None,
-            preferred: None,
-        },
-    });
-    let report = report_even_when_other_active_families_are_unresolved(input);
-    let entry = &report.entries[1];
-    assert!(matches!(
-        entry
-            .provenance
-            .as_ref()
-            .map(|provenance| &provenance.source),
-        Some(ResolutionSource::Declared {
-            kind: SourceKind::UserConfig,
-            ..
-        })
-    ));
-    assert_eq!(
-        entry.shadowed.last().unwrap().reason_code,
-        "lower_precedence"
+fn project_model_is_not_claimed_as_a_production_route_source() {
+    let model = families()
+        .iter()
+        .find(|family| family.id == "model")
+        .unwrap();
+    assert!(
+        model
+            .source
+            .bindings
+            .iter()
+            .all(|binding| binding.kind != SourceKind::ProjectConfig)
     );
 }
 

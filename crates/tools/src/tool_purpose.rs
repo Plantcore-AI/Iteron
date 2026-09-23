@@ -363,22 +363,6 @@ impl Registry {
             ToolPurpose::TargetedObservation,
         )
     }
-
-    /// Register a built-in whose successful execution changes the candidate under repair. This
-    /// metadata is private controller strategy, not authority: admission still uses the ToolSpec's
-    /// capability and the normal effect broker.
-    pub(crate) fn push_candidate_change_tool(
-        &mut self,
-        spec: ToolSpec,
-        run: impl Fn(ToolUse, PathBuf) -> boxfut::BoxFut + Send + Sync + 'static,
-    ) -> Result<(), ToolError> {
-        self.push_tool_with_origin_and_purpose(
-            spec,
-            run,
-            ToolOrigin::BuiltIn,
-            ToolPurpose::CandidateChange,
-        )
-    }
 }
 
 fn candidate_paths(call: &ToolUse) -> Option<Vec<&str>> {

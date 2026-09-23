@@ -223,6 +223,32 @@ impl EffectiveTunablesView {
         result
     }
 
+    /// Read the sealed winning source, rather than guessing from an effective numeric value.
+    /// A full-object family override remains explicit even when it repeats the default value.
+    pub(crate) fn has_default_provenance(
+        &self,
+        family_id: &str,
+    ) -> Result<bool, EffectiveViewError> {
+        let family = iteron_tunables::families()
+            .iter()
+            .find(|family| family.id == family_id)
+            .ok_or_else(|| EffectiveViewError::NotEffective(family_id.to_owned()))?;
+        let entry = self
+            .entry_states
+            .get(family_id)
+            .filter(|entry| entry.state == RunGenesisTunableState::Effective)
+            .ok_or_else(|| EffectiveViewError::NotEffective(family_id.to_owned()))?;
+        if !self.values.contains_key(family_id) {
+            return Err(EffectiveViewError::NotEffective(family_id.to_owned()));
+        }
+        let provenance = entry
+            .provenance
+            .as_ref()
+            .filter(|value| canonical_provenance_matches(family, value))
+            .ok_or_else(|| EffectiveViewError::ProvenanceMismatch(family_id.to_owned()))?;
+        Ok(provenance["source"]["type"] == "default")
+    }
+
     pub(crate) fn seal_runtime_binding_receipt(
         &self,
         owner_receipt: Option<&RuntimeOwnerReceipt>,
@@ -761,6 +787,66 @@ mod tests {
         let mut forged = valid;
         forged["source"]["declared_locator"] = serde_json::json!("crates/forged.rs");
         assert!(!canonical_provenance_matches(family, &forged));
+    }
+
+    #[test]
+    fn context_budget_source_requires_canonical_checkpoint_provenance() {
+        let family_id = "context_window_override_reserve";
+        let family = iteron_tunables::families()
+            .iter()
+            .find(|family| family.id == family_id)
+            .unwrap();
+        let mut view = EffectiveTunablesView::from_test_values(BTreeMap::from([(
+            family_id.into(),
+            ResolutionValue::Object {
+                fields: BTreeMap::new(),
+            },
+        )]));
+        assert_eq!(
+            view.has_default_provenance(family_id),
+            Err(EffectiveViewError::NotEffective(family_id.into()))
+        );
+        let entry = SnapshotEntryState {
+            state: RunGenesisTunableState::Effective,
+            provenance: Some(serde_json::json!({
+                "source": {
+                    "type": "default",
+                    "resolver_id": default_resolver_id(family.default.resolver),
+                    "evidence_digest_sha256": "a".repeat(64),
+                    "subject": null,
+                    "fallback": false,
+                }
+            })),
+            inactive_reason: None,
+            fixed_authority_binding: None,
+        };
+        view.entry_states.insert(family_id.into(), entry);
+        assert_eq!(view.has_default_provenance(family_id), Ok(true));
+
+        let binding = family
+            .source
+            .bindings
+            .iter()
+            .find(|binding| binding.kind == SourceKind::UserConfig)
+            .unwrap();
+        let explicit = serde_json::json!({
+            "source": {
+                "type": "profile",
+                "kind": binding.kind,
+                "trust": binding.trust,
+                "declared_locator": binding.locator,
+                "profile_digest_sha256": "b".repeat(64),
+            }
+        });
+        view.entry_states.get_mut(family_id).unwrap().provenance = Some(explicit.clone());
+        assert_eq!(view.has_default_provenance(family_id), Ok(false));
+        let mut forged = explicit;
+        forged["source"]["declared_locator"] = serde_json::json!("crates/forged.rs");
+        view.entry_states.get_mut(family_id).unwrap().provenance = Some(forged);
+        assert_eq!(
+            view.has_default_provenance(family_id),
+            Err(EffectiveViewError::ProvenanceMismatch(family_id.into()))
+        );
     }
 
     #[test]

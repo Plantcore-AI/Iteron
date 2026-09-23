@@ -1606,6 +1606,14 @@ fn row_for(
             "RATIO_EIGHT_TENTHS"
         )
     );
+    let pinned_external_catalog = matches!(
+        (krate, relative, name),
+        (
+            "cli",
+            "crates/cli/src/providers.rs",
+            "CODEX_V0156_OPENAI_API_PREFERENCE"
+        )
+    );
     let exact_schema_cardinality = matches!(
         (krate, relative, name),
         (
@@ -1628,6 +1636,19 @@ fn row_for(
             "protocol",
             "crates/protocol/src/message.rs",
             "MAX_STOP_REASON_CODE_BYTES"
+        ) | (
+            "protocol",
+            "crates/protocol/src/product_contract.rs",
+            "MAX_THREAD_ITEMS"
+                | "MAX_THREAD_SUBMISSIONS"
+                | "MAX_PRODUCT_EVENTS"
+                | "MAX_PRODUCT_EVENT_BYTES"
+                | "MAX_PRODUCT_CONTENT_CHUNK_BYTES"
+                | "MAX_PRODUCT_SOURCE_CONTENT_BYTES"
+                | "MAX_PRODUCT_APPROVAL_FIELD_BYTES"
+                | "MAX_PRODUCT_APPROVAL_ARGUMENTS_BYTES"
+                | "MAX_PRODUCT_READ_EVENTS"
+                | "MAX_PRODUCT_READ_BYTES"
         ) | (
             "cli",
             "crates/cli/src/output.rs",
@@ -1819,6 +1840,7 @@ fn row_for(
         || invariant_array_crate
         || direct_alias(value)
         || evidence_only_duplicate
+        || pinned_external_catalog
         || exact_schema_cardinality
         || wire_compatibility_invariant
         || derived_object
@@ -1901,6 +1923,11 @@ fn invariant_reason_for(
     wire_compatibility: bool,
     hard_budget: bool,
 ) -> InvariantReason {
+    if relative == "crates/cli/src/providers.rs" && name == "CODEX_V0156_OPENAI_API_PREFERENCE" {
+        // A pinned upstream catalog snapshot is evidence of a reference implementation,
+        // not a runtime-adjustable route that could bypass account/model admission.
+        return InvariantReason::Identity;
+    }
     if relative == "crates/cli/src/iteron_workspace_hook.rs" {
         return InvariantReason::Security;
     }

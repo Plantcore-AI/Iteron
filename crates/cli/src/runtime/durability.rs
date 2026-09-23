@@ -1,5 +1,19 @@
 use super::*;
 
+/// Retain at most one UTF-8 scalar beyond the interrupted-stream display limit. That extra
+/// scalar lets `strict_utf8_head` mark truncation without buffering an unbounded provider stream.
+pub(super) fn append_interrupted_stream_head(buffer: &mut String, delta: &str, max_bytes: usize) {
+    let capacity = max_bytes.saturating_add(4);
+    if buffer.len() >= capacity {
+        return;
+    }
+    let mut end = delta.len().min(capacity - buffer.len());
+    while end > 0 && !delta.is_char_boundary(end) {
+        end -= 1;
+    }
+    buffer.push_str(&delta[..end]);
+}
+
 /// Lifecycle log/span count recorded in the export audit when the payload carries no lifecycle
 /// snapshot at all, so the audit argument stays present and content-free.
 const ABSENT_LIFECYCLE_COUNT: usize = 0;
@@ -194,7 +208,8 @@ impl Agent {
                 (
                     DurableAppendFault::ContextInjection,
                     EventKind::ContextInjection { .. }
-                ) | (DurableAppendFault::Notice, EventKind::Notice { .. })
+                ) | (DurableAppendFault::SteerMessage, EventKind::Message { .. })
+                    | (DurableAppendFault::Notice, EventKind::Notice { .. })
                     | (DurableAppendFault::TurnStart, EventKind::TurnStart)
                     | (
                         DurableAppendFault::EffectIntent,
@@ -970,14 +985,15 @@ impl Agent {
     ///
     /// A mid-stream disconnect used to return before the assistant message was appended, so every
     /// token the operator had watched arrive was destroyed by the failure that interrupted it —
-    /// and only 429/529 are retried, so a connection reset, a DNS failure, a VPN drop and the
+    /// ambiguous transport failures are not retried, so a connection reset, a VPN drop and the
     /// stream idle timeout all took that path. Worse, the `Text`/`Thinking` delta events the
     /// frozen schema declares had no producer anywhere, so streamed text had no durable channel
     /// at all.
     ///
     /// This is that channel, and it writes two different things for two different readers:
-    /// the coalesced deltas are what was on screen, and the interrupted assistant message is what
-    /// resume and rewind replay into the next request. Both are bounded, both are emitted only on
+    /// the bounded coalesced delta prefix records what began appearing on screen, and the
+    /// interrupted assistant message is what resume and rewind replay into the next request.
+    /// Both are bounded, both are emitted only on
     /// this path, and neither claims usage: **no billing semantics change here**. An append
     /// failure is swallowed on purpose — the provider error is the one worth reporting, and
     /// losing the record of a partial answer must not also lose the reason it was partial.
@@ -991,30 +1007,23 @@ impl Agent {
         if text.is_empty() && thinking.is_empty() {
             return;
         }
+        let max_bytes = iteron_tunables::param_integer(
+            "cli.runtime.interrupted_stream_max_bytes",
+            INTERRUPTED_STREAM_MAX_BYTES,
+        )
+        .min(INTERRUPTED_STREAM_MAX_BYTES);
         if !thinking.is_empty() {
             let _ = self.emit_durable(
                 turn,
                 EventKind::Thinking {
-                    delta: strict_utf8_head(
-                        thinking,
-                        iteron_tunables::param_integer(
-                            "cli.runtime.interrupted_stream_max_bytes",
-                            INTERRUPTED_STREAM_MAX_BYTES,
-                        ),
-                    ),
+                    delta: strict_utf8_head(thinking, max_bytes),
                 },
             );
         }
         if text.is_empty() {
             return;
         }
-        let delta = strict_utf8_head(
-            text,
-            iteron_tunables::param_integer(
-                "cli.runtime.interrupted_stream_max_bytes",
-                INTERRUPTED_STREAM_MAX_BYTES,
-            ),
-        );
+        let delta = strict_utf8_head(text, max_bytes);
         let _ = self.emit_durable(
             turn,
             EventKind::Text {

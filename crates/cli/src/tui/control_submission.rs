@@ -253,7 +253,7 @@ pub(super) fn request_drain(
     if !app.running || app.draining {
         return;
     }
-    if session.submit(Op::Drain).is_err() {
+    if !matches!(session.submit_for_running_turn(Op::Drain), Some(Ok(_))) {
         app.note(
             block::NoticeLevel::Err,
             "could not request a drain because the active run is no longer reachable",
@@ -286,12 +286,14 @@ pub(super) fn request_interrupt(app: &mut App, session: &Session, interrupt: &Ar
     if !app.running || app.force_cancelling {
         return;
     }
-    if !interrupt.swap(true, Ordering::SeqCst) && session.submit(Op::Interrupt).is_err() {
+    if !matches!(session.submit_for_running_turn(Op::Interrupt), Some(Ok(_))) {
         app.note(
             block::NoticeLevel::Err,
-            "interrupt reached the local executor, but its ordered session receipt could not be queued",
+            "interrupt was not queued for the active product turn",
         );
+        return;
     }
+    interrupt.store(true, Ordering::SeqCst);
     app.interrupting = true;
     app.cancel_requested_at = Some(Instant::now());
     app.status = "interrupting turn…".into();
@@ -309,7 +311,10 @@ pub(super) fn force_cancel_turn(app: &mut App, session: &Session) {
     // A second gesture targets the same still-running turn regardless of elapsed wall time. The
     // five-second interval is useful for hint/reset presentation, never for withholding the
     // operator's stronger-cancellation request from a stuck run.
-    if session.submit(Op::ForceCancel).is_err() {
+    if !matches!(
+        session.submit_for_running_turn(Op::ForceCancel),
+        Some(Ok(_))
+    ) {
         app.note(
             block::NoticeLevel::Err,
             "could not request stronger cancellation because the active run is no longer reachable",

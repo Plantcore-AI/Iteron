@@ -35,6 +35,7 @@
         }
       ],
       "fields": [
+        { "name": "expected_product_turn_id", "introduced_release": 7, "optional": true },
         { "name": "op", "introduced_release": 1 },
         { "name": "protocol_version", "introduced_release": 1 },
         { "name": "submission_id", "introduced_release": 1 }
@@ -1184,6 +1185,107 @@
         { "name": "tool", "introduced_release": 1 },
         { "name": "type", "introduced_release": 1 },
         { "name": "workspace", "introduced_release": 1 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "cli.machine-stream.approval-resolved",
+      "current_version": 6,
+      "version_field": "schema_version",
+      "selector": { "field": "type", "value": "approval_resolved" },
+      "fixtures": [
+        {
+          "path": "crates/cli/tests/golden/machine_stream_all_v6.jsonl",
+          "format": "jsonl",
+          "schema_version": 6
+        },
+        {
+          "path": "crates/cli/tests/golden/receipt_stream_v6.jsonl",
+          "format": "jsonl",
+          "schema_version": 6
+        }
+      ],
+      "fields": [
+        { "name": "reason_code", "introduced_release": 7 },
+        { "name": "resolution", "introduced_release": 7 },
+        { "name": "response_submission_id", "introduced_release": 7 },
+        { "name": "schema_version", "introduced_release": 7 },
+        { "name": "submission_id", "introduced_release": 7 },
+        { "name": "type", "introduced_release": 7 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "cli.machine-stream.control-submission-applied",
+      "current_version": 6,
+      "version_field": "schema_version",
+      "selector": { "field": "type", "value": "control_submission_applied" },
+      "fixtures": [
+        {
+          "path": "crates/cli/tests/golden/machine_stream_all_v6.jsonl",
+          "format": "jsonl",
+          "schema_version": 6
+        },
+        {
+          "path": "crates/cli/tests/golden/receipt_stream_v6.jsonl",
+          "format": "jsonl",
+          "schema_version": 6
+        }
+      ],
+      "fields": [
+        { "name": "kind", "introduced_release": 7 },
+        { "name": "schema_version", "introduced_release": 7 },
+        { "name": "submission_id", "introduced_release": 7 },
+        { "name": "type", "introduced_release": 7 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "cli.machine-stream.steer-submission-applied",
+      "current_version": 6,
+      "version_field": "schema_version",
+      "selector": { "field": "type", "value": "steer_submission_applied" },
+      "fixtures": [
+        {
+          "path": "crates/cli/tests/golden/machine_stream_all_v6.jsonl",
+          "format": "jsonl",
+          "schema_version": 6
+        },
+        {
+          "path": "crates/cli/tests/golden/receipt_stream_v6.jsonl",
+          "format": "jsonl",
+          "schema_version": 6
+        }
+      ],
+      "fields": [
+        { "name": "schema_version", "introduced_release": 7 },
+        { "name": "submission_id", "introduced_release": 7 },
+        { "name": "type", "introduced_release": 7 }
+      ],
+      "compatibility_shims": []
+    },
+    {
+      "id": "cli.machine-stream.submission-rejected",
+      "current_version": 6,
+      "version_field": "schema_version",
+      "selector": { "field": "type", "value": "submission_rejected" },
+      "fixtures": [
+        {
+          "path": "crates/cli/tests/golden/machine_stream_all_v6.jsonl",
+          "format": "jsonl",
+          "schema_version": 6
+        },
+        {
+          "path": "crates/cli/tests/golden/receipt_stream_v6.jsonl",
+          "format": "jsonl",
+          "schema_version": 6
+        }
+      ],
+      "fields": [
+        { "name": "reason_code", "introduced_release": 7 },
+        { "name": "schema_version", "introduced_release": 7 },
+        { "name": "submission_id", "introduced_release": 7 },
+        { "name": "type", "introduced_release": 7 }
       ],
       "compatibility_shims": []
     },

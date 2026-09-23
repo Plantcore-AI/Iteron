@@ -36,6 +36,7 @@ pub mod plantcore;
 pub mod policy_bundle_checkpoint;
 pub mod policy_evidence;
 pub mod pricing;
+pub mod product_contract;
 pub mod slot;
 pub mod task;
 pub mod tool;

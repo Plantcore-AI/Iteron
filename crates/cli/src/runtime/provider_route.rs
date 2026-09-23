@@ -291,9 +291,9 @@ impl Agent {
     /// # How a provider error is classified
     ///
     /// * A dropped in-flight stream (`Interrupted`, `DeadlineExceeded`) and a broken or unreadable
-    ///   response (`Stream`, `Decode`) are **unknown**: the request reached the endpoint and no
-    ///   authoritative outcome exists. Recovery reports them and never re-sends.
-    /// * A structured answer from the endpoint (`Http`, `Api`, `ApiResponse`, `Refusal`,
+    ///   response (`Http`, `Stream`, `Decode`) are **unknown**: the request may have reached the
+    ///   endpoint and no authoritative outcome exists. Recovery reports them and never re-sends.
+    /// * A structured answer from the endpoint (`Api`, `ApiResponse`, `Refusal`,
     ///   `UnknownStopReason`) is a **proven failure**: the turn is closed, just not successfully.
     ///
     /// The pre-flight refusal above removes the two cases that would otherwise be misfiled, so the
@@ -727,6 +727,7 @@ pub(super) fn provider_outcome_is_unobservable(error: &iteron_provider::Provider
         iteron_provider::ProviderError::Interrupted
             | iteron_provider::ProviderError::DeadlineExceeded
             | iteron_provider::ProviderError::Timeout { .. }
+            | iteron_provider::ProviderError::Http(_)
             | iteron_provider::ProviderError::Stream(_)
             | iteron_provider::ProviderError::Decode(_)
     )

@@ -17,7 +17,7 @@ fn live_source() -> Vec<u8> {
 fn d13_14_cli_outer_json_source_binding_ignores_nested_fields_and_rejects_duplicates() {
     let source = live_source();
     let shapes = cli_machine_record_shapes(&source).unwrap();
-    assert_eq!(shapes.len(), 19);
+    assert_eq!(shapes.len(), 23);
     assert_eq!(
         shapes["input_attachment"],
         BTreeSet::from([

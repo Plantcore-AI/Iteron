@@ -84,18 +84,6 @@ pub(super) fn interrupted_tool_result(
     }
 }
 
-pub(super) fn is_interrupted_tool_result(result: &ToolResult) -> bool {
-    result
-        .content
-        .starts_with("operator interrupted the admitted tool")
-        || result
-            .content
-            .starts_with("operator force-cancelled the admitted tool")
-        || result
-            .content
-            .starts_with("operator drained the admitted tool")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

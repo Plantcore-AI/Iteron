@@ -35,6 +35,7 @@ fn editing_only_registry(root: &Path) -> Registry {
         memo: std::sync::Arc::new(Memo::default()),
         sensitive_env_names: Default::default(),
         confine_execution: Default::default(),
+        test_helper_thread: Default::default(),
         egress_allow_policy: Default::default(),
         observation_tool_policy: Default::default(),
         observation_focus: Default::default(),
@@ -55,6 +56,205 @@ fn write_call(id: &str, path: &str, content: &str) -> ToolUse {
         name: "write_file".into(),
         input: serde_json::json!({"path": path, "content": content}),
     }
+}
+
+fn edit_call(id: &str, path: &str) -> ToolUse {
+    ToolUse {
+        id: id.into(),
+        name: "edit".into(),
+        input: serde_json::json!({"path": path, "old": "before", "new": "after"}),
+    }
+}
+
+#[tokio::test]
+async fn ordinary_coding_file_writers_refuse_parent_and_absolute_escapes() {
+    let root = TestRoot::new("confined-root");
+    let outside = TestRoot::new("confined-outside");
+    std::fs::write(outside.0.join("existing.txt"), "before\n").unwrap();
+    let outside_name = outside.0.file_name().unwrap().to_string_lossy();
+    let parent_path = format!("../{outside_name}/existing.txt");
+    let absolute_path = outside
+        .0
+        .join("existing.txt")
+        .to_string_lossy()
+        .into_owned();
+    let mut registry = editing_only_registry(&root.0);
+    registry.set_confine_execution(true);
+
+    for path in [&parent_path, &absolute_path] {
+        let write = registry
+            .run(write_call("write-escape", path, "overwritten"))
+            .await;
+        assert!(write.is_error, "{path}: {}", write.content);
+        assert!(
+            write.content.contains("outside workspace"),
+            "{}",
+            write.content
+        );
+        let edit = registry.run(edit_call("edit-escape", path)).await;
+        assert!(edit.is_error, "{path}: {}", edit.content);
+        assert!(
+            edit.content.contains("outside workspace"),
+            "{}",
+            edit.content
+        );
+        assert_eq!(
+            std::fs::read_to_string(outside.0.join("existing.txt")).unwrap(),
+            "before\n"
+        );
+    }
+
+    // Absolute paths are valid when they still resolve inside the active workspace.
+    let inside = root.0.join("inside.txt").to_string_lossy().into_owned();
+    let result = registry
+        .run(write_call("absolute-inside", &inside, "before\n"))
+        .await;
+    assert!(!result.is_error, "{}", result.content);
+    let result = registry
+        .run(edit_call("absolute-inside-edit", &inside))
+        .await;
+    assert!(!result.is_error, "{}", result.content);
+    assert_eq!(std::fs::read_to_string(inside).unwrap(), "after\n");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn ordinary_coding_file_writers_refuse_symlink_escape_before_dispatch() {
+    let root = TestRoot::new("confined-link-root");
+    let outside = TestRoot::new("confined-link-outside");
+    std::fs::write(outside.0.join("existing.txt"), "before\n").unwrap();
+    std::os::unix::fs::symlink(&outside.0, root.0.join("escape")).unwrap();
+    let mut registry = editing_only_registry(&root.0);
+    registry.set_confine_execution(true);
+
+    let write = registry
+        .dispatch(write_call("write-link", "escape/new.txt", "new"))
+        .await;
+    assert!(write.is_error, "{}", write.content);
+    let edit = registry
+        .run(edit_call("edit-link", "escape/existing.txt"))
+        .await;
+    assert!(edit.is_error, "{}", edit.content);
+    assert!(!outside.0.join("new.txt").exists());
+    assert_eq!(
+        std::fs::read_to_string(outside.0.join("existing.txt")).unwrap(),
+        "before\n"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn confined_write_rechecks_swapped_parent_at_commit() {
+    let root = TestRoot::new("swap-write-root");
+    let outside = TestRoot::new("swap-write-outside");
+    std::fs::create_dir(root.0.join("subdir")).unwrap();
+
+    let error = write_workspace_file_with_hook_and_boundary(
+        &root.0,
+        "subdir/new.txt",
+        "agent bytes\n",
+        true,
+        |_| {
+            std::fs::rename(root.0.join("subdir"), root.0.join("moved")).unwrap();
+            std::os::unix::fs::symlink(&outside.0, root.0.join("subdir")).unwrap();
+        },
+    )
+    .await
+    .unwrap_err();
+
+    assert!(error.contains("outside workspace"), "{error}");
+    assert!(!outside.0.join("new.txt").exists());
+    assert!(!root.0.join("moved/new.txt").exists());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn confined_edit_rechecks_swapped_parent_at_commit() {
+    let root = TestRoot::new("swap-edit-root");
+    let outside = TestRoot::new("swap-edit-outside");
+    std::fs::create_dir(root.0.join("subdir")).unwrap();
+    std::fs::write(root.0.join("subdir/file.txt"), "before\n").unwrap();
+    // A hard link preserves the exact inode/stamp across the alias. A snapshot-identity check
+    // alone would therefore accept the replacement; the final workspace check must reject it.
+    std::fs::hard_link(root.0.join("subdir/file.txt"), outside.0.join("file.txt")).unwrap();
+
+    let error = crate::edit::edit_workspace_file_with_hook_and_boundary(
+        &root.0,
+        "subdir/file.txt",
+        "before",
+        "after",
+        true,
+        |_| {
+            std::fs::rename(root.0.join("subdir"), root.0.join("moved")).unwrap();
+            std::os::unix::fs::symlink(&outside.0, root.0.join("subdir")).unwrap();
+        },
+    )
+    .await
+    .unwrap_err();
+
+    assert!(error.contains("outside workspace"), "{error}");
+    assert_eq!(
+        std::fs::read_to_string(outside.0.join("file.txt")).unwrap(),
+        "before\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.0.join("moved/file.txt")).unwrap(),
+        "before\n"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn confined_write_rejects_parent_swap_before_creation_without_outside_directory() {
+    let root = TestRoot::new("swap-before-create-root");
+    let outside = TestRoot::new("swap-before-create-outside");
+    std::os::unix::fs::symlink(&outside.0, root.0.join("subdir")).unwrap();
+    let target = root.0.join("subdir/deep/new.txt");
+    let result = crate::confined_fs::ConfinedTarget::open(&root.0, &target, true);
+    assert!(result.is_err());
+    assert!(!outside.0.join("deep").exists());
+    assert!(transaction_files(&outside.0).is_empty());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn confined_write_rejects_parent_swap_before_temporary_allocation() {
+    let root = TestRoot::new("swap-before-temp-root");
+    let outside = TestRoot::new("swap-before-temp-outside");
+    std::fs::create_dir(root.0.join("subdir")).unwrap();
+    let target_path = root.0.join("subdir/new.txt");
+    let target = std::sync::Arc::new(
+        crate::confined_fs::ConfinedTarget::open(&root.0, &target_path, false).unwrap(),
+    );
+    std::fs::rename(root.0.join("subdir"), outside.0.join("moved")).unwrap();
+    std::os::unix::fs::symlink(&outside.0, root.0.join("subdir")).unwrap();
+    let result = StagedWrite::prepare_confined(&target_path, b"agent bytes", target).await;
+    assert!(result.is_err());
+    assert!(transaction_files(&outside.0.join("moved")).is_empty());
+    assert!(!outside.0.join("new.txt").exists());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn confined_write_rejects_parent_swap_before_rename_and_cleans_pinned_temp() {
+    let root = TestRoot::new("swap-before-rename-root");
+    let outside = TestRoot::new("swap-before-rename-outside");
+    std::fs::create_dir(root.0.join("subdir")).unwrap();
+    let target_path = root.0.join("subdir/new.txt");
+    let target = std::sync::Arc::new(
+        crate::confined_fs::ConfinedTarget::open(&root.0, &target_path, false).unwrap(),
+    );
+    let staged = StagedWrite::prepare_confined(&target_path, b"agent bytes", target)
+        .await
+        .unwrap();
+    std::fs::rename(root.0.join("subdir"), outside.0.join("moved")).unwrap();
+    std::os::unix::fs::symlink(&outside.0, root.0.join("subdir")).unwrap();
+    let failure = staged.commit().await.unwrap_err();
+    assert!(failure.error.to_string().contains("outside workspace"));
+    assert!(!failure.target_replaced);
+    assert!(transaction_files(&outside.0.join("moved")).is_empty());
+    assert!(!outside.0.join("new.txt").exists());
+    assert!(!outside.0.join("moved/new.txt").exists());
 }
 
 fn transaction_files(parent: &Path) -> Vec<PathBuf> {

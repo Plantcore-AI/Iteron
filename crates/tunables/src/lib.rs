@@ -136,8 +136,9 @@ pub const REGISTRY_SCHEMA_VERSION: u16 = 4;
 pub const FAMILY_SCHEMA_VERSION: u16 = 3;
 /// Stable logical registry identity.
 pub const REGISTRY_ID: &str = "iteron-tunables";
-/// Revision of the family set under schema v4. Revision 24 makes low effort the performance-first
-/// default while preserving explicit medium and higher reasoning tiers. Revision 23 makes retrieval recency decay a real
+/// Revision of the family set under schema v4. Revision 25 aligns fresh route, effort, and
+/// permission defaults with production admission; it does not make a provider or model globally
+/// available. Revision 24 made low effort the performance-first default. Revision 23 makes retrieval recency decay a real
 /// bounded context strategy instead of a tenant-scoped singleton. Revision 22 bounds model-visible observation and
 /// MCP result amplification while preserving private/full evidence and paged reachability.
 /// Revision 21 retunes interactive execution,
@@ -148,7 +149,7 @@ pub const REGISTRY_ID: &str = "iteron-tunables";
 /// overriding that constant through its Tier-2 handle is precisely what makes the comparison fail.
 /// Revision 19 externalized every non-Pin governed family through the universal profile seam while
 /// retaining immutable Pin admission rules.
-pub const REGISTRY_REVISION: u16 = 24;
+pub const REGISTRY_REVISION: u16 = 25;
 /// Exact family cardinality required by the R0/R1 contract.
 pub const EXPECTED_FAMILY_COUNT: usize = 160;
 /// Canonical byte encoding used as the digest input.
@@ -157,6 +158,6 @@ pub const CANONICALIZATION: &str = "iteron-tunables-json-v4";
 pub const FAMILY_CANONICALIZATION: &str = "core-tunable-family-json-v3";
 /// Digest algorithm for canonical artifacts.
 pub const DIGEST_ALGORITHM: &str = "sha256";
-/// Golden digest for revision 24; metadata changes require an explicit revision and digest update.
+/// Golden digest for revision 25; metadata changes require an explicit revision and digest update.
 pub const REGISTRY_DIGEST_SHA256: &str =
-    "dc46c5a2f21c77ae289c3c6169cc372230b5080110694d51bd39d4709bdc88fd";
+    "fa047ac86fa33d921ac49f60507adefe6a226e2e57396be626d0008690854fa3";

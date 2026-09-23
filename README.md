@@ -29,11 +29,12 @@
 </p>
 
 > [!WARNING]
-> **Pre-alpha; code execution is unconfined by default.** Iteron is intended for
-> development and evaluation, not unattended use on sensitive repositories.
-> Use `--ask-permissions` to restore the capability gate and `--confine` for
-> macOS Seatbelt or Linux bubblewrap. Windows has no code-execution sandbox;
-> `--confine` refuses command execution there.
+> **Pre-alpha; the ordinary permission gate and macOS/Linux execution sandbox
+> are enabled by default.** Iteron is still unsuitable for unattended use on
+> sensitive repositories: the built-in file-write boundary has an unresolved
+> symlink race. `--dangerously-bypass-permissions` is an explicit opt-in to broad
+> host authority. Windows has no code-execution sandbox, so confined execution
+> refuses commands there.
 
 Iteron is an open-source substrate for building, evaluating, and governing
 **harness checkpoints for domain-specific AI agents**. It provides modular Rust runtime
@@ -99,10 +100,10 @@ iteron -p -C /path/to/repository \
   "Fix the failing test, verify the change, and summarize the evidence"
 ```
 
-For an untrusted repository, enable both controls:
+For an untrusted repository, use read-only mode or inspect it manually:
 
 ```sh
-iteron -p -C /path/to/untrusted-repository --ask-permissions --confine \
+iteron -p -C /path/to/untrusted-repository --mode plan \
   "Explain what this repository's build script does"
 ```
 

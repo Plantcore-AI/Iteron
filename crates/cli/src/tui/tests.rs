@@ -1652,9 +1652,12 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             app.steer_admission("late steer"),
             SubmissionAdmission::Accept
         );
-        app.track_steer("late steer".into());
+        app.track_steer("late steer".into(), SubmissionId(1));
         app.queue_after_turn("queued last".into()).unwrap();
-        let (moved, unmatched) = app.requeue_unadmitted(vec!["late steer".into()]);
+        let (moved, unmatched) = app.requeue_unadmitted(
+            vec!["late steer".into()],
+            &[Some(SubmissionId(1))],
+        );
         assert_eq!((moved, unmatched), (1, 0));
         assert_eq!(
             app.queued
@@ -1679,11 +1682,14 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     #[test]
     fn unmatched_steer_previews_are_preserved_as_ordered_follow_ups() {
         let mut app = App::new();
-        app.track_steer("returned by kernel".into());
-        app.track_steer("preview missing from reclaim report".into());
+        app.track_steer("returned by kernel".into(), SubmissionId(1));
+        app.track_steer("preview missing from reclaim report".into(), SubmissionId(2));
         app.queue_after_turn("already queued".into()).unwrap();
 
-        let (reported, preserved) = app.requeue_unadmitted(vec!["returned by kernel".into()]);
+        let (reported, preserved) = app.requeue_unadmitted(
+            vec!["returned by kernel".into()],
+            &[Some(SubmissionId(1))],
+        );
 
         assert_eq!((reported, preserved), (1, 1));
         assert!(app.steer_previews.is_empty());
@@ -1849,6 +1855,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             reason: "update src/main.rs".into(),
             arguments: serde_json::json!({"path": "src/main.rs"}),
             workspace: "/tmp/project".into(),
+            prompt_complete: true,
         });
         term.draw(|f| draw(f, &mut app)).unwrap();
         // CRITICAL regression: the completion menu OPEN on short terminals must not panic (the
@@ -1896,7 +1903,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         s
     }
 
-    fn render_text(app: &mut App, width: u16, height: u16) -> String {
+    pub(super) fn render_text(app: &mut App, width: u16, height: u16) -> String {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
@@ -2382,7 +2389,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             app.run_started = Some(Instant::now());
             app.active_tools
                 .push_back(("tool-1".into(), "Bash(cargo test -p iteron-cli)".into()));
-            app.track_steer("also cover narrow terminals".into());
+            app.track_steer("also cover narrow terminals".into(), SubmissionId(1));
             app.queue_after_turn("then update the design record".into())
                 .unwrap();
             let screen = render_text(&mut app, width, height);
@@ -3274,7 +3281,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         // Running keeps a real composer and teaches the steer/queue split instead of claiming Send.
         app.editor.clear();
         app.running = true;
-        app.track_steer("also cover narrow terminals".into());
+        app.track_steer("also cover narrow terminals".into(), SubmissionId(1));
         let mut term3 = Terminal::new(TestBackend::new(100, 12)).unwrap();
         term3.draw(|f| draw(f, &mut app)).unwrap();
         let s3 = buffer_text(&term3);
@@ -3341,6 +3348,9 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 cost: summary.cost.clone(),
                 last_turn_usage: None,
                 unadmitted_steers: Vec::new(),
+                unadmitted_internal_notifications: Vec::new(),
+                unadmitted_client_steers: 0,
+                unadmitted_steer_submission_ids: Vec::new(),
                 permission_rules: PermissionRules::new(),
                 runtime_policy: None,
                 ledger_summary: String::new(),
@@ -3446,6 +3456,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             kernel_tax: iteron_obs::KernelTax::default(),
             memo_hits: 0,
             memo_misses: 0,
+            terminal_evidence: None,
         }
     }
 
@@ -3511,6 +3522,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             error: None,
             memo_hits: 0,
             memo_misses: 0,
+            terminal_evidence: None,
         };
         let outcome = summary.terminal.outcome();
         let expected = crate::output::final_result(
@@ -3531,6 +3543,9 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 cost: CostState::default(),
                 last_turn_usage: None,
                 unadmitted_steers: Vec::new(),
+                unadmitted_internal_notifications: Vec::new(),
+                unadmitted_client_steers: 0,
+                unadmitted_steer_submission_ids: Vec::new(),
                 permission_rules: PermissionRules::new(),
                 runtime_policy: None,
                 ledger_summary: String::new(),
@@ -3584,6 +3599,9 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 cost: CostState::default(),
                 last_turn_usage: None,
                 unadmitted_steers: Vec::new(),
+                unadmitted_internal_notifications: Vec::new(),
+                unadmitted_client_steers: 0,
+                unadmitted_steer_submission_ids: Vec::new(),
                 permission_rules: PermissionRules::new(),
                 runtime_policy: None,
                 ledger_summary: String::new(),
@@ -3603,6 +3621,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 error: None,
                 memo_hits: 0,
                 memo_misses: 0,
+                terminal_evidence: None,
             }),
         };
         let mut notifier = notification::TerminalNotifier::new(false);
@@ -3649,6 +3668,9 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 cost: CostState::default(),
                 last_turn_usage: None,
                 unadmitted_steers: Vec::new(),
+                unadmitted_internal_notifications: Vec::new(),
+                unadmitted_client_steers: 0,
+                unadmitted_steer_submission_ids: Vec::new(),
                 permission_rules: PermissionRules::new(),
                 runtime_policy: None,
                 ledger_summary: String::new(),
@@ -3670,6 +3692,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 error: None,
                 memo_hits: 0,
                 memo_misses: 0,
+                terminal_evidence: None,
             }),
         };
         let mut notifier = notification::TerminalNotifier::new(false);
@@ -3993,11 +4016,18 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             app.last_turn_usage.map(|usage| usage.cache_hit_ratio()),
             Some(0.5)
         );
-        app.track_steer("first".into());
-        app.track_steer("second".into());
+        app.track_steer("first".into(), SubmissionId(1));
+        app.track_steer("second".into(), SubmissionId(2));
         apply_event(&mut app, UiEvent::SteerApplied { count: 1 });
+        assert_eq!(app.steer_previews.len(), 2);
+        apply_event(
+            &mut app,
+            UiEvent::SteerSubmissionApplied {
+                id: SubmissionId(2),
+            },
+        );
         assert_eq!(app.steer_previews.len(), 1);
-        assert_eq!(app.steer_previews.front().unwrap().text, "second");
+        assert_eq!(app.steer_previews.front().unwrap().text, "first");
     }
 
     #[test]
@@ -6495,6 +6525,9 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             cost: iteron_obs::CostState::default(),
             last_turn_usage: None,
             unadmitted_steers: Vec::new(),
+            unadmitted_internal_notifications: Vec::new(),
+            unadmitted_client_steers: 0,
+            unadmitted_steer_submission_ids: Vec::new(),
             permission_rules: PermissionRules::new(),
             runtime_policy: None,
             ledger_summary: String::new(),
@@ -6831,6 +6864,49 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert_eq!(app.approval_choice, ApprovalChoice::Deny);
     }
 
+    #[test]
+    fn approval_resolution_clears_only_its_prompt_and_renders_decision_not_tool_success() {
+        let mut app = App::new();
+        app.running = true;
+        apply_event(
+            &mut app,
+            UiEvent::ApprovalRequest {
+                id: SubmissionId(77),
+                tool: "bash".into(),
+                capability: Capability::CodeExecuting,
+                reason: "run test".into(),
+                arguments: serde_json::json!({"command": "true"}),
+                workspace: "/fixture".into(),
+            },
+        );
+        apply_event(
+            &mut app,
+            UiEvent::ApprovalResolved {
+                id: SubmissionId(78),
+                resolution: crate::runtime::ApprovalResolution::Denied,
+                reason_code: "other_prompt",
+                response_submission_id: None,
+            },
+        );
+        assert_eq!(
+            app.pending.as_ref().map(|pending| pending.id),
+            Some(SubmissionId(77))
+        );
+        apply_event(
+            &mut app,
+            UiEvent::ApprovalResolved {
+                id: SubmissionId(77),
+                resolution: crate::runtime::ApprovalResolution::Approved,
+                reason_code: "operator_approved",
+                response_submission_id: Some(SubmissionId(79)),
+            },
+        );
+        assert!(app.pending.is_none());
+        assert!(app.status.contains("tool pending"));
+        assert!(!app.status.contains("tool complete"));
+        assert!(render_text(&mut app, 100, 24).contains("tool pending"));
+    }
+
     #[tokio::test]
     async fn pending_transcript_effect_never_blocks_an_approval_transition() {
         let mut app = App::new();
@@ -7125,4 +7201,371 @@ fn request_sent_owns_ttft_origin_and_delayed_activity_keeps_protocol_age() {
         app.provider_accepted,
         "only Accepted advances the presentation label"
     );
+}
+
+#[test]
+fn ordinary_tui_projects_product_final_answer_and_renders_exact_terminal_text() {
+    use iteron_protocol::product_contract::{
+        ItemContentChannelV1, ProductEventKindV1, ProductEventV1, ProductEventsPageV1,
+        ProductTurnId, TurnStateV1,
+    };
+    let thread_id = iteron_protocol::SessionId("terminal-thread".into());
+    let run_id = iteron_protocol::RunId("terminal-run".into());
+    let event = |event_seq, source_event_seq, event| ProductEventV1 {
+        event_seq,
+        source_event_seq,
+        thread_id: thread_id.clone(),
+        run_id: run_id.clone(),
+        turn_id: Some(ProductTurnId(3)),
+        item_id: Some("item-1".into()),
+        event,
+    };
+    let mut app = App::new();
+    app.running = true;
+    app.product_stream_active = true;
+    let mut projection = product_projection::ProductProjection::default();
+    projection.ingest_page(
+        &mut app,
+        ProductEventsPageV1 {
+            contract_version: 1,
+            thread_id: thread_id.clone(),
+            requested_after: 0,
+            next_cursor: 5,
+            latest_cursor: 5,
+            oldest_available: 1,
+            gap: None,
+            events: vec![
+                event(1, None, ProductEventKindV1::TurnStarted { submission_id: None }),
+                event(
+                    2,
+                    Some(10),
+                    ProductEventKindV1::ItemContent {
+                        channel: ItemContentChannelV1::Assistant,
+                        content: "partial answer".into(),
+                    },
+                ),
+                event(
+                    3,
+                    Some(11),
+                    ProductEventKindV1::ItemContent {
+                        channel: ItemContentChannelV1::FinalAnswer,
+                        content: "exact terminal answer".into(),
+                    },
+                ),
+                event(
+                    4,
+                    Some(12),
+                    ProductEventKindV1::TurnEnded {
+                        state: TurnStateV1::Completed,
+                        reason_code: None,
+                        error: None,
+                        terminal_text_exact: true,
+                    },
+                ),
+                // The next turn has no source EQ sequence. It must wait for the next envelope,
+                // even if its admission reached the resident Product ring already.
+                event(5, None, ProductEventKindV1::TurnStarted { submission_id: None }),
+            ],
+            latest_terminal: None,
+        },
+        12,
+    );
+    assert_eq!(app.product_terminal_answer.as_deref(), Some("exact terminal answer"));
+    let screen = tests::render_text(&mut app, 100, 24);
+    assert!(screen.contains("exact terminal answer"), "{screen}");
+    assert!(!screen.contains("partial answer"), "{screen}");
+}
+
+#[test]
+fn product_cursor_gap_is_visible_and_cannot_certify_an_exact_terminal_answer() {
+    use iteron_protocol::product_contract::{
+        ItemContentChannelV1, ProductEventGapV1, ProductEventKindV1, ProductEventV1,
+        ProductEventsPageV1, ProductTurnId, TurnStateV1,
+    };
+    let thread_id = iteron_protocol::SessionId("gap-thread".into());
+    let run_id = iteron_protocol::RunId("gap-run".into());
+    let event = |event_seq, event| ProductEventV1 {
+        event_seq,
+        source_event_seq: Some(event_seq),
+        thread_id: thread_id.clone(),
+        run_id: run_id.clone(),
+        turn_id: Some(ProductTurnId(7)),
+        item_id: Some("item-1".into()),
+        event,
+    };
+    let mut app = App::new();
+    app.running = true;
+    let mut projection = product_projection::ProductProjection::default();
+    projection.ingest_page(
+        &mut app,
+        ProductEventsPageV1 {
+            contract_version: 1,
+            thread_id: thread_id.clone(),
+            requested_after: 0,
+            next_cursor: 3,
+            latest_cursor: 3,
+            oldest_available: 2,
+            gap: Some(ProductEventGapV1 {
+                requested_after: 0,
+                oldest_available: 2,
+            }),
+            events: vec![
+                event(
+                    2,
+                    ProductEventKindV1::ItemContent {
+                        channel: ItemContentChannelV1::FinalAnswer,
+                        content: "incomplete terminal".into(),
+                    },
+                ),
+                event(
+                    3,
+                    ProductEventKindV1::TurnEnded {
+                        state: TurnStateV1::Completed,
+                        reason_code: None,
+                        error: None,
+                        terminal_text_exact: true,
+                    },
+                ),
+            ],
+            latest_terminal: None,
+        },
+        3,
+    );
+    assert!(app.product_terminal_answer.is_none());
+    assert!(tests::render_text(&mut app, 100, 24).contains("product content gap"));
+}
+
+#[test]
+fn active_tui_control_carries_product_turn_epoch() {
+    let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+    let session = Session::for_test(tx);
+    let id = session
+        .submit_for_running_turn(Op::Interrupt)
+        .expect("test product turn is running")
+        .expect("SQ has room");
+    let envelope = rx.try_recv().expect("bound control enqueued");
+    assert_eq!(envelope.submission_id, id);
+    assert_eq!(
+        envelope.expected_product_turn_id,
+        Some(iteron_protocol::product_contract::ProductTurnId(1))
+    );
+}
+
+#[test]
+fn stale_tui_control_is_not_queued_for_a_later_product_turn() {
+    let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+    let session = Session::for_test(tx);
+    session.client.seed_contract_identity_for_test(
+        iteron_protocol::SessionId("session-test".into()),
+        iteron_protocol::RunId("next-run".into()),
+    );
+    assert!(session.submit_for_running_turn(Op::Interrupt).is_none());
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn ordinary_tui_does_not_offer_approval_for_an_incomplete_product_prompt() {
+    use iteron_protocol::product_contract::{
+        ProductEventKindV1, ProductEventV1, ProductEventsPageV1, ProductTurnId,
+    };
+    let thread_id = iteron_protocol::SessionId("approval-thread".into());
+    let mut app = App::new();
+    app.running = true;
+    app.product_stream_active = true;
+    let mut projection = product_projection::ProductProjection::default();
+    projection.ingest_page(
+        &mut app,
+        ProductEventsPageV1 {
+            contract_version: 1,
+            thread_id: thread_id.clone(),
+            requested_after: 0,
+            next_cursor: 1,
+            latest_cursor: 1,
+            oldest_available: 1,
+            gap: None,
+            events: vec![ProductEventV1 {
+                event_seq: 1,
+                source_event_seq: Some(1),
+                thread_id,
+                run_id: iteron_protocol::RunId("approval-run".into()),
+                turn_id: Some(ProductTurnId(1)),
+                item_id: None,
+                event: ProductEventKindV1::ApprovalRequested {
+                    approval_id: SubmissionId(7),
+                    tool: "bash".into(),
+                    capability: Capability::CodeExecuting,
+                    reason: "truncated".into(),
+                    arguments_json: None,
+                    workspace: "/fixture".into(),
+                    prompt_complete: false,
+                },
+            }],
+            latest_terminal: None,
+        },
+        1,
+    );
+    let pending = app.pending.as_ref().expect("product prompt projected");
+    assert!(!pending.prompt_complete);
+    let actions = approval_action_line(&app, pending, 100)
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect::<String>();
+    assert!(actions.contains("prompt truncated"));
+    assert!(!actions.contains("Allow"));
+    assert!(tests::render_text(&mut app, 100, 24).contains("prompt truncated"));
+}
+
+#[test]
+fn product_approval_response_settles_only_its_exact_submission_receipt() {
+    use iteron_protocol::product_contract::{
+        ProductEventKindV1, ProductEventV1, ProductEventsPageV1, ProductTurnId,
+        SubmissionReceiptV1,
+    };
+    let thread_id = iteron_protocol::SessionId("receipt-thread".into());
+    let run_id = iteron_protocol::RunId("receipt-run".into());
+    let receipt = |event_seq, submission_id, state| ProductEventV1 {
+        event_seq,
+        source_event_seq: Some(event_seq),
+        thread_id: thread_id.clone(),
+        run_id: run_id.clone(),
+        turn_id: Some(ProductTurnId(1)),
+        item_id: None,
+        event: ProductEventKindV1::Submission {
+            receipt: SubmissionReceiptV1 {
+                submission_id,
+                state,
+                reason_code: None,
+            },
+        },
+    };
+    let mut app = App::new();
+    app.pending = Some(Pending {
+        id: SubmissionId(7),
+        tool: "bash".into(),
+        cap: Capability::CodeExecuting,
+        reason: "fixture".into(),
+        arguments: serde_json::Value::Null,
+        workspace: "/fixture".into(),
+        prompt_complete: true,
+    });
+    app.pending_approval_response = Some(SubmissionId(9));
+    let mut projection = product_projection::ProductProjection::default();
+    projection.ingest_page(
+        &mut app,
+        ProductEventsPageV1 {
+            contract_version: 1,
+            thread_id: thread_id.clone(),
+            requested_after: 0,
+            next_cursor: 1,
+            latest_cursor: 2,
+            oldest_available: 1,
+            gap: None,
+            events: vec![receipt(
+                1,
+                SubmissionId(8),
+                iteron_protocol::SubmissionLifecycleState::Rejected,
+            )],
+            latest_terminal: None,
+        },
+        1,
+    );
+    assert_eq!(app.pending_approval_response, Some(SubmissionId(9)));
+    projection.ingest_page(
+        &mut app,
+        ProductEventsPageV1 {
+            contract_version: 1,
+            thread_id: thread_id.clone(),
+            requested_after: 1,
+            next_cursor: 2,
+            latest_cursor: 2,
+            oldest_available: 1,
+            gap: None,
+            events: vec![receipt(
+                2,
+                SubmissionId(9),
+                iteron_protocol::SubmissionLifecycleState::Rejected,
+            )],
+            latest_terminal: None,
+        },
+        2,
+    );
+    assert_eq!(app.pending.as_ref().map(|pending| pending.id), Some(SubmissionId(7)));
+    assert!(app.pending_approval_response.is_none());
+    assert!(app.status.contains("rejected"));
+}
+
+#[test]
+fn product_run_rebind_skips_retained_old_run_content_and_terminal() {
+    use iteron_protocol::product_contract::{
+        ItemContentChannelV1, ProductEventKindV1, ProductEventV1, ProductEventsPageV1,
+        ProductTurnId, TurnStateV1,
+    };
+    let thread = iteron_protocol::SessionId("rebind-thread".into());
+    let old = iteron_protocol::RunId("old-run".into());
+    let new = iteron_protocol::RunId("new-run".into());
+    let event = |seq, run_id: iteron_protocol::RunId, kind| ProductEventV1 {
+        event_seq: seq,
+        source_event_seq: Some(seq),
+        thread_id: thread.clone(),
+        run_id,
+        turn_id: Some(ProductTurnId(1)),
+        item_id: Some("item-1".into()),
+        event: kind,
+    };
+    let content = |text: &str| ProductEventKindV1::ItemContent {
+        channel: ItemContentChannelV1::Assistant,
+        content: text.into(),
+    };
+    let terminal = ProductEventKindV1::TurnEnded {
+        state: TurnStateV1::Completed,
+        reason_code: None,
+        error: None,
+        terminal_text_exact: false,
+    };
+    let mut projection = product_projection::ProductProjection::default();
+    let mut old_app = App::new();
+    projection.select_run(&mut old_app, old.clone());
+    projection.ingest_page(
+        &mut old_app,
+        ProductEventsPageV1 {
+            contract_version: 1,
+            thread_id: thread.clone(),
+            requested_after: 0,
+            next_cursor: 2,
+            latest_cursor: 2,
+            oldest_available: 1,
+            gap: None,
+            events: vec![
+                event(1, old.clone(), content("old answer ")),
+                event(2, old.clone(), terminal.clone()),
+            ],
+            latest_terminal: None,
+        },
+        2,
+    );
+    let mut new_app = App::new();
+    projection.select_run(&mut new_app, new.clone());
+    projection.ingest_page(
+        &mut new_app,
+        ProductEventsPageV1 {
+            contract_version: 1,
+            thread_id: thread.clone(),
+            requested_after: 2,
+            next_cursor: 5,
+            latest_cursor: 5,
+            oldest_available: 1,
+            gap: None,
+            events: vec![
+                event(3, old.clone(), content("old replay ")),
+                event(4, old, terminal),
+                event(5, new, content("fresh content ")),
+            ],
+            latest_terminal: None,
+        },
+        5,
+    );
+    new_app.finish_text_boundary();
+    assert_eq!(new_app.assistant_stream_authority, "fresh content ");
+    assert!(!tests::render_text(&mut new_app, 100, 24).contains("old replay"));
 }

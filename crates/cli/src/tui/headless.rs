@@ -25,6 +25,7 @@ use crate::output;
 use crate::runtime::{PlantcoreUiEvent, UiEvent};
 use anyhow::{Context, Result, bail};
 use iteron_protocol::PROTOCOL_VERSION;
+use iteron_protocol::product_contract::PRODUCT_CONTRACT_VERSION;
 use serde_json::{Value, json};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -55,6 +56,72 @@ fn project_v7_plantcore_event(
     }
     values.push(output::v7_plantcore_event(event)?);
     Ok(values)
+}
+
+/// Preserve redaction state across V4/V5/V6 provider chunks and emit only complete tokens.
+#[derive(Default)]
+struct LegacyStreamScrubbers {
+    assistant: output::StreamingScrubber,
+    reasoning: output::StreamingScrubber,
+}
+
+impl LegacyStreamScrubbers {
+    fn emit(
+        logical: &mut Vec<(bool, Value)>,
+        event: UiEvent,
+        turn: &mut u32,
+        schema: u32,
+    ) -> Result<()> {
+        logical.push((false, output::stream_event_for_schema(event, turn, schema)?));
+        Ok(())
+    }
+
+    fn finish(
+        &mut self,
+        logical: &mut Vec<(bool, Value)>,
+        turn: &mut u32,
+        schema: u32,
+    ) -> Result<()> {
+        if let Some(safe) = self.assistant.finish() {
+            Self::emit(logical, UiEvent::Text(safe), turn, schema)?;
+        }
+        if let Some(safe) = self.reasoning.finish() {
+            Self::emit(logical, UiEvent::Thinking(safe), turn, schema)?;
+        }
+        Ok(())
+    }
+
+    fn project(
+        &mut self,
+        event: UiEvent,
+        logical: &mut Vec<(bool, Value)>,
+        turn: &mut u32,
+        schema: u32,
+    ) -> Result<()> {
+        match event {
+            UiEvent::Text(delta) => {
+                if let Some(safe) = self.reasoning.finish() {
+                    Self::emit(logical, UiEvent::Thinking(safe), turn, schema)?;
+                }
+                if let Some(safe) = self.assistant.push(&delta) {
+                    Self::emit(logical, UiEvent::Text(safe), turn, schema)?;
+                }
+            }
+            UiEvent::Thinking(delta) => {
+                if let Some(safe) = self.assistant.finish() {
+                    Self::emit(logical, UiEvent::Text(safe), turn, schema)?;
+                }
+                if let Some(safe) = self.reasoning.push(&delta) {
+                    Self::emit(logical, UiEvent::Thinking(safe), turn, schema)?;
+                }
+            }
+            other => {
+                self.finish(logical, turn, schema)?;
+                Self::emit(logical, other, turn, schema)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -362,7 +429,8 @@ impl Shared {
         event: ServerEvent,
         turn: u32,
         mut assistant: output::V7AssistantStream,
-    ) -> Result<(u32, output::V7AssistantStream)> {
+        mut legacy: LegacyStreamScrubbers,
+    ) -> Result<(u32, output::V7AssistantStream, LegacyStreamScrubbers)> {
         // `resume_from` names this transport's presentation stream, not the in-process EQ. Some EQ
         // variants intentionally have no frozen stream-json representation, so carrying their EQ
         // sequence numbers across the projection would manufacture holes that every correct client
@@ -375,13 +443,13 @@ impl Shared {
                 | ServerEvent::Activity(_)
                 | ServerEvent::McpInputRequested(_)
         ) {
-            return Ok((turn, assistant));
+            return Ok((turn, assistant, legacy));
         }
         let previous_seq = self.cursor.load(Ordering::Acquire);
         let machine_schema_version = self.machine_schema_version;
         // Projection can redact or serialize the full bounded provider result. Keep that work, and
         // the following two-pass frame preparation, off Tokio's runtime workers.
-        let (frames, next_turn, assistant) = tokio::task::spawn_blocking(move || {
+        let (frames, next_turn, assistant, legacy) = tokio::task::spawn_blocking(move || {
             let mut next_turn = turn;
             let mut logical = Vec::with_capacity(3);
             match event {
@@ -392,36 +460,43 @@ impl Shared {
                         logical.push((false, event));
                     }
                 }
+                ServerEvent::Ui(event) if machine_schema_version != output::V7_SCHEMA_VERSION => {
+                    legacy.project(event, &mut logical, &mut next_turn, machine_schema_version)?;
+                }
                 ServerEvent::Ui(event) => logical.push((
                     false,
                     output::stream_event_for_schema(event, &mut next_turn, machine_schema_version)?,
                 )),
                 ServerEvent::Plantcore(event) => {
+                    legacy.finish(&mut logical, &mut next_turn, machine_schema_version)?;
                     logical.extend(
                         project_v7_plantcore_event(&mut assistant, event)?
                             .into_iter()
                             .map(|event| (false, event)),
                     );
                 }
-                ServerEvent::Notice(message) => logical.push((
-                    false,
-                    output::stream_event_for_schema(
+                ServerEvent::Notice(message) => {
+                    legacy.finish(&mut logical, &mut next_turn, machine_schema_version)?;
+                    LegacyStreamScrubbers::emit(
+                        &mut logical,
                         UiEvent::Notice(message),
                         &mut next_turn,
                         machine_schema_version,
-                    )?,
-                )),
-                ServerEvent::Lagged { dropped } => logical.push((
-                    false,
-                    output::stream_event_for_schema(
+                    )?;
+                }
+                ServerEvent::Lagged { dropped } => {
+                    legacy.finish(&mut logical, &mut next_turn, machine_schema_version)?;
+                    LegacyStreamScrubbers::emit(
+                        &mut logical,
                         UiEvent::Notice(format!(
                             "{dropped} streamed update(s) were dropped by the bounded event queue"
                         )),
                         &mut next_turn,
                         machine_schema_version,
-                    )?,
-                )),
+                    )?;
+                }
                 ServerEvent::RunEnded { summary, .. } => {
+                    legacy.finish(&mut logical, &mut next_turn, machine_schema_version)?;
                     if machine_schema_version == output::V7_SCHEMA_VERSION {
                         let completes_assistant = summary.completes_assistant_stream_for_v7();
                         logical.extend(
@@ -466,7 +541,7 @@ impl Shared {
                     })
                 })
                 .collect::<Result<Vec<_>>>()?;
-            Ok::<_, anyhow::Error>((frames, next_turn, assistant))
+            Ok::<_, anyhow::Error>((frames, next_turn, assistant, legacy))
         })
         .await
         .context("headless live-frame projection task join")??;
@@ -479,7 +554,7 @@ impl Shared {
         .await
         .context("headless live-frame encoder task join")??;
         if frames.is_empty() {
-            return Ok((next_turn, assistant));
+            return Ok((next_turn, assistant, legacy));
         }
         let sequences = frames.iter().map(|frame| frame.seq).collect::<Vec<_>>();
         let mut ring = self.ring.lock().await;
@@ -498,7 +573,7 @@ impl Shared {
         for seq in sequences {
             let _ = self.live.send(seq);
         }
-        Ok((next_turn, assistant))
+        Ok((next_turn, assistant, legacy))
     }
 
     fn record_client_failure(&self) {
@@ -660,6 +735,7 @@ pub(crate) async fn serve(
     let mut pump = tokio::spawn(async move {
         let mut turn = 0;
         let mut assistant = output::V7AssistantStream::default();
+        let mut legacy = LegacyStreamScrubbers::default();
         let mut last_seq = 0;
         while let Some(envelope) = events.recv().await {
             let seq = envelope.sequence();
@@ -684,10 +760,11 @@ pub(crate) async fn serve(
                     break;
                 }
             };
-            match pump_shared.publish(event, turn, assistant).await {
-                Ok((next_turn, next_assistant)) => {
+            match pump_shared.publish(event, turn, assistant, legacy).await {
+                Ok((next_turn, next_assistant, next_legacy)) => {
                     turn = next_turn;
                     assistant = next_assistant;
+                    legacy = next_legacy;
                 }
                 Err(error) => {
                     log(json!({
@@ -824,15 +901,19 @@ async fn serve_connection(
         frame: hello,
         input_guard: hello_input_guard,
     } = parse_client_frame(hello).await?;
-    let (version, resume_from, requested_session_id) = match hello {
+    let (version, resume_from, requested_session_id, product_contract_version) = match hello {
         ClientFrame::Hello {
             bearer_token,
             protocol_version,
             resume_from,
             session_id,
-        } if shared.auth_token.authorizes(&bearer_token) => {
-            (protocol_version, resume_from, session_id)
-        }
+            product_contract_version,
+        } if shared.auth_token.authorizes(&bearer_token) => (
+            protocol_version,
+            resume_from,
+            session_id,
+            product_contract_version,
+        ),
         ClientFrame::Hello { .. } | ClientFrame::Submit { .. } | ClientFrame::Control { .. } => {
             // Do not expose even the negotiated protocol version until the capability check has
             // succeeded. Missing/malformed tokens fail during bounded parsing on the same path.
@@ -851,6 +932,20 @@ async fn serve_connection(
                 &format!(
                     "unsupported SQ/EQ protocol version {version}; expected {PROTOCOL_VERSION}"
                 ),
+            ),
+        )
+        .await?;
+        return Ok(());
+    }
+    if product_contract_version.is_some_and(|version| version != PRODUCT_CONTRACT_VERSION) {
+        send_frame(
+            &mut writer,
+            &shared.outbound_budget,
+            &shared.frame_preparers,
+            &shared.fragment_encoders,
+            error_frame(
+                "product_contract_version_mismatch",
+                "unsupported product contract version; expected 1",
             ),
         )
         .await?;
@@ -931,6 +1026,7 @@ async fn serve_connection(
             session_id: shared.session_id.clone(),
             cursor,
             replay_source: if fallback { "rollout" } else { "ring" },
+            product_contract_version,
         },
     )
     .await?;
@@ -1146,6 +1242,35 @@ async fn serve_connection(
                         }
                         drop(input_guard);
                         match control {
+                            control::WireControl::ProductV1 { command } => {
+                                let reply = if product_contract_version.is_none() {
+                                    json!({
+                                        "type": "control_refused_v1",
+                                        "contract_version": PRODUCT_CONTRACT_VERSION,
+                                        "reason_code": "contract_not_negotiated",
+                                    })
+                                } else if shared.plantcore {
+                                    json!({
+                                        "type": "control_refused_v1",
+                                        "contract_version": PRODUCT_CONTRACT_VERSION,
+                                        "reason_code": "mode_unavailable",
+                                    })
+                                } else {
+                                    control::product_reply(&shared.client, command)
+                                };
+                                send_frame(
+                                    &mut writer,
+                                    &shared.outbound_budget,
+                                    &shared.frame_preparers,
+                                    &shared.fragment_encoders,
+                                    ServerFrame::ControlReply {
+                                        protocol_version: PROTOCOL_VERSION,
+                                        request_id,
+                                        reply,
+                                    },
+                                )
+                                .await?;
+                            }
                             control::WireControl::PlantcoreCommandV1 {
                                 command_id,
                                 command,
@@ -1365,6 +1490,84 @@ mod boundary_tests {
         FiveClassUsage, TurnUsage, input::MAX_TOTAL_IMAGE_BASE64_BYTES, task::MAX_TASK_TEXT_BYTES,
     };
     use std::cell::Cell;
+
+    #[tokio::test]
+    async fn legacy_headless_replay_frames_scrub_split_url_and_token() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        for schema in output::SUPPORTED_SCHEMA_VERSIONS {
+            let mut scrubbers = LegacyStreamScrubbers::default();
+            let mut turn = 0;
+            let mut logical = Vec::new();
+            for delta in [
+                "link https:",
+                "//user:plain",
+                "password@host.example/path ",
+                "key sk-an",
+                "t-api03-AbCdEfGhIjKlMnOpQrStUvWx ",
+            ] {
+                scrubbers
+                    .project(UiEvent::Text(delta.into()), &mut logical, &mut turn, schema)
+                    .unwrap();
+                let live = serde_json::to_string(&logical).unwrap();
+                assert!(!live.contains("plainpassword"), "schema {schema}: {live}");
+                assert!(!live.contains("sk-ant-api03"), "schema {schema}: {live}");
+            }
+            for delta in ["thought sk-an", "t-api03-AbCdEfGhIjKlMnOpQrStUvWx "] {
+                scrubbers
+                    .project(
+                        UiEvent::Thinking(delta.into()),
+                        &mut logical,
+                        &mut turn,
+                        schema,
+                    )
+                    .unwrap();
+                let live = serde_json::to_string(&logical).unwrap();
+                assert!(!live.contains("sk-ant-api03"), "schema {schema}: {live}");
+            }
+            scrubbers
+                .project(
+                    UiEvent::Notice("boundary".into()),
+                    &mut logical,
+                    &mut turn,
+                    schema,
+                )
+                .unwrap();
+            let mut ring = ReplayRing::production();
+            let frame_count = logical.len();
+            for (index, (_, event)) in logical.into_iter().enumerate() {
+                let frame = ServerFrame::Event {
+                    protocol_version: PROTOCOL_VERSION,
+                    seq: index as u64 + 1,
+                    event,
+                };
+                ring.push(Arc::new(EncodedServerFrame::from_live(frame).unwrap()));
+            }
+            let retention = Arc::new(Semaphore::new(max_pinned_replay_bytes()));
+            let outbound = Arc::new(Semaphore::new(max_in_flight_server_bytes()));
+            let encoders = Arc::new(Semaphore::new(1));
+            let (mut writer, mut reader) = tokio::io::duplex(16 * 1024);
+            for seq in 1..=frame_count as u64 {
+                let frame = ring
+                    .try_lease(seq, &retention)
+                    .expect("retained replay frame");
+                send_encoded_frame(&mut writer, &outbound, &encoders, frame)
+                    .await
+                    .unwrap();
+            }
+            writer.shutdown().await.unwrap();
+            let mut replay = String::new();
+            reader.read_to_string(&mut replay).await.unwrap();
+            assert!(replay.contains("REDACTED"), "schema {schema}: {replay}");
+            assert!(
+                !replay.contains("plainpassword"),
+                "schema {schema}: {replay}"
+            );
+            assert!(
+                !replay.contains("sk-ant-api03"),
+                "schema {schema}: {replay}"
+            );
+        }
+    }
 
     #[test]
     fn listener_validation_preserves_ordinary_loopback_addresses() {

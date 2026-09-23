@@ -11,9 +11,9 @@
       "structural": 0
     },
     "cli": {
-      "bounded": 217,
+      "bounded": 219,
       "searchable": 274,
-      "structural": 226
+      "structural": 228
     },
     "ctx": {
       "bounded": 53,
@@ -58,7 +58,7 @@
     "protocol": {
       "bounded": 51,
       "searchable": 1,
-      "structural": 50
+      "structural": 61
     },
     "provider": {
       "bounded": 70,
@@ -112,7 +112,7 @@
     }
   },
   "schema_version": 1,
-  "settable": 1476,
-  "structural": 836,
-  "total": 2312
+  "settable": 1478,
+  "structural": 849,
+  "total": 2327
 }

@@ -7,16 +7,18 @@ security boundaries rather than optional polish.
 ## Current posture
 
 - Pre-alpha; only current `main` receives security fixes.
-- Code execution is enabled by default and runs with the invoking user's own
-  authority. Pass `--confine` to use the macOS/Linux sandbox, or `--mode plan`
-  to disable effects entirely.
+- Code execution is enabled by default and confined by the macOS/Linux sandbox.
+  Use `--mode plan` to disable effects entirely. Windows has no equivalent
+  code-execution sandbox.
 - The sandbox is not a confidentiality boundary and hostile-code safety is not
   claimed.
 - A repository cannot grant itself provider routing, endpoints, hooks, MCP
   processes, effort, or code execution.
-- The shipped permission gate is bypassed by default, including for declared
-  `trust_mutating` and `irreversible_external` operations. Pass
-  `--ask-permissions` to restore capability prompts and refusals.
+- The shipped permission gate is enabled by default. Reversible workspace edits
+  and trusted sandboxed code execution run automatically; trust-changing and
+  declared external operations require approval. The file-write guard still has
+  an unresolved symlink race, so workspace containment is not yet proven against
+  a hostile concurrent local process.
 - Run records are tamper-evident, not encrypted.
 
 Review the full

@@ -48,12 +48,58 @@ pub(super) fn render(
         ),
     ]);
 
+    append_product_contract(&mut rows, session.client.thread_snapshot_v1().as_ref());
+
     append_authoritative_snapshot(&mut rows, &snapshot);
     rows.push(block::PanelRow::Note(format!(
         "settled ledger · {}",
         session.ledger_summary()
     )));
     app.panel("≡", "status · authoritative runtime snapshot", rows);
+}
+
+fn append_product_contract(
+    rows: &mut Vec<block::PanelRow>,
+    snapshot: Option<&iteron_protocol::product_contract::ThreadSnapshotV1>,
+) {
+    use iteron_protocol::product_contract::TurnStateV1;
+    let Some(snapshot) = snapshot else {
+        rows.push(kv("product contract", "unavailable"));
+        return;
+    };
+    rows.push(kv("product contract", "Thread/Turn/Item v1"));
+    rows.push(kv("thread", &snapshot.thread_id.0));
+    rows.push(kv(
+        "control receipts",
+        &format!(
+            "{} retained · {} evicted",
+            snapshot.submissions.len(),
+            snapshot.evicted_submissions
+        ),
+    ));
+    if let Some(turn) = &snapshot.turn {
+        let state = match turn.state {
+            TurnStateV1::Running => "running",
+            TurnStateV1::Completed => "completed",
+            TurnStateV1::Interrupted => "interrupted",
+            TurnStateV1::Drained => "drained",
+            TurnStateV1::BudgetExhausted => "budget exhausted",
+            TurnStateV1::Stuck => "stuck",
+            TurnStateV1::Failed => "failed",
+        };
+        rows.push(kv("turn", &format!("{} · {state}", turn.turn_id.0)));
+        rows.push(kv(
+            "items",
+            &format!(
+                "{} retained · {} omitted",
+                turn.items.len(),
+                turn.omitted_items
+            ),
+        ));
+        if turn.pending_approval.is_some() {
+            rows.push(kv("approval", "runtime decision pending"));
+        }
+    }
 }
 
 fn append_authoritative_snapshot(
@@ -619,6 +665,60 @@ fn status_workspace(path: &std::path::Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn product_contract_status_has_semantic_and_terminal_render_evidence() {
+        use iteron_protocol::product_contract::{
+            ItemKindV1, ItemSnapshotV1, ItemStateV1, PRODUCT_CONTRACT_VERSION, ThreadSnapshotV1,
+            TurnSnapshotV1, TurnStateV1,
+        };
+        let snapshot = ThreadSnapshotV1 {
+            contract_version: PRODUCT_CONTRACT_VERSION,
+            thread_id: iteron_protocol::SessionId("session-r".into()),
+            run_id: iteron_protocol::RunId("r".into()),
+            source_event_seq: 5,
+            turn: Some(TurnSnapshotV1 {
+                turn_id: iteron_protocol::product_contract::ProductTurnId(2),
+                submission_id: Some(iteron_protocol::SubmissionId(4)),
+                state: TurnStateV1::Interrupted,
+                items: vec![ItemSnapshotV1 {
+                    item_id: "item-1".into(),
+                    kind: ItemKindV1::AssistantMessage,
+                    state: ItemStateV1::Completed,
+                    title: None,
+                }],
+                omitted_items: 0,
+                pending_approval: None,
+                terminal_reason_code: None,
+                terminal_error: None,
+            }),
+            submissions: Vec::new(),
+            evicted_submissions: 0,
+        };
+        let mut rows = Vec::new();
+        append_product_contract(&mut rows, Some(&snapshot));
+        let block = block::Block::new(
+            1,
+            block::BlockKind::Panel {
+                title: "status".into(),
+                rows,
+            },
+        );
+        let rendered = block
+            .render(48, &crate::theme::Theme::mono(), 0)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.into_owned())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("Thread/Turn/Item v1"), "{rendered}");
+        assert!(rendered.contains("2 · interrupted"), "{rendered}");
+        assert!(rendered.contains("1 retained · 0 omitted"), "{rendered}");
+    }
 
     fn rendered(rows: &[block::PanelRow]) -> String {
         rows.iter()

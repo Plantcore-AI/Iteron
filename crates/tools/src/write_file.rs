@@ -4,10 +4,14 @@
 //! and replaces the destination with a same-directory transaction file.
 
 use crate::edit::suspicious_unicode;
-use crate::{Registry, ToolError, boxfut, err_result, ok_result, resolve_in_root};
+use crate::{Registry, ToolError, err_result, ok_result, resolve_in_root};
 use iteron_protocol::{Capability, Purity, ToolSpec};
 use sha2::{Digest, Sha256};
+#[cfg(unix)]
+use std::ffi::OsString;
 use std::io;
+#[cfg(unix)]
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
@@ -171,6 +175,73 @@ async fn capture_target(target: &Path) -> Result<CapturedTarget, SnapshotError> 
     })
 }
 
+#[cfg(unix)]
+fn capture_confined(
+    target: &crate::confined_fs::ConfinedTarget,
+) -> Result<CapturedTarget, SnapshotError> {
+    target.require_visible()?;
+    let Some(path_before) = target.metadata()? else {
+        return Ok(CapturedTarget {
+            state: TargetSnapshot::Missing,
+            bytes: Vec::new(),
+        });
+    };
+    if !path_before.is_file() {
+        return Err(SnapshotError::NotRegular);
+    }
+    let max_bytes = iteron_tunables::param_usize(
+        "tools.write_file.max_file_transaction_bytes",
+        MAX_FILE_TRANSACTION_BYTES,
+    );
+    if path_before.len() > max_bytes as u64 {
+        return Err(SnapshotError::TooLarge);
+    }
+    let mut file = target.open_existing()?;
+    let opened_before = file.metadata()?;
+    if metadata_stamp(&path_before) != metadata_stamp(&opened_before) {
+        return Err(SnapshotError::ChangedDuringRead);
+    }
+    let mut bytes = Vec::new();
+    file.by_ref()
+        .take(max_bytes.saturating_add(1) as u64)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > max_bytes {
+        return Err(SnapshotError::TooLarge);
+    }
+    let opened_after = file.metadata()?;
+    let path_after = target.metadata()?.ok_or(SnapshotError::ChangedDuringRead)?;
+    if metadata_stamp(&opened_before) != metadata_stamp(&opened_after)
+        || metadata_stamp(&opened_after) != metadata_stamp(&path_after)
+    {
+        return Err(SnapshotError::ChangedDuringRead);
+    }
+    let digest = Sha256::digest(&bytes).into();
+    Ok(CapturedTarget {
+        state: TargetSnapshot::Existing(ExistingTarget {
+            stamp: metadata_stamp(&opened_after),
+            digest,
+        }),
+        bytes,
+    })
+}
+
+#[cfg(unix)]
+pub(crate) fn read_existing_confined_snapshot(
+    target: &crate::confined_fs::ConfinedTarget,
+) -> Result<ExistingFileSnapshot, SnapshotError> {
+    let captured = capture_confined(target)?;
+    if matches!(captured.state, TargetSnapshot::Missing) {
+        return Err(SnapshotError::Io(io::Error::new(
+            io::ErrorKind::NotFound,
+            "target does not exist",
+        )));
+    }
+    Ok(ExistingFileSnapshot {
+        bytes: captured.bytes,
+        target: captured.state,
+    })
+}
+
 fn metadata_stamp(metadata: &std::fs::Metadata) -> MetadataStamp {
     #[cfg(unix)]
     use std::os::unix::fs::MetadataExt;
@@ -193,11 +264,23 @@ fn metadata_stamp(metadata: &std::fs::Metadata) -> MetadataStamp {
     }
 }
 
-struct TemporaryFile(PathBuf);
+enum TemporaryFile {
+    Disarmed,
+    Path(PathBuf),
+    #[cfg(unix)]
+    Confined(std::sync::Arc<crate::confined_fs::ConfinedTarget>, OsString),
+}
 
 impl Drop for TemporaryFile {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+        match self {
+            Self::Disarmed => {}
+            Self::Path(path) => {
+                let _ = std::fs::remove_file(path);
+            }
+            #[cfg(unix)]
+            Self::Confined(target, name) => target.remove_temporary(name),
+        }
     }
 }
 
@@ -206,6 +289,9 @@ impl Drop for TemporaryFile {
 pub(crate) struct StagedWrite {
     target: PathBuf,
     temporary: TemporaryFile,
+    confined_root: Option<PathBuf>,
+    #[cfg(unix)]
+    confined_target: Option<std::sync::Arc<crate::confined_fs::ConfinedTarget>>,
 }
 
 #[derive(Debug)]
@@ -223,7 +309,32 @@ pub(crate) enum GuardedCommitFailure {
 }
 
 impl StagedWrite {
+    #[cfg(test)]
     pub(crate) async fn prepare(target: &Path, content: &[u8]) -> io::Result<Self> {
+        Self::prepare_with_boundary(target, content, None).await
+    }
+
+    pub(crate) async fn prepare_with_boundary(
+        target: &Path,
+        content: &[u8],
+        confined_root: Option<&Path>,
+    ) -> io::Result<Self> {
+        if let Some(root) = confined_root {
+            crate::workspace_boundary::validate_coding_write_target(root, target)
+                .map_err(io::Error::other)?;
+            #[cfg(unix)]
+            {
+                let bound = std::sync::Arc::new(crate::confined_fs::ConfinedTarget::open(
+                    root, target, false,
+                )?);
+                return Self::prepare_confined(target, content, bound).await;
+            }
+            #[cfg(not(unix))]
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "confined writes require a descriptor-relative backend",
+            ));
+        }
         let max_transaction_bytes = iteron_tunables::param_usize(
             "tools.write_file.max_file_transaction_bytes",
             iteron_tunables::param_integer(
@@ -250,13 +361,76 @@ impl StagedWrite {
         // transaction path (important on platforms that cannot unlink an open file).
         let staged = Self {
             target: target.to_path_buf(),
-            temporary: TemporaryFile(temporary_path),
+            temporary: TemporaryFile::Path(temporary_path),
+            confined_root: None,
+            #[cfg(unix)]
+            confined_target: None,
         };
         let mut file = opened_file;
         file.write_all(content).await?;
         file.flush().await?;
-        if let Some(permissions) = existing_permissions {
-            tokio::fs::set_permissions(&staged.temporary.0, permissions).await?;
+        if let Some(permissions) = existing_permissions
+            && let TemporaryFile::Path(path) = &staged.temporary
+        {
+            tokio::fs::set_permissions(path, permissions).await?;
+        }
+        file.sync_all().await?;
+        drop(file);
+        Ok(staged)
+    }
+
+    #[cfg(unix)]
+    pub(crate) async fn prepare_confined(
+        target_path: &Path,
+        content: &[u8],
+        target: std::sync::Arc<crate::confined_fs::ConfinedTarget>,
+    ) -> io::Result<Self> {
+        use std::os::unix::fs::PermissionsExt;
+        let max_bytes = iteron_tunables::param_usize(
+            "tools.write_file.max_file_transaction_bytes",
+            MAX_FILE_TRANSACTION_BYTES,
+        );
+        if content.len() > max_bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "replacement exceeds transaction limit",
+            ));
+        }
+        let permissions = target.metadata()?.map(|metadata| metadata.permissions());
+        let max_attempts =
+            iteron_tunables::param_usize("tools.write_file.max_temp_attempts", MAX_TEMP_ATTEMPTS);
+        let mut allocated = None;
+        for _ in 0..max_attempts {
+            let id = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
+            let name = OsString::from(format!(".core-write-{}-{id}.tmp", std::process::id()));
+            match target.create_temporary(&name) {
+                Ok(file) => {
+                    allocated = Some((name, file));
+                    break;
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        let (name, file) = allocated.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "temporary allocation exhausted",
+            )
+        })?;
+        crate::confined_helper::debug_pause_if("ITERON_HELPER_PAUSE_AFTER_TEMP_OPEN");
+        let staged = Self {
+            target: target_path.to_path_buf(),
+            temporary: TemporaryFile::Confined(target.clone(), name),
+            confined_root: None,
+            confined_target: Some(target),
+        };
+        let mut file = tokio::fs::File::from_std(file);
+        file.write_all(content).await?;
+        file.flush().await?;
+        if let Some(permissions) = permissions {
+            file.set_permissions(std::fs::Permissions::from_mode(permissions.mode()))
+                .await?;
         }
         file.sync_all().await?;
         drop(file);
@@ -271,7 +445,15 @@ impl StagedWrite {
         self,
         expected: &TargetSnapshot,
     ) -> Result<(), GuardedCommitFailure> {
-        let actual = match capture_target_snapshot(&self.target).await {
+        #[cfg(unix)]
+        let captured = if let Some(target) = &self.confined_target {
+            capture_confined(target).map(|captured| captured.state)
+        } else {
+            capture_target_snapshot(&self.target).await
+        };
+        #[cfg(not(unix))]
+        let captured = capture_target_snapshot(&self.target).await;
+        let actual = match captured {
             Ok(snapshot) => snapshot,
             Err(SnapshotError::Io(error)) => {
                 return Err(GuardedCommitFailure::Inspect(error));
@@ -288,7 +470,7 @@ impl StagedWrite {
         self.commit().await.map_err(GuardedCommitFailure::Commit)
     }
 
-    async fn commit_inner(self, inject_before_rename: bool) -> Result<(), CommitFailure> {
+    async fn commit_inner(mut self, inject_before_rename: bool) -> Result<(), CommitFailure> {
         #[cfg(unix)]
         let parent = self
             .target
@@ -300,12 +482,41 @@ impl StagedWrite {
                 target_replaced: false,
             });
         }
-        if let Err(error) = tokio::fs::rename(&self.temporary.0, &self.target).await {
+        #[cfg(unix)]
+        if let (Some(target), TemporaryFile::Confined(_, name)) =
+            (&self.confined_target, &self.temporary)
+        {
+            target
+                .rename_temporary(name)
+                .map_err(|error| CommitFailure {
+                    target_replaced: false,
+                    error,
+                })?;
+            self.temporary = TemporaryFile::Disarmed;
+            return target.sync_parent().map_err(|error| CommitFailure {
+                target_replaced: true,
+                error,
+            });
+        }
+        if let Some(root) = &self.confined_root
+            && let Err(reason) =
+                crate::workspace_boundary::validate_coding_write_target(root, &self.target)
+        {
+            return Err(CommitFailure {
+                error: io::Error::other(reason),
+                target_replaced: false,
+            });
+        }
+        let TemporaryFile::Path(temporary_path) = &self.temporary else {
+            unreachable!("confined transaction handled above")
+        };
+        if let Err(error) = tokio::fs::rename(temporary_path, &self.target).await {
             return Err(CommitFailure {
                 error,
                 target_replaced: false,
             });
         }
+        self.temporary = TemporaryFile::Disarmed;
         #[cfg(unix)]
         if let Err(error) = std::fs::File::open(parent).and_then(|directory| directory.sync_all()) {
             return Err(CommitFailure {
@@ -323,15 +534,22 @@ impl StagedWrite {
 
     #[cfg(test)]
     pub(crate) fn temporary_path(&self) -> &Path {
-        &self.temporary.0
+        match &self.temporary {
+            TemporaryFile::Disarmed => &self.target,
+            TemporaryFile::Path(path) => path,
+            #[cfg(unix)]
+            TemporaryFile::Confined(_, _) => &self.target,
+        }
     }
 }
 
 pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
-    registry.push_candidate_change_tool(
+    let confined = registry.confine_execution_handle();
+    let test_helper_thread = registry.test_helper_thread_handle();
+    registry.push_candidate_change_effect_tool(
         ToolSpec {
             name: "write_file".into(),
-            description: "Create or replace one UTF-8 text file inside the workspace. Missing \
+            description: "Create or replace one UTF-8 text file in the workspace by default. Missing \
                           parent directories are created. The same-directory replacement is \
                           fsynced, atomic, bounded to 4 MiB, and refused if the destination changes \
                           while staging. Use this instead of bash for new source/config files. \
@@ -342,7 +560,7 @@ pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "destination path relative to the workspace root"
+                        "description": "destination path relative to the workspace root, or absolute inside it"
                     },
                     "content": {
                         "type": "string",
@@ -354,29 +572,45 @@ pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
             purity: Purity::Effecting,
             capability: Capability::ReversibleLocal,
         },
-        |call, root| {
-            boxfut::box_it(async move {
+        move |call, root| {
+            let confined = confined.clone();
+            let test_helper_thread = test_helper_thread.clone();
+            crate::effectfut::box_it(async move {
+                if confined.load(Ordering::Relaxed) {
+                    return crate::confined_helper::execute(
+                        &root,
+                        call,
+                        test_helper_thread.load(Ordering::Relaxed),
+                    )
+                    .await;
+                }
                 let id = call.id.clone();
                 let Some(path) = call.input.get("path").and_then(|value| value.as_str()) else {
-                    return err_result(id, "write_file: missing string field `path`".into());
+                    return crate::ToolExecution::Definite(err_result(id, "write_file: missing string field `path`".into()));
                 };
                 let Some(content) = call.input.get("content").and_then(|value| value.as_str())
                 else {
-                    return err_result(id, "write_file: missing string field `content`".into());
+                    return crate::ToolExecution::Definite(err_result(id, "write_file: missing string field `content`".into()));
                 };
-                match write_workspace_file(&root, path, content).await {
+                crate::ToolExecution::Definite(match write_workspace_file(&root, path, content, false).await {
                     Ok(()) => ok_result(id, format!("wrote {path} ({} bytes)", content.len())),
                     Err(error) => err_result(id, error),
-                }
+                })
             })
         },
     )
 }
 
-async fn write_workspace_file(root: &Path, path: &str, content: &str) -> Result<(), String> {
-    write_workspace_file_with_hook(root, path, content, |_| {}).await
+pub(crate) async fn write_workspace_file(
+    root: &Path,
+    path: &str,
+    content: &str,
+    confined: bool,
+) -> Result<(), String> {
+    write_workspace_file_with_hook_and_boundary(root, path, content, confined, |_| {}).await
 }
 
+#[cfg(test)]
 pub(crate) async fn write_workspace_file_with_hook<F>(
     root: &Path,
     path: &str,
@@ -386,13 +620,60 @@ pub(crate) async fn write_workspace_file_with_hook<F>(
 where
     F: FnOnce(&Path),
 {
+    write_workspace_file_with_hook_and_boundary(root, path, content, false, before_commit).await
+}
+
+pub(crate) async fn write_workspace_file_with_hook_and_boundary<F>(
+    root: &Path,
+    path: &str,
+    content: &str,
+    confined: bool,
+    before_commit: F,
+) -> Result<(), String>
+where
+    F: FnOnce(&Path),
+{
     validate_input(path, content)?;
 
     // First resolution follows symlinks and yields the absolute location whose parents may need
-    // creating. It no longer refuses a destination outside the workspace (owner-directed
-    // 2026-08-05); what survives is the dangling-symlink refusal below, which is a data-loss
-    // guard — a link we cannot resolve is one we must not silently replace — not containment.
+    // creating. In ordinary mode the registry and this executor both reject an escaping target;
+    // the dangling-symlink guard also prevents accidental replacement of an unresolved link.
     let initial_target = resolve_in_root(root, path)?;
+    if confined {
+        crate::workspace_boundary::validate_coding_write_target(root, &initial_target)?;
+        #[cfg(unix)]
+        {
+            let target = std::sync::Arc::new(
+                crate::confined_fs::ConfinedTarget::open(root, &initial_target, true)
+                    .map_err(|error| format!("bind {path}: {error}"))?,
+            );
+            let captured =
+                capture_confined(&target).map_err(|error| format!("snapshot {path}: {error}"))?;
+            if matches!(captured.state, TargetSnapshot::Existing(_))
+                && captured.bytes == content.as_bytes()
+            {
+                return Err(format!(
+                    "write_file refused: content would not change target bytes: {path}"
+                ));
+            }
+            let staged = StagedWrite::prepare_confined(&initial_target, content.as_bytes(), target)
+                .await
+                .map_err(|error| format!("stage {path}: {error}"))?;
+            before_commit(&initial_target);
+            return match staged.commit_if_unchanged(&captured.state).await {
+                Ok(()) => Ok(()),
+                Err(GuardedCommitFailure::Changed) => Err(file_changed_json("write_file", path)),
+                Err(GuardedCommitFailure::Inspect(error)) => {
+                    Err(format!("inspect {path} before commit: {error}"))
+                }
+                Err(GuardedCommitFailure::Commit(failure)) => {
+                    Err(format!("write {path}: {}", failure.error))
+                }
+            };
+        }
+        #[cfg(not(unix))]
+        return Err("confined writes require a descriptor-relative backend".into());
+    }
     reject_dangling_target_symlink(root, path)?;
     let initial_parent = target_parent(&initial_target, path)?;
     tokio::fs::create_dir_all(initial_parent)
@@ -402,6 +683,9 @@ where
     // Re-resolve after directory creation: a parent that changed between the two operations must
     // not leave the transaction pointed at the pre-creation location.
     let target = resolve_in_root(root, path)?;
+    if confined {
+        crate::workspace_boundary::validate_coding_write_target(root, &target)?;
+    }
     reject_dangling_target_symlink(root, path)?;
     if tokio::fs::metadata(&target)
         .await
@@ -419,9 +703,10 @@ where
         ));
     }
     let expected = captured.state;
-    let staged = StagedWrite::prepare(&target, content.as_bytes())
-        .await
-        .map_err(|error| format!("stage {path}: {error}"))?;
+    let staged =
+        StagedWrite::prepare_with_boundary(&target, content.as_bytes(), confined.then_some(root))
+            .await
+            .map_err(|error| format!("stage {path}: {error}"))?;
     before_commit(&target);
     match staged.commit_if_unchanged(&expected).await {
         Ok(()) => Ok(()),
@@ -502,8 +787,12 @@ fn reject_dangling_target_symlink(root: &Path, requested_path: &str) -> Result<(
     Ok(())
 }
 
-pub(crate) async fn atomic_replace(target: &Path, content: &[u8]) -> io::Result<()> {
-    StagedWrite::prepare(target, content)
+pub(crate) async fn atomic_replace_with_boundary(
+    target: &Path,
+    content: &[u8],
+    confined_root: Option<&Path>,
+) -> io::Result<()> {
+    StagedWrite::prepare_with_boundary(target, content, confined_root)
         .await?
         .commit()
         .await

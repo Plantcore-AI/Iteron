@@ -121,6 +121,10 @@ impl App {
             steer_previews: VecDeque::new(),
             next_submission_seq: 0,
             pending_turn_receipt: None,
+            pending_approval_response: None,
+            product_stream_active: false,
+            product_terminal_answer: None,
+            product_turn_status: None,
             #[cfg(test)]
             refused_image_paths: HashSet::new(),
         }

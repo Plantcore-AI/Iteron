@@ -46,7 +46,7 @@
 //! accounting, not a second opinion on it; where they could disagree, the result wins.
 
 use crate::runtime::{
-    UiEvent, WorkflowAgentOutcomeUi, WorkflowExecutionModeUi, WorkflowPhaseUi,
+    ApprovalResolution, UiEvent, WorkflowAgentOutcomeUi, WorkflowExecutionModeUi, WorkflowPhaseUi,
     WorkflowRunOutcomeUi, WorkflowTaskUi, WorkflowUiEvent,
 };
 use iteron_protocol::wire::{PROTOCOL_VERSION, ProtocolVersionError};
@@ -132,6 +132,18 @@ pub enum ClientEvent {
     SteerApplied {
         count: usize,
     },
+    /// Durable admission of one identified client steer, never inferred from a FIFO count.
+    SteerSubmissionApplied {
+        id: u64,
+    },
+    SubmissionRejected {
+        id: u64,
+        reason_code: String,
+    },
+    ControlSubmissionApplied {
+        id: u64,
+        control: String,
+    },
     Notice {
         text: String,
     },
@@ -143,6 +155,13 @@ pub enum ClientEvent {
         reason: String,
         arguments: serde_json::Value,
         workspace: String,
+    },
+    /// Permission decision for the matching request id; not a tool-effect receipt.
+    ApprovalResolved {
+        id: u64,
+        resolution: ClientApprovalResolution,
+        reason_code: String,
+        response_submission_id: Option<u64>,
     },
     Done {
         outcome: String,
@@ -156,6 +175,26 @@ pub enum ClientEvent {
     ArtifactProduced {
         artifact: iteron_protocol::artifact::ArtifactRef,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClientApprovalResolution {
+    Approved,
+    Denied,
+    Cancelled,
+    TimedOut,
+}
+
+impl From<ApprovalResolution> for ClientApprovalResolution {
+    fn from(value: ApprovalResolution) -> Self {
+        match value {
+            ApprovalResolution::Approved => Self::Approved,
+            ApprovalResolution::Denied => Self::Denied,
+            ApprovalResolution::Cancelled => Self::Cancelled,
+            ApprovalResolution::TimedOut => Self::TimedOut,
+        }
+    }
 }
 
 /// Cost as evidence-backed state, not a bare number.
@@ -588,6 +627,15 @@ impl From<&UiEvent> for ClientEvent {
                 event: event.into(),
             },
             UiEvent::SteerApplied { count } => Self::SteerApplied { count: *count },
+            UiEvent::SteerSubmissionApplied { id } => Self::SteerSubmissionApplied { id: id.0 },
+            UiEvent::SubmissionRejected { id, reason_code } => Self::SubmissionRejected {
+                id: id.0,
+                reason_code: (*reason_code).into(),
+            },
+            UiEvent::ControlSubmissionApplied { id, kind } => Self::ControlSubmissionApplied {
+                id: id.0,
+                control: kind.as_str().into(),
+            },
             UiEvent::Notice(text) => Self::Notice { text: text.clone() },
             UiEvent::ApprovalRequest {
                 id,
@@ -604,6 +652,17 @@ impl From<&UiEvent> for ClientEvent {
                 arguments: arguments.clone(),
                 workspace: workspace.clone(),
             },
+            UiEvent::ApprovalResolved {
+                id,
+                resolution,
+                reason_code,
+                response_submission_id,
+            } => Self::ApprovalResolved {
+                id: id.0,
+                resolution: (*resolution).into(),
+                reason_code: (*reason_code).into(),
+                response_submission_id: response_submission_id.map(|id| id.0),
+            },
             UiEvent::Done(outcome) => Self::Done {
                 outcome: outcome.clone(),
             },
@@ -614,3 +673,30 @@ impl From<&UiEvent> for ClientEvent {
 #[cfg(test)]
 #[path = "client_event_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod approval_resolution_tests {
+    use super::*;
+
+    #[test]
+    fn approval_resolution_round_trips_without_claiming_a_tool_effect() {
+        let event = ClientEvent::from(&UiEvent::ApprovalResolved {
+            id: iteron_protocol::SubmissionId(17),
+            resolution: ApprovalResolution::Approved,
+            reason_code: "operator_approved",
+            response_submission_id: Some(iteron_protocol::SubmissionId(18)),
+        });
+        let bytes = serde_json::to_vec(&ClientEventEnvelope::current(event.clone())).unwrap();
+        let decoded: ClientEventEnvelope = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(decoded.into_current().unwrap(), event);
+        assert!(matches!(
+            event,
+            ClientEvent::ApprovalResolved {
+                id: 17,
+                resolution: ClientApprovalResolution::Approved,
+                reason_code,
+                response_submission_id: Some(18),
+            } if reason_code == "operator_approved"
+        ));
+    }
+}

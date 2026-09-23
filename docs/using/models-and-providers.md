@@ -12,11 +12,16 @@ Routing-sensitive provider precedence is:
 1. CLI `--provider`;
 2. `ITERON_PROVIDER`;
 3. trusted user config `~/.iteron/config.json`;
-4. built-in default `glm`.
+4. validated last-success route, if no operator route was supplied;
+5. built-in preference `openai`, falling back to the first locally credentialed
+   provider when it is not usable.
 
-Model selection accepts `--model`, `ITERON_MODEL`, trusted user config, and one
-repository-safe exception: `.iteron/config.json` may name a **bare** model within the
-already trusted provider. It cannot qualify another provider or redirect egress.
+Model selection accepts `--model`, `ITERON_MODEL`, and trusted user config. When
+none is set, the built-in OpenAI Responses route prefers Codex v0.156.0's
+API-visible model order among the account's admitted catalog entries; other
+providers use their own documented or catalog selection. Repository
+`.iteron/config.json` does not override the production model route; it cannot
+qualify another provider or redirect egress.
 
 Use `provider:model` where qualification is needed and the provider id is known:
 

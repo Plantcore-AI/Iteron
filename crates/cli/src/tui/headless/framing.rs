@@ -94,6 +94,8 @@ pub(super) enum ServerFrame {
         session_id: String,
         cursor: u64,
         replay_source: &'static str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        product_contract_version: Option<u32>,
     },
     Event {
         protocol_version: u32,
@@ -916,6 +918,30 @@ mod tests {
     use super::*;
     use serde_json::json;
     use tokio::io::AsyncReadExt as _;
+
+    #[test]
+    fn legacy_hello_wire_is_unchanged_until_product_contract_is_negotiated() {
+        let legacy = serde_json::to_value(ServerFrame::Hello {
+            protocol_version: iteron_protocol::PROTOCOL_VERSION,
+            session_id: "session-r".into(),
+            cursor: 4,
+            replay_source: "ring",
+            product_contract_version: None,
+        })
+        .unwrap();
+        assert!(legacy.get("product_contract_version").is_none());
+        let negotiated = serde_json::to_value(ServerFrame::Hello {
+            protocol_version: iteron_protocol::PROTOCOL_VERSION,
+            session_id: "session-r".into(),
+            cursor: 4,
+            replay_source: "ring",
+            product_contract_version: Some(
+                iteron_protocol::product_contract::PRODUCT_CONTRACT_VERSION,
+            ),
+        })
+        .unwrap();
+        assert_eq!(negotiated["product_contract_version"], 1);
+    }
 
     fn event(seq: u64, text: String) -> ServerFrame {
         ServerFrame::Event {

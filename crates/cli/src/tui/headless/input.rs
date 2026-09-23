@@ -30,6 +30,8 @@ pub(super) enum ClientFrame {
         resume_from: Option<u64>,
         #[serde(default)]
         session_id: Option<String>,
+        #[serde(default)]
+        product_contract_version: Option<u32>,
     },
     Submit {
         protocol_version: u32,
@@ -261,6 +263,42 @@ impl<R> Drop for FrameReader<R> {
 mod tests {
     use super::*;
     use tokio::io::AsyncWriteExt as _;
+
+    #[test]
+    fn product_contract_hello_and_control_decode_without_changing_legacy_hello() {
+        let token = "0".repeat(64);
+        let version = iteron_protocol::PROTOCOL_VERSION;
+        let legacy =
+            format!(r#"{{"type":"hello","bearer_token":"{token}","protocol_version":{version}}}"#);
+        assert!(matches!(
+            parse(legacy.as_bytes()).unwrap(),
+            ClientFrame::Hello {
+                product_contract_version: None,
+                ..
+            }
+        ));
+        let negotiated = format!(
+            r#"{{"type":"hello","bearer_token":"{token}","protocol_version":{version},"product_contract_version":1}}"#
+        );
+        assert!(matches!(
+            parse(negotiated.as_bytes()).unwrap(),
+            ClientFrame::Hello {
+                product_contract_version: Some(1),
+                ..
+            }
+        ));
+        let control = format!(
+            r#"{{"type":"control","protocol_version":{version},"request_id":8,"control":{{"type":"product_v1","command":{{"type":"thread_read","thread_id":"session-r"}}}}}}"#
+        );
+        assert!(matches!(
+            parse(control.as_bytes()).unwrap(),
+            ClientFrame::Control {
+                request_id: 8,
+                control: WireControl::ProductV1 { .. },
+                ..
+            }
+        ));
+    }
 
     #[tokio::test]
     async fn frame_reader_keeps_coalesced_frames_separate() {

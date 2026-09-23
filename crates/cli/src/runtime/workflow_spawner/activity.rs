@@ -31,8 +31,12 @@ fn workflow_child_activity(event: &UiEvent) -> Option<String> {
         | UiEvent::Thinking(_)
         | UiEvent::Workflow(_)
         | UiEvent::SteerApplied { .. }
+        | UiEvent::SteerSubmissionApplied { .. }
+        | UiEvent::SubmissionRejected { .. }
+        | UiEvent::ControlSubmissionApplied { .. }
         | UiEvent::Notice(_)
         | UiEvent::ApprovalRequest { .. }
+        | UiEvent::ApprovalResolved { .. }
         | UiEvent::Done(_) => None,
     }
 }

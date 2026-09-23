@@ -27,6 +27,46 @@ fn validate_file(file: &syn::File) -> Result<()> {
             Self {
                 protocol_version: PROTOCOL_VERSION,
                 submission_id: SubmissionId::default(),
+                expected_product_turn_id: None,
+                op,
+            }
+        }"#,
+    )?;
+    require_method(
+        file,
+        "SqEnvelope",
+        "identified",
+        r#"pub fn identified(submission_id: SubmissionId, op: Op) -> Self {
+            Self {
+                protocol_version: PROTOCOL_VERSION,
+                submission_id,
+                expected_product_turn_id: None,
+                op,
+            }
+        }"#,
+    )?;
+    require_method(
+        file,
+        "SqEnvelope",
+        "with_version",
+        r#"pub fn with_version(protocol_version: u32, op: Op) -> Self {
+            Self {
+                protocol_version,
+                submission_id: SubmissionId::default(),
+                expected_product_turn_id: None,
+                op,
+            }
+        }"#,
+    )?;
+    require_method(
+        file,
+        "SqEnvelope",
+        "with_version_and_id",
+        r#"pub fn with_version_and_id(protocol_version: u32, submission_id: SubmissionId, op: Op) -> Self {
+            Self {
+                protocol_version,
+                submission_id,
+                expected_product_turn_id: None,
                 op,
             }
         }"#,
@@ -87,5 +127,17 @@ mod tests {
             1,
         );
         assert!(validate_file(&syn::parse_file(&wrong_stamp).unwrap()).is_err());
+        let widened_epoch = source.replacen(
+            "expected_product_turn_id: None,",
+            "expected_product_turn_id: Some(crate::product_contract::ProductTurnId(1)),",
+            1,
+        );
+        assert!(validate_file(&syn::parse_file(&widened_epoch).unwrap()).is_err());
+        let missing_identified_epoch = source.replacen(
+            "submission_id,\n            expected_product_turn_id: None,",
+            "submission_id,",
+            1,
+        );
+        assert!(validate_file(&syn::parse_file(&missing_identified_epoch).unwrap()).is_err());
     }
 }

@@ -148,6 +148,15 @@ impl Agent {
         self.approvals_rx = Some(rx);
     }
 
+    /// Bind the product/user-facing epoch before starting its runtime future, then clear it at
+    /// terminal handoff. The App Server owns this identity; kernel TurnId is not substituted.
+    pub(crate) fn set_active_product_turn_id(
+        &mut self,
+        id: Option<iteron_protocol::product_contract::ProductTurnId>,
+    ) {
+        self.active_product_turn_id = id;
+    }
+
     /// Install the TUI's command and approval-answer channel. An `Ask` verdict may then block
     /// (interrupt-bounded) for the operator's answer.
     pub fn set_approvals(&mut self, rx: tokio::sync::mpsc::Receiver<SqEnvelope>) {

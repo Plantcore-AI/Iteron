@@ -60,7 +60,13 @@ fn ui_event_heap_bytes(event: &UiEvent) -> usize {
             .saturating_add(reason.len())
             .saturating_add(workspace.len())
             .saturating_add(serde_json::to_vec(arguments).map_or(0, |bytes| bytes.len())),
-        UiEvent::Phase(_) | UiEvent::TurnEnd { .. } | UiEvent::SteerApplied { .. } => 4 * 1024,
+        UiEvent::ApprovalResolved { reason_code, .. } => reason_code.len(),
+        UiEvent::Phase(_)
+        | UiEvent::TurnEnd { .. }
+        | UiEvent::SteerApplied { .. }
+        | UiEvent::SteerSubmissionApplied { .. }
+        | UiEvent::SubmissionRejected { .. }
+        | UiEvent::ControlSubmissionApplied { .. } => 4 * 1024,
     })
 }
 
@@ -146,8 +152,12 @@ fn is_authoritative_ui_event(event: &UiEvent) -> bool {
         | UiEvent::TurnEnd { .. }
         | UiEvent::Workflow(_)
         | UiEvent::SteerApplied { .. }
+        | UiEvent::SteerSubmissionApplied { .. }
+        | UiEvent::SubmissionRejected { .. }
+        | UiEvent::ControlSubmissionApplied { .. }
         | UiEvent::Notice(_)
         | UiEvent::ApprovalRequest { .. }
+        | UiEvent::ApprovalResolved { .. }
         | UiEvent::Done(_) => true,
     }
 }
@@ -166,8 +176,12 @@ fn refusal_must_fail_run(event: &UiEvent) -> bool {
         | UiEvent::TurnEnd { .. }
         | UiEvent::Workflow(_)
         | UiEvent::SteerApplied { .. }
+        | UiEvent::SteerSubmissionApplied { .. }
+        | UiEvent::SubmissionRejected { .. }
+        | UiEvent::ControlSubmissionApplied { .. }
         | UiEvent::Notice(_)
         | UiEvent::ApprovalRequest { .. } => true,
+        UiEvent::ApprovalResolved { .. } => true,
     }
 }
 
@@ -539,6 +553,9 @@ pub(super) fn ui_workflow_label(content: &str) -> String {
 }
 
 impl Agent {
+    /// Physical model/effect turn currently owned by the runtime. This is not a stable identity
+    /// for one submitted user turn: tool continuations and compaction can advance it, and a
+    /// follow-up advances it before its first provider request.
     pub(crate) fn current_turn_id(&self) -> iteron_protocol::TurnId {
         iteron_protocol::TurnId(self.seq_turn)
     }

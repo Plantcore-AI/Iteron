@@ -9,7 +9,7 @@ use crate::fs_tools::EditableText;
 use crate::write_file::{
     GuardedCommitFailure, StagedWrite, file_changed_json, read_existing_snapshot,
 };
-use crate::{Registry, ToolError, boxfut, err_result, ok_result, resolve_in_root};
+use crate::{Registry, ToolError, err_result, ok_result, resolve_in_root};
 use iteron_protocol::{Capability, Purity, ToolSpec};
 use std::ops::Range;
 
@@ -390,20 +390,36 @@ pub(crate) fn suspicious_unicode(s: &str) -> Option<u32> {
     })
 }
 
-async fn edit_workspace_file(
+pub(crate) async fn edit_workspace_file(
     root: &std::path::Path,
     path: &str,
     old: &str,
     new: &str,
+    confined: bool,
 ) -> Result<(), String> {
-    edit_workspace_file_with_hook(root, path, old, new, |_| {}).await
+    edit_workspace_file_with_hook_and_boundary(root, path, old, new, confined, |_| {}).await
 }
 
+#[cfg(test)]
 pub(crate) async fn edit_workspace_file_with_hook<F>(
     root: &std::path::Path,
     path: &str,
     old: &str,
     new: &str,
+    before_commit: F,
+) -> Result<(), String>
+where
+    F: FnOnce(&std::path::Path),
+{
+    edit_workspace_file_with_hook_and_boundary(root, path, old, new, false, before_commit).await
+}
+
+pub(crate) async fn edit_workspace_file_with_hook_and_boundary<F>(
+    root: &std::path::Path,
+    path: &str,
+    old: &str,
+    new: &str,
+    confined: bool,
     before_commit: F,
 ) -> Result<(), String>
 where
@@ -428,6 +444,32 @@ where
     }
 
     let target = resolve_in_root(root, path)?;
+    if confined {
+        crate::workspace_boundary::validate_coding_write_target(root, &target)?;
+    }
+    #[cfg(unix)]
+    let confined_target = if confined {
+        Some(std::sync::Arc::new(
+            crate::confined_fs::ConfinedTarget::open(root, &target, false)
+                .map_err(|error| format!("bind {path}: {error}"))?,
+        ))
+    } else {
+        None
+    };
+    #[cfg(not(unix))]
+    if confined {
+        return Err("confined edits require a descriptor-relative backend".into());
+    }
+    #[cfg(unix)]
+    let snapshot = if let Some(bound) = &confined_target {
+        crate::write_file::read_existing_confined_snapshot(bound)
+            .map_err(|error| format!("read {path}: {error}"))?
+    } else {
+        read_existing_snapshot(&target)
+            .await
+            .map_err(|error| format!("read {path}: {error}"))?
+    };
+    #[cfg(not(unix))]
     let snapshot = read_existing_snapshot(&target)
         .await
         .map_err(|error| format!("read {path}: {error}"))?;
@@ -442,7 +484,15 @@ where
             "edit {path}: replacement would not change target bytes"
         ));
     }
-    let staged = StagedWrite::prepare(&target, &encoded)
+    #[cfg(unix)]
+    let staged = if let Some(bound) = confined_target {
+        StagedWrite::prepare_confined(&target, &encoded, bound).await
+    } else {
+        StagedWrite::prepare_with_boundary(&target, &encoded, None).await
+    }
+    .map_err(|error| format!("stage {path}: {error}"))?;
+    #[cfg(not(unix))]
+    let staged = StagedWrite::prepare_with_boundary(&target, &encoded, None)
         .await
         .map_err(|error| format!("stage {path}: {error}"))?;
     before_commit(&target);
@@ -459,7 +509,9 @@ where
 }
 
 pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
-    r.push_candidate_change_tool(
+    let confined = r.confine_execution_handle();
+    let test_helper_thread = r.test_helper_thread_handle();
+    r.push_candidate_change_effect_tool(
         ToolSpec {
             name: "edit".into(),
             description: "Replace one UNIQUE snippet in a file with new text. Exact matching is \
@@ -482,8 +534,18 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
             purity: Purity::Effecting,
             capability: Capability::ReversibleLocal,
         },
-        |call, root| {
-            boxfut::box_it(async move {
+        move |call, root| {
+            let confined = confined.clone();
+            let test_helper_thread = test_helper_thread.clone();
+            crate::effectfut::box_it(async move {
+                if confined.load(std::sync::atomic::Ordering::Relaxed) {
+                    return crate::confined_helper::execute(
+                        &root,
+                        call,
+                        test_helper_thread.load(std::sync::atomic::Ordering::Relaxed),
+                    )
+                    .await;
+                }
                 let id = call.id.clone();
                 let path = call
                     .input
@@ -492,10 +554,10 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
                     .unwrap_or("");
                 let old = call.input.get("old").and_then(|x| x.as_str()).unwrap_or("");
                 let new = call.input.get("new").and_then(|x| x.as_str()).unwrap_or("");
-                match edit_workspace_file(&root, path, old, new).await {
+                crate::ToolExecution::Definite(match edit_workspace_file(&root, path, old, new, false).await {
                     Ok(()) => ok_result(id, format!("edited {path} (1 replacement)")),
                     Err(error) => err_result(id, error),
-                }
+                })
             })
         },
     )

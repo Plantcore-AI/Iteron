@@ -18,8 +18,9 @@ const DEFAULT_OUTPUT_RESERVE_TOKENS: u32 = 8_192;
 /// Additional space held back for the post-answer verification pass.
 const DEFAULT_VERIFICATION_RESERVE_TOKENS: u32 = 4_096;
 
-/// Separately-accounted request components. These are ceilings, not allocation targets: unused
-/// budget in one class cannot silently widen another class.
+/// Separately-accounted request components. All classes have hard ceilings except a default-
+/// derived task partition, which may borrow *currently unused* input space when explicitly
+/// enabled by the checkpoint-derived runtime. An operator-provided task cap never borrows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextBudgetPolicy {
     /// The immutable kernel/system prefix, excluding discovered instructions and memory.
@@ -28,6 +29,10 @@ pub struct ContextBudgetPolicy {
     pub instruction_tokens: usize,
     /// The active task plus bounded environment/outline/skill evidence selected for that task.
     pub task_context_tokens: usize,
+    /// A provenance-gated admission rule, not a larger reservation: the sum of component
+    /// ceilings and the output/verification reserves still fits the pinned route window.
+    #[serde(default)]
+    task_context_elastic: bool,
     /// Recalled/indexed memory admitted after trust and retrieval policy.
     pub memory_tokens: usize,
     /// Prior user/assistant conversation, excluding the active task and tool-result bodies.
@@ -94,6 +99,7 @@ impl ContextBudgetPolicy {
             stable_prefix_tokens: usable.saturating_mul(10) / 100,
             instruction_tokens: usable.saturating_mul(5) / 100,
             task_context_tokens: usable.saturating_mul(10) / 100,
+            task_context_elastic: false,
             memory_tokens: usable.saturating_mul(10) / 100,
             transcript_tokens: usable.saturating_mul(25) / 100,
             attachment_tokens: usable.saturating_mul(5) / 100,
@@ -104,6 +110,36 @@ impl ContextBudgetPolicy {
             output_reserve_tokens,
             verification_reserve_tokens,
         }
+    }
+
+    /// Only the checkpoint's default-derived partition may use this flexibility. Explicit
+    /// family-96 values remain hard limits even when numerically equal to the default.
+    pub fn with_elastic_task_context(mut self, enabled: bool) -> Self {
+        self.task_context_elastic = enabled;
+        self
+    }
+
+    /// Actual task allowance in this request, excluding multimodal space entirely. Each other
+    /// input class keeps its own hard cap; only its *unused* part may be borrowed by the task.
+    fn task_context_ceiling(&self, usage: &ContextComponentUsage) -> usize {
+        if !self.task_context_elastic {
+            return self.task_context_tokens;
+        }
+        let unused = [
+            (self.stable_prefix_tokens, usage.stable_prefix_tokens),
+            (self.instruction_tokens, usage.instruction_tokens),
+            (self.memory_tokens, usage.memory_tokens),
+            (self.transcript_tokens, usage.transcript_tokens),
+            (self.attachment_tokens, usage.attachment_tokens),
+            (self.tool_schema_tokens, usage.tool_schema_tokens),
+            (self.tool_result_tokens, usage.tool_result_tokens),
+            (self.lsp_result_tokens, usage.lsp_result_tokens),
+        ]
+        .into_iter()
+        .fold(0usize, |spare, (ceiling, used)| {
+            spare.saturating_add(ceiling.saturating_sub(used))
+        });
+        self.task_context_tokens.saturating_add(unused)
     }
 
     /// Verify that the independently-owned component ceilings fit inside the request window.
@@ -162,7 +198,7 @@ impl ContextBudgetPolicy {
             (
                 ContextBudgetClass::TaskContext,
                 usage.task_context_tokens,
-                self.task_context_tokens,
+                self.task_context_ceiling(usage),
             ),
             (
                 ContextBudgetClass::Memory,
@@ -480,6 +516,51 @@ mod tests {
             policy.admit_components(&usage).unwrap_err().class,
             ContextBudgetClass::StablePrefix
         );
+    }
+
+    #[test]
+    fn task_context_over_twelve_k_uses_only_default_derived_spare_capacity() {
+        // Unknown metadata uses the pinned 120K fallback plus its output reserve; known metadata
+        // uses its exact smaller physical window. In both cases the task exceeds its nominal 10%
+        // slice but the request still fits without borrowing reserved output or multimodal space.
+        for (window, output_reserve, overage) in [(128_192, 8_192, 2_048), (32_000, 8_192, 2_048)] {
+            let base = ContextBudgetPolicy::for_usable_window(window, output_reserve, 0);
+            base.validate_for_window(window).unwrap();
+            let usage = ContextComponentUsage {
+                task_context_tokens: base.task_context_tokens + overage,
+                ..ContextComponentUsage::default()
+            };
+            assert!(
+                base.with_elastic_task_context(true)
+                    .admit_components(&usage)
+                    .is_ok()
+            );
+            let explicit_same_number = base.with_elastic_task_context(false);
+            let violation = explicit_same_number.admit_components(&usage).unwrap_err();
+            assert_eq!(violation.class, ContextBudgetClass::TaskContext);
+            assert_eq!(violation.ceiling, base.task_context_tokens);
+        }
+    }
+
+    #[test]
+    fn elastic_task_never_borrows_used_components_or_output_reserve() {
+        let policy = ContextBudgetPolicy::for_usable_window(128_192, 8_192, 0)
+            .with_elastic_task_context(true);
+        let saturated = ContextComponentUsage {
+            stable_prefix_tokens: policy.stable_prefix_tokens,
+            instruction_tokens: policy.instruction_tokens,
+            task_context_tokens: policy.task_context_tokens + 1,
+            memory_tokens: policy.memory_tokens,
+            transcript_tokens: policy.transcript_tokens,
+            attachment_tokens: policy.attachment_tokens,
+            tool_schema_tokens: policy.tool_schema_tokens,
+            tool_result_tokens: policy.tool_result_tokens,
+            lsp_result_tokens: policy.lsp_result_tokens,
+        };
+        let violation = policy.admit_components(&saturated).unwrap_err();
+        assert_eq!(violation.class, ContextBudgetClass::TaskContext);
+        assert_eq!(violation.ceiling, policy.task_context_tokens);
+        assert!(policy.validate_for_window(128_192).is_ok());
     }
 
     #[test]

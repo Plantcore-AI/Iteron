@@ -1,12 +1,12 @@
 {
   "digest": {
     "algorithm": "sha256",
-    "value": "dc46c5a2f21c77ae289c3c6169cc372230b5080110694d51bd39d4709bdc88fd"
+    "value": "fa047ac86fa33d921ac49f60507adefe6a226e2e57396be626d0008690854fa3"
   },
   "payload": {
     "schema_version": 4,
     "registry_id": "iteron-tunables",
-    "registry_revision": 24,
+    "registry_revision": 25,
     "canonicalization": "iteron-tunables-json-v4",
     "family_count": 160,
     "scalar_catalogs": [
@@ -96,7 +96,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "6ae08266af086add8ef1093d2b2e146772cce7fe748e3de1810e98c3ee2daa49"
+          "value": "2758402e6428cbf57485ca89cbe12f7acac3b40a0d66f9eb45082c314e7645b7"
         },
         "schema_version": 3,
         "ordinal": 1,
@@ -123,15 +123,13 @@
           "core/model_router"
         ],
         "default": {
-          "kind": "literal",
+          "kind": "dynamic",
           "resolver": {
-            "type": "literal"
+            "type": "runtime_observation",
+            "field": "selected_route.provider"
           },
           "requirement": "optional",
-          "value": {
-            "type": "enum",
-            "value": "glm"
-          }
+          "value": null
         },
         "source": {
           "bindings": [
@@ -216,7 +214,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "c199098b41c97c59c44ea9abc8ac6d1924a0fbf9ba98515d6ebf4e633750952e"
+          "value": "7bb1f3baed0c624d51b605bef051eb3ea77ebeab0e0c742502806e192e3e5b24"
         },
         "schema_version": 3,
         "ordinal": 2,
@@ -249,10 +247,7 @@
             "field": "default_model"
           },
           "requirement": "optional",
-          "value": {
-            "type": "enum",
-            "value": "glm-5.2"
-          }
+          "value": null
         },
         "source": {
           "bindings": [
@@ -275,15 +270,9 @@
               "merge": "override"
             },
             {
-              "kind": "project_config",
-              "trust": "repository",
-              "locator": ".iteron/config.json",
-              "merge": "route_suggestion"
-            },
-            {
               "kind": "builtin",
               "trust": "builtin",
-              "locator": "crates/provider/src/static_metadata.rs",
+              "locator": "crates/cli/src/providers.rs",
               "merge": "override"
             }
           ]
@@ -453,7 +442,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "f812a8afd428a44cf6466851166526bf3d9e66ca9c1767d2a10b6fceca35ffd2"
+          "value": "574c2633e537519adfe2ae9605a5ac0c7a4ad959302ab866fe2d207eca12cfa9"
         },
         "schema_version": 3,
         "ordinal": 4,
@@ -488,7 +477,7 @@
           "requirement": "optional",
           "value": {
             "type": "enum",
-            "value": "low"
+            "value": "medium"
           }
         },
         "source": {
@@ -1169,7 +1158,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "86accf3e6bf3bb8cb37e3a846cdb3156409ac9b9576039b096357d15cfec50dc"
+          "value": "d76ed3ec8b3373405d7e84c894c05fc64a63acf8d805cc2a05b529b024bb00c4"
         },
         "schema_version": 3,
         "ordinal": 10,
@@ -1201,7 +1190,7 @@
           "requirement": "optional",
           "value": {
             "type": "enum",
-            "value": "default"
+            "value": "acceptEdits"
           }
         },
         "source": {
@@ -1391,7 +1380,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "33a5d4eca1a084283671c31f4286555728d31521a07bb4baea32c14f308b0154"
+          "value": "a7ffea4d006ac2af98998f884d34b8a447061779b4bda9c07361b0dafa2ce69a"
         },
         "schema_version": 3,
         "ordinal": 12,
@@ -1423,7 +1412,7 @@
           "requirement": "optional",
           "value": {
             "type": "boolean",
-            "value": true
+            "value": false
           }
         },
         "source": {

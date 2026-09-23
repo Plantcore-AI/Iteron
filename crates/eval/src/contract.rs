@@ -21,10 +21,12 @@ pub const SUPPORTED_ITERON_CLI_TYPE_VERSIONS: &[(&str, u32)] = &[
     ("approval_request", 4),
     ("approval_request", 5),
     ("approval_request", 6),
+    ("approval_resolved", 6),
     ("assistant_text", 3),
     ("assistant_text", 4),
     ("assistant_text", 5),
     ("assistant_text", 6),
+    ("control_submission_applied", 6),
     ("input_attachment", 5),
     ("input_attachment", 6),
     ("notice", 4),
@@ -45,6 +47,8 @@ pub const SUPPORTED_ITERON_CLI_TYPE_VERSIONS: &[(&str, u32)] = &[
     ("steer_applied", 4),
     ("steer_applied", 5),
     ("steer_applied", 6),
+    ("steer_submission_applied", 6),
+    ("submission_rejected", 6),
     ("thinking", 4),
     ("thinking", 5),
     ("thinking", 6),
@@ -131,6 +135,10 @@ pub enum CliMachineEventKind {
     SteerApplied,
     Notice,
     ApprovalRequest,
+    ApprovalResolved,
+    ControlSubmissionApplied,
+    SteerSubmissionApplied,
+    SubmissionRejected,
     RunDone,
 }
 
@@ -154,6 +162,10 @@ impl CliMachineEventKind {
             Self::SteerApplied => "steer_applied",
             Self::Notice => "notice",
             Self::ApprovalRequest => "approval_request",
+            Self::ApprovalResolved => "approval_resolved",
+            Self::ControlSubmissionApplied => "control_submission_applied",
+            Self::SteerSubmissionApplied => "steer_submission_applied",
+            Self::SubmissionRejected => "submission_rejected",
             Self::RunDone => "run_done",
         }
     }
@@ -427,6 +439,27 @@ enum CliStreamEvent {
         arguments: Value,
         workspace: String,
     },
+    ApprovalResolved {
+        schema_version: u32,
+        submission_id: u64,
+        resolution: String,
+        reason_code: String,
+        response_submission_id: Option<u64>,
+    },
+    ControlSubmissionApplied {
+        schema_version: u32,
+        submission_id: u64,
+        kind: String,
+    },
+    SteerSubmissionApplied {
+        schema_version: u32,
+        submission_id: u64,
+    },
+    SubmissionRejected {
+        schema_version: u32,
+        submission_id: u64,
+        reason_code: String,
+    },
     RunDone {
         schema_version: u32,
     },
@@ -523,6 +556,19 @@ impl CliStreamEvent {
             Self::Notice { schema_version, .. } => (*schema_version, CliMachineEventKind::Notice),
             Self::ApprovalRequest { schema_version, .. } => {
                 (*schema_version, CliMachineEventKind::ApprovalRequest)
+            }
+            Self::ApprovalResolved { schema_version, .. } => {
+                (*schema_version, CliMachineEventKind::ApprovalResolved)
+            }
+            Self::ControlSubmissionApplied { schema_version, .. } => (
+                *schema_version,
+                CliMachineEventKind::ControlSubmissionApplied,
+            ),
+            Self::SteerSubmissionApplied { schema_version, .. } => {
+                (*schema_version, CliMachineEventKind::SteerSubmissionApplied)
+            }
+            Self::SubmissionRejected { schema_version, .. } => {
+                (*schema_version, CliMachineEventKind::SubmissionRejected)
             }
             Self::RunDone { schema_version } => (*schema_version, CliMachineEventKind::RunDone),
         }
@@ -1043,6 +1089,37 @@ mod tests {
     }
 
     #[test]
+    fn exact_submission_receipts_are_consumable_only_in_v6() {
+        let fixture = std::fs::read_to_string(
+            repository_root().join("crates/cli/tests/golden/receipt_stream_v6.jsonl"),
+        )
+        .unwrap();
+        let expected = [
+            CliMachineEventKind::ApprovalResolved,
+            CliMachineEventKind::ControlSubmissionApplied,
+            CliMachineEventKind::SteerSubmissionApplied,
+            CliMachineEventKind::SubmissionRejected,
+        ];
+        let records = fixture.lines().collect::<Vec<_>>();
+        assert_eq!(records.len(), expected.len());
+        for (line, expected_kind) in records.into_iter().zip(expected) {
+            assert!(matches!(
+                parse_machine_record(line.as_bytes()),
+                Ok(CliMachineRecord::Event { schema_version: 6, kind }) if kind == expected_kind
+            ));
+            let mut legacy: Value = serde_json::from_str(line).unwrap();
+            for version in [4, 5] {
+                legacy["schema_version"] = Value::from(version);
+                let bytes = serde_json::to_vec(&legacy).unwrap();
+                assert!(matches!(
+                    parse_machine_record(&bytes),
+                    Err(ContractError::TypeVersion { actual, .. }) if actual == version
+                ));
+            }
+        }
+    }
+
+    #[test]
     fn machine_parser_rejects_duplicate_keys_at_every_depth() {
         for malformed in [
             br#"{"schema_version":4,"type":"thinking","delta":"first","delta":"second"}"#.as_slice(),
@@ -1263,7 +1340,7 @@ mod tests {
         );
         assert_eq!(
             observed_types.len(),
-            19,
+            23,
             "every stream/result type is decoded"
         );
     }

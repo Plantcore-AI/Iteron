@@ -186,12 +186,14 @@ impl PausedProvider {
         // The replay-fallback fixture must exceed the ring's aggregate byte bound. Single-response
         // parity keeps its exact assistant text; the flood uses bounded 60 KiB thinking chunks for
         // 18.75 MiB of diagnostic events, below the 32 MiB provider-output ceiling but above the
-        // 16 MiB replay-byte budget. Keeping the final assistant answer small also respects v7's
-        // independent 65,536-byte assistant-message ceiling.
+        // 16 MiB replay-byte budget. Bound each harmless token below the scrubber's pending-token
+        // limit even if transport splits the chunk, testing replay retention rather than redaction.
+        // Keeping the final assistant answer small also respects v7's independent 65,536-byte
+        // assistant-message ceiling.
         let content = if chunks == 1 {
             "parity reply".to_owned()
         } else {
-            "x".repeat(60 * 1024)
+            ("x".repeat(1023) + " ").repeat(60)
         };
         let thread = thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("provider accepts one request");

@@ -7,7 +7,7 @@
 //!
 //! `schema_version` versions this CLI contract independently from Rust enum/debug formatting.
 
-use crate::runtime::{UiEvent, WorkflowUiEvent};
+use crate::runtime::{ApprovalResolution, UiEvent, WorkflowUiEvent};
 use clap::ValueEnum;
 use iteron_obs::{CostState, KernelTax};
 use iteron_protocol::{Outcome, Phase};
@@ -201,7 +201,18 @@ fn scrub_json(value: Value) -> Value {
 }
 
 fn is_token_boundary(c: char) -> bool {
-    c.is_whitespace() || matches!(c, '"' | '\'' | '=' | ':' | ',' | '(' | ')' | ';')
+    // `:` can be part of both a URL scheme and userinfo. Emitting `https:` before later deltas
+    // arrive makes the URL-password scrubber unable to recognize the complete credential.
+    c.is_whitespace() || matches!(c, '"' | '\'' | '=' | ',' | '(' | ')' | ';')
+}
+
+fn approval_resolution_name(resolution: ApprovalResolution) -> &'static str {
+    match resolution {
+        ApprovalResolution::Approved => "approved",
+        ApprovalResolution::Denied => "denied",
+        ApprovalResolution::Cancelled => "cancelled",
+        ApprovalResolution::TimedOut => "timed_out",
+    }
 }
 
 /// Stateful redaction for model deltas. The ordinary scrubber is token-oriented, so invoking it on
@@ -445,6 +456,23 @@ pub fn stream_event(event: UiEvent, turn: &mut u32) -> Value {
             "type": "steer_applied",
             "count": count,
         }),
+        UiEvent::SteerSubmissionApplied { id } => json!({
+            "schema_version": SCHEMA_VERSION,
+            "type": "steer_submission_applied",
+            "submission_id": id.0,
+        }),
+        UiEvent::SubmissionRejected { id, reason_code } => json!({
+            "schema_version": SCHEMA_VERSION,
+            "type": "submission_rejected",
+            "submission_id": id.0,
+            "reason_code": reason_code,
+        }),
+        UiEvent::ControlSubmissionApplied { id, kind } => json!({
+            "schema_version": SCHEMA_VERSION,
+            "type": "control_submission_applied",
+            "submission_id": id.0,
+            "kind": kind.as_str(),
+        }),
         UiEvent::Notice(message) => json!({
             "schema_version": SCHEMA_VERSION,
             "type": "notice",
@@ -466,6 +494,19 @@ pub fn stream_event(event: UiEvent, turn: &mut u32) -> Value {
             "reason": scrub(&reason),
             "arguments": scrub_json(arguments),
             "workspace": scrub(&workspace),
+        }),
+        UiEvent::ApprovalResolved {
+            id,
+            resolution,
+            reason_code,
+            response_submission_id,
+        } => json!({
+            "schema_version": SCHEMA_VERSION,
+            "type": "approval_resolved",
+            "submission_id": id.0,
+            "resolution": approval_resolution_name(resolution),
+            "reason_code": reason_code,
+            "response_submission_id": response_submission_id.map(|id| id.0),
         }),
         // The old UI event contains a Debug-formatted string, which is not a stable contract.
         // Preserve the lifecycle signal; the immediately-following result object is authoritative.
@@ -613,6 +654,23 @@ pub(crate) fn project_schema(mut value: Value, schema_version: u32) -> io::Resul
             "machine output record must be a JSON object",
         )
     })?;
+    if schema_version < SCHEMA_VERSION
+        && matches!(
+            fields.get("type").and_then(Value::as_str),
+            Some(
+                "approval_resolved"
+                    | "control_submission_applied"
+                    | "steer_submission_applied"
+                    | "submission_rejected"
+            )
+        )
+    {
+        return Ok(json!({
+            "schema_version": schema_version,
+            "type": "notice",
+            "message": scrub("Submission lifecycle detail requires output schema v6."),
+        }));
+    }
     fields.insert("schema_version".into(), Value::from(schema_version));
     if schema_version < SCHEMA_VERSION
         && fields.get("type").and_then(Value::as_str) == Some("turn_end")
@@ -1104,6 +1162,38 @@ mod tests {
         assert_eq!(approval["capability"], "code_executing");
         assert_eq!(approval["arguments"]["command"], "cargo test");
         assert_eq!(approval["workspace"], "/tmp/project");
+        let resolution = stream_event(
+            UiEvent::ApprovalResolved {
+                id: SubmissionId(7),
+                resolution: ApprovalResolution::Approved,
+                reason_code: "operator_approved",
+                response_submission_id: Some(SubmissionId(19)),
+            },
+            &mut turn,
+        );
+        assert_eq!(resolution["type"], "approval_resolved");
+        assert_eq!(resolution["submission_id"], 7);
+        assert_eq!(resolution["resolution"], "approved");
+        assert_eq!(resolution["reason_code"], "operator_approved");
+        assert_eq!(resolution["response_submission_id"], 19);
+        let stale = stream_event(
+            UiEvent::SubmissionRejected {
+                id: SubmissionId(20),
+                reason_code: "turn_mismatch_or_terminal",
+            },
+            &mut turn,
+        );
+        assert_eq!(stale["submission_id"], 20);
+        assert_eq!(stale["reason_code"], "turn_mismatch_or_terminal");
+        let control = stream_event(
+            UiEvent::ControlSubmissionApplied {
+                id: SubmissionId(21),
+                kind: crate::runtime::ControlSubmissionKind::Drain,
+            },
+            &mut turn,
+        );
+        assert_eq!(control["submission_id"], 21);
+        assert_eq!(control["kind"], "drain");
     }
 
     #[test]
@@ -1384,6 +1474,35 @@ mod tests {
                 },
                 &mut turn,
             ),
+            stream_event(
+                UiEvent::ApprovalResolved {
+                    id: SubmissionId(7),
+                    resolution: ApprovalResolution::Approved,
+                    reason_code: "operator_approved",
+                    response_submission_id: Some(SubmissionId(19)),
+                },
+                &mut turn,
+            ),
+            stream_event(
+                UiEvent::ControlSubmissionApplied {
+                    id: SubmissionId(21),
+                    kind: crate::runtime::ControlSubmissionKind::Drain,
+                },
+                &mut turn,
+            ),
+            stream_event(
+                UiEvent::SteerSubmissionApplied {
+                    id: SubmissionId(19),
+                },
+                &mut turn,
+            ),
+            stream_event(
+                UiEvent::SubmissionRejected {
+                    id: SubmissionId(20),
+                    reason_code: "turn_mismatch_or_terminal",
+                },
+                &mut turn,
+            ),
             stream_event(UiEvent::Done("ignored debug text".into()), &mut turn),
             final_result(
                 &Outcome::Done,
@@ -1406,7 +1525,7 @@ mod tests {
             .iter()
             .map(|record| record["type"].as_str().unwrap())
             .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(kinds.len(), 19, "every machine stream type is frozen once");
+        assert_eq!(kinds.len(), 23, "every machine stream type is frozen once");
         let tool_end_diff = records
             .iter()
             .find(|record| record["type"] == "tool_end")
@@ -1450,6 +1569,50 @@ mod tests {
             ]),
             "every nested machine effort shape is frozen"
         );
+    }
+
+    #[test]
+    fn identified_receipt_machine_records_match_the_additive_v6_fixture() {
+        let mut turn = 0;
+        let records = [
+            UiEvent::ApprovalResolved {
+                id: SubmissionId(7),
+                resolution: ApprovalResolution::Approved,
+                reason_code: "operator_approved",
+                response_submission_id: Some(SubmissionId(19)),
+            },
+            UiEvent::ControlSubmissionApplied {
+                id: SubmissionId(21),
+                kind: crate::runtime::ControlSubmissionKind::Drain,
+            },
+            UiEvent::SteerSubmissionApplied {
+                id: SubmissionId(19),
+            },
+            UiEvent::SubmissionRejected {
+                id: SubmissionId(20),
+                reason_code: "turn_mismatch_or_terminal",
+            },
+        ]
+        .into_iter()
+        .map(|event| stream_event_for_schema(event, &mut turn, SCHEMA_VERSION).unwrap())
+        .collect::<Vec<_>>();
+        let fixture = include_str!("../tests/golden/receipt_stream_v6.jsonl")
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(records, fixture);
+        for legacy_schema in [LEGACY_SCHEMA_VERSION, PREVIOUS_SCHEMA_VERSION] {
+            for record in &records {
+                let projected = project_schema(record.clone(), legacy_schema).unwrap();
+                let encoded = serde_json::to_string(&projected).unwrap();
+                assert_eq!(projected["schema_version"], legacy_schema);
+                assert_eq!(projected["type"], "notice");
+                assert_eq!(projected.as_object().unwrap().len(), 3);
+                assert!(projected["message"].as_str().unwrap().len() <= MAX_STDERR_NOTICE_BYTES);
+                assert!(!encoded.contains("applied"), "{encoded}");
+                assert!(!encoded.contains("submission_id"), "{encoded}");
+            }
+        }
     }
 
     #[test]
@@ -1517,6 +1680,55 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert!(!tail.contains("AbCdEfGhIjKlMnOpQrStUvWx"));
         assert!(tail.contains("[REDACTED"));
         assert_eq!(stream.finish(), Some("done".into()));
+    }
+
+    #[test]
+    fn streaming_scrubber_never_emits_a_split_url_password() {
+        let mut stream = StreamingScrubber::default();
+        assert!(stream.push("https:").is_none());
+        assert!(stream.push("//user:plain").is_none());
+        assert!(stream.push("password@host.example").is_none());
+        let completed = stream.push("/path done ").unwrap();
+        assert!(!completed.contains("plainpassword"), "{completed}");
+        assert!(completed.contains("[REDACTED"), "{completed}");
+        assert_eq!(stream.finish(), None);
+    }
+
+    #[test]
+    fn legacy_stream_json_never_emits_split_url_userinfo() {
+        for schema in [
+            LEGACY_SCHEMA_VERSION,
+            PREVIOUS_SCHEMA_VERSION,
+            SCHEMA_VERSION,
+        ] {
+            let mut stream = StreamingScrubber::default();
+            let mut turn = 0;
+            let mut frames = Vec::new();
+            for delta in [
+                "link https:",
+                "//user:plain",
+                "password@host.example",
+                "/path done ",
+            ] {
+                if let Some(safe) = stream.push(delta) {
+                    frames.push(
+                        stream_event_for_schema(UiEvent::Text(safe), &mut turn, schema).unwrap(),
+                    );
+                }
+                if delta == "//user:plain" || delta == "password@host.example" {
+                    assert_eq!(frames.len(), 1, "a credential prefix escaped early");
+                }
+                let emitted = serde_json::to_string(&frames).unwrap();
+                assert!(!emitted.contains("plainpassword"), "{emitted}");
+            }
+            if let Some(safe) = stream.finish() {
+                frames
+                    .push(stream_event_for_schema(UiEvent::Text(safe), &mut turn, schema).unwrap());
+            }
+            let emitted = serde_json::to_string(&frames).unwrap();
+            assert!(emitted.contains("REDACTED"), "{emitted}");
+            assert!(!emitted.contains("plainpassword"), "{emitted}");
+        }
     }
 
     #[test]

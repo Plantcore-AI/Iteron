@@ -1,7 +1,8 @@
 # Quickstart
 
-Use a disposable Git repository for the first run. Iteron is pre-alpha and, by
-default, executes code with your account's own filesystem and network authority.
+Use a disposable Git repository for the first run. Iteron is pre-alpha; its
+ordinary coding mode uses workspace-scoped execution and write boundaries, not a
+guarantee of safety against hostile code or concurrent filesystem manipulation.
 
 ## 1. Build the executable
 
@@ -16,14 +17,14 @@ The examples below use `/path/to/Iteron/target/release/iteron`. Replace it with
 
 ## 2. Set up a provider credential
 
-With no provider selected, Iteron routes to the first built-in provider that has
-a credential, so exporting one variable is enough to start. `glm` and its
-`GLM_API_KEY` are the last-resort fallback, used only when nothing on the machine
-can authenticate. The supported BYOK wizard validates a key before writing it to
-a private operator-owned file:
+With no provider selected, Iteron first reuses a validated last-success route;
+otherwise it prefers locally credentialed `openai`, then another locally
+credentialed provider. A catalog entry is not an account grant.
+The supported BYOK wizard validates a key before writing it to a private
+operator-owned file:
 
 ```sh
-iteron setup --byok glm
+iteron setup --byok openai
 ```
 
 Iteron never writes credential values into repository configuration. An
@@ -53,9 +54,10 @@ change session settings.
 
 ## 4. Choose the authority posture deliberately
 
-The shipped default bypasses permission prompts and runs unconfined. Use
-`--ask-permissions` to restore the capability gate, `--confine` to confine shell
-commands on macOS or Linux, and `--mode plan` for a read-only run. Review the
+The shipped default uses `acceptEdits` with shell sandboxing and workspace file
+write checks. Use `--ask-permissions` for stricter edit approvals, and
+`--mode plan` for a read-only run. Only the explicit
+`--dangerously-bypass-permissions` option grants the broad bypass. Review the
 [permission and sandbox contract](../using/permissions-and-sandbox.md) before
 opening an untrusted repository.
 
@@ -66,10 +68,9 @@ opening an untrusted repository.
   "Find the failing test, explain the cause, and stop without editing"
 ```
 
-One-shot mode defaults to `acceptEdits` and inherits the shipped permission bypass,
-so it does not prompt and code execution is already granted. Pass
-`--ask-permissions` to restore the gate; because one-shot has no approval channel,
-an operation that resolves to "ask" then fails closed.
+One-shot mode defaults to sandboxed `acceptEdits`, without a broad permission
+bypass. It has no approval channel, so an operation that resolves to "ask"
+fails closed; pass `--ask-permissions` only when that stricter refusal is intended.
 
 For automation, use the stable machine-output modes described in
 [one-shot and automation](../using/one-shot.md).

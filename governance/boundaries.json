@@ -1239,6 +1239,14 @@
         },
         {
           "kind": "file",
+          "path": "crates/tools/src/confined_fs.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/tools/src/confined_helper.rs"
+        },
+        {
+          "kind": "file",
           "path": "crates/tools/src/edit.rs"
         },
         {
@@ -1821,6 +1829,10 @@
         {
           "kind": "file",
           "path": "crates/cli/src/runtime/route_validation.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/terminal_diagnostics.rs"
         },
         {
           "kind": "file",
@@ -3423,7 +3435,8 @@
           "iteron-workflow"
         ],
         "dev": [
-          "iteron-record"
+          "iteron-record",
+          "iteron-tools"
         ],
         "build": []
       },

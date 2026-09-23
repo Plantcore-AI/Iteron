@@ -424,6 +424,14 @@ pub(super) async fn apply_control(
         ));
         return;
     }
+    // Adoption swaps the runtime journal. Check the public projection before that mutation so
+    // the two identities cannot diverge if a live product turn still owns this thread.
+    if matches!(&request.control, Control::AdoptRun(_)) && !events.can_rebind_contract_run() {
+        let _ = request.reply.send(ControlReply::Refused(
+            "cannot adopt while the public Thread projection has an active turn".into(),
+        ));
+        return;
+    }
     let reply = match request.control {
         Control::PlantcoreRunBootstrapV1(payload) => {
             if *started {
@@ -567,6 +575,10 @@ pub(super) async fn apply_control(
             match adoption {
                 Ok(adopted) => {
                     events.run_id = Some(iteron_protocol::RunId(adopted.run_id.clone()));
+                    assert!(
+                        events.rebind_contract_run(iteron_protocol::RunId(adopted.run_id.clone())),
+                        "adoption preflight keeps the public Thread projection rebindable"
+                    );
                     events.record_lifecycle(
                         "session.resumed",
                         None,
@@ -711,6 +723,27 @@ pub(super) async fn apply_side(
 
 /// Read the runtime state the frontend mirrors.
 pub(super) fn snapshot_of(agent: &mut Agent) -> SessionSnapshot {
+    // The kernel inbox has at most KERNEL_INBOUND_CAPACITY entries. The runtime may inspect only
+    // one per call under a low inbound_poll_limit, so exhaust that physical queue before another
+    // product turn can start. Controls left in the old inbox must never reach the next turn.
+    let mut unadmitted_entries = Vec::new();
+    let mut unadmitted_client_steers = 0usize;
+    for _ in 0..KERNEL_INBOUND_CAPACITY {
+        let (entries, client_count) = agent.take_unadmitted_steers_with_client_count();
+        unadmitted_entries.extend(entries);
+        unadmitted_client_steers = unadmitted_client_steers.saturating_add(client_count);
+    }
+    let mut unadmitted_steers = Vec::with_capacity(unadmitted_client_steers);
+    let mut unadmitted_internal_notifications = Vec::new();
+    let mut unadmitted_steer_submission_ids = Vec::new();
+    for entry in unadmitted_entries {
+        if entry.client_visible {
+            unadmitted_steer_submission_ids.push(entry.submission_id);
+            unadmitted_steers.push(entry.text);
+        } else {
+            unadmitted_internal_notifications.push(entry.text);
+        }
+    }
     SessionSnapshot {
         mode: agent.permission_mode(),
         effort: agent.effort(),
@@ -724,7 +757,10 @@ pub(super) fn snapshot_of(agent: &mut Agent) -> SessionSnapshot {
             .to_owned(),
         cost: agent.ledger.cost_state(),
         last_turn_usage: agent.ledger.last_turn_usage,
-        unadmitted_steers: agent.take_unadmitted_steers(),
+        unadmitted_steers,
+        unadmitted_internal_notifications,
+        unadmitted_client_steers,
+        unadmitted_steer_submission_ids,
         permission_rules: agent.permission_rules().clone(),
         runtime_policy: agent.runtime_policy_overlay(),
         ledger_summary: agent.ledger.summary(),

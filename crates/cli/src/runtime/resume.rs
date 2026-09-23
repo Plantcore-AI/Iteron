@@ -869,7 +869,13 @@ impl Agent {
         self.verification_policy = effective_core.verification;
         self.verify_command = effective_core.verify_command;
         self.compaction = effective_core.compaction;
-        self.context_budget_policy = effective_core.context_budget;
+        self.context_budget_policy =
+            effective_core
+                .context_budget
+                .with_elastic_task_context(matches!(
+                effective_core.task_context_budget_source,
+                crate::runtime_tunables::effective_core::TaskContextBudgetSource::DefaultDerived
+            ));
         self.context_materialization_policy = effective_core.context_materialization;
         self.model_context_window = effective_core.model_context_window;
         self.model_max_output_tokens = effective_core.request_output_cap;
