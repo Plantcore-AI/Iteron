@@ -331,7 +331,7 @@ mod registeredfut {
 /// A registered tool: its spec plus its executor.
 pub struct Tool {
     pub spec: ToolSpec,
-    run: Box<dyn Fn(ToolUse, PathBuf) -> registeredfut::BoxFut + Send + Sync>,
+    run: Arc<dyn Fn(ToolUse, PathBuf) -> registeredfut::BoxFut + Send + Sync>,
     output_owner: ToolOutputOwner,
     purpose: ToolPurpose,
 }
@@ -923,6 +923,110 @@ impl Registry {
         self.run_effect(intent.call).await
     }
 
+    /// Own the executor future so an admitted call can run while its provider keeps streaming.
+    /// Unlike `dispatch`, this preserves an executor's Unknown effect outcome.
+    pub fn dispatch_stream_intent(
+        &self,
+        intent: ToolIntent,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolExecution> + Send + 'static>> {
+        let refused = |id: String,
+                       reason: String|
+         -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = ToolExecution> + Send + 'static>,
+        > {
+            Box::pin(async move { ToolExecution::Definite(err_result(id, reason)) })
+        };
+        if let Err(reason) = self.validate_admitted_intent(&intent, None) {
+            return refused(intent.call.id, reason);
+        }
+        let is_effecting = intent.purity == Purity::Effecting;
+        let call = intent.call;
+        let tool = self
+            .tools
+            .iter()
+            .find(|tool| tool.spec.name == call.name)
+            .expect("admitted intent was checked against this registry");
+        if let Err(error) = schema::validate_arguments(&tool.spec.input_schema, &call.input) {
+            return refused(call.id, error.model_json(&tool.spec.name));
+        }
+        let confine_execution = self.confine_execution.clone();
+        let workspace_boundary = self.workspace_boundary;
+        let observation_focus = self.observation_focus.clone();
+        let id = call.id.clone();
+        let executor = tool.run.clone();
+        let root = self.root.clone();
+        let memo = self.memo.clone();
+        // Reads prepared after this admitted write cannot hit a pre-write memo entry.
+        if is_effecting {
+            memo.invalidate();
+        }
+        Box::pin(async move {
+            if confine_execution.load(std::sync::atomic::Ordering::Relaxed)
+                && matches!(call.name.as_str(), "write_file" | "edit" | "apply_patch")
+                && let Err(reason) = workspace_boundary::validate_coding_write_call(&root, &call)
+            {
+                return ToolExecution::Definite(err_result(id, reason));
+            }
+            if workspace_boundary
+                && let Err(reason) = workspace_boundary::validate_call(&root, &call)
+            {
+                return ToolExecution::Definite(err_result(id, reason));
+            }
+            // Cache lookup and closure invocation both belong behind the runtime gate.
+            let pending = if !is_effecting {
+                let memo_input = (call.name == "grep").then(|| {
+                    let mut input = call.input.clone();
+                    if let Some(object) = input.as_object_mut() {
+                        object.insert(
+                            "__iteron_observation_focus_revision".into(),
+                            observation_focus.revision().into(),
+                        );
+                    }
+                    input
+                });
+                match memo.key(&call.name, memo_input.as_ref().unwrap_or(&call.input)) {
+                    Some(key) => match memo.lookup(key) {
+                        Lookup::Hit(mut hit) => {
+                            if call.name == "read_file"
+                                && !hit.is_error
+                                && let Some(path) =
+                                    call.input.get("path").and_then(serde_json::Value::as_str)
+                                && let Ok(path) = resolve_in_root(&root, path)
+                            {
+                                observation_focus.observe(path, &hit.content);
+                            }
+                            hit.tool_use_id = id;
+                            hit.latency_ms = 0;
+                            return ToolExecution::Definite(hit);
+                        }
+                        Lookup::Miss(pending) => Some(pending),
+                    },
+                    None => None,
+                }
+            } else {
+                None
+            };
+            let started = Instant::now();
+            // Invoking an extension closure can itself perform work. Keep invocation
+            // behind the runtime's ordered lock and hook gates, not merely its future.
+            let registered = executor(call, root).await;
+            let mut outcome = registered.outcome;
+            let result = outcome.result_mut();
+            result.tool_use_id = id;
+            result.latency_ms = registered
+                .dispatch_to_terminal_ms
+                .unwrap_or_else(|| started.elapsed().as_millis() as u64);
+            if is_effecting {
+                memo.invalidate();
+            } else if let Some(pending) = pending
+                && let ToolExecution::Definite(result) = &outcome
+            {
+                memo.complete(pending, result);
+            }
+            outcome
+        })
+    }
+
     fn validate_admitted_intent(
         &self,
         intent: &ToolIntent,
@@ -1299,7 +1403,7 @@ impl Registry {
         self.register_with_origin(
             Tool {
                 spec,
-                run: Box::new(adapted),
+                run: Arc::new(adapted),
                 output_owner: ToolOutputOwner::Runtime,
                 purpose: ToolPurpose::CandidateChange,
             },
@@ -1339,7 +1443,7 @@ impl Registry {
         self.register_with_origin(
             Tool {
                 spec,
-                run: Box::new(adapted),
+                run: Arc::new(adapted),
                 output_owner: ToolOutputOwner::Runtime,
                 purpose,
             },
@@ -1383,7 +1487,7 @@ impl Registry {
         };
         self.register(Tool {
             spec,
-            run: Box::new(adapted),
+            run: Arc::new(adapted),
             output_owner: ToolOutputOwner::Runtime,
             purpose: ToolPurpose::General,
         })
@@ -1428,7 +1532,7 @@ impl Registry {
         };
         self.register(Tool {
             spec,
-            run: Box::new(adapted),
+            run: Arc::new(adapted),
             output_owner: ToolOutputOwner::Mcp,
             purpose: ToolPurpose::General,
         })

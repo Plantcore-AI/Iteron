@@ -705,7 +705,7 @@ pub(super) fn provider_settlement(
                 tool,
                 reason: format!(
                     "provider request was dispatched and produced no authoritative outcome ({}); \
-                     automatic retry is forbidden",
+                     billing remains unknown and continuation requires separate budget admission",
                     error.public_summary()
                 ),
                 provider_route_attempt: Some(accounting),
@@ -781,4 +781,32 @@ pub(super) fn retryable_before_semantic_output_provider_error(
     );
     (proven_terminal && error.retry_disposition() == iteron_provider::RetryDisposition::Transient)
         .then_some(error)
+}
+
+/// A dropped response may be continued from committed conversation/tool results. This is a
+/// new, separately accounted request, never proof that the failed request was free.
+pub(super) fn recoverable_response_stream_error(error: &KernelError) -> bool {
+    use iteron_provider::{ProviderError, ProviderTimeoutStage, RetryDisposition};
+    if let KernelError::Provider(error) = error
+        && error
+            .retry_after()
+            .is_some_and(|delay| delay > iteron_provider::MAX_INTERACTIVE_RETRY_AFTER)
+    {
+        return false;
+    }
+    match error {
+        KernelError::Provider(ProviderError::Http(_)) => true,
+        KernelError::Provider(ProviderError::Timeout { stage }) => matches!(
+            stage,
+            ProviderTimeoutStage::ResponseHeaders
+                | ProviderTimeoutStage::StreamIdle
+                | ProviderTimeoutStage::RequestTotal
+        ),
+        KernelError::Provider(
+            error @ (ProviderError::Stream(_)
+            | ProviderError::Api { .. }
+            | ProviderError::ApiResponse(_)),
+        ) => error.retry_disposition() == RetryDisposition::Transient,
+        _ => false,
+    }
 }

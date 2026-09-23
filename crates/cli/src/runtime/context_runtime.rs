@@ -347,51 +347,32 @@ impl Agent {
     }
 
     pub(super) fn persist_token_calibration(&self) -> bool {
-        use std::io::Write as _;
-
         if self.runtime_state_dir.as_os_str().is_empty() {
             return false;
         }
         let Ok(bytes) = serde_json::to_vec(&self.token_calibration.snapshot()) else {
             return false;
         };
-        if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > token_calibration_max_bytes()
-            || std::fs::create_dir_all(&self.runtime_state_dir).is_err()
-        {
+        if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > token_calibration_max_bytes() {
             return false;
         }
-        let target = self.runtime_state_dir.join(TOKEN_CALIBRATION_FILE);
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or(0);
-        let temporary = self.runtime_state_dir.join(format!(
-            ".token-calibration-v1.{}.{}.tmp",
-            std::process::id(),
-            nonce
-        ));
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt as _;
-            options.mode(0o600);
-        }
-        let Ok(mut file) = options.open(&temporary) else {
-            return false;
-        };
-        let written = file
-            .write_all(&bytes)
-            .and_then(|()| file.sync_all())
-            .is_ok();
-        drop(file);
-        if !written || std::fs::rename(&temporary, &target).is_err() {
-            let _ = std::fs::remove_file(&temporary);
-            return false;
-        }
-        std::fs::File::open(&self.runtime_state_dir)
-            .and_then(|directory| directory.sync_all())
-            .is_ok()
+        let runtime_state_dir = self.runtime_state_dir.clone();
+        let emitter = self.lifecycle_emitter.clone();
+        let correlation = self.lifecycle_correlation(Some(TurnId(self.seq_turn)));
+        super::turn_maintenance::enqueue(move || {
+            if !persist_calibration_snapshot(runtime_state_dir, bytes)
+                && let Some(emitter) = emitter
+            {
+                let _ = emitter.emit(
+                    "context.tokenizer.error_calculated",
+                    correlation,
+                    LifecyclePayload {
+                        outcome_code: Some("calibration_persist_failed".into()),
+                        ..LifecyclePayload::default()
+                    },
+                );
+            }
+        })
     }
 
     /// Project the aggregate provider-wire estimate back onto the non-overlapping source classes
@@ -1277,6 +1258,47 @@ impl Agent {
         )
         .unwrap_or(Trust::Trusted)
     }
+}
+
+// Calibration is advisory and reproducible from future provider observations. Its disk writes
+// cannot delay input readiness; the bounded FIFO preserves the order of submitted snapshots.
+fn persist_calibration_snapshot(runtime_state_dir: std::path::PathBuf, bytes: Vec<u8>) -> bool {
+    use std::io::Write as _;
+    if std::fs::create_dir_all(&runtime_state_dir).is_err() {
+        return false;
+    }
+    let target = runtime_state_dir.join(TOKEN_CALIBRATION_FILE);
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let temporary = runtime_state_dir.join(format!(
+        ".token-calibration-v1.{}.{}.tmp",
+        std::process::id(),
+        nonce
+    ));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    let Ok(mut file) = options.open(&temporary) else {
+        return false;
+    };
+    let written = file
+        .write_all(&bytes)
+        .and_then(|()| file.sync_all())
+        .is_ok();
+    drop(file);
+    if !written || std::fs::rename(&temporary, &target).is_err() {
+        let _ = std::fs::remove_file(&temporary);
+        return false;
+    }
+    std::fs::File::open(&runtime_state_dir)
+        .and_then(|directory| directory.sync_all())
+        .is_ok()
 }
 
 #[cfg(test)]

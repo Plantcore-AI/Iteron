@@ -418,7 +418,7 @@ impl SseDecoder {
         {
             Ok(())
         } else {
-            Err(ProviderError::Decode(
+            Err(ProviderError::Http(
                 "Responses stream ended with an incomplete SSE frame".into(),
             ))
         }
@@ -1158,7 +1158,7 @@ impl ResponseParser {
 
     fn finish(&self) -> Result<(), ProviderError> {
         if !self.terminal {
-            return Err(ProviderError::Decode(
+            return Err(ProviderError::Http(
                 "Responses stream ended before a terminal event".into(),
             ));
         }

@@ -27,12 +27,28 @@ impl Agent {
             selected.route.catalog_digest.clone(),
             selected.route.capability_digest.clone(),
         );
-        if snapshot.store(path).is_err() {
+        let path = path.to_owned();
+        let emitter = self.lifecycle_emitter.clone();
+        let correlation = self.lifecycle_correlation(Some(turn));
+        if !super::turn_maintenance::enqueue(move || {
+            if snapshot.store(&path).is_err()
+                && let Some(emitter) = emitter
+            {
+                let _ = emitter.emit(
+                    "model.route_failed",
+                    correlation,
+                    LifecyclePayload {
+                        reason_code: Some("last_success_snapshot_persist_failed".into()),
+                        ..LifecyclePayload::default()
+                    },
+                );
+            }
+        }) {
             self.lifecycle_event(
                 "model.route_failed",
                 Some(turn),
                 LifecyclePayload {
-                    reason_code: Some("last_success_snapshot_persist_failed".into()),
+                    reason_code: Some("last_success_snapshot_queue_full".into()),
                     ..LifecyclePayload::default()
                 },
             );

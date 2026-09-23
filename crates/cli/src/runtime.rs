@@ -20,7 +20,7 @@ pub use iteron_kernel::{diagnostics, effect_admission, effect_class, effect_jour
 type PureToolInFlight = (
     usize,
     ToolUse,
-    tokio::task::JoinHandle<EarlyPureToolOutcome>,
+    stream_tools::EarlyToolTask,
     Instant,
     EarlyHookEffectTickets,
 );
@@ -30,6 +30,8 @@ enum EarlyPureToolOutcome {
         managed: tool_output_spill::ManagedToolResult,
         spill_store: Option<std::sync::Arc<tool_output_spill::ToolOutputSpillStore>>,
         hook: Option<EarlyHookSummary>,
+        effect_unknown: bool,
+        operator_interrupted: bool,
     },
     Refused {
         reason: String,
@@ -47,6 +49,7 @@ struct EarlyHookSummary {
 
 #[derive(Default)]
 struct EarlyHookEffectTickets {
+    tool: Option<effects::EffectTicket>,
     compatibility: Option<(usize, effects::EffectTicket)>,
     lifecycle: Option<(usize, effects::EffectTicket)>,
 }
@@ -175,7 +178,11 @@ mod decomposition;
 mod deferred_tools;
 mod durability;
 mod failed_action_cache;
+mod stream_tools;
+#[cfg(test)]
+mod stream_tools_tests;
 pub(crate) mod turn_activity;
+mod turn_maintenance;
 pub(crate) use failed_action_cache::FailedActionPolicy;
 mod file_submission;
 pub(crate) mod force_cancel;
@@ -3143,6 +3150,9 @@ impl Agent {
         input_images: &[iteron_protocol::ImageContent],
     ) -> Result<Outcome, KernelError> {
         let mut consecutive_errors: u32 = 0;
+        let mut stream_recoveries = 0u32;
+        let mut recovered_tool_results: std::collections::BTreeMap<String, (ToolUse, ToolResult)> =
+            std::collections::BTreeMap::new();
         // The graph-governed repair workflow is retained for specialized workflows, not for
         // ordinary coding turns. Its evidence gates and workspace identity reads must not shape
         // the default model/tool loop.
@@ -3826,10 +3836,16 @@ impl Agent {
             // tool_use with an error result (code review: an unanswered tool_use is a dangling
             // block the model API rejects on the next turn).
             let mut pure: Vec<PureToolInFlight> = Vec::new();
+            let stream_execution_gate = std::sync::Arc::new(tokio::sync::RwLock::new(()));
+            let early_local_effects = !investigation_convergence.enabled()
+                && self.verify_command.is_none()
+                && !self.plantcore_runtime_enabled();
+            let mut early_effect_signatures = std::collections::BTreeSet::new();
+            let mut replayed_tool_results = std::collections::BTreeMap::new();
             // How many pure calls could not take a permit the instant they were admitted. They are
             // still dispatched concurrently — they wait in the governor's queue — but the count is
             // the honest report that the cap, not the workload, shaped this turn's tool phase.
-            let mut queued_pure: usize = 0;
+            let queued_pure = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let mut deferred: Vec<(
                 usize,
                 ToolUse,
@@ -4142,12 +4158,48 @@ impl Agent {
                                     tool_policy_record_error = Some(error);
                                     return;
                                 }
+                                if let Some((previous_call, previous_result)) =
+                                    recovered_tool_results.get(&tu.id)
+                                {
+                                    if previous_call != &tu {
+                                        tool_policy_record_error = Some(iteron_provider::ProviderError::Decode(
+                                            "recovery reused a completed tool call ID with different arguments".into(),
+                                        ).into());
+                                        return;
+                                    }
+                                    replayed_tool_results.insert(idx, previous_result.clone());
+                                    deferred.push((idx, tu, proposal));
+                                    return;
+                                }
                                 let is_pure = proposal
                                     .as_ref()
                                     .is_ok_and(|proposal| proposal.intent.purity == Purity::Pure);
-                                if is_pure && pure_overlap_enabled {
+                                let early_capability =
+                                    proposal.as_ref().ok().and_then(|proposal| {
+                                        self.early_local_tool_capability(proposal, argument_trust)
+                                    });
+                                let action_signature = format!("{}::{}", tu.name, tu.input);
+                                let early_effect = early_local_effects
+                                    && !is_pure
+                                    && early_capability.is_some()
+                                    && !self.failed_actions.contains_key(&action_signature)
+                                    && !early_effect_signatures.contains(&action_signature);
+                                // A call awaiting approval/other ordered admission is an exclusive
+                                // barrier. Later reads may not overtake that mutation.
+                                if deferred.is_empty()
+                                    && pure_overlap_enabled
+                                    && (is_pure || early_effect)
+                                {
                                     let proposal =
-                                        proposal.expect("checked pure tool-policy proposal");
+                                        proposal.expect("checked stream tool-policy proposal");
+                                    let capability = if is_pure {
+                                        Capability::ReadOnly
+                                    } else {
+                                        early_effect_signatures.insert(action_signature);
+                                        early_capability.expect("checked Auto capability")
+                                    };
+                                    let supports_parallel =
+                                        is_pure || capability == Capability::CodeExecuting;
                                     let tu_ui = proposal.intent.call.clone();
                                     if hook_gates_reads {
                                         self.lifecycle_event(
@@ -4159,8 +4211,7 @@ impl Agent {
                                             },
                                         );
                                     }
-                                    let intent =
-                                        proposal.admit(CapabilitySet::only(Capability::ReadOnly));
+                                    let intent = proposal.admit(CapabilitySet::only(capability));
                                     let compatibility_context = serde_json::json!({
                                         "event": "PreToolUse",
                                         "tool": tu_ui.name,
@@ -4224,6 +4275,17 @@ impl Agent {
                                             }
                                         }
                                     }
+                                    if !is_pure {
+                                        match self
+                                            .open_tool_call_effect(turn_id, idx, &tu_ui, capability)
+                                        {
+                                            Ok(ticket) => hook_effect_tickets.tool = Some(ticket),
+                                            Err(error) => {
+                                                tool_policy_record_error = Some(error);
+                                                return;
+                                            }
+                                        }
+                                    }
                                     // Spawn now — I/O overlaps the remaining decode. The permit is held for
                                     // the task's lifetime and released on completion (bounded). At the cap
                                     // the task still spawns and awaits a permit inside itself: the future
@@ -4231,59 +4293,74 @@ impl Agent {
                                     // capped while the WAITING work stays concurrent. The alternative this
                                     // replaces — an overflow list drained inline during collection — made
                                     // every call past the cap serial with nothing in the record saying so.
-                                    let fut = self.registry.dispatch_intent(intent);
+                                    let fut = self.registry.dispatch_stream_intent(intent);
+                                    let execution_guard = stream_tools::reserve_execution(
+                                        stream_execution_gate.clone(),
+                                        supports_parallel,
+                                    );
                                     let tool_use_id = tu_ui.id.clone();
                                     let spill_store = self.ordinary_tool_spill_store(&tu_ui.name);
                                     let interrupt = tool_interrupt.clone();
                                     let force_cancel = tool_force_cancel.clone();
                                     let drain = tool_drain.clone();
-                                    let permit = gov.try_acquire();
-                                    if permit.is_none() {
-                                        queued_pure += 1;
-                                    }
+                                    let queued_pure = queued_pure.clone();
                                     let gov = gov.clone();
                                     let hooks = early_hooks.clone();
                                     let hook_journal = early_hook_journal.clone();
-                                    let handle = tokio::spawn(async move {
-                                        let _permit = match permit {
-                                            Some(permit) => permit,
-                                            None => gov.acquire().await,
-                                        };
-                                        let hook = match run_lifecycle_gate(
-                                            &hooks,
-                                            EarlyHookGateContext {
-                                                journal: hook_journal.as_ref(),
-                                                compatibility_enabled: compatibility_pre_tool_hook,
-                                                lifecycle_enabled: lifecycle_pre_tool_hook,
-                                                compatibility_json: &compatibility_context,
-                                                lifecycle_json: &lifecycle_context,
-                                                interrupt: interrupt.as_deref(),
-                                                drain: drain.as_ref(),
-                                            },
-                                        )
-                                        .await
-                                        {
-                                            Ok(summary) => summary,
-                                            Err(refusal) => {
-                                                return EarlyPureToolOutcome::Refused {
-                                                    reason: refusal.reason,
-                                                    hook: refusal.summary,
-                                                };
-                                            }
-                                        };
-                                        let result = match await_tool_or_interrupt(
-                                            fut,
-                                            interrupt.as_deref(),
-                                            Some(force_cancel.as_ref()),
-                                            Some(drain.as_ref()),
-                                        )
-                                        .await
-                                        {
-                                            Ok(result) => result,
-                                            // Pure tools have no externally visible effect by contract, so
-                                            // dropping one on interrupt is a definite cancelled read rather
-                                            // than an unknown effect settlement.
-                                            Err(interruption) => ToolResult {
+                                    let handle = stream_tools::EarlyToolTask::new(tokio::spawn(
+                                        async move {
+                                            let _execution_guard = execution_guard.await;
+                                            // Never hold a governor permit while waiting behind an
+                                            // exclusive call: that call may itself need the permit.
+                                            let _permit = match gov.try_acquire() {
+                                                Some(permit) => permit,
+                                                None => {
+                                                    queued_pure.fetch_add(
+                                                        1,
+                                                        std::sync::atomic::Ordering::Relaxed,
+                                                    );
+                                                    gov.acquire().await
+                                                }
+                                            };
+                                            let hook = match run_lifecycle_gate(
+                                                &hooks,
+                                                EarlyHookGateContext {
+                                                    journal: hook_journal.as_ref(),
+                                                    compatibility_enabled:
+                                                        compatibility_pre_tool_hook,
+                                                    lifecycle_enabled: lifecycle_pre_tool_hook,
+                                                    compatibility_json: &compatibility_context,
+                                                    lifecycle_json: &lifecycle_context,
+                                                    interrupt: interrupt.as_deref(),
+                                                    drain: drain.as_ref(),
+                                                },
+                                            )
+                                            .await
+                                            {
+                                                Ok(summary) => summary,
+                                                Err(refusal) => {
+                                                    return EarlyPureToolOutcome::Refused {
+                                                        reason: refusal.reason,
+                                                        hook: refusal.summary,
+                                                    };
+                                                }
+                                            };
+                                            let mut operator_interrupted = false;
+                                            let execution = match await_tool_or_interrupt(
+                                                fut,
+                                                interrupt.as_deref(),
+                                                Some(force_cancel.as_ref()),
+                                                Some(drain.as_ref()),
+                                            )
+                                            .await
+                                            {
+                                                Ok(result) => result,
+                                                // Pure tools have no externally visible effect by contract, so
+                                                // dropping one on interrupt is a definite cancelled read rather
+                                                // than an unknown effect settlement.
+                                                Err(interruption) => {
+                                                    operator_interrupted = true;
+                                                    let result = ToolResult {
                                                 tool_use_id,
                                                 content: match interruption {
                                                     ToolInterruption::Forced => "operator force-cancelled the read before it completed",
@@ -4294,18 +4371,34 @@ impl Agent {
                                                 is_error: true,
                                                 trust: Trust::Workspace,
                                                 latency_ms: 0,
-                                            },
-                                        };
-                                        let managed = tool_output_spill::manage_result(
-                                            spill_store.as_deref(),
-                                            result,
-                                        );
-                                        EarlyPureToolOutcome::Completed {
-                                            managed,
-                                            spill_store,
-                                            hook,
-                                        }
-                                    });
+                                                };
+                                                    if is_pure {
+                                                        iteron_tools::ToolExecution::Definite(
+                                                            result,
+                                                        )
+                                                    } else {
+                                                        iteron_tools::ToolExecution::Unknown(result)
+                                                    }
+                                                }
+                                            };
+                                            let effect_unknown = matches!(
+                                                &execution,
+                                                iteron_tools::ToolExecution::Unknown(_)
+                                            );
+                                            let result = execution.into_result();
+                                            let managed = tool_output_spill::manage_result(
+                                                spill_store.as_deref(),
+                                                result,
+                                            );
+                                            EarlyPureToolOutcome::Completed {
+                                                managed,
+                                                spill_store,
+                                                hook,
+                                                effect_unknown,
+                                                operator_interrupted,
+                                            }
+                                        },
+                                    ));
                                     pure.push((
                                         idx,
                                         tu_ui,
@@ -4662,8 +4755,86 @@ impl Agent {
                     LifecyclePayload::default(),
                 );
             }
+            let mut stream_recovered = false;
             let turn_res = match provider_result {
                 Ok(result) => result,
+                Err(ref error)
+                    if !self.plantcore_runtime_enabled()
+                        && tool_contract_error.is_none()
+                        && stream_recoveries.saturating_add(1) < self.retry_policy.max_attempts
+                        && provider_route::recoverable_response_stream_error(error) =>
+                {
+                    let delay = iteron_sched::full_jitter(
+                        &self.retry_policy,
+                        stream_recoveries,
+                        retry_jitter.next01(),
+                    );
+                    let delay = match error {
+                        KernelError::Provider(error) => {
+                            error.retry_after().map_or(delay, |hint| hint.max(delay))
+                        }
+                        _ => delay,
+                    };
+                    stream_recoveries = stream_recoveries.saturating_add(1);
+                    self.activity.retry(
+                        turn_id,
+                        stream_recoveries,
+                        self.retry_policy.max_attempts,
+                        delay,
+                    );
+                    let prepare_recovery: Result<(), KernelError> = async {
+                        self.admit_followup_after_route_attempt_set(false)?;
+                        self.emit_durable(turn_id, EventKind::Notice {
+                            text: "provider stream disconnected; continuing from completed output and tool calls; interrupted usage remains unknown".into(),
+                        })?;
+                        self.wait_provider_retry(delay).await
+                    }.await;
+                    if let Err(recovery_error) = prepare_recovery {
+                        self.abort_early_pure_tools(turn_id, &mut pure).await?;
+                        self.preserve_interrupted_stream(
+                            turn_id,
+                            messages,
+                            &streamed_text,
+                            &streamed_thinking,
+                        );
+                        return Err(recovery_error);
+                    }
+                    self.ledger.record_provider_retries(
+                        1,
+                        u64::try_from(delay.as_millis().max(1)).unwrap_or(u64::MAX),
+                    );
+                    // Preserve only complete calls. The existing collection path settles their
+                    // running tasks and records results before the next request is constructed.
+                    // The physical provider effect above remains failed/unknown, not successful.
+                    let mut calls = pure
+                        .iter()
+                        .map(|(index, tool, ..)| (*index, tool.clone()))
+                        .chain(
+                            deferred
+                                .iter()
+                                .map(|(index, tool, _)| (*index, tool.clone())),
+                        )
+                        .collect::<Vec<_>>();
+                    calls.sort_by_key(|(index, _)| *index);
+                    let has_calls = !calls.is_empty();
+                    let mut blocks = Vec::new();
+                    if !streamed_text.is_empty() {
+                        blocks.push(Block::Text {
+                            text: format!("{streamed_text}\n\n{INTERRUPTED_STREAM_MARKER}"),
+                        });
+                    }
+                    blocks.extend(calls.into_iter().map(|(_, tool)| Block::ToolUse(tool)));
+                    stream_recovered = true;
+                    iteron_provider::TurnResult {
+                        blocks,
+                        stop_reason: if has_calls {
+                            StopReason::ToolUse
+                        } else {
+                            StopReason::PauseTurn
+                        },
+                        usage: UsageReport::provider_omitted(),
+                    }
+                }
                 Err(error) => {
                     // Physical route terminals already committed exact Known/Unknown cost truth
                     // before this branch. A proven provider failure (or a proved pre-dispatch
@@ -4764,7 +4935,7 @@ impl Agent {
             // The obs field is named for the behaviour it used to measure (an inline serial tail);
             // it now counts the calls that queued for a permit. Same question — "did the cap bind
             // this turn?" — answered without the serialisation that used to be its only symptom.
-            self.ledger.tool_inline_overflow(queued_pure);
+
             // Provider-active time only: local preparation, admission/fsync, retry backoff and
             // failover selection have their own clocks and cannot inflate `model_ms`.
             let model_ms = iteron_obs::duration_ms_ceil(provider_active);
@@ -4784,14 +4955,23 @@ impl Agent {
             self.last_assistant_text = turn_res.text();
             self.run_assistant_text.push_str(&self.last_assistant_text);
 
-            let complete_usage = self.record_provider_usage(
+            let complete_usage = match self.record_provider_usage(
                 turn_id,
                 turn_res.usage,
                 model_ms,
                 usd_attempt.projected_at_unix_secs(),
                 stream_timing,
-            )?;
-            self.emit_plantcore_turn_usage(turn_id)?;
+            ) {
+                Ok(usage) => usage,
+                Err(error) => {
+                    self.abort_early_pure_tools(turn_id, &mut pure).await?;
+                    return Err(error);
+                }
+            };
+            if let Err(error) = self.emit_plantcore_turn_usage(turn_id) {
+                self.abort_early_pure_tools(turn_id, &mut pure).await?;
+                return Err(error);
+            }
             if let Some(usage) = complete_usage {
                 usd_attempt.complete();
                 self.lifecycle_event(
@@ -4841,7 +5021,12 @@ impl Agent {
                 role: Role::Assistant,
                 content: turn_res.blocks.clone(),
             };
-            self.commit_message(turn_id, messages, assistant)?;
+            if (!stream_recovered || !assistant.content.is_empty())
+                && let Err(error) = self.commit_message(turn_id, messages, assistant)
+            {
+                self.abort_early_pure_tools(turn_id, &mut pure).await?;
+                return Err(error);
+            }
 
             // Recording scenarios may hold this durable post-Provider boundary until their driver
             // observes the Control command. No tool from this response has been dispatched yet.
@@ -5111,18 +5296,29 @@ impl Agent {
                         // A provider pause is a valid, resumable terminal. Append a user-role
                         // continuation so the next request remains portable across adapters and
                         // the ordinary max-turn/wall/USD ceilings still bound repeated pauses.
-                        let continuation = Message::user_text(
-                            "The provider paused the previous turn. Continue from the exact stopping point without repeating completed work.",
-                        );
+                        let continuation = Message::user_text(if stream_recovered {
+                            "The connection interrupted the previous response. Continue from the stopping point without repeating completed work. Re-emit only tool calls whose arguments were incomplete."
+                        } else {
+                            "The provider paused the previous turn. Continue from the exact stopping point without repeating completed work."
+                        });
                         self.emit(
                             turn_id,
                             EventKind::Notice {
-                                text: "provider paused the turn; requesting a bounded continuation"
-                                    .into(),
+                                text: if stream_recovered {
+                                    "provider stream recovery; requesting a bounded continuation"
+                                } else {
+                                    "provider paused the turn; requesting a bounded continuation"
+                                }
+                                .into(),
                             },
                         );
                         self.ui(UiEvent::Notice(
-                            "provider paused the turn; continuing".into(),
+                            if stream_recovered {
+                                "provider disconnected; reconnecting"
+                            } else {
+                                "provider paused the turn; continuing"
+                            }
+                            .into(),
                         ));
                         self.commit_message(turn_id, messages, continuation)?;
                         self.advance_turn().await?;
@@ -5347,11 +5543,21 @@ impl Agent {
 
             let mut results: Vec<Option<ToolResult>> = (0..total_tools).map(|_| None).collect();
             let mut any_error = false;
+            // Replayed recovery results bypass both concurrent and ordered executors.
+            deferred.retain(|(index, _, _)| !replayed_tool_results.contains_key(index));
+            for (index, result) in replayed_tool_results {
+                any_error |= result.is_error;
+                self.ui(tool_end_ui(&returned_tools[index], &result));
+                results[index] = Some(result);
+            }
             let mut completed_pure = Vec::new();
+            let mut early_unknown_count = 0;
 
-            // Pure tools: await their already-running handles. Time from dispatch to stream end
+            // Streaming tools: await their already-running handles. Time from dispatch to stream end
             // is the overlap we won (they ran during the decode tail).
-            for (idx, tu, mut handle, dispatched_at, hook_effect_tickets) in pure {
+            for (idx, tu, mut handle, dispatched_at, mut hook_effect_tickets) in pure {
+                let effect_ticket = hook_effect_tickets.tool.take();
+                let was_effecting = effect_ticket.is_some();
                 let since_dispatch = dispatched_at.duration_since(stream_start);
                 let overlap_ms = stream_elapsed.saturating_sub(since_dispatch).as_millis() as u64;
                 let joined = match self.run_time_remaining() {
@@ -5381,6 +5587,8 @@ impl Agent {
                         mut managed,
                         spill_store,
                         hook,
+                        effect_unknown,
+                        operator_interrupted,
                     })) => {
                         if let Some(hook) = hook {
                             self.observe_early_pure_hook(turn_id, hook, false);
@@ -5397,16 +5605,40 @@ impl Agent {
                                 managed.result.content.len(),
                             );
                         }
-                        let ticket =
-                            self.open_tool_call_effect(turn_id, idx, &tu, Capability::ReadOnly)?;
+                        let ticket = match effect_ticket {
+                            Some(ticket) => ticket,
+                            None => {
+                                self.open_tool_call_effect(turn_id, idx, &tu, Capability::ReadOnly)?
+                            }
+                        };
                         let r = &managed.result;
-                        self.commit_admitted_tool_result(
-                            ticket,
-                            &tu.name,
-                            r,
-                            overlap_ms.min(r.latency_ms),
-                        )?;
-                        any_error |= r.is_error;
+                        if effect_unknown {
+                            let cause = if operator_interrupted {
+                                durability::UnknownCause::OperatorCancelled
+                            } else {
+                                durability::UnknownCause::Unobserved
+                            };
+                            self.settle_kernel_effect_with_cause(ticket, effects::Settlement::Unknown(
+                                "streaming tool did not report an authoritative terminal; automatic retry is forbidden".into(),
+                            ), cause)?;
+                            self.ledger
+                                .tool(r.latency_ms, overlap_ms.min(r.latency_ms), true);
+                            early_unknown_count += 1;
+                        } else {
+                            self.commit_admitted_tool_result(
+                                ticket,
+                                &tu.name,
+                                r,
+                                overlap_ms.min(r.latency_ms),
+                            )?;
+                            if was_effecting && r.is_error {
+                                self.failed_actions.insert(
+                                    format!("{}::{}", tu.name, tu.input),
+                                    r.content.clone(),
+                                );
+                            }
+                        }
+                        any_error |= r.is_error || effect_unknown;
                         if managed.spilled {
                             // Pure-tool memoization happens inside the registry, before this owner
                             // sees the result. Invalidate it so the raw oversized value is not kept
@@ -5427,7 +5659,11 @@ impl Agent {
                             trust: Trust::Workspace,
                             latency_ms: 0,
                         };
-                        self.commit_refused_tool_result(turn_id, &tu.name, &result)?;
+                        if let Some(ticket) = effect_ticket {
+                            self.commit_admitted_tool_result(ticket, &tu.name, &result, 0)?;
+                        } else {
+                            self.commit_refused_tool_result(turn_id, &tu.name, &result)?;
+                        }
                         self.ui(tool_end_ui(&tu, &result));
                         results[idx] = Some(result);
                         any_error = true;
@@ -5443,7 +5679,19 @@ impl Agent {
                             trust: Trust::Workspace,
                             latency_ms: 0,
                         };
-                        self.commit_refused_tool_result(turn_id, &tu.name, &r)?;
+                        if let Some(ticket) = effect_ticket {
+                            self.settle_kernel_effect(
+                                ticket,
+                                effects::Settlement::Unknown(
+                                    "streaming tool task was lost before an authoritative terminal"
+                                        .into(),
+                                ),
+                            )?;
+                            self.ledger.tool(0, 0, true);
+                            early_unknown_count += 1;
+                        } else {
+                            self.commit_refused_tool_result(turn_id, &tu.name, &r)?;
+                        }
                         if hook_gates_reads {
                             self.lifecycle_event(
                                 "hook.failed",
@@ -5461,6 +5709,9 @@ impl Agent {
                     }
                 }
             }
+
+            self.ledger
+                .tool_inline_overflow(queued_pure.load(std::sync::atomic::Ordering::Relaxed));
 
             // A read may finish while the provider is still streaming, but its observational
             // PostToolUse hook remains ordered after the durable tool terminal. Run independent
@@ -5481,6 +5732,14 @@ impl Agent {
                 results[idx] = Some(managed.result);
             }
             pure_post_result?;
+            if early_unknown_count > 0 {
+                if let Some(outcome) = self.collect_and_finish_requested_control(turn_id).await? {
+                    return Ok(outcome);
+                }
+                return Err(KernelError::UnknownEffects {
+                    count: early_unknown_count,
+                });
+            }
 
             // Effecting tools: gated by capability, run in order, AFTER message_stop.
             //
@@ -6386,6 +6645,14 @@ impl Agent {
             }) {
                 self.advertised_tool_specs_cache = None;
             }
+            if stream_recovered {
+                for (call, result) in returned_tools.iter().zip(&results) {
+                    if let Some(result) = result {
+                        recovered_tool_results
+                            .insert(call.id.clone(), (call.clone(), result.clone()));
+                    }
+                }
+            }
             let mut blocks: Vec<Block> = results
                 .into_iter()
                 .flatten()
@@ -6729,12 +6996,36 @@ impl Agent {
         turn: TurnId,
         pure: &mut Vec<PureToolInFlight>,
     ) -> Result<(), KernelError> {
-        for (_, _, handle, _, hook_effect_tickets) in pure.drain(..) {
+        // Abort all tasks first, even if settling one ticket subsequently fails.
+        for (_, _, handle, _, _) in pure.iter() {
             handle.abort();
-            let _ = handle.await;
-            self.settle_early_pure_hook_effects(turn, hook_effect_tickets, None)?;
         }
-        Ok(())
+        let mut first_error = None;
+        for (_, _, handle, _, mut hook_effect_tickets) in pure.drain(..) {
+            let _ = handle.await;
+            if let Some(ticket) = hook_effect_tickets.tool.take() {
+                match self.settle_kernel_effect(
+                    ticket,
+                    effects::Settlement::Unknown(
+                        "provider stream stopped before the streaming tool terminal was collected"
+                            .into(),
+                    ),
+                ) {
+                    Ok(()) => self.ledger.tool(0, 0, true),
+                    Err(error) => {
+                        first_error.get_or_insert(error);
+                    }
+                }
+            }
+            if let Err(error) = self.settle_early_pure_hook_effects(turn, hook_effect_tickets, None)
+            {
+                first_error.get_or_insert(error);
+            }
+        }
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 
     async fn gate_concurrent_deferred_batch(
@@ -7879,6 +8170,9 @@ impl Agent {
         // can forward and paint “answer complete · finalizing” before durability work begins.
         tokio::task::yield_now().await;
         if outcome != Outcome::Drained
+            // Ordinary coding has no implicit Git commit/checkpoint tail. Explicit verification
+            // and interrupted recovery retain their existing snapshot policy.
+            && (self.verify_command.is_some() || outcome == Outcome::Interrupted)
             && self.verification_policy.checkpoint.turn_boundary
             // A checkpoint of an unchanged tree costs a full workspace copy and produces a
             // snapshot identical to the previous one. A question-and-answer turn admitted no

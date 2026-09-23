@@ -974,7 +974,7 @@ impl Provider for Anthropic {
 
         decoder.finish()?;
 
-        result.ok_or_else(|| ProviderError::Decode("stream ended before message_stop".into()))
+        result.ok_or_else(|| ProviderError::Http("stream ended before message_stop".into()))
     }
 }
 
