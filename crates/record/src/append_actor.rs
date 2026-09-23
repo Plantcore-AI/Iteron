@@ -24,7 +24,7 @@ fn closes_session_projection(kind: &EventKind) -> bool {
         )
 }
 
-fn append_batch_limit() -> usize {
+pub(super) fn append_batch_limit() -> usize {
     iteron_tunables::param_usize(
         "record.append_actor.max_append_batch_events",
         MAX_APPEND_BATCH_EVENTS,
@@ -66,6 +66,22 @@ impl Rollout {
     /// semantic boundaries with one device flush. On any write/barrier failure the writer remains
     /// poisoned and recovery proceeds through the ordinary reopen/tail-scan path.
     pub fn append_batch(&mut self, events: &[Event]) -> Result<Vec<Seq>, RecordError> {
+        if !self.pending_observations.is_empty() {
+            let mut prefix = std::mem::take(&mut self.pending_observations);
+            self.pending_observation_bytes = 0;
+            if prefix.len().saturating_add(events.len()) > append_batch_limit() {
+                for chunk in prefix.chunks(append_batch_limit()) {
+                    self.append_batch(chunk)?;
+                }
+                return self.append_batch(events);
+            }
+            let prefix_len = prefix.len();
+            prefix.extend_from_slice(events);
+            return self
+                .append_batch(&prefix)
+                .map(|sequences| sequences.into_iter().skip(prefix_len).collect());
+        }
+
         if events.is_empty() {
             return Ok(Vec::new());
         }
@@ -265,7 +281,7 @@ impl Rollout {
             // is also a boundary: AppServer appends it during session shutdown, after `Done` and
             // after the runtime's ordinary refresh. Projection failure must not turn an
             // acknowledged authoritative append into a reported record failure.
-            let _ = self.refresh_session_cache();
+            let _ = self.refresh_session_cache_async();
         }
         Ok(prepared.into_iter().map(|append| append.seq).collect())
     }
@@ -493,6 +509,67 @@ mod tests {
     use super::*;
     use crate::replay;
     use iteron_protocol::{TenantId, TurnId};
+
+    #[test]
+    fn observations_wait_for_the_next_authoritative_barrier() {
+        let dir =
+            std::env::temp_dir().join(format!("iteron-observation-buffer-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut rollout =
+            Rollout::open(&dir, &RunId("buffer".into()), TenantId::default()).unwrap();
+        rollout
+            .queue_observation(Event {
+                seq: Seq::ZERO,
+                turn: TurnId(0),
+                kind: EventKind::Notice {
+                    text: "queued".into(),
+                },
+            })
+            .unwrap();
+        assert_eq!(std::fs::metadata(rollout.path()).unwrap().len(), 0);
+        assert_eq!(rollout.barriers_taken(), (0, 0));
+        let seq = rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(0),
+                kind: EventKind::Done {
+                    outcome: "Done".into(),
+                },
+            })
+            .unwrap();
+        assert_eq!(seq, Seq(1));
+        assert_eq!(rollout.barriers_taken(), (0, 1));
+        assert_eq!(replay(rollout.path()).unwrap().len(), 2);
+        drop(rollout);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn observation_burst_applies_bounded_backpressure_instead_of_failing() {
+        let dir = std::env::temp_dir().join(format!(
+            "iteron-observation-backpressure-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut rollout = Rollout::open(&dir, &RunId("burst".into()), TenantId::default()).unwrap();
+        for index in 0..64 {
+            rollout
+                .queue_observation(Event {
+                    seq: Seq::ZERO,
+                    turn: TurnId(0),
+                    kind: EventKind::Notice {
+                        text: format!("queued {index}"),
+                    },
+                })
+                .unwrap();
+        }
+        assert_eq!(replay(rollout.path()).unwrap().len(), 63);
+        assert_eq!(rollout.next_sequence(), Seq(64));
+        rollout.flush_observations().unwrap();
+        assert_eq!(replay(rollout.path()).unwrap().len(), 64);
+        drop(rollout);
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn adjacent_actor_tickets_share_one_ordered_durability_barrier() {

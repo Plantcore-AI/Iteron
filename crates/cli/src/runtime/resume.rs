@@ -755,18 +755,27 @@ impl Agent {
                     .into(),
             ));
         }
-        self.provider
-            .control_capabilities()
-            .validate(&effective_core.provider_governor.controls)
+        let capabilities = self.provider.control_capabilities();
+        capabilities
+            .validate(&if self.plantcore_runtime_enabled() {
+                effective_core.provider_governor.controls
+            } else {
+                capabilities
+                    .adapt_optional_cache_breakpoint(effective_core.provider_governor.controls)
+            })
             .map_err(|_| KernelError::InvalidRouteMetadata {
                 field: "provider_controls",
                 reason: "resident provider does not attest the adopted request controls",
             })?;
         for route in &self.fallback_provider_routes {
-            route
-                .provider
-                .control_capabilities()
-                .validate(&effective_core.provider_governor.controls)
+            let capabilities = route.provider.control_capabilities();
+            capabilities
+                .validate(&if self.plantcore_runtime_enabled() {
+                    effective_core.provider_governor.controls
+                } else {
+                    capabilities
+                        .adapt_optional_cache_breakpoint(effective_core.provider_governor.controls)
+                })
                 .map_err(|_| KernelError::InvalidRouteMetadata {
                     field: "provider_fallback_routes",
                     reason: "a resident fallback does not attest the adopted request controls",

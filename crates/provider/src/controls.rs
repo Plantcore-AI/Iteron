@@ -156,6 +156,23 @@ impl Default for ProviderControlCapabilities {
 }
 
 impl ProviderControlCapabilities {
+    /// Cache breakpoints are optional wire hints. A route without the requested breakpoint may
+    /// omit it, while every other configured control keeps its exact value and validation.
+    /// In particular, an explicit TTL is not erased: it can affect price and remains attested.
+    pub fn adapt_optional_cache_breakpoint(
+        &self,
+        mut controls: ProviderRequestControls,
+    ) -> ProviderRequestControls {
+        if !self
+            .cache_breakpoints
+            .contains(&controls.prompt_cache.breakpoint)
+            && self.cache_breakpoints.contains(&CacheBreakpoint::None)
+        {
+            controls.prompt_cache.breakpoint = CacheBreakpoint::None;
+        }
+        controls
+    }
+
     pub fn validate(&self, controls: &ProviderRequestControls) -> Result<(), ControlError> {
         if !self.service_tiers.contains(&controls.service_tier) {
             return Err(ControlError::UnsupportedServiceTier(controls.service_tier));

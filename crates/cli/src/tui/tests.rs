@@ -910,6 +910,146 @@ mod tests {
         let _ = std::fs::remove_dir_all(runs);
     }
 
+    fn loading_session_picker(generation: u64) -> App {
+        let mut app = App::new();
+        app.session_picker_generation = generation;
+        app.picker = Some(Picker {
+            title: "Sessions · resume here".into(),
+            items: vec![PickItem::flat(
+                "Loading sessions…",
+                "reading saved conversations",
+                false,
+                PickAction::Info,
+            )],
+            sel: 0,
+            query: String::new(),
+            saved_theme: None,
+        });
+        app
+    }
+
+    #[tokio::test]
+    async fn session_picker_rebuild_completion_replaces_loading_without_reopen() {
+        use iteron_protocol::{Event, EventKind, Message, RunId, Seq, TenantId, TurnId};
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let runs = std::env::temp_dir().join(format!(
+            "iteron-picker-rebuild-{}-{nonce}",
+            std::process::id()
+        ));
+        let run = RunId("saved-conversation".into());
+        let mut rollout = iteron_record::Rollout::open(&runs, &run, TenantId::default()).unwrap();
+        let kinds = [
+            EventKind::RunStart {
+                cwd: "/synthetic/workspace".into(),
+                model: "test-model".into(),
+                effort: iteron_protocol::Effort::Medium,
+                created_at: 1000,
+                environment: None,
+                parent_run: None,
+                forked_at: None,
+                parent_hash_at_seq: None,
+                config_digest: "cfg".into(),
+                agent_definition_tag: None,
+                max_usd: None,
+            },
+            EventKind::TurnStart,
+            EventKind::Message {
+                message: Message::user_text("Resume this saved task"),
+            },
+            EventKind::Done {
+                outcome: "Done".into(),
+            },
+        ];
+        for kind in kinds {
+            rollout
+                .append(&Event {
+                    seq: Seq::ZERO,
+                    turn: TurnId(0),
+                    kind,
+                })
+                .unwrap();
+        }
+        drop(rollout);
+        for name in [
+            "sessions.index",
+            "sessions.delta.index",
+            "sessions.delta.state",
+        ] {
+            let _ = std::fs::remove_file(runs.join(name));
+        }
+        assert!(
+            !iteron_record::page(&runs, &TenantId::default(), None, None, Some(25)).index_ready
+        );
+        let page = tokio::time::timeout(
+            Duration::from_secs(5),
+            spawn_session_page_load(runs.clone(), String::new(), 9, None, 25, true),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let mut app = loading_session_picker(9);
+        assert!(apply_session_page_result(&mut app, Ok(page)));
+        let picker = app.picker.as_ref().unwrap();
+        assert!(picker.items.iter().any(
+            |item| matches!(&item.action, PickAction::AdoptRun(id) if id == "saved-conversation")
+        ));
+        let rendered = render_text(&mut app, 110, 24);
+        assert!(rendered.contains("Resume this saved task"), "{rendered}");
+        assert!(!rendered.contains("Loading sessions"));
+        assert!(!rendered.contains("Rebuilding session index"));
+        let _ = std::fs::remove_dir_all(runs);
+    }
+
+    #[tokio::test]
+    async fn session_picker_worker_failure_replaces_loading_with_retry_action() {
+        let mut app = loading_session_picker(11);
+        let failed = tokio::spawn(async {
+            panic!("synthetic picker worker failure");
+        })
+        .await;
+        let error = failed.unwrap_err();
+        assert!(apply_session_page_result(&mut app, Err(error)));
+        let rendered = render_text(&mut app, 110, 24);
+        assert!(rendered.contains("Sessions unavailable"), "{rendered}");
+        assert!(rendered.contains("retry"), "{rendered}");
+        assert!(!rendered.contains("Loading sessions"));
+        assert!(
+            app.picker
+                .as_ref()
+                .unwrap()
+                .items
+                .iter()
+                .all(|item| !item.enabled)
+        );
+    }
+
+    #[tokio::test]
+    async fn session_picker_rebuild_failure_and_stale_result_never_leave_loading() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let runs = std::env::temp_dir().join(format!(
+            "iteron-picker-not-directory-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::write(&runs, b"not a directory").unwrap();
+        let page = spawn_session_page_load(runs.clone(), String::new(), 12, None, 25, true)
+            .await
+            .unwrap();
+        let mut app = loading_session_picker(12);
+        assert!(apply_session_page_result(&mut app, Ok(page)));
+        let rendered = render_text(&mut app, 110, 24);
+        assert!(rendered.contains("Sessions unavailable"), "{rendered}");
+        assert!(!rendered.contains("Loading sessions"));
+        let stale = load_session_page(runs.clone(), String::new(), 11, None, 25, true);
+        assert!(!apply_session_page_result(&mut app, Ok(stale)));
+        let _ = std::fs::remove_file(runs);
+    }
+
     #[test]
     fn mode_picker_hint_tracks_the_effective_code_grant() {
         let hint_for = |rules: &PermissionRules, mode: PermissionMode| {

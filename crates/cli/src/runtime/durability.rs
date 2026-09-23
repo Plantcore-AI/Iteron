@@ -93,10 +93,9 @@ impl Agent {
     }
 
     pub(super) fn emit(&mut self, turn: TurnId, kind: EventKind) {
-        // The rollout assigns the real Seq on write; the placeholder here is overwritten.
-        // A durable-append failure is NOT swallowed (code review): it sets record_failed, which
-        // the loop checks at the next turn admission and halts at a safe point (audit integrity
-        // over silent continuation).
+        // Observations enter a bounded buffer without claiming a durable sequence. The next
+        // authoritative append flushes that prefix; either admission or flush failure latches
+        // record_failed and stops the run at the existing safe boundary.
         let phase = match &kind {
             EventKind::Phase { phase } => Some(*phase),
             _ => None,
@@ -114,14 +113,31 @@ impl Agent {
             kind,
         };
         let fsync_started = Instant::now();
-        let appended = self.rollout.append(&event);
-        self.ledger
-            .record_fsync_latency_us(elapsed_us(fsync_started));
+        let buffered = matches!(
+            &event.kind,
+            EventKind::Phase { .. }
+                | EventKind::Notice { .. }
+                | EventKind::Text { .. }
+                | EventKind::Thinking { .. }
+        );
+        let mut prefix_flushed = false;
+        let appended = if buffered {
+            self.rollout.queue_observation(event).map(|flushed| {
+                prefix_flushed = flushed;
+                Seq::ZERO
+            })
+        } else {
+            self.rollout.append(&event)
+        };
+        if !buffered || prefix_flushed {
+            self.ledger
+                .record_fsync_latency_us(elapsed_us(fsync_started));
+        }
         match appended {
             Ok(_) => {
                 if let Some(phase) = phase {
-                    // The durable phase transition is the source of truth; only project it after
-                    // the append succeeds so the HUD cannot claim a rejected phase.
+                    // Project only an accepted phase; required record barriers commit the prefix
+                    // before effects or a terminal outcome are acknowledged.
                     self.ui(UiEvent::Phase(phase));
                 }
             }
@@ -263,18 +279,10 @@ impl Agent {
         }
     }
 
-    /// Refresh the rebuildable session sidecars, charged to the same meter as a durable append.
-    ///
-    /// This is not free bookkeeping: `refresh_session_cache` rewrites the per-run `.meta.json` and
-    /// `sessions.index`, and each rewrite ends in a directory fsync. Called once per turn from
-    /// `advance_turn` and once at each run boundary, it was real durability cost that no meter saw,
-    /// so `kernel_tax` under-reported what the record actually costs. Failure stays best-effort:
-    /// the cache is rebuildable and the append-only rollout is the sole authoritative result.
+    /// Enqueue rebuildable sidecars off the turn path. Read and close boundaries rendezvous with
+    /// their worker; the durable writer marker makes an interrupted publication discoverable.
     pub(super) fn refresh_session_cache_metered(&mut self) {
-        let fsync_started = Instant::now();
-        let _ = self.rollout.refresh_session_cache();
-        self.ledger
-            .record_fsync_latency_us(elapsed_us(fsync_started));
+        let _ = self.rollout.refresh_session_cache_async();
     }
 
     pub(super) fn diagnostic_record_append_failed(&self) {

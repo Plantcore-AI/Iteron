@@ -28,7 +28,7 @@ This page is generated from the argument parser, so every shipped flag and subco
 | `--machine-contract` | Print the bounded, provider-free CLI capability report as JSON and exit. |
 | `-C`, `--repo <REPO>` | The repository to work in (defaults to the current directory). Default `.`. |
 | `--model <MODEL>` | Model id (overrides config / default). |
-| `--max-turns <MAX_TURNS>` | Max turns (bounded invariant; overrides config / default of 64). |
+| `--max-turns <MAX_TURNS>` | Maximum provider turns, or `unlimited` (the default). |
 | `--max-usd <MAX_USD>` | Max spend in USD (bounded invariant; overrides config / default). |
 | `--max-tokens <MAX_TOKENS>` | Aggregate provider-token ceiling across this run and all descendants. |
 | `--max-consecutive-tool-errors <MAX_CONSECUTIVE_TOOL_ERRORS>` | Consecutive failing tool calls before the run stops as stuck (stability floor; overrides the default of 5). |

@@ -635,9 +635,9 @@ pub(super) fn apply_transcript_effect_event(
                         block::NoticeLevel::Ok,
                         format!(
                             "turn ceiling is now {} ({} used, {} left this session)",
-                            state.max_turns,
+                            crate::config::turn_limit_label(state.max_turns),
                             state.used,
-                            state.remaining()
+                            crate::config::turn_limit_label(state.remaining())
                         ),
                     );
                 } else {
@@ -645,14 +645,18 @@ pub(super) fn apply_transcript_effect_event(
                         "◷",
                         "turn budget",
                         vec![
-                            kv("ceiling", &state.max_turns.to_string()),
+                            kv("ceiling", &crate::config::turn_limit_label(state.max_turns)),
                             kv(
                                 "used",
                                 &format!("{} (this session, subagents included)", state.used),
                             ),
-                            kv("remaining", &state.remaining().to_string()),
+                            kv(
+                                "remaining",
+                                &crate::config::turn_limit_label(state.remaining()),
+                            ),
                             block::PanelRow::Note(
-                                "/budget <turns> raises the ceiling without restarting".into(),
+                                "/budget <turns|unlimited> changes the limit without restarting"
+                                    .into(),
                             ),
                         ],
                     );

@@ -13,14 +13,17 @@ impl Agent {
         &self,
         request: &TurnRequest,
     ) -> Result<(), KernelError> {
-        self.provider
-            .control_capabilities()
-            .validate(&request.controls)
-            .map_err(|error| {
-                KernelError::Provider(iteron_provider::ProviderError::Configuration(
-                    error.to_string(),
-                ))
-            })?;
+        let capabilities = self.provider.control_capabilities();
+        let controls = if self.plantcore_runtime_enabled() {
+            request.controls
+        } else {
+            capabilities.adapt_optional_cache_breakpoint(request.controls)
+        };
+        capabilities.validate(&controls).map_err(|error| {
+            KernelError::Provider(iteron_provider::ProviderError::Configuration(
+                error.to_string(),
+            ))
+        })?;
         if let Some(selected) = &self.selected_route
             && (self.model != selected.route.model_id || request.model != selected.route.model_id)
         {
@@ -145,7 +148,9 @@ impl Agent {
         request: &TurnRequest,
     ) -> Result<ProviderAttemptGuard, KernelError> {
         let mut governed_request = request.clone();
-        governed_request.controls = self.provider_controls;
+        governed_request.controls = self.provider_controls_for(self.provider.as_ref());
+        governed_request.cache_system = governed_request.controls.prompt_cache.breakpoint
+            != iteron_provider::CacheBreakpoint::None;
         let request = &governed_request;
         // This is the single paid-inference choke point. Public fields may have changed since
         // construction, and operator compaction/decomposition can enter without `Agent::run`, so
@@ -308,7 +313,9 @@ impl Agent {
         use_hedge: bool,
     ) -> Result<iteron_provider::TurnResult, KernelError> {
         let mut governed_request = request.clone();
-        governed_request.controls = self.provider_controls;
+        governed_request.controls = self.provider_controls_for(self.provider.as_ref());
+        governed_request.cache_system = governed_request.controls.prompt_cache.breakpoint
+            != iteron_provider::CacheBreakpoint::None;
         let class = effect_class::EffectClass::Provider;
         let mut retry_index = 0u32;
         let mut physical_attempt = 0u32;
@@ -594,6 +601,9 @@ impl Agent {
             provider = next.provider.clone();
             route_id = next.id();
             governed_request.model = next.route.model_id;
+            governed_request.controls = self.provider_controls_for(provider.as_ref());
+            governed_request.cache_system = governed_request.controls.prompt_cache.breakpoint
+                != iteron_provider::CacheBreakpoint::None;
             self.admit_followup_after_route_attempt_set(true)?;
             retry_index = 0;
             jitter = iteron_sched::backoff::Jitter::new();
@@ -651,6 +661,24 @@ pub(super) async fn execute_admitted_provider_turn(
     if deadline.saturating_duration_since(Instant::now()).is_zero() {
         return Err(iteron_provider::ProviderError::DeadlineExceeded.into());
     }
+    // This is shared by ordinary, auxiliary and hedged physical calls. A fallback/hedge can use a
+    // different adapter than the request's original route; never forward its unsupported hint or
+    // leave the legacy bit true (which some adapters interpret as an implicit rolling hint).
+    let controls = provider
+        .control_capabilities()
+        .adapt_optional_cache_breakpoint(request.controls);
+    let projected;
+    let request = if controls != request.controls {
+        projected = TurnRequest {
+            controls,
+            cache_system: controls.prompt_cache.breakpoint
+                != iteron_provider::CacheBreakpoint::None,
+            ..request.clone()
+        };
+        &projected
+    } else {
+        request
+    };
     let mut cancels = vec![
         cancellation.force_cancel.as_ref(),
         cancellation.drain.as_ref(),

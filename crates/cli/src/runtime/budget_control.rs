@@ -69,7 +69,10 @@ impl Agent {
         self.budget.validate().map_err(KernelError::InvalidBudget)?;
         self.synchronize_usd_budget()?;
         self.close_usd_budget_on_unknown_cost();
-        if self.ledger.provider_attempts >= self.budget.max_turns {
+        if self
+            .budget
+            .turn_limit_reached(self.ledger.provider_attempts)
+        {
             Ok(Some("max_turns"))
         } else if self.token_budget_exhausted() {
             Ok(Some("max_tokens"))
@@ -83,9 +86,7 @@ impl Agent {
     }
 
     pub(super) fn remaining_inference_turns(&self) -> u32 {
-        self.budget
-            .max_turns
-            .saturating_sub(self.ledger.provider_attempts)
+        self.budget.remaining_turns(self.ledger.provider_attempts)
     }
 
     /// The turn ceiling and what has already been charged against it, read as one pair so a

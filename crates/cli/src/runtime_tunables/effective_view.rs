@@ -4,9 +4,11 @@ use iteron_protocol::{
     RunGenesisFixedAuthorityBindingV2, RunGenesisFixedAuthorityIdV2, RunGenesisTunableState,
 };
 use iteron_record::TunablesCheckpoint;
+#[cfg(test)]
+use iteron_tunables::fixed_authority_value_digest_sha256;
 use iteron_tunables::{
     EvidenceProjectionId, FixedAuthorityId, ResolutionValue, RuntimeBindingSpec, RuntimeGetterId,
-    RuntimeOwnerReceipt, fixed_authority_value_digest_sha256,
+    RuntimeOwnerReceipt, fixed_authority_value_digest_sha256_at_registry,
 };
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
@@ -28,6 +30,9 @@ struct SnapshotEntryState {
 
 #[derive(Debug, Clone)]
 pub(crate) struct EffectiveTunablesView {
+    registry_id: String,
+    registry_revision: u16,
+    registry_digest_sha256: String,
     effective_digest_sha256: String,
     values: BTreeMap<String, ResolutionValue>,
     entry_states: BTreeMap<String, SnapshotEntryState>,
@@ -39,6 +44,17 @@ pub(crate) struct EffectiveTunablesView {
     fixed_consumed: RefCell<BTreeSet<String>>,
     binding_error: RefCell<Option<EffectiveViewError>>,
     enforce_bindings: bool,
+}
+
+// The only historical registry identity admitted for runtime replay. A V2 snapshot has its
+// own authenticated effective values and provenance; decoding it must not resolve new defaults.
+const R25_REGISTRY_DIGEST_SHA256: &str =
+    "fa047ac86fa33d921ac49f60507adefe6a226e2e57396be626d0008690854fa3";
+
+fn supported_checkpoint_registry(revision: u16, digest: &str) -> bool {
+    (revision == iteron_tunables::REGISTRY_REVISION
+        && digest == iteron_tunables::REGISTRY_DIGEST_SHA256)
+        || (revision == 25 && digest == R25_REGISTRY_DIGEST_SHA256)
 }
 
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
@@ -58,7 +74,7 @@ pub(crate) enum EffectiveViewError {
     Decode(String),
     #[error("immutable tunables checkpoint has no recognized named runtime profile")]
     UnknownProfile,
-    #[error("immutable tunables checkpoint does not match the exact running registry identity")]
+    #[error("immutable tunables checkpoint has an unsupported registry identity")]
     RegistryIdentityMismatch,
     #[error("effective tunable `{0}` has no canonical owner provenance")]
     ProvenanceMismatch(String),
@@ -126,6 +142,9 @@ impl EffectiveTunablesView {
     #[cfg(test)]
     pub(crate) fn from_test_values(values: BTreeMap<String, ResolutionValue>) -> Self {
         Self {
+            registry_id: iteron_tunables::REGISTRY_ID.into(),
+            registry_revision: iteron_tunables::REGISTRY_REVISION,
+            registry_digest_sha256: iteron_tunables::REGISTRY_DIGEST_SHA256.into(),
             effective_digest_sha256: "0".repeat(64),
             values,
             entry_states: BTreeMap::new(),
@@ -152,8 +171,10 @@ impl EffectiveTunablesView {
             || snapshot.registry_id != iteron_tunables::REGISTRY_ID
             || snapshot.registry_schema_version != iteron_tunables::REGISTRY_SCHEMA_VERSION
             || snapshot.family_schema_version != iteron_tunables::FAMILY_SCHEMA_VERSION
-            || snapshot.registry_revision != iteron_tunables::REGISTRY_REVISION
-            || snapshot.registry_digest_sha256 != iteron_tunables::REGISTRY_DIGEST_SHA256
+            || !supported_checkpoint_registry(
+                snapshot.registry_revision,
+                &snapshot.registry_digest_sha256,
+            )
             || snapshot
                 .entries
                 .iter()
@@ -193,6 +214,9 @@ impl EffectiveTunablesView {
             }
         }
         Ok(Self {
+            registry_id: snapshot.registry_id.clone(),
+            registry_revision: snapshot.registry_revision,
+            registry_digest_sha256: snapshot.registry_digest_sha256.clone(),
             effective_digest_sha256: snapshot.effective_digest_sha256.clone(),
             values,
             entry_states,
@@ -324,7 +348,10 @@ impl EffectiveTunablesView {
                         .values
                         .get(family.id)
                         .expect("effective fixed value presence was checked");
-                    let binding = validate_fixed_authority_binding(
+                    let binding = validate_fixed_authority_binding_at_registry(
+                        &self.registry_id,
+                        self.registry_revision,
+                        &self.registry_digest_sha256,
                         family.id,
                         authority,
                         expected,
@@ -649,7 +676,28 @@ fn default_resolver_id(resolver: iteron_tunables::DefaultResolver) -> String {
     }
 }
 
+#[cfg(test)]
 fn validate_fixed_authority_binding<'a>(
+    family: &str,
+    authority: FixedAuthorityId,
+    value: &ResolutionValue,
+    binding: Option<&'a RunGenesisFixedAuthorityBindingV2>,
+) -> Result<&'a RunGenesisFixedAuthorityBindingV2, EffectiveViewError> {
+    validate_fixed_authority_binding_at_registry(
+        iteron_tunables::REGISTRY_ID,
+        iteron_tunables::REGISTRY_REVISION,
+        iteron_tunables::REGISTRY_DIGEST_SHA256,
+        family,
+        authority,
+        value,
+        binding,
+    )
+}
+
+fn validate_fixed_authority_binding_at_registry<'a>(
+    registry_id: &str,
+    registry_revision: u16,
+    registry_digest_sha256: &str,
     family: &str,
     authority: FixedAuthorityId,
     value: &ResolutionValue,
@@ -661,8 +709,15 @@ fn validate_fixed_authority_binding<'a>(
         ));
     };
     let authority_matches = binding.authority == protocol_fixed_authority(authority);
-    let digest_matches = fixed_authority_value_digest_sha256(family, authority, value)
-        .is_ok_and(|expected| expected == binding.owner_value_digest_sha256);
+    let digest_matches = fixed_authority_value_digest_sha256_at_registry(
+        registry_id,
+        registry_revision,
+        registry_digest_sha256,
+        family,
+        authority,
+        value,
+    )
+    .is_ok_and(|expected| expected == binding.owner_value_digest_sha256);
     if !authority_matches || !digest_matches {
         return Err(EffectiveViewError::InvalidFixedAuthorityEvidence(
             family.to_owned(),
@@ -701,6 +756,52 @@ mod tests {
     use super::*;
     use iteron_protocol::{RunGenesisTunablesSnapshot, RunGenesisTunablesVersion};
     use iteron_tunables::{ProfileValue, RuntimeProfile, SourceKind};
+
+    #[test]
+    fn historical_r25_registry_and_fixed_receipt_are_admitted_exactly() {
+        assert!(supported_checkpoint_registry(
+            25,
+            R25_REGISTRY_DIGEST_SHA256
+        ));
+        assert!(!supported_checkpoint_registry(
+            25,
+            iteron_tunables::REGISTRY_DIGEST_SHA256
+        ));
+        assert!(!supported_checkpoint_registry(
+            24,
+            R25_REGISTRY_DIGEST_SHA256
+        ));
+
+        let owner = provider_discovery_owner_value();
+        let authority = FixedAuthorityId::ProviderDiscoveryBootstrap;
+        let family = "provider_discovery_account_probe_cache_policy";
+        let historical_digest = fixed_authority_value_digest_sha256_at_registry(
+            iteron_tunables::REGISTRY_ID,
+            25,
+            R25_REGISTRY_DIGEST_SHA256,
+            family,
+            authority,
+            &owner,
+        )
+        .unwrap();
+        let binding = RunGenesisFixedAuthorityBindingV2 {
+            authority: RunGenesisFixedAuthorityIdV2::ProviderDiscoveryBootstrap,
+            owner_value_digest_sha256: historical_digest,
+        };
+        validate_fixed_authority_binding_at_registry(
+            iteron_tunables::REGISTRY_ID,
+            25,
+            R25_REGISTRY_DIGEST_SHA256,
+            family,
+            authority,
+            &owner,
+            Some(&binding),
+        )
+        .expect("sealed r25 fixed receipt remains valid under its historical registry");
+        assert!(
+            validate_fixed_authority_binding(family, authority, &owner, Some(&binding),).is_err()
+        );
+    }
 
     #[test]
     fn v1_identity_is_never_misrepresented_as_runtime_values() {

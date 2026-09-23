@@ -226,6 +226,18 @@ impl AgentCatalog {
         }
     }
 
+    /// Reconstruct the r25 default worker ceiling for a candidate historical catalog. Callers
+    /// must compare the complete resulting runtime identity with the sealed r25 checkpoint before
+    /// admitting it. An explicit r25 agent limit was at most 30 and is left unchanged.
+    pub fn historical_r25_turn_candidate(mut self) -> Self {
+        for def in &mut self.defs {
+            if def.budget.max_turns == iteron_protocol::Budget::UNLIMITED_TURNS {
+                def.budget.max_turns = 30;
+            }
+        }
+        self
+    }
+
     /// Look up a definition by name (built-ins included; first match wins).
     pub fn get(&self, name: &str) -> Option<&AgentDef> {
         self.defs.iter().find(|d| d.name == name)
@@ -506,6 +518,31 @@ mod tests {
         // agent arrived, and the isolated writer is the one the workspace-boundary registry admits.
         let names: Vec<_> = cat.defs().iter().map(|def| def.name.as_str()).collect();
         assert_eq!(names, vec!["generic", crate::ISOLATED_WRITER_NAME]);
+    }
+
+    #[test]
+    fn historical_r25_candidate_matches_the_sealed_builtin_catalog() {
+        let current = AgentCatalog::builtin_only();
+        let historical = current.historical_r25_turn_candidate();
+        let identity = historical.runtime_identity();
+        assert_eq!(identity.entry_count, 2);
+        assert_eq!(identity.canonical_bytes, 179);
+        assert_eq!(
+            identity.digest_sha256,
+            "606c64675f3a9568570344e4e851cdec5c955d1fefddc81428b63726cee00665"
+        );
+        assert!(
+            historical
+                .defs()
+                .iter()
+                .all(|def| def.budget.max_turns == 30)
+        );
+        assert!(
+            historical
+                .get(crate::ISOLATED_WRITER_NAME)
+                .unwrap()
+                .is_isolated_writer()
+        );
     }
 
     #[test]

@@ -140,10 +140,10 @@ pub(super) fn handle_registered_command(
             let set = if requested.is_empty() {
                 None
             } else {
-                match requested.parse::<u32>() {
+                match crate::config::parse_turn_limit(requested) {
                     Ok(turns) => Some(turns),
                     Err(_) => {
-                        app.push(fg(Color::Red), "usage: /budget [turns]");
+                        app.push(fg(Color::Red), "usage: /budget [turns|unlimited]");
                         return;
                     }
                 }

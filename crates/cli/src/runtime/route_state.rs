@@ -256,14 +256,11 @@ impl Agent {
             self.record_model_router_abstention(turn, source, "invalid_route_metadata")?;
             return Err(error);
         }
-        // The session's request controls are resolved once, against the launch route, and are
-        // immutable afterwards; every route the session may use has to be able to put them on the
-        // wire. A route the operator picks from `/model` is not in the composed route set, so it
-        // can be the first one that cannot — say which control it is and what would let this route
-        // in, because "unattested" alone leaves the operator with nothing to do.
+        // The sealed session preference stays immutable. Optional cache breakpoints are projected
+        // onto each route; unsupported semantic, pricing and authority controls still refuse.
         provider
             .control_capabilities()
-            .validate(&self.provider_controls)
+            .validate(&self.provider_controls_for(provider.as_ref()))
             .map_err(|error| KernelError::InvalidRouteMetadata {
                 field: "provider_controls",
                 reason: unattested_control_reason(error),
@@ -332,7 +329,7 @@ impl Agent {
     ) -> Result<(), KernelError> {
         provider
             .control_capabilities()
-            .validate(&self.provider_controls)
+            .validate(&self.provider_controls_for(provider.as_ref()))
             .map_err(|error| KernelError::InvalidRouteMetadata {
                 field: "provider_controls",
                 reason: unattested_control_reason(error),

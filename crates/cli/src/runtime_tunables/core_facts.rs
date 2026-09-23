@@ -341,7 +341,7 @@ fn add_budget_values(
     literal_with_override(
         builder,
         "max_turns",
-        int(64),
+        int(iteron_protocol::Budget::UNLIMITED_TURNS.into()),
         input.budget_origins.max_turns,
         int(b.max_turns.into()),
     )?;

@@ -185,6 +185,10 @@ impl EffectiveCoreSettings {
 
         let (context_budget, context_materialization, model_context_window) =
             decode_context_policies(view)?;
+        // A default history share is a planning allocation, not a second model window.
+        // Read sealed provenance so an operator's same-valued limit stays explicit on resume.
+        let context_budget = context_budget
+            .with_elastic_transcript(view.has_default_provenance("conversation_history_budget")?);
         let task_context_budget_source =
             if view.has_default_provenance("context_window_override_reserve")? {
                 TaskContextBudgetSource::DefaultDerived

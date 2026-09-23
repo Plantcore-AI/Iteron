@@ -24,12 +24,12 @@
       "use_sites": [
         {
           "path": "crates/agents/src/catalog.rs",
-          "line": 256,
+          "line": 268,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/agents/src/catalog.rs",
-          "line": 257,
+          "line": 269,
           "evidence": "Rust path reference"
         }
       ]
@@ -58,12 +58,12 @@
       "use_sites": [
         {
           "path": "crates/agents/src/catalog.rs",
-          "line": 356,
+          "line": 368,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/agents/src/catalog.rs",
-          "line": 358,
+          "line": 370,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -103,12 +103,12 @@
         },
         {
           "path": "crates/agents/src/catalog.rs",
-          "line": 423,
+          "line": 435,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/agents/src/catalog.rs",
-          "line": 425,
+          "line": 437,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -138,7 +138,7 @@
       "use_sites": [
         {
           "path": "crates/agents/src/catalog.rs",
-          "line": 289,
+          "line": 301,
           "evidence": "param_usize runtime resolution"
         }
       ],
@@ -168,7 +168,7 @@
       "use_sites": [
         {
           "path": "crates/agents/src/catalog.rs",
-          "line": 275,
+          "line": 287,
           "evidence": "param_usize runtime resolution"
         }
       ],
@@ -195,7 +195,7 @@
       "use_sites": [
         {
           "path": "crates/agents/src/catalog.rs",
-          "line": 468,
+          "line": 480,
           "evidence": "Rust path reference"
         }
       ]
@@ -220,7 +220,7 @@
       "use_sites": [
         {
           "path": "crates/agents/src/catalog.rs",
-          "line": 315,
+          "line": 327,
           "evidence": "param_usize runtime resolution"
         }
       ],
@@ -653,12 +653,12 @@
       "use_sites": [
         {
           "path": "crates/agents/src/def.rs",
-          "line": 283,
+          "line": 286,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/agents/src/def.rs",
-          "line": 306,
+          "line": 309,
           "evidence": "Rust path reference"
         }
       ]
@@ -683,7 +683,7 @@
       "use_sites": [
         {
           "path": "crates/agents/src/def.rs",
-          "line": 291,
+          "line": 294,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -736,7 +736,7 @@
       "use_sites": [
         {
           "path": "crates/agents/src/def.rs",
-          "line": 492,
+          "line": 501,
           "evidence": "Rust path reference"
         }
       ]
@@ -765,12 +765,12 @@
       "use_sites": [
         {
           "path": "crates/agents/src/def.rs",
-          "line": 353,
+          "line": 362,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/agents/src/def.rs",
-          "line": 355,
+          "line": 364,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -800,7 +800,7 @@
       "use_sites": [
         {
           "path": "crates/agents/src/def.rs",
-          "line": 421,
+          "line": 430,
           "evidence": "param_usize runtime resolution"
         }
       ],
@@ -830,12 +830,12 @@
       "use_sites": [
         {
           "path": "crates/agents/src/def.rs",
-          "line": 345,
+          "line": 354,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/agents/src/def.rs",
-          "line": 448,
+          "line": 457,
           "evidence": "param_usize runtime resolution"
         }
       ],
@@ -865,12 +865,12 @@
       "use_sites": [
         {
           "path": "crates/agents/src/def.rs",
-          "line": 372,
+          "line": 381,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/agents/src/def.rs",
-          "line": 374,
+          "line": 383,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -900,12 +900,12 @@
       "use_sites": [
         {
           "path": "crates/agents/src/def.rs",
-          "line": 400,
+          "line": 409,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/agents/src/def.rs",
-          "line": 402,
+          "line": 411,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -935,7 +935,7 @@
       "use_sites": [
         {
           "path": "crates/agents/src/def.rs",
-          "line": 396,
+          "line": 405,
           "evidence": "param_usize runtime resolution"
         }
       ],
@@ -961,17 +961,17 @@
       "use_sites": [
         {
           "path": "crates/agents/src/def.rs",
-          "line": 231,
+          "line": 234,
           "evidence": "param_i128 runtime resolution"
         },
         {
           "path": "crates/agents/src/def.rs",
-          "line": 233,
+          "line": 236,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/agents/src/def.rs",
-          "line": 235,
+          "line": 238,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -1033,7 +1033,7 @@
       "use_sites": [
         {
           "path": "crates/agents/src/def.rs",
-          "line": 268,
+          "line": 271,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -3217,12 +3217,12 @@
         },
         {
           "path": "crates/cli/src/runtime_tunables/effective_core.rs",
-          "line": 437,
+          "line": 441,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime_tunables/effective_core.rs",
-          "line": 438,
+          "line": 442,
           "evidence": "Rust path reference"
         },
         {
@@ -3237,12 +3237,12 @@
         },
         {
           "path": "crates/cli/src/tui.rs",
-          "line": 4032,
+          "line": 3989,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/tui.rs",
-          "line": 4761,
+          "line": 4718,
           "evidence": "Rust path reference"
         },
         {
@@ -3506,7 +3506,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/config.rs",
-          "line": 1804,
+          "line": 1822,
           "evidence": "param_bool runtime resolution"
         }
       ],
@@ -3532,7 +3532,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/config.rs",
-          "line": 1403,
+          "line": 1398,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -3559,7 +3559,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/config.rs",
-          "line": 1420,
+          "line": 1415,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -3585,7 +3585,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/config.rs",
-          "line": 1407,
+          "line": 1402,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -3611,7 +3611,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/config.rs",
-          "line": 1412,
+          "line": 1407,
           "evidence": "param_bool runtime resolution"
         }
       ],
@@ -3641,32 +3641,32 @@
       "use_sites": [
         {
           "path": "crates/cli/src/config.rs",
-          "line": 1577,
+          "line": 1572,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/config.rs",
-          "line": 1582,
+          "line": 1577,
           "evidence": "param_integer runtime resolution in macro"
         },
         {
           "path": "crates/cli/src/config.rs",
-          "line": 1586,
+          "line": 1581,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/config.rs",
-          "line": 1589,
+          "line": 1584,
+          "evidence": "param_integer runtime resolution"
+        },
+        {
+          "path": "crates/cli/src/config.rs",
+          "line": 1588,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/config.rs",
           "line": 1593,
-          "evidence": "param_integer runtime resolution"
-        },
-        {
-          "path": "crates/cli/src/config.rs",
-          "line": 1598,
           "evidence": "param_integer runtime resolution in macro"
         }
       ],
@@ -4201,7 +4201,7 @@
         },
         {
           "path": "crates/cli/src/config.rs",
-          "line": 1536,
+          "line": 1531,
           "evidence": "Rust path reference"
         },
         {
@@ -4267,12 +4267,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/config.rs",
-          "line": 1330,
+          "line": 1325,
           "evidence": "macro token reference"
         },
         {
           "path": "crates/cli/src/config.rs",
-          "line": 1373,
+          "line": 1368,
           "evidence": "Rust path reference"
         }
       ]
@@ -4297,7 +4297,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/config.rs",
-          "line": 1488,
+          "line": 1483,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -4705,7 +4705,7 @@
         },
         {
           "path": "crates/cli/src/runtime_tunables/provider_process_facts.rs",
-          "line": 321,
+          "line": 325,
           "evidence": "Rust path reference"
         }
       ]
@@ -6389,12 +6389,12 @@
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 4032,
+          "line": 4047,
           "evidence": "param_str runtime resolution"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 4245,
+          "line": 4260,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -6461,7 +6461,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3899,
+          "line": 3914,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -6543,7 +6543,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3888,
+          "line": 3903,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -6647,7 +6647,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3901,
+          "line": 3916,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -6699,7 +6699,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/main.rs",
-          "line": 4151,
+          "line": 4166,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -6730,12 +6730,12 @@
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 4293,
+          "line": 4308,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 4698,
+          "line": 4718,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -7450,27 +7450,27 @@
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3395,
+          "line": 3410,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 3524,
+          "line": 3539,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 4065,
+          "line": 4080,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 4095,
+          "line": 4110,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 4131,
+          "line": 4146,
           "evidence": "Rust path reference"
         },
         {
@@ -10690,7 +10690,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 3375,
+          "line": 3431,
           "evidence": "param_bool runtime resolution"
         }
       ],
@@ -10746,7 +10746,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/context_runtime.rs",
-          "line": 465,
+          "line": 447,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -10772,7 +10772,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/context_runtime.rs",
-          "line": 472,
+          "line": 454,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -10835,7 +10835,7 @@
         },
         {
           "path": "crates/cli/src/runtime/context_runtime.rs",
-          "line": 363,
+          "line": 1271,
           "evidence": "Rust path reference"
         }
       ]
@@ -10994,7 +10994,7 @@
         },
         {
           "path": "crates/cli/src/runtime_tunables/execution_policy.rs",
-          "line": 313,
+          "line": 317,
           "evidence": "Rust path reference"
         }
       ]
@@ -11306,12 +11306,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/durability.rs",
-          "line": 833,
+          "line": 841,
           "evidence": "macro token reference"
         },
         {
           "path": "crates/cli/src/runtime/durability.rs",
-          "line": 834,
+          "line": 842,
           "evidence": "macro token reference"
         }
       ]
@@ -11340,7 +11340,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 1231,
+          "line": 1240,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -11406,7 +11406,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 292,
+          "line": 301,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -12184,7 +12184,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/context_runtime.rs",
-          "line": 644,
+          "line": 626,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -12210,7 +12210,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/context_runtime.rs",
-          "line": 628,
+          "line": 610,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -12237,7 +12237,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 8143,
+          "line": 8490,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -12263,7 +12263,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 4830,
+          "line": 5063,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -12290,7 +12290,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 1176,
+          "line": 1185,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -12317,7 +12317,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 358,
+          "line": 367,
           "evidence": "production declaration"
         }
       ]
@@ -12346,12 +12346,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 3864,
+          "line": 3926,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/cli/src/runtime/durability.rs",
-          "line": 1010,
+          "line": 1018,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -13223,7 +13223,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/provider_route.rs",
-          "line": 188,
+          "line": 193,
           "evidence": "param_integer runtime resolution"
         },
         {
@@ -13368,7 +13368,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 1794,
+          "line": 1847,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -13524,17 +13524,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/context_runtime.rs",
-          "line": 1096,
+          "line": 1078,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime/context_runtime.rs",
-          "line": 1115,
+          "line": 1097,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime/context_runtime.rs",
-          "line": 1129,
+          "line": 1111,
           "evidence": "Rust path reference"
         }
       ]
@@ -13586,17 +13586,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/context_runtime.rs",
-          "line": 1143,
+          "line": 1125,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime/context_runtime.rs",
-          "line": 1152,
+          "line": 1134,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime/context_runtime.rs",
-          "line": 1166,
+          "line": 1148,
           "evidence": "Rust path reference"
         }
       ]
@@ -13622,22 +13622,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/route_state.rs",
-          "line": 426,
+          "line": 439,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime/route_state.rs",
-          "line": 433,
-          "evidence": "Rust path reference"
-        },
-        {
-          "path": "crates/cli/src/runtime/route_state.rs",
-          "line": 450,
-          "evidence": "Rust path reference"
-        },
-        {
-          "path": "crates/cli/src/runtime/route_state.rs",
-          "line": 453,
+          "line": 446,
           "evidence": "Rust path reference"
         },
         {
@@ -13647,17 +13637,27 @@
         },
         {
           "path": "crates/cli/src/runtime/route_state.rs",
-          "line": 470,
+          "line": 466,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime/route_state.rs",
-          "line": 488,
+          "line": 476,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime/route_state.rs",
-          "line": 494,
+          "line": 483,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/cli/src/runtime/route_state.rs",
+          "line": 501,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/cli/src/runtime/route_state.rs",
+          "line": 507,
           "evidence": "Rust path reference"
         },
         {
@@ -13739,17 +13739,17 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 4104,
+          "line": 4166,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 4124,
+          "line": 4186,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 4136,
+          "line": 4198,
           "evidence": "Rust path reference"
         },
         {
@@ -14251,12 +14251,12 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/provider_route.rs",
-          "line": 616,
+          "line": 626,
           "evidence": "param_duration runtime resolution"
         },
         {
           "path": "crates/cli/src/runtime/provider_route.rs",
-          "line": 669,
+          "line": 697,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -14314,7 +14314,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/provider_route.rs",
-          "line": 184,
+          "line": 189,
           "evidence": "Rust path reference"
         }
       ]
@@ -14396,7 +14396,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/route_state.rs",
-          "line": 273,
+          "line": 286,
           "evidence": "param_bool runtime resolution"
         }
       ],
@@ -14423,22 +14423,22 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/route_state.rs",
-          "line": 428,
+          "line": 441,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime/route_state.rs",
-          "line": 456,
+          "line": 469,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime/route_state.rs",
-          "line": 465,
+          "line": 478,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/runtime/route_state.rs",
-          "line": 490,
+          "line": 503,
           "evidence": "Rust path reference"
         }
       ]
@@ -14503,7 +14503,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 299,
+          "line": 308,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -14977,6 +14977,37 @@
       "behavior_oracle": "installed profile id cli.runtime.turn_activity.max_pending_activity_terminals is resolved at every listed production helper call"
     },
     {
+      "id": "cli.runtime.turn_maintenance.worker",
+      "module": "scheduler_parallelism",
+      "class": "structural",
+      "type": "object",
+      "rust_type": "OnceLock<Option<mpsc::SyncSender<Work>>>",
+      "default": "OnceLock::new()",
+      "krate": "cli",
+      "decl": "crates/cli/src/runtime/turn_maintenance.rs",
+      "applied": false,
+      "candidate_kind": "static",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "runtime_state_not_a_value",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/runtime/turn_maintenance.rs",
+        "symbol": "enqueue::WORKER"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/runtime/turn_maintenance.rs",
+          "line": 11,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/cli/src/tui/terminal_input/windows_query.rs",
+          "line": 210,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
       "id": "cli.runtime.ui_projection_truncated_when_unmarked",
       "module": "scheduler_parallelism",
       "class": "searchable",
@@ -14996,7 +15027,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 5771,
+          "line": 6083,
           "evidence": "param_bool runtime resolution"
         }
       ],
@@ -15053,7 +15084,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 8278,
+          "line": 8625,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -15107,7 +15138,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime.rs",
-          "line": 8164,
+          "line": 8511,
           "evidence": "Rust path reference"
         },
         {
@@ -16058,7 +16089,7 @@
         },
         {
           "path": "crates/cli/src/main.rs",
-          "line": 4474,
+          "line": 4494,
           "evidence": "Rust path reference"
         },
         {
@@ -16279,7 +16310,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime_tunables/effective_core.rs",
-          "line": 889,
+          "line": 893,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -16305,7 +16336,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime_tunables/effective_core.rs",
-          "line": 882,
+          "line": 886,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -16331,7 +16362,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime_tunables/effective_core.rs",
-          "line": 1165,
+          "line": 1169,
           "evidence": "param_bool runtime resolution"
         }
       ],
@@ -16357,7 +16388,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime_tunables/effective_core.rs",
-          "line": 199,
+          "line": 203,
           "evidence": "param_bool runtime resolution"
         }
       ],
@@ -16383,11 +16414,37 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime_tunables/effective_core.rs",
-          "line": 1209,
+          "line": 1213,
           "evidence": "param_bool runtime resolution"
         }
       ],
       "behavior_oracle": "installed profile id cli.runtime_tunables.effective_core.summary_coverage_check_default_enabled is resolved at every listed production helper call"
+    },
+    {
+      "id": "cli.runtime_tunables.effective_view.r25_registry_digest_sha256",
+      "module": "context_assembly",
+      "class": "structural",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\"fa047ac86fa33d921ac49f60507adefe6a226e2e57396be626d0008690854fa3\"",
+      "krate": "cli",
+      "decl": "crates/cli/src/runtime_tunables/effective_view.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "identity",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/runtime_tunables/effective_view.rs",
+        "symbol": "R25_REGISTRY_DIGEST_SHA256"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/runtime_tunables/effective_view.rs",
+          "line": 57,
+          "evidence": "Rust path reference"
+        }
+      ]
     },
     {
       "id": "cli.runtime_tunables.execution_facts.known_schema_blockers",
@@ -16476,7 +16533,7 @@
         },
         {
           "path": "crates/cli/src/runtime_tunables/execution_policy.rs",
-          "line": 313,
+          "line": 317,
           "evidence": "Rust path reference"
         }
       ]
@@ -16505,7 +16562,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime_tunables/execution_policy.rs",
-          "line": 305,
+          "line": 309,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -16614,7 +16671,7 @@
         },
         {
           "path": "crates/cli/src/runtime_tunables/provider_process_facts.rs",
-          "line": 321,
+          "line": 325,
           "evidence": "Rust path reference"
         }
       ]
@@ -16779,7 +16836,7 @@
         },
         {
           "path": "crates/cli/src/runtime_tunables/provider_process_facts.rs",
-          "line": 321,
+          "line": 325,
           "evidence": "Rust path reference"
         }
       ]
@@ -16872,7 +16929,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/resume.rs",
-          "line": 1170,
+          "line": 1179,
           "evidence": "Rust path reference"
         },
         {
@@ -17463,7 +17520,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui.rs",
-          "line": 3715,
+          "line": 3672,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -17620,7 +17677,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui.rs",
-          "line": 2879,
+          "line": 2836,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -17920,7 +17977,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui.rs",
-          "line": 2266,
+          "line": 2223,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -17947,7 +18004,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui.rs",
-          "line": 2301,
+          "line": 2258,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -18176,7 +18233,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui.rs",
-          "line": 2462,
+          "line": 2419,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -18203,7 +18260,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui.rs",
-          "line": 2271,
+          "line": 2228,
           "evidence": "param_duration runtime resolution"
         }
       ],
@@ -19849,7 +19906,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui.rs",
-          "line": 5075,
+          "line": 5032,
           "evidence": "Rust path reference"
         }
       ]
@@ -19875,7 +19932,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui.rs",
-          "line": 4203,
+          "line": 4160,
           "evidence": "Rust path reference"
         }
       ]
@@ -19931,7 +19988,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui.rs",
-          "line": 3512,
+          "line": 3469,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -20078,7 +20135,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui.rs",
-          "line": 3865,
+          "line": 3822,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -20637,7 +20694,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui.rs",
-          "line": 3494,
+          "line": 3451,
           "evidence": "param_str runtime resolution in macro"
         }
       ],
@@ -20960,7 +21017,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui/session_picker.rs",
-          "line": 161,
+          "line": 176,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -20970,8 +21027,8 @@
       "id": "cli.tui.session_picker.session_index_rebuilds",
       "module": "session_stop",
       "class": "structural",
-      "type": "object",
-      "rust_type": "std::sync::OnceLock<\n    std::sync::Mutex<std::collections::HashSet<PathBuf>>,\n>",
+      "type": "map",
+      "rust_type": "std::sync::OnceLock<\n    std::sync::Mutex<std::collections::HashMap<PathBuf, std::sync::Arc<SessionIndexRebuild>>>,\n>",
       "default": "std::sync::OnceLock::new()",
       "krate": "cli",
       "decl": "crates/cli/src/tui/session_picker.rs",
@@ -20987,12 +21044,43 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui/session_picker.rs",
-          "line": 281,
+          "line": 284,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/cli/src/tui/session_picker.rs",
-          "line": 297,
+          "line": 319,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "cli.tui.session_picker.session_page_loads",
+      "module": "session_stop",
+      "class": "structural",
+      "type": "object",
+      "rust_type": "std::sync::atomic::AtomicUsize",
+      "default": "std::sync::atomic::AtomicUsize::new(0)",
+      "krate": "cli",
+      "decl": "crates/cli/src/tui/session_picker.rs",
+      "applied": false,
+      "candidate_kind": "static",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "runtime_state_not_a_value",
+      "owner": {
+        "krate": "cli",
+        "path": "crates/cli/src/tui/session_picker.rs",
+        "symbol": "SESSION_PAGE_LOADS"
+      },
+      "use_sites": [
+        {
+          "path": "crates/cli/src/tui/session_picker.rs",
+          "line": 23,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/cli/src/tui/session_picker.rs",
+          "line": 380,
           "evidence": "Rust path reference"
         }
       ]
@@ -21017,7 +21105,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui/session_picker.rs",
-          "line": 21,
+          "line": 36,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -21043,7 +21131,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui/session_picker.rs",
-          "line": 29,
+          "line": 44,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -21096,7 +21184,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/tui/status_command.rs",
-          "line": 223,
+          "line": 226,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -21615,6 +21703,11 @@
         "symbol": "WORKER"
       },
       "use_sites": [
+        {
+          "path": "crates/cli/src/runtime/turn_maintenance.rs",
+          "line": 11,
+          "evidence": "Rust path reference"
+        },
         {
           "path": "crates/cli/src/tui/terminal_input/windows_query.rs",
           "line": 210,
@@ -26474,7 +26567,7 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/runtime_policy.rs",
-          "line": 348,
+          "line": 394,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -26500,12 +26593,12 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/runtime_policy.rs",
-          "line": 54,
+          "line": 58,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/ctx/src/runtime_policy.rs",
-          "line": 56,
+          "line": 60,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -26531,17 +26624,17 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/runtime_policy.rs",
-          "line": 61,
+          "line": 65,
           "evidence": "param_i128 runtime resolution"
         },
         {
           "path": "crates/ctx/src/runtime_policy.rs",
-          "line": 63,
+          "line": 67,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/ctx/src/runtime_policy.rs",
-          "line": 68,
+          "line": 72,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -26567,17 +26660,17 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/runtime_policy.rs",
-          "line": 72,
+          "line": 76,
           "evidence": "param_i128 runtime resolution"
         },
         {
           "path": "crates/ctx/src/runtime_policy.rs",
-          "line": 74,
+          "line": 78,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/ctx/src/runtime_policy.rs",
-          "line": 79,
+          "line": 83,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -26603,7 +26696,7 @@
       "use_sites": [
         {
           "path": "crates/ctx/src/runtime_policy.rs",
-          "line": 325,
+          "line": 371,
           "evidence": "param_usize runtime resolution"
         }
       ],
@@ -46735,7 +46828,7 @@
       "use_sites": [
         {
           "path": "crates/record/src/lib.rs",
-          "line": 551,
+          "line": 552,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -46800,7 +46893,7 @@
       "use_sites": [
         {
           "path": "crates/record/src/lib.rs",
-          "line": 547,
+          "line": 548,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -47276,6 +47369,47 @@
         {
           "path": "crates/protocol/src/capability_set.rs",
           "line": 98,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "protocol.lib.unlimited_turns",
+      "module": "budget_allocation",
+      "class": "structural",
+      "type": "integer",
+      "rust_type": "u32",
+      "default": "u32::MAX",
+      "krate": "protocol",
+      "decl": "crates/protocol/src/lib.rs",
+      "applied": false,
+      "candidate_kind": "associated_const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "wire_compatibility",
+      "owner": {
+        "krate": "protocol",
+        "path": "crates/protocol/src/lib.rs",
+        "symbol": "Budget::UNLIMITED_TURNS"
+      },
+      "use_sites": [
+        {
+          "path": "crates/protocol/src/lib.rs",
+          "line": 510,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/protocol/src/lib.rs",
+          "line": 526,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/protocol/src/lib.rs",
+          "line": 530,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/protocol/src/lib.rs",
+          "line": 531,
           "evidence": "Rust path reference"
         }
       ]
@@ -56343,7 +56477,7 @@
         },
         {
           "path": "crates/record/src/lib.rs",
-          "line": 48,
+          "line": 49,
           "evidence": "Rust path reference"
         }
       ]
@@ -56374,7 +56508,7 @@
         },
         {
           "path": "crates/record/src/lib.rs",
-          "line": 43,
+          "line": 44,
           "evidence": "Rust path reference"
         }
       ]
@@ -56405,7 +56539,7 @@
         },
         {
           "path": "crates/record/src/lib.rs",
-          "line": 45,
+          "line": 46,
           "evidence": "Rust path reference"
         }
       ]
@@ -56434,17 +56568,17 @@
       "use_sites": [
         {
           "path": "crates/record/src/lib.rs",
-          "line": 727,
+          "line": 728,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/record/src/lib.rs",
-          "line": 731,
+          "line": 732,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/record/src/lib.rs",
-          "line": 770,
+          "line": 771,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -56474,32 +56608,32 @@
       "use_sites": [
         {
           "path": "crates/record/src/append_actor.rs",
-          "line": 170,
+          "line": 186,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/record/src/lib.rs",
-          "line": 742,
+          "line": 743,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/record/src/lib.rs",
-          "line": 745,
+          "line": 746,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/record/src/lib.rs",
-          "line": 757,
+          "line": 758,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/record/src/lib.rs",
-          "line": 797,
+          "line": 798,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/record/src/lib.rs",
-          "line": 1563,
+          "line": 1591,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -56529,32 +56663,32 @@
       "use_sites": [
         {
           "path": "crates/record/src/append_actor.rs",
-          "line": 101,
+          "line": 117,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/record/src/lib.rs",
-          "line": 838,
+          "line": 839,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/record/src/lib.rs",
-          "line": 844,
+          "line": 845,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/record/src/lib.rs",
-          "line": 1422,
+          "line": 1433,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/record/src/lib.rs",
-          "line": 1428,
+          "line": 1439,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/record/src/lib.rs",
-          "line": 1491,
+          "line": 1519,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -56584,32 +56718,32 @@
       "use_sites": [
         {
           "path": "crates/record/src/append_actor.rs",
-          "line": 102,
+          "line": 118,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/record/src/lib.rs",
-          "line": 820,
+          "line": 821,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/record/src/lib.rs",
-          "line": 826,
+          "line": 827,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/record/src/lib.rs",
-          "line": 1401,
+          "line": 1412,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/record/src/lib.rs",
-          "line": 1407,
+          "line": 1418,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/record/src/lib.rs",
-          "line": 1495,
+          "line": 1523,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -56639,7 +56773,7 @@
       "use_sites": [
         {
           "path": "crates/record/src/lib.rs",
-          "line": 462,
+          "line": 463,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -56665,22 +56799,22 @@
       "use_sites": [
         {
           "path": "crates/record/src/lib.rs",
-          "line": 1061,
+          "line": 1065,
           "evidence": "param_str runtime resolution"
         },
         {
           "path": "crates/record/src/lib.rs",
-          "line": 1386,
+          "line": 1397,
           "evidence": "param_str runtime resolution"
         },
         {
           "path": "crates/record/src/lib.rs",
-          "line": 1672,
+          "line": 1763,
           "evidence": "param_str runtime resolution"
         },
         {
           "path": "crates/record/src/lib.rs",
-          "line": 1730,
+          "line": 1821,
           "evidence": "param_str runtime resolution"
         }
       ],
@@ -57000,12 +57134,12 @@
       "use_sites": [
         {
           "path": "crates/record/src/session.rs",
-          "line": 1863,
+          "line": 1890,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/record/src/session.rs",
-          "line": 1881,
+          "line": 1908,
           "evidence": "Rust path reference"
         }
       ]
@@ -57030,7 +57164,7 @@
       "use_sites": [
         {
           "path": "crates/record/src/session.rs",
-          "line": 1936,
+          "line": 1963,
           "evidence": "param_u64 runtime resolution"
         }
       ],
@@ -57056,7 +57190,7 @@
       "use_sites": [
         {
           "path": "crates/record/src/session.rs",
-          "line": 1928,
+          "line": 1955,
           "evidence": "param_u64 runtime resolution"
         }
       ],
@@ -57082,7 +57216,7 @@
       "use_sites": [
         {
           "path": "crates/record/src/session.rs",
-          "line": 1552,
+          "line": 1578,
           "evidence": "param_usize runtime resolution"
         }
       ],
@@ -57108,7 +57242,7 @@
       "use_sites": [
         {
           "path": "crates/record/src/session.rs",
-          "line": 1219,
+          "line": 1239,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -57138,12 +57272,12 @@
       "use_sites": [
         {
           "path": "crates/record/src/session.rs",
-          "line": 1028,
+          "line": 1048,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/record/src/session.rs",
-          "line": 1033,
+          "line": 1053,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -57203,17 +57337,17 @@
       "use_sites": [
         {
           "path": "crates/record/src/session.rs",
-          "line": 897,
+          "line": 917,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/record/src/session.rs",
-          "line": 2989,
+          "line": 3067,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/record/src/session.rs",
-          "line": 3013,
+          "line": 3091,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -57243,7 +57377,7 @@
       "use_sites": [
         {
           "path": "crates/record/src/session.rs",
-          "line": 1599,
+          "line": 1625,
           "evidence": "param_usize runtime resolution"
         }
       ],
@@ -57304,7 +57438,7 @@
         },
         {
           "path": "crates/record/src/session.rs",
-          "line": 2759,
+          "line": 2837,
           "evidence": "param_f64 runtime resolution"
         }
       ],
@@ -57330,7 +57464,7 @@
       "use_sites": [
         {
           "path": "crates/record/src/session.rs",
-          "line": 1001,
+          "line": 1021,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -57356,7 +57490,7 @@
       "use_sites": [
         {
           "path": "crates/record/src/session.rs",
-          "line": 749,
+          "line": 769,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -57383,7 +57517,7 @@
       "use_sites": [
         {
           "path": "crates/record/src/session.rs",
-          "line": 2564,
+          "line": 2642,
           "evidence": "Rust path reference"
         }
       ]
@@ -57409,37 +57543,37 @@
       "use_sites": [
         {
           "path": "crates/record/src/session.rs",
-          "line": 1340,
+          "line": 1360,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/record/src/session.rs",
-          "line": 1341,
+          "line": 1361,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/record/src/session.rs",
-          "line": 1396,
+          "line": 1416,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/record/src/session.rs",
-          "line": 1932,
+          "line": 1959,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/record/src/session.rs",
-          "line": 1940,
+          "line": 1967,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/record/src/session.rs",
-          "line": 1981,
+          "line": 2008,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/record/src/session.rs",
-          "line": 1982,
+          "line": 2009,
           "evidence": "Rust path reference"
         }
       ]
@@ -57465,7 +57599,7 @@
       "use_sites": [
         {
           "path": "crates/record/src/session.rs",
-          "line": 478,
+          "line": 498,
           "evidence": "Rust path reference"
         }
       ]
@@ -57491,37 +57625,37 @@
       "use_sites": [
         {
           "path": "crates/record/src/session.rs",
-          "line": 1327,
+          "line": 1347,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/record/src/session.rs",
-          "line": 1335,
+          "line": 1355,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/record/src/session.rs",
-          "line": 1394,
+          "line": 1414,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/record/src/session.rs",
-          "line": 1904,
+          "line": 1931,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/record/src/session.rs",
-          "line": 1918,
+          "line": 1945,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/record/src/session.rs",
-          "line": 2008,
+          "line": 2035,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/record/src/session.rs",
-          "line": 2016,
+          "line": 2043,
           "evidence": "Rust path reference"
         }
       ]
@@ -57547,12 +57681,12 @@
       "use_sites": [
         {
           "path": "crates/record/src/session.rs",
-          "line": 510,
+          "line": 530,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/record/src/session.rs",
-          "line": 2021,
+          "line": 2048,
           "evidence": "Rust path reference"
         }
       ]
@@ -57578,7 +57712,7 @@
       "use_sites": [
         {
           "path": "crates/record/src/session.rs",
-          "line": 482,
+          "line": 502,
           "evidence": "Rust path reference"
         }
       ]
@@ -57604,7 +57738,7 @@
       "use_sites": [
         {
           "path": "crates/record/src/session.rs",
-          "line": 486,
+          "line": 506,
           "evidence": "Rust path reference"
         }
       ]
@@ -57630,12 +57764,12 @@
       "use_sites": [
         {
           "path": "crates/record/src/session.rs",
-          "line": 1242,
+          "line": 1262,
           "evidence": "Rust path reference"
         },
         {
           "path": "crates/record/src/session.rs",
-          "line": 1301,
+          "line": 1321,
           "evidence": "Rust path reference"
         },
         {
@@ -57665,11 +57799,109 @@
       "use_sites": [
         {
           "path": "crates/record/src/session.rs",
-          "line": 3083,
+          "line": 3161,
           "evidence": "param_bool runtime resolution"
         }
       ],
       "behavior_oracle": "installed profile id record.session.unbounded_scope_admits_line is resolved at every listed production helper call"
+    },
+    {
+      "id": "record.session_maintenance.pending_dir",
+      "module": "session_checkpoint",
+      "class": "structural",
+      "type": "text",
+      "rust_type": "&str",
+      "default": "\".session-pending\"",
+      "krate": "record",
+      "decl": "crates/record/src/session_maintenance.rs",
+      "applied": false,
+      "candidate_kind": "const",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "durability_replay",
+      "owner": {
+        "krate": "record",
+        "path": "crates/record/src/session_maintenance.rs",
+        "symbol": "PENDING_DIR"
+      },
+      "use_sites": [
+        {
+          "path": "crates/record/src/session_maintenance.rs",
+          "line": 102,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/record/src/session_maintenance.rs",
+          "line": 144,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/record/src/session_maintenance.rs",
+          "line": 186,
+          "evidence": "Rust path reference"
+        }
+      ]
+    },
+    {
+      "id": "record.session_maintenance.wait_limit",
+      "module": "session_checkpoint",
+      "class": "bounded",
+      "type": "duration",
+      "rust_type": "Duration",
+      "unit": "seconds",
+      "default": "Duration::from_secs(10)",
+      "domain": {
+        "min": 0,
+        "max": 10
+      },
+      "krate": "record",
+      "decl": "crates/record/src/session_maintenance.rs",
+      "applied": true,
+      "candidate_kind": "const",
+      "disposition": "runtime_settable",
+      "owner": {
+        "krate": "record",
+        "path": "crates/record/src/session_maintenance.rs",
+        "symbol": "WAIT_LIMIT"
+      },
+      "use_sites": [
+        {
+          "path": "crates/record/src/session_maintenance.rs",
+          "line": 62,
+          "evidence": "param_duration runtime resolution"
+        }
+      ],
+      "behavior_oracle": "installed profile id record.session_maintenance.wait_limit is resolved at every listed production helper call"
+    },
+    {
+      "id": "record.session_maintenance.worker",
+      "module": "session_checkpoint",
+      "class": "structural",
+      "type": "object",
+      "rust_type": "OnceLock<Option<mpsc::SyncSender<Command>>>",
+      "default": "OnceLock::new()",
+      "krate": "record",
+      "decl": "crates/record/src/session_maintenance.rs",
+      "applied": false,
+      "candidate_kind": "static",
+      "disposition": "invariant_read_only",
+      "invariant_reason": "durability_replay",
+      "owner": {
+        "krate": "record",
+        "path": "crates/record/src/session_maintenance.rs",
+        "symbol": "WORKER"
+      },
+      "use_sites": [
+        {
+          "path": "crates/record/src/session_maintenance.rs",
+          "line": 21,
+          "evidence": "Rust path reference"
+        },
+        {
+          "path": "crates/record/src/session_maintenance.rs",
+          "line": 57,
+          "evidence": "Rust path reference"
+        }
+      ]
     },
     {
       "id": "record.session_private_cache.content_busy_retry_attempts",
@@ -62148,7 +62380,7 @@
       "use_sites": [
         {
           "path": "crates/tools/src/lib.rs",
-          "line": 1454,
+          "line": 1558,
           "evidence": "Rust path reference"
         }
       ]
@@ -62233,7 +62465,7 @@
       "use_sites": [
         {
           "path": "crates/tools/src/lib.rs",
-          "line": 1421,
+          "line": 1525,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -67039,7 +67271,7 @@
       "class": "structural",
       "type": "text",
       "rust_type": "&str",
-      "default": "\"fa047ac86fa33d921ac49f60507adefe6a226e2e57396be626d0008690854fa3\"",
+      "default": "\"41d03740d482fe481c5425278c130b21492e75b38eae7178fd5d70e4487d76c2\"",
       "krate": "tunables",
       "decl": "crates/tunables/src/lib.rs",
       "applied": false,
@@ -67196,7 +67428,7 @@
       "class": "structural",
       "type": "integer",
       "rust_type": "u16",
-      "default": "25",
+      "default": "26",
       "krate": "tunables",
       "decl": "crates/tunables/src/lib.rs",
       "applied": false,
@@ -69530,7 +69762,7 @@
       "class": "structural",
       "type": "array",
       "rust_type": "[DefaultSpec; 85]",
-      "default": "[\n    // The admitted route owns these defaults. No single provider or model is a truthful\n    // process-wide value when discovery and operator-selected providers are both supported.\n    dynamic_observation_default!(\"selected_route.provider\"), // 1 provider\n    model_default!(\"default_model\"),                         // 2 model\n    derived_default!(\"base_url\"),                            // 3 base_url\n    literal_default!(enum_value!(\"medium\")),                 // 4 effort\n    literal_default!(integer_value!(64)),                    // 5 max_turns\n    operator_default!(\"max_usd\"),                            // 6 max_usd\n    operator_default!(\"max_tokens\"),                         // 7 max_tokens\n    literal_default!(integer_value!(3_600)),                 // 8 max_wall_secs\n    literal_default!(boolean_value!(true)),                  // 9 allow_code\n    literal_default!(enum_value!(\"acceptEdits\")),            // 10 permission_mode\n    derived_default!(\"permission_rules\"),                    // 11 permission_rules\n    literal_default!(boolean_value!(false)),                 // 12 bypass_permissions\n    derived_default_with_value!(\n        \"compaction_trigger\",\n        object_value!(\n            \"mode\" => enum_value!(\"adaptive\"),\n            \"usable_window_ratio\" => decimal_value!(82, 2),\n            \"fallback_trigger_tokens\" => integer_value!(120_000),\n            \"output_reserve_tokens\" => integer_value!(8_192),\n        )\n    ), // 13 compaction_trigger\n    operator_default!(\"verify_command\"),                     // 14 verify_command\n    literal_default!(integer_value!(500)),                   // 15 retry_backoff_base\n    literal_default!(integer_value!(30_000)),                // 16 retry_backoff_cap\n    literal_default!(integer_value!(3)),                     // 17 retry_max_attempts\n    literal_default!(list_value!()),                         // 18 egress_allow\n    model_default_with_value!(\"max_output_tokens\", integer_value!(8_192)), // 19 request_output_cap\n    derived_default!(\"effort_reasoning_map\"),                // 20 effort_reasoning_map\n    derived_default!(\"thinking_map\"),                        // 21 thinking_map\n    derived_default!(\"orchestration_map\"),                   // 22 orchestration_map\n    literal_default!(boolean_value!(true)),                  // 23 prompt_cache\n    derived_default_with_value!(\n        \"compaction_adaptive\",\n        object_value!(\n            \"usable_window_ratio\" => decimal_value!(82, 2),\n            \"keep_recent_messages\" => integer_value!(0),\n            \"output_reserve_tokens\" => integer_value!(8_192),\n        )\n    ), // 24 compaction_adaptive\n    derived_default_with_value!(\"compaction_keep_recent\", integer_value!(0)), // 25 compaction_keep_recent\n    derived_default!(\"token_estimator\"),                                      // 26 token_estimator\n    derived_default!(\"summary_profile\"),                                      // 27 summary_profile\n    derived_default!(\"compaction_failure\"), // 28 compaction_failure\n    derived_default!(\"instruction_discovery_render\"), // 29 instruction_discovery_render\n    literal_default!(boolean_value!(true)), // 30 memory_enable\n    derived_default!(\"memory_budgets\"),     // 31 memory_budgets\n    derived_default!(\"bm25\"),               // 32 bm25\n    derived_default!(\"skill_listing_budget\"), // 33 skill_listing_budget\n    derived_default_with_value!(\"max_consecutive_tool_errors\", integer_value!(5)), // 34 max_consecutive_tool_errors\n    derived_default!(\"pure_overlap\"),        // 35 pure_overlap\n    derived_default!(\"pure_concurrency\"),    // 36 pure_concurrency\n    derived_default!(\"failed_action_dedup\"), // 37 failed_action_dedup\n    derived_default!(\"pure_memo_cache\"),     // 38 pure_memo_cache\n    derived_default_with_value!(\n        \"shell_timeout_output\",\n        object_value!(\n            \"timeout_seconds\" => integer_value!(120),\n            \"stdout_max_bytes\" => integer_value!(65_536),\n            \"stderr_max_bytes\" => integer_value!(65_536),\n        )\n    ), // 39 shell_timeout_output\n    derived_default!(\"read_file_limits\"),    // 40 read_file_limits\n    derived_default!(\"list_dir_limits\"),     // 41 list_dir_limits\n    derived_default!(\"glob_limits\"),         // 42 glob_limits\n    derived_default!(\"grep_limits\"),         // 43 grep_limits\n    derived_default!(\"repo_map\"),            // 44 repo_map\n    derived_default!(\"git_limits\"),          // 45 git_limits\n    derived_default!(\"web_fetch_limits\"),    // 46 web_fetch_limits\n    derived_default!(\"web_search_cap\"),      // 47 web_search_cap\n    derived_default!(\"verifier_attempts\"),   // 48 verifier_attempts\n    derived_default!(\"verifier_feedback_tails\"), // 49 verifier_feedback_tails\n    derived_default_with_value!(\"verifier_timeout\", integer_value!(180)), // 50 verifier_timeout\n    derived_default!(\"route_topology\"),      // 51 route_topology\n    derived_default!(\"decomposition_profile\"), // 52 decomposition_profile\n    derived_default!(\"fan_breadth\"),         // 53 fan_breadth\n    derived_default!(\"admission\"),           // 54 admission\n    derived_default!(\"writer_fan_turn_split\"), // 55 writer_fan_turn_split\n    derived_default!(\"worker_min_turns\"),    // 56 worker_min_turns\n    derived_default!(\"wall_split\"),          // 57 wall_split\n    derived_default!(\"token_split\"),         // 58 token_split\n    derived_default!(\"fan_concurrency\"),     // 59 fan_concurrency\n    derived_default!(\"child_ceiling\"),       // 60 child_ceiling\n    derived_default!(\"direct_child_allocation\"), // 61 direct_child_allocation\n    derived_default!(\"subagent_effort_inheritance\"), // 62 subagent_effort_inheritance\n    derived_default!(\"report_budget\"),       // 63 report_budget\n    derived_default!(\"join_reduce\"),         // 64 join_reduce\n    derived_default!(\"workflow_aggregate\"),  // 65 workflow_aggregate\n    derived_default!(\"schema_retry_jitter\"), // 66 schema_retry_jitter\n    derived_default_with_value!(\"provider_connect_tls_timeout\", integer_value!(10)), // 67 provider_connect_tls_timeout\n    literal_default!(object_value!(\n        \"max_images\" => integer_value!(8),\n        \"per_image_raw_bytes\" => integer_value!(25_165_824),\n        \"aggregate_raw_bytes\" => integer_value!(25_165_824),\n        \"max_dimension\" => integer_value!(8_192),\n        \"max_frames\" => integer_value!(256),\n    )), // 68 multimodal_input_admission_decode_envelope\n    derived_default_with_value!(\n        \"app_server_sq_eq_backpressure\",\n        object_value!(\n            \"submission_entries\" => integer_value!(256),\n            \"submission_bytes\" => integer_value!(34_866_176),\n            \"event_entries\" => integer_value!(1_024),\n            \"cosmetic_overflow\" => enum_value!(\"coalesce\"),\n            \"authoritative_overflow\" => enum_value!(\"wait\"),\n        )\n    ), // 69 app_server_sq_eq_backpressure\n    literal_default!(object_value!(\n        \"eager_budget_milliseconds\" => integer_value!(0),\n        \"positive_ttl_seconds\" => integer_value!(900),\n        \"failure_backoff_base_seconds\" => integer_value!(60),\n        \"failure_backoff_cap_seconds\" => integer_value!(86_400),\n    )), // 70 provider_discovery_account_probe_cache_policy\n    operator_default!(\"operator_prompt_stream\"), // 71 operator_prompt_stream\n    catalog_default!(\"builtin_prompt_corpus\"),   // 72 builtin_prompt_corpus\n    catalog_default!(\"instruction_bundle\"),      // 73 instruction_bundle\n    catalog_default!(\"memory_corpus\"),           // 74 memory_corpus\n    catalog_default!(\"skill_catalog\"),           // 75 skill_catalog\n    catalog_default!(\"agent_catalog\"),           // 76 agent_catalog\n    catalog_default!(\"provider_model_capability_catalog\"), // 77 provider_model_capability_catalog\n    catalog_default!(\"mcp_topology_tool_catalog\"), // 78 mcp_topology_tool_catalog\n    catalog_default!(\"hooks_map\"),               // 79 hooks_map\n    catalog_default!(\"workflow_graph\"),          // 80 workflow_graph\n    catalog_default!(\"tool_action_space\"),       // 81 tool_action_space\n    catalog_default!(\"rate_card_catalog\"),       // 82 rate_card_catalog\n    catalog_default!(\"router_lexicons\"),         // 83 router_lexicons\n    observation_default!(\"run_boundary.environment_snapshot\"), // 84 environment_snapshot\n    catalog_default!(\"web_search_backend_catalog\"), // 85 web_search_backend_catalog\n]",
+      "default": "[\n    // The admitted route owns these defaults. No single provider or model is a truthful\n    // process-wide value when discovery and operator-selected providers are both supported.\n    dynamic_observation_default!(\"selected_route.provider\"), // 1 provider\n    model_default!(\"default_model\"),                         // 2 model\n    derived_default!(\"base_url\"),                            // 3 base_url\n    literal_default!(enum_value!(\"medium\")),                 // 4 effort\n    literal_default!(integer_value!(u32::MAX as i64)), // 5 max_turns: no finite default ceiling\n    operator_default!(\"max_usd\"),                      // 6 max_usd\n    operator_default!(\"max_tokens\"),                   // 7 max_tokens\n    literal_default!(integer_value!(3_600)),           // 8 max_wall_secs\n    literal_default!(boolean_value!(true)),            // 9 allow_code\n    literal_default!(enum_value!(\"acceptEdits\")),      // 10 permission_mode\n    derived_default!(\"permission_rules\"),              // 11 permission_rules\n    literal_default!(boolean_value!(false)),           // 12 bypass_permissions\n    derived_default_with_value!(\n        \"compaction_trigger\",\n        object_value!(\n            \"mode\" => enum_value!(\"adaptive\"),\n            \"usable_window_ratio\" => decimal_value!(82, 2),\n            \"fallback_trigger_tokens\" => integer_value!(120_000),\n            \"output_reserve_tokens\" => integer_value!(8_192),\n        )\n    ), // 13 compaction_trigger\n    operator_default!(\"verify_command\"),               // 14 verify_command\n    literal_default!(integer_value!(500)),             // 15 retry_backoff_base\n    literal_default!(integer_value!(30_000)),          // 16 retry_backoff_cap\n    literal_default!(integer_value!(3)),               // 17 retry_max_attempts\n    literal_default!(list_value!()),                   // 18 egress_allow\n    model_default_with_value!(\"max_output_tokens\", integer_value!(8_192)), // 19 request_output_cap\n    derived_default!(\"effort_reasoning_map\"),          // 20 effort_reasoning_map\n    derived_default!(\"thinking_map\"),                  // 21 thinking_map\n    derived_default!(\"orchestration_map\"),             // 22 orchestration_map\n    literal_default!(boolean_value!(true)),            // 23 prompt_cache\n    derived_default_with_value!(\n        \"compaction_adaptive\",\n        object_value!(\n            \"usable_window_ratio\" => decimal_value!(82, 2),\n            \"keep_recent_messages\" => integer_value!(0),\n            \"output_reserve_tokens\" => integer_value!(8_192),\n        )\n    ), // 24 compaction_adaptive\n    derived_default_with_value!(\"compaction_keep_recent\", integer_value!(0)), // 25 compaction_keep_recent\n    derived_default!(\"token_estimator\"),                                      // 26 token_estimator\n    derived_default!(\"summary_profile\"),                                      // 27 summary_profile\n    derived_default!(\"compaction_failure\"), // 28 compaction_failure\n    derived_default!(\"instruction_discovery_render\"), // 29 instruction_discovery_render\n    literal_default!(boolean_value!(true)), // 30 memory_enable\n    derived_default!(\"memory_budgets\"),     // 31 memory_budgets\n    derived_default!(\"bm25\"),               // 32 bm25\n    derived_default!(\"skill_listing_budget\"), // 33 skill_listing_budget\n    derived_default_with_value!(\"max_consecutive_tool_errors\", integer_value!(5)), // 34 max_consecutive_tool_errors\n    derived_default!(\"pure_overlap\"),        // 35 pure_overlap\n    derived_default!(\"pure_concurrency\"),    // 36 pure_concurrency\n    derived_default!(\"failed_action_dedup\"), // 37 failed_action_dedup\n    derived_default!(\"pure_memo_cache\"),     // 38 pure_memo_cache\n    derived_default_with_value!(\n        \"shell_timeout_output\",\n        object_value!(\n            \"timeout_seconds\" => integer_value!(120),\n            \"stdout_max_bytes\" => integer_value!(65_536),\n            \"stderr_max_bytes\" => integer_value!(65_536),\n        )\n    ), // 39 shell_timeout_output\n    derived_default!(\"read_file_limits\"),    // 40 read_file_limits\n    derived_default!(\"list_dir_limits\"),     // 41 list_dir_limits\n    derived_default!(\"glob_limits\"),         // 42 glob_limits\n    derived_default!(\"grep_limits\"),         // 43 grep_limits\n    derived_default!(\"repo_map\"),            // 44 repo_map\n    derived_default!(\"git_limits\"),          // 45 git_limits\n    derived_default!(\"web_fetch_limits\"),    // 46 web_fetch_limits\n    derived_default!(\"web_search_cap\"),      // 47 web_search_cap\n    derived_default!(\"verifier_attempts\"),   // 48 verifier_attempts\n    derived_default!(\"verifier_feedback_tails\"), // 49 verifier_feedback_tails\n    derived_default_with_value!(\"verifier_timeout\", integer_value!(180)), // 50 verifier_timeout\n    derived_default!(\"route_topology\"),      // 51 route_topology\n    derived_default!(\"decomposition_profile\"), // 52 decomposition_profile\n    derived_default!(\"fan_breadth\"),         // 53 fan_breadth\n    derived_default!(\"admission\"),           // 54 admission\n    derived_default!(\"writer_fan_turn_split\"), // 55 writer_fan_turn_split\n    derived_default!(\"worker_min_turns\"),    // 56 worker_min_turns\n    derived_default!(\"wall_split\"),          // 57 wall_split\n    derived_default!(\"token_split\"),         // 58 token_split\n    derived_default!(\"fan_concurrency\"),     // 59 fan_concurrency\n    derived_default!(\"child_ceiling\"),       // 60 child_ceiling\n    derived_default!(\"direct_child_allocation\"), // 61 direct_child_allocation\n    derived_default!(\"subagent_effort_inheritance\"), // 62 subagent_effort_inheritance\n    derived_default!(\"report_budget\"),       // 63 report_budget\n    derived_default!(\"join_reduce\"),         // 64 join_reduce\n    derived_default!(\"workflow_aggregate\"),  // 65 workflow_aggregate\n    derived_default!(\"schema_retry_jitter\"), // 66 schema_retry_jitter\n    derived_default_with_value!(\"provider_connect_tls_timeout\", integer_value!(10)), // 67 provider_connect_tls_timeout\n    literal_default!(object_value!(\n        \"max_images\" => integer_value!(8),\n        \"per_image_raw_bytes\" => integer_value!(25_165_824),\n        \"aggregate_raw_bytes\" => integer_value!(25_165_824),\n        \"max_dimension\" => integer_value!(8_192),\n        \"max_frames\" => integer_value!(256),\n    )), // 68 multimodal_input_admission_decode_envelope\n    derived_default_with_value!(\n        \"app_server_sq_eq_backpressure\",\n        object_value!(\n            \"submission_entries\" => integer_value!(256),\n            \"submission_bytes\" => integer_value!(34_866_176),\n            \"event_entries\" => integer_value!(1_024),\n            \"cosmetic_overflow\" => enum_value!(\"coalesce\"),\n            \"authoritative_overflow\" => enum_value!(\"wait\"),\n        )\n    ), // 69 app_server_sq_eq_backpressure\n    literal_default!(object_value!(\n        \"eager_budget_milliseconds\" => integer_value!(0),\n        \"positive_ttl_seconds\" => integer_value!(900),\n        \"failure_backoff_base_seconds\" => integer_value!(60),\n        \"failure_backoff_cap_seconds\" => integer_value!(86_400),\n    )), // 70 provider_discovery_account_probe_cache_policy\n    operator_default!(\"operator_prompt_stream\"), // 71 operator_prompt_stream\n    catalog_default!(\"builtin_prompt_corpus\"),   // 72 builtin_prompt_corpus\n    catalog_default!(\"instruction_bundle\"),      // 73 instruction_bundle\n    catalog_default!(\"memory_corpus\"),           // 74 memory_corpus\n    catalog_default!(\"skill_catalog\"),           // 75 skill_catalog\n    catalog_default!(\"agent_catalog\"),           // 76 agent_catalog\n    catalog_default!(\"provider_model_capability_catalog\"), // 77 provider_model_capability_catalog\n    catalog_default!(\"mcp_topology_tool_catalog\"), // 78 mcp_topology_tool_catalog\n    catalog_default!(\"hooks_map\"),               // 79 hooks_map\n    catalog_default!(\"workflow_graph\"),          // 80 workflow_graph\n    catalog_default!(\"tool_action_space\"),       // 81 tool_action_space\n    catalog_default!(\"rate_card_catalog\"),       // 82 rate_card_catalog\n    catalog_default!(\"router_lexicons\"),         // 83 router_lexicons\n    observation_default!(\"run_boundary.environment_snapshot\"), // 84 environment_snapshot\n    catalog_default!(\"web_search_backend_catalog\"), // 85 web_search_backend_catalog\n]",
       "krate": "tunables",
       "decl": "crates/tunables/src/resolution_metadata/current.rs",
       "applied": false,
@@ -70927,7 +71159,7 @@
       "class": "structural",
       "type": "array",
       "rust_type": "[ValueSchema; 30]",
-      "default": "[\n    scalar_schema!(\n        \"provider\",\n        Enum,\n        catalog_enum_domain!(\"providers\"),\n        [external_rule!(\"$\", ProviderCapability)]\n    ),\n    scalar_schema!(\n        \"model\",\n        Enum,\n        catalog_enum_domain!(\"models\"),\n        [external_rule!(\"$\", ProviderCapability)]\n    ),\n    scalar_schema!(\n        \"base_url\",\n        String,\n        text_domain!(1, 2048, Uri),\n        [external_rule!(\"$\", OperatorAuthority)]\n    ),\n    scalar_schema!(\n        \"effort\",\n        Enum,\n        finite_enum_domain!(\"low\", \"medium\", \"high\", \"xhigh\", \"max\", \"ultracode\"),\n        [external_rule!(\"$\", OperatorAuthority)]\n    ),\n    scalar_schema!(\n        \"max_turns\",\n        Count,\n        int_domain!(1, 1_000_000, \"turns\"),\n        [external_rule!(\"$\", ParentTurns)]\n    ),\n    scalar_schema!(\n        \"max_usd\",\n        Decimal,\n        decimal_domain!(0, 0, 1_000_000_000, 0, 6, \"usd\"),\n        [external_rule!(\"$\", ParentCost)]\n    ),\n    scalar_schema!(\n        \"max_tokens\",\n        Count,\n        int_domain!(1, 1_000_000_000, \"tokens\"),\n        [external_rule!(\"$\", ParentTokens)]\n    ),\n    scalar_schema!(\n        \"max_wall_secs\",\n        Duration,\n        int_domain!(1, 86_400, \"seconds\"),\n        [external_rule!(\"$\", ParentWall)]\n    ),\n    scalar_schema!(\n        \"allow_code\",\n        Bool,\n        bool_domain!(),\n        [external_rule!(\"$\", OperatorAuthority)]\n    ),\n    scalar_schema!(\n        \"permission_mode\",\n        Enum,\n        finite_enum_domain!(\"default\", \"acceptEdits\", \"plan\", \"yolo\"),\n        [external_rule!(\"$\", OperatorAuthority)]\n    ),\n    map_schema!(\n        \"permission_rules\",\n        0,\n        256,\n        text_domain!(1, 96, NamespacedId),\n        crate::FieldDomain::Scalar {\n            domain: finite_enum_domain!(\"allow\", \"ask\", \"deny\")\n        },\n        [external_rule!(\"$\", OperatorAuthority)]\n    ),\n    scalar_schema!(\n        \"bypass_permissions\",\n        Bool,\n        bool_domain!(),\n        [external_rule!(\"$\", OperatorAuthority)]\n    ),\n    object_schema!(\n        \"compaction_trigger\",\n        [\n            scalar_field!(\"mode\", true, finite_enum_domain!(\"adaptive\", \"fixed\")),\n            scalar_field!(\n                \"usable_window_ratio\",\n                true,\n                decimal_domain!(1, 2, 1, 0, 4, \"ratio\")\n            ),\n            scalar_field!(\n                \"fallback_trigger_tokens\",\n                true,\n                int_domain!(1, 2_000_000, \"tokens\")\n            ),\n            scalar_field!(\n                \"output_reserve_tokens\",\n                true,\n                int_domain!(0, 1_000_000, \"tokens\")\n            )\n        ],\n        [\n            external_rule!(\"fallback_trigger_tokens\", ContextWindow),\n            external_rule!(\"output_reserve_tokens\", ProviderCapability)\n        ]\n    ),\n    scalar_schema!(\n        \"verify_command\",\n        String,\n        text_domain!(1, 4096, Command),\n        [\n            external_rule!(\"$\", OperatorAuthority),\n            external_rule!(\"$\", VerificationFloor)\n        ]\n    ),\n    scalar_schema!(\n        \"retry_backoff_base\",\n        Duration,\n        int_domain!(1, 30_000, \"milliseconds\"),\n        [external_rule!(\"$\", ParentWall)]\n    ),\n    scalar_schema!(\n        \"retry_backoff_cap\",\n        Duration,\n        int_domain!(1, 60_000, \"milliseconds\"),\n        [external_rule!(\"$\", ParentWall)]\n    ),\n    scalar_schema!(\n        \"retry_max_attempts\",\n        Count,\n        int_domain!(1, 10, \"attempts\"),\n        [external_rule!(\"$\", RunBudget)]\n    ),\n    list_schema!(\n        \"egress_allow\",\n        0,\n        256,\n        true,\n        text_domain!(1, 253, NamespacedId),\n        [external_rule!(\"$\", OperatorAuthority)]\n    ),\n    scalar_schema!(\n        \"request_output_cap\",\n        Count,\n        int_domain!(1, 1_000_000, \"tokens\"),\n        [\n            external_rule!(\"$\", ProviderCapability),\n            external_rule!(\"$\", ParentTokens)\n        ]\n    ),\n    map_schema!(\n        \"effort_reasoning_map\",\n        6,\n        6,\n        finite_enum_domain!(\"low\", \"medium\", \"high\", \"xhigh\", \"max\", \"ultracode\"),\n        crate::FieldDomain::Scalar {\n            domain: catalog_enum_domain!(\"provider-reasoning-levels\")\n        },\n        [external_rule!(\"$\", ProviderCapability)]\n    ),\n    map_schema!(\n        \"thinking_map\",\n        6,\n        6,\n        finite_enum_domain!(\"low\", \"medium\", \"high\", \"xhigh\", \"max\", \"ultracode\"),\n        crate::FieldDomain::Scalar {\n            domain: int_domain!(0, 1_000_000, \"tokens\")\n        },\n        [\n            external_rule!(\"$\", ProviderCapability),\n            external_domain_rule!(\"$\", ParentTokens)\n        ]\n    ),\n    map_schema!(\n        \"orchestration_map\",\n        6,\n        6,\n        finite_enum_domain!(\"low\", \"medium\", \"high\", \"xhigh\", \"max\", \"ultracode\"),\n        crate::FieldDomain::Scalar {\n            domain: finite_enum_domain!(\"direct\", \"orchestrated\")\n        },\n        [external_rule!(\"$\", OperatorAuthority)]\n    ),\n    scalar_schema!(\n        \"prompt_cache\",\n        Bool,\n        bool_domain!(),\n        [external_rule!(\"$\", ProviderCapability)]\n    ),\n    object_schema!(\n        \"compaction_adaptive\",\n        [\n            scalar_field!(\n                \"usable_window_ratio\",\n                true,\n                decimal_domain!(1, 2, 1, 0, 4, \"ratio\")\n            ),\n            scalar_field!(\n                \"keep_recent_messages\",\n                true,\n                int_domain!(0, 1024, \"messages\")\n            ),\n            scalar_field!(\n                \"output_reserve_tokens\",\n                true,\n                int_domain!(0, 1_000_000, \"tokens\")\n            )\n        ],\n        [external_rule!(\"output_reserve_tokens\", ContextWindow)]\n    ),\n    scalar_schema!(\n        \"compaction_keep_recent\",\n        Count,\n        int_domain!(0, 1024, \"messages\"),\n        [external_rule!(\"$\", ContextWindow)]\n    ),\n    object_schema!(\n        \"token_estimator\",\n        [\n            scalar_field!(\"estimator\", true, catalog_enum_domain!(\"token-estimators\")),\n            scalar_field!(\n                \"safety_margin\",\n                true,\n                decimal_domain!(0, 0, 0, 0, 0, \"ratio\")\n            )\n        ],\n        []\n    ),\n    object_schema!(\n        \"summary_profile\",\n        [\n            scalar_field!(\n                \"max_output_tokens\",\n                true,\n                int_domain!(1, 1_000_000, \"tokens\")\n            ),\n            scalar_field!(\n                \"effort\",\n                true,\n                finite_enum_domain!(\"low\", \"medium\", \"high\", \"xhigh\", \"max\", \"ultracode\")\n            ),\n            scalar_field!(\"preserve_tool_evidence\", true, bool_domain!())\n        ],\n        [\n            external_rule!(\"max_output_tokens\", ParentTokens),\n            external_domain_rule!(\"effort\", ParentTokens)\n        ]\n    ),\n    scalar_schema!(\n        \"compaction_failure\",\n        Enum,\n        finite_enum_domain!(\"fail_closed\", \"retain_original\", \"truncate_bounded\"),\n        [external_domain_rule!(\"$\", ContextWindow)]\n    ),\n    object_schema!(\n        \"instruction_discovery_render\",\n        [\n            scalar_field!(\"max_depth\", true, int_domain!(0, 64, \"levels\")),\n            scalar_field!(\"max_files\", true, int_domain!(1, 1024, \"files\")),\n            scalar_field!(\"per_file_bytes\", true, int_domain!(1, 1_048_576, \"bytes\")),\n            scalar_field!(\"total_bytes\", true, int_domain!(1, 8_388_608, \"bytes\"))\n        ],\n        [\n            less_equal_rule!(\"per_file_bytes\", \"total_bytes\"),\n            external_rule!(\"total_bytes\", ToolBudget)\n        ]\n    ),\n    scalar_schema!(\n        \"memory_enable\",\n        Bool,\n        bool_domain!(),\n        [external_rule!(\"$\", TenantScope)]\n    ),\n]",
+      "default": "[\n    scalar_schema!(\n        \"provider\",\n        Enum,\n        catalog_enum_domain!(\"providers\"),\n        [external_rule!(\"$\", ProviderCapability)]\n    ),\n    scalar_schema!(\n        \"model\",\n        Enum,\n        catalog_enum_domain!(\"models\"),\n        [external_rule!(\"$\", ProviderCapability)]\n    ),\n    scalar_schema!(\n        \"base_url\",\n        String,\n        text_domain!(1, 2048, Uri),\n        [external_rule!(\"$\", OperatorAuthority)]\n    ),\n    scalar_schema!(\n        \"effort\",\n        Enum,\n        finite_enum_domain!(\"low\", \"medium\", \"high\", \"xhigh\", \"max\", \"ultracode\"),\n        [external_rule!(\"$\", OperatorAuthority)]\n    ),\n    scalar_schema!(\n        \"max_turns\",\n        Count,\n        int_domain!(1, u32::MAX as i64, \"turns\"),\n        [external_rule!(\"$\", ParentTurns)]\n    ),\n    scalar_schema!(\n        \"max_usd\",\n        Decimal,\n        decimal_domain!(0, 0, 1_000_000_000, 0, 6, \"usd\"),\n        [external_rule!(\"$\", ParentCost)]\n    ),\n    scalar_schema!(\n        \"max_tokens\",\n        Count,\n        int_domain!(1, 1_000_000_000, \"tokens\"),\n        [external_rule!(\"$\", ParentTokens)]\n    ),\n    scalar_schema!(\n        \"max_wall_secs\",\n        Duration,\n        int_domain!(1, 86_400, \"seconds\"),\n        [external_rule!(\"$\", ParentWall)]\n    ),\n    scalar_schema!(\n        \"allow_code\",\n        Bool,\n        bool_domain!(),\n        [external_rule!(\"$\", OperatorAuthority)]\n    ),\n    scalar_schema!(\n        \"permission_mode\",\n        Enum,\n        finite_enum_domain!(\"default\", \"acceptEdits\", \"plan\", \"yolo\"),\n        [external_rule!(\"$\", OperatorAuthority)]\n    ),\n    map_schema!(\n        \"permission_rules\",\n        0,\n        256,\n        text_domain!(1, 96, NamespacedId),\n        crate::FieldDomain::Scalar {\n            domain: finite_enum_domain!(\"allow\", \"ask\", \"deny\")\n        },\n        [external_rule!(\"$\", OperatorAuthority)]\n    ),\n    scalar_schema!(\n        \"bypass_permissions\",\n        Bool,\n        bool_domain!(),\n        [external_rule!(\"$\", OperatorAuthority)]\n    ),\n    object_schema!(\n        \"compaction_trigger\",\n        [\n            scalar_field!(\"mode\", true, finite_enum_domain!(\"adaptive\", \"fixed\")),\n            scalar_field!(\n                \"usable_window_ratio\",\n                true,\n                decimal_domain!(1, 2, 1, 0, 4, \"ratio\")\n            ),\n            scalar_field!(\n                \"fallback_trigger_tokens\",\n                true,\n                int_domain!(1, 2_000_000, \"tokens\")\n            ),\n            scalar_field!(\n                \"output_reserve_tokens\",\n                true,\n                int_domain!(0, 1_000_000, \"tokens\")\n            )\n        ],\n        [\n            external_rule!(\"fallback_trigger_tokens\", ContextWindow),\n            external_rule!(\"output_reserve_tokens\", ProviderCapability)\n        ]\n    ),\n    scalar_schema!(\n        \"verify_command\",\n        String,\n        text_domain!(1, 4096, Command),\n        [\n            external_rule!(\"$\", OperatorAuthority),\n            external_rule!(\"$\", VerificationFloor)\n        ]\n    ),\n    scalar_schema!(\n        \"retry_backoff_base\",\n        Duration,\n        int_domain!(1, 30_000, \"milliseconds\"),\n        [external_rule!(\"$\", ParentWall)]\n    ),\n    scalar_schema!(\n        \"retry_backoff_cap\",\n        Duration,\n        int_domain!(1, 60_000, \"milliseconds\"),\n        [external_rule!(\"$\", ParentWall)]\n    ),\n    scalar_schema!(\n        \"retry_max_attempts\",\n        Count,\n        int_domain!(1, 10, \"attempts\"),\n        [external_rule!(\"$\", RunBudget)]\n    ),\n    list_schema!(\n        \"egress_allow\",\n        0,\n        256,\n        true,\n        text_domain!(1, 253, NamespacedId),\n        [external_rule!(\"$\", OperatorAuthority)]\n    ),\n    scalar_schema!(\n        \"request_output_cap\",\n        Count,\n        int_domain!(1, 1_000_000, \"tokens\"),\n        [\n            external_rule!(\"$\", ProviderCapability),\n            external_rule!(\"$\", ParentTokens)\n        ]\n    ),\n    map_schema!(\n        \"effort_reasoning_map\",\n        6,\n        6,\n        finite_enum_domain!(\"low\", \"medium\", \"high\", \"xhigh\", \"max\", \"ultracode\"),\n        crate::FieldDomain::Scalar {\n            domain: catalog_enum_domain!(\"provider-reasoning-levels\")\n        },\n        [external_rule!(\"$\", ProviderCapability)]\n    ),\n    map_schema!(\n        \"thinking_map\",\n        6,\n        6,\n        finite_enum_domain!(\"low\", \"medium\", \"high\", \"xhigh\", \"max\", \"ultracode\"),\n        crate::FieldDomain::Scalar {\n            domain: int_domain!(0, 1_000_000, \"tokens\")\n        },\n        [\n            external_rule!(\"$\", ProviderCapability),\n            external_domain_rule!(\"$\", ParentTokens)\n        ]\n    ),\n    map_schema!(\n        \"orchestration_map\",\n        6,\n        6,\n        finite_enum_domain!(\"low\", \"medium\", \"high\", \"xhigh\", \"max\", \"ultracode\"),\n        crate::FieldDomain::Scalar {\n            domain: finite_enum_domain!(\"direct\", \"orchestrated\")\n        },\n        [external_rule!(\"$\", OperatorAuthority)]\n    ),\n    scalar_schema!(\n        \"prompt_cache\",\n        Bool,\n        bool_domain!(),\n        [external_rule!(\"$\", ProviderCapability)]\n    ),\n    object_schema!(\n        \"compaction_adaptive\",\n        [\n            scalar_field!(\n                \"usable_window_ratio\",\n                true,\n                decimal_domain!(1, 2, 1, 0, 4, \"ratio\")\n            ),\n            scalar_field!(\n                \"keep_recent_messages\",\n                true,\n                int_domain!(0, 1024, \"messages\")\n            ),\n            scalar_field!(\n                \"output_reserve_tokens\",\n                true,\n                int_domain!(0, 1_000_000, \"tokens\")\n            )\n        ],\n        [external_rule!(\"output_reserve_tokens\", ContextWindow)]\n    ),\n    scalar_schema!(\n        \"compaction_keep_recent\",\n        Count,\n        int_domain!(0, 1024, \"messages\"),\n        [external_rule!(\"$\", ContextWindow)]\n    ),\n    object_schema!(\n        \"token_estimator\",\n        [\n            scalar_field!(\"estimator\", true, catalog_enum_domain!(\"token-estimators\")),\n            scalar_field!(\n                \"safety_margin\",\n                true,\n                decimal_domain!(0, 0, 0, 0, 0, \"ratio\")\n            )\n        ],\n        []\n    ),\n    object_schema!(\n        \"summary_profile\",\n        [\n            scalar_field!(\n                \"max_output_tokens\",\n                true,\n                int_domain!(1, 1_000_000, \"tokens\")\n            ),\n            scalar_field!(\n                \"effort\",\n                true,\n                finite_enum_domain!(\"low\", \"medium\", \"high\", \"xhigh\", \"max\", \"ultracode\")\n            ),\n            scalar_field!(\"preserve_tool_evidence\", true, bool_domain!())\n        ],\n        [\n            external_rule!(\"max_output_tokens\", ParentTokens),\n            external_domain_rule!(\"effort\", ParentTokens)\n        ]\n    ),\n    scalar_schema!(\n        \"compaction_failure\",\n        Enum,\n        finite_enum_domain!(\"fail_closed\", \"retain_original\", \"truncate_bounded\"),\n        [external_domain_rule!(\"$\", ContextWindow)]\n    ),\n    object_schema!(\n        \"instruction_discovery_render\",\n        [\n            scalar_field!(\"max_depth\", true, int_domain!(0, 64, \"levels\")),\n            scalar_field!(\"max_files\", true, int_domain!(1, 1024, \"files\")),\n            scalar_field!(\"per_file_bytes\", true, int_domain!(1, 1_048_576, \"bytes\")),\n            scalar_field!(\"total_bytes\", true, int_domain!(1, 8_388_608, \"bytes\"))\n        ],\n        [\n            less_equal_rule!(\"per_file_bytes\", \"total_bytes\"),\n            external_rule!(\"total_bytes\", ToolBudget)\n        ]\n    ),\n    scalar_schema!(\n        \"memory_enable\",\n        Bool,\n        bool_domain!(),\n        [external_rule!(\"$\", TenantScope)]\n    ),\n]",
       "krate": "tunables",
       "decl": "crates/tunables/src/value_schemas/current/first.rs",
       "applied": false,
@@ -70978,7 +71210,7 @@
       "class": "structural",
       "type": "array",
       "rust_type": "[ValueSchema; 30]",
-      "default": "[\n    object_schema!(\n        \"memory_budgets\",\n        [\n            scalar_field!(\"recall_bytes\", true, int_domain!(0, 1_048_576, \"bytes\")),\n            scalar_field!(\"index_bytes\", true, int_domain!(0, 1_048_576, \"bytes\")),\n            scalar_field!(\n                \"instruction_bytes\",\n                true,\n                int_domain!(0, 1_048_576, \"bytes\")\n            ),\n            scalar_field!(\"fact_bytes\", true, int_domain!(0, 1_048_576, \"bytes\")),\n            scalar_field!(\"total_bytes\", true, int_domain!(1, 4_194_304, \"bytes\"))\n        ],\n        [\n            sum_rule!(\n                [\"recall_bytes\", \"index_bytes\", \"instruction_bytes\"],\n                \"total_bytes\"\n            ),\n            less_equal_rule!(\"fact_bytes\", \"total_bytes\"),\n            external_rule!(\"total_bytes\", ContextWindow)\n        ]\n    ),\n    map_schema!(\n        \"bm25\",\n        3,\n        3,\n        finite_enum_domain!(\"k1\", \"b\", \"recall_limit\"),\n        crate::FieldDomain::Scalar {\n            domain: decimal_domain!(0, 0, 4096, 0, 6, \"number\")\n        },\n        [\n            map_entry_domain_rule!(\"k1\", decimal_domain!(1, 3, 1000, 0, 3, \"number\")),\n            map_entry_domain_rule!(\"b\", decimal_domain!(0, 0, 1, 0, 6, \"ratio\")),\n            map_entry_domain_rule!(\"recall_limit\", decimal_domain!(1, 0, 4096, 0, 0, \"items\"))\n        ]\n    ),\n    scalar_schema!(\n        \"skill_listing_budget\",\n        Bytes,\n        int_domain!(0, 1_048_576, \"bytes\"),\n        [external_rule!(\"$\", ContextWindow)]\n    ),\n    scalar_schema!(\n        \"max_consecutive_tool_errors\",\n        Count,\n        int_domain!(1, 1024, \"errors\"),\n        [external_rule!(\"$\", RunBudget)]\n    ),\n    scalar_schema!(\n        \"pure_overlap\",\n        Bool,\n        bool_domain!(),\n        [external_domain_rule!(\"$\", ToolBudget)]\n    ),\n    scalar_schema!(\n        \"pure_concurrency\",\n        Count,\n        int_domain!(1, 1024, \"calls\"),\n        [external_rule!(\"$\", ProcessBudget)]\n    ),\n    object_schema!(\n        \"failed_action_dedup\",\n        [\n            scalar_field!(\"max_identities\", true, int_domain!(1, 65_536, \"entries\")),\n            scalar_field!(\"scope\", true, finite_enum_domain!(\"turn\", \"run\")),\n            scalar_field!(\"failed_only\", true, bool_domain!())\n        ],\n        [external_rule!(\"max_identities\", ToolBudget)]\n    ),\n    object_schema!(\n        \"pure_memo_cache\",\n        [\n            scalar_field!(\"max_entries\", true, int_domain!(0, 65_536, \"entries\")),\n            scalar_field!(\"max_key_bytes\", true, int_domain!(1, 65_536, \"bytes\")),\n            scalar_field!(\"generation_scoped\", true, bool_domain!())\n        ],\n        [external_rule!(\"max_entries\", ToolBudget)]\n    ),\n    object_schema!(\n        \"shell_timeout_output\",\n        [\n            scalar_field!(\"timeout_seconds\", true, int_domain!(1, 86_400, \"seconds\")),\n            scalar_field!(\n                \"stdout_max_bytes\",\n                true,\n                int_domain!(0, 16_777_216, \"bytes\")\n            ),\n            scalar_field!(\n                \"stderr_max_bytes\",\n                true,\n                int_domain!(0, 16_777_216, \"bytes\")\n            )\n        ],\n        [\n            external_rule!(\"timeout_seconds\", ParentWall),\n            external_rule!(\"stdout_max_bytes\", ToolBudget),\n            external_rule!(\"stderr_max_bytes\", ToolBudget)\n        ]\n    ),\n    object_schema!(\n        \"read_file_limits\",\n        [\n            scalar_field!(\n                \"source_max_bytes\",\n                true,\n                int_domain!(1, 134_217_728, \"bytes\")\n            ),\n            scalar_field!(\n                \"output_max_bytes\",\n                true,\n                int_domain!(512, 16_777_216, \"bytes\")\n            ),\n            scalar_field!(\"max_lines\", true, int_domain!(1, 1_000_000, \"lines\"))\n        ],\n        [\n            less_equal_rule!(\"output_max_bytes\", \"source_max_bytes\"),\n            external_rule!(\"output_max_bytes\", ToolBudget)\n        ]\n    ),\n    object_schema!(\n        \"list_dir_limits\",\n        [\n            scalar_field!(\"max_depth\", true, int_domain!(0, 64, \"levels\")),\n            scalar_field!(\"max_entries\", true, int_domain!(1, 100_000, \"entries\")),\n            scalar_field!(\n                \"output_max_bytes\",\n                true,\n                int_domain!(256, 16_777_216, \"bytes\")\n            )\n        ],\n        [external_rule!(\"output_max_bytes\", ToolBudget)]\n    ),\n    object_schema!(\n        \"glob_limits\",\n        [\n            scalar_field!(\"max_depth\", true, int_domain!(0, 128, \"levels\")),\n            scalar_field!(\"max_results\", true, int_domain!(1, 100_000, \"results\")),\n            scalar_field!(\n                \"output_max_bytes\",\n                true,\n                int_domain!(256, 16_777_216, \"bytes\")\n            )\n        ],\n        [external_rule!(\"output_max_bytes\", ToolBudget)]\n    ),\n    object_schema!(\n        \"grep_limits\",\n        [\n            scalar_field!(\"max_matches\", true, int_domain!(1, 1_000_000, \"matches\")),\n            scalar_field!(\n                \"snippet_max_bytes\",\n                true,\n                int_domain!(1, 1_048_576, \"bytes\")\n            ),\n            scalar_field!(\n                \"output_max_bytes\",\n                true,\n                int_domain!(1, 16_777_216, \"bytes\")\n            )\n        ],\n        [\n            less_equal_rule!(\"snippet_max_bytes\", \"output_max_bytes\"),\n            external_rule!(\"output_max_bytes\", ContextWindow)\n        ]\n    ),\n    object_schema!(\n        \"repo_map\",\n        [\n            scalar_field!(\"max_files\", true, int_domain!(1, 1_000_000, \"files\")),\n            scalar_field!(\"max_depth\", true, int_domain!(0, 128, \"levels\")),\n            scalar_field!(\"max_tokens\", true, int_domain!(1, 1_000_000, \"tokens\"))\n        ],\n        [external_rule!(\"max_tokens\", ToolBudget)]\n    ),\n    object_schema!(\n        \"git_limits\",\n        [\n            scalar_field!(\"timeout_seconds\", true, int_domain!(1, 3600, \"seconds\")),\n            scalar_field!(\n                \"output_max_bytes\",\n                true,\n                int_domain!(1, 16_777_216, \"bytes\")\n            ),\n            scalar_field!(\n                \"status_max_entries\",\n                true,\n                int_domain!(1, 100_000, \"entries\")\n            ),\n            scalar_field!(\"log_max_entries\", true, int_domain!(1, 10_000, \"entries\"))\n        ],\n        [\n            external_rule!(\"timeout_seconds\", ParentWall),\n            external_rule!(\"output_max_bytes\", ContextWindow)\n        ]\n    ),\n    object_schema!(\n        \"web_fetch_limits\",\n        [\n            scalar_field!(\n                \"body_max_bytes\",\n                true,\n                int_domain!(1_000, 16_777_216, \"bytes\")\n            ),\n            scalar_field!(\"max_redirects\", true, int_domain!(0, 32, \"redirects\")),\n            scalar_field!(\"timeout_seconds\", true, int_domain!(1, 300, \"seconds\")),\n            scalar_field!(\"max_lines\", true, int_domain!(1, 100_000, \"lines\"))\n        ],\n        [\n            external_rule!(\"body_max_bytes\", ToolBudget),\n            external_rule!(\"timeout_seconds\", ParentWall)\n        ]\n    ),\n    scalar_schema!(\n        \"web_search_cap\",\n        Count,\n        int_domain!(0, 1000, \"results\"),\n        [external_rule!(\"$\", ContextWindow)]\n    ),\n    scalar_schema!(\n        \"verifier_attempts\",\n        Count,\n        int_domain!(0, 1024, \"attempts\"),\n        [external_rule!(\"$\", RunBudget)]\n    ),\n    object_schema!(\n        \"verifier_feedback_tails\",\n        [\n            scalar_field!(\n                \"command_output_bytes\",\n                true,\n                int_domain!(0, 1_048_576, \"bytes\")\n            ),\n            scalar_field!(\n                \"oracle_output_bytes\",\n                true,\n                int_domain!(0, 1_048_576, \"bytes\")\n            ),\n            scalar_field!(\"total_bytes\", true, int_domain!(1, 2_097_152, \"bytes\"))\n        ],\n        [external_rule!(\"total_bytes\", ToolBudget)]\n    ),\n    scalar_schema!(\n        \"verifier_timeout\",\n        Duration,\n        int_domain!(1, 86_400, \"seconds\"),\n        [external_rule!(\"$\", ParentWall)]\n    ),\n    scalar_schema!(\n        \"route_topology\",\n        Enum,\n        finite_enum_domain!(\"direct\", \"orchestrated\"),\n        [external_rule!(\"$\", OperatorAuthority)]\n    ),\n    object_schema!(\n        \"decomposition_profile\",\n        [\n            scalar_field!(\"max_output_tokens\", true, int_domain!(1, 65_536, \"tokens\")),\n            scalar_field!(\n                \"effort\",\n                true,\n                finite_enum_domain!(\"low\", \"medium\", \"high\", \"xhigh\", \"max\", \"ultracode\")\n            ),\n            scalar_field!(\"thinking_tokens\", true, int_domain!(0, 1_000_000, \"tokens\"))\n        ],\n        [\n            external_rule!(\"max_output_tokens\", ParentTokens),\n            external_rule!(\"thinking_tokens\", RunBudget)\n        ]\n    ),\n    scalar_schema!(\n        \"fan_breadth\",\n        Count,\n        int_domain!(1, 1024, \"agents\"),\n        [external_rule!(\"$\", RunBudget)]\n    ),\n    object_schema!(\n        \"admission\",\n        [\n            scalar_field!(\n                \"minimum_remaining_turns\",\n                true,\n                int_domain!(0, 1_000_000, \"turns\")\n            ),\n            scalar_field!(\n                \"minimum_remaining_wall_seconds\",\n                true,\n                int_domain!(0, 86_400, \"seconds\")\n            ),\n            scalar_field!(\"require_capability_subset\", true, bool_domain!())\n        ],\n        [\n            external_rule!(\"minimum_remaining_turns\", ParentTurns),\n            external_rule!(\"minimum_remaining_wall_seconds\", ParentWall)\n        ]\n    ),\n    object_schema!(\n        \"writer_fan_turn_split\",\n        [\n            scalar_field!(\"writer_numerator\", true, int_domain!(0, 1_000, \"parts\")),\n            scalar_field!(\"writer_denominator\", true, int_domain!(1, 1_000, \"parts\")),\n            scalar_field!(\n                \"minimum_writer_turns\",\n                true,\n                int_domain!(1, 1_000_000, \"turns\")\n            ),\n            scalar_field!(\"strictly_dominant\", true, bool_domain!())\n        ],\n        [\n            less_equal_rule!(\"writer_numerator\", \"writer_denominator\"),\n            external_rule!(\"minimum_writer_turns\", ParentTurns)\n        ]\n    ),\n    scalar_schema!(\n        \"worker_min_turns\",\n        Count,\n        int_domain!(1, 1_000_000, \"turns\"),\n        [external_rule!(\"$\", ParentTurns)]\n    ),\n    object_schema!(\n        \"wall_split\",\n        [\n            scalar_field!(\"fan_numerator\", true, int_domain!(0, 1_000, \"parts\")),\n            scalar_field!(\"fan_denominator\", true, int_domain!(1, 1_000, \"parts\")),\n            scalar_field!(\n                \"minimum_fan_seconds\",\n                true,\n                int_domain!(1, 86_400, \"seconds\")\n            )\n        ],\n        [\n            less_equal_rule!(\"fan_numerator\", \"fan_denominator\"),\n            external_rule!(\"minimum_fan_seconds\", ParentWall)\n        ]\n    ),\n    scalar_schema!(\n        \"token_split\",\n        Ratio,\n        decimal_domain!(0, 0, 1, 0, 6, \"ratio\"),\n        [external_rule!(\"$\", ParentTokens)]\n    ),\n    scalar_schema!(\n        \"fan_concurrency\",\n        Count,\n        int_domain!(1, 1024, \"agents\"),\n        [external_rule!(\"$\", ProcessBudget)]\n    ),\n    object_schema!(\n        \"child_ceiling\",\n        [\n            scalar_field!(\"max_turns\", true, int_domain!(1, 1_000_000, \"turns\")),\n            scalar_field!(\"max_wall_seconds\", true, int_domain!(1, 86_400, \"seconds\")),\n            scalar_field!(\n                \"max_consecutive_errors\",\n                true,\n                int_domain!(1, 1024, \"errors\")\n            ),\n            list_field!(\n                \"capabilities\",\n                true,\n                0,\n                256,\n                true,\n                text_domain!(1, 96, NamespacedId)\n            )\n        ],\n        [\n            external_rule!(\"max_turns\", ParentTurns),\n            external_rule!(\"max_wall_seconds\", ParentWall),\n            external_rule!(\"capabilities\", OperatorAuthority)\n        ]\n    ),\n]",
+      "default": "[\n    object_schema!(\n        \"memory_budgets\",\n        [\n            scalar_field!(\"recall_bytes\", true, int_domain!(0, 1_048_576, \"bytes\")),\n            scalar_field!(\"index_bytes\", true, int_domain!(0, 1_048_576, \"bytes\")),\n            scalar_field!(\n                \"instruction_bytes\",\n                true,\n                int_domain!(0, 1_048_576, \"bytes\")\n            ),\n            scalar_field!(\"fact_bytes\", true, int_domain!(0, 1_048_576, \"bytes\")),\n            scalar_field!(\"total_bytes\", true, int_domain!(1, 4_194_304, \"bytes\"))\n        ],\n        [\n            sum_rule!(\n                [\"recall_bytes\", \"index_bytes\", \"instruction_bytes\"],\n                \"total_bytes\"\n            ),\n            less_equal_rule!(\"fact_bytes\", \"total_bytes\"),\n            external_rule!(\"total_bytes\", ContextWindow)\n        ]\n    ),\n    map_schema!(\n        \"bm25\",\n        3,\n        3,\n        finite_enum_domain!(\"k1\", \"b\", \"recall_limit\"),\n        crate::FieldDomain::Scalar {\n            domain: decimal_domain!(0, 0, 4096, 0, 6, \"number\")\n        },\n        [\n            map_entry_domain_rule!(\"k1\", decimal_domain!(1, 3, 1000, 0, 3, \"number\")),\n            map_entry_domain_rule!(\"b\", decimal_domain!(0, 0, 1, 0, 6, \"ratio\")),\n            map_entry_domain_rule!(\"recall_limit\", decimal_domain!(1, 0, 4096, 0, 0, \"items\"))\n        ]\n    ),\n    scalar_schema!(\n        \"skill_listing_budget\",\n        Bytes,\n        int_domain!(0, 1_048_576, \"bytes\"),\n        [external_rule!(\"$\", ContextWindow)]\n    ),\n    scalar_schema!(\n        \"max_consecutive_tool_errors\",\n        Count,\n        int_domain!(1, 1024, \"errors\"),\n        [external_rule!(\"$\", RunBudget)]\n    ),\n    scalar_schema!(\n        \"pure_overlap\",\n        Bool,\n        bool_domain!(),\n        [external_domain_rule!(\"$\", ToolBudget)]\n    ),\n    scalar_schema!(\n        \"pure_concurrency\",\n        Count,\n        int_domain!(1, 1024, \"calls\"),\n        [external_rule!(\"$\", ProcessBudget)]\n    ),\n    object_schema!(\n        \"failed_action_dedup\",\n        [\n            scalar_field!(\"max_identities\", true, int_domain!(1, 65_536, \"entries\")),\n            scalar_field!(\"scope\", true, finite_enum_domain!(\"turn\", \"run\")),\n            scalar_field!(\"failed_only\", true, bool_domain!())\n        ],\n        [external_rule!(\"max_identities\", ToolBudget)]\n    ),\n    object_schema!(\n        \"pure_memo_cache\",\n        [\n            scalar_field!(\"max_entries\", true, int_domain!(0, 65_536, \"entries\")),\n            scalar_field!(\"max_key_bytes\", true, int_domain!(1, 65_536, \"bytes\")),\n            scalar_field!(\"generation_scoped\", true, bool_domain!())\n        ],\n        [external_rule!(\"max_entries\", ToolBudget)]\n    ),\n    object_schema!(\n        \"shell_timeout_output\",\n        [\n            scalar_field!(\"timeout_seconds\", true, int_domain!(1, 86_400, \"seconds\")),\n            scalar_field!(\n                \"stdout_max_bytes\",\n                true,\n                int_domain!(0, 16_777_216, \"bytes\")\n            ),\n            scalar_field!(\n                \"stderr_max_bytes\",\n                true,\n                int_domain!(0, 16_777_216, \"bytes\")\n            )\n        ],\n        [\n            external_rule!(\"timeout_seconds\", ParentWall),\n            external_rule!(\"stdout_max_bytes\", ToolBudget),\n            external_rule!(\"stderr_max_bytes\", ToolBudget)\n        ]\n    ),\n    object_schema!(\n        \"read_file_limits\",\n        [\n            scalar_field!(\n                \"source_max_bytes\",\n                true,\n                int_domain!(1, 134_217_728, \"bytes\")\n            ),\n            scalar_field!(\n                \"output_max_bytes\",\n                true,\n                int_domain!(512, 16_777_216, \"bytes\")\n            ),\n            scalar_field!(\"max_lines\", true, int_domain!(1, 1_000_000, \"lines\"))\n        ],\n        [\n            less_equal_rule!(\"output_max_bytes\", \"source_max_bytes\"),\n            external_rule!(\"output_max_bytes\", ToolBudget)\n        ]\n    ),\n    object_schema!(\n        \"list_dir_limits\",\n        [\n            scalar_field!(\"max_depth\", true, int_domain!(0, 64, \"levels\")),\n            scalar_field!(\"max_entries\", true, int_domain!(1, 100_000, \"entries\")),\n            scalar_field!(\n                \"output_max_bytes\",\n                true,\n                int_domain!(256, 16_777_216, \"bytes\")\n            )\n        ],\n        [external_rule!(\"output_max_bytes\", ToolBudget)]\n    ),\n    object_schema!(\n        \"glob_limits\",\n        [\n            scalar_field!(\"max_depth\", true, int_domain!(0, 128, \"levels\")),\n            scalar_field!(\"max_results\", true, int_domain!(1, 100_000, \"results\")),\n            scalar_field!(\n                \"output_max_bytes\",\n                true,\n                int_domain!(256, 16_777_216, \"bytes\")\n            )\n        ],\n        [external_rule!(\"output_max_bytes\", ToolBudget)]\n    ),\n    object_schema!(\n        \"grep_limits\",\n        [\n            scalar_field!(\"max_matches\", true, int_domain!(1, 1_000_000, \"matches\")),\n            scalar_field!(\n                \"snippet_max_bytes\",\n                true,\n                int_domain!(1, 1_048_576, \"bytes\")\n            ),\n            scalar_field!(\n                \"output_max_bytes\",\n                true,\n                int_domain!(1, 16_777_216, \"bytes\")\n            )\n        ],\n        [\n            less_equal_rule!(\"snippet_max_bytes\", \"output_max_bytes\"),\n            external_rule!(\"output_max_bytes\", ContextWindow)\n        ]\n    ),\n    object_schema!(\n        \"repo_map\",\n        [\n            scalar_field!(\"max_files\", true, int_domain!(1, 1_000_000, \"files\")),\n            scalar_field!(\"max_depth\", true, int_domain!(0, 128, \"levels\")),\n            scalar_field!(\"max_tokens\", true, int_domain!(1, 1_000_000, \"tokens\"))\n        ],\n        [external_rule!(\"max_tokens\", ToolBudget)]\n    ),\n    object_schema!(\n        \"git_limits\",\n        [\n            scalar_field!(\"timeout_seconds\", true, int_domain!(1, 3600, \"seconds\")),\n            scalar_field!(\n                \"output_max_bytes\",\n                true,\n                int_domain!(1, 16_777_216, \"bytes\")\n            ),\n            scalar_field!(\n                \"status_max_entries\",\n                true,\n                int_domain!(1, 100_000, \"entries\")\n            ),\n            scalar_field!(\"log_max_entries\", true, int_domain!(1, 10_000, \"entries\"))\n        ],\n        [\n            external_rule!(\"timeout_seconds\", ParentWall),\n            external_rule!(\"output_max_bytes\", ContextWindow)\n        ]\n    ),\n    object_schema!(\n        \"web_fetch_limits\",\n        [\n            scalar_field!(\n                \"body_max_bytes\",\n                true,\n                int_domain!(1_000, 16_777_216, \"bytes\")\n            ),\n            scalar_field!(\"max_redirects\", true, int_domain!(0, 32, \"redirects\")),\n            scalar_field!(\"timeout_seconds\", true, int_domain!(1, 300, \"seconds\")),\n            scalar_field!(\"max_lines\", true, int_domain!(1, 100_000, \"lines\"))\n        ],\n        [\n            external_rule!(\"body_max_bytes\", ToolBudget),\n            external_rule!(\"timeout_seconds\", ParentWall)\n        ]\n    ),\n    scalar_schema!(\n        \"web_search_cap\",\n        Count,\n        int_domain!(0, 1000, \"results\"),\n        [external_rule!(\"$\", ContextWindow)]\n    ),\n    scalar_schema!(\n        \"verifier_attempts\",\n        Count,\n        int_domain!(0, 1024, \"attempts\"),\n        [external_rule!(\"$\", RunBudget)]\n    ),\n    object_schema!(\n        \"verifier_feedback_tails\",\n        [\n            scalar_field!(\n                \"command_output_bytes\",\n                true,\n                int_domain!(0, 1_048_576, \"bytes\")\n            ),\n            scalar_field!(\n                \"oracle_output_bytes\",\n                true,\n                int_domain!(0, 1_048_576, \"bytes\")\n            ),\n            scalar_field!(\"total_bytes\", true, int_domain!(1, 2_097_152, \"bytes\"))\n        ],\n        [external_rule!(\"total_bytes\", ToolBudget)]\n    ),\n    scalar_schema!(\n        \"verifier_timeout\",\n        Duration,\n        int_domain!(1, 86_400, \"seconds\"),\n        [external_rule!(\"$\", ParentWall)]\n    ),\n    scalar_schema!(\n        \"route_topology\",\n        Enum,\n        finite_enum_domain!(\"direct\", \"orchestrated\"),\n        [external_rule!(\"$\", OperatorAuthority)]\n    ),\n    object_schema!(\n        \"decomposition_profile\",\n        [\n            scalar_field!(\"max_output_tokens\", true, int_domain!(1, 65_536, \"tokens\")),\n            scalar_field!(\n                \"effort\",\n                true,\n                finite_enum_domain!(\"low\", \"medium\", \"high\", \"xhigh\", \"max\", \"ultracode\")\n            ),\n            scalar_field!(\"thinking_tokens\", true, int_domain!(0, 1_000_000, \"tokens\"))\n        ],\n        [\n            external_rule!(\"max_output_tokens\", ParentTokens),\n            external_rule!(\"thinking_tokens\", RunBudget)\n        ]\n    ),\n    scalar_schema!(\n        \"fan_breadth\",\n        Count,\n        int_domain!(1, 1024, \"agents\"),\n        [external_rule!(\"$\", RunBudget)]\n    ),\n    object_schema!(\n        \"admission\",\n        [\n            scalar_field!(\n                \"minimum_remaining_turns\",\n                true,\n                int_domain!(0, 1_000_000, \"turns\")\n            ),\n            scalar_field!(\n                \"minimum_remaining_wall_seconds\",\n                true,\n                int_domain!(0, 86_400, \"seconds\")\n            ),\n            scalar_field!(\"require_capability_subset\", true, bool_domain!())\n        ],\n        [\n            external_rule!(\"minimum_remaining_turns\", ParentTurns),\n            external_rule!(\"minimum_remaining_wall_seconds\", ParentWall)\n        ]\n    ),\n    object_schema!(\n        \"writer_fan_turn_split\",\n        [\n            scalar_field!(\"writer_numerator\", true, int_domain!(0, 1_000, \"parts\")),\n            scalar_field!(\"writer_denominator\", true, int_domain!(1, 1_000, \"parts\")),\n            scalar_field!(\n                \"minimum_writer_turns\",\n                true,\n                int_domain!(1, 1_000_000, \"turns\")\n            ),\n            scalar_field!(\"strictly_dominant\", true, bool_domain!())\n        ],\n        [\n            less_equal_rule!(\"writer_numerator\", \"writer_denominator\"),\n            external_rule!(\"minimum_writer_turns\", ParentTurns)\n        ]\n    ),\n    scalar_schema!(\n        \"worker_min_turns\",\n        Count,\n        int_domain!(1, 1_000_000, \"turns\"),\n        [external_rule!(\"$\", ParentTurns)]\n    ),\n    object_schema!(\n        \"wall_split\",\n        [\n            scalar_field!(\"fan_numerator\", true, int_domain!(0, 1_000, \"parts\")),\n            scalar_field!(\"fan_denominator\", true, int_domain!(1, 1_000, \"parts\")),\n            scalar_field!(\n                \"minimum_fan_seconds\",\n                true,\n                int_domain!(1, 86_400, \"seconds\")\n            )\n        ],\n        [\n            less_equal_rule!(\"fan_numerator\", \"fan_denominator\"),\n            external_rule!(\"minimum_fan_seconds\", ParentWall)\n        ]\n    ),\n    scalar_schema!(\n        \"token_split\",\n        Ratio,\n        decimal_domain!(0, 0, 1, 0, 6, \"ratio\"),\n        [external_rule!(\"$\", ParentTokens)]\n    ),\n    scalar_schema!(\n        \"fan_concurrency\",\n        Count,\n        int_domain!(1, 1024, \"agents\"),\n        [external_rule!(\"$\", ProcessBudget)]\n    ),\n    object_schema!(\n        \"child_ceiling\",\n        [\n            scalar_field!(\"max_turns\", true, int_domain!(1, u32::MAX as i64, \"turns\")),\n            scalar_field!(\"max_wall_seconds\", true, int_domain!(1, 86_400, \"seconds\")),\n            scalar_field!(\n                \"max_consecutive_errors\",\n                true,\n                int_domain!(1, 1024, \"errors\")\n            ),\n            list_field!(\n                \"capabilities\",\n                true,\n                0,\n                256,\n                true,\n                text_domain!(1, 96, NamespacedId)\n            )\n        ],\n        [\n            external_rule!(\"max_turns\", ParentTurns),\n            external_rule!(\"max_wall_seconds\", ParentWall),\n            external_rule!(\"capabilities\", OperatorAuthority)\n        ]\n    ),\n]",
       "krate": "tunables",
       "decl": "crates/tunables/src/value_schemas/current/second.rs",
       "applied": false,

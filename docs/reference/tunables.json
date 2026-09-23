@@ -1,12 +1,12 @@
 {
   "digest": {
     "algorithm": "sha256",
-    "value": "fa047ac86fa33d921ac49f60507adefe6a226e2e57396be626d0008690854fa3"
+    "value": "41d03740d482fe481c5425278c130b21492e75b38eae7178fd5d70e4487d76c2"
   },
   "payload": {
     "schema_version": 4,
     "registry_id": "iteron-tunables",
-    "registry_revision": 25,
+    "registry_revision": 26,
     "canonicalization": "iteron-tunables-json-v4",
     "family_count": 160,
     "scalar_catalogs": [
@@ -569,7 +569,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "330d270cbb58c4ebde76c44dd5106e94b0188f5e5fc3892cb2b103d05a2c2615"
+          "value": "96b5e14f1cd51f8776be673cf5b2c691b8732fbc3e6556246cf7dad42b4a544e"
         },
         "schema_version": 3,
         "ordinal": 5,
@@ -601,7 +601,7 @@
           "requirement": "optional",
           "value": {
             "type": "integer",
-            "value": 64
+            "value": 4294967295
           }
         },
         "source": {
@@ -647,7 +647,7 @@
             "domain": {
               "type": "integer",
               "min": 1,
-              "max": 1000000,
+              "max": 4294967295,
               "unit": "turns"
             }
           },
@@ -7520,7 +7520,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "27a498012951da40d47f0e5566bc81718e8bef43b75a79aa3ffa66595d7279f9"
+          "value": "c36c46cec3dd66c8c4dc21423e068638686e5cc6dbca0f834f864adfdc244ffd"
         },
         "schema_version": 3,
         "ordinal": 60,
@@ -7579,7 +7579,7 @@
                   "domain": {
                     "type": "integer",
                     "min": 1,
-                    "max": 1000000,
+                    "max": 4294967295,
                     "unit": "turns"
                   }
                 }

@@ -378,7 +378,8 @@ impl Agent {
     /// Project the aggregate provider-wire estimate back onto the non-overlapping source classes
     /// owned by this admitted request. The source evidence was captured when the immutable
     /// injection was materialized; the active task and attachment evidence belong to this one
-    /// submission. No class may borrow unused capacity from another class.
+    /// submission. Admission separately permits default task/history shares to borrow unused
+    /// text capacity while preserving explicit caps and the aggregate model window.
     pub(super) fn context_component_usage(
         &self,
         messages: &[iteron_protocol::Message],

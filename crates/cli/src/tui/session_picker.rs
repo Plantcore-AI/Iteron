@@ -6,8 +6,23 @@ const PICKER_TITLE_MAX_CHARS: usize = 80;
 const SESSION_PICKER_PAGE_SIZE: usize = 25;
 const SESSION_PICKER_PREFETCH_DISTANCE: usize = 5;
 static SESSION_INDEX_REBUILDS: std::sync::OnceLock<
-    std::sync::Mutex<std::collections::HashSet<PathBuf>>,
+    std::sync::Mutex<std::collections::HashMap<PathBuf, std::sync::Arc<SessionIndexRebuild>>>,
 > = std::sync::OnceLock::new();
+
+struct SessionIndexRebuild {
+    result: std::sync::Mutex<Option<Result<(), String>>>,
+    ready: std::sync::Condvar,
+}
+
+static SESSION_PAGE_LOADS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+struct SessionPageLoadSlot;
+
+impl Drop for SessionPageLoadSlot {
+    fn drop(&mut self) {
+        SESSION_PAGE_LOADS.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
+}
 
 fn max_background_session_index_rebuilds() -> usize {
     iteron_tunables::param_usize(
@@ -194,16 +209,12 @@ pub(super) fn open_session_picker(app: &mut App, session: &Session) {
     let generation = app.session_picker_generation;
     let mut loading = PickItem::flat(
         "Loading sessions…",
-        format!(
-            "first page {} · prefetch distance {}",
-            session_picker_page_size(),
-            session_picker_prefetch_distance(),
-        ),
+        "reading your saved conversations",
         false,
         PickAction::Info,
     );
     loading.enabled = false;
-    loading.disabled_reason = Some("session index is loading in the background".into());
+    loading.disabled_reason = Some("Esc to close while sessions load".into());
     app.picker = Some(Picker {
         title: "Sessions · resume here".into(),
         items: vec![loading],
@@ -212,10 +223,14 @@ pub(super) fn open_session_picker(app: &mut App, session: &Session) {
         saved_theme: None,
     });
     let current_run = current_run.to_owned();
-    app.session_picker_job = Some(tokio::task::spawn_blocking(move || {
-        let page_size = session_picker_page_size();
-        load_session_page(runs, current_run, generation, None, page_size, true)
-    }));
+    app.session_picker_job = Some(spawn_session_page_load(
+        runs,
+        current_run,
+        generation,
+        None,
+        session_picker_page_size(),
+        true,
+    ));
 }
 
 pub(super) fn load_session_page(
@@ -231,29 +246,19 @@ pub(super) fn load_session_page(
     let mut warning = None;
     let mut replace = first;
     if !page.index_ready {
-        let started = schedule_session_index_rebuild(&runs);
-        let mut rebuilding = PickItem::flat(
-            "Rebuilding session index…",
-            if started {
-                "the picker stays responsive; reopen when the background rebuild finishes"
-            } else {
-                "one background rebuild is already running"
-            },
-            false,
-            PickAction::Info,
-        );
-        rebuilding.enabled = false;
-        rebuilding.disabled_reason = Some("session index is rebuilding".into());
-        return SessionPageResult {
-            generation,
-            runs,
-            current_run,
-            next_cursor: None,
-            has_more: false,
-            replace: true,
-            warning: None,
-            items: vec![rebuilding],
-        };
+        if let Err(reason) = rebuild_session_index(&runs) {
+            return failed_session_page(runs, current_run, generation, &reason);
+        }
+        page = iteron_record::page(&runs, &tenant, None, None, Some(page_size));
+        replace = true;
+        if !page.index_ready {
+            return failed_session_page(
+                runs,
+                current_run,
+                generation,
+                "The session index could not be read after rebuilding. Close and reopen /resume to retry.",
+            );
+        }
     } else if page.cursor_stale {
         page = iteron_record::page(&runs, &tenant, None, None, Some(page_size));
         replace = true;
@@ -272,40 +277,210 @@ pub(super) fn load_session_page(
     }
 }
 
-/// Start at most one physical rebuild per runs directory and return immediately. A picker close can
-/// safely abandon its tiny page-read task, while the atomic index publisher is deliberately allowed
-/// to finish: `reindex` has no cooperative cancellation seam and interrupting it between private
-/// derivative publication and the final index swap would only create more repair work.
-fn schedule_session_index_rebuild(runs: &Path) -> bool {
+/// One rebuild per directory. Its callers wait on blocking workers while the TUI stays live;
+/// completion reloads the page automatically, and every failure becomes a terminal picker row.
+fn rebuild_session_index(runs: &Path) -> Result<(), String> {
     let key = runs.canonicalize().unwrap_or_else(|_| runs.to_path_buf());
     let active = SESSION_INDEX_REBUILDS
-        .get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()));
-    {
-        let Ok(mut active) = active.lock() else {
-            return false;
-        };
-        if active.contains(&key) || active.len() >= max_background_session_index_rebuilds() {
-            return false;
-        }
-        active.insert(key.clone());
-    }
-    let thread_key = key.clone();
-    let spawned = std::thread::Builder::new()
-        .name("iteron-session-picker-reindex".into())
-        .spawn(move || {
-            let _ = iteron_record::reindex(&thread_key);
-            if let Some(active) = SESSION_INDEX_REBUILDS.get()
-                && let Ok(mut active) = active.lock()
-            {
-                active.remove(&thread_key);
+        .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    let (state, start) = {
+        let mut active = active
+            .lock()
+            .map_err(|_| "Session index worker is unavailable.")?;
+        if let Some(state) = active.get(&key) {
+            (state.clone(), false)
+        } else {
+            if active.len() >= max_background_session_index_rebuilds() {
+                return Err(
+                    "Session index workers are busy. Close and reopen /resume to retry.".into(),
+                );
             }
-        });
-    if spawned.is_err() {
-        if let Ok(mut active) = active.lock() {
-            active.remove(&key);
+            let state = std::sync::Arc::new(SessionIndexRebuild {
+                result: std::sync::Mutex::new(None),
+                ready: std::sync::Condvar::new(),
+            });
+            active.insert(key.clone(), state.clone());
+            (state, true)
         }
+    };
+    if start {
+        let thread_key = key.clone();
+        let worker_state = state.clone();
+        let spawned = std::thread::Builder::new()
+            .name("iteron-session-picker-reindex".into())
+            .spawn(move || {
+                let result = std::panic::catch_unwind(|| iteron_record::reindex(&thread_key))
+                    .map_err(|_| "Session index worker failed. Reopen /resume to retry.".to_string())
+                    .and_then(|result| result.map(|_| ()).map_err(|_| "Cannot rebuild the session index. Check the session directory is readable and writable, then reopen /resume.".to_string()));
+                if let Ok(mut slot) = worker_state.result.lock() {
+                    *slot = Some(result);
+                }
+                worker_state.ready.notify_all();
+                if let Some(active) = SESSION_INDEX_REBUILDS.get()
+                    && let Ok(mut active) = active.lock()
+                {
+                    active.remove(&thread_key);
+                }
+            });
+        if spawned.is_err() {
+            if let Ok(mut active) = active.lock() {
+                active.remove(&key);
+            }
+            if let Ok(mut result) = state.result.lock() {
+                *result = Some(Err(
+                    "Cannot start the session index worker. Reopen /resume to retry.".into(),
+                ));
+            }
+            state.ready.notify_all();
+        }
+    }
+    let result = state
+        .result
+        .lock()
+        .map_err(|_| "Session index worker failed.")?;
+    let (result, _) = state
+        .ready
+        .wait_timeout_while(result, Duration::from_secs(10), |result| result.is_none())
+        .map_err(|_| "Session index worker failed.")?;
+    result.clone().unwrap_or_else(|| Err(
+        "Session index rebuilding is taking longer than expected. Close and reopen /resume to retry.".into()
+    ))
+}
+
+fn failed_session_page(
+    runs: PathBuf,
+    current_run: String,
+    generation: u64,
+    reason: &str,
+) -> SessionPageResult {
+    let mut item = PickItem::flat("Sessions unavailable", reason, false, PickAction::Info);
+    item.enabled = false;
+    item.disabled_reason = Some("Esc to close; /resume to retry".into());
+    SessionPageResult {
+        generation,
+        runs,
+        current_run,
+        next_cursor: None,
+        has_more: false,
+        replace: true,
+        warning: None,
+        items: vec![item],
+    }
+}
+
+pub(super) fn spawn_session_page_load(
+    runs: PathBuf,
+    current_run: String,
+    generation: u64,
+    cursor: Option<iteron_record::SessionPageCursor>,
+    page_size: usize,
+    first: bool,
+) -> tokio::task::JoinHandle<SessionPageResult> {
+    tokio::spawn(async move {
+        if SESSION_PAGE_LOADS
+            .fetch_update(
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+                |active| (active < max_background_session_index_rebuilds()).then_some(active + 1),
+            )
+            .is_err()
+        {
+            return failed_session_page(
+                runs,
+                current_run,
+                generation,
+                "Session loading is busy. Close and reopen /resume to retry.",
+            );
+        }
+        let slot = SessionPageLoadSlot;
+        let worker_runs = runs.clone();
+        let worker_run = current_run.clone();
+        let job = tokio::task::spawn_blocking(move || {
+            // Keep admission until physical work ends, even when its picker has closed or timed out.
+            let _slot = slot;
+            load_session_page(
+                worker_runs,
+                worker_run,
+                generation,
+                cursor,
+                page_size,
+                first,
+            )
+        });
+        match tokio::time::timeout(Duration::from_secs(15), job).await {
+            Ok(Ok(page)) => page,
+            Ok(Err(_)) => failed_session_page(
+                runs,
+                current_run,
+                generation,
+                "Session loading failed. Close and reopen /resume to retry.",
+            ),
+            Err(_) => failed_session_page(
+                runs,
+                current_run,
+                generation,
+                "Session loading timed out. Close and reopen /resume to retry.",
+            ),
+        }
+    })
+}
+
+pub(super) fn apply_session_page_result(
+    app: &mut App,
+    result: Result<SessionPageResult, tokio::task::JoinError>,
+) -> bool {
+    if app
+        .picker
+        .as_ref()
+        .is_none_or(|picker| picker.title != "Sessions · resume here")
+    {
         return false;
     }
+    let mut page = match result {
+        Ok(page) if page.generation == app.session_picker_generation => page,
+        Ok(_) => return false,
+        Err(_) => failed_session_page(
+            PathBuf::new(),
+            String::new(),
+            app.session_picker_generation,
+            "Session loading failed. Close and reopen /resume to retry.",
+        ),
+    };
+    if let Some(warning) = page.warning.take() {
+        app.note(block::NoticeLevel::Info, warning);
+    }
+    if page.replace {
+        if page.items.is_empty() {
+            let mut empty = PickItem::flat(
+                "No sessions recorded yet",
+                "start a prompt to create one",
+                false,
+                PickAction::Info,
+            );
+            empty.enabled = false;
+            page.items.push(empty);
+        }
+        if let Some(picker) = app.picker.as_mut() {
+            picker.sel = initial_picker_selection(&page.items);
+            picker.items = page.items;
+        }
+        app.session_picker_backing = Some(SessionPickerBacking {
+            runs: page.runs,
+            current_run: page.current_run,
+            next_cursor: page.next_cursor,
+            has_more: page.has_more,
+            generation: page.generation,
+        });
+    } else if let Some(backing) = app.session_picker_backing.as_mut()
+        && backing.generation == page.generation
+    {
+        backing.next_cursor = page.next_cursor;
+        backing.has_more = page.has_more;
+        if let Some(picker) = app.picker.as_mut() {
+            picker.items.extend(page.items);
+        }
+    }
+    maybe_prefetch_session_page(app);
     true
 }
 
@@ -339,9 +514,14 @@ pub(super) fn maybe_prefetch_session_page(app: &mut App) {
     let current_run = backing.current_run.clone();
     let generation = backing.generation;
     let cursor = backing.next_cursor;
-    app.session_picker_job = Some(tokio::task::spawn_blocking(move || {
-        load_session_page(runs, current_run, generation, cursor, page_size, false)
-    }));
+    app.session_picker_job = Some(spawn_session_page_load(
+        runs,
+        current_run,
+        generation,
+        cursor,
+        page_size,
+        false,
+    ));
 }
 
 pub(super) fn start_session_preview(app: &mut App, runs: PathBuf, run: String) {

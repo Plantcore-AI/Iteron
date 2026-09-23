@@ -951,6 +951,77 @@ mod tests {
             super::super::effective_core::TaskContextBudgetSource::Explicit,
             "resume must read the durable winning provenance, not infer from the 12K value",
         );
+        // Exercise production default provenance and the same-valued explicit history cap,
+        // including checkpoint decode: both routes must preserve the operator's decision.
+        let history_usage = iteron_ctx::ContextComponentUsage {
+            transcript_tokens: fresh.settings.context_budget.transcript_tokens + 1_004,
+            ..Default::default()
+        };
+        assert!(
+            fresh
+                .settings
+                .context_budget
+                .admit_components(&history_usage)
+                .is_ok()
+        );
+        let default_history = fresh
+            .resolved
+            .report()
+            .entries
+            .iter()
+            .find(|entry| entry.family_id == "conversation_history_budget")
+            .and_then(|entry| entry.effective.clone())
+            .unwrap();
+        let mut explicit_history_profile = tunables_profile.clone();
+        explicit_history_profile
+            .values
+            .push(iteron_tunables::ProfileValue {
+                family: "conversation_history_budget".into(),
+                as_declared_source: iteron_tunables::SourceKind::UserConfig,
+                value: default_history,
+            });
+        let explicit_history = compose(
+            Sourced {
+                value: Effort::default(),
+                origin: ConfigOrigin::Builtin,
+            },
+            ConfigOrigin::Builtin,
+            ConfigOrigin::Builtin,
+            Sourced {
+                value: PermissionMode::AcceptEdits,
+                origin: ConfigOrigin::Builtin,
+            },
+            Sourced {
+                value: false,
+                origin: ConfigOrigin::Builtin,
+            },
+            &explicit_history_profile,
+        )
+        .unwrap();
+        assert!(
+            explicit_history
+                .settings
+                .context_budget
+                .admit_components(&history_usage)
+                .is_err()
+        );
+        for (resolved, elastic) in [(&fresh.resolved, true), (&explicit_history.resolved, false)] {
+            let checkpoint = iteron_record::TunablesCheckpoint::V2(
+                iteron_record::snapshot_v2_from_resolved(resolved).unwrap(),
+            );
+            let view =
+                super::super::effective_view::EffectiveTunablesView::from_checkpoint(&checkpoint)
+                    .unwrap();
+            let resumed =
+                super::super::effective_core::EffectiveCoreSettings::decode(&view).unwrap();
+            assert_eq!(
+                resumed
+                    .context_budget
+                    .admit_components(&history_usage)
+                    .is_ok(),
+                elastic
+            );
+        }
         let effort_entry = overridden
             .resolved
             .report()

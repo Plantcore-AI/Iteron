@@ -60,11 +60,29 @@ impl GovernedProviderRoute {
 }
 
 impl Agent {
+    /// Keep the sealed session preference intact; adapt only its optional cache wire hint for
+    /// the selected physical route. Governed workers retain their exact request contract.
+    pub(super) fn provider_controls_for(
+        &self,
+        provider: &dyn Provider,
+    ) -> iteron_provider::ProviderRequestControls {
+        if self.plantcore_runtime_enabled() {
+            self.provider_controls
+        } else {
+            provider
+                .control_capabilities()
+                .adapt_optional_cache_breakpoint(self.provider_controls)
+        }
+    }
+
     /// Legacy provider cache bit projected from the same immutable typed breakpoint used on the
     /// wire. Keeping one helper prevents main, compaction, and coverage turns from disagreeing;
     /// notably Anthropic treats `true` plus a `None` breakpoint as an implicit Rolling request.
     pub(super) fn provider_cache_system_enabled(&self) -> bool {
-        self.provider_controls.prompt_cache.breakpoint != iteron_provider::CacheBreakpoint::None
+        self.provider_controls_for(self.provider.as_ref())
+            .prompt_cache
+            .breakpoint
+            != iteron_provider::CacheBreakpoint::None
     }
 
     /// Install the exact immutable controls before the first provider attempt.
@@ -78,9 +96,14 @@ impl Agent {
                 reason: "cannot replace request controls after provider admission",
             });
         }
-        self.provider
-            .control_capabilities()
-            .validate(&controls)
+        let capabilities = self.provider.control_capabilities();
+        let executable = if self.plantcore_runtime_enabled() {
+            controls
+        } else {
+            capabilities.adapt_optional_cache_breakpoint(controls)
+        };
+        capabilities
+            .validate(&executable)
             .map_err(|_| KernelError::InvalidRouteMetadata {
                 field: "provider_controls",
                 reason: "selected provider does not attest one configured control",
@@ -142,7 +165,7 @@ impl Agent {
             route
                 .provider
                 .control_capabilities()
-                .validate(&self.provider_controls)
+                .validate(&self.provider_controls_for(route.provider.as_ref()))
                 .map_err(|_| KernelError::InvalidRouteMetadata {
                     field: "provider_fallback_routes",
                     reason: "a fallback route does not attest the configured request controls",

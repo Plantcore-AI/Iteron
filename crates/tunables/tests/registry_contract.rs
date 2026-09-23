@@ -869,7 +869,7 @@ fn defaults_resolvers_and_provenance_match_production_truth() {
     );
     assert_eq!(model.default.value, None);
 
-    assert_eq!(integer_default("max_turns"), 64);
+    assert_eq!(integer_default("max_turns"), i64::from(u32::MAX));
     assert_eq!(integer_default("max_wall_secs"), 3_600);
     assert_eq!(integer_default("max_consecutive_tool_errors"), 5);
     assert_eq!(integer_default("deferred_discovery_threshold"), 4);

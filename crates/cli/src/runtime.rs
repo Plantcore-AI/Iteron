@@ -178,6 +178,8 @@ mod decomposition;
 mod deferred_tools;
 mod durability;
 mod failed_action_cache;
+#[cfg(test)]
+mod route_controls_tests;
 mod stream_tools;
 #[cfg(test)]
 mod stream_tools_tests;
@@ -1391,7 +1393,11 @@ fn allocate_orchestration(
         return None;
     }
     let initial_writer_reserve = policy.writer_fan_turn_split.writer_reserve(remaining_turns);
-    let fan_available = remaining_turns.saturating_sub(initial_writer_reserve);
+    let fan_available = if remaining_turns == Budget::UNLIMITED_TURNS {
+        Budget::UNLIMITED_TURNS
+    } else {
+        remaining_turns.saturating_sub(initial_writer_reserve)
+    };
     // Admit as many distinct investigators as the pinned fan/worker controls allow. Wall-clock is
     // bounded separately by the concurrency permit count.
     let active_workers = task_count
@@ -1412,7 +1418,11 @@ fn allocate_orchestration(
         .min(remaining_wall_secs);
     Some(OrchestrationAllocation {
         fan_turns,
-        writer_turns_reserved: remaining_turns.saturating_sub(fan_turns),
+        writer_turns_reserved: if remaining_turns == Budget::UNLIMITED_TURNS {
+            Budget::UNLIMITED_TURNS
+        } else {
+            remaining_turns.saturating_sub(fan_turns)
+        },
         active_workers,
         fan_wall_secs,
         writer_wall_reserved_secs: remaining_wall_secs.saturating_sub(fan_wall_secs),
@@ -1444,7 +1454,11 @@ fn fan_budget_slices(
         .unwrap_or_default();
     (0..active_workers)
         .map(|index| Budget {
-            max_turns: (base_turns + u32::from((index as u32) < extra_turns)).min(ceiling),
+            max_turns: if aggregate.max_turns == Budget::UNLIMITED_TURNS {
+                ceiling
+            } else {
+                (base_turns + u32::from((index as u32) < extra_turns)).min(ceiling)
+            },
             max_usd,
             max_tokens: base_tokens.map(|base| base + u64::from((index as u64) < extra_tokens)),
             // Concurrent workers each observe the whole fan wall window; the engine Governor
@@ -1551,6 +1565,38 @@ fn apply_workflow_execution_policy(
 #[cfg(test)]
 mod orchestration_allocation_tests {
     use super::*;
+
+    #[test]
+    fn unlimited_parent_keeps_unlimited_children_and_honors_explicit_child_caps() {
+        let budget = Budget::default();
+        let policy = crate::runtime_tunables::execution_policy::ExecutionRuntimePolicy::owner(
+            iteron_protocol::Effort::Ultracode,
+            &budget,
+            iteron_workflow::RunLimits::default(),
+        );
+        let allocation = allocate_orchestration(Budget::UNLIMITED_TURNS, 3, 900, policy).unwrap();
+        assert_eq!(allocation.fan_turns, Budget::UNLIMITED_TURNS);
+        assert_eq!(allocation.writer_turns_reserved, Budget::UNLIMITED_TURNS);
+        let slices = fan_budget_slices(&budget, 3, None);
+        assert!(
+            slices
+                .iter()
+                .all(|child| child.max_turns == Budget::UNLIMITED_TURNS)
+        );
+        let mut ceiling = iteron_agents::subagent_budget_ceiling();
+        let child = policy
+            .direct_child_allocation
+            .allocate(Budget::UNLIMITED_TURNS, 300, None, &ceiling)
+            .unwrap();
+        assert_eq!(child.max_turns, Budget::UNLIMITED_TURNS);
+        ceiling.max_turns = 2;
+        let child = policy
+            .direct_child_allocation
+            .allocate(Budget::UNLIMITED_TURNS, 300, None, &ceiling)
+            .unwrap();
+        assert_eq!(child.max_turns, 2);
+        assert!(child.turn_limit_reached(2));
+    }
 
     fn policy() -> crate::runtime_tunables::execution_policy::ExecutionRuntimePolicy {
         crate::runtime_tunables::execution_policy::ExecutionRuntimePolicy::owner(
@@ -1695,7 +1741,7 @@ mod orchestration_allocation_tests {
             5,
             child_ceiling - 1,
             child_ceiling,
-            child_ceiling * 3,
+            child_ceiling.saturating_mul(3),
         ] {
             let collapsed = (remaining_turns / child_ceiling.min(remaining_turns).max(1)).max(1);
             assert!(
@@ -4756,11 +4802,18 @@ impl Agent {
                 );
             }
             let mut stream_recovered = false;
+            let pre_output_retry_exhausted =
+                provider_route::retryable_before_semantic_output_provider_error(
+                    &provider_result,
+                    semantic_output_observed,
+                )
+                .is_some();
             let turn_res = match provider_result {
                 Ok(result) => result,
                 Err(ref error)
                     if !self.plantcore_runtime_enabled()
                         && tool_contract_error.is_none()
+                        && !pre_output_retry_exhausted
                         && stream_recoveries.saturating_add(1) < self.retry_policy.max_attempts
                         && provider_route::recoverable_response_stream_error(error) =>
                 {
@@ -8652,7 +8705,11 @@ pub struct TurnBudgetState {
 impl TurnBudgetState {
     /// Attempts still admissible before the next submission stops immediately.
     pub fn remaining(&self) -> u32 {
-        self.max_turns.saturating_sub(self.used)
+        if self.max_turns == Budget::UNLIMITED_TURNS {
+            Budget::UNLIMITED_TURNS
+        } else {
+            self.max_turns.saturating_sub(self.used)
+        }
     }
 }
 

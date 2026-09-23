@@ -1912,50 +1912,7 @@ pub async fn run(
                 .session_picker_job
                 .take()
                 .expect("finished session picker job was present");
-            if let Ok(mut page) = job.await
-                && page.generation == app.session_picker_generation
-                && app
-                    .picker
-                    .as_ref()
-                    .is_some_and(|picker| picker.title == "Sessions · resume here")
-            {
-                if let Some(warning) = page.warning.take() {
-                    app.note(block::NoticeLevel::Info, warning);
-                }
-                if page.replace {
-                    if page.items.is_empty() {
-                        let mut empty = PickItem::flat(
-                            "No sessions recorded yet",
-                            "start a prompt to create one",
-                            false,
-                            PickAction::Info,
-                        );
-                        empty.enabled = false;
-                        page.items.push(empty);
-                    }
-                    if let Some(picker) = app.picker.as_mut() {
-                        picker.sel = initial_picker_selection(&page.items);
-                        picker.items = page.items;
-                    }
-                    app.session_picker_backing = Some(SessionPickerBacking {
-                        runs: page.runs,
-                        current_run: page.current_run,
-                        next_cursor: page.next_cursor,
-                        has_more: page.has_more,
-                        generation: page.generation,
-                    });
-                } else if let Some(backing) = app.session_picker_backing.as_mut()
-                    && backing.generation == page.generation
-                {
-                    backing.next_cursor = page.next_cursor;
-                    backing.has_more = page.has_more;
-                    if let Some(picker) = app.picker.as_mut() {
-                        picker.items.extend(page.items);
-                    }
-                }
-                maybe_prefetch_session_page(&mut app);
-                redraw = true;
-            }
+            redraw |= apply_session_page_result(&mut app, job.await);
         }
         if app
             .session_preview_job

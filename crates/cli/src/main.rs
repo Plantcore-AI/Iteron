@@ -801,8 +801,8 @@ struct Cli {
     #[arg(long)]
     model: Option<String>,
 
-    /// Max turns (bounded invariant; overrides config / default of 64).
-    #[arg(long)]
+    /// Maximum provider turns, or `unlimited` (the default).
+    #[arg(long, value_parser = config::parse_turn_limit)]
     max_turns: Option<u32>,
 
     /// Max spend in USD (bounded invariant; overrides config / default).
@@ -2146,7 +2146,7 @@ async fn run_cli() -> anyhow::Result<u8> {
     // default and repository/user configuration can only tighten or explicitly override it.
     let trusted_max_turns = config::pick_with_origin(
         cli.max_turns,
-        config::env_u32("ITERON_MAX_TURNS"),
+        config::env_turn_limit(),
         user_file.max_turns,
         Budget::default().max_turns,
     );
@@ -2770,7 +2770,10 @@ async fn run_cli() -> anyhow::Result<u8> {
         .map_err(anyhow::Error::msg)?;
     let provider_control_capabilities = provider_arc.control_capabilities();
     provider_control_capabilities
-        .validate(&provider_governor.controls)
+        .validate(
+            &provider_control_capabilities
+                .adapt_optional_cache_breakpoint(provider_governor.controls),
+        )
         .map_err(|error| anyhow::anyhow!("provider request controls are not supported: {error}"))?;
     let fresh_composition = if resumed_tunables_checkpoint.is_none() {
         Some(runtime_tunables::composition::resolve_fresh(
@@ -3091,9 +3094,11 @@ async fn run_cli() -> anyhow::Result<u8> {
             let provider = provider_directory
                 .build(&fallback_selection)
                 .map_err(|error| anyhow::anyhow!("fallback route is unavailable: {error}"))?;
-            provider
-                .control_capabilities()
-                .validate(&effective_settings.provider_governor.controls)
+            let controls_capabilities = provider.control_capabilities();
+            controls_capabilities
+                .validate(&controls_capabilities.adapt_optional_cache_breakpoint(
+                    effective_settings.provider_governor.controls,
+                ))
                 .map_err(|error| {
                     anyhow::anyhow!("fallback route request controls are unsupported: {error}")
                 })?;
@@ -3258,6 +3263,16 @@ async fn run_cli() -> anyhow::Result<u8> {
     agent.compaction_summary_prompt = compaction_summary_prompt(tunables_profile_document.as_ref());
     if let Some(msgs) = resume_messages {
         agent.set_resume(msgs)?;
+        if max_turns_origin != config::ConfigOrigin::Builtin {
+            agent.transition_turn_ceiling(
+                max_turns,
+                if max_turns_origin == config::ConfigOrigin::ProjectConfig {
+                    iteron_protocol::RuntimePolicySource::Harness
+                } else {
+                    iteron_protocol::RuntimePolicySource::Operator
+                },
+            )?;
+        }
         if effort_runtime_override {
             agent.transition_effort(
                 resolved_effort,
@@ -4323,9 +4338,11 @@ async fn run_workflow_command(
             )
             .map_err(anyhow::Error::msg)?,
     };
-    provider_arc
-        .control_capabilities()
-        .validate(&provider_governor.controls)
+    let controls_capabilities = provider_arc.control_capabilities();
+    controls_capabilities
+        .validate(
+            &controls_capabilities.adapt_optional_cache_breakpoint(provider_governor.controls),
+        )
         .map_err(|error| anyhow::anyhow!("provider request controls are not supported: {error}"))?;
     let fallback_provider_routes = provider_governor
         .fallback_routes
@@ -4347,9 +4364,12 @@ async fn run_workflow_command(
             let provider = provider_directory
                 .build(&fallback)
                 .map_err(|error| anyhow::anyhow!("fallback route is unavailable: {error}"))?;
-            provider
-                .control_capabilities()
-                .validate(&provider_governor.controls)
+            let controls_capabilities = provider.control_capabilities();
+            controls_capabilities
+                .validate(
+                    &controls_capabilities
+                        .adapt_optional_cache_breakpoint(provider_governor.controls),
+                )
                 .map_err(|error| {
                     anyhow::anyhow!("fallback route request controls are unsupported: {error}")
                 })?;
@@ -4393,7 +4413,7 @@ async fn run_workflow_command(
     let default_budget = Budget::default();
     let (workflow_max_turns, workflow_max_turns_origin) = config::pick_with_origin(
         cli.max_turns,
-        config::env_u32("ITERON_MAX_TURNS"),
+        config::env_turn_limit(),
         user_file.max_turns,
         default_budget.max_turns,
     );
@@ -4963,6 +4983,23 @@ mod tests {
             Cli::try_parse_from(["iteron", "--max-wall-secs", "-1"]).is_err(),
             "a negative ceiling is not a u64"
         );
+    }
+
+    #[test]
+    fn unlimited_turns_are_settable_without_a_numeric_magic_value() {
+        let parsed = Cli::try_parse_from(["iteron", "--max-turns", "unlimited"]).unwrap();
+        assert_eq!(parsed.max_turns, Some(Budget::UNLIMITED_TURNS));
+        let mut file = config::FileConfig::default();
+        config::apply_setting(&mut file, "max_turns", "unlimited").unwrap();
+        let decoded: config::FileConfig =
+            serde_json::from_str(&serde_json::to_string(&file).unwrap()).unwrap();
+        assert_eq!(decoded.max_turns, parsed.max_turns);
+        assert_eq!(
+            config::setting_value(&decoded, "max_turns").as_deref(),
+            Some("unlimited")
+        );
+        assert_eq!(config::tighten(Some(2), Budget::UNLIMITED_TURNS), 2);
+        assert!(Cli::try_parse_from(["iteron", "--max-turns", "0"]).is_err());
     }
 
     #[test]

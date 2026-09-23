@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "profile_id": "codex-comparison/retry-r26",
+  "registry_revision": 26,
+  "registry_digest": "41d03740d482fe481c5425278c130b21492e75b38eae7178fd5d70e4487d76c2",
+  "values": [
+    {
+      "family": "retry_backoff_base",
+      "as_declared_source": "user_config",
+      "value": { "type": "integer", "value": 200 }
+    },
+    {
+      "family": "retry_max_attempts",
+      "as_declared_source": "user_config",
+      "value": { "type": "integer", "value": 5 }
+    },
+    {
+      "family": "provider_health_circuit_breaker_state_policy",
+      "as_declared_source": "user_config",
+      "value": {
+        "type": "object",
+        "fields": {
+          "failure_threshold": { "type": "integer", "value": 10 },
+          "open_seconds": { "type": "integer", "value": 30 },
+          "half_open_probes": { "type": "integer", "value": 1 },
+          "success_threshold": { "type": "integer", "value": 1 }
+        }
+      }
+    }
+  ],
+  "params": [],
+  "artifacts": []
+}

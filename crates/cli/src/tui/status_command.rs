@@ -168,7 +168,10 @@ fn append_runtime_policy(
         ),
         kv(
             "current turn ceiling",
-            &format_runtime_policy_value(&policy.max_turns, policy.max_turns.value),
+            &format_runtime_policy_value(
+                &policy.max_turns,
+                crate::config::turn_limit_label(policy.max_turns.value),
+            ),
         ),
         kv(
             "current USD ceiling",
@@ -233,7 +236,7 @@ fn append_budget(rows: &mut Vec<block::PanelRow>, budget: &crate::runtime::Runti
         "run budget · last safe point",
         &format!(
             "turns {}/{} ({} left) · tokens {}/{} ({} left) · wall {}ms/{}s · tools {} calls/{} errors · USD ≤{}",
-            budget.provider_attempts, budget.ceiling.max_turns, budget.provider_attempts_remaining,
+            budget.provider_attempts, crate::config::turn_limit_label(budget.ceiling.max_turns), crate::config::turn_limit_label(budget.provider_attempts_remaining),
             budget.tokens_used, optional_number(budget.ceiling.max_tokens),
             optional_number(budget.tokens_remaining), optional_number(budget.wall_remaining_ms),
             budget.ceiling.max_wall_secs, budget.tool_calls, budget.tool_errors,

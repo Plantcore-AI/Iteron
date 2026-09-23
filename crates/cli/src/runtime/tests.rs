@@ -7888,6 +7888,53 @@ ant-api03-SuperSecretModelToken12345"
     /// reached `max_turns` ended every later submission immediately and the only exit was killing
     /// the process. The ceiling has to be movable from inside the session.
     #[tokio::test]
+    async fn unlimited_defaults_admit_after_former_parent_and_child_turn_limits() {
+        for (budget, used) in [(Budget::default(), 64), (iteron_agents::subagent_budget_ceiling(), 30)] {
+            let ws = temp_ws("unlimited-turn-default");
+            let provider = std::sync::Arc::new(MeteredProvider {
+                calls: AtomicUsize::new(0), continuation: false,
+            });
+            let rollout = Rollout::open(&ws.join(".iteron/runs"),
+                &iteron_protocol::RunId("unlimited-turn-default".into()),
+                iteron_protocol::TenantId::default()).unwrap();
+            let mut agent = Agent::new(provider.clone(), Registry::read_only(&ws).unwrap(),
+                rollout, "model-a".into(), "sys".into(), budget);
+            agent.workspace = ws.clone();
+            // Existing completed work must not cause either former implicit ceiling to reject
+            // the next physical request. No counter is reset when unlimited is selected.
+            agent.ledger.provider_attempts = used;
+            agent.ledger.turns = used;
+            assert_eq!(agent.run("continue existing work").await.unwrap(), Outcome::Done);
+            assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+            assert_eq!(agent.turn_budget().used, used + 1);
+            assert_eq!(agent.remaining_inference_turns(), Budget::UNLIMITED_TURNS);
+            assert_eq!(agent.turn_budget().remaining(), Budget::UNLIMITED_TURNS);
+            drop(agent);
+            std::fs::remove_dir_all(ws).ok();
+        }
+    }
+
+    #[tokio::test]
+    async fn explicit_two_turn_limit_still_stops_before_third_request() {
+        let ws = temp_ws("explicit-two-turn-limit");
+        let provider = std::sync::Arc::new(MeteredProvider {
+            calls: AtomicUsize::new(0), continuation: false,
+        });
+        let rollout = Rollout::open(&ws.join(".iteron/runs"),
+            &iteron_protocol::RunId("explicit-two-turn-limit".into()),
+            iteron_protocol::TenantId::default()).unwrap();
+        let mut agent = Agent::new(provider.clone(), Registry::read_only(&ws).unwrap(),
+            rollout, "model-a".into(), "sys".into(), Budget { max_turns: 2, ..Budget::default() });
+        agent.workspace = ws.clone();
+        assert_eq!(agent.run("first").await.unwrap(), Outcome::Done);
+        assert_eq!(agent.follow_up("second").await.unwrap(), Outcome::Done);
+        assert_eq!(agent.follow_up("third").await.unwrap(), Outcome::BudgetExhausted("max_turns"));
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+        drop(agent);
+        std::fs::remove_dir_all(ws).ok();
+    }
+
+    #[tokio::test]
     async fn a_saturated_turn_ceiling_is_recoverable_without_restarting_the_session() {
         let ws = temp_ws("turn-ceiling-raise");
         let provider = std::sync::Arc::new(MeteredProvider {
@@ -13490,6 +13537,81 @@ ant-api03-SuperSecretModelToken12345"
     }
 
     #[tokio::test]
+    async fn transcript_64492_of_default_63488_uses_spare_window_but_explicit_cap_compacts() {
+        const TRANSCRIPT_TOKENS: usize = 64_492;
+        for (elastic, compact, expected_requests) in [(true, true, 1), (false, true, 2), (false, false, 0)] {
+            let ws = temp_ws("transcript-default-partition");
+            let run = iteron_protocol::RunId("transcript-default-partition".into());
+            let rollout = Rollout::open(&ws.join(".iteron/runs"), &run, iteron_protocol::TenantId::default()).unwrap();
+            let provider = std::sync::Arc::new(CaptureSteering::default());
+            let mut agent = Agent::new(provider.clone(), Registry::read_only(&ws).unwrap(), rollout,
+                "kimi-k3-256k".into(), "sys".into(), Budget {
+                    max_turns: 4, max_usd: None, max_tokens: None, max_wall_secs: 30,
+                    max_consecutive_tool_errors: 3,
+                });
+            // This fixture counts one bounded summary plus one model request. The general
+            // registry fixture can select a multi-stage topology, so seal this choice explicitly.
+            pin_test_tunables_with_edits(&mut agent, [(
+                "multi_stage_summary_topology",
+                iteron_tunables::ResolutionValue::Enum { value: "single_stage".into() },
+            )]);
+            agent.workspace = ws.clone();
+            agent.model_context_window = Some(262_144);
+            agent.model_max_output_tokens = Some(8_192);
+            agent.context_budget_policy = iteron_ctx::ContextBudgetPolicy::for_usable_window(262_144, 8_192, 0)
+                .with_elastic_transcript(elastic);
+            assert_eq!(agent.context_budget_policy.transcript_tokens, 63_488);
+            agent.compaction.enabled = compact;
+            agent.compaction.keep_recent = 1;
+            agent.compaction.coverage_check = false;
+            let history = |bytes: usize| vec![
+                Message::user_text("original task"),
+                Message { role: Role::Assistant, content: vec![Block::Text { text: "x".repeat(bytes) }] },
+                Message::user_text("older instruction"),
+                Message { role: Role::Assistant, content: vec![Block::Text { text: "recent progress".into() }] },
+                Message::user_text("continue"),
+            ];
+            // Derive an exact token fixture through the production estimator rather than assume
+            // an ASCII byte/token ratio or copy the screenshot's unsupported machine settings.
+            let measured = |messages: &[Message]| {
+                let estimate = agent.context_estimator.estimate_uncached("sys", messages, &[]);
+                let estimate = agent.calibrated_context_estimate(estimate);
+                agent.inspect_context_budget(messages, &estimate)
+                    .component_tokens(iteron_ctx::ContextBudgetClass::Transcript)
+            };
+            let (mut low, mut high) = (0usize, TRANSCRIPT_TOKENS * 8);
+            while low < high {
+                let middle = low + (high - low) / 2;
+                if measured(&history(middle)) < TRANSCRIPT_TOKENS { low = middle + 1; }
+                else { high = middle; }
+            }
+            let messages = history(low);
+            assert_eq!(measured(&messages), TRANSCRIPT_TOKENS);
+            agent.set_resume(messages).unwrap();
+            let outcome = agent.run("").await;
+            if expected_requests == 0 {
+                assert!(matches!(outcome, Err(KernelError::ContextBudget(ref reason))
+                    if reason.contains("64492") && reason.contains("63488")));
+            } else {
+                assert_eq!(outcome.unwrap(), Outcome::Done);
+            }
+            let requests = provider.requests.lock().unwrap();
+            assert_eq!(requests.len(), expected_requests);
+            if elastic {
+                assert!(!requests[0].tools.is_empty(), "spare input capacity must not trigger a summary call");
+                let estimate = estimate_request_context(&requests[0].system, &requests[0].messages, &requests[0].tools);
+                assert!(estimate.total_tokens + 8_192 < 262_144);
+            } else if compact {
+                assert!(requests[0].tools.is_empty(), "explicit cap must still trigger bounded compaction");
+                assert!(!requests[1].tools.is_empty());
+            }
+            drop(requests);
+            drop(agent);
+            std::fs::remove_dir_all(ws).ok();
+        }
+    }
+
+    #[tokio::test]
     async fn model_window_drives_compaction_before_admission_and_avoids_legacy_large_window_cutoff()
     {
         fn history(message_bytes: usize) -> Vec<Message> {
@@ -15407,6 +15529,41 @@ ant-api03-SuperSecretModelToken12345"
         );
         assert_eq!(gate.prepare_resume(), Err("session_terminal"));
         let _ = std::fs::remove_dir_all(ws);
+    }
+
+    #[tokio::test]
+    async fn pre_output_retry_exhaustion_does_not_spend_stream_recovery_budget() {
+        struct NeverConnected(AtomicUsize);
+        #[async_trait::async_trait]
+        impl Provider for NeverConnected {
+            async fn turn(
+                &self,
+                _request: &TurnRequest,
+                _on_item: &mut (dyn FnMut(StreamItem) + Send),
+            ) -> Result<TurnResult, ProviderError> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Err(ProviderError::Api { status: 429, body: "transient before any output".into() })
+            }
+        }
+        let ws = temp_ws("pre-output-retry-budget");
+        let provider = std::sync::Arc::new(NeverConnected(AtomicUsize::new(0)));
+        let run = iteron_protocol::RunId("pre-output-retry-budget".into());
+        let rollout = Rollout::open(
+            &ws.join(".iteron/runs"), &run, iteron_protocol::TenantId::default(),
+        ).unwrap();
+        let mut agent = Agent::new(
+            provider.clone(), Registry::read_only(&ws).unwrap(), rollout,
+            "model-a".into(), "sys".into(), Budget::default(),
+        );
+        pin_test_tunables(&mut agent);
+        agent.workspace = ws.clone();
+        agent.set_retry_policy(iteron_sched::BackoffPolicy {
+            base_ms: 1, cap_ms: 1, max_attempts: 2,
+        });
+        assert!(agent.run("finish answer").await.is_err());
+        assert_eq!(provider.0.load(Ordering::SeqCst), 2,
+            "exhausting request attempts must not start another request retry group as stream recovery");
+        std::fs::remove_dir_all(ws).ok();
     }
 
     #[tokio::test]
@@ -20104,10 +20261,9 @@ ant-api03-SuperSecretModelToken12345"
     }
 
     #[tokio::test]
-    async fn i17_the_per_turn_session_cache_refresh_is_charged_to_the_kernel_tax() {
-        // `refresh_session_cache` rewrites two sidecars and fsyncs their directory on every turn
-        // advance. Outside the meter it was invisible durability cost, so `kernel_tax` understated
-        // what a turn actually pays for the record.
+    async fn i17_background_cache_refresh_does_not_charge_foreground_fsync() {
+        // Derivative cache publication runs on its worker; enqueueing must not charge foreground
+        // turn admission for background filesystem work.
         let ws = temp_ws("session-cache-metered");
         let mut agent = agent_for(&ws);
         agent
@@ -20115,9 +20271,9 @@ ant-api03-SuperSecretModelToken12345"
             .expect("seed a turn so the projection has something to persist");
         let before = agent.ledger.kernel_tax().record_fsync_latency_us;
         agent.advance_turn().await.unwrap();
-        assert!(
-            agent.ledger.kernel_tax().record_fsync_latency_us > before,
-            "the turn-advance cache refresh must appear in the ledger, not beside it"
+        assert_eq!(
+            agent.ledger.kernel_tax().record_fsync_latency_us, before,
+            "turn advance queues cache publication without a foreground fsync"
         );
         let _ = std::fs::remove_dir_all(&ws);
     }
