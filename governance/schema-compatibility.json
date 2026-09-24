@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "release_ordinal": 7,
+  "release_ordinal": 8,
   "minimum_deprecation_releases": 1,
   "surfaces": [
     {
@@ -1325,12 +1325,12 @@
         }
       ],
       "fields": [
-        { "name": "reason_code", "introduced_release": 7 },
-        { "name": "resolution", "introduced_release": 7 },
-        { "name": "response_submission_id", "introduced_release": 7 },
-        { "name": "schema_version", "introduced_release": 7 },
-        { "name": "submission_id", "introduced_release": 7 },
-        { "name": "type", "introduced_release": 7 }
+        { "name": "reason_code", "introduced_release": 8 },
+        { "name": "resolution", "introduced_release": 8 },
+        { "name": "response_submission_id", "introduced_release": 8 },
+        { "name": "schema_version", "introduced_release": 8 },
+        { "name": "submission_id", "introduced_release": 8 },
+        { "name": "type", "introduced_release": 8 }
       ],
       "compatibility_shims": []
     },
@@ -1352,10 +1352,10 @@
         }
       ],
       "fields": [
-        { "name": "kind", "introduced_release": 7 },
-        { "name": "schema_version", "introduced_release": 7 },
-        { "name": "submission_id", "introduced_release": 7 },
-        { "name": "type", "introduced_release": 7 }
+        { "name": "kind", "introduced_release": 8 },
+        { "name": "schema_version", "introduced_release": 8 },
+        { "name": "submission_id", "introduced_release": 8 },
+        { "name": "type", "introduced_release": 8 }
       ],
       "compatibility_shims": []
     },
@@ -1377,9 +1377,9 @@
         }
       ],
       "fields": [
-        { "name": "schema_version", "introduced_release": 7 },
-        { "name": "submission_id", "introduced_release": 7 },
-        { "name": "type", "introduced_release": 7 }
+        { "name": "schema_version", "introduced_release": 8 },
+        { "name": "submission_id", "introduced_release": 8 },
+        { "name": "type", "introduced_release": 8 }
       ],
       "compatibility_shims": []
     },
@@ -1401,10 +1401,10 @@
         }
       ],
       "fields": [
-        { "name": "reason_code", "introduced_release": 7 },
-        { "name": "schema_version", "introduced_release": 7 },
-        { "name": "submission_id", "introduced_release": 7 },
-        { "name": "type", "introduced_release": 7 }
+        { "name": "reason_code", "introduced_release": 8 },
+        { "name": "schema_version", "introduced_release": 8 },
+        { "name": "submission_id", "introduced_release": 8 },
+        { "name": "type", "introduced_release": 8 }
       ],
       "compatibility_shims": []
     },

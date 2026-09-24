@@ -188,23 +188,6 @@ pub(super) fn validate(file: &syn::File) -> Result<()> {
                     "machine output record must be a JSON object",
                 )
             })?;
-            if schema_version < SCHEMA_VERSION
-                && matches!(
-                    fields.get("type").and_then(Value::as_str),
-                    Some(
-                        "approval_resolved"
-                            | "control_submission_applied"
-                            | "steer_submission_applied"
-                            | "submission_rejected"
-                    )
-                )
-            {
-                return Ok(json!({
-                    "schema_version": schema_version,
-                    "type": "notice",
-                    "message": scrub("Submission lifecycle detail requires output schema v6."),
-                }));
-            }
             fields.insert("schema_version".into(), Value::from(schema_version));
             if schema_version < SCHEMA_VERSION
                 && fields.get("type").and_then(Value::as_str) == Some("turn_end")
