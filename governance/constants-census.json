@@ -13,12 +13,12 @@
     "cli": {
       "bounded": 219,
       "searchable": 274,
-      "structural": 228
+      "structural": 231
     },
     "ctx": {
       "bounded": 53,
       "searchable": 35,
-      "structural": 15
+      "structural": 16
     },
     "eval": {
       "bounded": 41,
@@ -58,7 +58,7 @@
     "protocol": {
       "bounded": 51,
       "searchable": 1,
-      "structural": 61
+      "structural": 62
     },
     "provider": {
       "bounded": 70,
@@ -66,9 +66,9 @@
       "structural": 47
     },
     "record": {
-      "bounded": 30,
+      "bounded": 31,
       "searchable": 22,
-      "structural": 50
+      "structural": 52
     },
     "sandbox": {
       "bounded": 6,
@@ -112,7 +112,7 @@
     }
   },
   "schema_version": 1,
-  "settable": 1478,
-  "structural": 849,
-  "total": 2327
+  "settable": 1479,
+  "structural": 856,
+  "total": 2335
 }
