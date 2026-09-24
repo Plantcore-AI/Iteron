@@ -1,8 +1,75 @@
 use super::*;
 
+/// Host-only routing metadata around the unchanged public SQ wire envelope. The expected
+/// Product turn travels through both bounded queues and is checked at the runtime consume point,
+/// so a control delayed past a terminal boundary cannot act on the next user turn.
+#[derive(Debug, Clone)]
+pub(crate) struct TurnSubmission {
+    envelope: SqEnvelope,
+    pub(crate) expected_product_turn_id: Option<iteron_protocol::product_contract::ProductTurnId>,
+}
+
+impl TurnSubmission {
+    pub(crate) fn current(op: Op) -> Self {
+        SqEnvelope::current(op).into()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn identified(submission_id: SubmissionId, op: Op) -> Self {
+        SqEnvelope::identified(submission_id, op).into()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_version(protocol_version: u32, op: Op) -> Self {
+        SqEnvelope::with_version(protocol_version, op).into()
+    }
+
+    pub(crate) fn with_version_and_id(
+        protocol_version: u32,
+        submission_id: SubmissionId,
+        op: Op,
+    ) -> Self {
+        SqEnvelope::with_version_and_id(protocol_version, submission_id, op).into()
+    }
+
+    pub(crate) fn into_current_identified(
+        self,
+    ) -> Result<(SubmissionId, Op), iteron_protocol::ProtocolVersionError> {
+        self.envelope.into_current_identified()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn into_current(self) -> Result<Op, iteron_protocol::ProtocolVersionError> {
+        self.envelope.into_current()
+    }
+}
+
+impl From<SqEnvelope> for TurnSubmission {
+    fn from(envelope: SqEnvelope) -> Self {
+        Self {
+            envelope,
+            expected_product_turn_id: None,
+        }
+    }
+}
+
+impl From<Op> for TurnSubmission {
+    fn from(op: Op) -> Self {
+        Self::current(op)
+    }
+}
+
+impl std::ops::Deref for TurnSubmission {
+    type Target = SqEnvelope;
+
+    fn deref(&self) -> &Self::Target {
+        &self.envelope
+    }
+}
+
 pub(super) fn stale_product_epoch(
     active: Option<iteron_protocol::product_contract::ProductTurnId>,
-    envelope: &SqEnvelope,
+    envelope: &TurnSubmission,
 ) -> bool {
     envelope
         .expected_product_turn_id
@@ -377,6 +444,32 @@ impl Agent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_turn_binding_preserves_the_public_wire_and_protocol_admission() {
+        use iteron_protocol::product_contract::ProductTurnId;
+
+        let wire = iteron_protocol::SqEnvelope::identified(SubmissionId(7), Op::Interrupt);
+        let encoded = serde_json::to_value(&wire).unwrap();
+        let mut bound = TurnSubmission::from(wire);
+        assert_eq!(bound.expected_product_turn_id, None);
+        bound.expected_product_turn_id = Some(ProductTurnId(42));
+        assert_eq!(serde_json::to_value(&bound.envelope).unwrap(), encoded);
+        assert!(encoded.get("expected_product_turn_id").is_none());
+        assert!(!stale_product_epoch(Some(ProductTurnId(42)), &bound));
+        assert!(stale_product_epoch(Some(ProductTurnId(43)), &bound));
+        assert!(stale_product_epoch(None, &bound));
+        assert!(matches!(
+            bound.into_current_identified(),
+            Ok((SubmissionId(7), Op::Interrupt))
+        ));
+
+        let mut skewed =
+            TurnSubmission::with_version(iteron_protocol::PROTOCOL_VERSION + 1, Op::Interrupt);
+        skewed.expected_product_turn_id = Some(ProductTurnId(42));
+        assert!(!stale_product_epoch(Some(ProductTurnId(42)), &skewed));
+        assert!(skewed.into_current_identified().is_err());
+    }
 
     #[test]
     fn control_queue_batch_cannot_be_disabled_or_made_unbounded_by_a_profile() {

@@ -7,7 +7,7 @@
 //!
 //! `schema_version` versions this CLI contract independently from Rust enum/debug formatting.
 
-use crate::runtime::{ApprovalResolution, UiEvent, WorkflowUiEvent};
+use crate::runtime::{UiEvent, WorkflowUiEvent};
 use clap::ValueEnum;
 use iteron_obs::{CostState, KernelTax};
 use iteron_protocol::{Outcome, Phase};
@@ -18,15 +18,16 @@ use std::io::{self, Write};
 mod v7;
 pub(crate) type V7AssistantStream = v7::AssistantStream;
 
-/// Frozen pre-PlantCore stream schema used by the compatibility projector and its goldens.
-pub const SCHEMA_VERSION: u32 = 6;
+/// Current one-shot stream schema. Schema 7 belongs to the separate resident contract.
+pub const SCHEMA_VERSION: u32 = 8;
 pub const V7_SCHEMA_VERSION: u32 = 7;
 pub const DEFAULT_SCHEMA_VERSION: u32 = SCHEMA_VERSION;
 pub const PREVIOUS_SCHEMA_VERSION: u32 = 5;
 pub const LEGACY_SCHEMA_VERSION: u32 = 4;
-pub const SUPPORTED_SCHEMA_VERSIONS: [u32; 3] = [
+pub const SUPPORTED_SCHEMA_VERSIONS: [u32; 4] = [
     LEGACY_SCHEMA_VERSION,
     PREVIOUS_SCHEMA_VERSION,
+    6,
     SCHEMA_VERSION,
 ];
 pub const EXIT_SUCCESS: u8 = 0;
@@ -206,12 +207,12 @@ fn is_token_boundary(c: char) -> bool {
     c.is_whitespace() || matches!(c, '"' | '\'' | '=' | ',' | '(' | ')' | ';')
 }
 
-fn approval_resolution_name(resolution: ApprovalResolution) -> &'static str {
+fn approval_resolution_name(resolution: crate::runtime::ApprovalResolution) -> &'static str {
     match resolution {
-        ApprovalResolution::Approved => "approved",
-        ApprovalResolution::Denied => "denied",
-        ApprovalResolution::Cancelled => "cancelled",
-        ApprovalResolution::TimedOut => "timed_out",
+        crate::runtime::ApprovalResolution::Approved => "approved",
+        crate::runtime::ApprovalResolution::Denied => "denied",
+        crate::runtime::ApprovalResolution::Cancelled => "cancelled",
+        crate::runtime::ApprovalResolution::TimedOut => "timed_out",
     }
 }
 
@@ -668,11 +669,11 @@ pub(crate) fn project_schema(mut value: Value, schema_version: u32) -> io::Resul
         return Ok(json!({
             "schema_version": schema_version,
             "type": "notice",
-            "message": scrub("Submission lifecycle detail requires output schema v6."),
+            "message": scrub("Submission lifecycle detail requires output schema v8."),
         }));
     }
     fields.insert("schema_version".into(), Value::from(schema_version));
-    if schema_version < SCHEMA_VERSION
+    if schema_version < 6
         && fields.get("type").and_then(Value::as_str) == Some("turn_end")
         && let Some(context) = fields.get_mut("context").and_then(Value::as_object_mut)
     {
@@ -856,8 +857,8 @@ mod tests {
         }
     }
     use crate::runtime::{
-        WorkflowAgentOutcomeUi, WorkflowExecutionModeUi, WorkflowPhaseUi, WorkflowRunOutcomeUi,
-        WorkflowTaskUi,
+        ApprovalResolution, WorkflowAgentOutcomeUi, WorkflowExecutionModeUi, WorkflowPhaseUi,
+        WorkflowRunOutcomeUi, WorkflowTaskUi,
     };
     use iteron_protocol::{Capability, DiffLine, DiffTag, FileDiff, Hunk, SubmissionId};
 
@@ -922,10 +923,10 @@ mod tests {
         assert_eq!(
             value,
             serde_json::from_str::<Value>(include_str!(
-                "../tests/golden/one_shot_json_drained_v6.json"
+                "../tests/golden/one_shot_json_drained_v8.json"
             ))
             .unwrap(),
-            "the complete drained machine terminal is a frozen schema-v6 contract"
+            "the complete drained machine terminal is a frozen schema-v8 contract"
         );
     }
 
@@ -1275,7 +1276,7 @@ mod tests {
     }
 
     #[test]
-    fn d13_14_every_stream_record_type_matches_the_frozen_v6_corpus() {
+    fn d13_14_every_stream_record_type_matches_the_frozen_v8_corpus() {
         fn frozen_turn_end(effort: EffortApplication, turn: &mut u32) -> Value {
             stream_event(
                 UiEvent::TurnEnd {
@@ -1514,13 +1515,37 @@ mod tests {
                 None,
             ),
         ];
-        let frozen = include_str!("../tests/golden/input_attachment_stream_v6.jsonl")
+        let frozen = include_str!("../tests/golden/input_attachment_stream_v8.jsonl")
+            .lines()
+            .chain(include_str!("../tests/golden/machine_stream_all_v8.jsonl").lines())
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(records, frozen);
+        // The new receipt vocabulary must not rewrite any published v6 event shape.
+        // Its four events are tested separately as compatibility notices below.
+        let legacy_records = records
+            .iter()
+            .filter(|record| {
+                !matches!(
+                    record["type"].as_str(),
+                    Some(
+                        "approval_resolved"
+                            | "control_submission_applied"
+                            | "steer_submission_applied"
+                            | "submission_rejected"
+                    )
+                )
+            })
+            .map(|record| project_schema(record.clone(), 6).unwrap())
+            .collect::<Vec<_>>();
+        let legacy_frozen = include_str!("../tests/golden/input_attachment_stream_v6.jsonl")
             .lines()
             .chain(include_str!("../tests/golden/machine_stream_all_v6.jsonl").lines())
             .filter(|line| !line.trim().is_empty())
             .map(|line| serde_json::from_str::<Value>(line).unwrap())
             .collect::<Vec<_>>();
-        assert_eq!(records, frozen);
+        assert_eq!(legacy_records, legacy_frozen);
         let kinds = records
             .iter()
             .map(|record| record["type"].as_str().unwrap())
@@ -1572,7 +1597,7 @@ mod tests {
     }
 
     #[test]
-    fn identified_receipt_machine_records_match_the_additive_v6_fixture() {
+    fn identified_receipt_machine_records_match_the_versioned_v8_fixture() {
         let mut turn = 0;
         let records = [
             UiEvent::ApprovalResolved {
@@ -1596,12 +1621,12 @@ mod tests {
         .into_iter()
         .map(|event| stream_event_for_schema(event, &mut turn, SCHEMA_VERSION).unwrap())
         .collect::<Vec<_>>();
-        let fixture = include_str!("../tests/golden/receipt_stream_v6.jsonl")
+        let fixture = include_str!("../tests/golden/receipt_stream_v8.jsonl")
             .lines()
             .map(|line| serde_json::from_str::<Value>(line).unwrap())
             .collect::<Vec<_>>();
         assert_eq!(records, fixture);
-        for legacy_schema in [LEGACY_SCHEMA_VERSION, PREVIOUS_SCHEMA_VERSION] {
+        for legacy_schema in [LEGACY_SCHEMA_VERSION, PREVIOUS_SCHEMA_VERSION, 6] {
             for record in &records {
                 let projected = project_schema(record.clone(), legacy_schema).unwrap();
                 let encoded = serde_json::to_string(&projected).unwrap();
@@ -1696,11 +1721,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
     #[test]
     fn legacy_stream_json_never_emits_split_url_userinfo() {
-        for schema in [
-            LEGACY_SCHEMA_VERSION,
-            PREVIOUS_SCHEMA_VERSION,
-            SCHEMA_VERSION,
-        ] {
+        for schema in SUPPORTED_SCHEMA_VERSIONS {
             let mut stream = StreamingScrubber::default();
             let mut turn = 0;
             let mut frames = Vec::new();
@@ -1759,7 +1780,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     #[test]
     fn input_attachment_is_bounded_metadata_only_and_stream_json_only() {
         let frozen: Value = serde_json::from_str(include_str!(
-            "../tests/golden/input_attachment_stream_v6.jsonl"
+            "../tests/golden/input_attachment_stream_v8.jsonl"
         ))
         .unwrap();
         assert_eq!(

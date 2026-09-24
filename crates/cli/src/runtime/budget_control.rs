@@ -145,7 +145,7 @@ impl Agent {
     }
 
     /// Install the resident safe-point command channel without enabling human approval prompts.
-    pub(crate) fn set_inbound_control(&mut self, rx: tokio::sync::mpsc::Receiver<SqEnvelope>) {
+    pub(crate) fn set_inbound_control(&mut self, rx: tokio::sync::mpsc::Receiver<TurnSubmission>) {
         self.approvals_rx = Some(rx);
     }
 
@@ -160,7 +160,7 @@ impl Agent {
 
     /// Install the TUI's command and approval-answer channel. An `Ask` verdict may then block
     /// (interrupt-bounded) for the operator's answer.
-    pub fn set_approvals(&mut self, rx: tokio::sync::mpsc::Receiver<SqEnvelope>) {
+    pub(crate) fn set_approvals(&mut self, rx: tokio::sync::mpsc::Receiver<TurnSubmission>) {
         self.interactive_approvals = true;
         self.set_inbound_control(rx);
     }

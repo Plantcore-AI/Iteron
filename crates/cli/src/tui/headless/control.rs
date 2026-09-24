@@ -494,7 +494,7 @@ mod tests {
         assert!(queued["turn_id"].is_null());
         assert!(client.thread_snapshot_v1().unwrap().turn.is_none());
         assert!(matches!(
-            submissions.try_recv().unwrap().op,
+            &submissions.try_recv().unwrap().op,
             iteron_protocol::Op::UserInput { text } if text == "fix the test"
         ));
     }

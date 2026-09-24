@@ -498,11 +498,9 @@ mod tests {
             else {
                 panic!("session isolation must be constrained by attested domains")
             };
-            *values = std::collections::BTreeSet::from([
-                iteron_tunables::ResolutionValue::Enum {
-                    value: "durable".into(),
-                },
-            ]);
+            *values = std::collections::BTreeSet::from([iteron_tunables::ResolutionValue::Enum {
+                value: "durable".into(),
+            }]);
             isolation_constraints += 1;
         }
         assert!(isolation_constraints > 0);
@@ -775,9 +773,18 @@ mod tests {
         project_recorded_transcript(&mut app, &events);
 
         assert_eq!(app.transcript.len(), 2);
-        assert!(matches!(&app.transcript[0].kind, block::BlockKind::User(text) if text == "previous question"));
-        assert!(matches!(&app.transcript[1].kind, block::BlockKind::Assistant(_)));
-        assert!(app.transcript.iter().all(|block| !matches!(block.kind, block::BlockKind::Welcome { .. })));
+        assert!(
+            matches!(&app.transcript[0].kind, block::BlockKind::User(text) if text == "previous question")
+        );
+        assert!(matches!(
+            &app.transcript[1].kind,
+            block::BlockKind::Assistant(_)
+        ));
+        assert!(
+            app.transcript
+                .iter()
+                .all(|block| !matches!(block.kind, block::BlockKind::Welcome { .. }))
+        );
     }
 
     #[test]
@@ -1794,10 +1801,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         );
         app.track_steer("late steer".into(), SubmissionId(1));
         app.queue_after_turn("queued last".into()).unwrap();
-        let (moved, unmatched) = app.requeue_unadmitted(
-            vec!["late steer".into()],
-            &[Some(SubmissionId(1))],
-        );
+        let (moved, unmatched) =
+            app.requeue_unadmitted(vec!["late steer".into()], &[Some(SubmissionId(1))]);
         assert_eq!((moved, unmatched), (1, 0));
         assert_eq!(
             app.queued
@@ -1823,13 +1828,14 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     fn unmatched_steer_previews_are_preserved_as_ordered_follow_ups() {
         let mut app = App::new();
         app.track_steer("returned by kernel".into(), SubmissionId(1));
-        app.track_steer("preview missing from reclaim report".into(), SubmissionId(2));
+        app.track_steer(
+            "preview missing from reclaim report".into(),
+            SubmissionId(2),
+        );
         app.queue_after_turn("already queued".into()).unwrap();
 
-        let (reported, preserved) = app.requeue_unadmitted(
-            vec!["returned by kernel".into()],
-            &[Some(SubmissionId(1))],
-        );
+        let (reported, preserved) =
+            app.requeue_unadmitted(vec!["returned by kernel".into()], &[Some(SubmissionId(1))]);
 
         assert_eq!((reported, preserved), (1, 1));
         assert!(app.steer_previews.is_empty());
@@ -2459,10 +2465,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     fn local_workers_add_only_a_bounded_active_wakeup() {
         let now = Instant::now();
         assert_eq!(local_job_wake(None, now, false), None);
-        assert_eq!(
-            local_job_wake(None, now, true),
-            Some(now + LOCAL_JOB_POLL)
-        );
+        assert_eq!(local_job_wake(None, now, true), Some(now + LOCAL_JOB_POLL));
         let earlier = now + Duration::from_millis(1);
         assert_eq!(local_job_wake(Some(earlier), now, true), Some(earlier));
     }
@@ -3471,7 +3474,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     fn one_shot_terminal_result(summary: &app_server::TerminalSummary) -> serde_json::Value {
         summary
             .result_for_schema(crate::output::SCHEMA_VERSION)
-            .expect("v6 terminal facts must project")
+            .expect("current terminal facts must project")
     }
 
     fn tui_terminal_result(summary: &app_server::TerminalSummary) -> (serde_json::Value, String) {
@@ -3605,7 +3608,16 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         for (outcome, expected_outcome, expected_exit_code) in parity_cases() {
             let capture = capture_client_parity(&parity_summary(outcome));
             assert_eq!(pairwise_result_equality(&capture), [true, true, true]);
-            assert_eq!(capture.one_shot["schema_version"], 6);
+            assert_eq!(capture.one_shot["schema_version"], 8);
+            if expected_outcome == "done" {
+                let fixture: serde_json::Value = serde_json::from_str(include_str!(
+                    "../../../../governance/client-conformance/client-parity-v8.json"
+                ))
+                .expect("the current parity fixture is valid JSON");
+                for client in fixture["clients"].as_array().unwrap() {
+                    assert_eq!(capture.one_shot, client["result"]);
+                }
+            }
             assert_eq!(capture.one_shot["outcome"], expected_outcome);
             assert_eq!(
                 capture.one_shot["exit_code"].as_u64(),
@@ -3615,7 +3627,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     }
 
     #[test]
-    fn plantcore_resident_uses_v7_while_tui_retains_its_v6_presentation_state() {
+    fn plantcore_resident_uses_v7_while_tui_retains_its_v8_presentation_state() {
         for (outcome, expected_outcome, expected_exit_code) in parity_cases() {
             let capture = capture_v7_machine_parity(&parity_summary(outcome));
 
@@ -3623,7 +3635,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             assert_eq!(capture.one_shot["schema_version"], 7);
             assert_eq!(capture.one_shot["outcome"], expected_outcome);
             assert!(capture.one_shot.get("exit_code").is_none());
-            assert_eq!(capture.tui["schema_version"], 6);
+            assert_eq!(capture.tui["schema_version"], 8);
             assert_eq!(capture.tui["outcome"], expected_outcome);
             assert_eq!(
                 capture.tui["exit_code"].as_u64(),
@@ -3647,10 +3659,10 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         let summary = app_server::TerminalSummary {
             terminal: app_server::TerminalAuthority::Plantcore(
                 iteron_protocol::PlantcoreTerminalOutcome::Done(
-                iteron_protocol::ProductResult::Completed {
-                    assistant_text: "the typed answer".into(),
-                    artifacts: Vec::new(),
-                },
+                    iteron_protocol::ProductResult::Completed {
+                        assistant_text: "the typed answer".into(),
+                        artifacts: Vec::new(),
+                    },
                 ),
             ),
             assistant_text: "the typed answer".into(),
@@ -3679,7 +3691,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 mode: PermissionMode::default(),
                 effort: Effort::default(),
                 model: "test-model".into(),
-            provider_id: "test-provider".into(),
+                provider_id: "test-provider".into(),
                 cost: CostState::default(),
                 last_turn_usage: None,
                 unadmitted_steers: Vec::new(),
@@ -3708,8 +3720,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             &mut notification_bytes,
             &interrupt,
             &drain,
-        
-            None,);
+            None,
+        );
 
         assert_eq!(app.last_result.as_ref(), Some(&expected));
         assert_eq!(app.status, "idle · last: done");
@@ -3735,7 +3747,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 mode: PermissionMode::default(),
                 effort: Effort::default(),
                 model: "test-model".into(),
-            provider_id: "test-provider".into(),
+                provider_id: "test-provider".into(),
                 cost: CostState::default(),
                 last_turn_usage: None,
                 unadmitted_steers: Vec::new(),
@@ -3778,8 +3790,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             &mut notification_bytes,
             &interrupt,
             &drain,
-        
-            None,);
+            None,
+        );
 
         assert!(!app.running, "RunEnded returns the composer to idle");
         assert!(!app.interrupting);
@@ -3804,7 +3816,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 mode: PermissionMode::default(),
                 effort: Effort::default(),
                 model: "test-model".into(),
-            provider_id: "test-provider".into(),
+                provider_id: "test-provider".into(),
                 cost: CostState::default(),
                 last_turn_usage: None,
                 unadmitted_steers: Vec::new(),
@@ -3849,8 +3861,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             &mut notification_bytes,
             &interrupt,
             &drain,
-        
-            None,);
+            None,
+        );
 
         assert_eq!(app.status, "idle · last: budget_exhausted");
         let notice = app
@@ -5412,7 +5424,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
         let (busy_tx, _busy_rx) = tokio::sync::mpsc::channel(1);
         busy_tx
-            .try_send(iteron_protocol::SqEnvelope::current(Op::Interrupt))
+            .try_send(crate::runtime::TurnSubmission::current(Op::Interrupt))
             .expect("fixture fills the bounded SQ");
         let busy_session = Session::for_test(busy_tx);
         let mut busy_app = App::new();
@@ -5445,7 +5457,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
         let (busy_tx, _busy_rx) = tokio::sync::mpsc::channel(1);
         busy_tx
-            .try_send(iteron_protocol::SqEnvelope::current(Op::Interrupt))
+            .try_send(crate::runtime::TurnSubmission::current(Op::Interrupt))
             .expect("fixture fills the bounded SQ");
         let busy_session = Session::for_test(busy_tx);
         let mut notifier = notification::TerminalNotifier::new(false);
@@ -5534,8 +5546,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             &mut Vec::new(),
             &Arc::new(AtomicBool::new(false)),
             &Arc::new(AtomicBool::new(false)),
-        
-            None,);
+            None,
+        );
         assert!(!app.editor.has_submission());
     }
 
@@ -5592,8 +5604,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             &mut notification_bytes,
             &Arc::new(AtomicBool::new(false)),
             &Arc::new(AtomicBool::new(false)),
-        
-            None,);
+            None,
+        );
         assert!(!app.editor.has_submission());
         let op = rx
             .try_recv()
@@ -5635,8 +5647,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             &mut notification_bytes,
             &Arc::new(AtomicBool::new(false)),
             &Arc::new(AtomicBool::new(false)),
-        
-            None,);
+            None,
+        );
         assert_eq!(
             app.transcript
                 .iter()
@@ -5692,8 +5704,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             &mut Vec::new(),
             &Arc::new(AtomicBool::new(false)),
             &Arc::new(AtomicBool::new(false)),
-        
-            None,);
+            None,
+        );
         assert!(!app.editor.has_submission());
         assert_eq!(app.editor.chip_count(), 0);
 
@@ -7201,8 +7213,8 @@ fn terminal_activity_boundaries_remain_visible_and_late_ids_do_not_resurrect() {
         &mut writer,
         &interrupt,
         &drain,
-    
-            None,);
+        None,
+    );
     assert_eq!(app.status, "answer complete · finalizing…");
     apply_server_event(
         &mut app,
@@ -7216,8 +7228,8 @@ fn terminal_activity_boundaries_remain_visible_and_late_ids_do_not_resurrect() {
         &mut writer,
         &interrupt,
         &drain,
-    
-            None,);
+        None,
+    );
     assert!(app.activities.contains_key("turn-1-finalizing"));
 
     app.retired_activity_ids
@@ -7236,8 +7248,8 @@ fn terminal_activity_boundaries_remain_visible_and_late_ids_do_not_resurrect() {
         &mut writer,
         &interrupt,
         &drain,
-    
-            None,);
+        None,
+    );
     assert!(
         app.activities.is_empty(),
         "late old-turn activity stayed retired"
@@ -7257,8 +7269,8 @@ fn terminal_activity_boundaries_remain_visible_and_late_ids_do_not_resurrect() {
         &mut writer,
         &interrupt,
         &drain,
-    
-            None,);
+        None,
+    );
     assert_eq!(app.status, "idle · input ready");
 }
 
@@ -7301,8 +7313,8 @@ fn request_sent_owns_ttft_origin_and_delayed_activity_keeps_protocol_age() {
         &mut writer,
         &interrupt,
         &drain,
-    
-            None,);
+        None,
+    );
 
     assert!(
         !app.provider_accepted,
@@ -7335,8 +7347,8 @@ fn request_sent_owns_ttft_origin_and_delayed_activity_keeps_protocol_age() {
         &mut writer,
         &interrupt,
         &drain,
-    
-            None,);
+        None,
+    );
     assert!(
         app.provider_accepted,
         "only Accepted advances the presentation label"
@@ -7375,7 +7387,13 @@ fn ordinary_tui_projects_product_final_answer_and_renders_exact_terminal_text() 
             oldest_available: 1,
             gap: None,
             events: vec![
-                event(1, None, ProductEventKindV1::TurnStarted { submission_id: None }),
+                event(
+                    1,
+                    None,
+                    ProductEventKindV1::TurnStarted {
+                        submission_id: None,
+                    },
+                ),
                 event(
                     2,
                     Some(10),
@@ -7404,13 +7422,22 @@ fn ordinary_tui_projects_product_final_answer_and_renders_exact_terminal_text() 
                 ),
                 // The next turn has no source EQ sequence. It must wait for the next envelope,
                 // even if its admission reached the resident Product ring already.
-                event(5, None, ProductEventKindV1::TurnStarted { submission_id: None }),
+                event(
+                    5,
+                    None,
+                    ProductEventKindV1::TurnStarted {
+                        submission_id: None,
+                    },
+                ),
             ],
             latest_terminal: None,
         },
         12,
     );
-    assert_eq!(app.product_terminal_answer.as_deref(), Some("exact terminal answer"));
+    assert_eq!(
+        app.product_terminal_answer.as_deref(),
+        Some("exact terminal answer")
+    );
     let screen = tests::render_text(&mut app, 100, 24);
     assert!(screen.contains("exact terminal answer"), "{screen}");
     assert!(!screen.contains("partial answer"), "{screen}");
@@ -7559,8 +7586,7 @@ fn ordinary_tui_does_not_offer_approval_for_an_incomplete_product_prompt() {
 #[test]
 fn product_approval_response_settles_only_its_exact_submission_receipt() {
     use iteron_protocol::product_contract::{
-        ProductEventKindV1, ProductEventV1, ProductEventsPageV1, ProductTurnId,
-        SubmissionReceiptV1,
+        ProductEventKindV1, ProductEventV1, ProductEventsPageV1, ProductTurnId, SubmissionReceiptV1,
     };
     let thread_id = iteron_protocol::SessionId("receipt-thread".into());
     let run_id = iteron_protocol::RunId("receipt-run".into());
@@ -7630,7 +7656,10 @@ fn product_approval_response_settles_only_its_exact_submission_receipt() {
         },
         2,
     );
-    assert_eq!(app.pending.as_ref().map(|pending| pending.id), Some(SubmissionId(7)));
+    assert_eq!(
+        app.pending.as_ref().map(|pending| pending.id),
+        Some(SubmissionId(7))
+    );
     assert!(app.pending_approval_response.is_none());
     assert!(app.status.contains("rejected"));
 }

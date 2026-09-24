@@ -2,8 +2,8 @@
 
 Iteron is Apache-2.0 licensed and **pre-alpha**. The current `main` branch is the
 only development line; there is no stable compatibility or support promise.
-The current source workspace declares **v0.0.21**. The latest public release is
-**v0.0.20**.
+The current source workspace declares **v0.0.22**. Published versions are listed
+on [GitHub Releases](https://github.com/Plantcore-AI/Iteron/releases).
 
 ## Delivered baseline
 

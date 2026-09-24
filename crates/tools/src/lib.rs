@@ -48,7 +48,7 @@ mod write_file;
 pub use tool_search::DEFAULT_DEFERRED_TOOL_EAGER_LIMIT;
 pub use web::WEB_SEARCH_RESULT_CAP;
 
-pub use confined_helper::confined_helper_entry;
+pub use confined_helper::{confined_helper_entry, native_write_confinement_notice};
 
 pub use edit::apply_unique_edit;
 pub use egress::{EgressAllowPolicy, EgressPolicyError, MAX_EGRESS_HOST_BYTES, MAX_EGRESS_HOSTS};

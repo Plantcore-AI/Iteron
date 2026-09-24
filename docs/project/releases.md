@@ -21,6 +21,7 @@ assets attached to each tag.
 | `v0.0.9` | 2026-08-16 | release workflow | three macOS/Linux archives |
 | `v0.0.19` | 2026-08-23 | release workflow | three macOS/Linux archives |
 | `v0.0.20` | 2026-08-24 | release workflow | macOS arm64, Linux arm64/x86-64, Windows x86-64 |
+| `v0.0.21` | 2026-09-15 | release workflow | release page is authoritative |
 
 The first four were produced while hosted Actions capacity was unavailable. They carry
 content-addressed manifests, receipts, checksums, legal evidence, and SBOMs, but
@@ -32,9 +33,9 @@ release contract below.
 creating a release because the public schema chronology had not advanced. It has
 no downloadable assets and is not a release fallback.
 
-`v0.0.20` is the current pre-alpha release. Its release manifest and GitHub asset
-list, rather than this summary table, are authoritative for its exact targets and
-attestations.
+The [latest release](https://github.com/Plantcore-AI/Iteron/releases/latest), its manifest, and
+GitHub asset list are authoritative for current targets and attestations. This table records
+historical milestones and may lag new immutable releases.
 
 ## Accepted release artifacts
 

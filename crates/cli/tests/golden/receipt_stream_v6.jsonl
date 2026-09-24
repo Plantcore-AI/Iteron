@@ -1,4 +1,0 @@
-{"reason_code":"operator_approved","resolution":"approved","response_submission_id":19,"schema_version":6,"submission_id":7,"type":"approval_resolved"}
-{"kind":"drain","schema_version":6,"submission_id":21,"type":"control_submission_applied"}
-{"schema_version":6,"submission_id":19,"type":"steer_submission_applied"}
-{"reason_code":"turn_mismatch_or_terminal","schema_version":6,"submission_id":20,"type":"submission_rejected"}

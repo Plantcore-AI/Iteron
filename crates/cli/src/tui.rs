@@ -337,7 +337,7 @@ impl Session {
     /// so that production code has exactly one way to obtain a `Session`: `app_server::wire`.
     #[cfg(test)]
     pub(crate) fn for_test(
-        submissions: tokio::sync::mpsc::Sender<iteron_protocol::SqEnvelope>,
+        submissions: tokio::sync::mpsc::Sender<crate::runtime::TurnSubmission>,
     ) -> Self {
         let (control, _control_rx) = tokio::sync::mpsc::channel(1);
         let (mcp_input, _mcp_input_rx) = tokio::sync::mpsc::channel(1);

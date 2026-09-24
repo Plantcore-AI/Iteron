@@ -953,7 +953,7 @@ fn drain_preserves_canonical_observers_through_real_headless_session_shutdown() 
     );
     let result = receive_result_within_timeout(&mut reader);
     assert_eq!(result["result"]["outcome"], "drained", "{result}");
-    assert_eq!(result["result"]["schema_version"], 6, "{result}");
+    assert_eq!(result["result"]["schema_version"], 8, "{result}");
     assert_eq!(result["result"]["success"], true, "{result}");
 
     // Drain settles the active turn; the resident headless listener still owns the AppServer.
@@ -1127,7 +1127,7 @@ fn no_tty_skew_reconnect_and_current_result_share_one_headless_server() {
     }
     assert_eq!(results.len(), 1);
     let result = &results[0];
-    assert_eq!(result["schema_version"], 6);
+    assert_eq!(result["schema_version"], 8);
     assert_eq!(result["type"], "result");
     assert_eq!(result["assistant_text"], "parity reply");
     assert_eq!(result["outcome"], "done");

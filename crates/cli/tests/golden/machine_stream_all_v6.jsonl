@@ -18,9 +18,5 @@
 {"count":1,"schema_version":6,"type":"steer_applied"}
 {"message":"checkpoint","schema_version":6,"type":"notice"}
 {"arguments":{"command":"cargo test"},"capability":"code_executing","reason":"approve?","schema_version":6,"submission_id":7,"tool":"bash","type":"approval_request","workspace":"/workspace"}
-{"reason_code":"operator_approved","resolution":"approved","response_submission_id":19,"schema_version":6,"submission_id":7,"type":"approval_resolved"}
-{"kind":"drain","schema_version":6,"submission_id":21,"type":"control_submission_applied"}
-{"schema_version":6,"submission_id":19,"type":"steer_submission_applied"}
-{"reason_code":"turn_mismatch_or_terminal","schema_version":6,"submission_id":20,"type":"submission_rejected"}
 {"schema_version":6,"type":"run_done"}
 {"assistant_text":"complete","cost_reason":null,"cost_status":"zero","cost_usd":0.0,"error":null,"exit_code":0,"outcome":"done","reason":null,"run_id":"run-all-types","schema_version":6,"success":true,"turns":5,"type":"result","kernel_tax":{"admission_latency_us":0,"broker_latency_us":0,"record_fsync_latency_us":0,"estimated_tokens":0,"failed_runs":0}}

@@ -33,7 +33,8 @@
 //! consumes them. Carrying `UiEvent` in a versioned envelope of our own satisfies both — the wire
 //! is version-negotiated in both directions, and no frozen type moves.
 //!
-//! The SQ is different: it carries `iteron_protocol::SqEnvelope` unchanged, because `Op` expresses
+//! The SQ carries the unchanged `iteron_protocol::SqEnvelope` inside a host-only
+//! `TurnSubmission` with the optional Product V1 turn epoch, because `Op` expresses
 //! everything the frontend submits.
 //!
 //! # Backpressure
@@ -79,11 +80,11 @@ pub(crate) use self::operator_status::{
 };
 use self::plantcore::PlantcoreAdmission;
 pub(crate) use self::recording_fault::RecordingAppServerFault;
-use crate::runtime::{Agent, UiEvent};
+use crate::runtime::{Agent, TurnSubmission, UiEvent};
 use iteron_protocol::{
     Capability, ContentSegments, LifecyclePayload, LifecycleState, Op, Outcome, PROTOCOL_VERSION,
-    ProtocolVersionError, RunId, RunLifecycleState, SessionId, SessionLifecycleState, SqEnvelope,
-    SubmissionId, SubmissionLifecycleState, TurnId, TurnLifecycleState,
+    ProtocolVersionError, RunId, RunLifecycleState, SessionId, SessionLifecycleState, SubmissionId,
+    SubmissionLifecycleState, TurnId, TurnLifecycleState,
 };
 use std::io::{Read as _, Seek as _, Write as _};
 use std::sync::Arc;
@@ -747,7 +748,7 @@ impl EventEnvelope {
     }
 
     /// Unwrap an event the frontend's negotiated protocol can render. Mirrors
-    /// `SqEnvelope::into_current`: the version travels with the payload, so a server that started
+    /// `TurnSubmission::into_current`: the version travels with the payload, so a server that started
     /// emitting a newer shape mid-session is caught at the point of use rather than assumed away by
     /// the connect-time handshake.
     pub(crate) fn into_current(mut self) -> Result<ServerEvent, EventEnvelopeError> {
@@ -945,7 +946,7 @@ pub(crate) struct AppServerClient {
 enum SubmissionSender {
     /// Test-only bare wires keep the existing constructor usable by frontend submission tests.
     #[cfg(test)]
-    Bare(mpsc::Sender<SqEnvelope>),
+    Bare(mpsc::Sender<TurnSubmission>),
     /// Production wires charge every queued submission against the shared heap budget.
     Weighted {
         sender: mpsc::Sender<QueuedSubmission>,
@@ -960,7 +961,7 @@ enum SubmissionSender {
 /// moving it into the safe-point queue retains both bounds.
 #[derive(Debug)]
 pub(crate) struct QueuedSubmission {
-    envelope: SqEnvelope,
+    envelope: TurnSubmission,
     _memory: OwnedSemaphorePermit,
     /// Retained across server-side requeue. Channel capacity alone is not a bound once an item has
     /// been dequeued, so this permit keeps data and priority populations independently bounded.
@@ -1045,7 +1046,7 @@ fn is_priority_submission(op: &Op) -> bool {
 }
 
 impl QueuedSubmission {
-    fn into_envelope(self) -> SqEnvelope {
+    fn into_envelope(self) -> TurnSubmission {
         self.envelope
     }
 }
@@ -1114,7 +1115,7 @@ impl AppServerClient {
     #[cfg(test)]
     pub(crate) fn connect(
         server_version: u32,
-        submissions: mpsc::Sender<SqEnvelope>,
+        submissions: mpsc::Sender<TurnSubmission>,
     ) -> Result<Self, ProtocolVersionError> {
         Self::connect_to(
             server_version,
@@ -1284,7 +1285,7 @@ impl AppServerClient {
             Op::Drain => Some("drain.requested"),
             _ => None,
         };
-        let mut envelope = SqEnvelope::with_version_and_id(self.negotiated_version, id, op);
+        let mut envelope = TurnSubmission::with_version_and_id(self.negotiated_version, id, op);
         envelope.expected_product_turn_id = expected_product_turn_id;
         let correlation = iteron_obs::lifecycle::LifecycleCorrelation {
             submission_id: Some(id),
@@ -2336,7 +2337,7 @@ pub(crate) struct AppServer {
     /// the separate interactive-approval posture decides whether `Ask` may wait for a human.
     /// The kernel drains commands at its own safe points; the server never reaches into a running
     /// turn.
-    to_kernel: mpsc::Sender<SqEnvelope>,
+    to_kernel: mpsc::Sender<TurnSubmission>,
     activity: mpsc::Receiver<iteron_protocol::ActivityEvent>,
     mcp_input_requests: mpsc::Receiver<mcp_input::McpInputRequestEnvelope>,
     mcp_input_responses: mpsc::Receiver<McpInputResponse>,
@@ -2358,7 +2359,7 @@ impl AppServer {
         let run_id = agent.rollout.run_id().clone();
         ends.events
             .bind_lifecycle_identity(SessionId(format!("session-{}", run_id.0)), run_id);
-        let (to_kernel, kernel_rx) = mpsc::channel::<SqEnvelope>(
+        let (to_kernel, kernel_rx) = mpsc::channel::<TurnSubmission>(
             iteron_tunables::param_integer(
                 "cli.app_server.kernel_inbound_capacity",
                 KERNEL_INBOUND_CAPACITY,
@@ -3231,7 +3232,7 @@ impl AppServer {
                             // happened, not at the end of whatever turn is running.
                             let notification = publish_settled(&mut events, settled).await;
                             if to_kernel
-                                .try_send(SqEnvelope::current(Op::Steer {
+                                .try_send(TurnSubmission::current(Op::Steer {
                                     text: notification.clone(),
                                 }))
                                 .is_err()
@@ -3473,7 +3474,7 @@ impl AppServer {
                                         ).await;
                                         let kind = kernel_submission_kind(&op);
                                         let forced = matches!(op, Op::ForceCancel);
-                                        let mut kernel_envelope = SqEnvelope::with_version_and_id(
+                                        let mut kernel_envelope = TurnSubmission::with_version_and_id(
                                             version,
                                             submission_id,
                                             op,
@@ -4933,8 +4934,8 @@ mod tests {
         assert_eq!(second.turn.unwrap().turn_id.0, 2);
     }
 
-    fn envelope(op: Op) -> SqEnvelope {
-        SqEnvelope::with_version(PROTOCOL_VERSION, op)
+    fn envelope(op: Op) -> TurnSubmission {
+        TurnSubmission::with_version(PROTOCOL_VERSION, op)
     }
 
     #[test]
@@ -5673,7 +5674,7 @@ mod tests {
             (SubmissionId(62), Op::Interrupt),
             (SubmissionId(63), Op::Drain),
         ] {
-            let mut envelope = SqEnvelope::identified(id, op);
+            let mut envelope = TurnSubmission::identified(id, op);
             envelope.expected_product_turn_id = Some(ProductTurnId(1));
             kernel_tx.try_send(envelope).unwrap();
         }
@@ -5778,7 +5779,7 @@ mod tests {
 
     #[test]
     fn matching_version_connects_and_stamps_every_submission() {
-        let (tx, mut rx) = mpsc::channel::<SqEnvelope>(4);
+        let (tx, mut rx) = mpsc::channel::<TurnSubmission>(4);
         let client = AppServerClient::connect(PROTOCOL_VERSION, tx)
             .expect("the current server version accepts the handshake");
         assert_eq!(client.negotiated_version(), PROTOCOL_VERSION);
@@ -5793,7 +5794,7 @@ mod tests {
 
     #[test]
     fn version_skew_is_refused_up_front() {
-        let (tx, mut rx) = mpsc::channel::<SqEnvelope>(4);
+        let (tx, mut rx) = mpsc::channel::<TurnSubmission>(4);
         let err = AppServerClient::connect(PROTOCOL_VERSION + 1, tx.clone())
             .expect_err("a peer on a different version must be refused");
         assert_eq!(err.expected, PROTOCOL_VERSION);
@@ -5851,7 +5852,7 @@ mod tests {
     fn a_closed_queue_and_a_full_queue_are_different_answers() {
         // The frontend must be able to tell "the runtime is gone" from "try again": one is fatal,
         // the other is a keystroke that did not land.
-        let (tx, rx) = mpsc::channel::<SqEnvelope>(1);
+        let (tx, rx) = mpsc::channel::<TurnSubmission>(1);
         let client = AppServerClient::connect(PROTOCOL_VERSION, tx).expect("handshake");
         client.submit(Op::Interrupt).expect("first fits");
         assert_eq!(client.submit(Op::Drain), Err(SubmitError::Busy));

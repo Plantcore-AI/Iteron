@@ -11,9 +11,9 @@ use serde_json::Value;
 ///
 /// Keep the current version last. The schema-compatibility corpus test below binds this list to
 /// every retained machine-output fixture, so a producer bump cannot silently strand evaluation.
-pub const SUPPORTED_ITERON_CLI_SCHEMA_VERSIONS: &[u32] = &[3, 4, 5, 6];
+pub const SUPPORTED_ITERON_CLI_SCHEMA_VERSIONS: &[u32] = &[3, 4, 5, 6, 8];
 /// Version currently emitted by `iteron --output-format json`.
-pub const ITERON_CLI_SCHEMA_VERSION: u32 = 6;
+pub const ITERON_CLI_SCHEMA_VERSION: u32 = 8;
 const MAX_CLI_INPUT_ATTACHMENTS: u8 = 8;
 const MAX_CLI_IMAGE_BASE64_BYTES: u64 = 8 * 1024 * 1024;
 /// Exact machine-record/version pairs admitted by the real evaluation consumer.
@@ -21,68 +21,87 @@ pub const SUPPORTED_ITERON_CLI_TYPE_VERSIONS: &[(&str, u32)] = &[
     ("approval_request", 4),
     ("approval_request", 5),
     ("approval_request", 6),
-    ("approval_resolved", 6),
+    ("approval_request", 8),
+    ("approval_resolved", 8),
     ("assistant_text", 3),
     ("assistant_text", 4),
     ("assistant_text", 5),
     ("assistant_text", 6),
-    ("control_submission_applied", 6),
+    ("assistant_text", 8),
+    ("control_submission_applied", 8),
     ("input_attachment", 5),
     ("input_attachment", 6),
+    ("input_attachment", 8),
     ("notice", 4),
     ("notice", 5),
     ("notice", 6),
+    ("notice", 8),
     ("phase", 3),
     ("phase", 4),
     ("phase", 5),
     ("phase", 6),
+    ("phase", 8),
     ("result", 3),
     ("result", 4),
     ("result", 5),
     ("result", 6),
+    ("result", 8),
     ("run_done", 3),
     ("run_done", 4),
     ("run_done", 5),
     ("run_done", 6),
+    ("run_done", 8),
     ("steer_applied", 4),
     ("steer_applied", 5),
     ("steer_applied", 6),
-    ("steer_submission_applied", 6),
-    ("submission_rejected", 6),
+    ("steer_applied", 8),
+    ("steer_submission_applied", 8),
+    ("submission_rejected", 8),
     ("thinking", 4),
     ("thinking", 5),
     ("thinking", 6),
+    ("thinking", 8),
     ("tool_end", 4),
     ("tool_end", 5),
     ("tool_end", 6),
+    ("tool_end", 8),
     ("tool_start", 4),
     ("tool_start", 5),
     ("tool_start", 6),
+    ("tool_start", 8),
     ("turn_end", 3),
     ("turn_end", 4),
     ("turn_end", 5),
     ("turn_end", 6),
+    ("turn_end", 8),
     ("workflow_agent_activity", 4),
     ("workflow_agent_activity", 5),
     ("workflow_agent_activity", 6),
+    ("workflow_agent_activity", 8),
     ("workflow_agent_end", 4),
     ("workflow_agent_end", 5),
     ("workflow_agent_end", 6),
+    ("workflow_agent_end", 8),
     ("workflow_agent_start", 4),
     ("workflow_agent_start", 5),
     ("workflow_agent_start", 6),
+    ("workflow_agent_start", 8),
     ("workflow_end", 4),
     ("workflow_end", 5),
     ("workflow_end", 6),
+    ("workflow_end", 8),
     ("workflow_phase", 4),
     ("workflow_phase", 5),
     ("workflow_phase", 6),
+    ("workflow_phase", 8),
     ("workflow_plan", 4),
     ("workflow_plan", 5),
     ("workflow_plan", 6),
+    ("workflow_plan", 8),
     ("workflow_start", 4),
     ("workflow_start", 5),
     ("workflow_start", 6),
+    ("workflow_start", 8),
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -1089,9 +1108,9 @@ mod tests {
     }
 
     #[test]
-    fn exact_submission_receipts_are_consumable_only_in_v6() {
+    fn exact_submission_receipts_are_consumable_only_in_v8() {
         let fixture = std::fs::read_to_string(
-            repository_root().join("crates/cli/tests/golden/receipt_stream_v6.jsonl"),
+            repository_root().join("crates/cli/tests/golden/receipt_stream_v8.jsonl"),
         )
         .unwrap();
         let expected = [
@@ -1105,10 +1124,10 @@ mod tests {
         for (line, expected_kind) in records.into_iter().zip(expected) {
             assert!(matches!(
                 parse_machine_record(line.as_bytes()),
-                Ok(CliMachineRecord::Event { schema_version: 6, kind }) if kind == expected_kind
+                Ok(CliMachineRecord::Event { schema_version: 8, kind }) if kind == expected_kind
             ));
             let mut legacy: Value = serde_json::from_str(line).unwrap();
-            for version in [4, 5] {
+            for version in [4, 5, 6] {
                 legacy["schema_version"] = Value::from(version);
                 let bytes = serde_json::to_vec(&legacy).unwrap();
                 assert!(matches!(

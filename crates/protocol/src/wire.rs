@@ -91,10 +91,6 @@ pub struct SqEnvelope {
     /// envelopes whose producer predates identified submission transport.
     #[serde(default, skip_serializing_if = "submission_id_is_zero")]
     pub submission_id: SubmissionId,
-    /// Optional Product V1 user-turn epoch. Legacy producers omit it; a bound control must be
-    /// refused by the resident runtime if that exact user-facing turn is no longer active.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expected_product_turn_id: Option<crate::product_contract::ProductTurnId>,
     pub op: Op,
 }
 
@@ -103,7 +99,6 @@ impl SqEnvelope {
         Self {
             protocol_version: PROTOCOL_VERSION,
             submission_id: SubmissionId::default(),
-            expected_product_turn_id: None,
             op,
         }
     }
@@ -112,7 +107,6 @@ impl SqEnvelope {
         Self {
             protocol_version: PROTOCOL_VERSION,
             submission_id,
-            expected_product_turn_id: None,
             op,
         }
     }
@@ -121,7 +115,6 @@ impl SqEnvelope {
         Self {
             protocol_version,
             submission_id: SubmissionId::default(),
-            expected_product_turn_id: None,
             op,
         }
     }
@@ -130,7 +123,6 @@ impl SqEnvelope {
         Self {
             protocol_version,
             submission_id,
-            expected_product_turn_id: None,
             op,
         }
     }
@@ -196,29 +188,6 @@ mod tests {
     /// The same unknown op tag under the version this build does speak.
     const CURRENT_UNKNOWN_OP_JSON: &str =
         r#"{"protocol_version":5,"submission_id":9,"op":{"op":"reprioritize"}}"#;
-
-    #[test]
-    fn product_turn_epoch_is_optional_on_legacy_sq_and_roundtrips_when_bound() {
-        let legacy = SqEnvelope::identified(SubmissionId(7), Op::Interrupt);
-        let legacy_json = serde_json::to_value(&legacy).unwrap();
-        assert!(legacy_json.get("expected_product_turn_id").is_none());
-        assert_eq!(
-            serde_json::from_value::<SqEnvelope>(legacy_json)
-                .unwrap()
-                .expected_product_turn_id,
-            None
-        );
-        let mut bound = SqEnvelope::identified(SubmissionId(8), Op::Drain);
-        bound.expected_product_turn_id = Some(crate::product_contract::ProductTurnId(42));
-        let bound_json = serde_json::to_value(&bound).unwrap();
-        assert_eq!(bound_json["expected_product_turn_id"], 42);
-        assert_eq!(
-            serde_json::from_value::<SqEnvelope>(bound_json)
-                .unwrap()
-                .expected_product_turn_id,
-            bound.expected_product_turn_id
-        );
-    }
 
     #[test]
     fn d1_02_sq_and_eq_are_stamped_and_reject_version_skew() {

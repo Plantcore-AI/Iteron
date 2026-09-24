@@ -16,6 +16,13 @@ pub const CONTEXT_SLOT_VERSION: u16 = 1;
 pub const MAX_CONTEXT_OUTLINE_DEPTH: u8 = 8;
 const MAX_CONTEXT_TASK_BYTES: usize = 64 * 1024;
 
+fn max_context_task_bytes() -> usize {
+    iteron_tunables::param_integer(
+        "ctx.context_strategy.max_context_task_bytes",
+        MAX_CONTEXT_TASK_BYTES,
+    )
+}
+
 /// The traversal-depth ceiling actually enforced this run: the compiled constant unless a profile
 /// installed an override. Depth is a `u8`, so an out-of-range override falls back to the constant
 /// rather than silently wrapping.
@@ -79,6 +86,35 @@ impl ContextSlotObservation {
             task: task.into(),
         }
     }
+
+    /// Project a submission into the bounded relevance query seen by the context slot and its
+    /// memory/skill selectors. The submission itself remains intact in the conversation and
+    /// provider request. Retain both ends so a large attached history cannot hide the latest ask
+    /// or an initial path hint. The marker is included inside the byte ceiling.
+    pub fn bounded_task_query(task: &str) -> String {
+        let limit = max_context_task_bytes();
+        if task.len() <= limit {
+            return task.to_owned();
+        }
+        const MARKER: &str = "\n[context query middle omitted]\n";
+        if limit <= MARKER.len() {
+            let mut end = limit;
+            while end > 0 && !task.is_char_boundary(end) {
+                end -= 1;
+            }
+            return task[..end].to_owned();
+        }
+        let retained = limit - MARKER.len();
+        let mut head = retained / 2;
+        while head > 0 && !task.is_char_boundary(head) {
+            head -= 1;
+        }
+        let mut tail = task.len() - (retained - retained / 2);
+        while tail < task.len() && !task.is_char_boundary(tail) {
+            tail += 1;
+        }
+        format!("{}{}{}", &task[..head], MARKER, &task[tail..])
+    }
 }
 
 /// A request plus the local-only choices intentionally absent from the frozen ABI.
@@ -131,6 +167,9 @@ impl ContextStrategy {
         input: &ContextSlotObservation,
         ceiling: CapabilitySet,
     ) -> Result<ContextPlan, &'static str> {
+        if input.task.len() > max_context_task_bytes() {
+            return Err("context task exceeds its local observation bound");
+        }
         let payload = serde_json::to_value(input).map_err(|_| "context observation is invalid")?;
         let observation = SlotObservation {
             slot: slot.slot().clone(),
@@ -155,13 +194,7 @@ impl ContextStrategy {
                 {
                     return Err("context decision widened the caller's byte or trust ceiling");
                 }
-                if plan.task != input.task
-                    || plan.task.len()
-                        > iteron_tunables::param_integer(
-                            "ctx.context_strategy.max_context_task_bytes",
-                            MAX_CONTEXT_TASK_BYTES,
-                        )
-                {
+                if plan.task != input.task || plan.task.len() > max_context_task_bytes() {
                     return Err("context decision changed or exceeded the bounded task query");
                 }
                 if !plan_fits_observation(&plan, input) {
@@ -177,12 +210,7 @@ impl ContextStrategy {
         if input.version != CONTEXT_SLOT_VERSION {
             return Err("unsupported context slot version");
         }
-        if input.task.len()
-            > iteron_tunables::param_integer(
-                "ctx.context_strategy.max_context_task_bytes",
-                MAX_CONTEXT_TASK_BYTES,
-            )
-        {
+        if input.task.len() > max_context_task_bytes() {
             return Err("context task exceeds its local observation bound");
         }
         if input.depth > max_context_outline_depth() {

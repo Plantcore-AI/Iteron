@@ -785,7 +785,7 @@ struct Cli {
     output_format: OutputFormat,
 
     /// Pin a published machine stdout schema. Supported versions are reported by
-    /// `--machine-contract`; omission keeps the current v6 default.
+    /// `--machine-contract`; omission keeps the current v8 default.
     #[arg(long, value_name = "VERSION")]
     output_schema_version: Option<u32>,
 
@@ -1332,7 +1332,7 @@ async fn run_cli() -> anyhow::Result<u8> {
         .unwrap_or(output::DEFAULT_SCHEMA_VERSION);
     if !output::SUPPORTED_SCHEMA_VERSIONS.contains(&machine_schema_version) {
         anyhow::bail!(
-            "unsupported --output-schema-version {machine_schema_version}; supported versions: 4, 5, 6"
+            "unsupported --output-schema-version {machine_schema_version}; supported versions: 4, 5, 6, 8"
         );
     }
     if cli.output_schema_version.is_some()
@@ -2898,6 +2898,9 @@ async fn run_cli() -> anyhow::Result<u8> {
         cli.confine,
     )?;
     registry.set_confine_execution(confine_execution);
+    if confine_execution && let Some(notice) = iteron_tools::native_write_confinement_notice() {
+        eprintln!("notice: {notice}");
+    }
     effective_settings
         .session_isolation
         .admit_continuation(cli.resume.is_some(), cli.continue_recent)?;

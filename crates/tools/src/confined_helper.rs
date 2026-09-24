@@ -1,11 +1,21 @@
-//! One-shot, process-isolated native file mutation. The child installs a kernel write policy
-//! before opening a writable file descriptor; unrelated provider/runtime I/O stays in the parent.
+//! Native file mutation backends. Linux uses a process-isolated Landlock helper; macOS uses
+//! descriptor-relative workspace transactions without claiming kernel sandbox isolation.
 
-use crate::{ToolExecution, err_result, ok_result};
-use iteron_protocol::{ToolResult, ToolUse};
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use crate::ok_result;
+use crate::{ToolExecution, err_result};
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use iteron_protocol::ToolResult;
+use iteron_protocol::ToolUse;
+#[cfg(target_os = "linux")]
 use serde::{Deserialize, Serialize};
-use std::io::{self, Read, Write};
-use std::path::{Path, PathBuf};
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::io;
+#[cfg(target_os = "linux")]
+use std::io::{Read, Write};
+use std::path::Path;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::path::PathBuf;
 #[cfg(target_os = "linux")]
 use std::process::Stdio;
 #[cfg(target_os = "linux")]
@@ -13,6 +23,7 @@ use std::time::Duration;
 #[cfg(all(not(test), target_os = "linux"))]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+#[cfg(target_os = "linux")]
 #[derive(Serialize, Deserialize)]
 struct Request {
     root: PathBuf,
@@ -23,6 +34,7 @@ struct Request {
     root_inode: u64,
 }
 
+#[cfg(target_os = "linux")]
 #[derive(Serialize, Deserialize)]
 struct Response {
     result: ToolResult,
@@ -30,7 +42,12 @@ struct Response {
 }
 
 pub(crate) async fn execute(root: &Path, call: ToolUse, test_helper_thread: bool) -> ToolExecution {
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        let _ = test_helper_thread;
+        execute_descriptor_relative(root, call).await
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = root;
         let _ = test_helper_thread;
@@ -229,6 +246,43 @@ mod child_guard_tests {
     }
 }
 
+/// The fallback preserves path and permission policy, but is not a process sandbox. CLI callers
+/// display this once at startup rather than flooding successful tool results with diagnostics.
+pub const fn native_write_confinement_notice() -> Option<&'static str> {
+    if cfg!(target_os = "macos") {
+        Some(
+            "macOS native file writes use descriptor-relative workspace checks; Linux Landlock isolation is unavailable. Permission policy and shell sandboxing are unchanged.",
+        )
+    } else {
+        None
+    }
+}
+
+#[cfg(any(target_os = "macos", all(test, target_os = "linux")))]
+async fn execute_descriptor_relative(root: &Path, call: ToolUse) -> ToolExecution {
+    // Keep this check at the executor seam as well as registry admission. No fallback may turn
+    // an escaping path or Git administration mutation into ordinary host-authority execution.
+    let root = match root.canonicalize() {
+        Ok(root) => root,
+        Err(error) => {
+            return ToolExecution::Definite(err_result(
+                call.id,
+                format!("workspace root unavailable: {error}"),
+            ));
+        }
+    };
+    if let Err(reason) = crate::workspace_boundary::validate_coding_write_call(&root, &call) {
+        return ToolExecution::Definite(err_result(call.id, reason));
+    }
+    let before = effect_snapshot(&root, &call).await;
+    let result = run_request(&root, call).await;
+    if result.is_error && error_effect_unknown(before, &result).await {
+        ToolExecution::Unknown(result)
+    } else {
+        ToolExecution::Definite(result)
+    }
+}
+
 #[cfg(all(any(test, feature = "test-helper"), target_os = "linux"))]
 async fn execute_in_test_landlock_thread(root: PathBuf, call: ToolUse) -> ToolExecution {
     let id = call.id.clone();
@@ -361,13 +415,13 @@ fn helper_entry_inner() -> io::Result<()> {
     io::stdout().flush()
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 struct EffectSnapshot {
     targets: Vec<(PathBuf, crate::write_file::TargetSnapshot)>,
     parent_was_missing: bool,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 async fn effect_snapshot(root: &Path, call: &ToolUse) -> io::Result<EffectSnapshot> {
     let paths: Vec<&str> = if call.name == "apply_patch" {
         call.input
@@ -419,7 +473,7 @@ async fn effect_snapshot(root: &Path, call: &ToolUse) -> io::Result<EffectSnapsh
     })
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 async fn error_effect_unknown(before: io::Result<EffectSnapshot>, result: &ToolResult) -> bool {
     if serde_json::from_str::<serde_json::Value>(&result.content)
         .ok()
@@ -465,7 +519,7 @@ pub(crate) fn debug_pause_if(name: &str) {
 #[cfg(not(all(target_os = "linux", debug_assertions)))]
 pub(crate) fn debug_pause_if(_name: &str) {}
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 async fn run_request(root: &Path, call: ToolUse) -> ToolResult {
     let id = call.id;
     match call.name.as_str() {
@@ -630,4 +684,153 @@ fn close_inherited_descriptors() -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
     Ok(())
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+mod descriptor_tests {
+    use super::*;
+    use serde_json::json;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
+
+    struct TestRoot(PathBuf);
+
+    impl TestRoot {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "iteron-descriptor-writes-{}-{}",
+                std::process::id(),
+                NEXT_ROOT.fetch_add(1, Ordering::Relaxed)
+            ));
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path.canonicalize().unwrap())
+        }
+    }
+
+    impl Drop for TestRoot {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn call(name: &str, input: serde_json::Value) -> ToolUse {
+        ToolUse {
+            id: "descriptor-call".into(),
+            name: name.into(),
+            input,
+        }
+    }
+
+    #[tokio::test]
+    async fn descriptor_backend_creates_edits_and_patches_workspace_files() {
+        let root = TestRoot::new();
+        let target = root.0.join("nested/review.py");
+        for request in [
+            call("write_file", json!({"path": target, "content": "before\n"})),
+            call(
+                "edit",
+                json!({"path": "nested/review.py", "old": "before", "new": "after"}),
+            ),
+            call(
+                "apply_patch",
+                json!({"files": [{"path": "nested/review.py", "hunks": [{"old": "after", "new": "reviewed"}]}]}),
+            ),
+        ] {
+            let result = execute_descriptor_relative(&root.0, request).await;
+            assert!(
+                matches!(&result, ToolExecution::Definite(result) if !result.is_error),
+                "{result:?}"
+            );
+        }
+        assert_eq!(std::fs::read_to_string(target).unwrap(), "reviewed\n");
+    }
+
+    #[tokio::test]
+    async fn descriptor_backend_refuses_escape_symlink_and_git_administration() {
+        let root = TestRoot::new();
+        let outside = TestRoot::new();
+        let target = outside.0.join("untouched.txt");
+        std::fs::write(&target, "before\n").unwrap();
+        std::os::unix::fs::symlink(&outside.0, root.0.join("escape")).unwrap();
+        let parent = format!(
+            "../{}/untouched.txt",
+            outside.0.file_name().unwrap().to_str().unwrap()
+        );
+        for path in [
+            target.to_str().unwrap(),
+            &parent,
+            "escape/untouched.txt",
+            ".git/config",
+        ] {
+            for request in [
+                call(
+                    "write_file",
+                    json!({"path": path, "content": "overwritten"}),
+                ),
+                call(
+                    "edit",
+                    json!({"path": path, "old": "before", "new": "after"}),
+                ),
+                call(
+                    "apply_patch",
+                    json!({"files": [{"path": path, "hunks": [{"old": "before", "new": "after"}]}]}),
+                ),
+            ] {
+                let result = execute_descriptor_relative(&root.0, request).await;
+                assert!(
+                    matches!(&result, ToolExecution::Definite(result) if result.is_error),
+                    "{result:?}"
+                );
+                assert_eq!(std::fs::read_to_string(&target).unwrap(), "before\n");
+            }
+        }
+        assert!(!root.0.join(".git").exists());
+    }
+
+    #[tokio::test]
+    async fn descriptor_backend_refuses_missing_anchor_without_changing_bytes() {
+        let root = TestRoot::new();
+        std::fs::write(root.0.join("review.py"), "before\n").unwrap();
+        let result = execute_descriptor_relative(
+            &root.0,
+            call(
+                "edit",
+                json!({
+                    "path": "review.py", "old": "missing", "new": "after"
+                }),
+            ),
+        )
+        .await;
+        assert!(
+            matches!(&result, ToolExecution::Definite(result) if result.is_error),
+            "{result:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.0.join("review.py")).unwrap(),
+            "before\n"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn macos_default_registry_writes_without_dangerous_bypass() {
+        let root = TestRoot::new();
+        let registry = crate::Registry::coding_agent(&root.0).unwrap();
+        assert!(registry.confine_execution_handle().load(Ordering::Relaxed));
+        let result = registry
+            .run(call(
+                "write_file",
+                json!({"path": "review.py", "content": "reviewed\n"}),
+            ))
+            .await;
+        assert!(!result.is_error, "{}", result.content);
+        let result = registry
+            .run(call(
+                "write_file",
+                json!({"path": "../escaped.py", "content": "refused"}),
+            ))
+            .await;
+        assert!(result.is_error);
+    }
 }

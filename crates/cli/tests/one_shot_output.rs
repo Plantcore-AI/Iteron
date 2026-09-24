@@ -843,7 +843,7 @@ fn core_command_with_effort(
         extra_args,
         task,
         effort,
-        Some("6"),
+        Some("8"),
     )
 }
 
@@ -989,7 +989,7 @@ fn glm_core_command(scratch: &Scratch, format: &str, proxy_url: &str) -> Command
         .stderr(Stdio::piped())
         .process_group(0);
     if format != "text" {
-        command.arg("--output-schema-version").arg("6");
+        command.arg("--output-schema-version").arg("8");
     }
     command
 }
@@ -1224,7 +1224,7 @@ fn assert_diagnostics_on_stderr(output: &Output, outcome: &str) {
 
 fn assert_terminal_result(value: &Value, expected_exit: i32, expected_outcome: &str) {
     assert!(value.is_object(), "terminal result is a JSON object");
-    assert_eq!(value["schema_version"], 6);
+    assert_eq!(value["schema_version"], 8);
     let tax = &value["kernel_tax"];
     assert!(tax["admission_latency_us"].as_u64().is_some());
     assert!(tax["broker_latency_us"].as_u64().is_some());
@@ -1448,16 +1448,16 @@ fn json_one_shot_process_contract_matches_golden() {
     assert_eq!(
         actual,
         golden_lines(
-            "one_shot_json_success_v6.json",
-            include_str!("golden/one_shot_json_success_v6.json")
+            "one_shot_json_success_v8.json",
+            include_str!("golden/one_shot_json_success_v8.json")
         )
     );
 }
 
 #[test]
-fn omitted_schema_version_uses_v6() {
+fn omitted_schema_version_uses_v8() {
     let server = MockProvider::spawn(Reply::Success);
-    let scratch = Scratch::new("json-default-v6", &server.api_root);
+    let scratch = Scratch::new("json-default-v8", &server.api_root);
     let output = collect_core(
         core_command_with_schema(&scratch, "json", 1, &[], DEFAULT_TASK, Some("low"), None)
             .spawn()
@@ -1468,7 +1468,7 @@ fn omitted_schema_version_uses_v6() {
     assert_eq!(output.status.code(), Some(0));
     let frames = json_lines(&output.stdout);
     assert_eq!(frames.len(), 1);
-    assert_eq!(frames[0]["schema_version"], 6);
+    assert_eq!(frames[0]["schema_version"], 8);
 }
 
 #[test]
@@ -1491,7 +1491,7 @@ fn one_shot_schema_v7_is_rejected_before_provider_contact() {
     assert!(!output.status.success());
     assert!(
         String::from_utf8_lossy(&output.stderr)
-            .contains("unsupported --output-schema-version 7; supported versions: 4, 5, 6")
+            .contains("unsupported --output-schema-version 7; supported versions: 4, 5, 6, 8")
     );
 }
 
@@ -2037,8 +2037,8 @@ fn stream_json_one_shot_process_contract_matches_golden() {
     assert_diagnostics_on_stderr(&output, "Done");
     normalize_runtime_fields(&mut actual);
     let mut expected = golden_lines(
-        "one_shot_stream_json_success_v6.jsonl",
-        include_str!("golden/one_shot_stream_json_success_v6.jsonl"),
+        "one_shot_stream_json_success_v8.jsonl",
+        include_str!("golden/one_shot_stream_json_success_v8.jsonl"),
     );
     let turn_context = expected
         .iter_mut()
@@ -2072,7 +2072,7 @@ fn image_one_shot_emits_metadata_then_uploads_to_a_declared_capable_provider() {
     assert_eq!(
         records.first(),
         Some(&json!({
-            "schema_version": 6,
+            "schema_version": 8,
             "type": "input_attachment",
             "ordinal": 1,
             "media_type": "image/gif",

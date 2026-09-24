@@ -40,8 +40,10 @@ pub(crate) fn resolve_live_context(
     port: &dyn ContextPort,
     request: LiveContextRequest<'_>,
 ) -> Result<LiveContext, String> {
-    let mut observation =
-        ContextSlotObservation::baseline(RequestId(u64::from(request.turn.0)), request.task);
+    let mut observation = ContextSlotObservation::baseline(
+        RequestId(u64::from(request.turn.0)),
+        ContextSlotObservation::bounded_task_query(request.task),
+    );
     observation.include_outline = false;
     observation.instruction_scopes.clear();
     observation.include_environment = false;
@@ -166,6 +168,54 @@ mod tests {
                 .iter()
                 .all(|segment| segment.source != ContextSource::Memory)
         );
+        let _ = std::fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn large_multibyte_submission_keeps_both_relevance_ends_without_refusing_context() {
+        let workspace =
+            std::env::temp_dir().join(format!("core-large-context-query-{}", std::process::id()));
+        std::fs::create_dir_all(&workspace).unwrap();
+        let task = format!("start/path.rs {} latest request", "界".repeat(28_000));
+        assert!(task.len() > 64 * 1024);
+        assert_eq!(
+            iteron_ctx::ContextStrategy::default().select(
+                &ContextSlotObservation::baseline(RequestId(6), &task),
+                CapabilitySet::only(Capability::ReadOnly),
+            ),
+            Err("context task exceeds its local observation bound")
+        );
+        let resolved = resolve_live_context(
+            &iteron_ctx::ContextStrategy::default(),
+            &iteron_ctx::MemoryRecallStrategy::default(),
+            &iteron_ctx::DefaultContextPort,
+            LiveContextRequest {
+                workspace: &workspace,
+                home_dir: None,
+                dependency_skill_dirs: &[],
+                turn: TurnId(6),
+                task: &task,
+                memory_benchmark_scope: None,
+                materialization: iteron_ctx::ContextMaterializationPolicy::default(),
+            },
+        )
+        .unwrap();
+        assert!(resolved.policy_observation.task.len() <= 64 * 1024);
+        assert!(
+            resolved
+                .policy_observation
+                .task
+                .starts_with("start/path.rs")
+        );
+        assert!(resolved.policy_observation.task.ends_with("latest request"));
+        assert!(
+            resolved
+                .policy_observation
+                .task
+                .contains("context query middle omitted")
+        );
+        assert_eq!(resolved.policy_plan.task, resolved.policy_observation.task);
+        assert!(task.ends_with("latest request"));
         let _ = std::fs::remove_dir_all(workspace);
     }
 }

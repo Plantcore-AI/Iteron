@@ -10283,7 +10283,7 @@ ant-api03-SuperSecretModelToken12345"
 
         std::fs::write(ws.join("selected.txt"), "failing candidate\n").unwrap();
         std::fs::write(ws.join("unselected.txt"), "later unrelated work\n").unwrap();
-        let (approval_tx, approval_rx) = tokio::sync::mpsc::channel::<SqEnvelope>(64);
+        let (approval_tx, approval_rx) = tokio::sync::mpsc::channel::<TurnSubmission>(64);
         agent.set_approvals(approval_rx);
         let (ui_tx, mut ui_rx) = tokio::sync::mpsc::channel::<UiEvent>(64);
         agent.set_ui(ui_tx);
@@ -10508,7 +10508,7 @@ ant-api03-SuperSecretModelToken12345"
             .unwrap();
         std::fs::write(ws.join("selected.txt"), "candidate shown for approval\n").unwrap();
 
-        let (approval_tx, approval_rx) = tokio::sync::mpsc::channel::<SqEnvelope>(64);
+        let (approval_tx, approval_rx) = tokio::sync::mpsc::channel::<TurnSubmission>(64);
         agent.set_approvals(approval_rx);
         let (ui_tx, mut ui_rx) = tokio::sync::mpsc::channel::<UiEvent>(64);
         agent.set_ui(ui_tx);
@@ -11539,7 +11539,7 @@ ant-api03-SuperSecretModelToken12345"
         let ws = temp_ws("noninteractive-control");
         let mut agent = agent_for(&ws);
         agent.permission_mode = PermissionMode::Default;
-        let (_tx, rx) = tokio::sync::mpsc::channel::<SqEnvelope>(64);
+        let (_tx, rx) = tokio::sync::mpsc::channel::<TurnSubmission>(64);
         agent.set_inbound_control(rx);
         let (ui_tx, mut ui_rx) = tokio::sync::mpsc::channel::<UiEvent>(64);
         agent.set_ui(ui_tx);
@@ -11647,7 +11647,7 @@ ant-api03-SuperSecretModelToken12345"
             ),
             (22, 1, false, current_epoch),
         ] {
-            let mut envelope = SqEnvelope::with_version_and_id(
+            let mut envelope = TurnSubmission::with_version_and_id(
                 iteron_protocol::wire::PROTOCOL_VERSION,
                 SubmissionId(submission),
                 Op::ApprovalResponse {
@@ -11891,7 +11891,7 @@ ant-api03-SuperSecretModelToken12345"
         std::fs::write(ws.join("f.txt"), "a\n").unwrap();
         let mut agent = agent_for(&ws);
         agent.permission_mode = PermissionMode::Default;
-        let (atx, arx) = tokio::sync::mpsc::channel::<SqEnvelope>(64);
+        let (atx, arx) = tokio::sync::mpsc::channel::<TurnSubmission>(64);
         agent.set_approvals(arx);
         let (uitx, mut uirx) = tokio::sync::mpsc::channel::<UiEvent>(64);
         agent.set_ui(uitx);
@@ -13332,14 +13332,14 @@ ant-api03-SuperSecretModelToken12345"
         agent.set_inbound_control(rx);
         agent.set_ui(ui_tx);
         agent.set_active_product_turn_id(Some(old));
-        let mut steer = SqEnvelope::identified(
+        let mut steer = TurnSubmission::identified(
             SubmissionId(51),
             Op::Steer {
                 text: "old turn steer".into(),
             },
         );
         steer.expected_product_turn_id = Some(old);
-        let mut drain = SqEnvelope::identified(SubmissionId(52), Op::Drain);
+        let mut drain = TurnSubmission::identified(SubmissionId(52), Op::Drain);
         drain.expected_product_turn_id = Some(old);
         tx.try_send(steer).unwrap();
         tx.try_send(drain).unwrap();
@@ -13366,7 +13366,7 @@ ant-api03-SuperSecretModelToken12345"
             })
         ));
         agent.set_active_product_turn_id(None);
-        let mut late_interrupt = SqEnvelope::identified(SubmissionId(53), Op::Interrupt);
+        let mut late_interrupt = TurnSubmission::identified(SubmissionId(53), Op::Interrupt);
         late_interrupt.expected_product_turn_id = Some(old);
         tx.try_send(late_interrupt).unwrap();
         assert!(agent.take_unadmitted_steers_with_client_count().0.len() == 1);
@@ -13391,7 +13391,7 @@ ant-api03-SuperSecretModelToken12345"
         agent.set_inbound_control(rx);
         agent.set_ui(ui_tx);
         agent.set_active_product_turn_id(Some(epoch));
-        let mut drain = SqEnvelope::identified(SubmissionId(91), Op::Drain);
+        let mut drain = TurnSubmission::identified(SubmissionId(91), Op::Drain);
         drain.expected_product_turn_id = Some(epoch);
         tx.try_send(drain).unwrap();
 
@@ -18826,7 +18826,7 @@ ant-api03-SuperSecretModelToken12345"
 
         let marker = "version-skew-payload-must-not-be-interpreted-or-recorded";
         let (tx, rx) = tokio::sync::mpsc::channel(64);
-        tx.try_send(SqEnvelope::with_version(
+        tx.try_send(TurnSubmission::with_version(
             iteron_protocol::PROTOCOL_VERSION + 1,
             Op::Steer {
                 text: marker.into(),

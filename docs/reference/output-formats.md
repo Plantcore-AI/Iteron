@@ -2,7 +2,7 @@
 
 Machine output is available for one-shot runs and the bounded session operations below.
 
-The current one-shot CLI default is schema v6. A client can pin schema v4, v5, or v6 with
+The current one-shot CLI default is schema v8. A client can pin schema v4, v5, v6, or v8 with
 `--output-schema-version`, together with `--output-format json` or `stream-json`. On one-shot task,
 continue, and resume operations, each version projects every stdout record onto its published shape.
 Unsupported selectors fail before a rollout is opened.
@@ -40,7 +40,7 @@ Both `json` and `stream-json` end with an authoritative result object:
 
 ```json
 {
-  "schema_version": 6,
+  "schema_version": 8,
   "type": "result",
   "outcome": "done",
   "reason": null,
@@ -64,7 +64,7 @@ Both `json` and `stream-json` end with an authoritative result object:
 ```
 
 The example shows shape, not guaranteed values. `cost_usd` can be null or unknown
-when no authoritative price evidence exists. Schemas v5 and v6 require the typed
+when no authoritative price evidence exists. Schemas v5, v6, and v8 require the typed
 `kernel_tax` object; its latency values are measured in microseconds and all five
 fields are non-negative integers.
 
@@ -82,7 +82,7 @@ but remains distinct from ordinary `done`.
 - `phase` and `turn_end` lifecycle events;
 - `tool_start`, `tool_end`, and `approval_request`;
 - `notice`, `steer_applied`, and `run_done`;
-- in v6, `approval_resolved`, `steer_submission_applied`,
+- in v8, `approval_resolved`, `steer_submission_applied`,
   `control_submission_applied`, and `submission_rejected` with exact submission IDs;
 - `workflow_start`, `workflow_plan`, `workflow_phase`;
 - `workflow_agent_start`, `workflow_agent_activity`, `workflow_agent_end`;
@@ -96,10 +96,10 @@ never carries image bytes, a filename, or a path. Historical v4 event fixtures
 and their terminal result remain unchanged; consumers should skip this v5+ tag
 when they do not need attachment metadata.
 
-The four exact submission lifecycle records are declared only for v6. When an
-operator selects v4 or v5, each projects to a bounded, scrubbed `notice` without
+The four exact submission lifecycle records are declared only for v8. When an
+operator selects v4, v5, or v6, each projects to a bounded, scrubbed `notice` without
 an ID or an `Applied` claim; clients needing authoritative receipts should use
-v6 or the Product V1 App Server contract. An approval request is not itself an
+v8 or the Product V1 App Server contract. An approval request is not itself an
 approval resolution, and a queued submission is not proof of application.
 
 Schema v6 adds `turn_end.context.components`, a non-overlapping vector of

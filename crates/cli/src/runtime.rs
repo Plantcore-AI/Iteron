@@ -236,6 +236,7 @@ use deferred_tools::declared_write_paths;
 use deferred_tools::{AutoApprovedCall, scheduling_write_paths, write_paths_conflict};
 use diagnostics::{DiagnosticEmitter, KernelDiagnostic};
 use hooks::{HookDecision, HookEvent, Hooks};
+pub(crate) use inbound_control::TurnSubmission;
 #[cfg(test)]
 use iteron_ctx::estimate_request_context;
 use iteron_obs::{
@@ -2725,7 +2726,7 @@ pub struct Agent {
     policy_capabilities: CapabilitySet,
     /// Inbound operator channel for safe-point commands and approval answers (the SQ seed,
     /// ADR-010). Resident frontends install it even when human approval prompts are disabled.
-    approvals_rx: Option<tokio::sync::mpsc::Receiver<SqEnvelope>>,
+    approvals_rx: Option<tokio::sync::mpsc::Receiver<TurnSubmission>>,
     /// Stable user-facing Product Turn epoch, distinct from physical kernel TurnId. A single
     /// Product Turn can contain several model calls and compaction turns.
     active_product_turn_id: Option<iteron_protocol::product_contract::ProductTurnId>,
