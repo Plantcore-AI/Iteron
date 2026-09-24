@@ -190,6 +190,19 @@ pub(super) fn compare_critical_functions(
         compare_frozen_scope(path, base, current)?;
     }
 
+    let machine_schema_version = crate::rust_source::public_decimal_const(
+        loaded["crates/cli/src/output.rs"]
+            .1
+            .to_token_stream()
+            .to_string()
+            .as_bytes(),
+        "SCHEMA_VERSION",
+        "u32",
+    )?;
+    if machine_schema_version == 8 {
+        validate_submission_receipt_types(&loaded["crates/cli/src/runtime.rs"].1)?;
+    }
+
     for group in FREE_FUNCTIONS {
         let (base, current) = loaded
             .get(group.path)
@@ -197,7 +210,11 @@ pub(super) fn compare_critical_functions(
         for name in group.names {
             let old = free_function(base, name)?;
             let new = free_function(current, name)?;
-            if function_fingerprint(old) != function_fingerprint(new) {
+            if function_fingerprint(old) != function_fingerprint(new)
+                && !(group.path == "crates/cli/src/output.rs"
+                    && *name == "is_token_boundary"
+                    && exact_url_boundary_upgrade(old, new))
+            {
                 bail!(
                     "critical schema function '{}::{name}' changed from the trusted base",
                     group.path
@@ -238,7 +255,12 @@ pub(super) fn compare_critical_functions(
         for name in group.names {
             let old = named_type(base, name)?;
             let new = named_type(current, name)?;
-            if semantic_item(old) != semantic_item(new) {
+            if semantic_item(old) != semantic_item(new)
+                && !(group.path == "crates/cli/src/runtime.rs"
+                    && *name == "UiEvent"
+                    && machine_schema_version == 8
+                    && exact_submission_event_upgrade(old, new))
+            {
                 bail!(
                     "critical schema type '{}::{name}' changed from the trusted base",
                     group.path
@@ -247,6 +269,122 @@ pub(super) fn compare_critical_functions(
         }
     }
     Ok(())
+}
+
+/// Directional security repair: only stop splitting a streamed URL at its colon.
+fn exact_url_boundary_upgrade(old: &syn::ItemFn, new: &syn::ItemFn) -> bool {
+    let previous: syn::ItemFn = syn::parse_quote! {
+        fn is_token_boundary(c: char) -> bool {
+            c.is_whitespace() || matches!(c, '"' | '\'' | '=' | ':' | ',' | '(' | ')' | ';')
+        }
+    };
+    let repaired: syn::ItemFn = syn::parse_quote! {
+        fn is_token_boundary(c: char) -> bool {
+            c.is_whitespace() || matches!(c, '"' | '\'' | '=' | ',' | '(' | ')' | ';')
+        }
+    };
+    function_fingerprint(old) == function_fingerprint(&previous)
+        && function_fingerprint(new) == function_fingerprint(&repaired)
+}
+
+/// Four typed receipts may be added for v8; every pre-existing enum token stays frozen.
+fn exact_submission_event_upgrade(old: &syn::Item, new: &syn::Item) -> bool {
+    let (syn::Item::Enum(previous), syn::Item::Enum(current)) = (old, new) else {
+        return false;
+    };
+    let receipt_shape: syn::ItemEnum = syn::parse_quote! {
+        enum ReceiptShape {
+            SteerSubmissionApplied { id: SubmissionId },
+            SubmissionRejected { id: SubmissionId, reason_code: &'static str, },
+            ControlSubmissionApplied { id: SubmissionId, kind: ControlSubmissionKind, },
+            ApprovalResolved {
+                id: SubmissionId,
+                resolution: ApprovalResolution,
+                reason_code: &'static str,
+                response_submission_id: Option<SubmissionId>,
+            },
+        }
+    };
+    if current.variants.len() != previous.variants.len() + receipt_shape.variants.len() {
+        return false;
+    }
+    let mut stripped = current.clone();
+    for expected in &receipt_shape.variants {
+        if previous
+            .variants
+            .iter()
+            .any(|variant| variant.ident == expected.ident)
+        {
+            return false;
+        }
+        let mut observed = current
+            .variants
+            .iter()
+            .filter(|variant| variant.ident == expected.ident);
+        let Some(actual) = observed.next() else {
+            return false;
+        };
+        if observed.next().is_some() || variant_fingerprint(actual) != variant_fingerprint(expected)
+        {
+            return false;
+        }
+    }
+    stripped.variants = stripped
+        .variants
+        .into_pairs()
+        .filter(|pair| {
+            !receipt_shape
+                .variants
+                .iter()
+                .any(|expected| expected.ident == pair.value().ident)
+        })
+        .collect();
+    semantic_item(&syn::Item::Enum(stripped)) == semantic_item(old)
+}
+
+fn validate_submission_receipt_types(file: &syn::File) -> Result<()> {
+    let expected: syn::File = syn::parse_quote! {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub enum ApprovalResolution {
+            Approved,
+            Denied,
+            Cancelled,
+            TimedOut,
+        }
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub enum ControlSubmissionKind {
+            Interrupt,
+            ForceCancel,
+            Drain,
+        }
+        impl ControlSubmissionKind {
+            pub fn as_str(self) -> &'static str {
+                match self {
+                    Self::Interrupt => "interrupt",
+                    Self::ForceCancel => "force_cancel",
+                    Self::Drain => "drain",
+                }
+            }
+        }
+    };
+    for name in ["ApprovalResolution", "ControlSubmissionKind"] {
+        if semantic_item(named_type(file, name)?) != semantic_item(named_type(&expected, name)?) {
+            bail!("v8 submission receipt type '{name}' differs from its exact trusted witness");
+        }
+    }
+    let (actual_impl, actual_method) = method(file, "ControlSubmissionKind", "as_str")?;
+    let (expected_impl, expected_method) = method(&expected, "ControlSubmissionKind", "as_str")?;
+    if impl_header_fingerprint(actual_impl) != impl_header_fingerprint(expected_impl)
+        || method_fingerprint(actual_method) != method_fingerprint(expected_method)
+    {
+        bail!("v8 ControlSubmissionKind::as_str differs from its exact trusted witness");
+    }
+    Ok(())
+}
+
+fn variant_fingerprint(variant: &syn::Variant) -> String {
+    let wrapped: syn::Item = syn::parse_quote! { enum ReceiptShape { #variant } };
+    semantic_item(&wrapped)
 }
 
 /// Compare the file-scope bindings that can affect this file's frozen items.
@@ -526,6 +664,159 @@ fn strip_item_docs(item: &mut syn::Item) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn staged_url_boundary_repair_is_exact_and_directional() {
+        let old: syn::ItemFn = syn::parse_quote! {
+            fn is_token_boundary(c: char) -> bool {
+                c.is_whitespace() || matches!(c, '"' | '\'' | '=' | ':' | ',' | '(' | ')' | ';')
+            }
+        };
+        let new: syn::ItemFn = syn::parse_quote! {
+            fn is_token_boundary(c: char) -> bool {
+                c.is_whitespace() || matches!(c, '"' | '\'' | '=' | ',' | '(' | ')' | ';')
+            }
+        };
+        assert!(exact_url_boundary_upgrade(&old, &new));
+        assert!(!exact_url_boundary_upgrade(&new, &old));
+        assert!(!exact_url_boundary_upgrade(&old, &old));
+        for changed in [
+            new.to_token_stream().to_string().replace("'=' |", ""),
+            "fn is_token_boundary(c: char) -> bool { true }".into(),
+            format!("pub {}", new.to_token_stream()),
+            format!("#[allow(unused)] {}", new.to_token_stream()),
+        ] {
+            assert!(!exact_url_boundary_upgrade(
+                &old,
+                &syn::parse_str(&changed).unwrap()
+            ));
+        }
+    }
+
+    fn submission_event_pair() -> (syn::Item, syn::Item) {
+        let old = syn::parse_quote! {
+            #[derive(Clone)]
+            pub enum UiEvent { SteerApplied { count: usize }, Notice(String), Done(String), }
+        };
+        let new = syn::parse_quote! {
+            #[derive(Clone)]
+            pub enum UiEvent {
+                SteerApplied { count: usize },
+                SteerSubmissionApplied { id: SubmissionId },
+                SubmissionRejected { id: SubmissionId, reason_code: &'static str, },
+                ControlSubmissionApplied { id: SubmissionId, kind: ControlSubmissionKind, },
+                Notice(String),
+                ApprovalResolved {
+                    id: SubmissionId,
+                    resolution: ApprovalResolution,
+                    reason_code: &'static str,
+                    response_submission_id: Option<SubmissionId>,
+                },
+                Done(String),
+            }
+        };
+        (old, new)
+    }
+
+    #[test]
+    fn staged_submission_events_preserve_all_existing_semantics() {
+        let (old, new) = submission_event_pair();
+        assert!(exact_submission_event_upgrade(&old, &new));
+        assert!(!exact_submission_event_upgrade(&new, &old));
+        assert!(!exact_submission_event_upgrade(&old, &old));
+        let source = new.to_token_stream().to_string();
+        for (from, to) in [
+            ("count : usize", "count : u64"),
+            ("Notice (String)", "Notice (u32)"),
+            ("derive (Clone)", "derive (Debug)"),
+            ("pub enum", "enum"),
+            ("enum UiEvent", "enum UiEvent<T>"),
+            ("Notice (String)", "#[deprecated] Notice (String)"),
+            ("Notice (String)", "Done (String)"),
+        ] {
+            let changed = source.replacen(from, to, 1);
+            assert_ne!(changed, source, "mutation must hit {from}");
+            assert!(
+                !exact_submission_event_upgrade(&old, &syn::parse_str(&changed).unwrap()),
+                "admitted {from}"
+            );
+        }
+    }
+
+    #[test]
+    fn staged_submission_events_require_exactly_four_exact_receipts() {
+        let (old, new) = submission_event_pair();
+        let source = new.to_token_stream().to_string();
+        for (from, to) in [
+            ("SteerSubmissionApplied", "AnotherEvent"),
+            ("id : SubmissionId", "id : u64"),
+            ("reason_code : & 'static str", "reason_code : String"),
+            ("kind : ControlSubmissionKind", "kind : u32"),
+            ("resolution : ApprovalResolution", "resolution : u32"),
+            ("Option < SubmissionId >", "SubmissionId"),
+            (
+                "SteerSubmissionApplied",
+                "#[deprecated] SteerSubmissionApplied",
+            ),
+            ("Done (String)", "Done (String), Unreviewed"),
+            (
+                "Done (String)",
+                "Done (String), SteerSubmissionApplied { id: SubmissionId }",
+            ),
+        ] {
+            let changed = source.replacen(from, to, 1);
+            assert_ne!(changed, source, "mutation must hit {from}");
+            assert!(
+                !exact_submission_event_upgrade(&old, &syn::parse_str(&changed).unwrap()),
+                "admitted {from}"
+            );
+        }
+    }
+
+    #[test]
+    fn staged_submission_receipt_types_and_labels_are_exact() {
+        let current: syn::File = syn::parse_quote! {
+            #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+            pub enum ApprovalResolution { Approved, Denied, Cancelled, TimedOut, }
+            #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+            pub enum ControlSubmissionKind { Interrupt, ForceCancel, Drain, }
+            impl ControlSubmissionKind {
+                pub fn as_str(self) -> &'static str {
+                    match self {
+                        Self::Interrupt => "interrupt",
+                        Self::ForceCancel => "force_cancel",
+                        Self::Drain => "drain",
+                    }
+                }
+            }
+        };
+        assert!(validate_submission_receipt_types(&current).is_ok());
+        let source = current.to_token_stream().to_string();
+        for (from, to) in [
+            ("Denied", "OtherDecision"),
+            ("TimedOut ,", "TimedOut , Extra ,"),
+            ("ForceCancel ,", "ForceCancel (u32) ,"),
+            (
+                "pub enum ControlSubmissionKind",
+                "enum ControlSubmissionKind",
+            ),
+            ("pub fn as_str", "fn as_str"),
+            (
+                "impl ControlSubmissionKind",
+                "#[allow(unused)] impl ControlSubmissionKind",
+            ),
+            ("\"interrupt\"", "\"drain\""),
+            ("\"force_cancel\"", "\"interrupt\""),
+            ("\"drain\"", "\"force_cancel\""),
+        ] {
+            let changed = source.replacen(from, to, 1);
+            assert_ne!(changed, source, "mutation must hit {from}");
+            assert!(
+                validate_submission_receipt_types(&syn::parse_str(&changed).unwrap()).is_err(),
+                "admitted {from}"
+            );
+        }
+    }
 
     fn referenced(tokens: &str) -> BTreeSet<String> {
         let mut names = BTreeSet::new();

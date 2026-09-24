@@ -128,9 +128,53 @@ pub(super) fn validate(file: &syn::File) -> Result<()> {
             })
         }"#,
     )?;
-    require_function(
-        file,
-        "project_schema",
+    let version = super::cli_parse::validate_machine_stream_contract(file)?;
+    let projection = if version == 8 {
+        r#"pub(crate) fn project_schema(mut value: Value, schema_version: u32) -> io::Result<Value> {
+            if !SUPPORTED_SCHEMA_VERSIONS.contains(&schema_version) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("unsupported CLI output schema version {schema_version}"),
+                ));
+            }
+            let fields = value.as_object_mut().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "machine output record must be a JSON object",
+                )
+            })?;
+            if schema_version < SCHEMA_VERSION
+                && matches!(
+                    fields.get("type").and_then(Value::as_str),
+                    Some(
+                        "approval_resolved"
+                            | "control_submission_applied"
+                            | "steer_submission_applied"
+                            | "submission_rejected"
+                    )
+                )
+            {
+                return Ok(json!({
+                    "schema_version": schema_version,
+                    "type": "notice",
+                    "message": scrub("Submission lifecycle detail requires output schema v8."),
+                }));
+            }
+            fields.insert("schema_version".into(), Value::from(schema_version));
+            if schema_version < 6
+                && fields.get("type").and_then(Value::as_str) == Some("turn_end")
+                && let Some(context) = fields.get_mut("context").and_then(Value::as_object_mut)
+            {
+                context.remove("components");
+            }
+            if schema_version == LEGACY_SCHEMA_VERSION
+                && fields.get("type").and_then(Value::as_str) == Some("result")
+            {
+                fields.remove("kernel_tax");
+            }
+            Ok(value)
+        }"#
+    } else {
         r#"pub(crate) fn project_schema(mut value: Value, schema_version: u32) -> io::Result<Value> {
             if !SUPPORTED_SCHEMA_VERSIONS.contains(&schema_version) {
                 return Err(io::Error::new(
@@ -174,8 +218,23 @@ pub(super) fn validate(file: &syn::File) -> Result<()> {
                 fields.remove("kernel_tax");
             }
             Ok(value)
-        }"#,
-    )?;
+        }"#
+    };
+    require_function(file, "project_schema", projection)?;
+    if version == 8 {
+        require_function(
+            file,
+            "approval_resolution_name",
+            r#"fn approval_resolution_name(resolution: crate::runtime::ApprovalResolution) -> &'static str {
+                match resolution {
+                    crate::runtime::ApprovalResolution::Approved => "approved",
+                    crate::runtime::ApprovalResolution::Denied => "denied",
+                    crate::runtime::ApprovalResolution::Cancelled => "cancelled",
+                    crate::runtime::ApprovalResolution::TimedOut => "timed_out",
+                }
+            }"#,
+        )?;
+    }
     validate_emitter(file)
 }
 
