@@ -2434,7 +2434,9 @@ fn forged_metadata_shadow_codes_and_aggregate_bounds_fail_closed() {
         .iter()
         .find(|family| family.id == "max_turns")
         .unwrap();
-    let forged_count = ResolutionValue::Integer { value: 1_000_001 };
+    let forged_count = ResolutionValue::Integer {
+        value: i64::from(u32::MAX) + 1,
+    };
     let entry = &mut out_of_range.entries[usize::from(max_turns.ordinal - 1)];
     entry.requested = Some(forged_count.clone());
     entry.effective = Some(forged_count);
@@ -2656,34 +2658,37 @@ fn project_numeric_sources_only_lower_operator_or_canonical_ceilings() {
         assert_eq!(entry.shadowed.last().unwrap().reason_code, shadow_reason);
     }
 
-    let mut default_limited = minimal_input();
-    default_limited.declared_values.push(DeclaredValue {
+    let mut project_limited = minimal_input();
+    project_limited.declared_values.push(DeclaredValue {
         family: "max_turns".to_owned(),
         source: SourceKind::ProjectConfig,
         evidence_digest_sha256: DIGEST_B.to_owned(),
         value: ResolutionValue::Integer { value: 900 },
     });
-    default_limited.constraint_evidence.push(upper_bound(
+    project_limited.constraint_evidence.push(upper_bound(
         "max_turns",
         ExternalCeiling::ParentTurns,
         ResolutionValue::Integer { value: 1_000 },
     ));
-    let report = report_even_when_other_active_families_are_unresolved(default_limited);
+    let report = report_even_when_other_active_families_are_unresolved(project_limited);
     let entry = &report.entries[4];
     assert_eq!(
         entry.requested,
-        Some(ResolutionValue::Integer { value: 64 })
+        Some(ResolutionValue::Integer { value: 900 })
     );
     assert!(matches!(
         entry
             .provenance
             .as_ref()
             .map(|provenance| &provenance.source),
-        Some(ResolutionSource::Default { .. })
+        Some(ResolutionSource::Declared {
+            kind: SourceKind::ProjectConfig,
+            ..
+        })
     ));
     assert_eq!(
         entry.shadowed.last().unwrap().reason_code,
-        "project_tightening_inert"
+        "project_tightened"
     );
 }
 
