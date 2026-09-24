@@ -4,6 +4,7 @@ pub(super) use super::cli_parse_scan::{
 pub(super) use super::cli_parse_tokens::{cli_nested_literal_fields, outer_json_object_shape};
 use super::cli_parse_tokens::{compact_rust, json_entry_values, validate_json_value_blocks};
 use anyhow::{Context, Result, bail};
+use quote::ToTokens;
 use std::collections::{BTreeMap, BTreeSet};
 use syn::visit::Visit;
 
@@ -12,6 +13,7 @@ pub(super) fn cli_machine_record_shapes(
 ) -> Result<BTreeMap<String, BTreeSet<String>>> {
     let source = std::str::from_utf8(source).context("CLI machine output source is not UTF-8")?;
     let file = parse_cli_output_source(source)?;
+    validate_machine_stream_contract(&file)?;
     let mut shapes = BTreeMap::new();
     let mut macros = 0usize;
     let mut producers = vec![("stream_event", true), ("final_result", true)];
@@ -22,9 +24,6 @@ pub(super) fn cli_machine_record_shapes(
     }
     for (name, public) in producers {
         let function = unique_value_function(&file, name, public)?;
-        if name == "stream_event" {
-            validate_stream_event_patterns(function)?;
-        }
         let mut objects = Vec::new();
         collect_direct_return_json_objects(function_tail(function)?, &mut objects)?;
         for object in objects {
@@ -366,7 +365,21 @@ pub(super) fn json_macro_object(mac: &syn::Macro) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn validate_stream_event_patterns(function: &syn::ItemFn) -> Result<()> {
+/// A source contract is one complete schema epoch, never a union of old/new record sets.
+pub(super) fn validate_machine_stream_contract(file: &syn::File) -> Result<u32> {
+    let version = crate::rust_source::public_decimal_const(
+        file.to_token_stream().to_string().as_bytes(),
+        "SCHEMA_VERSION",
+        "u32",
+    )?;
+    if !matches!(version, 6 | 8) {
+        bail!("CLI machine stream has no trusted source witness for schema {version}");
+    }
+    validate_stream_event_patterns(unique_value_function(file, "stream_event", true)?, version)?;
+    Ok(version)
+}
+
+fn validate_stream_event_patterns(function: &syn::ItemFn, version: u32) -> Result<()> {
     let syn::Expr::Match(top) = peel_expression(function_tail(function)?) else {
         bail!("CLI stream_event must directly match its UiEvent selector");
     };
@@ -376,6 +389,7 @@ fn validate_stream_event_patterns(function: &syn::ItemFn) -> Result<()> {
     let mut observed = BTreeMap::new();
     for arm in &top.arms {
         let variant = exact_pattern_variant(&arm.pat, "UiEvent")?;
+        validate_submission_record_arm(&variant, arm)?;
         if variant == "Workflow" {
             let syn::Expr::Match(workflow) = peel_expression(&arm.body) else {
                 bail!("CLI Workflow UiEvent must directly match its nested event");
@@ -393,7 +407,7 @@ fn validate_stream_event_patterns(function: &syn::ItemFn) -> Result<()> {
             insert_pattern_record(&mut observed, &variant, &arm.body)?;
         }
     }
-    let expected = BTreeMap::from([
+    let mut expected = BTreeMap::from([
         (
             "AgentActivity".to_owned(),
             "workflow_agent_activity".to_owned(),
@@ -415,8 +429,79 @@ fn validate_stream_event_patterns(function: &syn::ItemFn) -> Result<()> {
         ("ToolStart".to_owned(), "tool_start".to_owned()),
         ("TurnEnd".to_owned(), "turn_end".to_owned()),
     ]);
+    if version == 8 {
+        expected.extend([
+            (
+                "ApprovalResolved".to_owned(),
+                "approval_resolved".to_owned(),
+            ),
+            (
+                "ControlSubmissionApplied".to_owned(),
+                "control_submission_applied".to_owned(),
+            ),
+            (
+                "SteerSubmissionApplied".to_owned(),
+                "steer_submission_applied".to_owned(),
+            ),
+            (
+                "SubmissionRejected".to_owned(),
+                "submission_rejected".to_owned(),
+            ),
+        ]);
+    }
     if observed != expected {
         bail!("CLI UiEvent/WorkflowUiEvent pattern-to-record mapping changed: {observed:?}");
+    }
+    Ok(())
+}
+
+// The new receipts bind their exact IDs and result values to the matched event. Recognizing only
+// the record tag would allow a literal or another event's ID to masquerade as an applied receipt.
+fn validate_submission_record_arm(variant: &str, actual: &syn::Arm) -> Result<()> {
+    let expected = match variant {
+        "SteerSubmissionApplied" => {
+            r#"UiEvent::SteerSubmissionApplied { id } => json!({
+            "schema_version": SCHEMA_VERSION,
+            "type": "steer_submission_applied",
+            "submission_id": id.0,
+        }),"#
+        }
+        "SubmissionRejected" => {
+            r#"UiEvent::SubmissionRejected { id, reason_code } => json!({
+            "schema_version": SCHEMA_VERSION,
+            "type": "submission_rejected",
+            "submission_id": id.0,
+            "reason_code": reason_code,
+        }),"#
+        }
+        "ControlSubmissionApplied" => {
+            r#"UiEvent::ControlSubmissionApplied { id, kind } => json!({
+            "schema_version": SCHEMA_VERSION,
+            "type": "control_submission_applied",
+            "submission_id": id.0,
+            "kind": kind.as_str(),
+        }),"#
+        }
+        "ApprovalResolved" => {
+            r#"UiEvent::ApprovalResolved {
+            id,
+            resolution,
+            reason_code,
+            response_submission_id,
+        } => json!({
+            "schema_version": SCHEMA_VERSION,
+            "type": "approval_resolved",
+            "submission_id": id.0,
+            "resolution": approval_resolution_name(resolution),
+            "reason_code": reason_code,
+            "response_submission_id": response_submission_id.map(|id| id.0),
+        }),"#
+        }
+        _ => return Ok(()),
+    };
+    let witness = syn::parse_str::<syn::ExprMatch>(&format!("match event {{ {expected} }}"))?;
+    if actual.to_token_stream().to_string() != witness.arms[0].to_token_stream().to_string() {
+        bail!("CLI {variant} receipt differs from its exact event dataflow witness");
     }
     Ok(())
 }
