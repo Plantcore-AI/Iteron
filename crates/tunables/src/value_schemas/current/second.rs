@@ -350,7 +350,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 30] = [
     object_schema!(
         "child_ceiling",
         [
-            scalar_field!("max_turns", true, int_domain!(1, 1_000_000, "turns")),
+            scalar_field!("max_turns", true, int_domain!(1, u32::MAX as i64, "turns")),
             scalar_field!("max_wall_seconds", true, int_domain!(1, 86_400, "seconds")),
             scalar_field!(
                 "max_consecutive_errors",

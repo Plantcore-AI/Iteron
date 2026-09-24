@@ -43,6 +43,14 @@ pub(crate) enum CompactionFailurePolicy {
     TruncateBounded,
 }
 
+/// Origin of family 96's task-context partition in the immutable checkpoint. Only the derived
+/// default is eligible for bounded elasticity; an explicit full-object override is a hard cap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TaskContextBudgetSource {
+    DefaultDerived,
+    Explicit,
+}
+
 impl EffortRuntimePolicy {
     pub(crate) fn compiled() -> Self {
         Self {
@@ -112,6 +120,7 @@ pub(crate) struct EffectiveCoreSettings {
     /// ceilings were applied. This is deliberately distinct from the provider's physical maximum.
     pub request_output_cap: Option<u32>,
     pub context_budget: iteron_ctx::ContextBudgetPolicy,
+    pub task_context_budget_source: TaskContextBudgetSource,
     pub context_materialization: iteron_ctx::ContextMaterializationPolicy,
     pub provider_governor: crate::config::ResolvedProviderGovernorConfig,
     pub mcp: super::effective_mcp::EffectiveMcpSettings,
@@ -176,6 +185,16 @@ impl EffectiveCoreSettings {
 
         let (context_budget, context_materialization, model_context_window) =
             decode_context_policies(view)?;
+        // A default history share is a planning allocation, not a second model window.
+        // Read sealed provenance so an operator's same-valued limit stays explicit on resume.
+        let context_budget = context_budget
+            .with_elastic_transcript(view.has_default_provenance("conversation_history_budget")?);
+        let task_context_budget_source =
+            if view.has_default_provenance("context_window_override_reserve")? {
+                TaskContextBudgetSource::DefaultDerived
+            } else {
+                TaskContextBudgetSource::Explicit
+            };
         let request_output_cap = optional_integer(view, "request_output_cap")?
             .map(|value| u32v(value, "request_output_cap"))
             .transpose()?;
@@ -258,6 +277,7 @@ impl EffectiveCoreSettings {
             model_context_window,
             request_output_cap,
             context_budget,
+            task_context_budget_source,
             context_materialization,
             provider_governor,
             mcp,

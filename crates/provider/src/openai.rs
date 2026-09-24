@@ -724,12 +724,12 @@ fn validate_stream_end(pending: &[u8], saw_terminal: bool) -> Result<(), Provide
         )
     })?;
     if !pending.trim().is_empty() {
-        return Err(ProviderError::Decode(
+        return Err(ProviderError::Http(
             "OpenAI stream ended with an incomplete SSE event".to_string(),
         ));
     }
     if !saw_terminal {
-        return Err(ProviderError::Decode(
+        return Err(ProviderError::Http(
             "OpenAI stream ended before [DONE] or finish_reason".to_string(),
         ));
     }
@@ -1255,7 +1255,7 @@ impl Provider for OpenAiCompat {
 
         validate_stream_end(&wire[wire_start..], stop.is_some())?;
         let stop = stop.ok_or_else(|| {
-            ProviderError::Decode("OpenAI-compatible stream ended before finish_reason".into())
+            ProviderError::Http("OpenAI-compatible stream ended before finish_reason".into())
         })?;
         let usage = match (saw_usage, saw_cache_creation) {
             (true, true) => UsageReport::complete(usage),

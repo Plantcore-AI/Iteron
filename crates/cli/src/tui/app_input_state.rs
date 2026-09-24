@@ -196,7 +196,7 @@ impl App {
         SubmissionAdmission::Accept
     }
 
-    pub(super) fn track_steer(&mut self, text: String) {
+    pub(super) fn track_steer(&mut self, text: String, id: SubmissionId) {
         debug_assert!(!text.trim().is_empty());
         debug_assert!(
             text.len()
@@ -212,8 +212,19 @@ impl App {
                     MAX_PENDING_SUBMISSIONS
                 )
         );
-        let input = self.pending_input(text);
+        let mut input = self.pending_input(text);
+        input.submission_id = Some(id);
         self.steer_previews.push_back(input);
+    }
+
+    pub(super) fn settle_steer_submission(&mut self, id: SubmissionId) {
+        if let Some(index) = self
+            .steer_previews
+            .iter()
+            .position(|preview| preview.submission_id == Some(id))
+        {
+            self.steer_previews.remove(index);
+        }
     }
 
     pub(super) fn pending_input(&mut self, text: String) -> PendingInput {
@@ -222,20 +233,34 @@ impl App {
         PendingInput {
             seq,
             text,
+            submission_id: None,
             images: image_input::ImageAttachments::default(),
             files: file_input::FileAttachments::default(),
         }
     }
 
-    pub(super) fn requeue_unadmitted(&mut self, unadmitted: Vec<String>) -> (usize, usize) {
+    pub(super) fn requeue_unadmitted(
+        &mut self,
+        unadmitted: Vec<String>,
+        submission_ids: &[Option<SubmissionId>],
+    ) -> (usize, usize) {
         let count = unadmitted.len();
-        for text in unadmitted {
-            let input = if let Some(preview) = self.steer_previews.pop_front() {
+        for (index, text) in unadmitted.into_iter().enumerate() {
+            let id = submission_ids.get(index).copied().flatten();
+            let preview = id
+                .and_then(|id| {
+                    self.steer_previews
+                        .iter()
+                        .position(|preview| preview.submission_id == Some(id))
+                })
+                .and_then(|index| self.steer_previews.remove(index));
+            let input = if let Some(preview) = preview {
                 // A steered submission never carried chips (a draft with any is queued, never
                 // steered), so the requeued form has none to restore.
                 PendingInput {
                     seq: preview.seq,
                     text,
+                    submission_id: None,
                     images: image_input::ImageAttachments::default(),
                     files: file_input::FileAttachments::default(),
                 }
@@ -245,7 +270,7 @@ impl App {
             self.queued.push_back(input);
         }
         // The producer join + final event drain should make this empty: every submitted preview is
-        // either acknowledged by SteerApplied or returned by take_unadmitted_steers. If those two
+        // either acknowledged by SteerSubmissionApplied or returned by take_unadmitted_steers. If those two
         // counts ever disagree, preserve at-least-once operator intent as ordered after-turn input
         // instead of silently dropping the words with `mem::take(...).count()`.
         let unmatched_previews = self.steer_previews.len();

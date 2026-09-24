@@ -221,6 +221,9 @@ pub(super) struct ConvergenceRequest {
 /// an arbitrary turn number.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(super) struct InvestigationConvergence {
+    /// The graph-governed repair workflow is optional; ordinary coding turns must not inherit
+    /// its tool narrowing, owner-evidence gates, or terminal states.
+    disabled: bool,
     observations: u32,
     state: GraphState,
     last_receipt_digest: Option<String>,
@@ -333,39 +336,39 @@ impl CandidateWorkspaceBaseline {
 }
 
 impl InvestigationConvergence {
-    pub(super) fn for_run() -> Self {
-        let initial_localization_plateau = iteron_tunables::param_bool(
-            "cli.runtime.investigation_convergence.initial_localization_plateau",
-            false,
-        );
+    pub(super) fn for_general_run() -> Self {
         Self {
-            localization_plateau: initial_localization_plateau,
-            initial_localization_plateau,
+            disabled: true,
             ..Self::default()
         }
+    }
+
+    pub(super) const fn enabled(&self) -> bool {
+        !self.disabled
     }
 
     /// The graph-only tool surface is a recovery mode after an independent verifier
     /// counterexample, never the default coding path.
     pub(super) const fn patch_trial_active(&self) -> bool {
-        matches!(self.state, GraphState::Explain)
+        !self.disabled && matches!(self.state, GraphState::Explain)
     }
 
     /// Ordinary repairs may mutate directly in Discover. A voluntarily selected typed receipt
     /// enters Mutate, while a live candidate remains revisable in Review. Explain deliberately
     /// requires a new receipt before another candidate after a verifier-owned rollback.
     pub(super) const fn candidate_change_allowed(&self) -> bool {
-        matches!(
-            self.state,
-            GraphState::Discover
-                | GraphState::Mutate
-                | GraphState::Review
-                | GraphState::NetZeroRecovery
-        )
+        self.disabled
+            || matches!(
+                self.state,
+                GraphState::Discover
+                    | GraphState::Mutate
+                    | GraphState::Review
+                    | GraphState::NetZeroRecovery
+            )
     }
 
     pub(super) const fn candidate_change_required(&self) -> bool {
-        matches!(self.state, GraphState::Mutate)
+        !self.disabled && matches!(self.state, GraphState::Mutate)
     }
 
     /// Once a strong verifier has rejected candidate bytes, the next transition must preserve the
@@ -373,20 +376,22 @@ impl InvestigationConvergence {
     /// delete exact hunks and can create a genuinely new file; hiding `write_file` only removes the
     /// high-risk whole-file replacement path that discards unrelated code during repair.
     pub(super) fn candidate_revision_required(&self) -> bool {
-        self.candidate_change_required() && !self.failed_verification_candidates.is_empty()
+        !self.disabled
+            && self.candidate_change_required()
+            && !self.failed_verification_candidates.is_empty()
     }
 
     /// A verifier-proven structural regression gets one exact current-hunk refresh before another
     /// mutation. This prevents stale replacement text from deadlocking mutate-only recovery.
     pub(super) const fn structural_repair_read_required(&self) -> bool {
-        self.structural_repair_read_required
+        !self.disabled && self.structural_repair_read_required
     }
 
     /// A behavioral verifier counterexample may invalidate ownership rather than syntax. Keep the
     /// live candidate frozen while one bounded owner/consumer block is retrieved, then reopen only
     /// exact-hunk mutation. This avoids both blind tuning and speculative whole-file replacement.
     pub(super) const fn behavior_counterexample_read_required(&self) -> bool {
-        self.behavior_counterexample_read_required
+        !self.disabled && self.behavior_counterexample_read_required
     }
 
     /// Reopen exactly one immediate mutation surface when an automated implementation turn ended
@@ -395,6 +400,9 @@ impl InvestigationConvergence {
     /// read plateau before any candidate or verifier rejection; graph exhaustion, withdrawal and
     /// rejected-candidate terminals remain closed.
     pub(super) fn reopen_immediate_candidate_action(&mut self) -> bool {
+        if self.disabled {
+            return false;
+        }
         let recoverable_state = matches!(self.state, GraphState::Discover | GraphState::Mutate)
             || (matches!(self.state, GraphState::EvidenceInsufficient)
                 && self.localization_exhausted);
@@ -422,6 +430,9 @@ impl InvestigationConvergence {
         &mut self,
         candidate: CandidateDiffState,
     ) -> VerificationCandidateGuard {
+        if self.disabled {
+            return VerificationCandidateGuard::Verify;
+        }
         if candidate == CandidateDiffState::Unavailable {
             self.consecutive_unchanged_failed_completions = 0;
             return VerificationCandidateGuard::Verify;
@@ -453,7 +464,7 @@ impl InvestigationConvergence {
     }
 
     pub(super) fn has_failed_verification_candidate(&self) -> bool {
-        !self.failed_verification_candidates.is_empty()
+        !self.disabled && !self.failed_verification_candidates.is_empty()
     }
 
     /// Only a definite behavior failure with an exact identity owns candidate memory. The set is
@@ -461,6 +472,9 @@ impl InvestigationConvergence {
     /// candidate cannot evade the guard through an A -> B -> A cycle. An unavailable identity
     /// preserves the prior fail-open behavior and clears equality claims it cannot substantiate.
     pub(super) fn remember_verification_test_failure(&mut self, candidate: CandidateDiffState) {
+        if self.disabled {
+            return;
+        }
         if candidate == CandidateDiffState::Unavailable {
             self.failed_verification_candidates.clear();
         } else {
@@ -472,11 +486,11 @@ impl InvestigationConvergence {
     /// Repeated broad observations retain exact reads and candidate edits but close repository-
     /// wide discovery. This depends on evidence scope novelty, not on a provider-turn deadline.
     pub(super) const fn localization_plateau_active(&self) -> bool {
-        self.localization_plateau && !self.localization_exhausted
+        !self.disabled && self.localization_plateau && !self.localization_exhausted
     }
 
     pub(super) const fn localized_closure_active(&self) -> bool {
-        self.localized_closure_active && !self.localization_exhausted
+        !self.disabled && self.localized_closure_active && !self.localization_exhausted
     }
 
     /// Record successful native observation scopes from one provider batch. Different query text
@@ -496,6 +510,9 @@ impl InvestigationConvergence {
         scopes: impl IntoIterator<Item = String>,
         clean_no_candidate_round: bool,
     ) -> Option<ConvergenceRequest> {
+        if self.disabled {
+            return None;
+        }
         if !matches!(self.state, GraphState::Discover) || self.localization_exhausted {
             return None;
         }
@@ -615,23 +632,25 @@ impl InvestigationConvergence {
     /// Keep the provider on the bounded diff/revision/verification surface for a live candidate or
     /// its single exact-reread net-zero recovery. Historical writes alone do not keep it open.
     pub(super) const fn candidate_review_active(&self) -> bool {
-        matches!(self.state, GraphState::Review | GraphState::NetZeroRecovery)
+        !self.disabled && matches!(self.state, GraphState::Review | GraphState::NetZeroRecovery)
     }
 
     pub(super) const fn candidate_handoff_terminal(&self) -> bool {
-        matches!(self.state, GraphState::Handoff)
+        !self.disabled && matches!(self.state, GraphState::Handoff)
     }
 
     /// Every first non-empty candidate gets one bounded post-candidate stable-key audit before any
     /// revision or handoff. Pre-edit evidence cannot validate identifiers introduced by the diff.
     pub(super) const fn candidate_owner_evidence_required(&self) -> bool {
-        matches!(self.state, GraphState::Review) && self.candidate_owner_evidence_required
+        !self.disabled
+            && matches!(self.state, GraphState::Review)
+            && self.candidate_owner_evidence_required
     }
 
     /// A converged net-zero candidate is terminal evidence-insufficient, not permission to reopen
     /// discovery. The next provider request has no tool surface and can only explain the boundary.
     pub(super) const fn evidence_insufficient_terminal(&self) -> bool {
-        matches!(self.state, GraphState::EvidenceInsufficient)
+        !self.disabled && matches!(self.state, GraphState::EvidenceInsufficient)
     }
 
     /// When non-empty, candidate mutation is confined to paths carried by the typed repair receipt
@@ -712,6 +731,9 @@ impl InvestigationConvergence {
         exact_read: bool,
         stable_key_search: bool,
     ) -> Option<ConvergenceRequest> {
+        if self.disabled {
+            return None;
+        }
         if matches!(
             self.state,
             GraphState::Done | GraphState::Handoff | GraphState::EvidenceInsufficient
@@ -897,6 +919,9 @@ impl InvestigationConvergence {
         rolled_back: bool,
         structural_regression: bool,
     ) -> Option<ConvergenceRequest> {
+        if self.disabled {
+            return None;
+        }
         if matches!(
             self.state,
             GraphState::Done | GraphState::EvidenceInsufficient
@@ -947,6 +972,9 @@ impl InvestigationConvergence {
 
     /// Verification is the successful terminal of the graph-governed repair lifecycle.
     pub(super) fn verification_passed(&mut self) {
+        if self.disabled {
+            return;
+        }
         self.state = GraphState::Done;
         self.structural_repair_read_required = false;
         self.behavior_counterexample_read_required = false;
@@ -974,6 +1002,9 @@ impl InvestigationConvergence {
         repair_evidence: Option<iteron_tools::RepairEvidenceReceipt>,
         completed_observation: bool,
     ) -> Option<ConvergenceRequest> {
+        if self.disabled {
+            return None;
+        }
         if let Some(candidate_change_outstanding) = candidate_change_outstanding {
             if candidate_change_outstanding {
                 self.state = GraphState::Review;
@@ -1066,6 +1097,33 @@ impl InvestigationConvergence {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn general_run_does_not_inject_repair_workflow_or_narrow_tools() {
+        let mut policy = InvestigationConvergence::for_general_run();
+        assert!(!policy.enabled());
+        assert!(policy.candidate_change_allowed());
+        assert!(!policy.candidate_change_required());
+        assert!(!policy.candidate_review_active());
+        assert!(!policy.candidate_owner_evidence_required());
+        assert!(!policy.evidence_insufficient_terminal());
+        assert!(
+            policy
+                .observe_candidate_round(CandidateDiffState::Empty, true, None, false, false)
+                .is_none()
+        );
+        assert!(
+            policy
+                .observe_localization_scopes_for_round(["read_file:src/lib.rs@0".into()], true)
+                .is_none()
+        );
+        assert!(policy.observe_round(None, true, None, true).is_none());
+        assert_eq!(
+            policy.guard_verification_candidate(CandidateDiffState::Empty),
+            VerificationCandidateGuard::Verify
+        );
+        assert!(policy.verification_failed(false, false).is_none());
+    }
 
     fn receipt(
         digest: &str,

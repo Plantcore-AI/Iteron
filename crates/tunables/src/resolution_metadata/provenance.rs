@@ -65,7 +65,7 @@ macro_rules! configured {
 #[rustfmt::skip]
 pub(super) const SOURCES: [SourceSpec; crate::EXPECTED_FAMILY_COUNT] = [
     source!([(Cli, Operator, "crates/cli/src/main.rs"), (Environment, Operator, "ITERON_PROVIDER"), (UserConfig, Operator, "crates/cli/src/config.rs"), (Builtin, Builtin, "crates/cli/src/main.rs")]), // 1 provider
-    source!([binding!(Cli, Operator, "crates/cli/src/main.rs"), binding!(Environment, Operator, "ITERON_MODEL"), binding!(UserConfig, Operator, "crates/cli/src/config.rs"), binding!(ProjectConfig, Repository, ".iteron/config.json", RouteSuggestion), binding!(Builtin, Builtin, "crates/provider/src/static_metadata.rs")]), // 2 model
+    source!([binding!(Cli, Operator, "crates/cli/src/main.rs"), binding!(Environment, Operator, "ITERON_MODEL"), binding!(UserConfig, Operator, "crates/cli/src/config.rs"), binding!(Builtin, Builtin, "crates/cli/src/providers.rs")]), // 2 model
     source!([(Cli, Operator, "crates/cli/src/main.rs"), (Environment, Operator, "ITERON_BASE_URL"), (UserConfig, Operator, "crates/cli/src/config.rs")]), // 3 base_url
     source!([(Cli, Operator, "crates/cli/src/main.rs"), (Environment, Operator, "ITERON_EFFORT"), (UserConfig, Operator, "crates/cli/src/config.rs"), (Builtin, Builtin, "crates/protocol/src/lib.rs")]), // 4 effort
     source!([binding!(Cli, Operator, "crates/cli/src/main.rs"), binding!(Environment, Operator, "ITERON_MAX_TURNS"), binding!(UserConfig, Operator, "crates/cli/src/config.rs"), binding!(ProjectConfig, Repository, ".iteron/config.json", TightenMaximum), binding!(Builtin, Builtin, "crates/protocol/src/lib.rs")]), // 5 max_turns

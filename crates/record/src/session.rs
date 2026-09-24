@@ -344,6 +344,27 @@ impl SessionProjection {
     /// Atomically refresh the per-run sidecar and canonical index when this projection is current
     /// and independently bound to the physical rollout plus any fork ancestry it consumed.
     pub(crate) fn persist_at(&mut self, expected_record_bytes: u64) -> Result<bool, RecordError> {
+        if !self.prepare_publication(expected_record_bytes)? {
+            return Ok(false);
+        }
+        write_meta(&self.runs_dir, &self.meta)?;
+        Ok(true)
+    }
+
+    pub(crate) fn persist_in_background(
+        &mut self,
+        expected_record_bytes: u64,
+    ) -> Result<bool, RecordError> {
+        if !self.prepare_publication(expected_record_bytes)? {
+            return Ok(false);
+        }
+        Ok(crate::session_maintenance::enqueue(
+            self.runs_dir.clone(),
+            self.meta.clone(),
+        ))
+    }
+
+    fn prepare_publication(&mut self, expected_record_bytes: u64) -> Result<bool, RecordError> {
         if complete_record_len(&rollout_path(&self.runs_dir, &self.meta.run_id)?)
             != Some(expected_record_bytes)
         {
@@ -362,7 +383,6 @@ impl SessionProjection {
         if !projection_is_current(&self.runs_dir, &self.meta) {
             return Ok(false);
         }
-        write_meta(&self.runs_dir, &self.meta)?;
         Ok(true)
     }
 
@@ -1543,6 +1563,12 @@ pub fn page(
     cursor: Option<SessionPageCursor>,
     limit: Option<usize>,
 ) -> SessionPage {
+    if crate::session_maintenance::flush().is_err()
+        || !crate::session_maintenance::marked_projections_current(runs_dir)
+    {
+        return page_rebuild_needed(cursor.is_some());
+    }
+
     let had_cursor = cursor.is_some();
     if index_publication_incomplete(runs_dir) {
         return SessionPage::default();
@@ -1735,6 +1761,7 @@ pub fn page(
         ));
     }
     if index_publication_incomplete(runs_dir)
+        || !crate::session_maintenance::marked_projections_current(runs_dir)
         || !base_snapshot_is_current(runs_dir, base_generation)
         || !delta_snapshot_is_current(runs_dir, delta.as_ref())
     {
@@ -1849,7 +1876,7 @@ fn compact_session_index_unlocked(runs_dir: &Path) -> Result<(), RecordError> {
     mark_index_dirty_unlocked(runs_dir)?;
     let metas = rollout_run_ids(runs_dir)
         .into_iter()
-        .filter_map(|run| meta(runs_dir, &run).ok())
+        .filter_map(|run| meta_after_publication(runs_dir, &run).ok())
         .collect::<Vec<_>>();
     rewrite_index_unlocked(runs_dir, metas.iter())
 }
@@ -2076,6 +2103,13 @@ fn write_meta_sidecar(runs_dir: &Path, projected: &SessionMeta) -> Result<(), Re
 /// `Zero` and `Known` both require replay because mutable cache bytes cannot prove either exact
 /// monetary claim. A missing, stale, or corrupt cache degrades to the record (R5 design §2.5).
 pub fn meta(runs_dir: &Path, run: &RunId) -> Result<SessionMeta, RecordError> {
+    crate::session_maintenance::flush()?;
+    meta_after_publication(runs_dir, run)
+}
+
+// Internal index maintenance already owns publication ordering. Waiting for the worker while
+// holding the index lock would invert its worker -> index-lock acquisition order.
+fn meta_after_publication(runs_dir: &Path, run: &RunId) -> Result<SessionMeta, RecordError> {
     let cache = per_run_meta_path(runs_dir, run)?;
     if let Ok(bytes) = crate::cache_io::read_session_meta(&cache)
         && let Ok(m) = private_cache::read_sidecar(runs_dir, &bytes)
@@ -2106,6 +2140,8 @@ pub fn meta_with_pricing(
 /// This foreground read never rebuilds the global index: stale/active sessions are repaired only
 /// by explicit [`reindex`] or a post-paint maintainer.
 pub fn list(runs_dir: &Path, tenant: &TenantId) -> Vec<SessionMeta> {
+    let _ = crate::session_maintenance::flush();
+
     let existing: HashSet<String> = rollout_run_ids(runs_dir).into_iter().map(|r| r.0).collect();
 
     let mut by_run: HashMap<String, SessionMeta> = HashMap::new();
@@ -2124,7 +2160,7 @@ pub fn list(runs_dir: &Path, tenant: &TenantId) -> Vec<SessionMeta> {
     // Degrade: any rollout the index does not cover is projected from its per-run cache or record.
     for run in &existing {
         if !by_run.contains_key(run)
-            && let Ok(m) = meta(runs_dir, &RunId(run.clone()))
+            && let Ok(m) = meta_after_publication(runs_dir, &RunId(run.clone()))
         {
             by_run.insert(run.clone(), m);
         }
@@ -2178,8 +2214,9 @@ pub fn list_scoped(runs_dir: &Path, tenant: &TenantId, repo: Option<&Path>) -> V
 /// to `cwd` because the prefix cache is per-repo, so a cross-worktree continue would cache-miss.
 pub fn most_recent(runs_dir: &Path, cwd: &Path, tenant: &TenantId) -> Option<RunId> {
     let mut indexed = page(runs_dir, tenant, Some(cwd), None, Some(1));
-    if !indexed.index_ready && indexed.rebuild_recommended {
-        // A missing/torn projection may pay one explicit rebuild. The normal continuation path
+    if !indexed.index_ready {
+        // One rebuild also recovers a crashed publication's global dirty marker. Its sidecar
+        // may already match the record while the index row was never committed. The ready path
         // never enumerates rollout files or hydrates unrelated sessions before the first frame.
         reindex(runs_dir).ok()?;
         indexed = page(runs_dir, tenant, Some(cwd), None, Some(1));
@@ -2194,6 +2231,34 @@ pub fn most_recent(runs_dir: &Path, cwd: &Path, tenant: &TenantId) -> Option<Run
 /// sidecar is the incremental O(1) index entry. The sorted global `sessions.index` is repaired by
 /// list/reindex away from the turn boundary, so foreground durability never scans all sessions.
 pub(crate) fn write_meta(runs_dir: &Path, projected: &SessionMeta) -> Result<(), RecordError> {
+    write_meta_inner(runs_dir, projected, false)
+}
+
+pub(crate) fn write_meta_if_current(
+    runs_dir: &Path,
+    projected: &SessionMeta,
+) -> Result<(), RecordError> {
+    write_meta_inner(runs_dir, projected, true)
+}
+
+pub(crate) fn cached_projection_is_current(runs_dir: &Path, run: &RunId) -> bool {
+    let Ok(path) = per_run_meta_path(runs_dir, run) else {
+        return false;
+    };
+    let Ok(bytes) = crate::cache_io::read_session_meta(&path) else {
+        return false;
+    };
+    private_cache::read_sidecar(runs_dir, &bytes)
+        .is_ok_and(|meta| projection_is_current(runs_dir, &meta))
+}
+
+fn write_meta_inner(
+    runs_dir: &Path,
+    projected: &SessionMeta,
+    require_current: bool,
+) -> Result<(), RecordError> {
+    validate_run_id(&projected.run_id)?;
+
     crate::create_state_dir(runs_dir)?;
     // The marker precedes the sidecar: a crash at any later point makes latency-sensitive readers
     // report not-ready instead of returning a ready page that silently omits this newer run. The
@@ -2202,6 +2267,11 @@ pub(crate) fn write_meta(runs_dir: &Path, projected: &SessionMeta) -> Result<(),
     let mut transaction_result = None;
     let mut compact_after = false;
     crate::cache_io::with_session_index_lock(runs_dir, || {
+        if require_current && !projection_is_current(runs_dir, projected) {
+            transaction_result = Some(Ok(()));
+            return Ok(());
+        }
+
         let inherited_dirty = index_publication_incomplete(runs_dir);
         let transaction = (|| -> Result<(), RecordError> {
             if !inherited_dirty {
@@ -2237,7 +2307,10 @@ pub(crate) fn write_meta(runs_dir: &Path, projected: &SessionMeta) -> Result<(),
 /// safe to run. A corrupt/broken rollout is skipped rather than aborting the whole rebuild; returns
 /// the number of runs indexed.
 pub fn reindex(runs_dir: &Path) -> Result<usize, RecordError> {
+    crate::session_maintenance::flush()?;
+
     crate::create_state_dir(runs_dir)?;
+    let recovery = crate::session_maintenance::ReindexRecovery::acquire(runs_dir)?;
     let mut metas = Vec::new();
     for run in rollout_run_ids(runs_dir) {
         if let Ok(m) = meta_from_replay(runs_dir, &run, None) {
@@ -2261,6 +2334,7 @@ pub fn reindex(runs_dir: &Path) -> Result<usize, RecordError> {
         crate::cache_io::sync_dir(runs_dir)?;
     }
     merge_rewrite_index(runs_dir, metas.iter().cloned())?;
+    recovery.complete()?;
     Ok(metas.len())
 }
 
@@ -2324,6 +2398,8 @@ pub enum DeleteSessionError {
 /// the target refuses the operation. This is the explicit destructive counterpart to [`prune`]:
 /// callers must name one run rather than broadening a retention policy until it happens to match.
 pub fn delete(runs_dir: &Path, tenant: &TenantId, run: &RunId) -> Result<(), DeleteSessionError> {
+    crate::session_maintenance::flush()?;
+
     crate::validate_run_id(run)?;
     let sessions = list(runs_dir, tenant);
     if !sessions.iter().any(|meta| meta.run_id == *run) {
@@ -2438,6 +2514,8 @@ pub(crate) fn prune_at(
     policy: &PrunePolicy,
     now: u64,
 ) -> Result<PruneReport, RecordError> {
+    crate::session_maintenance::flush()?;
+
     if !policy.dry_run {
         crate::content_store::release_private_content_for_absent_runs(runs_dir, tenant)?;
     }
@@ -4385,6 +4463,7 @@ mod tests {
             "K turn-boundary refreshes must pay for only the initialization replay"
         );
 
+        crate::session_maintenance::flush().unwrap();
         let persisted = private_cache::read_sidecar(
             &dir,
             &crate::cache_io::read_session_meta(&per_run_meta_path(&dir, &run).unwrap()).unwrap(),
@@ -4934,6 +5013,75 @@ mod tests {
     }
 
     #[test]
+    fn page_rechecks_pending_writer_after_snapshot_before_reporting_an_empty_page() {
+        let dir = tmpdir("page-unpublished-concurrent-tail");
+        let tenant = TenantId::default();
+        let run = RunId("concurrent-unpublished-tail".into());
+        mk_run(
+            &dir,
+            &run,
+            &tenant,
+            "/repo/page",
+            "keep this session visible",
+        );
+        reindex(&dir).unwrap();
+        assert_eq!(page(&dir, &tenant, None, None, Some(25)).sessions.len(), 1);
+        let base_generation = open_base_index(&dir).unwrap().generation;
+        let delta_before = read_delta_state(&dir).unwrap();
+        let hook_dir = dir.clone();
+        let hook_run = run.clone();
+        let hook_tenant = tenant.clone();
+        AFTER_PAGE_SNAPSHOT.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move || {
+                let mut writer = Rollout::open_existing(&hook_dir, &hook_run, hook_tenant).unwrap();
+                // Change only the authoritative tail. No terminal/explicit cache publication
+                // runs, so base/delta generations and the global publication marker stay fixed.
+                writer
+                    .append(&Event {
+                        seq: Seq::ZERO,
+                        turn: TurnId(1),
+                        kind: EventKind::Notice {
+                            text: "new authoritative tail".into(),
+                        },
+                    })
+                    .unwrap();
+            }));
+        });
+        let raced = page(&dir, &tenant, None, None, Some(25));
+        assert!(
+            !raced.index_ready,
+            "an unpublished concurrent tail must invalidate the page"
+        );
+        assert!(raced.sessions.is_empty());
+        assert!(!index_publication_incomplete(&dir));
+        assert!(base_snapshot_is_current(&dir, base_generation));
+        let delta_after = read_delta_state(&dir).unwrap();
+        assert_eq!(
+            (
+                delta_after.generation,
+                delta_after.rows,
+                delta_after.high_water
+            ),
+            (
+                delta_before.generation,
+                delta_before.rows,
+                delta_before.high_water
+            ),
+            "the pending-writer recheck must catch a race invisible to index generations",
+        );
+        reindex(&dir).unwrap();
+        let repaired = page(&dir, &tenant, None, None, Some(25));
+        assert!(repaired.index_ready);
+        assert!(
+            repaired
+                .sessions
+                .iter()
+                .any(|session| session.run_id == run)
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn delta_hard_bounds_refuse_growth_and_locked_compaction_resets_state() {
         let dir = tmpdir("delta-hard-bound");
         let tenant = TenantId::default();
@@ -5112,6 +5260,7 @@ mod tests {
             })
             .unwrap();
 
+        crate::session_maintenance::flush().unwrap();
         // Replace the O(1) append log with a directory to inject a projection-publication failure
         // at the next explicit refresh. The durable rollout writer must remain usable.
         std::fs::remove_file(delta_index_path(&dir)).unwrap();
@@ -5231,6 +5380,141 @@ mod tests {
     }
 
     #[test]
+    fn pending_writer_marker_forces_discovery_after_lost_publication() {
+        let dir = tmpdir("pending-publication-crash");
+        let tenant = TenantId::default();
+        let run = RunId("crashed-publication".into());
+        mk_run(&dir, &run, &tenant, "/repo/crash", "find me after crash");
+        // Simulate the durable marker left by a process dying between its authoritative journal
+        // flush and derivative publication. No live worker is needed to discover the lost work.
+        let pending = dir.join(".session-pending");
+        std::fs::create_dir_all(&pending).unwrap();
+        std::fs::write(pending.join(&run.0), []).unwrap();
+        std::fs::remove_file(per_run_meta_path(&dir, &run).unwrap()).unwrap();
+        let stale = page(&dir, &tenant, None, None, Some(25));
+        assert!(!stale.index_ready);
+        assert!(stale.rebuild_recommended);
+        reindex(&dir).unwrap();
+        let recovered = page(&dir, &tenant, None, None, Some(25));
+        assert!(recovered.index_ready);
+        assert!(recovered.sessions.iter().any(|meta| meta.run_id == run));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn most_recent_recovers_crash_after_sidecar_before_index_publication() {
+        let dir = tmpdir("continue-crashed-publication");
+        let tenant = TenantId::default();
+        let run = RunId("continue-after-crash".into());
+        mk_run(
+            &dir,
+            &run,
+            &tenant,
+            "/repo/crash",
+            "recover current sidecar",
+        );
+        assert!(cached_projection_is_current(&dir, &run));
+        // A process may die after the private sidecar has been installed while the global
+        // publication marker still records that its index transaction never completed.
+        crate::cache_io::with_session_index_lock(&dir, || {
+            mark_index_dirty_unlocked(&dir).map_err(|error| io::Error::other(error.to_string()))
+        })
+        .unwrap();
+        let pending = page(&dir, &tenant, None, None, Some(25));
+        assert!(!pending.index_ready);
+        assert!(
+            !pending.rebuild_recommended,
+            "page preserves transient publication semantics"
+        );
+        assert_eq!(
+            most_recent(&dir, Path::new("/repo/crash"), &tenant),
+            Some(run)
+        );
+        assert!(!index_publication_incomplete(&dir));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn orphan_marker_with_torn_tail_does_not_block_healthy_sessions_after_reindex() {
+        use std::io::Write;
+        let dir = tmpdir("pending-publication-torn-tail");
+        let tenant = TenantId::default();
+        let healthy = RunId("healthy".into());
+        let torn = RunId("torn".into());
+        mk_run(&dir, &healthy, &tenant, "/repo/crash", "healthy session");
+        mk_run(&dir, &torn, &tenant, "/repo/crash", "torn session");
+        let pending = dir.join(".session-pending");
+        std::fs::create_dir_all(&pending).unwrap();
+        std::fs::write(pending.join(&torn.0), []).unwrap();
+        OpenOptions::new()
+            .append(true)
+            .open(rollout_path(&dir, &torn).unwrap())
+            .unwrap()
+            .write_all(b"{incomplete")
+            .unwrap();
+        assert!(!page(&dir, &tenant, None, None, Some(25)).index_ready);
+        reindex(&dir).unwrap();
+        let recovered = page(&dir, &tenant, None, None, Some(25));
+        assert!(recovered.index_ready);
+        assert!(recovered.sessions.iter().any(|meta| meta.run_id == healthy));
+        assert!(!pending.join(&torn.0).exists());
+        // Reindex is derivative maintenance: authoritative recovery stays at writer admission.
+        assert!(
+            std::fs::read(rollout_path(&dir, &torn).unwrap())
+                .unwrap()
+                .ends_with(b"{incomplete")
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn terminal_append_does_not_wait_for_optional_index_publication() {
+        let dir = tmpdir("async-index-tail");
+        let tenant = TenantId::default();
+        let run = RunId("async-index-tail".into());
+        let mut rollout = Rollout::open(&dir, &run, tenant).unwrap();
+        rollout.append(&genesis_event("/repo/async")).unwrap();
+        let lock_dir = dir.clone();
+        let (locked_tx, locked) = std::sync::mpsc::channel();
+        let (release, wait_release) = std::sync::mpsc::channel();
+        let owner = std::thread::spawn(move || {
+            crate::cache_io::with_session_index_lock(&lock_dir, || {
+                locked_tx.send(()).unwrap();
+                wait_release
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .unwrap();
+                Ok(())
+            })
+            .unwrap();
+        });
+        locked
+            .recv_timeout(std::time::Duration::from_secs(3))
+            .unwrap();
+        let (appended_tx, appended) = std::sync::mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            let result = rollout.append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(0),
+                kind: EventKind::Done {
+                    outcome: "Done".into(),
+                },
+            });
+            appended_tx.send(result.is_ok()).unwrap();
+            drop(rollout);
+        });
+        let completed_while_locked = appended.recv_timeout(std::time::Duration::from_secs(3));
+        release.send(()).unwrap();
+        owner.join().unwrap();
+        writer.join().unwrap();
+        assert!(
+            completed_while_locked.unwrap(),
+            "terminal durability must not wait for the optional index lock"
+        );
+        assert_eq!(meta(&dir, &run).unwrap().last_outcome, Some(Outcome::Done));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn write_meta_and_reindex_round_trip() {
         let dir = tmpdir("cache");
         let t = TenantId::default();
@@ -5304,6 +5588,12 @@ mod tests {
             );
         }
 
+        // The asynchronous publisher may skip a TurnEnd projection superseded by Done before
+        // it acquires the index lock. Every run must still publish its final snapshot exactly
+        // within the original two-boundary budget before testing explicit upsert growth.
+        crate::session_maintenance::flush().unwrap();
+        let initial_rows = read_delta_state(&dir).unwrap().rows;
+        assert!((runs.len() as u64..=2 * runs.len() as u64).contains(&initial_rows));
         for write in 0..32u64 {
             let run = &runs[(write as usize) % runs.len()];
             let projected = meta_from_replay(&dir, run, None).unwrap();
@@ -5311,7 +5601,7 @@ mod tests {
         }
 
         let state = read_delta_state(&dir).unwrap();
-        assert_eq!(state.rows, 2 * runs.len() as u64 + 32);
+        assert_eq!(state.rows, initial_rows + 32);
         assert!(state.rows < SESSION_DELTA_HARD_LIMITS.rows);
         assert!(state.high_water < SESSION_DELTA_HARD_LIMITS.bytes);
         assert!(runs.iter().all(|run| read_delta_ref(&dir, run).is_some()));

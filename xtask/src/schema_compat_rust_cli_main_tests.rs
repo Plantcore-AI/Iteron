@@ -11,7 +11,11 @@ fn source() -> String {
 fn main_entry_and_output_type_authority_reject_redirects() {
     let source = source();
     validate(&source).unwrap();
-    let entry = source.replacen("match run_cli().await", "match evil().await", 1);
+    let entry = source.replacen("runtime.block_on(run_cli())", "runtime.block_on(evil())", 1);
+    assert_ne!(
+        entry, source,
+        "entrypoint mutation must hit the current launcher"
+    );
     assert!(validate(&entry).is_err());
     let import = source.replacen(
         "use output::{Emitter, OutputFormat};",

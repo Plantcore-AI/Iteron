@@ -180,7 +180,8 @@ impl Agent {
             },
             Err(KernelError::Provider(
                 iteron_provider::ProviderError::KnownModelUnavailable { .. }
-                | iteron_provider::ProviderError::KnownAccountUnavailable { .. },
+                | iteron_provider::ProviderError::KnownAccountUnavailable { .. }
+                | iteron_provider::ProviderError::ConnectFailed,
             )) => (
                 ProviderRouteUsageTruth::NotDispatched,
                 ProviderRouteCostTruth::NotDispatched,

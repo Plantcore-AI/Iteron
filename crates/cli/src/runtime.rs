@@ -20,7 +20,7 @@ pub use iteron_kernel::{diagnostics, effect_admission, effect_class, effect_jour
 type PureToolInFlight = (
     usize,
     ToolUse,
-    tokio::task::JoinHandle<EarlyPureToolOutcome>,
+    stream_tools::EarlyToolTask,
     Instant,
     EarlyHookEffectTickets,
 );
@@ -30,6 +30,8 @@ enum EarlyPureToolOutcome {
         managed: tool_output_spill::ManagedToolResult,
         spill_store: Option<std::sync::Arc<tool_output_spill::ToolOutputSpillStore>>,
         hook: Option<EarlyHookSummary>,
+        effect_unknown: bool,
+        operator_interrupted: bool,
     },
     Refused {
         reason: String,
@@ -47,6 +49,7 @@ struct EarlyHookSummary {
 
 #[derive(Default)]
 struct EarlyHookEffectTickets {
+    tool: Option<effects::EffectTicket>,
     compatibility: Option<(usize, effects::EffectTicket)>,
     lifecycle: Option<(usize, effects::EffectTicket)>,
 }
@@ -175,7 +178,13 @@ mod decomposition;
 mod deferred_tools;
 mod durability;
 mod failed_action_cache;
+#[cfg(test)]
+mod route_controls_tests;
+mod stream_tools;
+#[cfg(test)]
+mod stream_tools_tests;
 pub(crate) mod turn_activity;
+mod turn_maintenance;
 pub(crate) use failed_action_cache::FailedActionPolicy;
 mod file_submission;
 pub(crate) mod force_cancel;
@@ -210,6 +219,7 @@ mod strategy_ports;
 mod strategy_runtime;
 mod subagent_control;
 pub mod telemetry;
+mod terminal_diagnostics;
 mod tool_interrupt;
 pub(crate) mod tool_output_spill;
 mod transcript;
@@ -226,6 +236,7 @@ use deferred_tools::declared_write_paths;
 use deferred_tools::{AutoApprovedCall, scheduling_write_paths, write_paths_conflict};
 use diagnostics::{DiagnosticEmitter, KernelDiagnostic};
 use hooks::{HookDecision, HookEvent, Hooks};
+pub(crate) use inbound_control::TurnSubmission;
 #[cfg(test)]
 use iteron_ctx::estimate_request_context;
 use iteron_obs::{
@@ -268,9 +279,7 @@ use route_validation::{
 use sha2::{Digest, Sha256};
 pub use side_conversation::{SideAnswer, SideConversation, SideStatus};
 use std::time::{Duration, Instant};
-use tool_interrupt::{
-    ToolInterruption, await_tool_or_interrupt, interrupted_tool_result, is_interrupted_tool_result,
-};
+use tool_interrupt::{ToolInterruption, await_tool_or_interrupt, interrupted_tool_result};
 use transcript::{merge_adjacent_user_message, project_messages_from_events, reconcile_transcript};
 pub(crate) use workflow_spawner::attach_workflow_telemetry;
 #[cfg(test)]
@@ -376,6 +385,34 @@ pub(crate) const MEMORY_ADDED_NOTIFICATION_PREFIX: &str =
 /// narrow this per opportunity, but it cannot expand beyond this owner value.
 pub(crate) const DEFAULT_MAX_TOOL_CONCURRENCY: usize = 16;
 
+/// A permission decision, not evidence that the proposed tool effect ran or succeeded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalResolution {
+    Approved,
+    Denied,
+    Cancelled,
+    TimedOut,
+}
+
+/// An identified control command that the runtime actually admitted. This is not a claim that a
+/// tool or external effect succeeded; it only records the cooperative control-state transition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ControlSubmissionKind {
+    Interrupt,
+    ForceCancel,
+    Drain,
+}
+
+impl ControlSubmissionKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Interrupt => "interrupt",
+            Self::ForceCancel => "force_cancel",
+            Self::Drain => "drain",
+        }
+    }
+}
+
 /// Events a UI (the TUI) renders. The kernel sends these to an optional channel so a front-end
 /// can display the run live without the kernel writing to stdout.
 #[derive(Debug, Clone)]
@@ -423,8 +460,24 @@ pub enum UiEvent {
     /// model). Task labels are scrubbed and bounded before crossing this seam.
     #[allow(dead_code)]
     Workflow(WorkflowUiEvent),
-    /// One or more operator steering messages were durably admitted at a turn boundary.
+    /// Legacy/unidentified steering messages admitted at a turn boundary. This count is never
+    /// authoritative for an identified client's submission receipt.
     SteerApplied { count: usize },
+    /// An exact identified steer was durably appended to the run record. App Server settles only
+    /// this submission ID as Applied; queue admission by itself is not successful execution.
+    SteerSubmissionApplied { id: SubmissionId },
+    /// Exact rejection of a product-turn-scoped command that arrived after its user-facing turn
+    /// ceased to own the kernel queue. The reason is a closed, non-secret code.
+    SubmissionRejected {
+        id: SubmissionId,
+        reason_code: &'static str,
+    },
+    /// Exact identified interrupt/drain command applied to runtime control state. A terminal
+    /// event alone does not prove this happened, so the App Server must not infer it by FIFO.
+    ControlSubmissionApplied {
+        id: SubmissionId,
+        kind: ControlSubmissionKind,
+    },
     /// A harness notice (compaction, verify gate, interrupt, ...).
     Notice(String),
     /// A capability gate needs the operator's answer (mode = default/plan/... produced `Ask`). The
@@ -439,6 +492,16 @@ pub enum UiEvent {
         arguments: serde_json::Value,
         /// Bounded workspace provenance for the effect target.
         workspace: String,
+    },
+    /// Authoritative resolution of the same approval id after its durable decision boundary.
+    /// `Approved` permits the later tool admission; it never claims the tool was executed.
+    ApprovalResolved {
+        id: SubmissionId,
+        resolution: ApprovalResolution,
+        reason_code: &'static str,
+        /// Exact client response submission accepted for this durable decision. Missing on
+        /// timeout, cancellation, one-shot denial, or a response never matched to this request.
+        response_submission_id: Option<SubmissionId>,
     },
     /// The run ended.
     Done(String),
@@ -1331,7 +1394,11 @@ fn allocate_orchestration(
         return None;
     }
     let initial_writer_reserve = policy.writer_fan_turn_split.writer_reserve(remaining_turns);
-    let fan_available = remaining_turns.saturating_sub(initial_writer_reserve);
+    let fan_available = if remaining_turns == Budget::UNLIMITED_TURNS {
+        Budget::UNLIMITED_TURNS
+    } else {
+        remaining_turns.saturating_sub(initial_writer_reserve)
+    };
     // Admit as many distinct investigators as the pinned fan/worker controls allow. Wall-clock is
     // bounded separately by the concurrency permit count.
     let active_workers = task_count
@@ -1352,7 +1419,11 @@ fn allocate_orchestration(
         .min(remaining_wall_secs);
     Some(OrchestrationAllocation {
         fan_turns,
-        writer_turns_reserved: remaining_turns.saturating_sub(fan_turns),
+        writer_turns_reserved: if remaining_turns == Budget::UNLIMITED_TURNS {
+            Budget::UNLIMITED_TURNS
+        } else {
+            remaining_turns.saturating_sub(fan_turns)
+        },
         active_workers,
         fan_wall_secs,
         writer_wall_reserved_secs: remaining_wall_secs.saturating_sub(fan_wall_secs),
@@ -1384,7 +1455,11 @@ fn fan_budget_slices(
         .unwrap_or_default();
     (0..active_workers)
         .map(|index| Budget {
-            max_turns: (base_turns + u32::from((index as u32) < extra_turns)).min(ceiling),
+            max_turns: if aggregate.max_turns == Budget::UNLIMITED_TURNS {
+                ceiling
+            } else {
+                (base_turns + u32::from((index as u32) < extra_turns)).min(ceiling)
+            },
             max_usd,
             max_tokens: base_tokens.map(|base| base + u64::from((index as u64) < extra_tokens)),
             // Concurrent workers each observe the whole fan wall window; the engine Governor
@@ -1491,6 +1566,38 @@ fn apply_workflow_execution_policy(
 #[cfg(test)]
 mod orchestration_allocation_tests {
     use super::*;
+
+    #[test]
+    fn unlimited_parent_keeps_unlimited_children_and_honors_explicit_child_caps() {
+        let budget = Budget::default();
+        let policy = crate::runtime_tunables::execution_policy::ExecutionRuntimePolicy::owner(
+            iteron_protocol::Effort::Ultracode,
+            &budget,
+            iteron_workflow::RunLimits::default(),
+        );
+        let allocation = allocate_orchestration(Budget::UNLIMITED_TURNS, 3, 900, policy).unwrap();
+        assert_eq!(allocation.fan_turns, Budget::UNLIMITED_TURNS);
+        assert_eq!(allocation.writer_turns_reserved, Budget::UNLIMITED_TURNS);
+        let slices = fan_budget_slices(&budget, 3, None);
+        assert!(
+            slices
+                .iter()
+                .all(|child| child.max_turns == Budget::UNLIMITED_TURNS)
+        );
+        let mut ceiling = iteron_agents::subagent_budget_ceiling();
+        let child = policy
+            .direct_child_allocation
+            .allocate(Budget::UNLIMITED_TURNS, 300, None, &ceiling)
+            .unwrap();
+        assert_eq!(child.max_turns, Budget::UNLIMITED_TURNS);
+        ceiling.max_turns = 2;
+        let child = policy
+            .direct_child_allocation
+            .allocate(Budget::UNLIMITED_TURNS, 300, None, &ceiling)
+            .unwrap();
+        assert_eq!(child.max_turns, 2);
+        assert!(child.turn_limit_reached(2));
+    }
 
     fn policy() -> crate::runtime_tunables::execution_policy::ExecutionRuntimePolicy {
         crate::runtime_tunables::execution_policy::ExecutionRuntimePolicy::owner(
@@ -1635,7 +1742,7 @@ mod orchestration_allocation_tests {
             5,
             child_ceiling - 1,
             child_ceiling,
-            child_ceiling * 3,
+            child_ceiling.saturating_mul(3),
         ] {
             let collapsed = (remaining_turns / child_ceiling.min(remaining_turns).max(1)).max(1);
             assert!(
@@ -2165,6 +2272,7 @@ mod plantcore_stuck_tests {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DurableAppendFault {
     BestEffort,
+    SteerMessage,
     ContextInjection,
     Notice,
     TurnStart,
@@ -2618,12 +2726,15 @@ pub struct Agent {
     policy_capabilities: CapabilitySet,
     /// Inbound operator channel for safe-point commands and approval answers (the SQ seed,
     /// ADR-010). Resident frontends install it even when human approval prompts are disabled.
-    approvals_rx: Option<tokio::sync::mpsc::Receiver<SqEnvelope>>,
+    approvals_rx: Option<tokio::sync::mpsc::Receiver<TurnSubmission>>,
+    /// Stable user-facing Product Turn epoch, distinct from physical kernel TurnId. A single
+    /// Product Turn can contain several model calls and compaction turns.
+    active_product_turn_id: Option<iteron_protocol::product_contract::ProductTurnId>,
     /// Whether an `Ask` verdict may wait for an operator response on `approvals_rx`.
     interactive_approvals: bool,
     /// Steering received while a provider/tool/approval was active. It is admitted only at a
     /// turn-atomic safe point and in submission order.
-    pending_steers: std::collections::VecDeque<String>,
+    pending_steers: std::collections::VecDeque<inbound_control::PendingSteer>,
     /// Monotonic counter minting `SubmissionId`s for approval requests (per-run, deterministic).
     approval_seq: u64,
     /// Re-entry guard scoped to the Ultracode admission wrapper.
@@ -3086,8 +3197,14 @@ impl Agent {
         input_images: &[iteron_protocol::ImageContent],
     ) -> Result<Outcome, KernelError> {
         let mut consecutive_errors: u32 = 0;
+        let mut stream_recoveries = 0u32;
+        let mut recovered_tool_results: std::collections::BTreeMap<String, (ToolUse, ToolResult)> =
+            std::collections::BTreeMap::new();
+        // The graph-governed repair workflow is retained for specialized workflows, not for
+        // ordinary coding turns. Its evidence gates and workspace identity reads must not shape
+        // the default model/tool loop.
         let mut investigation_convergence =
-            investigation_convergence::InvestigationConvergence::for_run();
+            investigation_convergence::InvestigationConvergence::for_general_run();
         let mut candidate_workspace_baseline =
             investigation_convergence::CandidateWorkspaceBaseline::default();
         let mut immediate_candidate_recovery_used = false;
@@ -3147,8 +3264,7 @@ impl Agent {
                 return Ok(outcome);
             }
             let effective_system = self.effective_system();
-            let tool_specs = self.advertised_tool_specs_for_task_with_patch_trial(
-                relevance_task,
+            let tool_projection_posture = if investigation_convergence.enabled() {
                 context_runtime::ToolProjectionPosture {
                     patch_trial: investigation_convergence.patch_trial_active(),
                     candidate_change_required: investigation_convergence
@@ -3168,7 +3284,13 @@ impl Agent {
                         .evidence_insufficient_terminal(),
                     candidate_handoff_terminal: investigation_convergence
                         .candidate_handoff_terminal(),
-                },
+                }
+            } else {
+                context_runtime::ToolProjectionPosture::default()
+            };
+            let tool_specs = self.advertised_tool_specs_for_task_with_patch_trial(
+                relevance_task,
+                tool_projection_posture,
             );
             // This is the checkpointed coding-request reservation. The provider's documented
             // maximum is an external ceiling applied during composition, not the amount every
@@ -3761,10 +3883,16 @@ impl Agent {
             // tool_use with an error result (code review: an unanswered tool_use is a dangling
             // block the model API rejects on the next turn).
             let mut pure: Vec<PureToolInFlight> = Vec::new();
+            let stream_execution_gate = std::sync::Arc::new(tokio::sync::RwLock::new(()));
+            let early_local_effects = !investigation_convergence.enabled()
+                && self.verify_command.is_none()
+                && !self.plantcore_runtime_enabled();
+            let mut early_effect_signatures = std::collections::BTreeSet::new();
+            let mut replayed_tool_results = std::collections::BTreeMap::new();
             // How many pure calls could not take a permit the instant they were admitted. They are
             // still dispatched concurrently — they wait in the governor's queue — but the count is
             // the honest report that the cap, not the workload, shaped this turn's tool phase.
-            let mut queued_pure: usize = 0;
+            let queued_pure = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let mut deferred: Vec<(
                 usize,
                 ToolUse,
@@ -3796,6 +3924,11 @@ impl Agent {
             // all. This buffer is that channel, bounded by the same output ceiling the turn is.
             let mut streamed_text = String::new();
             let mut streamed_thinking = String::new();
+            let interrupted_stream_head_limit = iteron_tunables::param_integer(
+                "cli.runtime.interrupted_stream_max_bytes",
+                INTERRUPTED_STREAM_MAX_BYTES,
+            )
+            .min(INTERRUPTED_STREAM_MAX_BYTES);
             // I-53: transport metadata, captured here and folded into the agent after the turn.
             let mut observed_rate_limit: Option<iteron_provider::RateLimitSnapshot> = None;
             let model_lifecycle = self.lifecycle_emitter.clone();
@@ -3960,7 +4093,11 @@ impl Agent {
                             provider_route::stream_item_has_semantic_output(&item);
                         match item {
                             StreamItem::TextDelta(t) => {
-                                streamed_text.push_str(&t);
+                                durability::append_interrupted_stream_head(
+                                    &mut streamed_text,
+                                    &t,
+                                    interrupted_stream_head_limit,
+                                );
                                 if !hedge_ui_pre_forwarded {
                                     // Scrub secrets before the assistant text crosses the UI seam (ADR-015 R1):
                                     // the record already masks the committed Block::Text, but the live UI / /export
@@ -3974,7 +4111,11 @@ impl Agent {
                                 }
                             }
                             StreamItem::ThinkingDelta(t) => {
-                                streamed_thinking.push_str(&t);
+                                durability::append_interrupted_stream_head(
+                                    &mut streamed_thinking,
+                                    &t,
+                                    interrupted_stream_head_limit,
+                                );
                                 if !hedge_ui_pre_forwarded {
                                     let _ = frontend_saturation.try_send_frontend(
                                         resident_ui_tx.as_ref(),
@@ -4064,12 +4205,48 @@ impl Agent {
                                     tool_policy_record_error = Some(error);
                                     return;
                                 }
+                                if let Some((previous_call, previous_result)) =
+                                    recovered_tool_results.get(&tu.id)
+                                {
+                                    if previous_call != &tu {
+                                        tool_policy_record_error = Some(iteron_provider::ProviderError::Decode(
+                                            "recovery reused a completed tool call ID with different arguments".into(),
+                                        ).into());
+                                        return;
+                                    }
+                                    replayed_tool_results.insert(idx, previous_result.clone());
+                                    deferred.push((idx, tu, proposal));
+                                    return;
+                                }
                                 let is_pure = proposal
                                     .as_ref()
                                     .is_ok_and(|proposal| proposal.intent.purity == Purity::Pure);
-                                if is_pure && pure_overlap_enabled {
+                                let early_capability =
+                                    proposal.as_ref().ok().and_then(|proposal| {
+                                        self.early_local_tool_capability(proposal, argument_trust)
+                                    });
+                                let action_signature = format!("{}::{}", tu.name, tu.input);
+                                let early_effect = early_local_effects
+                                    && !is_pure
+                                    && early_capability.is_some()
+                                    && !self.failed_actions.contains_key(&action_signature)
+                                    && !early_effect_signatures.contains(&action_signature);
+                                // A call awaiting approval/other ordered admission is an exclusive
+                                // barrier. Later reads may not overtake that mutation.
+                                if deferred.is_empty()
+                                    && pure_overlap_enabled
+                                    && (is_pure || early_effect)
+                                {
                                     let proposal =
-                                        proposal.expect("checked pure tool-policy proposal");
+                                        proposal.expect("checked stream tool-policy proposal");
+                                    let capability = if is_pure {
+                                        Capability::ReadOnly
+                                    } else {
+                                        early_effect_signatures.insert(action_signature);
+                                        early_capability.expect("checked Auto capability")
+                                    };
+                                    let supports_parallel =
+                                        is_pure || capability == Capability::CodeExecuting;
                                     let tu_ui = proposal.intent.call.clone();
                                     if hook_gates_reads {
                                         self.lifecycle_event(
@@ -4081,8 +4258,7 @@ impl Agent {
                                             },
                                         );
                                     }
-                                    let intent =
-                                        proposal.admit(CapabilitySet::only(Capability::ReadOnly));
+                                    let intent = proposal.admit(CapabilitySet::only(capability));
                                     let compatibility_context = serde_json::json!({
                                         "event": "PreToolUse",
                                         "tool": tu_ui.name,
@@ -4146,6 +4322,17 @@ impl Agent {
                                             }
                                         }
                                     }
+                                    if !is_pure {
+                                        match self
+                                            .open_tool_call_effect(turn_id, idx, &tu_ui, capability)
+                                        {
+                                            Ok(ticket) => hook_effect_tickets.tool = Some(ticket),
+                                            Err(error) => {
+                                                tool_policy_record_error = Some(error);
+                                                return;
+                                            }
+                                        }
+                                    }
                                     // Spawn now — I/O overlaps the remaining decode. The permit is held for
                                     // the task's lifetime and released on completion (bounded). At the cap
                                     // the task still spawns and awaits a permit inside itself: the future
@@ -4153,59 +4340,74 @@ impl Agent {
                                     // capped while the WAITING work stays concurrent. The alternative this
                                     // replaces — an overflow list drained inline during collection — made
                                     // every call past the cap serial with nothing in the record saying so.
-                                    let fut = self.registry.dispatch_intent(intent);
+                                    let fut = self.registry.dispatch_stream_intent(intent);
+                                    let execution_guard = stream_tools::reserve_execution(
+                                        stream_execution_gate.clone(),
+                                        supports_parallel,
+                                    );
                                     let tool_use_id = tu_ui.id.clone();
                                     let spill_store = self.ordinary_tool_spill_store(&tu_ui.name);
                                     let interrupt = tool_interrupt.clone();
                                     let force_cancel = tool_force_cancel.clone();
                                     let drain = tool_drain.clone();
-                                    let permit = gov.try_acquire();
-                                    if permit.is_none() {
-                                        queued_pure += 1;
-                                    }
+                                    let queued_pure = queued_pure.clone();
                                     let gov = gov.clone();
                                     let hooks = early_hooks.clone();
                                     let hook_journal = early_hook_journal.clone();
-                                    let handle = tokio::spawn(async move {
-                                        let _permit = match permit {
-                                            Some(permit) => permit,
-                                            None => gov.acquire().await,
-                                        };
-                                        let hook = match run_lifecycle_gate(
-                                            &hooks,
-                                            EarlyHookGateContext {
-                                                journal: hook_journal.as_ref(),
-                                                compatibility_enabled: compatibility_pre_tool_hook,
-                                                lifecycle_enabled: lifecycle_pre_tool_hook,
-                                                compatibility_json: &compatibility_context,
-                                                lifecycle_json: &lifecycle_context,
-                                                interrupt: interrupt.as_deref(),
-                                                drain: drain.as_ref(),
-                                            },
-                                        )
-                                        .await
-                                        {
-                                            Ok(summary) => summary,
-                                            Err(refusal) => {
-                                                return EarlyPureToolOutcome::Refused {
-                                                    reason: refusal.reason,
-                                                    hook: refusal.summary,
-                                                };
-                                            }
-                                        };
-                                        let result = match await_tool_or_interrupt(
-                                            fut,
-                                            interrupt.as_deref(),
-                                            Some(force_cancel.as_ref()),
-                                            Some(drain.as_ref()),
-                                        )
-                                        .await
-                                        {
-                                            Ok(result) => result,
-                                            // Pure tools have no externally visible effect by contract, so
-                                            // dropping one on interrupt is a definite cancelled read rather
-                                            // than an unknown effect settlement.
-                                            Err(interruption) => ToolResult {
+                                    let handle = stream_tools::EarlyToolTask::new(tokio::spawn(
+                                        async move {
+                                            let _execution_guard = execution_guard.await;
+                                            // Never hold a governor permit while waiting behind an
+                                            // exclusive call: that call may itself need the permit.
+                                            let _permit = match gov.try_acquire() {
+                                                Some(permit) => permit,
+                                                None => {
+                                                    queued_pure.fetch_add(
+                                                        1,
+                                                        std::sync::atomic::Ordering::Relaxed,
+                                                    );
+                                                    gov.acquire().await
+                                                }
+                                            };
+                                            let hook = match run_lifecycle_gate(
+                                                &hooks,
+                                                EarlyHookGateContext {
+                                                    journal: hook_journal.as_ref(),
+                                                    compatibility_enabled:
+                                                        compatibility_pre_tool_hook,
+                                                    lifecycle_enabled: lifecycle_pre_tool_hook,
+                                                    compatibility_json: &compatibility_context,
+                                                    lifecycle_json: &lifecycle_context,
+                                                    interrupt: interrupt.as_deref(),
+                                                    drain: drain.as_ref(),
+                                                },
+                                            )
+                                            .await
+                                            {
+                                                Ok(summary) => summary,
+                                                Err(refusal) => {
+                                                    return EarlyPureToolOutcome::Refused {
+                                                        reason: refusal.reason,
+                                                        hook: refusal.summary,
+                                                    };
+                                                }
+                                            };
+                                            let mut operator_interrupted = false;
+                                            let execution = match await_tool_or_interrupt(
+                                                fut,
+                                                interrupt.as_deref(),
+                                                Some(force_cancel.as_ref()),
+                                                Some(drain.as_ref()),
+                                            )
+                                            .await
+                                            {
+                                                Ok(result) => result,
+                                                // Pure tools have no externally visible effect by contract, so
+                                                // dropping one on interrupt is a definite cancelled read rather
+                                                // than an unknown effect settlement.
+                                                Err(interruption) => {
+                                                    operator_interrupted = true;
+                                                    let result = ToolResult {
                                                 tool_use_id,
                                                 content: match interruption {
                                                     ToolInterruption::Forced => "operator force-cancelled the read before it completed",
@@ -4216,18 +4418,34 @@ impl Agent {
                                                 is_error: true,
                                                 trust: Trust::Workspace,
                                                 latency_ms: 0,
-                                            },
-                                        };
-                                        let managed = tool_output_spill::manage_result(
-                                            spill_store.as_deref(),
-                                            result,
-                                        );
-                                        EarlyPureToolOutcome::Completed {
-                                            managed,
-                                            spill_store,
-                                            hook,
-                                        }
-                                    });
+                                                };
+                                                    if is_pure {
+                                                        iteron_tools::ToolExecution::Definite(
+                                                            result,
+                                                        )
+                                                    } else {
+                                                        iteron_tools::ToolExecution::Unknown(result)
+                                                    }
+                                                }
+                                            };
+                                            let effect_unknown = matches!(
+                                                &execution,
+                                                iteron_tools::ToolExecution::Unknown(_)
+                                            );
+                                            let result = execution.into_result();
+                                            let managed = tool_output_spill::manage_result(
+                                                spill_store.as_deref(),
+                                                result,
+                                            );
+                                            EarlyPureToolOutcome::Completed {
+                                                managed,
+                                                spill_store,
+                                                hook,
+                                                effect_unknown,
+                                                operator_interrupted,
+                                            }
+                                        },
+                                    ));
                                     pure.push((
                                         idx,
                                         tu_ui,
@@ -4584,8 +4802,93 @@ impl Agent {
                     LifecyclePayload::default(),
                 );
             }
+            let mut stream_recovered = false;
+            let pre_output_retry_exhausted =
+                provider_route::retryable_before_semantic_output_provider_error(
+                    &provider_result,
+                    semantic_output_observed,
+                )
+                .is_some();
             let turn_res = match provider_result {
                 Ok(result) => result,
+                Err(ref error)
+                    if !self.plantcore_runtime_enabled()
+                        && tool_contract_error.is_none()
+                        && !pre_output_retry_exhausted
+                        && stream_recoveries.saturating_add(1) < self.retry_policy.max_attempts
+                        && provider_route::recoverable_response_stream_error(error) =>
+                {
+                    let delay = iteron_sched::full_jitter(
+                        &self.retry_policy,
+                        stream_recoveries,
+                        retry_jitter.next01(),
+                    );
+                    let delay = match error {
+                        KernelError::Provider(error) => {
+                            error.retry_after().map_or(delay, |hint| hint.max(delay))
+                        }
+                        _ => delay,
+                    };
+                    stream_recoveries = stream_recoveries.saturating_add(1);
+                    self.activity.retry(
+                        turn_id,
+                        stream_recoveries,
+                        self.retry_policy.max_attempts,
+                        delay,
+                    );
+                    let prepare_recovery: Result<(), KernelError> = async {
+                        self.admit_followup_after_route_attempt_set(false)?;
+                        self.emit_durable(turn_id, EventKind::Notice {
+                            text: "provider stream disconnected; continuing from completed output and tool calls; interrupted usage remains unknown".into(),
+                        })?;
+                        self.wait_provider_retry(delay).await
+                    }.await;
+                    if let Err(recovery_error) = prepare_recovery {
+                        self.abort_early_pure_tools(turn_id, &mut pure).await?;
+                        self.preserve_interrupted_stream(
+                            turn_id,
+                            messages,
+                            &streamed_text,
+                            &streamed_thinking,
+                        );
+                        return Err(recovery_error);
+                    }
+                    self.ledger.record_provider_retries(
+                        1,
+                        u64::try_from(delay.as_millis().max(1)).unwrap_or(u64::MAX),
+                    );
+                    // Preserve only complete calls. The existing collection path settles their
+                    // running tasks and records results before the next request is constructed.
+                    // The physical provider effect above remains failed/unknown, not successful.
+                    let mut calls = pure
+                        .iter()
+                        .map(|(index, tool, ..)| (*index, tool.clone()))
+                        .chain(
+                            deferred
+                                .iter()
+                                .map(|(index, tool, _)| (*index, tool.clone())),
+                        )
+                        .collect::<Vec<_>>();
+                    calls.sort_by_key(|(index, _)| *index);
+                    let has_calls = !calls.is_empty();
+                    let mut blocks = Vec::new();
+                    if !streamed_text.is_empty() {
+                        blocks.push(Block::Text {
+                            text: format!("{streamed_text}\n\n{INTERRUPTED_STREAM_MARKER}"),
+                        });
+                    }
+                    blocks.extend(calls.into_iter().map(|(_, tool)| Block::ToolUse(tool)));
+                    stream_recovered = true;
+                    iteron_provider::TurnResult {
+                        blocks,
+                        stop_reason: if has_calls {
+                            StopReason::ToolUse
+                        } else {
+                            StopReason::PauseTurn
+                        },
+                        usage: UsageReport::provider_omitted(),
+                    }
+                }
                 Err(error) => {
                     // Physical route terminals already committed exact Known/Unknown cost truth
                     // before this branch. A proven provider failure (or a proved pre-dispatch
@@ -4686,7 +4989,7 @@ impl Agent {
             // The obs field is named for the behaviour it used to measure (an inline serial tail);
             // it now counts the calls that queued for a permit. Same question — "did the cap bind
             // this turn?" — answered without the serialisation that used to be its only symptom.
-            self.ledger.tool_inline_overflow(queued_pure);
+
             // Provider-active time only: local preparation, admission/fsync, retry backoff and
             // failover selection have their own clocks and cannot inflate `model_ms`.
             let model_ms = iteron_obs::duration_ms_ceil(provider_active);
@@ -4706,14 +5009,23 @@ impl Agent {
             self.last_assistant_text = turn_res.text();
             self.run_assistant_text.push_str(&self.last_assistant_text);
 
-            let complete_usage = self.record_provider_usage(
+            let complete_usage = match self.record_provider_usage(
                 turn_id,
                 turn_res.usage,
                 model_ms,
                 usd_attempt.projected_at_unix_secs(),
                 stream_timing,
-            )?;
-            self.emit_plantcore_turn_usage(turn_id)?;
+            ) {
+                Ok(usage) => usage,
+                Err(error) => {
+                    self.abort_early_pure_tools(turn_id, &mut pure).await?;
+                    return Err(error);
+                }
+            };
+            if let Err(error) = self.emit_plantcore_turn_usage(turn_id) {
+                self.abort_early_pure_tools(turn_id, &mut pure).await?;
+                return Err(error);
+            }
             if let Some(usage) = complete_usage {
                 usd_attempt.complete();
                 self.lifecycle_event(
@@ -4763,7 +5075,12 @@ impl Agent {
                 role: Role::Assistant,
                 content: turn_res.blocks.clone(),
             };
-            self.commit_message(turn_id, messages, assistant)?;
+            if (!stream_recovered || !assistant.content.is_empty())
+                && let Err(error) = self.commit_message(turn_id, messages, assistant)
+            {
+                self.abort_early_pure_tools(turn_id, &mut pure).await?;
+                return Err(error);
+            }
 
             // Recording scenarios may hold this durable post-Provider boundary until their driver
             // observes the Control command. No tool from this response has been dispatched yet.
@@ -4787,90 +5104,117 @@ impl Agent {
                 };
             }
 
-            // ---- collect tool results in DETERMINISTIC tool_use order (ADR-006 R7) ----
-            let tools_span = PhaseSpan::enter(Phase::Tools);
-            self.emit(
-                turn_id,
-                EventKind::Phase {
-                    phase: Phase::Tools,
-                },
-            );
             let total_tools = pure.len() + deferred.len();
+            // A final model answer has no tool phase. Avoid a redundant durable phase append and
+            // frontend transition on the common no-tool completion path; an explicit verifier
+            // still keeps the phase boundary used by its timing and audit contract.
+            let tools_span = PhaseSpan::enter(Phase::Tools);
+            if total_tools > 0 || self.verify_command.is_some() {
+                self.emit(
+                    turn_id,
+                    EventKind::Phase {
+                        phase: Phase::Tools,
+                    },
+                );
+            }
+            // ---- collect tool results in DETERMINISTIC tool_use order (ADR-006 R7) ----
             let mut workspace_candidate_changes = std::collections::BTreeSet::new();
             let mut workspace_candidate_paths = std::collections::BTreeSet::new();
             let mut unauthorized_candidate_changes = std::collections::BTreeSet::new();
             let mut owner_evidence_blocked_changes = std::collections::BTreeSet::new();
-            let repair_evidence_submissions = returned_tools
-                .iter()
-                .enumerate()
-                .filter_map(|(index, tool)| {
-                    self.registry
-                        .is_repair_evidence_submission(tool, &self.workspace)
-                        .then_some(index)
-                })
-                .collect::<std::collections::BTreeSet<_>>();
-            // A repair receipt submitted in this same turn has not yet produced typed authority.
-            // Treat that as an explicit opt-in to the confined path and wait for its result; an
-            // ordinary turn with no receipt stays on the direct workspace-confined fast path.
-            let candidate_owner_evidence_required =
-                investigation_convergence.candidate_owner_evidence_required();
-            let candidate_mutation_authorized = investigation_convergence
-                .candidate_change_allowed()
-                && !candidate_owner_evidence_required
-                && repair_evidence_submissions.is_empty();
-            let receipt_path_restricted = !investigation_convergence
-                .authorized_repair_paths()
-                .is_empty();
-            let authorized_candidate_paths = investigation_convergence
-                .authorized_repair_paths()
-                .iter()
-                .filter_map(|path| self.workspace.join(path).canonicalize().ok())
-                .collect::<std::collections::BTreeSet<_>>();
-            for (index, tool, _) in &deferred {
-                if !self.registry.is_candidate_change_tool(&tool.name) {
-                    continue;
-                }
-                let Some(paths) = self
-                    .registry
-                    .workspace_candidate_paths(tool, &self.workspace)
-                else {
-                    unauthorized_candidate_changes.insert(*index);
-                    continue;
-                };
-                if paths.is_empty()
-                    || !candidate_mutation_authorized
-                    || (receipt_path_restricted
-                        && !paths
-                            .iter()
-                            .all(|path| authorized_candidate_paths.contains(path)))
-                {
-                    unauthorized_candidate_changes.insert(*index);
-                    if candidate_owner_evidence_required {
-                        owner_evidence_blocked_changes.insert(*index);
+            let repair_evidence_submissions = if investigation_convergence.enabled() {
+                returned_tools
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, tool)| {
+                        self.registry
+                            .is_repair_evidence_submission(tool, &self.workspace)
+                            .then_some(index)
+                    })
+                    .collect::<std::collections::BTreeSet<_>>()
+            } else {
+                std::collections::BTreeSet::new()
+            };
+            // The graph workflow waits for a receipt result before granting graph-confined
+            // mutation. General coding does not enter that workflow or scan for its receipts.
+            if investigation_convergence.enabled() || self.verify_command.is_some() {
+                let candidate_owner_evidence_required =
+                    investigation_convergence.candidate_owner_evidence_required();
+                let candidate_mutation_authorized = investigation_convergence
+                    .candidate_change_allowed()
+                    && !candidate_owner_evidence_required
+                    && repair_evidence_submissions.is_empty();
+                let receipt_path_restricted = !investigation_convergence
+                    .authorized_repair_paths()
+                    .is_empty();
+                let authorized_candidate_paths = investigation_convergence
+                    .authorized_repair_paths()
+                    .iter()
+                    .filter_map(|path| self.workspace.join(path).canonicalize().ok())
+                    .collect::<std::collections::BTreeSet<_>>();
+                for (index, tool, _) in &deferred {
+                    if !self.registry.is_candidate_change_tool(&tool.name) {
+                        continue;
                     }
-                } else {
-                    workspace_candidate_changes.insert(*index);
-                    workspace_candidate_paths.extend(paths);
+                    let candidate_paths = self
+                        .registry
+                        .workspace_candidate_paths(tool, &self.workspace);
+                    if !investigation_convergence.enabled() {
+                        // An explicit verifier tracks changed paths without imposing the
+                        // graph's RepairIntent path restrictions on a general coding turn.
+                        workspace_candidate_changes.insert(*index);
+                        if let Some(paths) = candidate_paths {
+                            workspace_candidate_paths.extend(paths);
+                        }
+                        continue;
+                    }
+                    let Some(paths) = candidate_paths else {
+                        unauthorized_candidate_changes.insert(*index);
+                        continue;
+                    };
+                    if paths.is_empty()
+                        || !candidate_mutation_authorized
+                        || (receipt_path_restricted
+                            && !paths
+                                .iter()
+                                .all(|path| authorized_candidate_paths.contains(path)))
+                    {
+                        unauthorized_candidate_changes.insert(*index);
+                        if candidate_owner_evidence_required {
+                            owner_evidence_blocked_changes.insert(*index);
+                        }
+                    } else {
+                        workspace_candidate_changes.insert(*index);
+                        workspace_candidate_paths.extend(paths);
+                    }
                 }
             }
-            let workspace_targeted_observations = returned_tools
-                .iter()
-                .enumerate()
-                .filter_map(|(index, tool)| {
-                    self.registry
-                        .is_workspace_targeted_observation(tool, &self.workspace)
-                        .then_some(index)
-                })
-                .collect::<std::collections::BTreeSet<_>>();
-            let workspace_localization_observations = returned_tools
-                .iter()
-                .enumerate()
-                .filter_map(|(index, tool)| {
-                    self.registry
-                        .is_workspace_localization_observation(tool, &self.workspace)
-                        .then_some(index)
-                })
-                .collect::<std::collections::BTreeSet<_>>();
+            let workspace_targeted_observations = if investigation_convergence.enabled() {
+                returned_tools
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, tool)| {
+                        self.registry
+                            .is_workspace_targeted_observation(tool, &self.workspace)
+                            .then_some(index)
+                    })
+                    .collect::<std::collections::BTreeSet<_>>()
+            } else {
+                std::collections::BTreeSet::new()
+            };
+            let workspace_localization_observations = if investigation_convergence.enabled() {
+                returned_tools
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, tool)| {
+                        self.registry
+                            .is_workspace_localization_observation(tool, &self.workspace)
+                            .then_some(index)
+                    })
+                    .collect::<std::collections::BTreeSet<_>>()
+            } else {
+                std::collections::BTreeSet::new()
+            };
             let result_projection_budget =
                 self.turn_result_projection_budget(context_budget_inspection, &returned_tools);
             if total_tools > 0 {
@@ -5006,18 +5350,29 @@ impl Agent {
                         // A provider pause is a valid, resumable terminal. Append a user-role
                         // continuation so the next request remains portable across adapters and
                         // the ordinary max-turn/wall/USD ceilings still bound repeated pauses.
-                        let continuation = Message::user_text(
-                            "The provider paused the previous turn. Continue from the exact stopping point without repeating completed work.",
-                        );
+                        let continuation = Message::user_text(if stream_recovered {
+                            "The connection interrupted the previous response. Continue from the stopping point without repeating completed work. Re-emit only tool calls whose arguments were incomplete."
+                        } else {
+                            "The provider paused the previous turn. Continue from the exact stopping point without repeating completed work."
+                        });
                         self.emit(
                             turn_id,
                             EventKind::Notice {
-                                text: "provider paused the turn; requesting a bounded continuation"
-                                    .into(),
+                                text: if stream_recovered {
+                                    "provider stream recovery; requesting a bounded continuation"
+                                } else {
+                                    "provider paused the turn; requesting a bounded continuation"
+                                }
+                                .into(),
                             },
                         );
                         self.ui(UiEvent::Notice(
-                            "provider paused the turn; continuing".into(),
+                            if stream_recovered {
+                                "provider disconnected; reconnecting"
+                            } else {
+                                "provider paused the turn; continuing"
+                            }
+                            .into(),
                         ));
                         self.commit_message(turn_id, messages, continuation)?;
                         self.advance_turn().await?;
@@ -5027,7 +5382,8 @@ impl Agent {
                         if let Some(reason) = self.completed_turn_budget_exhaustion() {
                             return self.finish(turn_id, Outcome::BudgetExhausted(reason)).await;
                         }
-                        let promised_immediate_candidate = !self.interactive_approvals
+                        let promised_immediate_candidate = investigation_convergence.enabled()
+                            && !self.interactive_approvals
                             && completion_semantics::task_requests_candidate_action(relevance_task)
                             && completion_semantics::commits_to_immediate_candidate_action(
                                 &self.last_assistant_text,
@@ -5241,11 +5597,21 @@ impl Agent {
 
             let mut results: Vec<Option<ToolResult>> = (0..total_tools).map(|_| None).collect();
             let mut any_error = false;
+            // Replayed recovery results bypass both concurrent and ordered executors.
+            deferred.retain(|(index, _, _)| !replayed_tool_results.contains_key(index));
+            for (index, result) in replayed_tool_results {
+                any_error |= result.is_error;
+                self.ui(tool_end_ui(&returned_tools[index], &result));
+                results[index] = Some(result);
+            }
             let mut completed_pure = Vec::new();
+            let mut early_unknown_count = 0;
 
-            // Pure tools: await their already-running handles. Time from dispatch to stream end
+            // Streaming tools: await their already-running handles. Time from dispatch to stream end
             // is the overlap we won (they ran during the decode tail).
-            for (idx, tu, mut handle, dispatched_at, hook_effect_tickets) in pure {
+            for (idx, tu, mut handle, dispatched_at, mut hook_effect_tickets) in pure {
+                let effect_ticket = hook_effect_tickets.tool.take();
+                let was_effecting = effect_ticket.is_some();
                 let since_dispatch = dispatched_at.duration_since(stream_start);
                 let overlap_ms = stream_elapsed.saturating_sub(since_dispatch).as_millis() as u64;
                 let joined = match self.run_time_remaining() {
@@ -5275,6 +5641,8 @@ impl Agent {
                         mut managed,
                         spill_store,
                         hook,
+                        effect_unknown,
+                        operator_interrupted,
                     })) => {
                         if let Some(hook) = hook {
                             self.observe_early_pure_hook(turn_id, hook, false);
@@ -5291,16 +5659,40 @@ impl Agent {
                                 managed.result.content.len(),
                             );
                         }
-                        let ticket =
-                            self.open_tool_call_effect(turn_id, idx, &tu, Capability::ReadOnly)?;
+                        let ticket = match effect_ticket {
+                            Some(ticket) => ticket,
+                            None => {
+                                self.open_tool_call_effect(turn_id, idx, &tu, Capability::ReadOnly)?
+                            }
+                        };
                         let r = &managed.result;
-                        self.commit_admitted_tool_result(
-                            ticket,
-                            &tu.name,
-                            r,
-                            overlap_ms.min(r.latency_ms),
-                        )?;
-                        any_error |= r.is_error;
+                        if effect_unknown {
+                            let cause = if operator_interrupted {
+                                durability::UnknownCause::OperatorCancelled
+                            } else {
+                                durability::UnknownCause::Unobserved
+                            };
+                            self.settle_kernel_effect_with_cause(ticket, effects::Settlement::Unknown(
+                                "streaming tool did not report an authoritative terminal; automatic retry is forbidden".into(),
+                            ), cause)?;
+                            self.ledger
+                                .tool(r.latency_ms, overlap_ms.min(r.latency_ms), true);
+                            early_unknown_count += 1;
+                        } else {
+                            self.commit_admitted_tool_result(
+                                ticket,
+                                &tu.name,
+                                r,
+                                overlap_ms.min(r.latency_ms),
+                            )?;
+                            if was_effecting && r.is_error {
+                                self.failed_actions.insert(
+                                    format!("{}::{}", tu.name, tu.input),
+                                    r.content.clone(),
+                                );
+                            }
+                        }
+                        any_error |= r.is_error || effect_unknown;
                         if managed.spilled {
                             // Pure-tool memoization happens inside the registry, before this owner
                             // sees the result. Invalidate it so the raw oversized value is not kept
@@ -5321,7 +5713,11 @@ impl Agent {
                             trust: Trust::Workspace,
                             latency_ms: 0,
                         };
-                        self.commit_refused_tool_result(turn_id, &tu.name, &result)?;
+                        if let Some(ticket) = effect_ticket {
+                            self.commit_admitted_tool_result(ticket, &tu.name, &result, 0)?;
+                        } else {
+                            self.commit_refused_tool_result(turn_id, &tu.name, &result)?;
+                        }
                         self.ui(tool_end_ui(&tu, &result));
                         results[idx] = Some(result);
                         any_error = true;
@@ -5337,7 +5733,19 @@ impl Agent {
                             trust: Trust::Workspace,
                             latency_ms: 0,
                         };
-                        self.commit_refused_tool_result(turn_id, &tu.name, &r)?;
+                        if let Some(ticket) = effect_ticket {
+                            self.settle_kernel_effect(
+                                ticket,
+                                effects::Settlement::Unknown(
+                                    "streaming tool task was lost before an authoritative terminal"
+                                        .into(),
+                                ),
+                            )?;
+                            self.ledger.tool(0, 0, true);
+                            early_unknown_count += 1;
+                        } else {
+                            self.commit_refused_tool_result(turn_id, &tu.name, &r)?;
+                        }
                         if hook_gates_reads {
                             self.lifecycle_event(
                                 "hook.failed",
@@ -5355,6 +5763,9 @@ impl Agent {
                     }
                 }
             }
+
+            self.ledger
+                .tool_inline_overflow(queued_pure.load(std::sync::atomic::Ordering::Relaxed));
 
             // A read may finish while the provider is still streaming, but its observational
             // PostToolUse hook remains ordered after the durable tool terminal. Run independent
@@ -5375,6 +5786,14 @@ impl Agent {
                 results[idx] = Some(managed.result);
             }
             pure_post_result?;
+            if early_unknown_count > 0 {
+                if let Some(outcome) = self.collect_and_finish_requested_control(turn_id).await? {
+                    return Ok(outcome);
+                }
+                return Err(KernelError::UnknownEffects {
+                    count: early_unknown_count,
+                });
+            }
 
             // Effecting tools: gated by capability, run in order, AFTER message_stop.
             //
@@ -5387,13 +5806,15 @@ impl Agent {
             // gate auto-approves, with no declared write path in common, executes concurrently
             // under the same governor the pure path uses; the loop below then owns every call that
             // group did not take, in the order it always ran them.
-            candidate_workspace_baseline
-                .capture_before(
-                    workspace_candidate_paths
-                        .iter()
-                        .map(std::path::PathBuf::as_path),
-                )
-                .await;
+            if investigation_convergence.enabled() || self.verify_command.is_some() {
+                candidate_workspace_baseline
+                    .capture_before(
+                        workspace_candidate_paths
+                            .iter()
+                            .map(std::path::PathBuf::as_path),
+                    )
+                    .await;
+            }
             let batch = self.select_concurrent_deferred_batch(
                 &deferred,
                 argument_trust,
@@ -6006,7 +6427,7 @@ impl Agent {
                 self.observe_process_tool_started(turn_id, registry_effect_id.clone(), &tu);
                 let tool_use_id = intent.call.id.clone();
                 let started = Instant::now();
-                let execution = match await_tool_or_interrupt(
+                let (execution, operator_interrupted) = match await_tool_or_interrupt(
                     registry.run_admitted_intent(intent),
                     interrupt.as_deref(),
                     Some(force_cancel.as_ref()),
@@ -6014,14 +6435,15 @@ impl Agent {
                 )
                 .await
                 {
-                    Ok(execution) => execution,
-                    Err(interruption) => {
+                    Ok(execution) => (execution, false),
+                    Err(interruption) => (
                         iteron_tools::ToolExecution::Unknown(interrupted_tool_result(
                             tool_use_id,
                             started.elapsed().as_millis() as u64,
                             interruption,
-                        ))
-                    }
+                        )),
+                        true,
+                    ),
                 };
                 running_activity.complete();
                 let post_activity = self.activity.span(
@@ -6061,14 +6483,13 @@ impl Agent {
                         })
                     }
                     iteron_tools::ToolExecution::Unknown(_) => effects::Settlement::Unknown(
-                        "executor was force/cooperatively cancelled without an authoritative terminal; automatic retry is forbidden".into(),
+                        "executor did not report an authoritative terminal; side-effect state is unknown and automatic retry is forbidden".into(),
                     ),
                 };
-                // The only way to reach `ToolExecution::Unknown` here is an operator interrupt
-                // (`await_tool_or_interrupt` returning `Forced`/cooperative). Record the Unknown
-                // terminal — the effect really may be half-applied — but do not let the operator's
-                // own Esc gate every submission they make afterwards.
-                let cause = if matches!(execution, iteron_tools::ToolExecution::Unknown(_)) {
+                // A tool may itself return Unknown after a crash or lost helper response. Only
+                // an actual interrupt from `await_tool_or_interrupt` is operator cancellation;
+                // unobserved native effects must keep the durable continuation gate closed.
+                let cause = if operator_interrupted {
                     durability::UnknownCause::OperatorCancelled
                 } else {
                     durability::UnknownCause::Unobserved
@@ -6106,7 +6527,7 @@ impl Agent {
                             &result,
                             false,
                         );
-                        if is_interrupted_tool_result(&result) {
+                        if operator_interrupted {
                             self.tool_lifecycle_event(
                                 "tool.call_cancelled",
                                 turn_id,
@@ -6172,29 +6593,35 @@ impl Agent {
                         .and_then(Option::as_ref)
                         .is_some_and(|result| !result.is_error)
                 });
-            let candidate_diff_state = if attempted_workspace_candidate_change
-                || (investigation_convergence.candidate_review_active() && total_tools > 0)
+            let candidate_diff_state = if (investigation_convergence.enabled()
+                || self.verify_command.is_some())
+                && (attempted_workspace_candidate_change
+                    || (investigation_convergence.candidate_review_active() && total_tools > 0))
             {
                 Some(candidate_workspace_baseline.diff_state().await)
             } else {
                 None
             };
-            let mutation_failure_signature = workspace_candidate_changes
-                .iter()
-                .filter_map(|index| {
-                    let result = results.get(*index)?.as_ref()?;
-                    if !result.is_error {
-                        return None;
-                    }
-                    let tool = returned_tools.get(*index)?;
-                    Some(
-                        investigation_convergence::InvestigationConvergence::mutation_failure_signature(
-                            &tool.name,
-                            &result.content,
-                        ),
-                    )
-                })
-                .next_back();
+            let mutation_failure_signature = if investigation_convergence.enabled() {
+                workspace_candidate_changes
+                    .iter()
+                    .filter_map(|index| {
+                        let result = results.get(*index)?.as_ref()?;
+                        if !result.is_error {
+                            return None;
+                        }
+                        let tool = returned_tools.get(*index)?;
+                        Some(
+                            investigation_convergence::InvestigationConvergence::mutation_failure_signature(
+                                &tool.name,
+                                &result.content,
+                            ),
+                        )
+                    })
+                    .next_back()
+            } else {
+                None
+            };
             // Targeted observations mark localization but do not consume a fixed round allowance;
             // legitimate dependent evidence can remain multi-hop. Only a successful, tool-owned
             // comparison result closes the evidence phase below.
@@ -6231,7 +6658,7 @@ impl Agent {
             let exact_localization_read = completed_localization_scopes
                 .iter()
                 .any(|scope| scope.starts_with("read_file:"));
-            let completed_stable_key_search = workspace_localization_observations
+            let completed_stable_key_search = investigation_convergence.enabled() && workspace_localization_observations
                 .iter()
                 .filter_map(|index| {
                     let tool = returned_tools.get(*index)?;
@@ -6251,14 +6678,15 @@ impl Agent {
                                 )
                             })
                 });
-            let localization_request = if completed_repair_evidence.is_none() {
-                investigation_convergence.observe_localization_scopes_for_round(
-                    completed_localization_scopes,
-                    !any_error && !attempted_workspace_candidate_change,
-                )
-            } else {
-                None
-            };
+            let localization_request =
+                if investigation_convergence.enabled() && completed_repair_evidence.is_none() {
+                    investigation_convergence.observe_localization_scopes_for_round(
+                        completed_localization_scopes,
+                        !any_error && !attempted_workspace_candidate_change,
+                    )
+                } else {
+                    None
+                };
             // `tool_search` mutates the session-local visible schema set. Do not reuse the
             // pre-search projection on the next model turn, or the tool it just exposed remains
             // impossible to call despite the successful discovery receipt.
@@ -6270,6 +6698,14 @@ impl Agent {
                         .is_some_and(|result| !result.is_error)
             }) {
                 self.advertised_tool_specs_cache = None;
+            }
+            if stream_recovered {
+                for (call, result) in returned_tools.iter().zip(&results) {
+                    if let Some(result) = result {
+                        recovered_tool_results
+                            .insert(call.id.clone(), (call.clone(), result.clone()));
+                    }
+                }
             }
             let mut blocks: Vec<Block> = results
                 .into_iter()
@@ -6614,12 +7050,36 @@ impl Agent {
         turn: TurnId,
         pure: &mut Vec<PureToolInFlight>,
     ) -> Result<(), KernelError> {
-        for (_, _, handle, _, hook_effect_tickets) in pure.drain(..) {
+        // Abort all tasks first, even if settling one ticket subsequently fails.
+        for (_, _, handle, _, _) in pure.iter() {
             handle.abort();
-            let _ = handle.await;
-            self.settle_early_pure_hook_effects(turn, hook_effect_tickets, None)?;
         }
-        Ok(())
+        let mut first_error = None;
+        for (_, _, handle, _, mut hook_effect_tickets) in pure.drain(..) {
+            let _ = handle.await;
+            if let Some(ticket) = hook_effect_tickets.tool.take() {
+                match self.settle_kernel_effect(
+                    ticket,
+                    effects::Settlement::Unknown(
+                        "provider stream stopped before the streaming tool terminal was collected"
+                            .into(),
+                    ),
+                ) {
+                    Ok(()) => self.ledger.tool(0, 0, true),
+                    Err(error) => {
+                        first_error.get_or_insert(error);
+                    }
+                }
+            }
+            if let Err(error) = self.settle_early_pure_hook_effects(turn, hook_effect_tickets, None)
+            {
+                first_error.get_or_insert(error);
+            }
+        }
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 
     async fn gate_concurrent_deferred_batch(
@@ -7053,7 +7513,7 @@ impl Agent {
                 let tool_name = intent.call.name.clone();
                 let _permit = governor.acquire().await;
                 let started = Instant::now();
-                let mut execution = match await_tool_or_interrupt(
+                let (mut execution, operator_interrupted) = match await_tool_or_interrupt(
                     registry.run_admitted_intent(intent),
                     interrupt.as_deref(),
                     Some(force_cancel.as_ref()),
@@ -7061,14 +7521,15 @@ impl Agent {
                 )
                 .await
                 {
-                    Ok(execution) => execution,
-                    Err(interruption) => {
+                    Ok(execution) => (execution, false),
+                    Err(interruption) => (
                         iteron_tools::ToolExecution::Unknown(interrupted_tool_result(
                             provider_tool_use_id.clone(),
                             started.elapsed().as_millis() as u64,
                             interruption,
-                        ))
-                    }
+                        )),
+                        true,
+                    ),
                 };
                 match &mut execution {
                     iteron_tools::ToolExecution::Definite(result)
@@ -7090,7 +7551,7 @@ impl Agent {
                         result.result.content.len()
                     }
                 });
-                (managed, spill_store, visible)
+                (managed, spill_store, visible, operator_interrupted)
             }
         }))
         .await;
@@ -7100,7 +7561,7 @@ impl Agent {
         let mut completed = Vec::new();
         for (
             (index, call, action_signature, ticket),
-            (execution, spill_store, projected_visible),
+            (execution, spill_store, projected_visible, operator_interrupted),
         ) in pending.into_iter().zip(executions)
         {
             if let Some(visible) = projected_visible {
@@ -7129,7 +7590,7 @@ impl Agent {
                     false,
                 ),
             };
-            let cause = if !definite && is_interrupted_tool_result(&managed.result) {
+            let cause = if !definite && operator_interrupted {
                 durability::UnknownCause::OperatorCancelled
             } else {
                 durability::UnknownCause::Unobserved
@@ -7148,7 +7609,7 @@ impl Agent {
                 definite,
             );
             if !definite {
-                if is_interrupted_tool_result(result) {
+                if operator_interrupted {
                     self.tool_lifecycle_event(
                         "tool.call_cancelled",
                         turn_id,
@@ -7763,6 +8224,9 @@ impl Agent {
         // can forward and paint “answer complete · finalizing” before durability work begins.
         tokio::task::yield_now().await;
         if outcome != Outcome::Drained
+            // Ordinary coding has no implicit Git commit/checkpoint tail. Explicit verification
+            // and interrupted recovery retain their existing snapshot policy.
+            && (self.verify_command.is_some() || outcome == Outcome::Interrupted)
             && self.verification_policy.checkpoint.turn_boundary
             // A checkpoint of an unchanged tree costs a full workspace copy and produces a
             // snapshot identical to the previous one. A question-and-answer turn admitted no
@@ -7946,6 +8410,12 @@ impl Agent {
                     verdict: Verdict::Deny,
                 },
             )?;
+            self.ui(UiEvent::ApprovalResolved {
+                id,
+                resolution: ApprovalResolution::Denied,
+                reason_code: "noninteractive_approval_unavailable",
+                response_submission_id: None,
+            });
             return Ok(false);
         }
         let approval_activity = self
@@ -7974,6 +8444,12 @@ impl Agent {
                     verdict: Verdict::Deny,
                 },
             )?;
+            self.ui(UiEvent::ApprovalResolved {
+                id,
+                resolution: ApprovalResolution::Denied,
+                reason_code: "frontend_queue_saturated_or_closed",
+                response_submission_id: None,
+            });
             self.lifecycle_event(
                 "tool.policy_evaluated",
                 Some(turn),
@@ -7990,18 +8466,25 @@ impl Agent {
         let interrupt = self.interrupt.clone();
         let mut approved = false;
         let mut remember_approved = false;
+        let mut matched_response_submission_id = None;
+        let mut resolution = ApprovalResolution::Cancelled;
+        let mut reason_code = "approval_channel_closed";
         loop {
             // Honor a cooperative interrupt (Ctrl-C) even if no Op arrives — bounded, not a spin.
             if self.run_deadline_exhausted() {
+                resolution = ApprovalResolution::TimedOut;
+                reason_code = "run_deadline_exhausted";
                 break;
             }
             if self.requested_control() == InboundControl::Drain {
+                reason_code = "drain_requested";
                 break;
             }
             if interrupt
                 .as_ref()
                 .is_some_and(|f| f.load(std::sync::atomic::Ordering::Relaxed))
             {
+                reason_code = "interrupt_requested";
                 break;
             }
             match tokio::time::timeout(
@@ -8014,8 +8497,13 @@ impl Agent {
             .await
             {
                 Ok(Some(envelope)) => {
-                    let op = match envelope.into_current() {
-                        Ok(op) => op,
+                    if inbound_control::stale_product_epoch(self.active_product_turn_id, &envelope)
+                    {
+                        self.reject_stale_product_submissions(vec![envelope.submission_id]);
+                        continue;
+                    }
+                    let (submission_id, op) = match envelope.into_current_identified() {
+                        Ok(identified) => identified,
                         Err(_) => {
                             self.record_rejected_submissions(
                                 turn,
@@ -8032,7 +8520,19 @@ impl Agent {
                             approved: a,
                             remember,
                         } if rid == id => {
+                            matched_response_submission_id =
+                                (submission_id.0 != 0).then_some(submission_id);
                             approved = a;
+                            resolution = if a {
+                                ApprovalResolution::Approved
+                            } else {
+                                ApprovalResolution::Denied
+                            };
+                            reason_code = if a {
+                                "operator_approved"
+                            } else {
+                                "operator_denied"
+                            };
                             // "always allow this capability" (the `a` answer): record a session
                             // rule so the gate auto-approves this class thereafter. NEVER for the
                             // two non-negotiable carve-outs.
@@ -8048,8 +8548,15 @@ impl Agent {
                         Op::Interrupt => {
                             // Deny this call and park the run at the next safe point.
                             self.interrupt_requested = true;
+                            reason_code = "interrupt_requested";
                             if let Some(f) = &interrupt {
                                 f.store(true, std::sync::atomic::Ordering::Relaxed);
+                            }
+                            if submission_id.0 != 0 {
+                                self.ui(UiEvent::ControlSubmissionApplied {
+                                    id: submission_id,
+                                    kind: ControlSubmissionKind::Interrupt,
+                                });
                             }
                             break;
                         }
@@ -8057,6 +8564,7 @@ impl Agent {
                             // Escalation is distinct from cooperative Ctrl-C even while the
                             // approval modal owns input. The effect has not crossed admission yet.
                             self.force_cancel_requested = true;
+                            reason_code = "force_cancel_requested";
                             self.force_cancel
                                 .store(true, std::sync::atomic::Ordering::Release);
                             let requested = self
@@ -8078,18 +8586,37 @@ impl Agent {
                                     ..LifecyclePayload::default()
                                 },
                             );
+                            if submission_id.0 != 0 {
+                                self.ui(UiEvent::ControlSubmissionApplied {
+                                    id: submission_id,
+                                    kind: ControlSubmissionKind::ForceCancel,
+                                });
+                            }
                             break;
                         }
                         Op::Drain => {
                             // Deny the not-yet-admitted effect, then checkpoint at the ordinary
                             // post-tool safe point. Drain never aliases the cancellation flag.
                             self.drain_requested = true;
+                            reason_code = "drain_requested";
+                            if submission_id.0 != 0 {
+                                self.ui(UiEvent::ControlSubmissionApplied {
+                                    id: submission_id,
+                                    kind: ControlSubmissionKind::Drain,
+                                });
+                            }
                             break;
                         }
-                        Op::Steer { text } | Op::UserInput { text } => {
+                        Op::Steer { text } => {
                             // Preserve steering that arrived while the approval modal owned input;
                             // it is admitted immediately after the effect boundary, never dropped.
-                            self.pending_steers.push_back(text);
+                            self.pending_steers.push_back(
+                                inbound_control::PendingSteer::from_steer(text, submission_id),
+                            );
+                        }
+                        Op::UserInput { text } => {
+                            self.pending_steers
+                                .push_back(inbound_control::PendingSteer::user(text));
                         }
                         Op::UserInputV2 { .. } | Op::UserInputV3 { .. } | Op::Unknown => self
                             .record_rejected_submissions(
@@ -8131,11 +8658,30 @@ impl Agent {
         if remember_approved {
             let mut next_rules = self.permission_rules.clone();
             next_rules.allow_cap(cap);
-            self.transition_permission_policy(
+            if let Err(error) = self.transition_permission_policy(
                 self.permission_mode,
                 next_rules,
                 RuntimePolicySource::ApprovalRemember,
-            )?;
+            ) {
+                self.ui(UiEvent::ApprovalResolved {
+                    id,
+                    resolution: ApprovalResolution::Cancelled,
+                    reason_code: "remember_policy_persist_failed",
+                    response_submission_id: None,
+                });
+                return Err(error);
+            }
+        }
+        if !self.ui(UiEvent::ApprovalResolved {
+            id,
+            resolution,
+            reason_code,
+            response_submission_id: matched_response_submission_id,
+        }) && approved
+        {
+            return Err(KernelError::EffectBoundary(
+                "approval resolution could not reach the frontend".into(),
+            ));
         }
         approval_activity.complete();
         Ok(approved)
@@ -8160,7 +8706,11 @@ pub struct TurnBudgetState {
 impl TurnBudgetState {
     /// Attempts still admissible before the next submission stops immediately.
     pub fn remaining(&self) -> u32 {
-        self.max_turns.saturating_sub(self.used)
+        if self.max_turns == Budget::UNLIMITED_TURNS {
+            Budget::UNLIMITED_TURNS
+        } else {
+            self.max_turns.saturating_sub(self.used)
+        }
     }
 }
 

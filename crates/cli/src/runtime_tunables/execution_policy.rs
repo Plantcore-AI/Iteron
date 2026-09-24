@@ -113,9 +113,13 @@ impl DirectChildAllocationPolicy {
         {
             writer = writer.saturating_add(1);
         }
-        let child_turns = remaining_turns
-            .saturating_sub(writer.max(2).min(remaining_turns))
-            .min(ceiling.max_turns);
+        let child_turns = if remaining_turns == Budget::UNLIMITED_TURNS {
+            ceiling.max_turns
+        } else {
+            remaining_turns
+                .saturating_sub(writer.max(2).min(remaining_turns))
+                .min(ceiling.max_turns)
+        };
         if child_turns < self.minimum_child_turns {
             return None;
         }

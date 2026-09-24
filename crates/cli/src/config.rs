@@ -1257,11 +1257,6 @@ const SETTABLE_KEYS: &[&str] = &[
 /// together (a `/model` choice is a provider AND a model) compose them inside one
 /// [`update_user_config`] transaction rather than issuing two writes.
 pub(crate) fn apply_setting(config: &mut FileConfig, key: &str, value: &str) -> Result<(), String> {
-    let parse_u32 = |value: &str| {
-        value
-            .parse::<u32>()
-            .map_err(|_| format!("`{key}` must be a non-negative integer, got `{value}`"))
-    };
     let parse_u64 = |value: &str| {
         value
             .parse::<u64>()
@@ -1277,7 +1272,7 @@ pub(crate) fn apply_setting(config: &mut FileConfig, key: &str, value: &str) -> 
         "model" => config.model = Some(value.to_owned()),
         "base_url" => config.base_url = Some(value.to_owned()),
         "effort" => config.effort = Some(value.to_owned()),
-        "max_turns" => config.max_turns = Some(parse_u32(value)?),
+        "max_turns" => config.max_turns = Some(parse_turn_limit(value)?),
         "max_usd" => {
             config.max_usd = Some(
                 value
@@ -1341,7 +1336,7 @@ pub(crate) fn setting_value(config: &FileConfig, key: &str) -> Option<String> {
         "model" => config.model.clone(),
         "base_url" => config.base_url.clone(),
         "effort" => config.effort.clone(),
-        "max_turns" => config.max_turns.map(|value| value.to_string()),
+        "max_turns" => config.max_turns.map(turn_limit_label),
         "max_usd" => config.max_usd.map(|value| format!("{value}")),
         "max_wall_secs" => config.max_wall_secs.map(|value| value.to_string()),
         "allow_code" => config.allow_code.map(|value| value.to_string()),
@@ -1663,9 +1658,32 @@ fn validate_api_root(provider_id: &str, value: &str) -> Result<(), String> {
 }
 
 /// Read an env override for a field. Env sits above the file, below the flags.
-pub fn env_u32(key: &str) -> Option<u32> {
-    std::env::var(key).ok().and_then(|v| v.parse().ok())
+pub(crate) fn parse_turn_limit(value: &str) -> Result<u32, String> {
+    if value.trim().eq_ignore_ascii_case("unlimited") {
+        return Ok(iteron_protocol::Budget::UNLIMITED_TURNS);
+    }
+    value
+        .trim()
+        .parse::<u32>()
+        .ok()
+        .filter(|value| *value > 0)
+        .ok_or_else(|| "max_turns must be a positive integer or unlimited".to_owned())
 }
+
+pub(crate) fn turn_limit_label(value: u32) -> String {
+    if value == iteron_protocol::Budget::UNLIMITED_TURNS {
+        "unlimited".into()
+    } else {
+        value.to_string()
+    }
+}
+
+pub(crate) fn env_turn_limit() -> Option<u32> {
+    std::env::var("ITERON_MAX_TURNS")
+        .ok()
+        .and_then(|value| parse_turn_limit(&value).ok())
+}
+
 pub fn env_f64(key: &str) -> Option<f64> {
     std::env::var(key).ok().and_then(|v| v.parse().ok())
 }

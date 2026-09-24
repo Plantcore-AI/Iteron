@@ -209,7 +209,11 @@ pub(super) fn apply_server_event<T: notification::NotificationTransport + ?Sized
             app.activities.clear();
             app.flush_think();
             app.finish_text_boundary();
-            if app.reconcile_terminal_assistant(&summary.assistant_text) {
+            let terminal_answer = app
+                .product_terminal_answer
+                .take()
+                .unwrap_or_else(|| iteron_record::redact::scrub(&summary.assistant_text));
+            if app.reconcile_terminal_assistant(&terminal_answer) {
                 app.note(
                     block::NoticeLevel::Warn,
                     "terminal authority exposed a middle-gap, duplicate, or rewrite ambiguity; the current response was rebuilt exactly from the terminal answer",
@@ -217,6 +221,7 @@ pub(super) fn apply_server_event<T: notification::NotificationTransport + ?Sized
             }
             app.flush_text();
             app.pending = None; // a pending approval cannot outlive its run
+            app.pending_approval_response = None;
             app.clear_mcp_inputs();
             app.settle_unfinished_tools();
             interrupt.store(false, Ordering::Relaxed);
@@ -225,8 +230,10 @@ pub(super) fn apply_server_event<T: notification::NotificationTransport + ?Sized
             // A channel send is not delivery. The exact raw texts the kernel did not admit come
             // back on the snapshot and go into the frontend's own submission order, so nothing is
             // lost, duplicated, or reordered across the turn boundary.
-            let (count, unmatched_previews) =
-                app.requeue_unadmitted(snapshot.unadmitted_steers.clone());
+            let (count, unmatched_previews) = app.requeue_unadmitted(
+                snapshot.unadmitted_steers.clone(),
+                &snapshot.unadmitted_steer_submission_ids,
+            );
             if count > 0 {
                 app.note(
                     block::NoticeLevel::Warn,

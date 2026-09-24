@@ -281,6 +281,7 @@ impl Agent {
             authority_ceiling: all_capabilities,
             policy_capabilities: all_capabilities,
             approvals_rx: None,
+            active_product_turn_id: None,
             interactive_approvals: false,
             pending_steers: std::collections::VecDeque::new(),
             approval_seq: 0,
@@ -432,7 +433,7 @@ impl Agent {
     /// immutable execution inputs before doing new work.
     pub fn pin_agent_catalog(
         &mut self,
-        catalog: iteron_agents::AgentCatalog,
+        mut catalog: iteron_agents::AgentCatalog,
     ) -> Result<(), KernelError> {
         if self.agent_catalog_pinned {
             return Err(KernelError::AgentCatalogAlreadyResolved);
@@ -444,9 +445,27 @@ impl Agent {
             .map(|content| &content.agent_catalog)
             && expected != &identity
         {
-            return Err(KernelError::ExecutionPolicy(
-                "executable agent catalog differs from the immutable checkpoint".into(),
-            ));
+            let historical_r25 = self
+                .tunables_pin
+                .as_ref()
+                .and_then(|pin| pin.checkpoint().as_v2())
+                .is_some_and(|snapshot| {
+                    snapshot.registry_revision == 25
+                        && snapshot.registry_digest_sha256
+                            == "fa047ac86fa33d921ac49f60507adefe6a226e2e57396be626d0008690854fa3"
+                });
+            if !historical_r25 {
+                return Err(KernelError::ExecutionPolicy(
+                    "executable agent catalog differs from the immutable checkpoint".into(),
+                ));
+            }
+            let candidate = catalog.historical_r25_turn_candidate();
+            if &candidate.runtime_identity() != expected {
+                return Err(KernelError::ExecutionPolicy(
+                    "executable agent catalog differs from the immutable checkpoint".into(),
+                ));
+            }
+            catalog = candidate;
         }
         for def in catalog.defs() {
             def.validate()

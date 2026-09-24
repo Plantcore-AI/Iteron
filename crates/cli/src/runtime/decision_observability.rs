@@ -89,12 +89,7 @@ impl Agent {
         text: &str,
         superseded_id: Option<&str>,
     ) -> Result<(), &'static str> {
-        if self.pending_steers.len()
-            >= iteron_tunables::param_integer(
-                "cli.runtime.max_inbound_ops_per_poll",
-                MAX_INBOUND_OPS_PER_POLL,
-            )
-        {
+        if self.pending_steers.len() >= super::inbound_control::inbound_poll_limit() {
             return Err("the bounded session refresh queue is full");
         }
         let source_turn = TurnId(self.seq_turn);
@@ -141,7 +136,8 @@ impl Agent {
                  `read_memory` can retrieve it by id; the stable REC-INJECT prefix remains unchanged."
             ),
         };
-        self.pending_steers.push_back(notification);
+        self.pending_steers
+            .push_back(super::inbound_control::PendingSteer::internal(notification));
         Ok(())
     }
 

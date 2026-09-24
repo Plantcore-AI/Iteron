@@ -162,7 +162,7 @@
   "client_parity": {
     "status": "green",
     "clients": ["tui", "one-shot", "headless"],
-    "transcript": "governance/client-conformance/client-parity-v6.json",
+    "transcript": "governance/client-conformance/client-parity-v8.json",
     "test": {
       "kind": "test",
       "path": "crates/cli/src/tui/tests.rs",

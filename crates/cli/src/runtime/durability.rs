@@ -1,5 +1,19 @@
 use super::*;
 
+/// Retain at most one UTF-8 scalar beyond the interrupted-stream display limit. That extra
+/// scalar lets `strict_utf8_head` mark truncation without buffering an unbounded provider stream.
+pub(super) fn append_interrupted_stream_head(buffer: &mut String, delta: &str, max_bytes: usize) {
+    let capacity = max_bytes.saturating_add(4);
+    if buffer.len() >= capacity {
+        return;
+    }
+    let mut end = delta.len().min(capacity - buffer.len());
+    while end > 0 && !delta.is_char_boundary(end) {
+        end -= 1;
+    }
+    buffer.push_str(&delta[..end]);
+}
+
 /// Lifecycle log/span count recorded in the export audit when the payload carries no lifecycle
 /// snapshot at all, so the audit argument stays present and content-free.
 const ABSENT_LIFECYCLE_COUNT: usize = 0;
@@ -79,10 +93,9 @@ impl Agent {
     }
 
     pub(super) fn emit(&mut self, turn: TurnId, kind: EventKind) {
-        // The rollout assigns the real Seq on write; the placeholder here is overwritten.
-        // A durable-append failure is NOT swallowed (code review): it sets record_failed, which
-        // the loop checks at the next turn admission and halts at a safe point (audit integrity
-        // over silent continuation).
+        // Observations enter a bounded buffer without claiming a durable sequence. The next
+        // authoritative append flushes that prefix; either admission or flush failure latches
+        // record_failed and stops the run at the existing safe boundary.
         let phase = match &kind {
             EventKind::Phase { phase } => Some(*phase),
             _ => None,
@@ -100,14 +113,31 @@ impl Agent {
             kind,
         };
         let fsync_started = Instant::now();
-        let appended = self.rollout.append(&event);
-        self.ledger
-            .record_fsync_latency_us(elapsed_us(fsync_started));
+        let buffered = matches!(
+            &event.kind,
+            EventKind::Phase { .. }
+                | EventKind::Notice { .. }
+                | EventKind::Text { .. }
+                | EventKind::Thinking { .. }
+        );
+        let mut prefix_flushed = false;
+        let appended = if buffered {
+            self.rollout.queue_observation(event).map(|flushed| {
+                prefix_flushed = flushed;
+                Seq::ZERO
+            })
+        } else {
+            self.rollout.append(&event)
+        };
+        if !buffered || prefix_flushed {
+            self.ledger
+                .record_fsync_latency_us(elapsed_us(fsync_started));
+        }
         match appended {
             Ok(_) => {
                 if let Some(phase) = phase {
-                    // The durable phase transition is the source of truth; only project it after
-                    // the append succeeds so the HUD cannot claim a rejected phase.
+                    // Project only an accepted phase; required record barriers commit the prefix
+                    // before effects or a terminal outcome are acknowledged.
                     self.ui(UiEvent::Phase(phase));
                 }
             }
@@ -194,7 +224,8 @@ impl Agent {
                 (
                     DurableAppendFault::ContextInjection,
                     EventKind::ContextInjection { .. }
-                ) | (DurableAppendFault::Notice, EventKind::Notice { .. })
+                ) | (DurableAppendFault::SteerMessage, EventKind::Message { .. })
+                    | (DurableAppendFault::Notice, EventKind::Notice { .. })
                     | (DurableAppendFault::TurnStart, EventKind::TurnStart)
                     | (
                         DurableAppendFault::EffectIntent,
@@ -248,18 +279,10 @@ impl Agent {
         }
     }
 
-    /// Refresh the rebuildable session sidecars, charged to the same meter as a durable append.
-    ///
-    /// This is not free bookkeeping: `refresh_session_cache` rewrites the per-run `.meta.json` and
-    /// `sessions.index`, and each rewrite ends in a directory fsync. Called once per turn from
-    /// `advance_turn` and once at each run boundary, it was real durability cost that no meter saw,
-    /// so `kernel_tax` under-reported what the record actually costs. Failure stays best-effort:
-    /// the cache is rebuildable and the append-only rollout is the sole authoritative result.
+    /// Enqueue rebuildable sidecars off the turn path. Read and close boundaries rendezvous with
+    /// their worker; the durable writer marker makes an interrupted publication discoverable.
     pub(super) fn refresh_session_cache_metered(&mut self) {
-        let fsync_started = Instant::now();
-        let _ = self.rollout.refresh_session_cache();
-        self.ledger
-            .record_fsync_latency_us(elapsed_us(fsync_started));
+        let _ = self.rollout.refresh_session_cache_async();
     }
 
     pub(super) fn diagnostic_record_append_failed(&self) {
@@ -970,14 +993,15 @@ impl Agent {
     ///
     /// A mid-stream disconnect used to return before the assistant message was appended, so every
     /// token the operator had watched arrive was destroyed by the failure that interrupted it —
-    /// and only 429/529 are retried, so a connection reset, a DNS failure, a VPN drop and the
+    /// ambiguous transport failures are not retried, so a connection reset, a VPN drop and the
     /// stream idle timeout all took that path. Worse, the `Text`/`Thinking` delta events the
     /// frozen schema declares had no producer anywhere, so streamed text had no durable channel
     /// at all.
     ///
     /// This is that channel, and it writes two different things for two different readers:
-    /// the coalesced deltas are what was on screen, and the interrupted assistant message is what
-    /// resume and rewind replay into the next request. Both are bounded, both are emitted only on
+    /// the bounded coalesced delta prefix records what began appearing on screen, and the
+    /// interrupted assistant message is what resume and rewind replay into the next request.
+    /// Both are bounded, both are emitted only on
     /// this path, and neither claims usage: **no billing semantics change here**. An append
     /// failure is swallowed on purpose — the provider error is the one worth reporting, and
     /// losing the record of a partial answer must not also lose the reason it was partial.
@@ -991,30 +1015,23 @@ impl Agent {
         if text.is_empty() && thinking.is_empty() {
             return;
         }
+        let max_bytes = iteron_tunables::param_integer(
+            "cli.runtime.interrupted_stream_max_bytes",
+            INTERRUPTED_STREAM_MAX_BYTES,
+        )
+        .min(INTERRUPTED_STREAM_MAX_BYTES);
         if !thinking.is_empty() {
             let _ = self.emit_durable(
                 turn,
                 EventKind::Thinking {
-                    delta: strict_utf8_head(
-                        thinking,
-                        iteron_tunables::param_integer(
-                            "cli.runtime.interrupted_stream_max_bytes",
-                            INTERRUPTED_STREAM_MAX_BYTES,
-                        ),
-                    ),
+                    delta: strict_utf8_head(thinking, max_bytes),
                 },
             );
         }
         if text.is_empty() {
             return;
         }
-        let delta = strict_utf8_head(
-            text,
-            iteron_tunables::param_integer(
-                "cli.runtime.interrupted_stream_max_bytes",
-                INTERRUPTED_STREAM_MAX_BYTES,
-            ),
-        );
+        let delta = strict_utf8_head(text, max_bytes);
         let _ = self.emit_durable(
             turn,
             EventKind::Text {

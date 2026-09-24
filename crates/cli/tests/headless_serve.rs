@@ -186,12 +186,14 @@ impl PausedProvider {
         // The replay-fallback fixture must exceed the ring's aggregate byte bound. Single-response
         // parity keeps its exact assistant text; the flood uses bounded 60 KiB thinking chunks for
         // 18.75 MiB of diagnostic events, below the 32 MiB provider-output ceiling but above the
-        // 16 MiB replay-byte budget. Keeping the final assistant answer small also respects v7's
-        // independent 65,536-byte assistant-message ceiling.
+        // 16 MiB replay-byte budget. Bound each harmless token below the scrubber's pending-token
+        // limit even if transport splits the chunk, testing replay retention rather than redaction.
+        // Keeping the final assistant answer small also respects v7's independent 65,536-byte
+        // assistant-message ceiling.
         let content = if chunks == 1 {
             "parity reply".to_owned()
         } else {
-            "x".repeat(60 * 1024)
+            ("x".repeat(1023) + " ").repeat(60)
         };
         let thread = thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("provider accepts one request");
@@ -951,7 +953,7 @@ fn drain_preserves_canonical_observers_through_real_headless_session_shutdown() 
     );
     let result = receive_result_within_timeout(&mut reader);
     assert_eq!(result["result"]["outcome"], "drained", "{result}");
-    assert_eq!(result["result"]["schema_version"], 6, "{result}");
+    assert_eq!(result["result"]["schema_version"], 8, "{result}");
     assert_eq!(result["result"]["success"], true, "{result}");
 
     // Drain settles the active turn; the resident headless listener still owns the AppServer.
@@ -1125,7 +1127,7 @@ fn no_tty_skew_reconnect_and_current_result_share_one_headless_server() {
     }
     assert_eq!(results.len(), 1);
     let result = &results[0];
-    assert_eq!(result["schema_version"], 6);
+    assert_eq!(result["schema_version"], 8);
     assert_eq!(result["type"], "result");
     assert_eq!(result["assistant_text"], "parity reply");
     assert_eq!(result["outcome"], "done");

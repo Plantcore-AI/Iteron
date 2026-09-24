@@ -836,10 +836,13 @@ fn relevance_is_formal_and_independent_from_causal_path() {
 #[test]
 fn defaults_resolvers_and_provenance_match_production_truth() {
     let provider = family("provider");
-    assert_eq!(provider.default.kind, DefaultKind::Literal);
+    assert_eq!(provider.default.kind, DefaultKind::Dynamic);
+    assert_eq!(provider.default.value, None);
     assert_eq!(
-        provider.default.value,
-        Some(TunableValue::Enum { value: "glm" })
+        provider.default.resolver,
+        DefaultResolver::RuntimeObservation {
+            field: "selected_route.provider"
+        }
     );
     assert_eq!(
         provider
@@ -864,12 +867,9 @@ fn defaults_resolvers_and_provenance_match_production_truth() {
             field: "default_model"
         }
     );
-    assert_eq!(
-        model.default.value,
-        Some(TunableValue::Enum { value: "glm-5.2" })
-    );
+    assert_eq!(model.default.value, None);
 
-    assert_eq!(integer_default("max_turns"), 64);
+    assert_eq!(integer_default("max_turns"), i64::from(u32::MAX));
     assert_eq!(integer_default("max_wall_secs"), 3_600);
     assert_eq!(integer_default("max_consecutive_tool_errors"), 5);
     assert_eq!(integer_default("deferred_discovery_threshold"), 4);
@@ -879,7 +879,13 @@ fn defaults_resolvers_and_provenance_match_production_truth() {
     );
     assert_eq!(
         family("bypass_permissions").default.value,
-        Some(TunableValue::Boolean { value: true })
+        Some(TunableValue::Boolean { value: false })
+    );
+    assert_eq!(
+        family("permission_mode").default.value,
+        Some(TunableValue::Enum {
+            value: "acceptEdits"
+        })
     );
     assert_eq!(
         family("memory_enable").default.value,
@@ -1208,7 +1214,6 @@ fn activation_source_and_default_invariants_hold_for_every_entry() {
 #[test]
 fn repository_sources_have_typed_non_widening_merge_semantics() {
     for (id, expected) in [
-        ("model", SourceMergePolicy::RouteSuggestion),
         ("max_turns", SourceMergePolicy::TightenMaximum),
         ("max_usd", SourceMergePolicy::TightenMaximum),
         ("max_wall_secs", SourceMergePolicy::TightenMaximum),

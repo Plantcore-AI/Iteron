@@ -755,18 +755,27 @@ impl Agent {
                     .into(),
             ));
         }
-        self.provider
-            .control_capabilities()
-            .validate(&effective_core.provider_governor.controls)
+        let capabilities = self.provider.control_capabilities();
+        capabilities
+            .validate(&if self.plantcore_runtime_enabled() {
+                effective_core.provider_governor.controls
+            } else {
+                capabilities
+                    .adapt_optional_cache_breakpoint(effective_core.provider_governor.controls)
+            })
             .map_err(|_| KernelError::InvalidRouteMetadata {
                 field: "provider_controls",
                 reason: "resident provider does not attest the adopted request controls",
             })?;
         for route in &self.fallback_provider_routes {
-            route
-                .provider
-                .control_capabilities()
-                .validate(&effective_core.provider_governor.controls)
+            let capabilities = route.provider.control_capabilities();
+            capabilities
+                .validate(&if self.plantcore_runtime_enabled() {
+                    effective_core.provider_governor.controls
+                } else {
+                    capabilities
+                        .adapt_optional_cache_breakpoint(effective_core.provider_governor.controls)
+                })
                 .map_err(|_| KernelError::InvalidRouteMetadata {
                     field: "provider_fallback_routes",
                     reason: "a resident fallback does not attest the adopted request controls",
@@ -869,7 +878,13 @@ impl Agent {
         self.verification_policy = effective_core.verification;
         self.verify_command = effective_core.verify_command;
         self.compaction = effective_core.compaction;
-        self.context_budget_policy = effective_core.context_budget;
+        self.context_budget_policy =
+            effective_core
+                .context_budget
+                .with_elastic_task_context(matches!(
+                effective_core.task_context_budget_source,
+                crate::runtime_tunables::effective_core::TaskContextBudgetSource::DefaultDerived
+            ));
         self.context_materialization_policy = effective_core.context_materialization;
         self.model_context_window = effective_core.model_context_window;
         self.model_max_output_tokens = effective_core.request_output_cap;

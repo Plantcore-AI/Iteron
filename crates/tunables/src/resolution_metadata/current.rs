@@ -1,18 +1,20 @@
 use crate::DefaultSpec;
 
 pub(super) const DEFAULTS: [DefaultSpec; 85] = [
-    literal_default!(enum_value!("glm")), // 1 provider
-    model_default_with_value!("default_model", enum_value!("glm-5.2")), // 2 model
-    derived_default!("base_url"),         // 3 base_url
-    literal_default!(enum_value!("low")), // 4 effort
-    literal_default!(integer_value!(64)), // 5 max_turns
-    operator_default!("max_usd"),         // 6 max_usd
-    operator_default!("max_tokens"),      // 7 max_tokens
-    literal_default!(integer_value!(3_600)), // 8 max_wall_secs
-    literal_default!(boolean_value!(true)), // 9 allow_code
-    literal_default!(enum_value!("default")), // 10 permission_mode
-    derived_default!("permission_rules"), // 11 permission_rules
-    literal_default!(boolean_value!(true)), // 12 bypass_permissions
+    // The admitted route owns these defaults. No single provider or model is a truthful
+    // process-wide value when discovery and operator-selected providers are both supported.
+    dynamic_observation_default!("selected_route.provider"), // 1 provider
+    model_default!("default_model"),                         // 2 model
+    derived_default!("base_url"),                            // 3 base_url
+    literal_default!(enum_value!("medium")),                 // 4 effort
+    literal_default!(integer_value!(u32::MAX as i64)), // 5 max_turns: no finite default ceiling
+    operator_default!("max_usd"),                      // 6 max_usd
+    operator_default!("max_tokens"),                   // 7 max_tokens
+    literal_default!(integer_value!(3_600)),           // 8 max_wall_secs
+    literal_default!(boolean_value!(true)),            // 9 allow_code
+    literal_default!(enum_value!("acceptEdits")),      // 10 permission_mode
+    derived_default!("permission_rules"),              // 11 permission_rules
+    literal_default!(boolean_value!(false)),           // 12 bypass_permissions
     derived_default_with_value!(
         "compaction_trigger",
         object_value!(
@@ -22,16 +24,16 @@ pub(super) const DEFAULTS: [DefaultSpec; 85] = [
             "output_reserve_tokens" => integer_value!(8_192),
         )
     ), // 13 compaction_trigger
-    operator_default!("verify_command"),  // 14 verify_command
-    literal_default!(integer_value!(500)), // 15 retry_backoff_base
-    literal_default!(integer_value!(30_000)), // 16 retry_backoff_cap
-    literal_default!(integer_value!(3)),  // 17 retry_max_attempts
-    literal_default!(list_value!()),      // 18 egress_allow
+    operator_default!("verify_command"),               // 14 verify_command
+    literal_default!(integer_value!(500)),             // 15 retry_backoff_base
+    literal_default!(integer_value!(30_000)),          // 16 retry_backoff_cap
+    literal_default!(integer_value!(3)),               // 17 retry_max_attempts
+    literal_default!(list_value!()),                   // 18 egress_allow
     model_default_with_value!("max_output_tokens", integer_value!(8_192)), // 19 request_output_cap
-    derived_default!("effort_reasoning_map"), // 20 effort_reasoning_map
-    derived_default!("thinking_map"),     // 21 thinking_map
-    derived_default!("orchestration_map"), // 22 orchestration_map
-    literal_default!(boolean_value!(true)), // 23 prompt_cache
+    derived_default!("effort_reasoning_map"),          // 20 effort_reasoning_map
+    derived_default!("thinking_map"),                  // 21 thinking_map
+    derived_default!("orchestration_map"),             // 22 orchestration_map
+    literal_default!(boolean_value!(true)),            // 23 prompt_cache
     derived_default_with_value!(
         "compaction_adaptive",
         object_value!(

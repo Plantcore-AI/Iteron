@@ -187,6 +187,32 @@ impl KernelError {
             Self::EnvironmentContextAlreadyResolved => {
                 "environment context is already fixed for this run".into()
             }
+            Self::ContextResolution(reason)
+                if reason == "context task exceeds its local observation bound" =>
+            {
+                let limit = iteron_tunables::param_integer(
+                    "ctx.context_strategy.max_context_task_bytes",
+                    64 * 1024,
+                );
+                format!(
+                    "context relevance query exceeds the {limit}-byte selection limit; split or shorten the submission"
+                )
+            }
+            Self::ContextResolution(reason)
+                if matches!(
+                    reason.as_str(),
+                    "requested context bytes exceed the protocol ceiling"
+                        | "granted context bytes exceed the protocol ceiling"
+                ) =>
+            {
+                let limit = iteron_tunables::param_integer(
+                    "protocol.context.max_context_grant_bytes",
+                    iteron_protocol::context::MAX_CONTEXT_GRANT_BYTES,
+                );
+                format!(
+                    "context materialization exceeds the {limit}-byte protocol grant limit; reduce the configured context grant size"
+                )
+            }
             Self::ContextResolution(_) => {
                 "context selection or materialization failed closed".into()
             }
@@ -308,5 +334,32 @@ mod context_budget_message_tests {
             !rendered.contains("multimodal_token_budget"),
             "unsupported routes cannot be repaired by widening a component budget: {rendered}"
         );
+    }
+}
+
+#[cfg(test)]
+mod context_resolution_message_tests {
+    use super::*;
+
+    #[test]
+    fn bounded_context_refusals_name_the_limit_without_exposing_arbitrary_reasons() {
+        let query = KernelError::ContextResolution(
+            "context task exceeds its local observation bound".into(),
+        )
+        .public_summary();
+        assert!(query.contains("65536-byte selection limit"), "{query}");
+
+        let grant = KernelError::ContextResolution(
+            "requested context bytes exceed the protocol ceiling".into(),
+        )
+        .public_summary();
+        assert!(
+            grant.contains("131072-byte protocol grant limit"),
+            "{grant}"
+        );
+
+        let opaque =
+            KernelError::ContextResolution("private/path/secret-token".into()).public_summary();
+        assert_eq!(opaque, "context selection or materialization failed closed");
     }
 }

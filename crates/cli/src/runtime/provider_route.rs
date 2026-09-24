@@ -13,14 +13,17 @@ impl Agent {
         &self,
         request: &TurnRequest,
     ) -> Result<(), KernelError> {
-        self.provider
-            .control_capabilities()
-            .validate(&request.controls)
-            .map_err(|error| {
-                KernelError::Provider(iteron_provider::ProviderError::Configuration(
-                    error.to_string(),
-                ))
-            })?;
+        let capabilities = self.provider.control_capabilities();
+        let controls = if self.plantcore_runtime_enabled() {
+            request.controls
+        } else {
+            capabilities.adapt_optional_cache_breakpoint(request.controls)
+        };
+        capabilities.validate(&controls).map_err(|error| {
+            KernelError::Provider(iteron_provider::ProviderError::Configuration(
+                error.to_string(),
+            ))
+        })?;
         if let Some(selected) = &self.selected_route
             && (self.model != selected.route.model_id || request.model != selected.route.model_id)
         {
@@ -145,7 +148,9 @@ impl Agent {
         request: &TurnRequest,
     ) -> Result<ProviderAttemptGuard, KernelError> {
         let mut governed_request = request.clone();
-        governed_request.controls = self.provider_controls;
+        governed_request.controls = self.provider_controls_for(self.provider.as_ref());
+        governed_request.cache_system = governed_request.controls.prompt_cache.breakpoint
+            != iteron_provider::CacheBreakpoint::None;
         let request = &governed_request;
         // This is the single paid-inference choke point. Public fields may have changed since
         // construction, and operator compaction/decomposition can enter without `Agent::run`, so
@@ -291,9 +296,9 @@ impl Agent {
     /// # How a provider error is classified
     ///
     /// * A dropped in-flight stream (`Interrupted`, `DeadlineExceeded`) and a broken or unreadable
-    ///   response (`Stream`, `Decode`) are **unknown**: the request reached the endpoint and no
-    ///   authoritative outcome exists. Recovery reports them and never re-sends.
-    /// * A structured answer from the endpoint (`Http`, `Api`, `ApiResponse`, `Refusal`,
+    ///   response (`Http`, `Stream`, `Decode`) are **unknown**: the request may have reached the
+    ///   endpoint and no authoritative outcome exists. Recovery reports them and never re-sends.
+    /// * A structured answer from the endpoint (`Api`, `ApiResponse`, `Refusal`,
     ///   `UnknownStopReason`) is a **proven failure**: the turn is closed, just not successfully.
     ///
     /// The pre-flight refusal above removes the two cases that would otherwise be misfiled, so the
@@ -308,7 +313,9 @@ impl Agent {
         use_hedge: bool,
     ) -> Result<iteron_provider::TurnResult, KernelError> {
         let mut governed_request = request.clone();
-        governed_request.controls = self.provider_controls;
+        governed_request.controls = self.provider_controls_for(self.provider.as_ref());
+        governed_request.cache_system = governed_request.controls.prompt_cache.breakpoint
+            != iteron_provider::CacheBreakpoint::None;
         let class = effect_class::EffectClass::Provider;
         let mut retry_index = 0u32;
         let mut physical_attempt = 0u32;
@@ -594,6 +601,9 @@ impl Agent {
             provider = next.provider.clone();
             route_id = next.id();
             governed_request.model = next.route.model_id;
+            governed_request.controls = self.provider_controls_for(provider.as_ref());
+            governed_request.cache_system = governed_request.controls.prompt_cache.breakpoint
+                != iteron_provider::CacheBreakpoint::None;
             self.admit_followup_after_route_attempt_set(true)?;
             retry_index = 0;
             jitter = iteron_sched::backoff::Jitter::new();
@@ -651,6 +661,24 @@ pub(super) async fn execute_admitted_provider_turn(
     if deadline.saturating_duration_since(Instant::now()).is_zero() {
         return Err(iteron_provider::ProviderError::DeadlineExceeded.into());
     }
+    // This is shared by ordinary, auxiliary and hedged physical calls. A fallback/hedge can use a
+    // different adapter than the request's original route; never forward its unsupported hint or
+    // leave the legacy bit true (which some adapters interpret as an implicit rolling hint).
+    let controls = provider
+        .control_capabilities()
+        .adapt_optional_cache_breakpoint(request.controls);
+    let projected;
+    let request = if controls != request.controls {
+        projected = TurnRequest {
+            controls,
+            cache_system: controls.prompt_cache.breakpoint
+                != iteron_provider::CacheBreakpoint::None,
+            ..request.clone()
+        };
+        &projected
+    } else {
+        request
+    };
     let mut cancels = vec![
         cancellation.force_cancel.as_ref(),
         cancellation.drain.as_ref(),
@@ -705,7 +733,7 @@ pub(super) fn provider_settlement(
                 tool,
                 reason: format!(
                     "provider request was dispatched and produced no authoritative outcome ({}); \
-                     automatic retry is forbidden",
+                     billing remains unknown and continuation requires separate budget admission",
                     error.public_summary()
                 ),
                 provider_route_attempt: Some(accounting),
@@ -727,6 +755,7 @@ pub(super) fn provider_outcome_is_unobservable(error: &iteron_provider::Provider
         iteron_provider::ProviderError::Interrupted
             | iteron_provider::ProviderError::DeadlineExceeded
             | iteron_provider::ProviderError::Timeout { .. }
+            | iteron_provider::ProviderError::Http(_)
             | iteron_provider::ProviderError::Stream(_)
             | iteron_provider::ProviderError::Decode(_)
     )
@@ -780,4 +809,32 @@ pub(super) fn retryable_before_semantic_output_provider_error(
     );
     (proven_terminal && error.retry_disposition() == iteron_provider::RetryDisposition::Transient)
         .then_some(error)
+}
+
+/// A dropped response may be continued from committed conversation/tool results. This is a
+/// new, separately accounted request, never proof that the failed request was free.
+pub(super) fn recoverable_response_stream_error(error: &KernelError) -> bool {
+    use iteron_provider::{ProviderError, ProviderTimeoutStage, RetryDisposition};
+    if let KernelError::Provider(error) = error
+        && error
+            .retry_after()
+            .is_some_and(|delay| delay > iteron_provider::MAX_INTERACTIVE_RETRY_AFTER)
+    {
+        return false;
+    }
+    match error {
+        KernelError::Provider(ProviderError::Http(_)) => true,
+        KernelError::Provider(ProviderError::Timeout { stage }) => matches!(
+            stage,
+            ProviderTimeoutStage::ResponseHeaders
+                | ProviderTimeoutStage::StreamIdle
+                | ProviderTimeoutStage::RequestTotal
+        ),
+        KernelError::Provider(
+            error @ (ProviderError::Stream(_)
+            | ProviderError::Api { .. }
+            | ProviderError::ApiResponse(_)),
+        ) => error.retry_disposition() == RetryDisposition::Transient,
+        _ => false,
+    }
 }

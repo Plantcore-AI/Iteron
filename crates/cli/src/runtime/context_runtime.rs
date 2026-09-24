@@ -43,9 +43,55 @@ pub(super) struct AdvertisedToolSpecsCache {
     prepared: PreparedToolSchemas,
 }
 
+/// These are the ordinary coding primitives named by the base prompt. A deferred catalog may
+/// rank other schemas from the task, but a task query or a tunable eager profile must not make an
+/// authority-admitted read, search, edit, or live shell control disappear from the next turn.
+const ORDINARY_CODING_TOOLS: &[&str] = &[
+    "read_file",
+    "grep",
+    "glob",
+    "list_dir",
+    "edit",
+    "apply_patch",
+    "write_file",
+    "bash",
+    "process_poll",
+    "process_stop",
+    "git_diff",
+    "tool_search",
+];
+
+fn ordinary_coding_projection(
+    registered: &[iteron_protocol::ToolSpec],
+    visible: &[iteron_protocol::ToolSpec],
+    admitted_names: &std::collections::BTreeSet<String>,
+) -> Option<Vec<iteron_protocol::ToolSpec>> {
+    let visible_names = visible
+        .iter()
+        .map(|spec| spec.name.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    if !ORDINARY_CODING_TOOLS
+        .iter()
+        .any(|name| admitted_names.contains(*name) && !visible_names.contains(name))
+    {
+        return None;
+    }
+    Some(
+        registered
+            .iter()
+            .filter(|spec| {
+                admitted_names.contains(&spec.name)
+                    && (visible_names.contains(spec.name.as_str())
+                        || ORDINARY_CODING_TOOLS.contains(&spec.name.as_str()))
+            })
+            .cloned()
+            .collect(),
+    )
+}
+
 /// Strategy-owned projection for the current provider turn. Grouping these related flags keeps
 /// call sites explicit and prevents positional boolean drift as the convergence policy evolves.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct ToolProjectionPosture {
     pub(super) patch_trial: bool,
     pub(super) candidate_change_required: bool,
@@ -57,6 +103,14 @@ pub(super) struct ToolProjectionPosture {
     pub(super) candidate_review_active: bool,
     pub(super) evidence_insufficient_terminal: bool,
     pub(super) candidate_handoff_terminal: bool,
+}
+
+fn tool_projection_task(task: &str, posture: ToolProjectionPosture) -> &str {
+    if posture == ToolProjectionPosture::default() {
+        ""
+    } else {
+        task
+    }
 }
 
 /// Active-task token count charged when the transcript holds no user text message to attribute.
@@ -293,57 +347,39 @@ impl Agent {
     }
 
     pub(super) fn persist_token_calibration(&self) -> bool {
-        use std::io::Write as _;
-
         if self.runtime_state_dir.as_os_str().is_empty() {
             return false;
         }
         let Ok(bytes) = serde_json::to_vec(&self.token_calibration.snapshot()) else {
             return false;
         };
-        if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > token_calibration_max_bytes()
-            || std::fs::create_dir_all(&self.runtime_state_dir).is_err()
-        {
+        if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > token_calibration_max_bytes() {
             return false;
         }
-        let target = self.runtime_state_dir.join(TOKEN_CALIBRATION_FILE);
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or(0);
-        let temporary = self.runtime_state_dir.join(format!(
-            ".token-calibration-v1.{}.{}.tmp",
-            std::process::id(),
-            nonce
-        ));
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt as _;
-            options.mode(0o600);
-        }
-        let Ok(mut file) = options.open(&temporary) else {
-            return false;
-        };
-        let written = file
-            .write_all(&bytes)
-            .and_then(|()| file.sync_all())
-            .is_ok();
-        drop(file);
-        if !written || std::fs::rename(&temporary, &target).is_err() {
-            let _ = std::fs::remove_file(&temporary);
-            return false;
-        }
-        std::fs::File::open(&self.runtime_state_dir)
-            .and_then(|directory| directory.sync_all())
-            .is_ok()
+        let runtime_state_dir = self.runtime_state_dir.clone();
+        let emitter = self.lifecycle_emitter.clone();
+        let correlation = self.lifecycle_correlation(Some(TurnId(self.seq_turn)));
+        super::turn_maintenance::enqueue(move || {
+            if !persist_calibration_snapshot(runtime_state_dir, bytes)
+                && let Some(emitter) = emitter
+            {
+                let _ = emitter.emit(
+                    "context.tokenizer.error_calculated",
+                    correlation,
+                    LifecyclePayload {
+                        outcome_code: Some("calibration_persist_failed".into()),
+                        ..LifecyclePayload::default()
+                    },
+                );
+            }
+        })
     }
 
     /// Project the aggregate provider-wire estimate back onto the non-overlapping source classes
     /// owned by this admitted request. The source evidence was captured when the immutable
     /// injection was materialized; the active task and attachment evidence belong to this one
-    /// submission. No class may borrow unused capacity from another class.
+    /// submission. Admission separately permits default task/history shares to borrow unused
+    /// text capacity while preserving explicit caps and the aggregate model window.
     pub(super) fn context_component_usage(
         &self,
         messages: &[iteron_protocol::Message],
@@ -684,6 +720,10 @@ impl Agent {
         task: &str,
         posture: ToolProjectionPosture,
     ) -> PreparedToolSchemas {
+        // Ordinary coding has no graph-repair phase. Keep its lazy catalog independent of task
+        // wording so prompt identity and basic tool availability are stable across turns.
+        let ordinary_coding = posture == ToolProjectionPosture::default();
+        let projection_task = tool_projection_task(task, posture);
         let ToolProjectionPosture {
             patch_trial,
             candidate_change_required,
@@ -752,7 +792,7 @@ impl Agent {
         let strategy_filtered = authority_visible.saturating_sub(admitted_names.len());
         let cached = self.advertised_tool_specs_cache.as_ref().filter(|cached| {
             cached.revision == base.revision()
-                && cached.task == task
+                && cached.task == projection_task
                 && cached.admitted_names == admitted_names
                 && cached.eager_limit == self.deferred_tool_eager_limit
         });
@@ -766,14 +806,26 @@ impl Agent {
         } else {
             let snapshot = self.registry.specs_for_task_snapshot(
                 &admitted_names,
-                task,
+                projection_task,
                 self.deferred_tool_eager_limit,
             );
-            let (specs, serialized_json, schema_tokens) = (
-                snapshot.iter().cloned().collect::<Vec<_>>().into(),
-                std::sync::Arc::clone(snapshot.serialized_json()),
-                snapshot.estimated_tokens(),
-            );
+            let selected = snapshot.iter().cloned().collect::<Vec<_>>();
+            let (specs, serialized_json, schema_tokens) = if ordinary_coding
+                && let Some(specs) =
+                    ordinary_coding_projection(base.specs(), &selected, &admitted_names)
+            {
+                let serialized: std::sync::Arc<str> = serde_json::to_string(&specs)
+                    .expect("registered ordinary tool schemas must serialize")
+                    .into();
+                let tokens = iteron_ctx::estimate_tokens(&serialized);
+                (specs.into(), serialized, tokens)
+            } else {
+                (
+                    selected.into(),
+                    std::sync::Arc::clone(snapshot.serialized_json()),
+                    snapshot.estimated_tokens(),
+                )
+            };
             let prepared = PreparedToolSchemas::new(
                 specs,
                 serialized_json,
@@ -782,7 +834,7 @@ impl Agent {
             );
             self.advertised_tool_specs_cache = Some(AdvertisedToolSpecsCache {
                 revision: snapshot.revision(),
-                task: task.to_owned(),
+                task: projection_task.to_owned(),
                 admitted_names: admitted_names.clone(),
                 eager_limit: self.deferred_tool_eager_limit,
                 authority_visible,
@@ -1207,6 +1259,47 @@ impl Agent {
         )
         .unwrap_or(Trust::Trusted)
     }
+}
+
+// Calibration is advisory and reproducible from future provider observations. Its disk writes
+// cannot delay input readiness; the bounded FIFO preserves the order of submitted snapshots.
+fn persist_calibration_snapshot(runtime_state_dir: std::path::PathBuf, bytes: Vec<u8>) -> bool {
+    use std::io::Write as _;
+    if std::fs::create_dir_all(&runtime_state_dir).is_err() {
+        return false;
+    }
+    let target = runtime_state_dir.join(TOKEN_CALIBRATION_FILE);
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let temporary = runtime_state_dir.join(format!(
+        ".token-calibration-v1.{}.{}.tmp",
+        std::process::id(),
+        nonce
+    ));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    let Ok(mut file) = options.open(&temporary) else {
+        return false;
+    };
+    let written = file
+        .write_all(&bytes)
+        .and_then(|()| file.sync_all())
+        .is_ok();
+    drop(file);
+    if !written || std::fs::rename(&temporary, &target).is_err() {
+        let _ = std::fs::remove_file(&temporary);
+        return false;
+    }
+    std::fs::File::open(&runtime_state_dir)
+        .and_then(|directory| directory.sync_all())
+        .is_ok()
 }
 
 #[cfg(test)]

@@ -15,10 +15,16 @@ documented by a provider.
 
 ## Default selection
 
-The built-in provider default is `glm`. Its exact standard root has a source-
-versioned model enum whose documented default is `glm-5.2`. Iteron selects it
-only when the provider entry is usable; missing credentials keep the leaves
-disabled.
+Fresh sessions first reuse a validated last-success route when one exists and no
+operator route was supplied. Otherwise they prefer the built-in `openai` route
+when it has a locally usable credential; if not, Iteron selects the first
+locally credentialed provider. An explicit CLI, environment, or trusted user
+route is not replaced.
+No provider or model is assumed to be available to every account. For the
+built-in OpenAI Responses route, Iteron prefers Codex v0.156.0's API-visible
+model order only among models admitted by the live catalog; `gpt-6-astra` is
+first when available. Other providers retain their documented or catalog
+selection behavior. Explicit model choices remain authoritative.
 
 ## Availability states
 

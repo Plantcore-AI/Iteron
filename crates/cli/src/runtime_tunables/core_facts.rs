@@ -15,17 +15,14 @@ use value::*;
 /// The registry's literal for the `effort` family, and the value the CLI must fall back
 /// to when nothing overrides it.
 ///
-/// These were two literals in two files: this declaration said `low` while
-/// `main.rs` derived its builtin fallback from `Effort::default()`, which is
-/// `Medium`. `RuntimeResolutionBuilder::declare` rejects a Builtin declaration that
-/// differs from the literal, so a stock install aborted in genesis resolution before
-/// any provider contact -- on every entry point, since both the one-shot and the
-/// workflow path built that fallback the same way (#372).
+/// A prior `low` registry literal diverged from `Effort::default()`, which is
+/// `Medium`. Both one-shot and workflow CLI paths read this constant for their
+/// builtin fallback, and the registry literal must match it for builtin admission.
 ///
 /// Keeping the fallback and the declaration on one constant is what stops them from
 /// drifting apart again. The protocol enum's own `Default` is deliberately untouched:
 /// it is a wire-reachable type, and moving its `#[default]` is a schema change.
-pub(crate) const EFFORT_CANONICAL: &str = "low";
+pub(crate) const EFFORT_CANONICAL: &str = "medium";
 
 use crate::config::ConfigOrigin;
 use crate::providers::{ModelCapabilities, ModelSelection};
@@ -179,18 +176,19 @@ pub(crate) fn apply_core_facts(
         .map_err(|_| CoreFactError::MonetaryScaleLoss)?;
     let mut report = CoreFactsReport::default();
 
-    literal_with_override(
+    // Route admission already checked the selected pair against the settled directory. Its
+    // provider/model are the only truthful defaults; explicit sources keep their own provenance.
+    route_default_or_override(
         builder,
         "provider",
-        en("glm"),
         input.provider_origin,
-        en(&input.selection.provider_id),
+        &input.selection.provider_id,
     )?;
-    declare(
+    route_default_or_override(
         builder,
         "model",
         input.model_origin,
-        en(&input.selection.model_id),
+        &input.selection.model_id,
     )?;
     if input.base_url.origin == ConfigOrigin::Builtin {
         builder.observe_default("base_url", text(input.base_url.value))?;
@@ -220,7 +218,7 @@ pub(crate) fn apply_core_facts(
     literal_with_override(
         builder,
         "permission_mode",
-        en("default"),
+        en("acceptEdits"),
         input.permission_mode.origin,
         en(input.permission_mode.value.label()),
     )?;
@@ -228,7 +226,7 @@ pub(crate) fn apply_core_facts(
     literal_with_override(
         builder,
         "bypass_permissions",
-        boolv(true),
+        boolv(false),
         input.bypass_permissions.origin,
         boolv(input.bypass_permissions.value),
     )?;
@@ -343,7 +341,7 @@ fn add_budget_values(
     literal_with_override(
         builder,
         "max_turns",
-        int(64),
+        int(iteron_protocol::Budget::UNLIMITED_TURNS.into()),
         input.budget_origins.max_turns,
         int(b.max_turns.into()),
     )?;

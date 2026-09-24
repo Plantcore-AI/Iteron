@@ -917,6 +917,36 @@ fn restored_console_mode(capture: &[u8]) -> Option<u32> {
     u32::from_str_radix(payload, 16).ok()
 }
 
+fn linked_run_and_notification_ready(screen: &str, capture: &[u8]) -> bool {
+    screen.contains("Read the Windows guide now.")
+        && screen.contains("idle · input ready")
+        && contains(capture, OSC9_RUN_COMPLETE)
+}
+
+#[test]
+fn completion_wait_accepts_a_notification_delivered_after_the_ready_frame() {
+    let ready_frame = b"Read the Windows guide now.\r\nidle \xc2\xb7 input ready";
+    let mut parser = vt100::Parser::new(32, 100, 0);
+    let mut capture = ready_frame.to_vec();
+    parser.process(ready_frame);
+    assert!(!linked_run_and_notification_ready(
+        &parser.screen().contents(),
+        &capture
+    ));
+
+    // ConPTY may deliver the retained frame, OSC payload, and terminator in separate reads.
+    // A visible ready frame or unterminated notification must not finish the bounded wait.
+    for chunk in OSC9_RUN_COMPLETE.chunks(1) {
+        capture.extend_from_slice(chunk);
+        parser.process(chunk);
+        assert_eq!(
+            linked_run_and_notification_ready(&parser.screen().contents(), &capture),
+            chunk == b"\x07",
+        );
+    }
+    assert_eq!(sequence_count(&capture, OSC9_RUN_COMPLETE), 1);
+}
+
 #[test]
 fn native_conpty_projects_link_and_exactly_one_capability_selected_notification() {
     let provider = LinkProvider::spawn();
@@ -927,10 +957,9 @@ fn native_conpty_projects_link_and_exactly_one_capability_selected_notification(
 
     pty.wait_until(
         "linked response and Windows Terminal completion notification",
-        |pty| {
-            let screen = pty.screen_text();
-            screen.contains("Read the Windows guide now.") && screen.contains("idle · input ready")
-        },
+        // The writer flushes the retained frame before its notification batch. Observing the
+        // ready row therefore cannot prove that ConPTY's next output chunk has arrived yet.
+        |pty| linked_run_and_notification_ready(&pty.screen_text(), &pty.capture),
     );
     pty.drain_ready();
     assert!(

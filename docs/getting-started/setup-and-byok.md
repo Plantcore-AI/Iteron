@@ -105,16 +105,16 @@ iteron config get provider
 local availability label. It does not contact every configured provider. The
 setup request is the live validation evidence.
 
-Then start in a disposable repository with an explicit safety posture:
+Then start in a disposable repository:
 
 ```sh
-iteron --provider openai --ask-permissions --confine \
+iteron --provider openai \
   -C /path/to/disposable-repository
 ```
 
 Omit `--provider openai` after setup if OpenAI should remain the persisted
-default. `--ask-permissions` restores approval prompts. `--confine` places shell
-commands inside the macOS/Linux sandbox; it does not turn that sandbox into a
+default. The ordinary gate and macOS/Linux execution sandbox are enabled by
+default, but the file-write guard has an unresolved symlink race and is not a
 confidentiality boundary. Read the
 [permissions and sandbox guide](../using/permissions-and-sandbox.md) before
 opening an untrusted repository.

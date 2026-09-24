@@ -27,12 +27,28 @@ impl Agent {
             selected.route.catalog_digest.clone(),
             selected.route.capability_digest.clone(),
         );
-        if snapshot.store(path).is_err() {
+        let path = path.to_owned();
+        let emitter = self.lifecycle_emitter.clone();
+        let correlation = self.lifecycle_correlation(Some(turn));
+        if !super::turn_maintenance::enqueue(move || {
+            if snapshot.store(&path).is_err()
+                && let Some(emitter) = emitter
+            {
+                let _ = emitter.emit(
+                    "model.route_failed",
+                    correlation,
+                    LifecyclePayload {
+                        reason_code: Some("last_success_snapshot_persist_failed".into()),
+                        ..LifecyclePayload::default()
+                    },
+                );
+            }
+        }) {
             self.lifecycle_event(
                 "model.route_failed",
                 Some(turn),
                 LifecyclePayload {
-                    reason_code: Some("last_success_snapshot_persist_failed".into()),
+                    reason_code: Some("last_success_snapshot_queue_full".into()),
                     ..LifecyclePayload::default()
                 },
             );
@@ -240,14 +256,11 @@ impl Agent {
             self.record_model_router_abstention(turn, source, "invalid_route_metadata")?;
             return Err(error);
         }
-        // The session's request controls are resolved once, against the launch route, and are
-        // immutable afterwards; every route the session may use has to be able to put them on the
-        // wire. A route the operator picks from `/model` is not in the composed route set, so it
-        // can be the first one that cannot — say which control it is and what would let this route
-        // in, because "unattested" alone leaves the operator with nothing to do.
+        // The sealed session preference stays immutable. Optional cache breakpoints are projected
+        // onto each route; unsupported semantic, pricing and authority controls still refuse.
         provider
             .control_capabilities()
-            .validate(&self.provider_controls)
+            .validate(&self.provider_controls_for(provider.as_ref()))
             .map_err(|error| KernelError::InvalidRouteMetadata {
                 field: "provider_controls",
                 reason: unattested_control_reason(error),
@@ -316,7 +329,7 @@ impl Agent {
     ) -> Result<(), KernelError> {
         provider
             .control_capabilities()
-            .validate(&self.provider_controls)
+            .validate(&self.provider_controls_for(provider.as_ref()))
             .map_err(|error| KernelError::InvalidRouteMetadata {
                 field: "provider_controls",
                 reason: unattested_control_reason(error),

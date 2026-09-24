@@ -32,9 +32,9 @@ What exists:
 What does not exist, and is not implied by any of the above:
 
 - **No code-execution sandbox.** `crates/sandbox` returns `Unsupported` for
-  every non-macOS, non-Linux target. `--confine` therefore refuses to run
-  commands on Windows, and the default operator-authority mode runs them
-  unconfined. This is the reason Windows is not a supported runtime.
+  every non-macOS, non-Linux target. The current source default therefore
+  refuses confined commands on Windows; an explicit dangerous bypass would
+  run them with host authority. This is why Windows is not a supported runtime.
 - **No interactive TUI claim.** The ConPTY oracle proves the pseudoconsole path
   compiles and runs; it is not a statement that the TUI is supported.
 - Lifecycle paths in places still assume a POSIX shell.

@@ -29,10 +29,10 @@
 </p>
 
 > [!WARNING]
-> **项目仍处于预发布阶段；代码执行默认不受沙箱约束。** Iteron 适用于开发与
-> 评估，不应在敏感仓库中无人值守运行。使用 `--ask-permissions` 恢复能力审批，
-> 使用 `--confine` 启用 macOS Seatbelt 或 Linux bubblewrap。Windows 没有代码
-> 执行沙箱，因此 `--confine` 会拒绝命令执行。
+> **项目仍处于预发布阶段；普通权限门与 macOS/Linux 执行沙箱现默认开启。**
+> 文件写入路径仍存在未解决的符号链接竞态，不应在敏感仓库中无人值守运行。
+> `--dangerously-bypass-permissions` 是明确的危险授权。Windows 没有代码执行
+> 沙箱，受限执行会拒绝命令。
 
 Iteron 是用于构建、评估和治理**任意垂类 AI Agent Harness Checkpoint** 的开源
 substrate。它提供覆盖上下文、工具、策略、权限、证据与 checkpoint 生命周期的
@@ -93,10 +93,10 @@ iteron -p -C /path/to/repository \
   "修复失败的测试，验证改动，并总结证据"
 ```
 
-处理不受信任的仓库时，同时启用两项控制：
+处理不受信任的仓库时，使用只读模式或先人工检查：
 
 ```sh
-iteron -p -C /path/to/untrusted-repository --ask-permissions --confine \
+iteron -p -C /path/to/untrusted-repository --mode plan \
   "解释这个仓库的构建脚本会执行什么"
 ```
 
@@ -162,8 +162,8 @@ producer provenance，不授权模型训练，也不允许把 trajectory 导出�
   operator 定义的兼容路由。
 - 工作区读取、搜索、编辑、shell、Git、Web、记忆、技能、钩子、外部工具服务和
   验证原语，并由类型化 capability 约束。
-- `--ask-permissions` 后的权限规则，以及 `--confine` 后的 macOS Seatbelt 与
-  Linux bubblewrap 后端。
+- 默认生效的权限规则与 macOS Seatbelt/Linux bubblewrap 执行沙箱；文件写入
+  边界仍有未解决的符号链接竞态。
 - 支持 resume、continue、fork、checkpoint 与回放契约的哈希链本地会话。
 
 Iteron 仍处于 pre-alpha 阶段，不声称已经生产就绪、具备机密性隔离、符合完整

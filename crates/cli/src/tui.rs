@@ -39,6 +39,7 @@ mod mcp_input;
 mod mouse_capture;
 mod notification;
 mod picker_catalog;
+mod product_projection;
 mod session_adoption;
 mod session_management;
 mod session_picker;
@@ -132,6 +133,9 @@ struct Pending {
     reason: String,
     arguments: serde_json::Value,
     workspace: String,
+    /// An incomplete public prompt cannot authorize an effect, even if a legacy EQ copy was
+    /// available. The App Server product projection is the visible approval authority.
+    prompt_complete: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -333,16 +337,20 @@ impl Session {
     /// so that production code has exactly one way to obtain a `Session`: `app_server::wire`.
     #[cfg(test)]
     pub(crate) fn for_test(
-        submissions: tokio::sync::mpsc::Sender<iteron_protocol::SqEnvelope>,
+        submissions: tokio::sync::mpsc::Sender<crate::runtime::TurnSubmission>,
     ) -> Self {
         let (control, _control_rx) = tokio::sync::mpsc::channel(1);
         let (mcp_input, _mcp_input_rx) = tokio::sync::mpsc::channel(1);
+        let client =
+            app_server::AppServerClient::connect(iteron_protocol::PROTOCOL_VERSION, submissions)
+                .expect("the in-process server speaks the current protocol");
+        client.seed_contract_turn_for_test(
+            iteron_protocol::SessionId("session-test".into()),
+            iteron_protocol::RunId("run-test".into()),
+            iteron_protocol::product_contract::ProductTurnId(1),
+        );
         Self {
-            client: app_server::AppServerClient::connect(
-                iteron_protocol::PROTOCOL_VERSION,
-                submissions,
-            )
-            .expect("the in-process server speaks the current protocol"),
+            client,
             control,
             mcp_input,
             lifecycle: iteron_obs::lifecycle::LifecycleBus::default(),
@@ -355,6 +363,9 @@ impl Session {
                 cost: iteron_obs::CostState::default(),
                 last_turn_usage: None,
                 unadmitted_steers: Vec::new(),
+                unadmitted_internal_notifications: Vec::new(),
+                unadmitted_client_steers: 0,
+                unadmitted_steer_submission_ids: Vec::new(),
                 permission_rules: PermissionRules::new(),
                 runtime_policy: None,
                 ledger_summary: String::new(),
@@ -421,16 +432,23 @@ impl Session {
         self.state = snapshot;
     }
 
-    /// Submit one operation on the SQ.
-    pub(crate) fn submit(&self, op: Op) -> Result<(), app_server::SubmitError> {
-        self.client.submit(op)
-    }
-
     pub(crate) fn submit_identified(
         &self,
         op: Op,
     ) -> Result<SubmissionId, app_server::SubmitError> {
         self.client.submit_identified(op)
+    }
+
+    /// Bind an active-turn control to the product turn observed at admission. The App Server
+    /// checks the same epoch again when it consumes the SQ entry, so a late keyboard event cannot
+    /// be carried into the next turn. `None` means the operator must keep the input locally.
+    pub(crate) fn submit_for_running_turn(
+        &self,
+        op: Op,
+    ) -> Option<Result<SubmissionId, app_server::SubmitError>> {
+        let turn = self.client.thread_snapshot_v1()?.turn?;
+        (turn.state == iteron_protocol::product_contract::TurnStateV1::Running)
+            .then(|| self.client.submit_identified_for_turn(op, turn.turn_id))
     }
 
     pub(crate) fn control_sender(&self) -> tokio::sync::mpsc::Sender<app_server::ControlRequest> {
@@ -1039,6 +1057,8 @@ fn cached_input_destination(
 struct PendingInput {
     seq: u64,
     text: String,
+    /// Set only while an identified steer awaits an exact runtime admission signal.
+    submission_id: Option<SubmissionId>,
     /// The chips this submission was composed with, moved out of the composer when it was queued.
     ///
     /// They travel WITH the text because `Editor::take_submit` clears the attachment stores: an
@@ -1065,6 +1085,7 @@ impl PartialEq for PendingInput {
     fn eq(&self, other: &Self) -> bool {
         self.seq == other.seq
             && self.text == other.text
+            && self.submission_id == other.submission_id
             && self.images.len() == other.images.len()
             && self.files.len() == other.files.len()
     }
@@ -1077,6 +1098,7 @@ impl std::fmt::Debug for PendingInput {
         f.debug_struct("PendingInput")
             .field("seq", &self.seq)
             .field("text", &self.text)
+            .field("submission_id", &self.submission_id)
             .field("images", &self.images.len())
             .field("files", &self.files.len())
             .finish()
@@ -1416,6 +1438,12 @@ struct App {
     steer_previews: VecDeque<PendingInput>,
     next_submission_seq: u64,
     pending_turn_receipt: Option<PendingTurnReceipt>,
+    pending_approval_response: Option<SubmissionId>,
+    /// Ordinary TUI content follows the same bounded Product V1 cursor as headless clients.
+    /// Legacy EQ remains for richer tool cards, metrics, and compatibility on older servers.
+    product_stream_active: bool,
+    product_terminal_answer: Option<String>,
+    product_turn_status: Option<String>,
     /// Dropped image paths this session has already refused out loud.
     ///
     /// Bare-path admission runs only at paste/drop/submit boundaries, but an unreadable path may be
@@ -1771,6 +1799,7 @@ pub async fn run(
     let mut termination_exit = None;
     let mut terminal_session_name = app.session_name.clone();
     let mut catch_up = CatchUp::default();
+    let mut product_projection = product_projection::ProductProjection::default();
     let mut eq_backlog_since: Option<Instant> = None;
     let mut resize_due: Option<Instant> = None;
 
@@ -1861,6 +1890,7 @@ pub async fn run(
                     _ => {}
                 }
             }
+            product_projection.sync(&mut app, &session.client, event_seq);
             apply_server_event(
                 &mut app,
                 &mut session,
@@ -1882,50 +1912,7 @@ pub async fn run(
                 .session_picker_job
                 .take()
                 .expect("finished session picker job was present");
-            if let Ok(mut page) = job.await
-                && page.generation == app.session_picker_generation
-                && app
-                    .picker
-                    .as_ref()
-                    .is_some_and(|picker| picker.title == "Sessions · resume here")
-            {
-                if let Some(warning) = page.warning.take() {
-                    app.note(block::NoticeLevel::Info, warning);
-                }
-                if page.replace {
-                    if page.items.is_empty() {
-                        let mut empty = PickItem::flat(
-                            "No sessions recorded yet",
-                            "start a prompt to create one",
-                            false,
-                            PickAction::Info,
-                        );
-                        empty.enabled = false;
-                        page.items.push(empty);
-                    }
-                    if let Some(picker) = app.picker.as_mut() {
-                        picker.sel = initial_picker_selection(&page.items);
-                        picker.items = page.items;
-                    }
-                    app.session_picker_backing = Some(SessionPickerBacking {
-                        runs: page.runs,
-                        current_run: page.current_run,
-                        next_cursor: page.next_cursor,
-                        has_more: page.has_more,
-                        generation: page.generation,
-                    });
-                } else if let Some(backing) = app.session_picker_backing.as_mut()
-                    && backing.generation == page.generation
-                {
-                    backing.next_cursor = page.next_cursor;
-                    backing.has_more = page.has_more;
-                    if let Some(picker) = app.picker.as_mut() {
-                        picker.items.extend(page.items);
-                    }
-                }
-                maybe_prefetch_session_page(&mut app);
-                redraw = true;
-            }
+            redraw |= apply_session_page_result(&mut app, job.await);
         }
         if app
             .session_preview_job
@@ -2709,38 +2696,38 @@ pub async fn run(
                     // the editor. This is the in-TUI approval UX (R5 §4.4).
                     if app.running && app.pending.is_some() {
                         if k.code == KeyCode::Char('c') && ctrl {
-                            // Ctrl-C while pending = deny this call + park the run at a safe point.
+                            // The runtime settles the prompt; requesting an interrupt is not an
+                            // approval decision and cannot clear its pending authority early.
                             request_interrupt(&mut app, &session, &interrupt);
-                            if let Some(p) = app.pending.take() {
-                                app.note(
-                                    block::NoticeLevel::Err,
-                                    format!("denied `{}` and interrupting", p.tool),
-                                );
-                            }
                             continue;
                         }
                         if let ApprovalInput::Answer { approved, remember } =
                             app.approval_key(k.code)
-                            && let Some(p) = app.pending.take()
+                            && let Some(p) = app.pending.as_ref()
                         {
-                            let _ = session.submit(Op::ApprovalResponse {
+                            if app.pending_approval_response.is_some() {
+                                app.note(block::NoticeLevel::Info, "approval response is awaiting its exact receipt");
+                                continue;
+                            }
+                            if approved && !p.prompt_complete {
+                                app.note(block::NoticeLevel::Warn, "approval prompt was truncated; approval is unavailable");
+                                continue;
+                            }
+                            let result = session.submit_for_running_turn(Op::ApprovalResponse {
                                 id: p.id,
                                 approved,
                                 remember,
                             });
-                            let verb = match (approved, remember) {
-                                (true, true) => "approved (always)",
-                                (true, false) => "approved",
-                                _ => "denied",
-                            };
-                            app.note(
-                                if approved {
-                                    block::NoticeLevel::Ok
-                                } else {
-                                    block::NoticeLevel::Err
-                                },
-                                format!("{verb} `{}` ({})", p.tool, cap_label(p.cap)),
-                            );
+                            match result {
+                                Some(Ok(id)) => {
+                                    app.pending_approval_response = Some(id);
+                                    app.status = format!("approval response {} queued · awaiting runtime", id.0);
+                                }
+                                _ => app.note(
+                                    block::NoticeLevel::Warn,
+                                    "approval response not queued; the prompt remains pending",
+                                ),
+                            }
                         }
                         continue; // consume the key; do not fall through to normal input handling
                     }
@@ -3210,11 +3197,12 @@ pub async fn run(
                                     InputDestination::SteerCurrentRun => {
                                         match app.steer_admission(&text) {
                                             SubmissionAdmission::Accept => {
-                                                if session
-                                                    .submit(Op::Steer { text: text.clone() })
-                                                    .is_ok()
+                                                if let Ok(id) = session
+                                                    .submit_for_running_turn(Op::Steer { text: text.clone() })
+                                                    .ok_or(())
+                                                    .and_then(|result| result.map_err(|_| ()))
                                                 {
-                                                    app.track_steer(text);
+                                                    app.track_steer(text, id);
                                                 } else {
                                                     // Receiver disappeared at the run boundary:
                                                     // preserve the words as an ordered follow-up.
@@ -4499,6 +4487,9 @@ fn render_status(f: &mut Frame, area: Rect, density: surface::Density, app: &App
                 ));
             }
         }
+        if let Some(product_turn) = &app.product_turn_status {
+            spans.push(Span::styled(format!(" · {product_turn}"), muted));
+        }
         if let Some(started) = app.run_started {
             spans.push(Span::styled(
                 format!(" · {}", fmt_mmss(started.elapsed())),
@@ -4615,7 +4606,9 @@ fn render_pending_lanes(f: &mut Frame, area: Rect, app: &App) {
 
 fn approval_action_line(app: &App, pending: &Pending, width: u16) -> Line<'static> {
     let rememberable = capability_can_be_remembered(pending.cap);
-    let choices: Vec<(ApprovalChoice, String)> = if width >= 60 {
+    let choices: Vec<(ApprovalChoice, String)> = if !pending.prompt_complete {
+        vec![(ApprovalChoice::Deny, "[n] Deny · prompt truncated".into())]
+    } else if width >= 60 {
         let mut choices = vec![(ApprovalChoice::Once, "[y] Allow once".into())];
         if rememberable {
             choices.push((

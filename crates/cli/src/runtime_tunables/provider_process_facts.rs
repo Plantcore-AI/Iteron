@@ -239,7 +239,11 @@ fn validate_input(input: &ProviderProcessFactsInput<'_>) -> Result<(), ProviderP
     }
     input
         .provider_control_capabilities
-        .validate(&input.provider_governor.controls)
+        .validate(
+            &input
+                .provider_control_capabilities
+                .adapt_optional_cache_breakpoint(input.provider_governor.controls),
+        )
         .map_err(|_| ProviderProcessFactError::ProviderControlMismatch)?;
     input
         .verification_policy

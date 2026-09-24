@@ -25,6 +25,7 @@ pub mod erasure;
 pub mod policy_bundle;
 pub mod redact;
 pub mod session;
+mod session_maintenance;
 
 // Public type identities remain available at the crate root without importing new names into the
 // scope that owns the frozen `replay`/`Rollout::append` authorities. Executable entry points live
@@ -1014,7 +1015,10 @@ pub struct Rollout {
     /// The sole owner of the append descriptor and its exclusive OS lock. Keeping this inside the
     /// façade makes every production `Rollout::append[_batch]` cross one bounded per-run writer
     /// protocol while preserving the synchronous durability contract exposed to callers.
+    _pending_publication: session_maintenance::PendingPublication,
     append_actor: RolloutAppendActor,
+    pending_observations: Vec<Event>,
+    pending_observation_bytes: usize,
     run: RunId,
     tenant: TenantId,
     seq: Seq,
@@ -1064,7 +1068,10 @@ impl Rollout {
     /// Sequence that will be assigned to the next durable event. Checkpoint producers bind a
     /// workspace snapshot to this exact position before appending its `Checkpoint` event.
     pub fn next_sequence(&self) -> Seq {
-        self.seq
+        Seq(self
+            .seq
+            .0
+            .saturating_add(self.pending_observations.len() as u64))
     }
 
     /// Open (creating) the rollout for a run under `dir`. If the file exists, resume the
@@ -1350,12 +1357,16 @@ impl Rollout {
         }
         let durable_bytes = file.metadata()?.len();
         let opened_at = std::time::Instant::now();
+        let pending_publication = session_maintenance::PendingPublication::open(&dir, run)?;
         let append_actor = RolloutAppendActor::spawn(file, run).map_err(RecordError::from)?;
         Ok(Rollout {
             #[cfg(windows)]
             _writer_lock: writer_lock,
             path,
             append_actor,
+            _pending_publication: pending_publication,
+            pending_observations: Vec::new(),
+            pending_observation_bytes: 0,
             run: run.clone(),
             tenant,
             seq,
@@ -1484,6 +1495,23 @@ impl Rollout {
     /// poisoned; only a successful durability barrier clears it. An I/O error therefore requires
     /// close + reopen, where tail recovery establishes the authoritative chain head.
     pub fn append(&mut self, event: &Event) -> Result<Seq, RecordError> {
+        if !self.pending_observations.is_empty() {
+            if self.pending_observations.len().saturating_add(1)
+                > append_actor::append_batch_limit()
+            {
+                self.flush_observations()?;
+                return self.append(event);
+            }
+            let mut events = std::mem::take(&mut self.pending_observations);
+            self.pending_observation_bytes = 0;
+            events.push(event.clone());
+            return self.append_batch(&events)?.last().copied().ok_or(
+                RecordError::InvalidAppendBatch {
+                    reason: "observation batch returned no sequence",
+                },
+            );
+        }
+
         if self.poisoned {
             return Err(RecordError::WriterPoisoned);
         }
@@ -1583,6 +1611,9 @@ impl Rollout {
     /// Refresh the rebuildable session sidecars from the record-owned incremental projection.
     /// The first call performs one bounded verified replay; later calls are O(1) in rollout age.
     pub fn refresh_session_cache(&mut self) -> Result<bool, RecordError> {
+        self.flush_observations()?;
+        session_maintenance::flush()?;
+
         if !self.ensure_session_projection()? {
             return Ok(false);
         }
@@ -1590,6 +1621,66 @@ impl Rollout {
             unreachable!("a successful projection initialization must be ready");
         };
         projection.persist_at(self.durable_bytes)
+    }
+
+    /// Advisory records are accepted into a bounded buffer; no durable sequence is acknowledged.
+    /// The next authoritative append commits the prefix under its existing durability barrier.
+    /// Returns whether admitting this event first flushed a saturated prefix for backpressure.
+    pub fn queue_observation(&mut self, event: Event) -> Result<bool, RecordError> {
+        if self.poisoned {
+            return Err(RecordError::WriterPoisoned);
+        }
+        if !matches!(
+            &event.kind,
+            EventKind::Phase { .. }
+                | EventKind::Notice { .. }
+                | EventKind::Text { .. }
+                | EventKind::Thinking { .. }
+        ) {
+            return Err(RecordError::InvalidAppendBatch {
+                reason: "only observational events may be buffered",
+            });
+        }
+        validate_event_bounds(&event)?;
+        let event = redact::redact_event(&event);
+        let bytes = serde_json::to_vec(&event)?.len();
+        if bytes > 8 * 1024 * 1024 {
+            return Err(RecordError::InvalidAppendBatch {
+                reason: "observation exceeds the bounded buffer capacity",
+            });
+        }
+        let flushed = self.pending_observations.len() >= 63
+            || self.pending_observation_bytes.saturating_add(bytes) > 8 * 1024 * 1024;
+        if flushed {
+            // Bounded queue saturation applies backpressure without rejecting a valid burst.
+            self.flush_observations()?;
+        }
+        self.pending_observation_bytes += bytes;
+        self.pending_observations.push(event);
+        Ok(flushed)
+    }
+
+    /// Explicit read/close barrier. An accepted observation is durable only after this succeeds.
+    pub fn flush_observations(&mut self) -> Result<(), RecordError> {
+        if self.pending_observations.is_empty() {
+            return Ok(());
+        }
+        let events = std::mem::take(&mut self.pending_observations);
+        self.pending_observation_bytes = 0;
+        for chunk in events.chunks(append_actor::append_batch_limit()) {
+            self.append_batch(chunk)?;
+        }
+        Ok(())
+    }
+
+    pub fn refresh_session_cache_async(&mut self) -> Result<bool, RecordError> {
+        if !self.ensure_session_projection()? {
+            return Ok(false);
+        }
+        let SessionProjectionState::Ready(projection) = &mut self.session_projection else {
+            unreachable!();
+        };
+        projection.persist_in_background(self.durable_bytes)
     }
 
     fn ensure_session_projection(&mut self) -> Result<bool, RecordError> {
@@ -1917,6 +2008,16 @@ pub fn replay_with_resolved_tunables(
     let compatibility =
         session::tunables::check_resolved_compatibility(recorded.as_ref(), resolved, legacy)?;
     Ok((events, compatibility))
+}
+
+impl Drop for Rollout {
+    fn drop(&mut self) {
+        let _ = self.flush_observations();
+        // Drain accepted work without inventing another projection publication. A nonterminal
+        // tail keeps its durable marker for read-time repair; read-only/fork writers never pay
+        // an extra replay or create new private derivatives merely by closing their handle.
+        let _ = session_maintenance::flush();
+    }
 }
 
 #[cfg(test)]

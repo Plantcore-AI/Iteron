@@ -17,11 +17,14 @@ wizard. This page covers route selection and advanced custom endpoints.
 | `minimax` | OpenAI-compatible Chat | `MINIMAX_API_KEY` |
 | `fireworks` | OpenAI-compatible Chat | `FIREWORKS_API_KEY` |
 
-The built-in default is `glm`. For its exact standard Chat endpoint, Iteron
-ships a versioned static manifest whose documented default is `glm-5.2`. That
-manifest proves endpoint schema compatibility, **not** that a particular account
-is funded or entitled to every listed model. Without a credential, its leaves are
-visible but unavailable.
+Fresh sessions reuse a validated last-success route when no operator route is
+given. Otherwise they prefer `openai` if it is locally credentialed, then the
+first locally credentialed provider. A trusted explicit selection is never
+silently redirected. The built-in OpenAI route prefers Codex v0.156.0's
+API-visible model order among the account's admitted models; other routes use
+their documented or catalog selection. Catalog metadata proves endpoint schema
+compatibility, **not**
+that a particular account is funded or entitled to every listed model.
 
 The GLM schema/capability snapshots and Anthropic effort beta metadata are dated
 world data. Iteron emits one preflight notice per selected provider showing the age

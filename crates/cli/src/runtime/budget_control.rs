@@ -69,7 +69,10 @@ impl Agent {
         self.budget.validate().map_err(KernelError::InvalidBudget)?;
         self.synchronize_usd_budget()?;
         self.close_usd_budget_on_unknown_cost();
-        if self.ledger.provider_attempts >= self.budget.max_turns {
+        if self
+            .budget
+            .turn_limit_reached(self.ledger.provider_attempts)
+        {
             Ok(Some("max_turns"))
         } else if self.token_budget_exhausted() {
             Ok(Some("max_tokens"))
@@ -83,9 +86,7 @@ impl Agent {
     }
 
     pub(super) fn remaining_inference_turns(&self) -> u32 {
-        self.budget
-            .max_turns
-            .saturating_sub(self.ledger.provider_attempts)
+        self.budget.remaining_turns(self.ledger.provider_attempts)
     }
 
     /// The turn ceiling and what has already been charged against it, read as one pair so a
@@ -144,13 +145,22 @@ impl Agent {
     }
 
     /// Install the resident safe-point command channel without enabling human approval prompts.
-    pub(crate) fn set_inbound_control(&mut self, rx: tokio::sync::mpsc::Receiver<SqEnvelope>) {
+    pub(crate) fn set_inbound_control(&mut self, rx: tokio::sync::mpsc::Receiver<TurnSubmission>) {
         self.approvals_rx = Some(rx);
+    }
+
+    /// Bind the product/user-facing epoch before starting its runtime future, then clear it at
+    /// terminal handoff. The App Server owns this identity; kernel TurnId is not substituted.
+    pub(crate) fn set_active_product_turn_id(
+        &mut self,
+        id: Option<iteron_protocol::product_contract::ProductTurnId>,
+    ) {
+        self.active_product_turn_id = id;
     }
 
     /// Install the TUI's command and approval-answer channel. An `Ask` verdict may then block
     /// (interrupt-bounded) for the operator's answer.
-    pub fn set_approvals(&mut self, rx: tokio::sync::mpsc::Receiver<SqEnvelope>) {
+    pub(crate) fn set_approvals(&mut self, rx: tokio::sync::mpsc::Receiver<TurnSubmission>) {
         self.interactive_approvals = true;
         self.set_inbound_control(rx);
     }

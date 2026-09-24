@@ -659,9 +659,10 @@ mod tests {
         let provider_controls = iteron_provider::ProviderControlCapabilities::default();
         let registry = Registry::coding_agent(workspace).unwrap();
         let agent_catalog = AgentCatalog::builtin_only();
-        // A small aggregate ceiling must not activate the unsupported provider thinking map.
+        // The explicit aggregate ceiling must admit the now-default medium child effort.
+        // An undersized ceiling is rejected by the separate external-constraint tests.
         let budget = Budget {
-            max_tokens: Some(100),
+            max_tokens: Some(u64::from(Effort::Medium.thinking_budget())),
             ..Budget::default()
         };
         let compaction = iteron_ctx::CompactionPolicy::default();
@@ -682,90 +683,381 @@ mod tests {
         .expect("Tier-1 --set assignments are valid")
         .expect("assignments create a value-bearing profile");
 
-        let fresh = resolve_fresh(FreshCompositionInput {
-            directory: &directory,
-            selection: &selection,
-            model_capabilities: &model_capabilities,
-            catalog_digest: &catalog_digest,
-            capability_digest: &capability_digest,
-            registry: &registry,
-            agent_spawn_available: true,
-            configured_mcp: &[],
-            agent_catalog: &agent_catalog,
-            profile: RuntimeProfile::Interactive,
-            tenant: &tenant,
-            benchmark_scope: None,
-            workspace,
-            environment: None,
-            operator_prompt: None,
-            hooks_catalog: None,
-            app_server_active: false,
-            provider_origin: ConfigOrigin::UserConfig,
-            model_origin: ConfigOrigin::UserConfig,
-            base_url: Sourced {
-                value: &api_root,
-                origin: ConfigOrigin::UserConfig,
-            },
-            effort: Sourced {
-                // `Builtin` means no operator override, so this value is compared against the
-                // frozen literal for family 4 -- which moved to `low` with the performance-first
-                // default. A fixture left at `Medium` is not a weaker assertion, it is a fresh
-                // composition that cannot seal.
-                value: Effort::Low,
+        let compose = |effort: Sourced<Effort>,
+                       provider_origin: ConfigOrigin,
+                       model_origin: ConfigOrigin,
+                       permission_mode: Sourced<PermissionMode>,
+                       bypass_permissions: Sourced<bool>,
+                       profile: &iteron_tunables::ProfileDocument| {
+            resolve_fresh(FreshCompositionInput {
+                directory: &directory,
+                selection: &selection,
+                model_capabilities: &model_capabilities,
+                catalog_digest: &catalog_digest,
+                capability_digest: &capability_digest,
+                registry: &registry,
+                agent_spawn_available: true,
+                configured_mcp: &[],
+                agent_catalog: &agent_catalog,
+                profile: RuntimeProfile::Interactive,
+                tenant: &tenant,
+                benchmark_scope: None,
+                workspace,
+                environment: None,
+                operator_prompt: None,
+                hooks_catalog: None,
+                app_server_active: false,
+                provider_origin,
+                model_origin,
+                base_url: Sourced {
+                    value: &api_root,
+                    origin: ConfigOrigin::UserConfig,
+                },
+                effort,
+                budget: &budget,
+                budget_origins: BudgetOrigins {
+                    max_turns: ConfigOrigin::Builtin,
+                    max_usd: None,
+                    max_tokens: Some(ConfigOrigin::Cli),
+                    max_wall_secs: ConfigOrigin::Builtin,
+                    max_consecutive_tool_errors: ConfigOrigin::Builtin,
+                },
+                allow_code: Sourced {
+                    value: false,
+                    // This fixture models the operator-selected read-only CLI posture. A Builtin
+                    // declaration may only attest the embedded literal `true`.
+                    origin: ConfigOrigin::Cli,
+                },
+                permission_mode,
+                permission_rules_origin: None,
+                permission_rules: &rules,
+                bypass_permissions,
+                operator_egress_allow: None,
+                project_egress_allow: None,
+                compaction: &compaction,
+                compaction_owner: CompactionOwner::AdaptiveDefault,
+                retry: &retry,
+                retry_origins: RetryOrigins {
+                    base_ms: ConfigOrigin::Builtin,
+                    cap_ms: ConfigOrigin::Builtin,
+                    max_attempts: ConfigOrigin::Builtin,
+                },
+                verify_command: None,
+                verification_config: None,
+                memory_enabled: Sourced {
+                    value: false,
+                    origin: ConfigOrigin::Cli,
+                },
+                tenant_allows_memory: true,
+                prompt_cache_enabled: false,
+                provider_governor: &governor,
+                provider_governor_configured: false,
+                provider_control_capabilities: &provider_controls,
+                authority_ceiling: CapabilitySet::from_iter_capabilities([Capability::ReadOnly]),
+                run_limits,
+                tunables_profile: Some(profile),
+            })
+        };
+        let fresh = compose(
+            Sourced {
+                value: Effort::default(),
                 origin: ConfigOrigin::Builtin,
             },
-            budget: &budget,
-            budget_origins: BudgetOrigins {
-                max_turns: ConfigOrigin::Builtin,
-                max_usd: None,
-                max_tokens: Some(ConfigOrigin::Cli),
-                max_wall_secs: ConfigOrigin::Builtin,
-                max_consecutive_tool_errors: ConfigOrigin::Builtin,
+            ConfigOrigin::Builtin,
+            ConfigOrigin::Builtin,
+            Sourced {
+                value: PermissionMode::AcceptEdits,
+                origin: ConfigOrigin::Builtin,
             },
-            allow_code: Sourced {
+            Sourced {
                 value: false,
-                // This fixture models the operator-selected read-only CLI posture. A Builtin
-                // declaration may only attest the embedded literal `true`.
-                origin: ConfigOrigin::Cli,
+                origin: ConfigOrigin::Builtin,
             },
-            permission_mode: Sourced {
-                value: PermissionMode::Plan,
-                origin: ConfigOrigin::Cli,
-            },
-            permission_rules_origin: None,
-            permission_rules: &rules,
-            bypass_permissions: Sourced {
-                value: false,
-                origin: ConfigOrigin::Cli,
-            },
-            operator_egress_allow: None,
-            project_egress_allow: None,
-            compaction: &compaction,
-            compaction_owner: CompactionOwner::AdaptiveDefault,
-            retry: &retry,
-            retry_origins: RetryOrigins {
-                base_ms: ConfigOrigin::Builtin,
-                cap_ms: ConfigOrigin::Builtin,
-                max_attempts: ConfigOrigin::Builtin,
-            },
-            verify_command: None,
-            verification_config: None,
-            memory_enabled: Sourced {
-                value: false,
-                origin: ConfigOrigin::Cli,
-            },
-            tenant_allows_memory: true,
-            prompt_cache_enabled: false,
-            provider_governor: &governor,
-            provider_governor_configured: false,
-            provider_control_capabilities: &provider_controls,
-            authority_ceiling: CapabilitySet::from_iter_capabilities([Capability::ReadOnly]),
-            run_limits,
-            tunables_profile: Some(&tunables_profile),
-        })
+            &tunables_profile,
+        )
         .unwrap_or_else(|error| {
             panic!("fresh production composition must resolve and seal: {error:#?}")
         });
+
+        assert_eq!(fresh.settings.effort, Effort::Medium);
+        assert_eq!(
+            fresh.settings.task_context_budget_source,
+            super::super::effective_core::TaskContextBudgetSource::DefaultDerived,
+        );
+        assert_eq!(fresh.settings.provider_id, selection.provider_id);
+        assert_eq!(fresh.settings.model_id, selection.model_id);
+        assert_eq!(fresh.settings.permission_mode, PermissionMode::AcceptEdits);
+        assert!(!fresh.settings.bypass_permissions);
+        for family_id in ["permission_mode", "bypass_permissions"] {
+            let entry = fresh
+                .resolved
+                .report()
+                .entries
+                .iter()
+                .find(|entry| entry.family_id == family_id)
+                .expect("permission family is present");
+            assert!(matches!(
+                entry
+                    .provenance
+                    .as_ref()
+                    .map(|provenance| &provenance.source),
+                Some(iteron_tunables::ResolutionSource::Default { .. })
+            ));
+        }
+        for family_id in ["provider", "model", "effort"] {
+            let entry = fresh
+                .resolved
+                .report()
+                .entries
+                .iter()
+                .find(|entry| entry.family_id == family_id)
+                .expect("route family is present");
+            assert!(matches!(
+                entry
+                    .provenance
+                    .as_ref()
+                    .map(|provenance| &provenance.source),
+                Some(iteron_tunables::ResolutionSource::Default { .. })
+            ));
+        }
+        let overridden = compose(
+            Sourced {
+                value: Effort::Low,
+                origin: ConfigOrigin::Cli,
+            },
+            ConfigOrigin::UserConfig,
+            ConfigOrigin::UserConfig,
+            Sourced {
+                value: PermissionMode::Default,
+                origin: ConfigOrigin::Cli,
+            },
+            Sourced {
+                value: false,
+                origin: ConfigOrigin::Builtin,
+            },
+            &tunables_profile,
+        )
+        .unwrap_or_else(|error| panic!("explicit CLI effort must resolve and seal: {error:#?}"));
+        assert_eq!(overridden.settings.effort, Effort::Low);
+        assert_eq!(overridden.settings.provider_id, selection.provider_id);
+        assert_eq!(overridden.settings.model_id, selection.model_id);
+        assert_eq!(overridden.settings.permission_mode, PermissionMode::Default);
+        assert!(!overridden.settings.bypass_permissions);
+        let ask_entry = overridden
+            .resolved
+            .report()
+            .entries
+            .iter()
+            .find(|entry| entry.family_id == "permission_mode")
+            .expect("explicit ask-permissions family is present");
+        assert!(matches!(
+            ask_entry
+                .provenance
+                .as_ref()
+                .map(|provenance| &provenance.source),
+            Some(iteron_tunables::ResolutionSource::Declared {
+                kind: iteron_tunables::SourceKind::Cli,
+                ..
+            })
+        ));
+        let dangerous_bypass = compose(
+            Sourced {
+                value: Effort::default(),
+                origin: ConfigOrigin::Builtin,
+            },
+            ConfigOrigin::Builtin,
+            ConfigOrigin::Builtin,
+            Sourced {
+                value: PermissionMode::AcceptEdits,
+                origin: ConfigOrigin::Builtin,
+            },
+            Sourced {
+                value: true,
+                origin: ConfigOrigin::Cli,
+            },
+            &tunables_profile,
+        )
+        .expect("explicit dangerous bypass remains an operator override");
+        assert!(dangerous_bypass.settings.bypass_permissions);
+        let bypass_entry = dangerous_bypass
+            .resolved
+            .report()
+            .entries
+            .iter()
+            .find(|entry| entry.family_id == "bypass_permissions")
+            .expect("bypass family is present");
+        assert!(matches!(
+            bypass_entry
+                .provenance
+                .as_ref()
+                .map(|provenance| &provenance.source),
+            Some(iteron_tunables::ResolutionSource::Declared {
+                kind: iteron_tunables::SourceKind::Cli,
+                ..
+            })
+        ));
+        let mut explicit_cap_profile = tunables_profile.clone();
+        let default_family_96 = fresh
+            .resolved
+            .report()
+            .entries
+            .iter()
+            .find(|entry| entry.family_id == "context_window_override_reserve")
+            .and_then(|entry| entry.effective.clone())
+            .expect("family 96 resolves in the fresh production composition");
+        explicit_cap_profile
+            .values
+            .push(iteron_tunables::ProfileValue {
+                family: "context_window_override_reserve".into(),
+                as_declared_source: iteron_tunables::SourceKind::UserConfig,
+                value: default_family_96,
+            });
+        let explicit_cap = compose(
+            Sourced {
+                value: Effort::default(),
+                origin: ConfigOrigin::Builtin,
+            },
+            ConfigOrigin::Builtin,
+            ConfigOrigin::Builtin,
+            Sourced {
+                value: PermissionMode::AcceptEdits,
+                origin: ConfigOrigin::Builtin,
+            },
+            Sourced {
+                value: false,
+                origin: ConfigOrigin::Builtin,
+            },
+            &explicit_cap_profile,
+        )
+        .expect("a repeated family 96 value remains an explicit operator cap");
+        assert_eq!(
+            explicit_cap.settings.context_budget.task_context_tokens,
+            fresh.settings.context_budget.task_context_tokens,
+        );
+        assert_eq!(
+            explicit_cap.settings.task_context_budget_source,
+            super::super::effective_core::TaskContextBudgetSource::Explicit,
+        );
+        let resumed_cap = iteron_record::TunablesCheckpoint::V2(
+            iteron_record::snapshot_v2_from_resolved(&explicit_cap.resolved).unwrap(),
+        );
+        let resumed_view =
+            super::super::effective_view::EffectiveTunablesView::from_checkpoint(&resumed_cap)
+                .unwrap();
+        let resumed_settings =
+            super::super::effective_core::EffectiveCoreSettings::decode(&resumed_view).unwrap();
+        assert_eq!(
+            resumed_settings.task_context_budget_source,
+            super::super::effective_core::TaskContextBudgetSource::Explicit,
+            "resume must read the durable winning provenance, not infer from the 12K value",
+        );
+        // Exercise production default provenance and the same-valued explicit history cap,
+        // including checkpoint decode: both routes must preserve the operator's decision.
+        let history_usage = iteron_ctx::ContextComponentUsage {
+            transcript_tokens: fresh.settings.context_budget.transcript_tokens + 1_004,
+            ..Default::default()
+        };
+        assert!(
+            fresh
+                .settings
+                .context_budget
+                .admit_components(&history_usage)
+                .is_ok()
+        );
+        let default_history = fresh
+            .resolved
+            .report()
+            .entries
+            .iter()
+            .find(|entry| entry.family_id == "conversation_history_budget")
+            .and_then(|entry| entry.effective.clone())
+            .unwrap();
+        let mut explicit_history_profile = tunables_profile.clone();
+        explicit_history_profile
+            .values
+            .push(iteron_tunables::ProfileValue {
+                family: "conversation_history_budget".into(),
+                as_declared_source: iteron_tunables::SourceKind::UserConfig,
+                value: default_history,
+            });
+        let explicit_history = compose(
+            Sourced {
+                value: Effort::default(),
+                origin: ConfigOrigin::Builtin,
+            },
+            ConfigOrigin::Builtin,
+            ConfigOrigin::Builtin,
+            Sourced {
+                value: PermissionMode::AcceptEdits,
+                origin: ConfigOrigin::Builtin,
+            },
+            Sourced {
+                value: false,
+                origin: ConfigOrigin::Builtin,
+            },
+            &explicit_history_profile,
+        )
+        .unwrap();
+        assert!(
+            explicit_history
+                .settings
+                .context_budget
+                .admit_components(&history_usage)
+                .is_err()
+        );
+        for (resolved, elastic) in [(&fresh.resolved, true), (&explicit_history.resolved, false)] {
+            let checkpoint = iteron_record::TunablesCheckpoint::V2(
+                iteron_record::snapshot_v2_from_resolved(resolved).unwrap(),
+            );
+            let view =
+                super::super::effective_view::EffectiveTunablesView::from_checkpoint(&checkpoint)
+                    .unwrap();
+            let resumed =
+                super::super::effective_core::EffectiveCoreSettings::decode(&view).unwrap();
+            assert_eq!(
+                resumed
+                    .context_budget
+                    .admit_components(&history_usage)
+                    .is_ok(),
+                elastic
+            );
+        }
+        let effort_entry = overridden
+            .resolved
+            .report()
+            .entries
+            .iter()
+            .find(|entry| entry.family_id == "effort")
+            .expect("effort family is present");
+        assert!(matches!(
+            effort_entry
+                .provenance
+                .as_ref()
+                .map(|provenance| &provenance.source),
+            Some(iteron_tunables::ResolutionSource::Declared {
+                kind: iteron_tunables::SourceKind::Cli,
+                ..
+            })
+        ));
+        for family_id in ["provider", "model"] {
+            let entry = overridden
+                .resolved
+                .report()
+                .entries
+                .iter()
+                .find(|entry| entry.family_id == family_id)
+                .expect("route family is present");
+            assert!(matches!(
+                entry
+                    .provenance
+                    .as_ref()
+                    .map(|provenance| &provenance.source),
+                Some(iteron_tunables::ResolutionSource::Declared {
+                    kind: iteron_tunables::SourceKind::UserConfig,
+                    ..
+                })
+            ));
+        }
 
         assert_eq!(
             fresh.binding_receipt.effective_family_count, fresh.binding_receipt.getter_count,
@@ -778,7 +1070,10 @@ mod tests {
         );
         assert_eq!(fresh.fact_summary.active_full_gaps, 0);
         assert_eq!(fresh.settings.budget.max_turns, 10);
-        assert_eq!(fresh.settings.budget.max_tokens, Some(100));
+        assert_eq!(
+            fresh.settings.budget.max_tokens,
+            Some(u64::from(Effort::Medium.thinking_budget()))
+        );
         assert_eq!(fresh.settings.context_budget.multimodal_tokens, 1_024);
         assert!(
             fresh.settings.model_context_window.is_some(),
@@ -844,8 +1139,14 @@ mod tests {
         let view =
             super::super::effective_view::EffectiveTunablesView::from_checkpoint(&checkpoint)
                 .unwrap();
-        super::super::effective_runtime::consume_registered_getters(&view)
-            .expect("the real fresh decoders execute");
+        let (resumed_core, _, _) =
+            super::super::effective_runtime::consume_registered_getters(&view)
+                .expect("the real fresh decoders execute");
+        assert_eq!(
+            resumed_core.task_context_budget_source,
+            super::super::effective_core::TaskContextBudgetSource::DefaultDerived,
+            "resume must preserve the checkpoint's derived-default provenance",
+        );
         view.remove_getter_receipt("provider");
         assert_eq!(
             view.seal_runtime_binding_receipt(

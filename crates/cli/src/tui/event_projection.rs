@@ -18,8 +18,16 @@ pub(super) fn apply_live_event<T: notification::NotificationTransport + ?Sized>(
 
 pub(super) fn apply_event(app: &mut App, ev: UiEvent) {
     match ev {
-        UiEvent::Text(t) => app.stream_text(&t),
-        UiEvent::Thinking(t) => app.stream_think(&t),
+        UiEvent::Text(t) => {
+            if !app.product_stream_active {
+                app.stream_text(&t);
+            }
+        }
+        UiEvent::Thinking(t) => {
+            if !app.product_stream_active {
+                app.stream_think(&t);
+            }
+        }
         UiEvent::ToolStart { id, name, args } => app.tool_start(id, name, args),
         UiEvent::ToolEnd {
             id,
@@ -70,11 +78,12 @@ pub(super) fn apply_event(app: &mut App, ev: UiEvent) {
             app.status = "answer complete · finalizing run record…".into();
         }
         UiEvent::Workflow(event) => app.workflow_event(event),
-        UiEvent::SteerApplied { count } => {
-            for _ in 0..count {
-                let _ = app.steer_previews.pop_front();
-            }
-        }
+        // Legacy count events lack an ID and cannot settle an identified TUI preview.
+        UiEvent::SteerApplied { .. } => {}
+        UiEvent::SteerSubmissionApplied { id } => app.settle_steer_submission(id),
+        // The submission receipt is projected by App Server; an unconfirmed TUI steer preview
+        // stays until turn-end recovery can preserve its text as a follow-up.
+        UiEvent::SubmissionRejected { .. } | UiEvent::ControlSubmissionApplied { .. } => {}
         UiEvent::Notice(n) => {
             app.push_block(block::BlockKind::Notice {
                 level: block::NoticeLevel::Info,
@@ -89,6 +98,9 @@ pub(super) fn apply_event(app: &mut App, ev: UiEvent) {
             arguments,
             workspace,
         } => {
+            if app.product_stream_active {
+                return;
+            }
             app.flush_text();
             app.transcript_viewer.close();
             app.status = "approval required".into();
@@ -100,7 +112,26 @@ pub(super) fn apply_event(app: &mut App, ev: UiEvent) {
                 reason,
                 arguments: ui_safe_json(&arguments),
                 workspace: ui_safe_text(&workspace),
+                prompt_complete: true,
             });
+        }
+        UiEvent::ApprovalResolved {
+            id,
+            resolution,
+            reason_code,
+            ..
+        } => {
+            if app.pending.as_ref().is_some_and(|pending| pending.id == id) {
+                app.pending = None;
+                app.pending_approval_response = None;
+                let decision = match resolution {
+                    crate::runtime::ApprovalResolution::Approved => "approved · tool pending",
+                    crate::runtime::ApprovalResolution::Denied => "denied",
+                    crate::runtime::ApprovalResolution::Cancelled => "cancelled",
+                    crate::runtime::ApprovalResolution::TimedOut => "timed out",
+                };
+                app.status = format!("approval {decision} · {}", ui_safe_text(reason_code));
+            }
         }
         UiEvent::Done(o) => {
             app.flush_text(); // finalize any in-flight answer/reasoning into blocks

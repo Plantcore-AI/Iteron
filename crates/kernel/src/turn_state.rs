@@ -103,7 +103,8 @@ impl TurnState {
     /// Has the run spent its turn ceiling? Judged on completed turns, so a turn that never reached
     /// a terminal does not silently consume budget.
     pub fn turn_ceiling_reached(&self) -> bool {
-        self.completed_turns >= self.limits.max_turns
+        self.limits.max_turns != iteron_protocol::Budget::UNLIMITED_TURNS
+            && self.completed_turns >= self.limits.max_turns
     }
 
     /// Has the stability floor tripped?
@@ -152,6 +153,19 @@ mod tests {
         );
         state.completed_turns = 2;
         assert!(state.turn_ceiling_reached());
+    }
+
+    #[test]
+    fn unlimited_turn_sentinel_never_trips_a_count_ceiling() {
+        let mut state = TurnState::new(
+            TurnLimits {
+                max_turns: iteron_protocol::Budget::UNLIMITED_TURNS,
+                ..TurnLimits::default()
+            },
+            false,
+        );
+        state.completed_turns = u32::MAX;
+        assert!(!state.turn_ceiling_reached());
     }
 
     #[test]

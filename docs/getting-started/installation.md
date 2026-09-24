@@ -110,8 +110,9 @@ The only mutating options are `--version vX.Y.Z` and `--bin-dir PATH`. Run the
 downloaded release asset with `--help` to inspect the complete interface.
 
 Do not use Windows for untrusted code execution: it has no code-execution
-sandbox, `--confine` refuses to execute commands, and the default
-operator-authority mode runs commands unconfined. See
+sandbox, and the current source default refuses confined commands. An explicit
+dangerous bypass would run with host authority. Historical release behavior
+may differ; inspect the installed binary's `--help`. See
 [supported platforms](../reference/platforms.md#windows).
 
 ## Release matrix and current availability
@@ -130,8 +131,8 @@ code-execution sandbox or make Windows a fully supported runtime.
 
 ## Linux prerequisite for confined code execution
 
-The shipped default is unconfined. When `--confine` is selected on Linux, code
-execution (`bash`, builds, and tests) uses bubblewrap and fails **closed** if a
+The current source default confines code execution on Linux. Code execution
+(`bash`, builds, and tests) uses bubblewrap and fails **closed** if a
 usable `bwrap` boundary cannot be established. Install the `bubblewrap` package;
 on Ubuntu 24.04, also grant it an AppArmor profile for unprivileged user
 namespaces.

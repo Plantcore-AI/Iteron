@@ -33,7 +33,8 @@
 //! consumes them. Carrying `UiEvent` in a versioned envelope of our own satisfies both — the wire
 //! is version-negotiated in both directions, and no frozen type moves.
 //!
-//! The SQ is different: it carries `iteron_protocol::SqEnvelope` unchanged, because `Op` expresses
+//! The SQ carries the unchanged `iteron_protocol::SqEnvelope` inside a host-only
+//! `TurnSubmission` with the optional Product V1 turn epoch, because `Op` expresses
 //! everything the frontend submits.
 //!
 //! # Backpressure
@@ -57,6 +58,7 @@ mod mcp_control;
 mod mcp_input;
 mod operator_status;
 mod plantcore;
+mod product_contract;
 mod recording_fault;
 
 pub(crate) use backpressure::{AppServerQueuePolicy, AuthoritativeOverflow, CosmeticOverflow};
@@ -78,11 +80,11 @@ pub(crate) use self::operator_status::{
 };
 use self::plantcore::PlantcoreAdmission;
 pub(crate) use self::recording_fault::RecordingAppServerFault;
-use crate::runtime::{Agent, UiEvent};
+use crate::runtime::{Agent, TurnSubmission, UiEvent};
 use iteron_protocol::{
     Capability, ContentSegments, LifecyclePayload, LifecycleState, Op, Outcome, PROTOCOL_VERSION,
-    ProtocolVersionError, RunId, RunLifecycleState, SessionId, SessionLifecycleState, SqEnvelope,
-    SubmissionId, SubmissionLifecycleState, TurnId, TurnLifecycleState,
+    ProtocolVersionError, RunId, RunLifecycleState, SessionId, SessionLifecycleState, SubmissionId,
+    SubmissionLifecycleState, TurnId, TurnLifecycleState,
 };
 use std::io::{Read as _, Seek as _, Write as _};
 use std::sync::Arc;
@@ -182,6 +184,9 @@ pub(crate) const EQ_CAPACITY: usize = 1024;
 #[derive(Debug, Clone)]
 pub(crate) struct TerminalSummary {
     pub(crate) terminal: TerminalAuthority,
+    /// Content-free classification supplied by the runtime. `None` is projected as unavailable,
+    /// never as proof that no external effect was dispatched.
+    pub(crate) terminal_evidence: Option<iteron_protocol::product_contract::TerminalEvidenceV1>,
     /// Most recent assistant turn, retained for the frozen v4-v6 projections.
     pub(crate) assistant_text: String,
     /// Run-wide schema-v7 assistant message when it differs from the final turn.
@@ -311,6 +316,16 @@ pub(crate) struct SessionSnapshot {
     pub(crate) cost: iteron_obs::CostState,
     pub(crate) last_turn_usage: Option<iteron_protocol::Usage>,
     pub(crate) unadmitted_steers: Vec<String>,
+    /// Runtime-origin notifications reclaimed alongside user steering, kept separate so a user
+    /// message with the same text prefix never acquires internal authority.
+    pub(crate) unadmitted_internal_notifications: Vec<String>,
+    /// Only user submissions still awaiting a safe point. Internal runtime notifications can be
+    /// present in `unadmitted_steers` but must never consume a user's SQ receipt.
+    pub(crate) unadmitted_client_steers: usize,
+    /// Identified App Server steers among the reclaimed texts. Turn-end receipt settlement uses
+    /// these exact IDs; legacy/unidentified steering never consumes an identified receipt.
+    /// Positions match `unadmitted_steers`; `None` is an unidentified legacy steer.
+    pub(crate) unadmitted_steer_submission_ids: Vec<Option<SubmissionId>>,
     /// The capability rules in force. Dynamic: `/permissions` changes them, and the frontend
     /// renders them, so they cannot be a session-invariant fact.
     pub(crate) permission_rules: iteron_protocol::PermissionRules,
@@ -432,6 +447,13 @@ fn event_heap_bytes(event: &ServerEvent) -> usize {
             .saturating_add(
                 snapshot
                     .unadmitted_steers
+                    .iter()
+                    .map(String::len)
+                    .sum::<usize>(),
+            )
+            .saturating_add(
+                snapshot
+                    .unadmitted_internal_notifications
                     .iter()
                     .map(String::len)
                     .sum::<usize>(),
@@ -726,7 +748,7 @@ impl EventEnvelope {
     }
 
     /// Unwrap an event the frontend's negotiated protocol can render. Mirrors
-    /// `SqEnvelope::into_current`: the version travels with the payload, so a server that started
+    /// `TurnSubmission::into_current`: the version travels with the payload, so a server that started
     /// emitting a newer shape mid-session is caught at the point of use rather than assumed away by
     /// the connect-time handshake.
     pub(crate) fn into_current(mut self) -> Result<ServerEvent, EventEnvelopeError> {
@@ -917,13 +939,14 @@ pub(crate) struct AppServerClient {
     lifecycle_hooks: LifecycleHookRoute,
     lifecycle_session_id: Option<SessionId>,
     lifecycle_run_id: Option<RunId>,
+    contract: product_contract::ContractReader,
 }
 
 #[derive(Debug, Clone)]
 enum SubmissionSender {
     /// Test-only bare wires keep the existing constructor usable by frontend submission tests.
     #[cfg(test)]
-    Bare(mpsc::Sender<SqEnvelope>),
+    Bare(mpsc::Sender<TurnSubmission>),
     /// Production wires charge every queued submission against the shared heap budget.
     Weighted {
         sender: mpsc::Sender<QueuedSubmission>,
@@ -938,7 +961,7 @@ enum SubmissionSender {
 /// moving it into the safe-point queue retains both bounds.
 #[derive(Debug)]
 pub(crate) struct QueuedSubmission {
-    envelope: SqEnvelope,
+    envelope: TurnSubmission,
     _memory: OwnedSemaphorePermit,
     /// Retained across server-side requeue. Channel capacity alone is not a bound once an item has
     /// been dequeued, so this permit keeps data and priority populations independently bounded.
@@ -957,6 +980,7 @@ enum KernelSubmissionKind {
 struct PendingKernelSubmission {
     id: SubmissionId,
     kind: KernelSubmissionKind,
+    expected_product_turn_id: Option<iteron_protocol::product_contract::ProductTurnId>,
 }
 
 const SUBMISSION_DEDUP_WINDOW: usize = 4096;
@@ -1022,7 +1046,7 @@ fn is_priority_submission(op: &Op) -> bool {
 }
 
 impl QueuedSubmission {
-    fn into_envelope(self) -> SqEnvelope {
+    fn into_envelope(self) -> TurnSubmission {
         self.envelope
     }
 }
@@ -1054,6 +1078,8 @@ impl AppServerClient {
     }
 
     fn bind_lifecycle_identity(&mut self, session_id: SessionId, run_id: RunId) {
+        self.contract
+            .bind_identity(session_id.clone(), run_id.clone());
         self.lifecycle_session_id = Some(session_id);
         self.lifecycle_run_id = Some(run_id);
     }
@@ -1089,7 +1115,7 @@ impl AppServerClient {
     #[cfg(test)]
     pub(crate) fn connect(
         server_version: u32,
-        submissions: mpsc::Sender<SqEnvelope>,
+        submissions: mpsc::Sender<TurnSubmission>,
     ) -> Result<Self, ProtocolVersionError> {
         Self::connect_to(
             server_version,
@@ -1163,7 +1189,54 @@ impl AppServerClient {
             lifecycle_hooks,
             lifecycle_session_id: None,
             lifecycle_run_id: None,
+            contract: product_contract::ContractReader::default(),
         })
+    }
+
+    /// The same bounded Thread/Turn/Item projection used by the interactive and headless clients.
+    pub(crate) fn thread_snapshot_v1(
+        &self,
+    ) -> Option<iteron_protocol::product_contract::ThreadSnapshotV1> {
+        self.contract.snapshot()
+    }
+
+    pub(crate) fn product_events_read_v1(
+        &self,
+        after: u64,
+    ) -> Option<
+        Result<
+            iteron_protocol::product_contract::ProductEventsPageV1,
+            iteron_protocol::product_contract::ProductEventsReadErrorV1,
+        >,
+    > {
+        self.contract.events_read(after)
+    }
+
+    pub(crate) fn product_terminal_diagnostics_v1(
+        &self,
+        turn_id: iteron_protocol::product_contract::ProductTurnId,
+    ) -> Option<iteron_protocol::product_contract::ProductTerminalDiagnosticsV1> {
+        self.contract.terminal_diagnostics(turn_id)
+    }
+
+    pub(crate) fn product_approval_prompt_complete_v1(&self, id: SubmissionId) -> bool {
+        self.contract.approval_prompt_complete(id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn seed_contract_identity_for_test(&self, thread_id: SessionId, run_id: RunId) {
+        self.contract.bind_identity(thread_id, run_id);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn seed_contract_turn_for_test(
+        &self,
+        thread_id: SessionId,
+        run_id: RunId,
+        turn_id: iteron_protocol::product_contract::ProductTurnId,
+    ) {
+        self.contract.bind_identity(thread_id, run_id.clone());
+        self.contract.begin_turn(run_id, turn_id, None);
     }
 
     /// The protocol version agreed during the handshake and stamped on every submission.
@@ -1182,6 +1255,22 @@ impl AppServerClient {
 
     /// Submit and return the identity that every receipt/application event will carry.
     pub(crate) fn submit_identified(&self, op: Op) -> Result<SubmissionId, SubmitError> {
+        self.submit_identified_with_turn(op, None)
+    }
+
+    pub(crate) fn submit_identified_for_turn(
+        &self,
+        op: Op,
+        turn_id: iteron_protocol::product_contract::ProductTurnId,
+    ) -> Result<SubmissionId, SubmitError> {
+        self.submit_identified_with_turn(op, Some(turn_id))
+    }
+
+    fn submit_identified_with_turn(
+        &self,
+        op: Op,
+        expected_product_turn_id: Option<iteron_protocol::product_contract::ProductTurnId>,
+    ) -> Result<SubmissionId, SubmitError> {
         use mpsc::error::TrySendError;
         let id = SubmissionId(
             self.next_submission_id
@@ -1196,7 +1285,8 @@ impl AppServerClient {
             Op::Drain => Some("drain.requested"),
             _ => None,
         };
-        let envelope = SqEnvelope::with_version_and_id(self.negotiated_version, id, op);
+        let mut envelope = TurnSubmission::with_version_and_id(self.negotiated_version, id, op);
+        envelope.expected_product_turn_id = expected_product_turn_id;
         let correlation = iteron_obs::lifecycle::LifecycleCorrelation {
             submission_id: Some(id),
             ..iteron_obs::lifecycle::LifecycleCorrelation::default()
@@ -1565,6 +1655,8 @@ pub(crate) struct EventPublisher {
     workflow_phases: std::collections::BTreeMap<String, String>,
     queue_policy: AppServerQueuePolicy,
     pending_cosmetic: PendingCosmetic,
+    contract: product_contract::ContractReader,
+    next_product_turn: u64,
 }
 
 const MAX_TRACKED_WORKFLOW_PHASES: usize = 256;
@@ -1724,12 +1816,36 @@ impl EventPublisher {
             workflow_phases: std::collections::BTreeMap::new(),
             queue_policy,
             pending_cosmetic: PendingCosmetic::default(),
+            contract: product_contract::ContractReader::default(),
+            next_product_turn: 0,
         }
     }
 
     fn bind_lifecycle_identity(&mut self, session_id: SessionId, run_id: RunId) {
+        self.contract
+            .bind_identity(session_id.clone(), run_id.clone());
         self.session_id = Some(session_id);
         self.run_id = Some(run_id);
+    }
+
+    fn begin_contract_turn(&mut self, run_id: RunId, submission_id: Option<SubmissionId>) {
+        self.next_product_turn = self
+            .next_product_turn
+            .checked_add(1)
+            .expect("product turn identity space exhausted");
+        self.contract.begin_turn(
+            run_id,
+            iteron_protocol::product_contract::ProductTurnId(self.next_product_turn),
+            submission_id,
+        );
+    }
+
+    fn rebind_contract_run(&mut self, run_id: RunId) -> bool {
+        self.contract.rebind_run(run_id)
+    }
+
+    fn can_rebind_contract_run(&self) -> bool {
+        self.contract.can_rebind_run()
     }
 
     fn bind_lifecycle_hooks(
@@ -1950,6 +2066,7 @@ impl EventPublisher {
         };
         let seq = self.next_seq;
         self.next_seq = self.next_seq.checked_add(1).ok_or(())?;
+        let terminal_spill_bytes = assistant_text_spill.as_ref().map(|spill| spill.bytes);
         let envelope = EventEnvelope {
             seq,
             protocol_version: PROTOCOL_VERSION,
@@ -1958,9 +2075,17 @@ impl EventPublisher {
             _byte_permit: Some(permit),
         };
         if reject_authoritative {
-            self.events.try_send(envelope).map_err(|_| ())
+            let slot = self.events.try_reserve().map_err(|_| ())?;
+            self.contract
+                .observe_with_spill(seq, &envelope.event, terminal_spill_bytes);
+            slot.send(envelope);
+            Ok(())
         } else {
-            self.events.send(envelope).await.map_err(|_| ())
+            let slot = self.events.reserve().await.map_err(|_| ())?;
+            self.contract
+                .observe_with_spill(seq, &envelope.event, terminal_spill_bytes);
+            slot.send(envelope);
+            Ok(())
         }
     }
 
@@ -2100,7 +2225,7 @@ fn wire_with_queue_policy(
     let lifecycle_otel =
         iteron_obs::otel::lifecycle::LifecycleTelemetryRuntime::attach(&lifecycle).ok();
     let hook_health = crate::runtime::lifecycle_hooks::LifecycleHookHealth::default();
-    let client = AppServerClient::connect_weighted_with_policy(
+    let mut client = AppServerClient::connect_weighted_with_policy(
         advertised_version(),
         sq_tx,
         priority_sq_tx,
@@ -2109,6 +2234,14 @@ fn wire_with_queue_policy(
         queue_policy,
         lifecycle_hooks.clone(),
     )?;
+    let publisher = EventPublisher::new_with_policy_and_hooks(
+        eq_tx,
+        lossless_events,
+        lifecycle_emitter,
+        queue_policy,
+        lifecycle_hooks,
+    );
+    client.contract = publisher.contract.clone();
     Ok((
         AppServerHandle {
             client,
@@ -2124,13 +2257,7 @@ fn wire_with_queue_policy(
             submissions: sq_rx,
             priority_submissions: priority_sq_rx,
             control: control_rx,
-            events: EventPublisher::new_with_policy_and_hooks(
-                eq_tx,
-                lossless_events,
-                lifecycle_emitter,
-                queue_policy,
-                lifecycle_hooks,
-            ),
+            events: publisher,
             hook_health,
             activity: activity_rx,
             mcp_input,
@@ -2210,7 +2337,7 @@ pub(crate) struct AppServer {
     /// the separate interactive-approval posture decides whether `Ask` may wait for a human.
     /// The kernel drains commands at its own safe points; the server never reaches into a running
     /// turn.
-    to_kernel: mpsc::Sender<SqEnvelope>,
+    to_kernel: mpsc::Sender<TurnSubmission>,
     activity: mpsc::Receiver<iteron_protocol::ActivityEvent>,
     mcp_input_requests: mpsc::Receiver<mcp_input::McpInputRequestEnvelope>,
     mcp_input_responses: mpsc::Receiver<McpInputResponse>,
@@ -2232,7 +2359,7 @@ impl AppServer {
         let run_id = agent.rollout.run_id().clone();
         ends.events
             .bind_lifecycle_identity(SessionId(format!("session-{}", run_id.0)), run_id);
-        let (to_kernel, kernel_rx) = mpsc::channel::<SqEnvelope>(
+        let (to_kernel, kernel_rx) = mpsc::channel::<TurnSubmission>(
             iteron_tunables::param_integer(
                 "cli.app_server.kernel_inbound_capacity",
                 KERNEL_INBOUND_CAPACITY,
@@ -2740,6 +2867,7 @@ impl AppServer {
                     queued,
                     preprocessed,
                 } => {
+                    let expected_product_turn_id = queued.envelope.expected_product_turn_id;
                     let envelope = queued.into_envelope();
                     let version = envelope.protocol_version;
                     let submission_id = envelope.submission_id;
@@ -2774,6 +2902,16 @@ impl AppServer {
                         None,
                     )
                     .await;
+                    if expected_product_turn_id.is_some() {
+                        publish_submission(
+                            &mut events,
+                            submission_id,
+                            SubmissionLifecycleState::Rejected,
+                            Some("turn_mismatch_or_terminal"),
+                        )
+                        .await;
+                        continue;
+                    }
                     if let Err(error) = plantcore.admit_input(&op) {
                         publish_submission(
                             &mut events,
@@ -2947,6 +3085,10 @@ impl AppServer {
                 .transition(SessionLifecycleState::Running)
                 .expect("only an idle session admits a turn");
             let live_turn_id = agent.current_turn_id();
+            events.begin_contract_turn(agent.rollout.run_id().clone(), turn_submission_id);
+            agent.set_active_product_turn_id(Some(
+                iteron_protocol::product_contract::ProductTurnId(events.next_product_turn),
+            ));
             let activity_overflow = agent.activity_overflow_port();
             let mut run_lifecycle = RunLifecycleState::Created;
             run_lifecycle = run_lifecycle
@@ -3090,7 +3232,7 @@ impl AppServer {
                             // happened, not at the end of whatever turn is running.
                             let notification = publish_settled(&mut events, settled).await;
                             if to_kernel
-                                .try_send(SqEnvelope::current(Op::Steer {
+                                .try_send(TurnSubmission::current(Op::Steer {
                                     text: notification.clone(),
                                 }))
                                 .is_err()
@@ -3173,6 +3315,18 @@ impl AppServer {
                                     SubmissionLifecycleState::Received,
                                     None,
                                 ).await;
+                                if !product_turn_accepts(
+                                    queued.envelope.expected_product_turn_id,
+                                    &events.contract,
+                                ) {
+                                    publish_submission(
+                                        &mut events,
+                                        submission_id,
+                                        SubmissionLifecycleState::Rejected,
+                                        Some("turn_mismatch_or_terminal"),
+                                    ).await;
+                                    continue;
+                                }
                                 let op = &queued.envelope.op;
                                 if drain_admission_closed
                                     && matches!(
@@ -3298,9 +3452,20 @@ impl AppServer {
                                     }
                                     Routed::ToKernel => {
                                         let envelope = queued.into_envelope();
+                                        let expected_product_turn_id = envelope.expected_product_turn_id;
                                         let (_, op) = envelope
                                             .into_current_identified()
                                             .expect("the protocol version was checked above");
+                                        if matches!(&op, Op::Steer { text } if text.trim().is_empty()) {
+                                            publish_submission(
+                                                &mut events,
+                                                submission_id,
+                                                SubmissionLifecycleState::Rejected,
+                                                Some("empty_steer"),
+                                            )
+                                            .await;
+                                            continue;
+                                        }
                                         publish_submission(
                                             &mut events,
                                             submission_id,
@@ -3309,13 +3474,13 @@ impl AppServer {
                                         ).await;
                                         let kind = kernel_submission_kind(&op);
                                         let forced = matches!(op, Op::ForceCancel);
-                                        let kernel_send = to_kernel.try_send(
-                                            SqEnvelope::with_version_and_id(
-                                                version,
-                                                submission_id,
-                                                op,
-                                            ),
+                                        let mut kernel_envelope = TurnSubmission::with_version_and_id(
+                                            version,
+                                            submission_id,
+                                            op,
                                         );
+                                        kernel_envelope.expected_product_turn_id = expected_product_turn_id;
+                                        let kernel_send = to_kernel.try_send(kernel_envelope);
                                         if let Err(error) = kernel_send {
                                             let reason = match error {
                                                 mpsc::error::TrySendError::Full(_) => {
@@ -3395,7 +3560,11 @@ impl AppServer {
                                                 }
                                                 KernelSubmissionKind::Approval => {}
                                             }
-                                            pending_kernel_submissions.push_back(PendingKernelSubmission { id: submission_id, kind });
+                                            pending_kernel_submissions.push_back(PendingKernelSubmission {
+                                                id: submission_id,
+                                                kind,
+                                                expected_product_turn_id,
+                                            });
                                             if matches!(kind, KernelSubmissionKind::Drain) {
                                                 expire_pending_turns(
                                                     &mut events,
@@ -3512,21 +3681,58 @@ impl AppServer {
                 let _ = events.publish(ServerEvent::Activity(event)).await;
             }
 
+            agent.set_active_product_turn_id(None);
             let mut snapshot = snapshot_of(&mut agent);
+            // `snapshot_of` reclaims the bounded kernel inbox after the product epoch is
+            // cleared. That reclaim can emit exact-ID SubmissionRejected events, even though
+            // the run's ordinary UI tail was already drained above. Publish and settle those
+            // before the generic turn-end fallback consumes pending receipts.
+            while let Ok(runtime_event) = runtime_ui_rx.try_recv() {
+                let runtime_bytes = frontend_channels.runtime_event_bytes(&runtime_event);
+                match runtime_event {
+                    crate::runtime::RuntimeFrontendEvent::Ui(ui) => {
+                        settle_kernel_submission_events(
+                            &mut events,
+                            &mut pending_kernel_submissions,
+                            &ui,
+                        )
+                        .await;
+                        let _ = events.publish(ServerEvent::Ui(ui)).await;
+                    }
+                    crate::runtime::RuntimeFrontendEvent::Plantcore(event) => {
+                        let _ = events.publish(ServerEvent::Plantcore(event)).await;
+                    }
+                }
+                frontend_channels.release_ui_bytes(runtime_bytes);
+            }
+            while let Some(runtime_event) = frontend_channels.try_pop_authoritative() {
+                let runtime_bytes = frontend_channels.runtime_event_bytes(&runtime_event);
+                match runtime_event {
+                    crate::runtime::RuntimeFrontendEvent::Ui(ui) => {
+                        settle_kernel_submission_events(
+                            &mut events,
+                            &mut pending_kernel_submissions,
+                            &ui,
+                        )
+                        .await;
+                        let _ = events.publish(ServerEvent::Ui(ui)).await;
+                    }
+                    crate::runtime::RuntimeFrontendEvent::Plantcore(event) => {
+                        let _ = events.publish(ServerEvent::Plantcore(event)).await;
+                    }
+                }
+                frontend_channels.release_ui_bytes(runtime_bytes);
+            }
+            discard_expired_product_steers(&mut snapshot, &pending_kernel_submissions);
             settle_kernel_submissions_at_turn_end(
                 &mut events,
                 &mut pending_kernel_submissions,
-                snapshot.unadmitted_steers.len(),
+                &snapshot.unadmitted_steer_submission_ids,
             )
             .await;
-            snapshot.unadmitted_steers.retain(|text| {
-                if text.starts_with(crate::runtime::RUNTIME_NOTIFICATION_PREFIX) {
-                    pending_runtime.push_back(text.clone());
-                    false
-                } else {
-                    true
-                }
-            });
+            forward_runtime_notifications(&mut snapshot, &mut pending_runtime);
+            let terminal_evidence =
+                Some(agent.terminal_diagnostic_snapshot(live_turn_id, &completion));
             let (outcome, mut error) = match completion {
                 Ok(outcome) => (outcome, None),
                 Err(error) => {
@@ -3694,6 +3900,7 @@ impl AppServer {
             };
             let summary = TerminalSummary {
                 terminal,
+                terminal_evidence,
                 assistant_text: agent.last_assistant_text().to_owned(),
                 v7_assistant_text: (agent.run_assistant_text() != agent.last_assistant_text())
                     .then(|| agent.run_assistant_text().to_owned()),
@@ -4016,49 +4223,139 @@ fn first_prompt_title(input: &RunInput) -> String {
     iteron_record::session::title_from_text(text)
 }
 
+fn product_turn_accepts(
+    expected: Option<iteron_protocol::product_contract::ProductTurnId>,
+    contract: &product_contract::ContractReader,
+) -> bool {
+    let Some(expected) = expected else {
+        return true;
+    };
+    contract
+        .snapshot()
+        .and_then(|snapshot| snapshot.turn)
+        .is_some_and(|turn| {
+            turn.turn_id == expected
+                && turn.state == iteron_protocol::product_contract::TurnStateV1::Running
+        })
+}
+
 async fn settle_kernel_submission_events(
     events: &mut EventPublisher,
     pending: &mut std::collections::VecDeque<PendingKernelSubmission>,
     event: &UiEvent,
 ) {
-    let UiEvent::SteerApplied { count } = event else {
+    if let UiEvent::SubmissionRejected { id, reason_code } = event {
+        if let Some(index) = pending.iter().position(|entry| entry.id == *id) {
+            pending.remove(index);
+            publish_submission(
+                events,
+                *id,
+                SubmissionLifecycleState::Rejected,
+                Some(*reason_code),
+            )
+            .await;
+        }
         return;
-    };
-    for _ in 0..*count {
+    }
+    if let UiEvent::ControlSubmissionApplied { id, kind } = event {
+        let expected = match kind {
+            crate::runtime::ControlSubmissionKind::Interrupt
+            | crate::runtime::ControlSubmissionKind::ForceCancel => KernelSubmissionKind::Interrupt,
+            crate::runtime::ControlSubmissionKind::Drain => KernelSubmissionKind::Drain,
+        };
+        if let Some(index) = pending
+            .iter()
+            .position(|entry| entry.id == *id && entry.kind == expected)
+        {
+            pending.remove(index);
+            publish_submission(events, *id, SubmissionLifecycleState::Applied, None).await;
+        }
+        return;
+    }
+    if let UiEvent::ApprovalResolved {
+        response_submission_id: Some(id),
+        ..
+    } = event
+    {
         let Some(index) = pending
             .iter()
-            .position(|entry| entry.kind == KernelSubmissionKind::Steer)
+            .position(|entry| entry.kind == KernelSubmissionKind::Approval && entry.id == *id)
         else {
-            break;
+            return;
         };
-        let entry = pending
-            .remove(index)
-            .expect("position came from this queue");
-        publish_submission(events, entry.id, SubmissionLifecycleState::Applied, None).await;
+        pending.remove(index);
+        publish_submission(events, *id, SubmissionLifecycleState::Applied, None).await;
+        return;
     }
+    let UiEvent::SteerSubmissionApplied { id } = event else {
+        return;
+    };
+    let Some(index) = pending
+        .iter()
+        .position(|entry| entry.kind == KernelSubmissionKind::Steer && entry.id == *id)
+    else {
+        return;
+    };
+    pending.remove(index);
+    publish_submission(events, *id, SubmissionLifecycleState::Applied, None).await;
+}
+
+fn forward_runtime_notifications(
+    snapshot: &mut SessionSnapshot,
+    pending_runtime: &mut std::collections::VecDeque<String>,
+) {
+    pending_runtime.extend(snapshot.unadmitted_internal_notifications.drain(..));
+}
+
+fn discard_expired_product_steers(
+    snapshot: &mut SessionSnapshot,
+    pending: &std::collections::VecDeque<PendingKernelSubmission>,
+) {
+    let ids = std::mem::take(&mut snapshot.unadmitted_steer_submission_ids);
+    let texts = std::mem::take(&mut snapshot.unadmitted_steers);
+    for (index, text) in texts.into_iter().enumerate() {
+        let id = ids.get(index).copied().flatten();
+        let expired = id.is_some_and(|id| {
+            pending.iter().any(|entry| {
+                entry.id == id
+                    && entry.kind == KernelSubmissionKind::Steer
+                    && entry.expected_product_turn_id.is_some()
+            })
+        });
+        if !expired {
+            snapshot.unadmitted_steers.push(text);
+            snapshot.unadmitted_steer_submission_ids.push(id);
+        }
+    }
+    snapshot.unadmitted_client_steers = snapshot.unadmitted_steers.len();
 }
 
 async fn settle_kernel_submissions_at_turn_end(
     events: &mut EventPublisher,
     pending: &mut std::collections::VecDeque<PendingKernelSubmission>,
-    mut unadmitted_steers: usize,
+    unadmitted_steer_ids: &[Option<SubmissionId>],
 ) {
     while let Some(entry) = pending.pop_front() {
         let (state, reason) = match entry.kind {
-            KernelSubmissionKind::Steer if unadmitted_steers > 0 => {
-                unadmitted_steers -= 1;
-                (
-                    SubmissionLifecycleState::Requeued,
-                    Some("safe_point_missed"),
-                )
+            KernelSubmissionKind::Steer if entry.expected_product_turn_id.is_some() => {
+                (SubmissionLifecycleState::Expired, Some("turn_expired"))
             }
+            KernelSubmissionKind::Steer if unadmitted_steer_ids.contains(&Some(entry.id)) => (
+                SubmissionLifecycleState::Requeued,
+                Some("safe_point_missed"),
+            ),
             KernelSubmissionKind::Steer => (
                 SubmissionLifecycleState::Rejected,
                 Some("application_unconfirmed"),
             ),
-            KernelSubmissionKind::Interrupt
-            | KernelSubmissionKind::Drain
-            | KernelSubmissionKind::Approval => (SubmissionLifecycleState::Applied, None),
+            KernelSubmissionKind::Approval => (
+                SubmissionLifecycleState::Rejected,
+                Some("application_unconfirmed"),
+            ),
+            KernelSubmissionKind::Interrupt | KernelSubmissionKind::Drain => (
+                SubmissionLifecycleState::Rejected,
+                Some("application_unconfirmed"),
+            ),
         };
         publish_submission(events, entry.id, state, reason).await;
     }
@@ -4616,8 +4913,29 @@ const _: () = assert!(
 mod tests {
     use super::*;
 
-    fn envelope(op: Op) -> SqEnvelope {
-        SqEnvelope::with_version(PROTOCOL_VERSION, op)
+    #[test]
+    fn product_turn_ids_are_minted_by_the_app_server_and_shared_with_clients() {
+        let (handle, mut ends) = wire().unwrap();
+        let thread_id = SessionId("session-r".into());
+        let run_id = RunId("r".into());
+        ends.events
+            .bind_lifecycle_identity(thread_id.clone(), run_id.clone());
+        ends.events
+            .begin_contract_turn(run_id.clone(), Some(SubmissionId(1)));
+        let first = handle.client.thread_snapshot_v1().unwrap();
+        assert_eq!(first.thread_id, thread_id);
+        assert_eq!(first.turn.as_ref().unwrap().turn_id.0, 1);
+        assert_eq!(
+            first.turn.as_ref().unwrap().submission_id,
+            Some(SubmissionId(1))
+        );
+        ends.events.begin_contract_turn(run_id, None);
+        let second = handle.client.thread_snapshot_v1().unwrap();
+        assert_eq!(second.turn.unwrap().turn_id.0, 2);
+    }
+
+    fn envelope(op: Op) -> TurnSubmission {
+        TurnSubmission::with_version(PROTOCOL_VERSION, op)
     }
 
     #[test]
@@ -4909,6 +5227,9 @@ mod tests {
             cost: iteron_obs::CostState::default(),
             last_turn_usage: None,
             unadmitted_steers: Vec::new(),
+            unadmitted_internal_notifications: Vec::new(),
+            unadmitted_client_steers: 0,
+            unadmitted_steer_submission_ids: Vec::new(),
             permission_rules: iteron_protocol::PermissionRules::new(),
             runtime_policy: None,
             ledger_summary: String::new(),
@@ -4931,12 +5252,534 @@ mod tests {
             error: Some("done".into()),
             memo_hits: 0,
             memo_misses: 0,
+            terminal_evidence: None,
         })
+    }
+
+    #[tokio::test]
+    async fn mixed_internal_notification_does_not_consume_user_steer_requeue_count() {
+        let (mut handle, mut ends) = wire().unwrap();
+        let mut pending = std::collections::VecDeque::from([
+            PendingKernelSubmission {
+                id: SubmissionId(11),
+                kind: KernelSubmissionKind::Steer,
+                expected_product_turn_id: None,
+            },
+            PendingKernelSubmission {
+                id: SubmissionId(12),
+                kind: KernelSubmissionKind::Steer,
+                expected_product_turn_id: None,
+            },
+        ]);
+        let mut snapshot = snapshot();
+        let notification = format!("{}internal", crate::runtime::RUNTIME_NOTIFICATION_PREFIX);
+        let user_steer = format!(
+            "{}user-authored text",
+            crate::runtime::RUNTIME_NOTIFICATION_PREFIX
+        );
+        snapshot.unadmitted_steers = vec![user_steer.clone()];
+        snapshot.unadmitted_internal_notifications = vec![notification.clone()];
+        snapshot.unadmitted_client_steers = 1;
+        snapshot.unadmitted_steer_submission_ids = vec![Some(SubmissionId(12))];
+        settle_kernel_submissions_at_turn_end(
+            &mut ends.events,
+            &mut pending,
+            &snapshot.unadmitted_steer_submission_ids,
+        )
+        .await;
+        let mut runtime_queue = std::collections::VecDeque::new();
+        forward_runtime_notifications(&mut snapshot, &mut runtime_queue);
+        assert_eq!(snapshot.unadmitted_steers, vec![user_steer]);
+        assert_eq!(runtime_queue.pop_front(), Some(notification));
+        let first = handle.events.recv().await.unwrap().into_current().unwrap();
+        let second = handle.events.recv().await.unwrap().into_current().unwrap();
+        assert!(matches!(
+            first,
+            ServerEvent::Submission {
+                id: SubmissionId(11),
+                state: SubmissionLifecycleState::Rejected,
+                reason_code: Some("application_unconfirmed")
+            }
+        ));
+        assert!(matches!(
+            second,
+            ServerEvent::Submission {
+                id: SubmissionId(12),
+                state: SubmissionLifecycleState::Requeued,
+                reason_code: Some("safe_point_missed")
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn identified_steer_receipts_ignore_legacy_count_and_requeue_exact_tail() {
+        let (mut handle, mut ends) = wire().unwrap();
+        let mut pending = std::collections::VecDeque::from([
+            PendingKernelSubmission {
+                id: SubmissionId(11),
+                kind: KernelSubmissionKind::Steer,
+                expected_product_turn_id: None,
+            },
+            PendingKernelSubmission {
+                id: SubmissionId(13),
+                kind: KernelSubmissionKind::Steer,
+                expected_product_turn_id: None,
+            },
+            PendingKernelSubmission {
+                id: SubmissionId(14),
+                kind: KernelSubmissionKind::Steer,
+                expected_product_turn_id: None,
+            },
+            PendingKernelSubmission {
+                id: SubmissionId(15),
+                kind: KernelSubmissionKind::Steer,
+                expected_product_turn_id: None,
+            },
+        ]);
+        // ID 12 was a blank client steer rejected before the kernel queue; an internal runtime
+        // notification has no client ID and therefore has no place in this pending FIFO.
+        publish_submission(
+            &mut ends.events,
+            SubmissionId(12),
+            SubmissionLifecycleState::Rejected,
+            Some("empty_steer"),
+        )
+        .await;
+        settle_kernel_submission_events(
+            &mut ends.events,
+            &mut pending,
+            &UiEvent::SteerApplied { count: 2 },
+        )
+        .await;
+        assert_eq!(
+            pending.len(),
+            4,
+            "legacy count has no identified receipt authority"
+        );
+        settle_kernel_submission_events(
+            &mut ends.events,
+            &mut pending,
+            &UiEvent::SteerSubmissionApplied {
+                id: SubmissionId(13),
+            },
+        )
+        .await;
+        settle_kernel_submission_events(
+            &mut ends.events,
+            &mut pending,
+            &UiEvent::SteerSubmissionApplied {
+                id: SubmissionId(11),
+            },
+        )
+        .await;
+        settle_kernel_submission_events(
+            &mut ends.events,
+            &mut pending,
+            &UiEvent::SteerSubmissionApplied {
+                id: SubmissionId(13),
+            },
+        )
+        .await;
+        settle_kernel_submission_events(
+            &mut ends.events,
+            &mut pending,
+            &UiEvent::SteerSubmissionApplied {
+                id: SubmissionId(99),
+            },
+        )
+        .await;
+        assert_eq!(
+            pending.iter().map(|entry| entry.id.0).collect::<Vec<_>>(),
+            vec![14, 15]
+        );
+        let mut tail = snapshot();
+        tail.unadmitted_internal_notifications = vec![format!(
+            "{}internal",
+            crate::runtime::RUNTIME_NOTIFICATION_PREFIX
+        )];
+        tail.unadmitted_steers = vec!["user tail".into()];
+        tail.unadmitted_client_steers = 1;
+        tail.unadmitted_steer_submission_ids = vec![Some(SubmissionId(14))];
+        settle_kernel_submissions_at_turn_end(
+            &mut ends.events,
+            &mut pending,
+            &tail.unadmitted_steer_submission_ids,
+        )
+        .await;
+        let mut seen = Vec::new();
+        for _ in 0..5 {
+            if let ServerEvent::Submission { id, state, .. } =
+                handle.events.recv().await.unwrap().into_current().unwrap()
+            {
+                seen.push((id.0, state));
+            }
+        }
+        assert_eq!(
+            seen,
+            [
+                (12, SubmissionLifecycleState::Rejected),
+                (13, SubmissionLifecycleState::Applied),
+                (11, SubmissionLifecycleState::Applied),
+                (14, SubmissionLifecycleState::Requeued),
+                (15, SubmissionLifecycleState::Rejected),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn approval_receipt_requires_matching_runtime_resolution_submission_id() {
+        let (mut handle, mut ends) = wire().unwrap();
+        let mut pending = std::collections::VecDeque::from([
+            PendingKernelSubmission {
+                id: SubmissionId(41),
+                kind: KernelSubmissionKind::Approval,
+                expected_product_turn_id: None,
+            },
+            PendingKernelSubmission {
+                id: SubmissionId(42),
+                kind: KernelSubmissionKind::Approval,
+                expected_product_turn_id: None,
+            },
+        ]);
+        for response_submission_id in [None, Some(SubmissionId(99)), Some(SubmissionId(42))] {
+            settle_kernel_submission_events(
+                &mut ends.events,
+                &mut pending,
+                &UiEvent::ApprovalResolved {
+                    id: SubmissionId(7),
+                    resolution: crate::runtime::ApprovalResolution::Denied,
+                    reason_code: "operator_denied",
+                    response_submission_id,
+                },
+            )
+            .await;
+        }
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending.front().unwrap().id, SubmissionId(41));
+        settle_kernel_submissions_at_turn_end(&mut ends.events, &mut pending, &[]).await;
+        let first = handle.events.recv().await.unwrap().into_current().unwrap();
+        let second = handle.events.recv().await.unwrap().into_current().unwrap();
+        assert!(matches!(
+            first,
+            ServerEvent::Submission {
+                id: SubmissionId(42),
+                state: SubmissionLifecycleState::Applied,
+                ..
+            }
+        ));
+        assert!(matches!(
+            second,
+            ServerEvent::Submission {
+                id: SubmissionId(41),
+                state: SubmissionLifecycleState::Rejected,
+                reason_code: Some("application_unconfirmed")
+            }
+        ));
+        assert!(
+            handle.events.try_recv().is_err(),
+            "a decision receipt is not tool execution success"
+        );
+    }
+
+    #[tokio::test]
+    async fn expired_product_steer_is_not_requeued_into_the_next_turn() {
+        use iteron_protocol::product_contract::ProductTurnId;
+
+        let (mut handle, mut ends) = wire().unwrap();
+        let mut pending = std::collections::VecDeque::from([PendingKernelSubmission {
+            id: SubmissionId(31),
+            kind: KernelSubmissionKind::Steer,
+            expected_product_turn_id: Some(ProductTurnId(1)),
+        }]);
+        let mut tail = snapshot();
+        tail.unadmitted_steers = vec!["old product steer".into(), "legacy follow-up".into()];
+        tail.unadmitted_steer_submission_ids = vec![Some(SubmissionId(31)), None];
+        tail.unadmitted_client_steers = 2;
+        discard_expired_product_steers(&mut tail, &pending);
+        assert_eq!(tail.unadmitted_steers, ["legacy follow-up"]);
+        assert_eq!(tail.unadmitted_steer_submission_ids, [None]);
+        settle_kernel_submissions_at_turn_end(
+            &mut ends.events,
+            &mut pending,
+            &tail.unadmitted_steer_submission_ids,
+        )
+        .await;
+        assert!(matches!(
+            handle.events.recv().await.unwrap().into_current().unwrap(),
+            ServerEvent::Submission {
+                id: SubmissionId(31),
+                state: SubmissionLifecycleState::Expired,
+                reason_code: Some("turn_expired")
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn interrupt_and_drain_receipts_require_exact_kernel_signals() {
+        let (mut handle, mut ends) = wire().unwrap();
+        let mut pending = std::collections::VecDeque::from([
+            PendingKernelSubmission {
+                id: SubmissionId(51),
+                kind: KernelSubmissionKind::Interrupt,
+                expected_product_turn_id: None,
+            },
+            PendingKernelSubmission {
+                id: SubmissionId(52),
+                kind: KernelSubmissionKind::Drain,
+                expected_product_turn_id: None,
+            },
+            PendingKernelSubmission {
+                id: SubmissionId(53),
+                kind: KernelSubmissionKind::Interrupt,
+                expected_product_turn_id: None,
+            },
+        ]);
+        settle_kernel_submission_events(
+            &mut ends.events,
+            &mut pending,
+            &UiEvent::ControlSubmissionApplied {
+                id: SubmissionId(52),
+                kind: crate::runtime::ControlSubmissionKind::Drain,
+            },
+        )
+        .await;
+        settle_kernel_submission_events(
+            &mut ends.events,
+            &mut pending,
+            &UiEvent::SubmissionRejected {
+                id: SubmissionId(51),
+                reason_code: "turn_mismatch_or_terminal",
+            },
+        )
+        .await;
+        settle_kernel_submissions_at_turn_end(&mut ends.events, &mut pending, &[]).await;
+        let states = std::iter::from_fn(|| handle.events.try_recv().ok())
+            .filter_map(|envelope| match envelope.into_current().unwrap() {
+                ServerEvent::Submission { id, state, .. } => Some((id, state)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            states,
+            [
+                (SubmissionId(52), SubmissionLifecycleState::Applied),
+                (SubmissionId(51), SubmissionLifecycleState::Rejected),
+                (SubmissionId(53), SubmissionLifecycleState::Rejected),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn product_steer_and_interrupt_keep_turn_epoch_across_queue_race() {
+        use iteron_protocol::product_contract::ProductTurnId;
+
+        let (data_tx, _data_rx) = mpsc::channel(4);
+        let (priority_tx, mut priority_rx) = mpsc::channel(4);
+        let client = AppServerClient::connect_weighted(
+            PROTOCOL_VERSION,
+            data_tx,
+            priority_tx,
+            Arc::new(Semaphore::new(1_000_000)),
+            iteron_obs::lifecycle::LifecycleEmitter::new(
+                iteron_obs::lifecycle::LifecycleBus::default(),
+            ),
+        )
+        .unwrap();
+        let old = ProductTurnId(1);
+        client
+            .submit_identified_for_turn(
+                Op::Steer {
+                    text: "old turn".into(),
+                },
+                old,
+            )
+            .unwrap();
+        client
+            .submit_identified_for_turn(Op::Interrupt, old)
+            .unwrap();
+        let steer = priority_rx.recv().await.unwrap();
+        let interrupt = priority_rx.recv().await.unwrap();
+        assert_eq!(steer.envelope.expected_product_turn_id, Some(old));
+        assert_eq!(interrupt.envelope.expected_product_turn_id, Some(old));
+
+        let contract = product_contract::ContractReader::default();
+        contract.bind_identity(SessionId("session-r".into()), RunId("r".into()));
+        contract.begin_turn(RunId("r".into()), old, None);
+        assert!(product_turn_accepts(
+            steer.envelope.expected_product_turn_id,
+            &contract
+        ));
+        contract.observe(
+            1,
+            &ServerEvent::RunEnded {
+                snapshot: snapshot(),
+                summary: terminal_summary(),
+            },
+        );
+        assert!(!product_turn_accepts(
+            steer.envelope.expected_product_turn_id,
+            &contract
+        ));
+        contract.begin_turn(RunId("r".into()), ProductTurnId(2), None);
+        assert!(!product_turn_accepts(
+            steer.envelope.expected_product_turn_id,
+            &contract
+        ));
+        assert!(!product_turn_accepts(
+            interrupt.envelope.expected_product_turn_id,
+            &contract
+        ));
+        assert!(
+            product_turn_accepts(None, &contract),
+            "legacy transport stays compatible"
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_snapshot_settles_late_old_epoch_rejections_by_exact_id() {
+        use iteron_protocol::product_contract::ProductTurnId;
+
+        let workspace = temp_workspace("old-epoch-kernel-tail");
+        let mut agent = agent_in(&workspace);
+        let (mut handle, mut ends) = wire().unwrap();
+        let mut pending = std::collections::VecDeque::from([
+            PendingKernelSubmission {
+                id: SubmissionId(61),
+                kind: KernelSubmissionKind::Steer,
+                expected_product_turn_id: Some(ProductTurnId(1)),
+            },
+            PendingKernelSubmission {
+                id: SubmissionId(62),
+                kind: KernelSubmissionKind::Interrupt,
+                expected_product_turn_id: Some(ProductTurnId(1)),
+            },
+            PendingKernelSubmission {
+                id: SubmissionId(63),
+                kind: KernelSubmissionKind::Drain,
+                expected_product_turn_id: Some(ProductTurnId(1)),
+            },
+        ]);
+        let (kernel_tx, kernel_rx) = mpsc::channel(KERNEL_INBOUND_CAPACITY);
+        let (ui_tx, mut ui_rx) = mpsc::channel(8);
+        agent.set_inbound_control(kernel_rx);
+        agent.set_ui(ui_tx);
+        agent.set_active_product_turn_id(Some(ProductTurnId(1)));
+        for (id, op) in [
+            (
+                SubmissionId(61),
+                Op::Steer {
+                    text: "old steer".into(),
+                },
+            ),
+            (SubmissionId(62), Op::Interrupt),
+            (SubmissionId(63), Op::Drain),
+        ] {
+            let mut envelope = TurnSubmission::identified(id, op);
+            envelope.expected_product_turn_id = Some(ProductTurnId(1));
+            kernel_tx.try_send(envelope).unwrap();
+        }
+        assert!(
+            ui_rx.try_recv().is_err(),
+            "the first UI tail is already empty"
+        );
+        agent.set_active_product_turn_id(None);
+        let snapshot = control::snapshot_of(&mut agent);
+        assert!(snapshot.unadmitted_steers.is_empty());
+        assert_eq!(kernel_tx.capacity(), KERNEL_INBOUND_CAPACITY);
+        let mut rejected = Vec::new();
+        while let Ok(ui) = ui_rx.try_recv() {
+            if let UiEvent::SubmissionRejected { id, reason_code } = &ui {
+                assert_eq!(*reason_code, "turn_mismatch_or_terminal");
+                rejected.push(*id);
+            }
+            settle_kernel_submission_events(&mut ends.events, &mut pending, &ui).await;
+            let _ = ends.events.publish(ServerEvent::Ui(ui)).await;
+        }
+        assert_eq!(
+            rejected,
+            [SubmissionId(61), SubmissionId(62), SubmissionId(63)]
+        );
+        // The post-snapshot UI drain must precede this fallback. Otherwise all three
+        // exact kernel rejections degrade to turn_expired/application_unconfirmed.
+        settle_kernel_submissions_at_turn_end(
+            &mut ends.events,
+            &mut pending,
+            &snapshot.unadmitted_steer_submission_ids,
+        )
+        .await;
+        assert!(pending.is_empty());
+        let mut receipts = Vec::new();
+        for _ in 0..6 {
+            if let ServerEvent::Submission {
+                id,
+                state,
+                reason_code,
+            } = handle.events.recv().await.unwrap().into_current().unwrap()
+            {
+                receipts.push((id, state, reason_code));
+            }
+        }
+        assert_eq!(
+            receipts,
+            [
+                (
+                    SubmissionId(61),
+                    SubmissionLifecycleState::Rejected,
+                    Some("turn_mismatch_or_terminal"),
+                ),
+                (
+                    SubmissionId(62),
+                    SubmissionLifecycleState::Rejected,
+                    Some("turn_mismatch_or_terminal"),
+                ),
+                (
+                    SubmissionId(63),
+                    SubmissionLifecycleState::Rejected,
+                    Some("turn_mismatch_or_terminal"),
+                ),
+            ]
+        );
+        let _ = std::fs::remove_dir_all(workspace);
+    }
+
+    #[tokio::test]
+    async fn rejected_eq_terminal_does_not_advance_the_public_projection() {
+        let policy = AppServerQueuePolicy::new(
+            SQ_PRIORITY_CAPACITY + 3,
+            1_000_000,
+            1,
+            CosmeticOverflow::Drop,
+            AuthoritativeOverflow::Reject,
+        )
+        .unwrap();
+        let (handle, mut ends) = wire_with_queue_policy(false, policy).unwrap();
+        ends.events
+            .bind_lifecycle_identity(SessionId("session-r".into()), RunId("r".into()));
+        ends.events.begin_contract_turn(RunId("r".into()), None);
+        ends.events
+            .publish(ServerEvent::Notice("occupy bounded EQ".into()))
+            .await
+            .unwrap();
+        assert!(
+            ends.events
+                .publish(ServerEvent::RunEnded {
+                    snapshot: snapshot(),
+                    summary: terminal_summary(),
+                })
+                .await
+                .is_err()
+        );
+        let public = handle.client.thread_snapshot_v1().unwrap();
+        assert_eq!(public.source_event_seq, 1);
+        assert_eq!(
+            public.turn.unwrap().state,
+            iteron_protocol::product_contract::TurnStateV1::Running
+        );
     }
 
     #[test]
     fn matching_version_connects_and_stamps_every_submission() {
-        let (tx, mut rx) = mpsc::channel::<SqEnvelope>(4);
+        let (tx, mut rx) = mpsc::channel::<TurnSubmission>(4);
         let client = AppServerClient::connect(PROTOCOL_VERSION, tx)
             .expect("the current server version accepts the handshake");
         assert_eq!(client.negotiated_version(), PROTOCOL_VERSION);
@@ -4951,7 +5794,7 @@ mod tests {
 
     #[test]
     fn version_skew_is_refused_up_front() {
-        let (tx, mut rx) = mpsc::channel::<SqEnvelope>(4);
+        let (tx, mut rx) = mpsc::channel::<TurnSubmission>(4);
         let err = AppServerClient::connect(PROTOCOL_VERSION + 1, tx.clone())
             .expect_err("a peer on a different version must be refused");
         assert_eq!(err.expected, PROTOCOL_VERSION);
@@ -4980,6 +5823,7 @@ mod tests {
             error: None,
             memo_hits: 0,
             memo_misses: 0,
+            terminal_evidence: None,
         };
         let authoritative = summary.current_result();
         let transcript: serde_json::Value = serde_json::from_str(include_str!(
@@ -5008,7 +5852,7 @@ mod tests {
     fn a_closed_queue_and_a_full_queue_are_different_answers() {
         // The frontend must be able to tell "the runtime is gone" from "try again": one is fatal,
         // the other is a keystroke that did not land.
-        let (tx, rx) = mpsc::channel::<SqEnvelope>(1);
+        let (tx, rx) = mpsc::channel::<TurnSubmission>(1);
         let client = AppServerClient::connect(PROTOCOL_VERSION, tx).expect("handshake");
         client.submit(Op::Interrupt).expect("first fits");
         assert_eq!(client.submit(Op::Drain), Err(SubmitError::Busy));
@@ -5323,6 +6167,7 @@ mod tests {
             error: None,
             memo_hits: 0,
             memo_misses: 0,
+            terminal_evidence: None,
         };
 
         assert_eq!(summary.current_result()["outcome"], "done");
@@ -5345,6 +6190,7 @@ mod tests {
             error: None,
             memo_hits: 0,
             memo_misses: 0,
+            terminal_evidence: None,
         };
 
         let value = summary.v7_result().unwrap();
@@ -6367,7 +7213,9 @@ mod tests {
                 .into_current()
                 .unwrap();
             match event {
-                ServerEvent::Ui(UiEvent::SteerApplied { count }) => steer_events += count,
+                ServerEvent::Ui(UiEvent::SteerSubmissionApplied { id }) if id == steer_id => {
+                    steer_events += 1
+                }
                 ServerEvent::Submission {
                     id,
                     state: SubmissionLifecycleState::Applied,

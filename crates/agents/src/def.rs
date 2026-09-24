@@ -190,12 +190,11 @@ pub struct AgentDef {
 }
 
 /// The largest budget a discovered subagent may receive. Admission can only narrow this ceiling.
-/// Raised to 30 turns: fan workers now run bounded-concurrent (owned tasks under a `Governor`), so
-/// each admitted investigator gets its own real budget rather than a thin slice of one serial chain;
-/// total cost stays bounded by the shared `max_usd`/wall/run-deadline ceilings and the permit count.
+/// Ordinary workers have no implicit turn-count ceiling. Explicit parent/definition turn caps,
+/// shared token/monetary budgets, wall deadlines and concurrency controls still constrain them.
 pub fn subagent_budget_ceiling() -> Budget {
     Budget {
-        max_turns: 30,
+        max_turns: Budget::UNLIMITED_TURNS,
         // No verified per-route rate card is inherited by a discovered worker yet. Turn/time
         // ceilings remain enforceable; a guessed dollar ceiling would not.
         max_usd: None,
@@ -225,9 +224,13 @@ pub fn subagent_budget(
     let writer_reserve = ((remaining_turns / 2).saturating_add(1))
         .max(2)
         .min(remaining_turns);
-    let child_turns = remaining_turns
-        .saturating_sub(writer_reserve)
-        .min(ceiling.max_turns);
+    let child_turns = if remaining_turns == Budget::UNLIMITED_TURNS {
+        ceiling.max_turns
+    } else {
+        remaining_turns
+            .saturating_sub(writer_reserve)
+            .min(ceiling.max_turns)
+    };
     let min_subagent_turns = u32::try_from(iteron_tunables::param_i128(
         "agents.def.min_subagent_turns",
         iteron_tunables::param_integer("agents.def.min_subagent_turns", MIN_SUBAGENT_TURNS) as i128,
@@ -303,8 +306,14 @@ impl AgentDef {
     /// name. Keeping the comparison here makes authority admission independent of catalog origin
     /// bookkeeping and catches accidental edits to any execution-relevant field.
     pub fn is_isolated_writer(&self) -> bool {
-        self.name == ISOLATED_WRITER_NAME
-            && self.execution_digest() == Self::isolated_writer().execution_digest()
+        if self.name != ISOLATED_WRITER_NAME {
+            return false;
+        }
+        let actual = self.execution_digest();
+        let mut historical = Self::isolated_writer();
+        let current = historical.execution_digest();
+        historical.budget.max_turns = 30;
+        actual == current || actual == historical.execution_digest()
     }
 
     /// Content identity for every execution-relevant field of this immutable definition.
@@ -723,7 +732,7 @@ mod tests {
         assert_eq!(g.trust, Trust::Trusted);
         assert_eq!(g.tools, ToolFilter::All);
         assert!(g.model.is_none());
-        assert_eq!(g.budget.max_turns, 30);
+        assert_eq!(g.budget.max_turns, Budget::UNLIMITED_TURNS);
     }
 
     #[test]
@@ -742,7 +751,9 @@ mod tests {
 
         let capped = subagent_budget(u32::MAX, u64::MAX, None)
             .expect("large inputs remain bounded without overflowing");
-        assert_eq!(capped.max_turns, 30);
+        assert_eq!(capped.max_turns, Budget::UNLIMITED_TURNS);
+        assert!(!capped.turn_limit_reached(31));
+        assert_eq!(subagent_budget(120, 300, None).unwrap().max_turns, 59);
         assert_eq!(capped.max_usd, None);
         assert_eq!(capped.max_wall_secs, 300);
         assert_eq!(capped.max_consecutive_tool_errors, 3);
@@ -777,7 +788,7 @@ mod tests {
         assert_eq!(def.budget.max_consecutive_tool_errors, 1);
 
         for invalid in [
-            "---\nname: x\nmaxTurns: 31\n---\nbody\n",
+            "---\nname: x\nmaxTurns: 4294967296\n---\nbody\n",
             "---\nname: x\nmaxUsd: NaN\n---\nbody\n",
             "---\nname: x\ntools: [read_file]\ndisallowedTools: [grep]\n---\nbody\n",
             "---\nname: x\nname: y\n---\nbody\n",

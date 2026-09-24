@@ -36,6 +36,7 @@ pub mod plantcore;
 pub mod policy_bundle_checkpoint;
 pub mod policy_evidence;
 pub mod pricing;
+pub mod product_contract;
 pub mod slot;
 pub mod task;
 pub mod tool;
@@ -487,6 +488,7 @@ pub enum OrchestrationMode {
 // No `Eq`: `max_usd` is an f64. `PartialEq` is what `TaskEnvelope` needs to derive its own.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Budget {
+    /// `UNLIMITED_TURNS` disables the turn-count ceiling. All other values remain exact caps.
     pub max_turns: u32,
     /// Optional operator-requested USD ceiling. `None` is honest absence of a monetary guarantee;
     /// a positive ceiling requires a verified route-bound rate card, while zero is universally
@@ -502,10 +504,10 @@ pub struct Budget {
 
 impl Default for Budget {
     fn default() -> Self {
-        // Turn and wall ceilings are always enforceable. Monetary control is opt-in because a
-        // guessed universal price table is worse than no dollar claim at all.
+        // Ordinary sessions have no default turn-count ceiling. Explicit turn, wall, token and
+        // monetary controls remain enforceable independently.
         Self {
-            max_turns: 64,
+            max_turns: Self::UNLIMITED_TURNS,
             max_usd: None,
             max_tokens: None,
             max_wall_secs: 3_600,
@@ -517,6 +519,21 @@ impl Default for Budget {
 }
 
 impl Budget {
+    /// Reserved wire-compatible sentinel, not a large finite admission limit.
+    pub const UNLIMITED_TURNS: u32 = u32::MAX;
+
+    pub fn turn_limit_reached(&self, used: u32) -> bool {
+        self.max_turns != Self::UNLIMITED_TURNS && used >= self.max_turns
+    }
+
+    pub fn remaining_turns(&self, used: u32) -> u32 {
+        if self.max_turns == Self::UNLIMITED_TURNS {
+            Self::UNLIMITED_TURNS
+        } else {
+            self.max_turns.saturating_sub(used)
+        }
+    }
+
     /// Validate values that integer types alone cannot make safe.  In particular, IEEE NaN makes
     /// every `cost >= max_usd` comparison false and would silently disable the monetary ceiling.
     /// Zero remains a valid explicit ceiling: the controller will terminate before admitting
@@ -713,12 +730,29 @@ mod effort_tests {
     }
 
     #[test]
-    fn interactive_budget_defaults_are_bounded_for_one_work_session() {
+    fn interactive_budget_has_no_implicit_turn_ceiling() {
         let budget = Budget::default();
-        assert_eq!(budget.max_turns, 64);
+        assert_eq!(budget.max_turns, Budget::UNLIMITED_TURNS);
+        for used in [0, 64, 1_000_000, u32::MAX] {
+            assert!(!budget.turn_limit_reached(used));
+            assert_eq!(budget.remaining_turns(used), Budget::UNLIMITED_TURNS);
+        }
         assert_eq!(budget.max_wall_secs, 3_600);
         assert_eq!(budget.max_consecutive_tool_errors, 5);
         assert_eq!(budget.max_usd, None);
         assert_eq!(budget.max_tokens, None);
+    }
+
+    #[test]
+    fn explicit_turn_limits_remain_exact() {
+        let budget = Budget {
+            max_turns: 2,
+            ..Budget::default()
+        };
+        assert!(!budget.turn_limit_reached(1));
+        assert_eq!(budget.remaining_turns(1), 1);
+        assert!(budget.turn_limit_reached(2));
+        assert!(budget.turn_limit_reached(3));
+        assert_eq!(budget.remaining_turns(3), 0);
     }
 }

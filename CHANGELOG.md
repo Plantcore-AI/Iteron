@@ -13,6 +13,27 @@ interfaces may change between releases.
   OTLP endpoint. Previously their child agents had no telemetry sink, so configured lifecycle
   observations were collected locally but never exported. (#376)
 
+## [0.0.22] - 2026-09-24
+
+### Added
+
+- Product turn lifecycle and bounded activity projections for resident clients, plus an explicit
+  schema v8 for the new machine stream lifecycle records while preserving older output schemas.
+- A route-specific comparison profile for selected runtime defaults.
+
+### Fixed
+
+- Long-context admission, session resume loading, provider retry exhaustion, and optional cache
+  breakpoint handling for route switches.
+- Default turn limits now support unlimited operation; explicit limits and other budgets remain
+  enforceable.
+- Restore default macOS native file writes with descriptor-relative workspace checks while keeping
+  permission rules; Linux continues to use Landlock. (#402)
+- Bound multibyte context relevance queries before selection while retaining the complete
+  submission for the provider, and identify known byte-limit failures. (#403)
+- Windows ConPTY completion-notification verification now waits for the complete terminal control
+  before checking that exactly one was emitted.
+
 ## [0.0.20] - 2026-08-24
 
 ## [0.0.19] - 2026-08-24

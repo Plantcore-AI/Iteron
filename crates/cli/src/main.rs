@@ -65,9 +65,9 @@ use output::{Emitter, OutputFormat};
 use runtime::Agent;
 use std::path::PathBuf;
 
-/// Fresh sessions use GLM's built-in provider. The model is deliberately not duplicated here:
-/// `ProviderDirectory::default_selection` resolves GLM's versioned, documented catalog default.
-const BUILTIN_DEFAULT_PROVIDER: &str = "glm";
+/// Prefer OpenAI for a fresh route when it is locally usable; admission may select another
+/// installed provider. The model is not duplicated here: the admitted provider directory owns it.
+const BUILTIN_DEFAULT_PROVIDER: &str = "openai";
 
 /// The synthetic id a `--base-url` override runs under. It exists only for the current process,
 /// so a later `--continue` that reads it out of the record has nothing to resolve it against and
@@ -785,7 +785,7 @@ struct Cli {
     output_format: OutputFormat,
 
     /// Pin a published machine stdout schema. Supported versions are reported by
-    /// `--machine-contract`; omission keeps the current v6 default.
+    /// `--machine-contract`; omission keeps the current v8 default.
     #[arg(long, value_name = "VERSION")]
     output_schema_version: Option<u32>,
 
@@ -801,8 +801,8 @@ struct Cli {
     #[arg(long)]
     model: Option<String>,
 
-    /// Max turns (bounded invariant; overrides config / default of 64).
-    #[arg(long)]
+    /// Maximum provider turns, or `unlimited` (the default).
+    #[arg(long, value_parser = config::parse_turn_limit)]
     max_turns: Option<u32>,
 
     /// Max spend in USD (bounded invariant; overrides config / default).
@@ -823,37 +823,32 @@ struct Cli {
     #[arg(long)]
     max_wall_secs: Option<u64>,
 
-    /// Enable code execution (bash/build/test). ON by default; a trusted `~/.iteron/config.json`
-    /// "allow_code": false, a project `.iteron/config.json` "allow_code": false, or `--mode plan`
-    /// tightens it back off. The command runs with your own user authority unless `--confine`.
+    /// Enable code execution (bash/build/test). ON by default inside the workspace sandbox; a
+    /// trusted or project `allow_code: false`, or `--mode plan`, can tighten it back off.
     #[arg(long)]
     allow_code: bool,
 
-    /// Put code execution back inside the platform sandbox: network denied, writes confined to
-    /// the workspace, ambient HOME credential paths denied (ADR-007). Off by default — bash
-    /// otherwise runs with your own user authority, which is what makes `git push`, `gh`, `curl`
-    /// and package installs work. Filesystem tools address the host either way; this flag governs
-    /// executed code only.
+    /// Keep execution inside the workspace sandbox even with the explicit dangerous bypass flag.
+    /// The sandbox is on by default, denies network and out-of-workspace shell writes, and fails
+    /// closed if the platform cannot enforce it. Built-in file writers also reapply their
+    /// workspace-write boundary when this flag is combined with dangerous bypass.
     #[arg(long)]
     confine: bool,
 
-    /// Auto-approve EVERY tool so the agent never prompts. ON by default since 2026-08-05, so
-    /// this flag is now an explicit statement of the default rather than a change to it; pass
-    /// `--ask-permissions` for the opposite. Plan mode still hard-denies and an explicit
-    /// `/permissions deny` is still honored either way.
+    /// DANGEROUS explicit opt-in: bypass tool approvals and run code with host authority unless
+    /// `--confine` is also passed. Plan mode and explicit deny rules still apply.
     #[arg(long)]
     dangerously_bypass_permissions: bool,
 
-    /// Restore the capability gate: edits, code execution, trust changes and external actions ask
-    /// for approval according to the permission mode. This is the opt-out from the default
-    /// bypass. In one-shot (`-p`) there is no approval channel, so an "ask" there is a refusal —
-    /// pair it with `--mode acceptEdits` or an explicit `/permissions` allow rule.
+    /// Use the stricter `default` permission mode when no explicit `--mode` was supplied. The
+    /// normal sandboxed `acceptEdits` mode already gates trust changes and external actions;
+    /// one-shot (`-p`) refuses any decision that requires an interactive answer.
     #[arg(long, conflicts_with = "dangerously_bypass_permissions")]
     ask_permissions: bool,
 
     /// Permission mode: default | acceptEdits | plan | yolo (ADR-007 §3). Reads always auto; the
-    /// mode governs edits/code/etc. Defaults to `default` (edits ask) in the interactive TUI and to
-    /// `acceptEdits` in one-shot, which has no approval channel; pass `--mode plan` for read-only.
+    /// mode governs edits/code/etc. Defaults to sandboxed `acceptEdits` in both TUI and one-shot;
+    /// pass `--ask-permissions` for stricter edit approvals or `--mode plan` for read-only.
     #[arg(long)]
     mode: Option<String>,
 
@@ -1027,34 +1022,44 @@ struct Cli {
     key_env: Option<String>,
 }
 
-/// The trusted (pre-project-tightening) code-execution grant. Deny-by-default: a public install
-/// executes nothing until the operator says so with `--allow-code` or a `~/.iteron/config.json`
-/// `"allow_code": true`. Those two are the operator-owned sources; the repository config is not one
-/// (it may only tighten, via `config::tighten_grant`). The internal team edition opts back into the
-/// permissive posture by writing that user-config key (or by passing the flag), which is an
-/// explicit, auditable act rather than a shipped default.
-/// Owner-directed 2026-08-05: code execution is ON unless an operator-owned source turns it off.
-/// A cloned repository is still not an authorization principal — a project `allow_code:false` may
-/// TIGHTEN this off and `--mode plan` hard-disables it — but the untouched default is now a grant,
-/// because a coding agent whose `bash` is off by default fails its first useful instruction.
+/// The trusted (pre-project-tightening) code-execution grant. Code starts enabled in the ordinary
+/// workspace sandbox; a trusted user setting or repository `allow_code:false` may tighten it, and
+/// `--mode plan` disables execution. A cloned repository cannot turn execution back on.
 fn trusted_allow_code(cli_flag: bool, user_config: Option<bool>) -> bool {
     cli_flag || user_config.unwrap_or(DEFAULT_ALLOW_CODE)
 }
 
-/// The permission mode a run starts in when `--mode` is absent.
-///
-/// Since 2026-08-05 this mostly does not decide whether anything prompts, because bypass is on by
-/// default and replaces the mode gate. It still decides two things that bypass never touches:
-/// `Plan` hard-denies regardless, and the mode is what the gate falls back to under
-/// `--ask-permissions`. The values are unchanged so that opting back in lands where it always did:
-/// the TUI has an approval channel and starts in `Default`; one-shot has none and starts in
-/// `AcceptEdits` (quickstart §4/§5).
-fn default_permission_mode(one_shot: bool) -> iteron_protocol::PermissionMode {
-    if one_shot {
-        iteron_protocol::PermissionMode::AcceptEdits
-    } else {
+/// Ordinary coding admits reversible workspace edits; trust/external actions still ask. An
+/// explicit `--ask-permissions` requests the stricter mode without silently changing bypass.
+fn default_permission_mode(ask_permissions: bool) -> iteron_protocol::PermissionMode {
+    if ask_permissions {
         iteron_protocol::PermissionMode::Default
+    } else {
+        iteron_protocol::PermissionMode::AcceptEdits
     }
+}
+
+fn confined_execution(dangerously_bypass_permissions: bool, force_confine: bool) -> bool {
+    !dangerously_bypass_permissions || force_confine
+}
+
+/// A historical checkpoint may contain the old broad bypass. Its permission authority cannot be
+/// silently upgraded/downgraded by current CLI defaults, because there is no durable bypass
+/// transition. Require an explicit matching dangerous opt-in for such a resume, and never allow
+/// `--dangerously-bypass-permissions` to turn off confinement under a gated checkpoint.
+fn admitted_execution_posture(
+    resuming: bool,
+    pinned_bypass: bool,
+    dangerous_opt_in: bool,
+    force_confine: bool,
+) -> anyhow::Result<bool> {
+    if pinned_bypass != dangerous_opt_in {
+        let context = if resuming { "resumed" } else { "fresh" };
+        anyhow::bail!(
+            "{context} permission bypass ({pinned_bypass}) disagrees with the explicit dangerous opt-in ({dangerous_opt_in}); start a new run or resume with matching --dangerously-bypass-permissions. Iteron will not change a checkpoint's authority or shell confinement silently"
+        );
+    }
+    Ok(confined_execution(pinned_bypass, force_confine))
 }
 
 /// The session rules a fresh run starts with. Only the operator's code-execution grant is seeded;
@@ -1245,12 +1250,29 @@ fn run_prune_command(
     Ok(output::EXIT_SUCCESS)
 }
 
-#[tokio::main]
-async fn main() -> std::process::ExitCode {
+fn main() -> std::process::ExitCode {
+    // The confined file mutator must enter before Tokio creates any worker thread: Landlock is
+    // inherited by threads created afterward, not retroactively imposed on an existing pool.
+    // This private self-exec path has no CLI/config/provider initialization or recursive helper.
+    let mut arguments = std::env::args_os().skip(1);
+    if arguments.next().as_deref() == Some(std::ffi::OsStr::new("--internal-confined-write")) {
+        if arguments.next().is_some() {
+            eprintln!("error: internal confined write helper accepts no extra arguments");
+            return std::process::ExitCode::from(output::EXIT_HARNESS);
+        }
+        std::process::exit(iteron_tools::confined_helper_entry());
+    }
     if iteron_workspace_hook::invoked_as_workspace_hook() {
         return iteron_workspace_hook::main();
     }
-    match run_cli().await {
+    let result = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime.block_on(run_cli()),
+        Err(error) => Err(error.into()),
+    };
+    match result {
         Ok(code) => std::process::ExitCode::from(code),
         Err(error) => {
             let error = iteron_record::redact::scrub(&format!("{error:#}"));
@@ -1310,7 +1332,7 @@ async fn run_cli() -> anyhow::Result<u8> {
         .unwrap_or(output::DEFAULT_SCHEMA_VERSION);
     if !output::SUPPORTED_SCHEMA_VERSIONS.contains(&machine_schema_version) {
         anyhow::bail!(
-            "unsupported --output-schema-version {machine_schema_version}; supported versions: 4, 5, 6"
+            "unsupported --output-schema-version {machine_schema_version}; supported versions: 4, 5, 6, 8"
         );
     }
     if cli.output_schema_version.is_some()
@@ -2103,7 +2125,6 @@ async fn run_cli() -> anyhow::Result<u8> {
     credential_env_names.dedup();
     registry.set_sensitive_env_names(credential_env_names.clone());
     // One bit, set once, read per bash call: which of the two execution postures this run uses.
-    registry.set_confine_execution(cli.confine);
     // A file-backed credential is never in the environment, so the env deny-list above says
     // nothing about it. The one place a tool, a child agent, or a hook can reach a file is the
     // workspace, so a credential file inside it is refused outright rather than trusted to stay
@@ -2125,7 +2146,7 @@ async fn run_cli() -> anyhow::Result<u8> {
     // default and repository/user configuration can only tighten or explicitly override it.
     let trusted_max_turns = config::pick_with_origin(
         cli.max_turns,
-        config::env_u32("ITERON_MAX_TURNS"),
+        config::env_turn_limit(),
         user_file.max_turns,
         Budget::default().max_turns,
     );
@@ -2210,11 +2231,9 @@ async fn run_cli() -> anyhow::Result<u8> {
             "--output-format is a one-shot option; pass -p/--print with a task (or omit it for the TUI)"
         );
     }
-    // Explicit --mode wins. Otherwise the documented posture applies (quickstart §4/§5): the
-    // interactive TUI starts in `default` — reads auto, edits and code ask, because there IS an
-    // approval channel — while one-shot starts in `acceptEdits` because it has none. Code execution
-    // is a separate grant in every mode (ADR-007 §3, R5).
-    let mode_runtime_override = cli.mode.is_some();
+    // Explicit --mode wins. Otherwise both TUI and one-shot admit reversible workspace edits
+    // inside the sandbox. A noninteractive Ask still fails closed.
+    let mode_runtime_override = cli.mode.is_some() || cli.ask_permissions;
     let (mode, mode_origin) = match cli.mode.as_deref() {
         Some(s) => (
             iteron_protocol::PermissionMode::parse(s).ok_or_else(|| {
@@ -2223,16 +2242,13 @@ async fn run_cli() -> anyhow::Result<u8> {
             config::ConfigOrigin::Cli,
         ),
         None => {
-            let default_mode = default_permission_mode(one_shot);
+            let default_mode = default_permission_mode(cli.ask_permissions);
             (
                 default_mode,
-                // `default` is the immutable embedded owner. The intentionally different
-                // no-approval-channel posture is selected by this CLI invocation and must be an
-                // admitted override, never a second value attributed to the Builtin owner.
-                if default_mode == iteron_protocol::PermissionMode::Default {
-                    config::ConfigOrigin::Builtin
-                } else {
+                if cli.ask_permissions {
                     config::ConfigOrigin::Cli
+                } else {
+                    config::ConfigOrigin::Builtin
                 },
             )
         }
@@ -2654,7 +2670,7 @@ async fn run_cli() -> anyhow::Result<u8> {
         authority_ceiling = authority_ceiling.intersect(envelope.ceiling);
     }
     let initial_rules = initial_permission_rules(allow_code);
-    let bypass_permissions = !cli.ask_permissions;
+    let bypass_permissions = cli.dangerously_bypass_permissions;
     let mut compaction_policy = iteron_ctx::CompactionPolicy::default();
     let compaction_owner = if let Some(trigger_tokens) = user_file.compaction_trigger_tokens {
         compaction_policy.set_fixed_trigger_tokens(trigger_tokens);
@@ -2754,7 +2770,10 @@ async fn run_cli() -> anyhow::Result<u8> {
         .map_err(anyhow::Error::msg)?;
     let provider_control_capabilities = provider_arc.control_capabilities();
     provider_control_capabilities
-        .validate(&provider_governor.controls)
+        .validate(
+            &provider_control_capabilities
+                .adapt_optional_cache_breakpoint(provider_governor.controls),
+        )
         .map_err(|error| anyhow::anyhow!("provider request controls are not supported: {error}"))?;
     let fresh_composition = if resumed_tunables_checkpoint.is_none() {
         Some(runtime_tunables::composition::resolve_fresh(
@@ -2808,7 +2827,7 @@ async fn run_cli() -> anyhow::Result<u8> {
                 permission_rules: &initial_rules,
                 bypass_permissions: runtime_tunables::core_facts::Sourced {
                     value: bypass_permissions,
-                    origin: if cli.ask_permissions {
+                    origin: if cli.dangerously_bypass_permissions {
                         config::ConfigOrigin::Cli
                     } else {
                         config::ConfigOrigin::Builtin
@@ -2872,6 +2891,16 @@ async fn run_cli() -> anyhow::Result<u8> {
         )?;
         settings
     };
+    let confine_execution = admitted_execution_posture(
+        resumed_tunables_checkpoint.is_some(),
+        effective_settings.bypass_permissions,
+        cli.dangerously_bypass_permissions,
+        cli.confine,
+    )?;
+    registry.set_confine_execution(confine_execution);
+    if confine_execution && let Some(notice) = iteron_tools::native_write_confinement_notice() {
+        eprintln!("notice: {notice}");
+    }
     effective_settings
         .session_isolation
         .admit_continuation(cli.resume.is_some(), cli.continue_recent)?;
@@ -3068,9 +3097,11 @@ async fn run_cli() -> anyhow::Result<u8> {
             let provider = provider_directory
                 .build(&fallback_selection)
                 .map_err(|error| anyhow::anyhow!("fallback route is unavailable: {error}"))?;
-            provider
-                .control_capabilities()
-                .validate(&effective_settings.provider_governor.controls)
+            let controls_capabilities = provider.control_capabilities();
+            controls_capabilities
+                .validate(&controls_capabilities.adapt_optional_cache_breakpoint(
+                    effective_settings.provider_governor.controls,
+                ))
                 .map_err(|error| {
                     anyhow::anyhow!("fallback route request controls are unsupported: {error}")
                 })?;
@@ -3148,7 +3179,12 @@ async fn run_cli() -> anyhow::Result<u8> {
     agent.install_session_spawn_ledger(session_spawn_ledger)?;
     agent.set_deferred_tool_eager_limit(effective_settings.deferred_tool_eager_limit);
     agent.set_context_runtime_policy(
-        effective_settings.context_budget,
+        effective_settings
+            .context_budget
+            .with_elastic_task_context(matches!(
+                effective_settings.task_context_budget_source,
+                runtime_tunables::effective_core::TaskContextBudgetSource::DefaultDerived
+            )),
         effective_settings.context_materialization,
     )?;
     agent.set_retry_policy(effective_settings.retry);
@@ -3204,13 +3240,11 @@ async fn run_cli() -> anyhow::Result<u8> {
     // Build a coherent fresh-session policy before genesis. A resumed session restores its last
     // durable snapshot; only explicit runtime overrides append a new policy event.
     agent.workspace = repo.clone();
-    // Owner-directed 2026-08-05: bypass is the default posture, and `--ask-permissions` is the
-    // way back to the gate. The banner still prints on every bypassed run — a default that
-    // auto-approves everything has to announce itself, or the operator learns it from the damage.
+    // Dangerous bypass is an explicit command-line act, never the new-user default.
     agent.bypass_permissions = effective_settings.bypass_permissions;
     if agent.bypass_permissions {
         eprintln!(
-            "permissions: BYPASS (every tool auto-approved; plan mode + explicit denies still apply; --ask-permissions restores the gate)"
+            "permissions: DANGEROUS BYPASS (every tool auto-approved; plan mode + explicit denies still apply)"
         );
     }
     agent.memory_workspace = effective_settings.memory_enabled.then(|| repo.clone()); // modular memory: .iteron/memory (R5)
@@ -3232,6 +3266,16 @@ async fn run_cli() -> anyhow::Result<u8> {
     agent.compaction_summary_prompt = compaction_summary_prompt(tunables_profile_document.as_ref());
     if let Some(msgs) = resume_messages {
         agent.set_resume(msgs)?;
+        if max_turns_origin != config::ConfigOrigin::Builtin {
+            agent.transition_turn_ceiling(
+                max_turns,
+                if max_turns_origin == config::ConfigOrigin::ProjectConfig {
+                    iteron_protocol::RuntimePolicySource::Harness
+                } else {
+                    iteron_protocol::RuntimePolicySource::Operator
+                },
+            )?;
+        }
         if effort_runtime_override {
             agent.transition_effort(
                 resolved_effort,
@@ -3268,16 +3312,13 @@ async fn run_cli() -> anyhow::Result<u8> {
         .permission_rules()
         .cap_rule(iteron_protocol::Capability::CodeExecuting)
     {
-        // The posture has to be read off the flag that decides it. This line kept saying
-        // "egress-off sandbox" after `--confine` became the way to ask for one, which told the
-        // operator the blast radius was the workspace while `bash` was in fact running with their
-        // own authority. A banner that overstates confinement is worse than no banner: it is the
-        // sentence someone quotes when deciding to run an untrusted repository.
-        Some(iteron_protocol::Verdict::Auto) if cli.confine => eprintln!(
-            "code execution: ON (--confine: egress-off sandbox, network denied, writes confined to workspace)"
+        // Describe the effective posture, including an explicit dangerous bypass and a
+        // subsequent `--confine` override, before the first tool can be offered to the model.
+        Some(iteron_protocol::Verdict::Auto) if confine_execution => eprintln!(
+            "code execution: ON (egress-off workspace sandbox; network and out-of-workspace writes denied)"
         ),
         Some(iteron_protocol::Verdict::Auto) => eprintln!(
-            "code execution: ON (your own authority: network reachable, writes anywhere your account can; --confine restores the sandbox)"
+            "code execution: DANGEROUS unconfined host authority (network and account-writable paths available)"
         ),
         _ => {
             eprintln!("code execution: OFF (bash/build/test refused). Pass --allow-code to enable.")
@@ -3386,7 +3427,7 @@ async fn run_cli() -> anyhow::Result<u8> {
             .permission_rules()
             .cap_rule(iteron_protocol::Capability::CodeExecuting)
         {
-            Some(iteron_protocol::Verdict::Auto) if cli.confine => "code:on/confined",
+            Some(iteron_protocol::Verdict::Auto) if confine_execution => "code:on/confined",
             Some(iteron_protocol::Verdict::Auto) => "code:on",
             _ => "code:off",
         };
@@ -3401,7 +3442,7 @@ async fn run_cli() -> anyhow::Result<u8> {
         ];
         // The default mode is what the footer also stays silent about; only a mode the operator
         // chose (plan, acceptEdits, yolo) is worth a field here.
-        if agent.permission_mode() != iteron_protocol::PermissionMode::Default {
+        if agent.permission_mode() != iteron_protocol::PermissionMode::AcceptEdits {
             posture.push(format!("mode:{}", agent.permission_mode().label()));
         }
         if let Some(command) = &agent.verify_command {
@@ -3411,12 +3452,10 @@ async fn run_cli() -> anyhow::Result<u8> {
             posture.push("verify-preconfined:outer-sandbox-attested".into());
         }
         initial_notices.push(posture.join(" · "));
-        // Not folded into the line above: bypass is the built-in default, so an operator who never
-        // asked for it has to be told what it means, in full, on every run that has it (see the
-        // primary-screen banner this replays).
+        // Keep the explicit dangerous opt-in conspicuous on every affected run.
         if agent.bypass_permissions {
             initial_notices.push(
-                "permissions: BYPASS (every tool auto-approved; plan mode + explicit denies still apply; --ask-permissions restores the gate)".to_owned(),
+                "permissions: DANGEROUS BYPASS (every tool auto-approved; plan mode + explicit denies still apply)".to_owned(),
             );
         }
         let attached = match app_server::attach(agent, true, false) {
@@ -3962,7 +4001,10 @@ fn build_workflow_spawner(
     cx.retry_policy = effective.retry;
     cx.verify_command = effective.verify_command.clone();
     cx.deferred_tool_eager_limit = effective.deferred_tool_eager_limit;
-    cx.context_budget_policy = effective.context_budget;
+    cx.context_budget_policy = effective.context_budget.with_elastic_task_context(matches!(
+        effective.task_context_budget_source,
+        runtime_tunables::effective_core::TaskContextBudgetSource::DefaultDerived
+    ));
     cx.context_materialization_policy = effective.context_materialization;
     cx.compaction_policy = effective.compaction;
     cx.permission_mode = effective.permission_mode;
@@ -4299,9 +4341,11 @@ async fn run_workflow_command(
             )
             .map_err(anyhow::Error::msg)?,
     };
-    provider_arc
-        .control_capabilities()
-        .validate(&provider_governor.controls)
+    let controls_capabilities = provider_arc.control_capabilities();
+    controls_capabilities
+        .validate(
+            &controls_capabilities.adapt_optional_cache_breakpoint(provider_governor.controls),
+        )
         .map_err(|error| anyhow::anyhow!("provider request controls are not supported: {error}"))?;
     let fallback_provider_routes = provider_governor
         .fallback_routes
@@ -4323,9 +4367,12 @@ async fn run_workflow_command(
             let provider = provider_directory
                 .build(&fallback)
                 .map_err(|error| anyhow::anyhow!("fallback route is unavailable: {error}"))?;
-            provider
-                .control_capabilities()
-                .validate(&provider_governor.controls)
+            let controls_capabilities = provider.control_capabilities();
+            controls_capabilities
+                .validate(
+                    &controls_capabilities
+                        .adapt_optional_cache_breakpoint(provider_governor.controls),
+                )
                 .map_err(|error| {
                     anyhow::anyhow!("fallback route request controls are unsupported: {error}")
                 })?;
@@ -4369,7 +4416,7 @@ async fn run_workflow_command(
     let default_budget = Budget::default();
     let (workflow_max_turns, workflow_max_turns_origin) = config::pick_with_origin(
         cli.max_turns,
-        config::env_u32("ITERON_MAX_TURNS"),
+        config::env_turn_limit(),
         user_file.max_turns,
         default_budget.max_turns,
     );
@@ -4942,6 +4989,23 @@ mod tests {
     }
 
     #[test]
+    fn unlimited_turns_are_settable_without_a_numeric_magic_value() {
+        let parsed = Cli::try_parse_from(["iteron", "--max-turns", "unlimited"]).unwrap();
+        assert_eq!(parsed.max_turns, Some(Budget::UNLIMITED_TURNS));
+        let mut file = config::FileConfig::default();
+        config::apply_setting(&mut file, "max_turns", "unlimited").unwrap();
+        let decoded: config::FileConfig =
+            serde_json::from_str(&serde_json::to_string(&file).unwrap()).unwrap();
+        assert_eq!(decoded.max_turns, parsed.max_turns);
+        assert_eq!(
+            config::setting_value(&decoded, "max_turns").as_deref(),
+            Some("unlimited")
+        );
+        assert_eq!(config::tighten(Some(2), Budget::UNLIMITED_TURNS), 2);
+        assert!(Cli::try_parse_from(["iteron", "--max-turns", "0"]).is_err());
+    }
+
+    #[test]
     fn verify_preconfined_requires_an_explicit_verifier_command() {
         assert!(
             Cli::try_parse_from(["iteron", "--verify-preconfined"]).is_err(),
@@ -5422,16 +5486,15 @@ mod tests {
     }
 
     #[test]
-    fn bypass_is_the_default_and_ask_permissions_is_the_way_back() {
-        // `--ask-permissions` is the whole opt-out, and `--dangerously-bypass-permissions` is now
-        // a statement of the default rather than a change to it. Clap refuses both together, so
-        // there is no combination whose meaning has to be guessed.
-        let bypass_of = |ask: bool| !ask;
+    fn new_user_is_gated_and_sandboxed_until_dangerous_bypass_is_explicit() {
         assert!(
-            bypass_of(false),
-            "an untouched invocation bypasses the gate"
+            !Cli::try_parse_from(["iteron"])
+                .unwrap()
+                .dangerously_bypass_permissions
         );
-        assert!(!bypass_of(true), "--ask-permissions restores it");
+        assert!(confined_execution(false, false));
+        assert!(!confined_execution(true, false));
+        assert!(confined_execution(true, true));
 
         let command = <Cli as clap::CommandFactory>::command();
         let ask = command
@@ -5440,53 +5503,83 @@ mod tests {
             .expect("--ask-permissions is a real flag");
         assert!(
             ask.get_long() == Some("ask-permissions"),
-            "the opt-out keeps its documented spelling"
+            "the stricter mode keeps its documented spelling"
         );
         assert!(
             command
                 .get_arguments()
                 .any(|arg| arg.get_id() == "dangerously_bypass_permissions"),
-            "the explicit grant is retained so existing invocations keep working"
+            "the explicit dangerous grant is retained for existing invocations"
+        );
+        assert!(
+            Cli::try_parse_from([
+                "iteron",
+                "--ask-permissions",
+                "--dangerously-bypass-permissions",
+            ])
+            .is_err()
         );
     }
 
     #[test]
-    fn the_gated_default_mode_asks_before_an_edit_and_before_code() {
+    fn fresh_and_resumed_bypass_sandbox_postures_are_one_admitted_decision() {
+        for resuming in [false, true] {
+            assert!(
+                admitted_execution_posture(resuming, false, false, false).unwrap(),
+                "a gated checkpoint always keeps the sandbox"
+            );
+            assert!(admitted_execution_posture(resuming, false, false, true).unwrap());
+            assert!(
+                !admitted_execution_posture(resuming, true, true, false).unwrap(),
+                "only a matching dangerous opt-in drops confinement"
+            );
+            assert!(
+                admitted_execution_posture(resuming, true, true, true).unwrap(),
+                "--confine restores the shell and file-writer boundary"
+            );
+            for (pinned, opt_in) in [(true, false), (false, true)] {
+                assert!(
+                    admitted_execution_posture(resuming, pinned, opt_in, false).is_err(),
+                    "a CLI bit cannot silently change a checkpoint's bypass"
+                );
+            }
+        }
+        assert_eq!(
+            default_permission_mode(true),
+            iteron_protocol::PermissionMode::Default
+        );
+        assert!(
+            Cli::try_parse_from(["iteron", "--ask-permissions"])
+                .unwrap()
+                .ask_permissions
+        );
+    }
+
+    #[test]
+    fn ordinary_mode_admits_local_edits_but_respects_stricter_permission_requests() {
         use iteron_protocol::{Capability, PermissionMode, Verdict, gate};
 
-        // This is what the MODE decides, which since 2026-08-05 is not what a default run does:
-        // bypass is on and replaces this gate entirely, so nothing here prompts unless the
-        // operator passed `--ask-permissions`. The mode still has to be right, because that flag
-        // falls back to exactly these values — see `bypass_is_the_default_and_ask_permissions_is_the_way_back`.
-        //
-        // Quickstart §4: "The interactive default mode automatically permits reads and asks before
-        // an edit or command." Shipping AcceptEdits in the TUI contradicted that.
-        assert_eq!(default_permission_mode(false), PermissionMode::Default);
-        // Quickstart §5: one-shot has no approval channel, so it stays in acceptEdits.
-        assert_eq!(default_permission_mode(true), PermissionMode::AcceptEdits);
+        assert_eq!(default_permission_mode(false), PermissionMode::AcceptEdits);
+        assert_eq!(default_permission_mode(true), PermissionMode::Default);
 
         let rules = initial_permission_rules(false);
-        for (mode, one_shot) in [
-            (PermissionMode::Default, false),
-            (PermissionMode::AcceptEdits, true),
-        ] {
-            assert_eq!(default_permission_mode(one_shot), mode);
+        for mode in [PermissionMode::Default, PermissionMode::AcceptEdits] {
             assert_eq!(
                 gate(mode, &rules, "bash", Capability::CodeExecuting),
                 Verdict::Ask,
-                "a default install must prompt before executing code in {}",
+                "an explicit code deny must require a decision in {}",
                 mode.label()
             );
         }
         assert_eq!(
             gate(
-                PermissionMode::Default,
+                PermissionMode::AcceptEdits,
                 &rules,
                 "write_file",
                 Capability::ReversibleLocal
             ),
-            Verdict::Ask,
-            "the interactive default mode asks before an edit"
+            Verdict::Auto,
+            "ordinary workspace edits are automatic"
         );
         assert_eq!(
             gate(
@@ -5546,10 +5639,10 @@ mod tests {
     }
 
     #[test]
-    fn fresh_route_defaults_to_glm_and_trusted_overrides_keep_precedence() {
+    fn fresh_route_prefers_openai_and_trusted_overrides_keep_precedence() {
         assert_eq!(
             config::pick_trusted_string(None, None, None, BUILTIN_DEFAULT_PROVIDER),
-            ("glm".into(), config::ConfigOrigin::Builtin)
+            ("openai".into(), config::ConfigOrigin::Builtin)
         );
         assert_eq!(
             config::pick_trusted_string(

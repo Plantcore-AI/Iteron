@@ -28,7 +28,7 @@ pub(super) const VALUE_SCHEMAS: [ValueSchema; 30] = [
     scalar_schema!(
         "max_turns",
         Count,
-        int_domain!(1, 1_000_000, "turns"),
+        int_domain!(1, u32::MAX as i64, "turns"),
         [external_rule!("$", ParentTurns)]
     ),
     scalar_schema!(

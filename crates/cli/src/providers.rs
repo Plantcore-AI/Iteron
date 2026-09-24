@@ -2953,36 +2953,42 @@ impl ProviderDirectory {
         }
     }
 
-    /// Pick the documented default for an official static schema, otherwise the first compatible
-    /// model in the provider/operator catalog. This is used only when the operator supplied no
-    /// model; Core does not invent or retain a stale hard-coded default model id.
+    /// Pick a provider's documented or version-pinned preferred model when it is actually
+    /// selectable in this account's catalog. This is used only when no model was supplied.
     pub fn default_selection(&self, provider_id: &str) -> Option<ModelSelection> {
         let entry = self.entry(provider_id)?;
         if self.blocked_reason(entry).is_some() {
             return None;
         }
         let catalog = entry.catalog.as_ref()?;
-        // A static schema is not a credential-visible ordering. Honor the documented default
-        // instead of accidentally choosing the lexicographically first identifier. Dynamic and
-        // operator catalogs keep their existing deterministic first-selectable behavior.
-        let preferred = is_glm_standard_schema_entry(entry)
-            .then(|| entry.instance.static_metadata().glm_default_model())
-            .and_then(|default| catalog.models.iter().find(|model| model.raw.id == default));
-        let model = preferred
-            .filter(|model| {
-                matches!(model.selectability, Selectability::Selectable)
-                    && self
-                        .model_blocked_reason(provider_id, &model.raw.id)
-                        .is_none()
+        // Codex v0.156.0 sorts its model catalog by priority, filters it by auth, then marks
+        // the first picker-visible model as default. The bundled API-visible preference order
+        // below is useful only after our own live catalog admits the model: API-key entitlement
+        // and custom operator catalogs must not be inferred from a bundled snapshot.
+        let admissible = |model: &&ModelDescriptor| {
+            matches!(model.selectability, Selectability::Selectable)
+                && self
+                    .model_blocked_reason(provider_id, &model.raw.id)
+                    .is_none()
+        };
+        let preferred = if is_glm_standard_schema_entry(entry) {
+            catalog.models.iter().find(|model| {
+                model.raw.id == entry.instance.static_metadata().glm_default_model()
+                    && admissible(model)
             })
-            .or_else(|| {
-                catalog.models.iter().find(|model| {
-                    matches!(model.selectability, Selectability::Selectable)
-                        && self
-                            .model_blocked_reason(provider_id, &model.raw.id)
-                            .is_none()
+        } else if is_builtin_openai_entry(entry) {
+            CODEX_V0156_OPENAI_API_PREFERENCE
+                .iter()
+                .find_map(|preferred| {
+                    catalog
+                        .models
+                        .iter()
+                        .find(|model| model.raw.id == *preferred && admissible(model))
                 })
-            })?;
+        } else {
+            None
+        };
+        let model = preferred.or_else(|| catalog.models.iter().find(admissible))?;
         Some(ModelSelection {
             provider_id: provider_id.to_owned(),
             model_id: model.raw.id.clone(),
@@ -3651,6 +3657,24 @@ fn is_glm_standard_schema_entry(entry: &ProviderEntry) -> bool {
             &entry.catalog_provenance,
             CatalogProvenance::StaticOfficial { .. }
         )
+}
+
+// openai/codex tag rust-v0.156.0, codex-rs/models-manager/models.json: API-supported,
+// picker-visible models in ascending priority. The manager selects the first available model
+// after auth filtering; these ids are preferences, never an availability claim.
+const CODEX_V0156_OPENAI_API_PREFERENCE: &[&str] = &[
+    "gpt-6-astra",
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+    "gpt-5.5",
+];
+
+fn is_builtin_openai_entry(entry: &ProviderEntry) -> bool {
+    entry.id() == "openai"
+        && entry.origin == ProviderOrigin::Builtin
+        && entry.instance.adapter() == AdapterKind::OpenAiResponses
+        && entry.instance.api_root().as_str() == OPENAI_API_ROOT
 }
 
 #[cfg(test)]
@@ -5783,6 +5807,81 @@ mod tests {
             directory
                 .status_label(directory.entry("glm").unwrap())
                 .contains("official static schema · account entitlement unknown")
+        );
+    }
+
+    #[test]
+    fn built_in_openai_default_prefers_codex_v0156_admitted_model_without_overriding_explicit() {
+        let mut entry = builtin_entries()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.id() == "openai")
+            .unwrap();
+        let mut catalog = snapshot(
+            "openai",
+            vec![
+                descriptor(
+                    "gpt-4o",
+                    Compatibility::Compatible,
+                    Selectability::Selectable,
+                ),
+                descriptor(
+                    "gpt-5.6-sol",
+                    Compatibility::Compatible,
+                    Selectability::Selectable,
+                ),
+                descriptor(
+                    "gpt-6-astra",
+                    Compatibility::Compatible,
+                    Selectability::Selectable,
+                ),
+            ],
+        );
+        catalog.adapter = AdapterKind::OpenAiResponses;
+        entry.catalog = Some(catalog);
+        entry.catalog_provenance = CatalogProvenance::DynamicFresh;
+        let health = ProviderHealthStore::new(4);
+        health.mark_ready("openai");
+        let directory = ProviderDirectory {
+            entries: Arc::new(vec![entry]),
+            health,
+            deferred: None,
+            refresh_activity: ProviderRefreshActivity::default(),
+        };
+
+        assert_eq!(
+            directory.default_selection("openai").unwrap().model_id,
+            "gpt-6-astra"
+        );
+        assert_eq!(
+            directory
+                .resolve_model("openai:gpt-4o", None)
+                .unwrap()
+                .model_id,
+            "gpt-4o",
+            "an explicit model remains authoritative"
+        );
+
+        let mut without_astra = (*directory.entries).clone();
+        without_astra[0]
+            .catalog
+            .as_mut()
+            .unwrap()
+            .models
+            .retain(|model| model.raw.id != "gpt-6-astra");
+        let directory_without_astra = ProviderDirectory {
+            entries: Arc::new(without_astra),
+            health: directory.health.clone(),
+            deferred: None,
+            refresh_activity: ProviderRefreshActivity::default(),
+        };
+        assert_eq!(
+            directory_without_astra
+                .default_selection("openai")
+                .unwrap()
+                .model_id,
+            "gpt-5.6-sol",
+            "the preferred model must be present in this credential's admitted catalog"
         );
     }
 
