@@ -679,6 +679,33 @@ jobs:
             validator_root=$RUNNER_TEMP/core-schema-compatibility-policy
             git worktree add --detach "$validator_root" "$compatibility_commit"
           fi
+          if [[ "$previous" == v0.0.21 ]]; then
+            # The immutable v0.0.21 validator cannot parse the four new v8
+            # receipt records. Use the already-merged validator that checks
+            # their v8-only additions and the frozen v6 projection. The exact
+            # parser sources and manifest below must match the candidate.
+            require_eq "v0.0.21 bridge release tag must be v0.0.22" \
+              "v0.0.22" "$candidate_tag"
+            compatibility_commit=d5435817aaacf8e9f44dd7d68d66fa496c10811b
+            compatibility_schema_blob=e95a7146aba03175cd128994fe65994982cc52d6
+            require_eq "v0.0.21 bridge commit must be a commit object" \
+              "commit" "$(git cat-file -t "$compatibility_commit")"
+            git merge-base --is-ancestor "$previous_commit" "$compatibility_commit"
+            git merge-base --is-ancestor \
+              "$compatibility_commit" \
+              "${{ steps.metadata.outputs.commit }}"
+            require_eq "v0.0.21 bridge schema policy blob must match the pin" \
+              "$compatibility_schema_blob" \
+              "$(git rev-parse "$compatibility_commit:governance/schema-compatibility.json")"
+            if ! git diff --quiet \
+              "$compatibility_commit" \
+              "${{ steps.metadata.outputs.commit }}" \
+              -- 'xtask/src/schema_compat*'; then
+              fail "v0.0.21 bridge validator source differs from the candidate"
+            fi
+            validator_root=$RUNNER_TEMP/core-schema-compatibility-policy
+            git worktree add --detach "$validator_root" "$compatibility_commit"
+          fi
           validator_target=$RUNNER_TEMP/core-schema-validator-target
           (
             cd "$validator_root"

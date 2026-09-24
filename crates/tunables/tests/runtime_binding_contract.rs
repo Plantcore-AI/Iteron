@@ -211,7 +211,9 @@ fn registry_inventory_is_bounded_deterministic_and_copies_no_ambient_state() {
     );
     assert_eq!(
         canonical_embedded_default("max_turns"),
-        Some(ResolutionValue::Integer { value: 64 })
+        Some(ResolutionValue::Integer {
+            value: i64::from(u32::MAX),
+        })
     );
     assert_eq!(
         canonical_embedded_default("max_wall_secs"),
