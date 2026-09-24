@@ -5826,18 +5826,28 @@ mod tests {
             terminal_evidence: None,
         };
         let authoritative = summary.current_result();
-        let transcript: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../governance/client-conformance/client-parity-v6.json"
-        ))
-        .unwrap();
-        let captures = transcript["clients"].as_array().unwrap();
-        assert_eq!(captures.len(), 3);
-        for capture in captures {
-            assert_eq!(
-                capture["result"], authoritative,
-                "{} changed terminal authority rather than presentation",
-                capture["client"]
-            );
+        for (schema_version, fixture) in [
+            (
+                6,
+                include_str!("../../../governance/client-conformance/client-parity-v6.json"),
+            ),
+            (
+                crate::output::SCHEMA_VERSION,
+                include_str!("../../../governance/client-conformance/client-parity-v8.json"),
+            ),
+        ] {
+            let transcript: serde_json::Value = serde_json::from_str(fixture).unwrap();
+            let captures = transcript["clients"].as_array().unwrap();
+            assert_eq!(captures.len(), 3);
+            let expected = crate::output::project_schema(authoritative.clone(), schema_version)
+                .expect("published schema projection is valid");
+            for capture in captures {
+                assert_eq!(
+                    capture["result"], expected,
+                    "{} changed terminal authority rather than presentation in schema v{schema_version}",
+                    capture["client"]
+                );
+            }
         }
         assert_eq!(authoritative["outcome"], "done");
         assert_eq!(authoritative["exit_code"], 0);
