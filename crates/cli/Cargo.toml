@@ -71,7 +71,7 @@ iteron-record = { path = "../record", features = ["test-fixtures"] }
 # CLI unit tests run under libtest, which cannot self-exec the production helper entry point.
 # The explicit registry fixture still runs native mutations in a Landlock-confined test thread.
 iteron-tools = { path = "../tools", features = ["test-helper"] }
-jsonschema = { version = "0.28", default-features = false }
+jsonschema = { version = "0.56", default-features = false }
 portable-pty = "=0.9.0"
-vt100 = "=0.15.2"
+vt100 = "=0.16.2"
 tokio = { workspace = true, features = ["test-util"] }

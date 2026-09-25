@@ -19,7 +19,7 @@ iteron-sched = { path = "../sched" }
 iteron-tunables = { path = "../tunables" }
 # QuickJS embed — the PROVEN spike pattern (features ["futures","macro"]): AsyncRuntime + LocalSet +
 # spawn_local(rt.drive()); inline `Async(async_fn)` host fns; eval -> Promise -> into_future.
-rquickjs = { version = "0.12", features = ["futures", "macro"] }
+rquickjs = { version = "0.14", features = ["futures", "macro"] }
 tokio = { workspace = true }
 # CancellationToken threaded into every AgentCall + the rquickjs interrupt handler (design B3).
 tokio-util = { version = "0.7" }
@@ -30,7 +30,7 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 # Schema-forced structured output (design §2.5): JSON Schema draft 2020-12 validation.
 # default-features off keeps it lean/offline — we only validate local, in-memory schemas.
-jsonschema = { version = "0.28", default-features = false }
+jsonschema = { version = "0.56", default-features = false }
 # Content-addressed resume cache key: v2:sha256 over the canonical agent input (design §2.6).
 sha2 = { workspace = true }
 hex = { workspace = true }
