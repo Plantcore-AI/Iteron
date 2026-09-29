@@ -2162,6 +2162,50 @@ mod guard_tests {
         let _wire = server.join().unwrap();
     }
 
+    #[tokio::test]
+    async fn compatible_chat_keeps_tool_id_and_counts_identical_usage_once() {
+        let body = concat!(
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"read_file\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"\",\"function\":{\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"prompt_tokens_details\":{\"cache_creation_tokens\":0}}}\n\n",
+            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"prompt_tokens_details\":{\"cache_creation_tokens\":0}}}\n\n",
+            "data: [DONE]\n\n"
+        )
+        .to_string();
+        let (root, server) = spawn_one_shot_sse(body);
+        let provider = crate::openai::OpenAiCompat::try_new("test-key".into(), Some(root)).unwrap();
+        let result = provider.turn(&request("model"), &mut |_| {}).await.unwrap();
+        assert_eq!(result.stop_reason, iteron_protocol::StopReason::ToolUse);
+        assert!(
+            matches!(&result.blocks[..], [iteron_protocol::Block::ToolUse(tool)] if tool.id == "call_1" && tool.name == "read_file")
+        );
+        assert_eq!(
+            result.usage,
+            UsageReport::complete(Usage {
+                input: 3,
+                output: 2,
+                ..Usage::default()
+            })
+        );
+        let _wire = server.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn compatible_chat_rejects_conflicting_trailing_usage() {
+        let body = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2}}\n\n",
+            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":2}}\n\n",
+            "data: [DONE]\n\n"
+        )
+        .to_string();
+        let (root, server) = spawn_one_shot_sse(body);
+        let provider = crate::openai::OpenAiCompat::try_new("test-key".into(), Some(root)).unwrap();
+        assert!(matches!(
+            provider.turn(&request("model"), &mut |_| {}).await,
+            Err(ProviderError::Decode(message)) if message.contains("conflicting usage reports")
+        ));
+        let _wire = server.join().unwrap();
+    }
+
     #[test]
     fn adapter_sources_have_no_ambient_environment_reads() {
         for (name, source) in [
