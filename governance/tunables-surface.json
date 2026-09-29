@@ -4,7 +4,7 @@
   "registry_revision": 27,
   "registry_digest": "50f8e3bc8bb5ad72a4af72c805e95613542e1c7a39c990015b8df886dc8211fb",
   "param_registry_id": "iteron-params",
-  "param_registry_digest": "4318a07450061ec54f894c7f5f1293ef2a55163fd661b4fbc8fcf4638e1400b0",
+  "param_registry_digest": "a6f0e4ca31f1ddc18a4cf5afb5b4bb8d924ff7b72ae0178e76c0d3c1da0fdd1d",
   "tool_text_registry_id": "iteron-builtin-tool-descriptions",
   "tool_text_registry_digest": "7da44a496e668c86c4456291e0e8178955ae7b99f473e69e1804d7742ae9738d",
   "counts": {
@@ -30022,7 +30022,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/kernel_error.rs",
-          "line": 300,
+          "line": 299,
           "evidence": "param_integer runtime resolution"
         },
         {
@@ -51927,7 +51927,7 @@
       "use_sites": [
         {
           "path": "crates/cli/src/runtime/kernel_error.rs",
-          "line": 315,
+          "line": 314,
           "evidence": "param_integer runtime resolution"
         },
         {
