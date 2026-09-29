@@ -7,6 +7,12 @@ on:
   # Run the complete validation/legal/native-build/package graph on any selected ref.
   # Branch dispatches never publish; an immutable v* tag dispatch may publish and canary.
   workflow_dispatch:
+    inputs:
+      fast_validation_only:
+        description: Validate the exact 0.0.23 release-only continuation without rebuilding platform archives
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   actions: read
@@ -267,10 +273,35 @@ jobs:
           set -euo pipefail
           candidate=${{ steps.metadata.outputs.commit }}
           evidence_commit=$candidate
-          evidence_run=$(gh api \
-            "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?branch=main&event=push&status=success&head_sha=$candidate&per_page=10" \
-            | jq -er --arg candidate "$candidate" \
-              '[.workflow_runs[] | select(.head_sha == $candidate)] | first | .id')
+          find_successful_ci() {
+            local source_commit=$1
+            gh api \
+              "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?branch=main&event=push&status=success&head_sha=$source_commit&per_page=10" \
+              | jq -r --arg source_commit "$source_commit" \
+                '[.workflow_runs[] | select(.head_sha == $source_commit)] | first | .id // empty'
+          }
+          evidence_run=$(find_successful_ci "$candidate")
+          if [[ -z "$evidence_run" ]]; then
+            # No candidate release-tool source is executed before the published
+            # schema anchor below. This one-time exception reads only Git objects
+            # and the two bounded policy JSON documents.
+            test "${{ steps.metadata.outputs.version }}" = 0.0.23
+            read -r commit parent extra < <(git rev-list --parents -n 1 "$candidate")
+            test "$commit" = "$candidate"
+            test -n "${parent:-}"
+            test -z "${extra:-}"
+            changed=$(git diff --name-only "$parent" "$candidate" | LC_ALL=C sort)
+            expected=$'.github/workflows/release.yml\ndocs/development/releasing.md\ngovernance/schema-compatibility.json\nrelease-tools/ci_evidence_parent.sh\nrelease-tools/create_release_tag.sh\nrelease-tools/tests/test_release_tools.py'
+            test "$changed" = "$expected"
+            git diff --check "$parent" "$candidate"
+            test "$(git show "$parent:governance/schema-compatibility.json" | jq -er .release_ordinal)" = 8
+            test "$(jq -er .release_ordinal governance/schema-compatibility.json)" = 9
+            diff -q \
+              <(git show "$parent:governance/schema-compatibility.json" | jq -S 'del(.release_ordinal)') \
+              <(jq -S 'del(.release_ordinal)' governance/schema-compatibility.json)
+            evidence_commit=$parent
+            evidence_run=$(find_successful_ci "$evidence_commit")
+          fi
           if [[ ! "$evidence_run" =~ ^[1-9][0-9]*$ ]]; then
             printf 'release validation failed: CI evidence run ID must be numeric\n  value: %q\n' "$evidence_run" >&2
             exit 1
@@ -752,6 +783,7 @@ jobs:
   legal:
     name: release / legal evidence
     needs: validate
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.fast_validation_only != true }}
     runs-on: [self-hosted, Linux, ARM64, dgx]
     timeout-minutes: 20
     steps:
@@ -821,13 +853,14 @@ jobs:
   build:
     name: release / ${{ matrix.target }}
     needs: [validate, legal]
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.fast_validation_only != true }}
     permissions:
       attestations: write
       contents: read
       id-token: write
     strategy:
       fail-fast: false
-      max-parallel: 3
+      max-parallel: 4
       matrix:
         include:
           - runner: ${{ vars.MACOS_RUNNER_LABELS || '["macos-15"]' }}

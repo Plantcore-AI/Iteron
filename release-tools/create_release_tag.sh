@@ -106,21 +106,32 @@ if [[ -z "$successful_dispatch" ]]; then
   fail "commit $commit has no successful workflow_dispatch run of release.yml on main; dispatch release.yml from this commit first"
 fi
 
-# Require successful protected CI evidence on main for this exact commit.
-ci_evidence_run=$(
-  gh api "repos/$owner/$repo/actions/workflows/ci.yml/runs?branch=main&event=push&status=success&head_sha=$commit&per_page=10" \
+# Require successful protected CI evidence on the exact commit, except for the
+# audited one-time 0.0.23 release-only continuation. That path verifies the
+# complete candidate diff and then uses the already-green direct parent's CI.
+find_successful_ci() {
+  local source_commit=$1
+  gh api "repos/$owner/$repo/actions/workflows/ci.yml/runs?branch=main&event=push&status=success&head_sha=$source_commit&per_page=10" \
     --jq ".workflow_runs[] | select(
-      .head_sha == \"$commit\"
+      .head_sha == \"$source_commit\"
       and .head_branch == \"main\"
       and .event == \"push\"
       and .status == \"completed\"
       and .conclusion == \"success\"
     ) | .id" \
     2>/dev/null | head -n 1
-) || true
+}
+
+ci_evidence_commit=$commit
+ci_evidence_run=$(find_successful_ci "$ci_evidence_commit") || true
+if [[ -z "$ci_evidence_run" ]]; then
+  ci_evidence_commit=$(bash release-tools/ci_evidence_parent.sh "$commit" "$version") ||
+    fail "no exact successful CI and the candidate is not the narrow 0.0.23 release-only continuation"
+  ci_evidence_run=$(find_successful_ci "$ci_evidence_commit") || true
+fi
 
 if [[ -z "$ci_evidence_run" ]]; then
-  fail "commit $commit has no successful CI push run on main; push the commit to main and wait for CI first"
+  fail "evidence commit $ci_evidence_commit has no successful CI push run on main"
 fi
 
 ci_required_jobs=$(

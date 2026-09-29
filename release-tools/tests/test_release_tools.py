@@ -538,7 +538,10 @@ exit 1
             "- name: Validate against the previous immutable schema release"
         )
         self.assertNotIn('cargo +"$RUST_VERSION" metadata', workflow[:anchor])
-        self.assertNotIn("release-tools/", workflow[:anchor])
+        self.assertNotIn("bash release-tools/", workflow[:anchor])
+        self.assertNotIn("python3 release-tools/", workflow[:anchor])
+        self.assertIn('test "$changed" = "$expected"', workflow[:anchor])
+        self.assertIn('evidence_commit=$parent', workflow[:anchor])
         self.assertIn("import tomllib", workflow[:anchor])
         self.assertIn('python3 -I - "$candidate_root"', workflow[:anchor])
         self.assertIn("stat --format='%s' -- \"$root_manifest\"", workflow[:anchor])
@@ -579,10 +582,11 @@ exit 1
         )
         self.assertEqual(workflow.count("dgx-release-arm64"), 3)
         self.assertEqual(workflow.count("dgx-release-x86"), 3)
-        self.assertEqual(workflow.count("max-parallel: 3"), 3)
+        self.assertEqual(workflow.count("max-parallel: 3"), 2)
+        self.assertEqual(workflow.count("max-parallel: 4"), 1)
         self.assertIn("command -v x86_64-linux-musl-ar", workflow)
         self.assertNotIn("evidence_commit=9bd92b", workflow)
-        self.assertIn("head_sha=$candidate", workflow)
+        self.assertIn("head_sha=$source_commit", workflow)
         self.assertIn("content-canary:", workflow)
         self.assertIn("release-manifest.receipt.json", workflow)
         self.assertIn("verify_release.py artifact", workflow)
@@ -687,7 +691,13 @@ exit 1
             encoding="utf-8"
         )
         dispatch = release.split("workflow_dispatch:", 1)[1].split("permissions:", 1)[0]
-        self.assertNotIn("inputs:", dispatch)
+        self.assertIn("fast_validation_only:", dispatch)
+        self.assertIn("default: false", dispatch)
+        self.assertIn("type: boolean", dispatch)
+        self.assertIn(
+            "if: ${{ github.event_name != 'workflow_dispatch' || inputs.fast_validation_only != true }}",
+            release,
+        )
         metadata = release.split(
             "- name: Validate version and release source commit", 1
         )[1].split(

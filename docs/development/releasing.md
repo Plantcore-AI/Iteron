@@ -18,9 +18,18 @@ supply-chain event, not a local `cargo build` plus an uploaded binary.
 
 Before creating an immutable tag, dispatch `release.yml` against the exact
 candidate commit. This preflight runs the same validation, legal-evidence, native
-three-target macOS/Linux test/package, SBOM, and attestation graph, but the publish
+macOS/Linux/Windows test/package, SBOM, and attestation graph, but the publish
 and canary jobs are structurally restricted to `refs/tags/v*`. All preflight jobs must
 be green before the Owner creates the tag.
+
+For the one-time `0.0.23` release-only continuation, `fast_validation_only=true`
+performs the exact-commit version, schema-compatibility, release-tooling, and
+boundary checks without rebuilding platform archives. Its candidate may reuse a
+successful direct-parent `main` CI only when the complete diff is the audited
+release-rule files and the schema policy changes solely from ordinal 8 to 9.
+The tagged workflow still performs legal evidence, native builds, packaging,
+attestations, publication, and canaries once. Any other source change requires
+normal exact-commit CI and the full preflight.
 
 ## Creating the release tag
 
