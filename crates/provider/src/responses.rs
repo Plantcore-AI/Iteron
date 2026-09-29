@@ -603,8 +603,8 @@ impl ResponseParser {
             "response.reasoning_summary_text.delta" => {
                 let delta = required_str(&value, "delta")?;
                 let output_index = required_u64(&value, "output_index")?;
-                let content_index = required_u64(&value, "content_index")?;
-                self.append_thinking(output_index, 0, content_index, delta)?;
+                let summary_index = required_u64(&value, "summary_index")?;
+                self.append_thinking(output_index, 0, summary_index, delta)?;
                 Ok(vec![StreamItem::ThinkingDelta(delta.to_string())])
             }
             "response.reasoning_text.delta" => {
@@ -2301,7 +2301,7 @@ mod tests {
         let events = [
             serde_json::json!({
                 "type":"response.reasoning_summary_text.delta","item_id":"rs_1",
-                "output_index":0,"content_index":0,"delta":"summary"
+                "output_index":0,"summary_index":0,"delta":"summary"
             }),
             serde_json::json!({
                 "type":"response.reasoning_text.delta","item_id":"rs_1",
@@ -2398,6 +2398,189 @@ mod tests {
             })
         );
         assert!(!usage.cache_creation_reported());
+    }
+
+    #[test]
+    fn summary_parts_survive_tool_continuation_to_final_text() {
+        let mut parser = ResponseParser::default();
+        let events = [
+            serde_json::json!({"type":"response.reasoning_summary_part.added",
+                "item_id":"rs_1","output_index":0,"summary_index":0,
+                "part":{"type":"summary_text","text":""}}),
+            serde_json::json!({"type":"response.reasoning_summary_text.delta",
+                "item_id":"rs_1","output_index":0,"summary_index":0,"delta":"Find "}),
+            serde_json::json!({"type":"response.reasoning_summary_text.delta",
+                "item_id":"rs_1","output_index":0,"summary_index":0,"delta":"tool"}),
+            serde_json::json!({"type":"response.reasoning_summary_text.done",
+                "item_id":"rs_1","output_index":0,"summary_index":0,"text":"Find tool"}),
+            serde_json::json!({"type":"response.reasoning_summary_part.done",
+                "item_id":"rs_1","output_index":0,"summary_index":0,
+                "part":{"type":"summary_text","text":"Find tool"}}),
+            serde_json::json!({"type":"response.reasoning_summary_part.added",
+                "item_id":"rs_1","output_index":0,"summary_index":1,
+                "part":{"type":"summary_text","text":""}}),
+            serde_json::json!({"type":"response.reasoning_summary_text.delta",
+                "item_id":"rs_1","output_index":0,"summary_index":1,"delta":"Call it"}),
+            serde_json::json!({"type":"response.output_item.added","output_index":1,
+                "item":{"id":"fc_1","type":"function_call","call_id":"call_1",
+                    "name":"tool_search","arguments":"","status":"in_progress"}}),
+            serde_json::json!({"type":"response.function_call_arguments.done",
+                "item_id":"fc_1","output_index":1,"arguments":"{\"query\":\"example\"}"}),
+        ];
+        let mut live = Vec::new();
+        for event in events {
+            live.extend(parser.push_frame(frame(event), None, None).unwrap());
+        }
+        assert_eq!(live.len(), 4);
+        assert!(matches!(&live[0], StreamItem::ThinkingDelta(v) if v == "Find "));
+        assert!(matches!(&live[1], StreamItem::ThinkingDelta(v) if v == "tool"));
+        assert!(matches!(&live[2], StreamItem::ThinkingDelta(v) if v == "Call it"));
+        assert!(matches!(&live[3], StreamItem::ToolUseComplete(tool) if tool.id == "call_1"));
+
+        let native_output = serde_json::json!([
+            {"id":"rs_1","type":"reasoning","encrypted_content":"synthetic",
+                "summary":[
+                {"type":"summary_text","text":"Find tool"},
+                {"type":"summary_text","text":"Call it"}]},
+            {"id":"fc_1","type":"function_call","call_id":"call_1",
+                "name":"tool_search","arguments":"{\"query\":\"example\"}","status":"completed"}
+        ]);
+        let terminal = parser
+            .push_frame(
+                frame(serde_json::json!({
+                    "type":"response.completed","response":{
+                        "status":"completed","output":native_output,"usage":usage()}
+                })),
+                None,
+                None,
+            )
+            .unwrap();
+        let StreamItem::TurnComplete {
+            blocks,
+            stop_reason,
+            ..
+        } = &terminal[0]
+        else {
+            panic!("expected tool turn completion");
+        };
+        assert_eq!(*stop_reason, StopReason::ToolUse);
+        assert!(
+            matches!(&blocks[1], Block::Thinking { thinking } if thinking == "Find tool\nCall it")
+        );
+        let assistant = Message {
+            role: Role::Assistant,
+            content: blocks.clone(),
+        };
+        let result = Message {
+            role: Role::User,
+            content: vec![Block::ToolResult(ToolResult {
+                tool_use_id: "call_1".into(),
+                content: "found".into(),
+                is_error: false,
+                trust: Trust::Workspace,
+                latency_ms: 1,
+            })],
+        };
+        let input =
+            transcript_to_input(&[assistant, result], "test-openai-responses", &[]).unwrap();
+        assert_eq!(input[..2], native_output.as_array().unwrap()[..]);
+        assert_eq!(
+            input[2],
+            serde_json::json!({
+            "type":"function_call_output","call_id":"call_1","output":"found"})
+        );
+
+        let mut continuation = ResponseParser::default();
+        let text = continuation
+            .push_frame(
+                frame(serde_json::json!({
+                    "type":"response.output_text.delta","item_id":"msg_2",
+                    "output_index":0,"content_index":0,"delta":"Done"
+                })),
+                None,
+                None,
+            )
+            .unwrap();
+        assert!(matches!(&text[0], StreamItem::TextDelta(v) if v == "Done"));
+        let final_turn = continuation
+            .push_frame(
+                frame(serde_json::json!({
+                    "type":"response.completed","response":{"status":"completed",
+                        "output":[{"id":"msg_2","type":"message","role":"assistant",
+                            "status":"completed","content":[{"type":"output_text","text":"Done"}]}],
+                        "usage":usage()}
+                })),
+                None,
+                None,
+            )
+            .unwrap();
+        assert!(matches!(&final_turn[0], StreamItem::TurnComplete {
+            stop_reason: StopReason::EndTurn, blocks, ..
+        } if blocks.iter().any(|block| matches!(block, Block::Text { text } if text == "Done"))));
+    }
+
+    #[test]
+    fn summary_delta_requires_numeric_summary_index() {
+        for index in [
+            serde_json::Value::Null,
+            serde_json::json!("0"),
+            serde_json::json!(-1),
+        ] {
+            let mut parser = ResponseParser::default();
+            let result = parser.push_frame(
+                frame(serde_json::json!({
+                    "type":"response.reasoning_summary_text.delta","item_id":"rs_1",
+                    "output_index":0,"summary_index":index,"content_index":0,"delta":"x"
+                })),
+                None,
+                None,
+            );
+            assert!(matches!(result, Err(ProviderError::Decode(_))));
+        }
+        let mut parser = ResponseParser::default();
+        assert!(matches!(
+            parser.push_frame(
+                frame(serde_json::json!({
+                    "type":"response.reasoning_text.delta","item_id":"rs_1",
+                    "output_index":0,"summary_index":0,"delta":"x"
+                })),
+                None,
+                None
+            ),
+            Err(ProviderError::Decode(_))
+        ));
+    }
+
+    #[test]
+    fn duplicate_or_reordered_summary_deltas_fail_terminal_reconciliation() {
+        for deltas in [["x", "x"], ["y", "x"]] {
+            let mut parser = ResponseParser::default();
+            for delta in deltas {
+                parser
+                    .push_frame(
+                        frame(serde_json::json!({
+                            "type":"response.reasoning_summary_text.delta","item_id":"rs_1",
+                            "output_index":0,"summary_index":0,"delta":delta
+                        })),
+                        None,
+                        None,
+                    )
+                    .unwrap();
+            }
+            let result = parser.push_frame(
+                frame(serde_json::json!({
+                    "type":"response.completed","response":{"status":"completed",
+                        "output":[{"id":"rs_1","type":"reasoning",
+                            "encrypted_content":"synthetic",
+                            "summary":[{"type":"summary_text","text":"xy"}]}],
+                        "usage":usage()}
+                })),
+                None,
+                None,
+            );
+            assert!(matches!(result, Err(ProviderError::Decode(message))
+                if message == "Responses completed reasoning disagreed with streamed deltas"));
+        }
     }
 
     #[test]
