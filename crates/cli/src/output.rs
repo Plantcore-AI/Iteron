@@ -274,7 +274,7 @@ pub fn stream_event(event: UiEvent, turn: &mut u32) -> Value {
         UiEvent::ToolStart { id, name, args } => json!({
             "schema_version": SCHEMA_VERSION,
             "type": "tool_start",
-            "tool_use_id": scrub(&id),
+            "tool_use_id": iteron_record::redact::scrub_correlation_identifier(&id),
             "name": scrub(&name),
             "args": scrub_json(args),
         }),
@@ -287,7 +287,7 @@ pub fn stream_event(event: UiEvent, turn: &mut u32) -> Value {
         } => json!({
             "schema_version": SCHEMA_VERSION,
             "type": "tool_end",
-            "tool_use_id": scrub(&id),
+            "tool_use_id": iteron_record::redact::scrub_correlation_identifier(&id),
             "ok": ok,
             "exit_code": exit_code,
             "output": scrub(&output),
@@ -1195,6 +1195,45 @@ mod tests {
         );
         assert_eq!(control["submission_id"], 21);
         assert_eq!(control["kind"], "drain");
+    }
+
+    #[test]
+    fn machine_tool_events_preserve_call_ids_without_relaxing_secret_scrubbing() {
+        let mut turn = 0;
+        let id = "call_00_RFTSn3Qcw4Wu9i4Z276c9895";
+        let credential_shape = concat!("sk-", "ant-api03-AbCdEfGhIjKlMnOpQrStUvWx");
+        let start = stream_event(
+            UiEvent::ToolStart {
+                id: id.into(),
+                name: "read_file".into(),
+                args: json!({"token": credential_shape}),
+            },
+            &mut turn,
+        );
+        let end = stream_event(
+            UiEvent::ToolEnd {
+                id: id.into(),
+                ok: true,
+                exit_code: None,
+                output: credential_shape.into(),
+                diff: None,
+            },
+            &mut turn,
+        );
+        assert_eq!(start["tool_use_id"], id);
+        assert_eq!(end["tool_use_id"], id);
+        assert_ne!(start["args"]["token"], credential_shape);
+        assert_ne!(end["output"], credential_shape);
+
+        let suspicious = stream_event(
+            UiEvent::ToolStart {
+                id: credential_shape.into(),
+                name: "read_file".into(),
+                args: json!({}),
+            },
+            &mut turn,
+        );
+        assert_ne!(suspicious["tool_use_id"], credential_shape);
     }
 
     #[test]

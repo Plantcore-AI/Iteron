@@ -587,6 +587,15 @@ struct ToolAcc {
     args: String,
 }
 
+fn apply_tool_call_id(tool: &mut ToolAcc, id: Option<&str>) {
+    // Compatible streams may repeat an empty ID after the first fragment. Only a real ID can
+    // update the per-index identity; a call that never receives one still fails in complete_tool.
+    if let Some(id) = id.filter(|id| !id.is_empty()) {
+        tool.id.clear();
+        tool.id.push_str(id);
+    }
+}
+
 fn complete_tool(tool: &ToolAcc) -> Result<ToolUse, ProviderError> {
     if tool.id.is_empty() || tool.name.is_empty() {
         return Err(ProviderError::Decode(
@@ -856,6 +865,28 @@ fn apply_reported_usage(
     })
 }
 
+fn apply_unique_reported_usage(
+    chunk: &serde_json::Value,
+    usage: &mut Usage,
+    first_usage: &mut Option<serde_json::Value>,
+) -> Result<ReportedUsage, ProviderError> {
+    let Some(raw) = chunk.get("usage").filter(|raw| !raw.is_null()) else {
+        return Ok(ReportedUsage::Absent);
+    };
+    if let Some(first) = first_usage {
+        if first != raw {
+            return Err(ProviderError::Decode(
+                "OpenAI-compatible stream emitted conflicting usage reports".into(),
+            ));
+        }
+        // An identical trailing usage frame is a duplicate observation, not another charge.
+        return Ok(ReportedUsage::Absent);
+    }
+    let reported = apply_reported_usage(chunk, usage)?;
+    *first_usage = Some(raw.clone());
+    Ok(reported)
+}
+
 #[async_trait::async_trait]
 impl Provider for OpenAiCompat {
     fn control_capabilities(&self) -> ProviderControlCapabilities {
@@ -990,6 +1021,7 @@ impl Provider for OpenAiCompat {
         let mut emitted_tools = BTreeSet::new();
         let mut usage = Usage::default();
         let mut saw_usage = false;
+        let mut first_usage = None;
         let mut saw_cache_creation = false;
         let mut stop: Option<StopReason> = None;
         let mut saw_done = false;
@@ -1080,12 +1112,7 @@ impl Provider for OpenAiCompat {
                     }
                     OpenAiSseLine::Chunk(value) => value,
                 };
-                let reported_usage = apply_reported_usage(&v, &mut usage)?;
-                if reported_usage.present() && saw_usage {
-                    return Err(ProviderError::Decode(
-                        "OpenAI-compatible stream emitted more than one usage report".into(),
-                    ));
-                }
+                let reported_usage = apply_unique_reported_usage(&v, &mut usage, &mut first_usage)?;
                 saw_usage |= reported_usage.present();
                 saw_cache_creation |= matches!(
                     reported_usage,
@@ -1195,7 +1222,7 @@ impl Provider for OpenAiCompat {
                                     "assembled output byte counter overflow".into(),
                                 )
                             })?;
-                            tools[idx].id = id.to_string();
+                            apply_tool_call_id(&mut tools[idx], Some(id));
                         }
                         if let Some(f) = tc.get("function") {
                             if let Some(n) = f.get("name").and_then(|x| x.as_str()) {
@@ -1796,6 +1823,51 @@ mod tests {
             ..ToolAcc::default()
         };
         assert!(assemble_tool_uses(vec![missing_id], StopReason::ToolUse).is_err());
+    }
+
+    #[test]
+    fn tool_call_ids_survive_empty_and_missing_continuations_per_index() {
+        let mut tools = [ToolAcc::default(), ToolAcc::default()];
+        apply_tool_call_id(&mut tools[0], Some("call_1"));
+        apply_tool_call_id(&mut tools[0], Some(""));
+        apply_tool_call_id(&mut tools[0], None);
+        apply_tool_call_id(&mut tools[1], Some(""));
+        assert_eq!(tools[0].id, "call_1");
+        assert!(complete_tool(&tools[1]).is_err());
+        apply_tool_call_id(&mut tools[1], Some("call_2"));
+        assert_eq!(tools[1].id, "call_2");
+        assert_eq!(tools[0].id, "call_1");
+    }
+
+    #[test]
+    fn identical_usage_repeat_is_counted_once_but_conflict_is_rejected() {
+        let first = serde_json::json!({"usage": {
+            "prompt_tokens": 12,
+            "completion_tokens": 4,
+            "prompt_tokens_details": {"cached_tokens": 2}
+        }});
+        let mut usage = Usage::default();
+        let mut observed = None;
+        assert!(
+            apply_unique_reported_usage(&first, &mut usage, &mut observed)
+                .unwrap()
+                .present()
+        );
+        let counted = usage;
+        let duplicate = serde_json::json!({"choices": [], "usage": first["usage"]});
+        assert_eq!(
+            apply_unique_reported_usage(&duplicate, &mut usage, &mut observed).unwrap(),
+            ReportedUsage::Absent
+        );
+        assert_eq!(usage, counted);
+        assert_eq!(usage.input, 10);
+        assert_eq!(usage.output, 4);
+        let conflicting = serde_json::json!({"usage": {
+            "prompt_tokens": 13,
+            "completion_tokens": 4
+        }});
+        assert!(apply_unique_reported_usage(&conflicting, &mut usage, &mut observed).is_err());
+        assert_eq!(usage, counted);
     }
 
     #[test]
