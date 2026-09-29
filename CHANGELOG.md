@@ -7,6 +7,8 @@ interfaces may change between releases.
 
 ## [Unreleased]
 
+## [0.0.23] - 2026-09-29
+
 ### Fixed
 
 - OpenAI-compatible streaming preserves known tool-call IDs across empty continuation fragments
