@@ -52071,7 +52071,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/openai.rs",
-          "line": 809,
+          "line": 818,
           "evidence": "Rust path reference"
         }
       ]
@@ -52122,7 +52122,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/openai.rs",
-          "line": 1158,
+          "line": 1185,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -52152,12 +52152,12 @@
       "use_sites": [
         {
           "path": "crates/provider/src/openai.rs",
-          "line": 1000,
+          "line": 1032,
           "evidence": "param_usize runtime resolution"
         },
         {
           "path": "crates/provider/src/openai.rs",
-          "line": 1002,
+          "line": 1034,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -52252,12 +52252,12 @@
       "use_sites": [
         {
           "path": "crates/provider/src/openai.rs",
-          "line": 1041,
+          "line": 1073,
           "evidence": "param_integer runtime resolution"
         },
         {
           "path": "crates/provider/src/openai.rs",
-          "line": 1234,
+          "line": 1261,
           "evidence": "param_integer runtime resolution"
         }
       ],
@@ -52287,7 +52287,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/openai.rs",
-          "line": 999,
+          "line": 1031,
           "evidence": "param_usize runtime resolution"
         }
       ],
@@ -52317,7 +52317,7 @@
       "use_sites": [
         {
           "path": "crates/provider/src/openai.rs",
-          "line": 1008,
+          "line": 1040,
           "evidence": "param_usize runtime resolution"
         }
       ],
@@ -52401,12 +52401,12 @@
       "use_sites": [
         {
           "path": "crates/provider/src/openai.rs",
-          "line": 923,
+          "line": 954,
           "evidence": "param_duration runtime resolution"
         },
         {
           "path": "crates/provider/src/openai.rs",
-          "line": 958,
+          "line": 989,
           "evidence": "param_duration runtime resolution"
         }
       ],

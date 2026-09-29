@@ -9,6 +9,10 @@ interfaces may change between releases.
 
 ### Fixed
 
+- OpenAI-compatible streaming preserves known tool-call IDs across empty continuation fragments
+  and accepts identical repeated usage reports without double-counting; conflicting reports still
+  fail. CLI machine tool events keep structural call IDs while credential-shaped values remain
+  redacted. (#413)
 - Standalone `iteron workflow` runs now export lifecycle telemetry to the operator-configured
   OTLP endpoint. Previously their child agents had no telemetry sink, so configured lifecycle
   observations were collected locally but never exported. (#376)
