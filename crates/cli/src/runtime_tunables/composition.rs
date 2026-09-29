@@ -770,7 +770,7 @@ mod tests {
                 origin: ConfigOrigin::Builtin,
             },
             Sourced {
-                value: false,
+                value: true,
                 origin: ConfigOrigin::Builtin,
             },
             &tunables_profile,
@@ -787,7 +787,7 @@ mod tests {
         assert_eq!(fresh.settings.provider_id, selection.provider_id);
         assert_eq!(fresh.settings.model_id, selection.model_id);
         assert_eq!(fresh.settings.permission_mode, PermissionMode::AcceptEdits);
-        assert!(!fresh.settings.bypass_permissions);
+        assert!(fresh.settings.bypass_permissions);
         for family_id in ["permission_mode", "bypass_permissions"] {
             let entry = fresh
                 .resolved
@@ -833,7 +833,7 @@ mod tests {
             },
             Sourced {
                 value: false,
-                origin: ConfigOrigin::Builtin,
+                origin: ConfigOrigin::Cli,
             },
             &tunables_profile,
         )
@@ -924,7 +924,7 @@ mod tests {
                 origin: ConfigOrigin::Builtin,
             },
             Sourced {
-                value: false,
+                value: true,
                 origin: ConfigOrigin::Builtin,
             },
             &explicit_cap_profile,
@@ -992,7 +992,7 @@ mod tests {
                 origin: ConfigOrigin::Builtin,
             },
             Sourced {
-                value: false,
+                value: true,
                 origin: ConfigOrigin::Builtin,
             },
             &explicit_history_profile,

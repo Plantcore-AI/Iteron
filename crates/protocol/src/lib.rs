@@ -510,10 +510,10 @@ impl Default for Budget {
             max_turns: Self::UNLIMITED_TURNS,
             max_usd: None,
             max_tokens: None,
-            max_wall_secs: 3_600,
-            // Five failures leave room for one correction cycle while bounding stuck loops well
-            // before they consume the full interactive turn or wall budget.
-            max_consecutive_tool_errors: 5,
+            // A generous finite submission ceiling preserves the bounded-time invariant.
+            max_wall_secs: 86_400,
+            // Allow sustained recovery while still bounding an unattended stuck loop.
+            max_consecutive_tool_errors: 50,
         }
     }
 }
@@ -737,8 +737,8 @@ mod effort_tests {
             assert!(!budget.turn_limit_reached(used));
             assert_eq!(budget.remaining_turns(used), Budget::UNLIMITED_TURNS);
         }
-        assert_eq!(budget.max_wall_secs, 3_600);
-        assert_eq!(budget.max_consecutive_tool_errors, 5);
+        assert_eq!(budget.max_wall_secs, 86_400);
+        assert_eq!(budget.max_consecutive_tool_errors, 50);
         assert_eq!(budget.max_usd, None);
         assert_eq!(budget.max_tokens, None);
     }
@@ -754,5 +754,21 @@ mod effort_tests {
         assert!(budget.turn_limit_reached(2));
         assert!(budget.turn_limit_reached(3));
         assert_eq!(budget.remaining_turns(3), 0);
+    }
+
+    #[test]
+    fn explicit_budget_caps_survive_serialization_without_default_expansion() {
+        let budget = Budget {
+            max_turns: 20,
+            max_usd: Some(0.5),
+            max_tokens: Some(1_024),
+            max_wall_secs: 180,
+            max_consecutive_tool_errors: 2,
+        };
+        let decoded: Budget =
+            serde_json::from_str(&serde_json::to_string(&budget).unwrap()).unwrap();
+        assert_eq!(decoded, budget);
+        assert!(decoded.turn_limit_reached(20));
+        assert_eq!(decoded.validate(), Ok(()));
     }
 }

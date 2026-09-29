@@ -136,7 +136,9 @@ pub const REGISTRY_SCHEMA_VERSION: u16 = 4;
 pub const FAMILY_SCHEMA_VERSION: u16 = 3;
 /// Stable logical registry identity.
 pub const REGISTRY_ID: &str = "iteron-tunables";
-/// Revision of the family set under schema v4. Revision 26 reserves u32::MAX as the
+/// Revision of the family set under schema v4. Revision 27 makes the public interactive
+/// permission and bounded execution-budget defaults explicit while retaining operator overrides.
+/// Revision 26 reserves u32::MAX as the
 /// no-turn-ceiling default and widens the parent and child budget value domains.
 /// Revision 25 aligns fresh route, effort, and
 /// permission defaults with production admission; it does not make a provider or model globally
@@ -151,7 +153,7 @@ pub const REGISTRY_ID: &str = "iteron-tunables";
 /// overriding that constant through its Tier-2 handle is precisely what makes the comparison fail.
 /// Revision 19 externalized every non-Pin governed family through the universal profile seam while
 /// retaining immutable Pin admission rules.
-pub const REGISTRY_REVISION: u16 = 26;
+pub const REGISTRY_REVISION: u16 = 27;
 /// Exact family cardinality required by the R0/R1 contract.
 pub const EXPECTED_FAMILY_COUNT: usize = 160;
 /// Canonical byte encoding used as the digest input.
@@ -160,6 +162,6 @@ pub const CANONICALIZATION: &str = "iteron-tunables-json-v4";
 pub const FAMILY_CANONICALIZATION: &str = "core-tunable-family-json-v3";
 /// Digest algorithm for canonical artifacts.
 pub const DIGEST_ALGORITHM: &str = "sha256";
-/// Golden digest for revision 26; metadata changes require an explicit revision and digest update.
+/// Golden digest for revision 27; metadata changes require an explicit revision and digest update.
 pub const REGISTRY_DIGEST_SHA256: &str =
-    "41d03740d482fe481c5425278c130b21492e75b38eae7178fd5d70e4487d76c2";
+    "50f8e3bc8bb5ad72a4af72c805e95613542e1c7a39c990015b8df886dc8211fb";

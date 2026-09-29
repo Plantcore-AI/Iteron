@@ -217,11 +217,11 @@ fn registry_inventory_is_bounded_deterministic_and_copies_no_ambient_state() {
     );
     assert_eq!(
         canonical_embedded_default("max_wall_secs"),
-        Some(ResolutionValue::Integer { value: 3_600 })
+        Some(ResolutionValue::Integer { value: 86_400 })
     );
     assert_eq!(
         canonical_embedded_default("max_consecutive_tool_errors"),
-        Some(ResolutionValue::Integer { value: 5 })
+        Some(ResolutionValue::Integer { value: 50 })
     );
 }
 

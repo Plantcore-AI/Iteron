@@ -54,10 +54,9 @@ change session settings.
 
 ## 4. Choose the authority posture deliberately
 
-The shipped default uses `acceptEdits` with shell sandboxing and workspace file
-write checks. Use `--ask-permissions` for stricter edit approvals, and
-`--mode plan` for a read-only run. Only the explicit
-`--dangerously-bypass-permissions` option grants the broad bypass. Review the
+The shipped default uses `acceptEdits` with dangerous broad host authority.
+Use `--ask-permissions` or an explicit gated `--mode` for approval checks,
+`--confine` for shell sandboxing, and `--mode plan` for a read-only run. Review the
 [permission and sandbox contract](../using/permissions-and-sandbox.md) before
 opening an untrusted repository.
 
@@ -68,9 +67,9 @@ opening an untrusted repository.
   "Find the failing test, explain the cause, and stop without editing"
 ```
 
-One-shot mode defaults to sandboxed `acceptEdits`, without a broad permission
-bypass. It has no approval channel, so an operation that resolves to "ask"
-fails closed; pass `--ask-permissions` only when that stricter refusal is intended.
+One-shot mode defaults to broad bypass. It has no approval channel, so an
+operation that resolves to "ask" under an explicit gated mode fails closed;
+pass `--ask-permissions` only when that stricter refusal is intended.
 
 For automation, use the stable machine-output modes described in
 [one-shot and automation](../using/one-shot.md).

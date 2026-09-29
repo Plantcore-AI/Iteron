@@ -29,12 +29,12 @@
 </p>
 
 > [!WARNING]
-> **Pre-alpha; the ordinary permission gate and macOS/Linux execution sandbox
-> are enabled by default.** Iteron is still unsuitable for unattended use on
-> sensitive repositories: the built-in file-write boundary has an unresolved
-> symlink race. `--dangerously-bypass-permissions` is an explicit opt-in to broad
-> host authority. Windows has no code-execution sandbox, so confined execution
-> refuses commands there.
+> **Pre-alpha; new ordinary sessions default to dangerous broad host authority.**
+> Iteron is unsuitable for unattended use on sensitive or untrusted repositories:
+> the built-in file-write boundary has an unresolved symlink race. Use
+> `--ask-permissions`, an explicit gated `--mode`, or `--confine` to tighten the
+> posture; `--mode plan` is read-only. Windows has no code-execution sandbox, so
+> confined execution refuses commands there.
 
 Iteron is an open-source substrate for building, evaluating, and governing
 **harness checkpoints for domain-specific AI agents**. It provides modular Rust runtime

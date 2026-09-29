@@ -46,14 +46,18 @@ pub(crate) struct EffectiveTunablesView {
     enforce_bindings: bool,
 }
 
-// The only historical registry identity admitted for runtime replay. A V2 snapshot has its
-// own authenticated effective values and provenance; decoding it must not resolve new defaults.
+// Historical registry identities admitted for runtime replay. A V2 snapshot has its own
+// authenticated effective values and provenance; decoding it must not resolve new defaults.
 const R25_REGISTRY_DIGEST_SHA256: &str =
     "fa047ac86fa33d921ac49f60507adefe6a226e2e57396be626d0008690854fa3";
+fn r26_registry_digest_sha256() -> &'static str {
+    "41d03740d482fe481c5425278c130b21492e75b38eae7178fd5d70e4487d76c2"
+}
 
 fn supported_checkpoint_registry(revision: u16, digest: &str) -> bool {
     (revision == iteron_tunables::REGISTRY_REVISION
         && digest == iteron_tunables::REGISTRY_DIGEST_SHA256)
+        || (revision == 26 && digest == r26_registry_digest_sha256())
         || (revision == 25 && digest == R25_REGISTRY_DIGEST_SHA256)
 }
 
@@ -756,6 +760,22 @@ mod tests {
     use super::*;
     use iteron_protocol::{RunGenesisTunablesSnapshot, RunGenesisTunablesVersion};
     use iteron_tunables::{ProfileValue, RuntimeProfile, SourceKind};
+
+    #[test]
+    fn historical_r26_checkpoint_keeps_its_pinned_runtime_authority() {
+        assert!(supported_checkpoint_registry(
+            26,
+            r26_registry_digest_sha256()
+        ));
+        assert!(!supported_checkpoint_registry(
+            26,
+            iteron_tunables::REGISTRY_DIGEST_SHA256
+        ));
+        assert!(!supported_checkpoint_registry(
+            27,
+            r26_registry_digest_sha256()
+        ));
+    }
 
     #[test]
     fn historical_r25_registry_and_fixed_receipt_are_admitted_exactly() {

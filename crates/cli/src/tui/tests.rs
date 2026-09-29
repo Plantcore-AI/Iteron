@@ -3802,6 +3802,94 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert_eq!(app.status, "idle · last: interrupted");
     }
 
+    #[test]
+    fn record_failure_run_ended_never_offers_same_session_retry() {
+        fn end_failed_run(error: String) -> App {
+            let mut app = App::new();
+            app.running = true;
+            app.retryable_task = Some("retry this turn".into());
+            let (sender, _receiver) = tokio::sync::mpsc::channel(1);
+            let mut session = Session::for_test(sender);
+            let event = app_server::ServerEvent::RunEnded {
+                snapshot: Box::new(app_server::SessionSnapshot {
+                    mode: PermissionMode::default(),
+                    effort: Effort::default(),
+                    model: "test-model".into(),
+                    provider_id: "test-provider".into(),
+                    cost: CostState::default(),
+                    last_turn_usage: None,
+                    unadmitted_steers: Vec::new(),
+                    unadmitted_internal_notifications: Vec::new(),
+                    unadmitted_client_steers: 0,
+                    unadmitted_steer_submission_ids: Vec::new(),
+                    permission_rules: PermissionRules::new(),
+                    runtime_policy: None,
+                    ledger_summary: String::new(),
+                    rate_limit: None,
+                    mcp_health: Vec::new(),
+                }),
+                summary: Box::new(app_server::TerminalSummary {
+                    terminal: app_server::TerminalAuthority::Runtime(
+                        iteron_protocol::Outcome::HarnessError,
+                    ),
+                    assistant_text: String::new(),
+                    v7_assistant_text: None,
+                    run_id: "run-record-failure".into(),
+                    cost: CostState::default(),
+                    turns: 1,
+                    kernel_tax: iteron_obs::KernelTax::default(),
+                    error: Some(error),
+                    memo_hits: 0,
+                    memo_misses: 0,
+                    terminal_evidence: None,
+                }),
+            };
+            let mut notifier = notification::TerminalNotifier::new(false);
+            notifier.begin_run();
+            apply_server_event(
+                &mut app,
+                &mut session,
+                event,
+                &mut notifier,
+                &mut Vec::new(),
+                &Arc::new(AtomicBool::new(false)),
+                &Arc::new(AtomicBool::new(false)),
+                None,
+            );
+            app
+        }
+
+        let record_error = crate::runtime::KernelError::Record(
+            iteron_record::RecordError::Io(std::io::Error::new(
+                std::io::ErrorKind::StorageFull,
+                "private/client/sk-test-secret",
+            )),
+        )
+        .public_summary();
+        let mut app = end_failed_run(record_error);
+        assert!(app.retryable_task.is_none());
+        let rendered = app.transcript.last().expect("failure block").to_text();
+        assert!(rendered.contains("[storage_full]"), "{rendered}");
+        assert!(!rendered.contains("ctrl+r"), "{rendered}");
+        assert!(!rendered.contains("sk-test-secret"), "{rendered}");
+        let screen = render_text(&mut app, 120, 28);
+        assert!(screen.contains("storage_full"), "{screen}");
+        assert!(!screen.contains("ctrl+r"), "{screen}");
+        assert!(!screen.contains("sk-test-secret"), "{screen}");
+
+        let ordinary = end_failed_run("provider: provider transport failed".into());
+        assert_eq!(ordinary.retryable_task.as_deref(), Some("retry this turn"));
+        assert!(
+            ordinary
+                .transcript
+                .last()
+                .expect("failure block")
+                .to_text()
+                .contains("ctrl+r"),
+            "only a record failure suppresses the existing manual retry offer"
+        );
+    }
+
     /// A budget stop is not an error, so it produced no block at all: the operator saw
     /// `idle · last: budget_exhausted` and nothing about the session turn ceiling being raisable
     /// in place. The terminal boundary has to say what clears the ceiling it just hit.

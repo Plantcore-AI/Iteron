@@ -7,6 +7,26 @@ interfaces may change between releases.
 
 ## [Unreleased]
 
+## [0.0.24] - 2026-09-29
+
+### Fixed
+
+- OpenAI Responses now accepts a function-call arguments terminal frame without a repeated tool
+  name only when the matching output item already established that name; changed, missing, or
+  duplicate call metadata still fails closed.
+- GPT-6 models receive the requested supported reasoning effort instead of silently falling back
+  to the provider default.
+- Session-record failures show a redacted storage/error category and do not offer a futile retry of
+  a latched failed run; previously saved checkpoints continue to use their pinned authority.
+
+### Changed
+
+- Fresh ordinary sessions default to unconfined permission bypass with a conspicuous warning;
+  `--ask-permissions`, explicit gated modes, `--confine`, and plan mode retain their documented
+  tightening behavior. Explicit budget settings and existing session authority remain binding.
+- The default submission wall ceiling is 24 hours and consecutive tool-error ceiling is 50;
+  generated starter configuration no longer imposes a 40-turn limit.
+
 ## [0.0.23] - 2026-09-29
 
 ### Fixed
@@ -340,7 +360,8 @@ names a commit that was never published.
 - The release was built locally for `aarch64-apple-darwin` only and has no GitHub
   OIDC attestation.
 
-[Unreleased]: https://github.com/Plantcore-AI/Iteron/compare/v0.0.6...HEAD
+[Unreleased]: https://github.com/Plantcore-AI/Iteron/compare/v0.0.24...HEAD
+[0.0.24]: https://github.com/Plantcore-AI/Iteron/compare/v0.0.23...v0.0.24
 [0.0.6]: https://github.com/Plantcore-AI/Iteron/compare/v0.0.5...v0.0.6
 [0.0.5]: https://github.com/Plantcore-AI/Iteron/compare/v0.0.4...v0.0.5
 [0.0.4]: https://github.com/Plantcore-AI/Iteron/compare/v0.0.3...v0.0.4

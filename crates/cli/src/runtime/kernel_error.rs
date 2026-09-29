@@ -1,5 +1,111 @@
 use super::effects;
 
+/// Closed, content-free record failure classes. A record error can carry paths, tenant names,
+/// hashes, JSON diagnostics, or private-content details; none of those fields may reach a client.
+#[derive(Clone, Copy)]
+enum PublicRecordFailure {
+    StorageFull,
+    StorageAccess,
+    StorageIo,
+    WriterBusy,
+    WriterLock,
+    WriterPoisoned,
+    Limit,
+    InvalidSchema,
+    Integrity,
+    Checkpoint,
+    PrivateContent,
+}
+
+impl PublicRecordFailure {
+    fn all() -> [Self; 11] {
+        [
+            Self::StorageFull,
+            Self::StorageAccess,
+            Self::StorageIo,
+            Self::WriterBusy,
+            Self::WriterLock,
+            Self::WriterPoisoned,
+            Self::Limit,
+            Self::InvalidSchema,
+            Self::Integrity,
+            Self::Checkpoint,
+            Self::PrivateContent,
+        ]
+    }
+
+    fn from_error(error: &iteron_record::RecordError) -> Self {
+        use iteron_record::RecordError;
+        match error {
+            RecordError::Io(source) => match source.kind() {
+                std::io::ErrorKind::StorageFull => Self::StorageFull,
+                std::io::ErrorKind::PermissionDenied
+                | std::io::ErrorKind::ReadOnlyFilesystem
+                | std::io::ErrorKind::NotFound => Self::StorageAccess,
+                _ => Self::StorageIo,
+            },
+            RecordError::WriterBusy { .. } => Self::WriterBusy,
+            RecordError::WriterLock { .. } => Self::WriterLock,
+            RecordError::WriterPoisoned => Self::WriterPoisoned,
+            RecordError::RecordLineTooLarge { .. }
+            | RecordError::EnvironmentContextTooLarge { .. }
+            | RecordError::RolloutTooLarge { .. }
+            | RecordError::TooManyEvents { .. }
+            | RecordError::TooManyRecordLines { .. } => Self::Limit,
+            RecordError::InvalidRunId { .. }
+            | RecordError::InvalidEventSchema { .. }
+            | RecordError::InvalidAppendBatch { .. }
+            | RecordError::Json(_) => Self::InvalidSchema,
+            RecordError::SequenceBroken { .. }
+            | RecordError::TenantMismatch { .. }
+            | RecordError::ChainBroken { .. }
+            | RecordError::ForkParentMismatch { .. } => Self::Integrity,
+            RecordError::Pricing(_)
+            | RecordError::TunablesSnapshot(_)
+            | RecordError::PolicyBundleCheckpoint(_) => Self::Checkpoint,
+            RecordError::PrivateContent(_) => Self::PrivateContent,
+        }
+    }
+
+    const fn summary(self) -> &'static str {
+        match self {
+            Self::StorageFull => {
+                "session record [storage_full]: storage is full; recover space before reopening this run"
+            }
+            Self::StorageAccess => {
+                "session record [storage_access]: record storage is unavailable or not writable; check its mount and permissions before reopening"
+            }
+            Self::StorageIo => {
+                "session record [storage_io]: durable I/O failed; inspect storage and recover before reopening this run"
+            }
+            Self::WriterBusy => {
+                "session record [writer_busy]: another writer owns this run; close that writer before reopening"
+            }
+            Self::WriterLock => {
+                "session record [writer_lock]: exclusive writer lock failed; inspect storage before reopening"
+            }
+            Self::WriterPoisoned => {
+                "session record [writer_poisoned]: append durability is uncertain; close and recover this run before reopening"
+            }
+            Self::Limit => {
+                "session record [limit]: a durable record limit was reached; this run cannot append more"
+            }
+            Self::InvalidSchema => {
+                "session record [invalid_schema]: record input or encoding failed validation; do not continue this run"
+            }
+            Self::Integrity => {
+                "session record [integrity]: durable sequence or identity evidence is inconsistent; do not continue this run"
+            }
+            Self::Checkpoint => {
+                "session record [checkpoint]: durable policy or pricing checkpoint failed validation; do not continue this run"
+            }
+            Self::PrivateContent => {
+                "session record [private_content]: private-content storage or validation failed; do not continue this run"
+            }
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum KernelError {
     #[error("provider: {0}")]
@@ -97,7 +203,7 @@ impl KernelError {
     pub fn public_summary(&self) -> String {
         match self {
             Self::Provider(error) => format!("provider: {}", error.public_summary()),
-            Self::Record(_) => "session record operation failed".into(),
+            Self::Record(error) => PublicRecordFailure::from_error(error).summary().into(),
             Self::InvalidRouteMetadata { field, reason } => {
                 format!("invalid route metadata in {field}: {reason}")
             }
@@ -250,11 +356,21 @@ impl KernelError {
             }
         }
     }
+
+    /// The TUI receives only a projected terminal summary, not the original typed error. Match
+    /// exact strings from the closed classifier rather than parsing an arbitrary error or exposing
+    /// a raw record diagnostic just to decide whether Ctrl+R is safe to offer.
+    pub(crate) fn is_public_record_failure(summary: &str) -> bool {
+        PublicRecordFailure::all()
+            .iter()
+            .any(|class| summary == class.summary())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::KernelError;
+    use iteron_record::RecordError;
 
     #[test]
     fn public_provider_error_never_exposes_transport_diagnostics() {
@@ -265,6 +381,73 @@ mod tests {
         assert_eq!(public, "provider: provider transport failed");
         assert!(!public.contains("secret.example"));
         assert!(!public.contains("sk-test-secret"));
+    }
+
+    #[test]
+    fn public_record_errors_classify_without_paths_raw_io_or_record_material() {
+        const SECRET: &str = "private/client/sk-test-secret";
+        let cases = [
+            (
+                RecordError::Io(std::io::Error::new(std::io::ErrorKind::StorageFull, SECRET)),
+                "[storage_full]",
+            ),
+            (
+                RecordError::Io(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    SECRET,
+                )),
+                "[storage_access]",
+            ),
+            (
+                RecordError::Io(std::io::Error::other(SECRET)),
+                "[storage_io]",
+            ),
+            (
+                RecordError::WriterBusy {
+                    path: SECRET.into(),
+                },
+                "[writer_busy]",
+            ),
+            (
+                RecordError::WriterLock {
+                    path: SECRET.into(),
+                    source: std::io::Error::other(SECRET),
+                },
+                "[writer_lock]",
+            ),
+            (RecordError::WriterPoisoned, "[writer_poisoned]"),
+            (
+                RecordError::RolloutTooLarge {
+                    bytes: 101,
+                    max: 100,
+                },
+                "[limit]",
+            ),
+            (
+                RecordError::InvalidEventSchema { reason: SECRET },
+                "[invalid_schema]",
+            ),
+            (
+                RecordError::ChainBroken {
+                    seq: 1,
+                    stored: SECRET.into(),
+                    computed: SECRET.into(),
+                },
+                "[integrity]",
+            ),
+        ];
+        for (record_error, expected_class) in cases {
+            let public = KernelError::Record(record_error).public_summary();
+            assert!(public.contains(expected_class), "{public}");
+            assert!(!public.contains(SECRET), "{public}");
+            assert!(KernelError::is_public_record_failure(&public));
+        }
+        assert!(!KernelError::is_public_record_failure(
+            "session record [storage_full]: private/client/sk-test-secret"
+        ));
+        assert!(!KernelError::is_public_record_failure(
+            "provider: provider transport failed"
+        ));
     }
 }
 

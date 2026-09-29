@@ -69,7 +69,6 @@ errors remain visible, then ignored for authority.
   "schema_version": 2,
   "provider": "glm",
   "model": "glm-5.2",
-  "max_turns": 40,
   "max_usd": 5.0,
   "max_wall_secs": 1800,
   "allow_code": false,

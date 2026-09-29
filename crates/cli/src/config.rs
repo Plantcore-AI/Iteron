@@ -199,15 +199,14 @@ pub enum PromptHistoryMode {
 /// Current-schema repository starter used by `/init`. Keeping the discriminator beside the
 /// parser prevents a newer binary from scaffolding a legacy document by accident.
 ///
-/// It deliberately does NOT emit `allow_code`. A project-level `false` is honoured as a tightening
+/// It deliberately emits neither a code grant nor a run-budget override. A project-level
+/// `allow_code: false` is honoured as a tightening
 /// (`tighten_grant`), so scaffolding one silently revoked code execution for the whole repository:
 /// the documented onboarding step turned off builds and tests, and nothing connected the two
 /// events. Absence keeps the effective grant exactly where the operator left it; a repository that
 /// genuinely wants code execution off can still add the key by hand.
 pub(crate) fn starter_project_config() -> String {
-    format!(
-        "{{\n  \"schema_version\": {FILE_CONFIG_SCHEMA_VERSION},\n  \"model\": null,\n  \"max_turns\": 40\n}}\n"
-    )
+    format!("{{\n  \"schema_version\": {FILE_CONFIG_SCHEMA_VERSION},\n  \"model\": null\n}}\n")
 }
 
 /// Runtime provenance for one MCP server declaration.
@@ -2283,7 +2282,7 @@ mod tests {
         let starter = starter_project_config();
         let config = FileConfig::parse(&starter).expect("starter must use the current schema");
         assert_eq!(config.schema_version, FILE_CONFIG_SCHEMA_VERSION);
-        assert_eq!(config.max_turns, Some(40));
+        assert_eq!(config.max_turns, None);
         assert_eq!(config.allow_code, None);
         assert_eq!(
             serde_json::to_value(config).unwrap()["schema_version"],

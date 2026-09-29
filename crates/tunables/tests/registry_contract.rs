@@ -870,8 +870,8 @@ fn defaults_resolvers_and_provenance_match_production_truth() {
     assert_eq!(model.default.value, None);
 
     assert_eq!(integer_default("max_turns"), i64::from(u32::MAX));
-    assert_eq!(integer_default("max_wall_secs"), 3_600);
-    assert_eq!(integer_default("max_consecutive_tool_errors"), 5);
+    assert_eq!(integer_default("max_wall_secs"), 86_400);
+    assert_eq!(integer_default("max_consecutive_tool_errors"), 50);
     assert_eq!(integer_default("deferred_discovery_threshold"), 4);
     assert_eq!(
         family("allow_code").default.value,
@@ -879,7 +879,7 @@ fn defaults_resolvers_and_provenance_match_production_truth() {
     );
     assert_eq!(
         family("bypass_permissions").default.value,
-        Some(TunableValue::Boolean { value: false })
+        Some(TunableValue::Boolean { value: true })
     );
     assert_eq!(
         family("permission_mode").default.value,
