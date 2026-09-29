@@ -7,13 +7,15 @@ interfaces may change between releases.
 
 ## [Unreleased]
 
-## [0.0.25] - 2026-09-29
+## [0.0.26] - 2026-09-29
 
 ### Fixed
 
 - OpenAI Responses accepts streamed reasoning summary deltas with their documented
   `summary_index`, allowing reasoning summaries to precede function calls and tool-result
   continuation without rejecting a valid provider response.
+
+The v0.0.25 tag did not publish a release; v0.0.26 supersedes that validation candidate.
 
 ## [0.0.24] - 2026-09-29
 
@@ -368,8 +370,8 @@ names a commit that was never published.
 - The release was built locally for `aarch64-apple-darwin` only and has no GitHub
   OIDC attestation.
 
-[Unreleased]: https://github.com/Plantcore-AI/Iteron/compare/v0.0.25...HEAD
-[0.0.25]: https://github.com/Plantcore-AI/Iteron/compare/v0.0.24...v0.0.25
+[Unreleased]: https://github.com/Plantcore-AI/Iteron/compare/v0.0.26...HEAD
+[0.0.26]: https://github.com/Plantcore-AI/Iteron/compare/v0.0.24...v0.0.26
 [0.0.24]: https://github.com/Plantcore-AI/Iteron/compare/v0.0.23...v0.0.24
 [0.0.6]: https://github.com/Plantcore-AI/Iteron/compare/v0.0.5...v0.0.6
 [0.0.5]: https://github.com/Plantcore-AI/Iteron/compare/v0.0.4...v0.0.5
