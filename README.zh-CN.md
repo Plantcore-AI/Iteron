@@ -29,10 +29,10 @@
 </p>
 
 > [!WARNING]
-> **项目仍处于预发布阶段；普通权限门与 macOS/Linux 执行沙箱现默认开启。**
-> 文件写入路径仍存在未解决的符号链接竞态，不应在敏感仓库中无人值守运行。
-> `--dangerously-bypass-permissions` 是明确的危险授权。Windows 没有代码执行
-> 沙箱，受限执行会拒绝命令。
+> **项目仍处于预发布阶段；普通新会话默认拥有危险的宽泛主机权限。**
+> 文件写入路径仍存在未解决的符号链接竞态，不应在敏感或不可信仓库中无人值守运行。
+> 可用 `--ask-permissions`、显式受限的 `--mode` 或 `--confine` 收紧权限；
+> `--mode plan` 只读。Windows 没有代码执行沙箱，受限执行会拒绝命令。
 
 Iteron 是用于构建、评估和治理**任意垂类 AI Agent Harness Checkpoint** 的开源
 substrate。它提供覆盖上下文、工具、策略、权限、证据与 checkpoint 生命周期的

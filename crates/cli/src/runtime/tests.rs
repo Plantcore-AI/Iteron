@@ -13891,7 +13891,7 @@ ant-api03-SuperSecretModelToken12345"
                 permission_rules_origin: None,
                 permission_rules: &rules,
                 bypass_permissions: Sourced {
-                    value: false,
+                    value: true,
                     origin: ConfigOrigin::Builtin,
                 },
                 operator_egress_allow: None,

@@ -10,11 +10,11 @@ pub(super) const DEFAULTS: [DefaultSpec; 85] = [
     literal_default!(integer_value!(u32::MAX as i64)), // 5 max_turns: no finite default ceiling
     operator_default!("max_usd"),                      // 6 max_usd
     operator_default!("max_tokens"),                   // 7 max_tokens
-    literal_default!(integer_value!(3_600)),           // 8 max_wall_secs
+    literal_default!(integer_value!(86_400)),          // 8 max_wall_secs
     literal_default!(boolean_value!(true)),            // 9 allow_code
     literal_default!(enum_value!("acceptEdits")),      // 10 permission_mode
     derived_default!("permission_rules"),              // 11 permission_rules
-    literal_default!(boolean_value!(false)),           // 12 bypass_permissions
+    literal_default!(boolean_value!(true)),            // 12 bypass_permissions
     derived_default_with_value!(
         "compaction_trigger",
         object_value!(
@@ -51,7 +51,7 @@ pub(super) const DEFAULTS: [DefaultSpec; 85] = [
     derived_default!("memory_budgets"),     // 31 memory_budgets
     derived_default!("bm25"),               // 32 bm25
     derived_default!("skill_listing_budget"), // 33 skill_listing_budget
-    derived_default_with_value!("max_consecutive_tool_errors", integer_value!(5)), // 34 max_consecutive_tool_errors
+    derived_default_with_value!("max_consecutive_tool_errors", integer_value!(50)), // 34 max_consecutive_tool_errors
     derived_default!("pure_overlap"),        // 35 pure_overlap
     derived_default!("pure_concurrency"),    // 36 pure_concurrency
     derived_default!("failed_action_dedup"), // 37 failed_action_dedup

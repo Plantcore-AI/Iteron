@@ -273,6 +273,16 @@ pub(super) fn apply_server_event<T: notification::NotificationTransport + ?Sized
             app.last_turn_usage = snapshot.last_turn_usage;
             session.adopt(*snapshot);
 
+            // A durable append/record refusal latches the current writer fail-closed. Re-sending
+            // into this same session cannot repair it, even if the original task text was kept for
+            // an ordinary provider retry. Only closed, secret-safe record summaries cross EQ.
+            let record_failed = summary
+                .error
+                .as_deref()
+                .is_some_and(crate::runtime::KernelError::is_public_record_failure);
+            if record_failed {
+                app.retryable_task = None;
+            }
             let result = summary.current_result();
             let canonical_outcome = result
                 .get("outcome")
@@ -285,7 +295,7 @@ pub(super) fn apply_server_event<T: notification::NotificationTransport + ?Sized
             {
                 // Everything already streamed is on the record as an interrupted message, so a
                 // retry continues from evidence rather than from nothing (I-39).
-                let detail = if app.retryable_task.is_some() {
+                let detail = if !record_failed && app.retryable_task.is_some() {
                     format!("{detail}\n\n{}", retry_hint())
                 } else {
                     detail

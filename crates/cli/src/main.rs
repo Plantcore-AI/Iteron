@@ -814,41 +814,41 @@ struct Cli {
     max_tokens: Option<u64>,
 
     /// Consecutive failing tool calls before the run stops as stuck (stability floor; overrides
-    /// the default of 5).
+    /// the default of 50).
     #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
     max_consecutive_tool_errors: Option<u32>,
 
     /// Wall-clock ceiling for ONE submission, in seconds (bounded invariant; overrides config /
-    /// default). The default is 3600s (1h).
+    /// default). The default is 86400s (24h).
     #[arg(long)]
     max_wall_secs: Option<u64>,
 
-    /// Enable code execution (bash/build/test). ON by default inside the workspace sandbox; a
+    /// Enable code execution (bash/build/test). ON by default; a
     /// trusted or project `allow_code: false`, or `--mode plan`, can tighten it back off.
     #[arg(long)]
     allow_code: bool,
 
-    /// Keep execution inside the workspace sandbox even with the explicit dangerous bypass flag.
-    /// The sandbox is on by default, denies network and out-of-workspace shell writes, and fails
+    /// Tighten execution to the workspace sandbox even with the default dangerous bypass.
+    /// The sandbox denies network and out-of-workspace shell writes, and fails
     /// closed if the platform cannot enforce it. Built-in file writers also reapply their
     /// workspace-write boundary when this flag is combined with dangerous bypass.
     #[arg(long)]
     confine: bool,
 
-    /// DANGEROUS explicit opt-in: bypass tool approvals and run code with host authority unless
-    /// `--confine` is also passed. Plan mode and explicit deny rules still apply.
+    /// Explicitly request dangerous bypass (already the default for fresh ordinary sessions).
+    /// Without `--confine`, code has host authority. Plan mode and explicit denies still apply.
     #[arg(long)]
     dangerously_bypass_permissions: bool,
 
-    /// Use the stricter `default` permission mode when no explicit `--mode` was supplied. The
-    /// normal sandboxed `acceptEdits` mode already gates trust changes and external actions;
-    /// one-shot (`-p`) refuses any decision that requires an interactive answer.
+    /// Disable the fresh-session bypass and use `default` mode unless `--mode` was supplied.
+    /// Execution is confined; one-shot (`-p`) refuses decisions requiring an interactive answer.
+    /// On resume, this must agree with the recorded bypass authority.
     #[arg(long, conflicts_with = "dangerously_bypass_permissions")]
     ask_permissions: bool,
 
     /// Permission mode: default | acceptEdits | plan | yolo (ADR-007 §3). Reads always auto; the
-    /// mode governs edits/code/etc. Defaults to sandboxed `acceptEdits` in both TUI and one-shot;
-    /// pass `--ask-permissions` for stricter edit approvals or `--mode plan` for read-only.
+    /// fresh default is `acceptEdits` with dangerous bypass. Explicit default/acceptEdits restores
+    /// approval gates unless the dangerous flag is also given; plan is always confined read-only.
     #[arg(long)]
     mode: Option<String>,
 
@@ -1023,14 +1023,14 @@ struct Cli {
 }
 
 /// The trusted (pre-project-tightening) code-execution grant. Code starts enabled in the ordinary
-/// workspace sandbox; a trusted user setting or repository `allow_code:false` may tighten it, and
+/// session; a trusted user setting or repository `allow_code:false` may tighten its rule, and
 /// `--mode plan` disables execution. A cloned repository cannot turn execution back on.
 fn trusted_allow_code(cli_flag: bool, user_config: Option<bool>) -> bool {
     cli_flag || user_config.unwrap_or(DEFAULT_ALLOW_CODE)
 }
 
-/// Ordinary coding admits reversible workspace edits; trust/external actions still ask. An
-/// explicit `--ask-permissions` requests the stricter mode without silently changing bypass.
+/// The mode is separate from bypass authority. `--ask-permissions` selects stricter mode and
+/// disables bypass for a fresh session; checkpoint authority is checked separately on resume.
 fn default_permission_mode(ask_permissions: bool) -> iteron_protocol::PermissionMode {
     if ask_permissions {
         iteron_protocol::PermissionMode::Default
@@ -1043,23 +1043,69 @@ fn confined_execution(dangerously_bypass_permissions: bool, force_confine: bool)
     !dangerously_bypass_permissions || force_confine
 }
 
-/// A historical checkpoint may contain the old broad bypass. Its permission authority cannot be
-/// silently upgraded/downgraded by current CLI defaults, because there is no durable bypass
-/// transition. Require an explicit matching dangerous opt-in for such a resume, and never allow
-/// `--dangerously-bypass-permissions` to turn off confinement under a gated checkpoint.
-fn admitted_execution_posture(
+fn fresh_permission_bypass(
+    dangerous_flag: bool,
+    ask_permissions: bool,
+    explicit_mode: Option<iteron_protocol::PermissionMode>,
+) -> bool {
+    use iteron_protocol::PermissionMode;
+    if ask_permissions || explicit_mode == Some(PermissionMode::Plan) {
+        false
+    } else {
+        dangerous_flag
+            || !matches!(
+                explicit_mode,
+                Some(PermissionMode::Default | PermissionMode::AcceptEdits)
+            )
+    }
+}
+
+fn requested_permission_bypass(
     resuming: bool,
+    dangerous_flag: bool,
+    ask_permissions: bool,
+    explicit_mode: Option<iteron_protocol::PermissionMode>,
+) -> Option<bool> {
+    if !resuming {
+        Some(fresh_permission_bypass(
+            dangerous_flag,
+            ask_permissions,
+            explicit_mode,
+        ))
+    } else if ask_permissions {
+        Some(false)
+    } else if dangerous_flag {
+        Some(true)
+    } else if matches!(
+        explicit_mode,
+        Some(
+            iteron_protocol::PermissionMode::Default | iteron_protocol::PermissionMode::AcceptEdits
+        )
+    ) {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// An absent CLI override preserves the checkpoint, including an older gated default. There is
+/// no durable bypass transition, so explicit conflicting authority requests fail rather than
+/// silently upgrading or downgrading a resumed run. Confinement may still be tightened.
+fn admitted_execution_posture(
     pinned_bypass: bool,
-    dangerous_opt_in: bool,
+    requested_bypass: Option<bool>,
     force_confine: bool,
 ) -> anyhow::Result<bool> {
-    if pinned_bypass != dangerous_opt_in {
-        let context = if resuming { "resumed" } else { "fresh" };
+    if requested_bypass.is_some_and(|requested| requested != pinned_bypass) {
         anyhow::bail!(
-            "{context} permission bypass ({pinned_bypass}) disagrees with the explicit dangerous opt-in ({dangerous_opt_in}); start a new run or resume with matching --dangerously-bypass-permissions. Iteron will not change a checkpoint's authority or shell confinement silently"
+            "recorded permission bypass ({pinned_bypass}) disagrees with the explicit permission request; omit that override to preserve recorded authority, or start a new run. Iteron will not change a checkpoint's bypass silently"
         );
     }
     Ok(confined_execution(pinned_bypass, force_confine))
+}
+
+fn dangerous_bypass_notice() -> &'static str {
+    "WARNING: DANGEROUS BYPASS active (the fresh-session default): tools may act without approval. Without --confine, code has host authority. Use --ask-permissions for a new gated session or --mode plan for read-only; explicit denies and authority ceilings still apply."
 }
 
 /// The session rules a fresh run starts with. Only the operator's code-execution grant is seeded;
@@ -2231,8 +2277,8 @@ async fn run_cli() -> anyhow::Result<u8> {
             "--output-format is a one-shot option; pass -p/--print with a task (or omit it for the TUI)"
         );
     }
-    // Explicit --mode wins. Otherwise both TUI and one-shot admit reversible workspace edits
-    // inside the sandbox. A noninteractive Ask still fails closed.
+    // Explicit --mode wins. Fresh ordinary sessions default to bypass; --ask-permissions and
+    // Plan tighten it below. A noninteractive Ask still fails closed.
     let mode_runtime_override = cli.mode.is_some() || cli.ask_permissions;
     let (mode, mode_origin) = match cli.mode.as_deref() {
         Some(s) => (
@@ -2670,7 +2716,11 @@ async fn run_cli() -> anyhow::Result<u8> {
         authority_ceiling = authority_ceiling.intersect(envelope.ceiling);
     }
     let initial_rules = initial_permission_rules(allow_code);
-    let bypass_permissions = cli.dangerously_bypass_permissions;
+    let bypass_permissions = fresh_permission_bypass(
+        cli.dangerously_bypass_permissions,
+        cli.ask_permissions,
+        cli.mode.as_ref().map(|_| mode),
+    );
     let mut compaction_policy = iteron_ctx::CompactionPolicy::default();
     let compaction_owner = if let Some(trigger_tokens) = user_file.compaction_trigger_tokens {
         compaction_policy.set_fixed_trigger_tokens(trigger_tokens);
@@ -2827,7 +2877,10 @@ async fn run_cli() -> anyhow::Result<u8> {
                 permission_rules: &initial_rules,
                 bypass_permissions: runtime_tunables::core_facts::Sourced {
                     value: bypass_permissions,
-                    origin: if cli.dangerously_bypass_permissions {
+                    origin: if cli.dangerously_bypass_permissions
+                        || cli.ask_permissions
+                        || cli.mode.is_some()
+                    {
                         config::ConfigOrigin::Cli
                     } else {
                         config::ConfigOrigin::Builtin
@@ -2891,11 +2944,18 @@ async fn run_cli() -> anyhow::Result<u8> {
         )?;
         settings
     };
-    let confine_execution = admitted_execution_posture(
+    let requested_bypass = requested_permission_bypass(
         resumed_tunables_checkpoint.is_some(),
-        effective_settings.bypass_permissions,
         cli.dangerously_bypass_permissions,
-        cli.confine,
+        cli.ask_permissions,
+        cli.mode.as_ref().map(|_| mode),
+    );
+    let confine_execution = admitted_execution_posture(
+        effective_settings.bypass_permissions,
+        requested_bypass,
+        cli.confine
+            || (mode_runtime_override && mode == iteron_protocol::PermissionMode::Plan)
+            || effective_settings.permission_mode == iteron_protocol::PermissionMode::Plan,
     )?;
     registry.set_confine_execution(confine_execution);
     if confine_execution && let Some(notice) = iteron_tools::native_write_confinement_notice() {
@@ -3240,12 +3300,10 @@ async fn run_cli() -> anyhow::Result<u8> {
     // Build a coherent fresh-session policy before genesis. A resumed session restores its last
     // durable snapshot; only explicit runtime overrides append a new policy event.
     agent.workspace = repo.clone();
-    // Dangerous bypass is an explicit command-line act, never the new-user default.
+    // Fresh sessions use the public bypass default; resumes retain their pinned authority.
     agent.bypass_permissions = effective_settings.bypass_permissions;
     if agent.bypass_permissions {
-        eprintln!(
-            "permissions: DANGEROUS BYPASS (every tool auto-approved; plan mode + explicit denies still apply)"
-        );
+        eprintln!("{}", dangerous_bypass_notice());
     }
     agent.memory_workspace = effective_settings.memory_enabled.then(|| repo.clone()); // modular memory: .iteron/memory (R5)
     if let Some(scope) = cli.benchmark_attempt_scope.as_deref() {
@@ -3454,9 +3512,7 @@ async fn run_cli() -> anyhow::Result<u8> {
         initial_notices.push(posture.join(" · "));
         // Keep the explicit dangerous opt-in conspicuous on every affected run.
         if agent.bypass_permissions {
-            initial_notices.push(
-                "permissions: DANGEROUS BYPASS (every tool auto-approved; plan mode + explicit denies still apply)".to_owned(),
-            );
+            initial_notices.push(dangerous_bypass_notice().to_owned());
         }
         let attached = match app_server::attach(agent, true, false) {
             Ok(attached) => attached,
@@ -5486,15 +5542,49 @@ mod tests {
     }
 
     #[test]
-    fn new_user_is_gated_and_sandboxed_until_dangerous_bypass_is_explicit() {
+    fn fresh_public_permission_default_bypasses_unless_explicitly_tightened() {
+        use iteron_protocol::PermissionMode;
+
+        let cli = Cli::try_parse_from(["iteron"]).unwrap();
         assert!(
-            !Cli::try_parse_from(["iteron"])
-                .unwrap()
-                .dangerously_bypass_permissions
+            !cli.dangerously_bypass_permissions,
+            "the legacy flag stays explicit"
+        );
+        assert_eq!(
+            requested_permission_bypass(false, false, false, None),
+            Some(true)
+        );
+        assert!(!fresh_permission_bypass(false, true, None));
+        assert!(!fresh_permission_bypass(
+            false,
+            false,
+            Some(PermissionMode::Plan)
+        ));
+        assert_eq!(
+            requested_permission_bypass(false, true, false, Some(PermissionMode::Plan)),
+            Some(false),
+            "even the explicit dangerous flag cannot weaken Plan"
         );
         assert!(confined_execution(false, false));
         assert!(!confined_execution(true, false));
         assert!(confined_execution(true, true));
+        for mode in [PermissionMode::Default, PermissionMode::AcceptEdits] {
+            assert!(!fresh_permission_bypass(false, false, Some(mode)));
+            assert!(fresh_permission_bypass(true, false, Some(mode)));
+            assert_eq!(
+                requested_permission_bypass(true, false, false, Some(mode)),
+                Some(false)
+            );
+        }
+        assert!(fresh_permission_bypass(
+            false,
+            false,
+            Some(PermissionMode::Yolo)
+        ));
+        assert_eq!(
+            requested_permission_bypass(true, false, false, Some(PermissionMode::Yolo)),
+            None
+        );
 
         let command = <Cli as clap::CommandFactory>::command();
         let ask = command
@@ -5522,28 +5612,35 @@ mod tests {
     }
 
     #[test]
-    fn fresh_and_resumed_bypass_sandbox_postures_are_one_admitted_decision() {
-        for resuming in [false, true] {
-            assert!(
-                admitted_execution_posture(resuming, false, false, false).unwrap(),
-                "a gated checkpoint always keeps the sandbox"
+    fn resumed_permission_authority_ignores_fresh_default_and_rejects_conflicts() {
+        use iteron_protocol::PermissionMode;
+
+        let unchanged = requested_permission_bypass(false, false, false, None);
+        assert_eq!(unchanged, Some(true));
+        let resumed = requested_permission_bypass(true, false, false, None);
+        assert_eq!(resumed, None);
+        for pinned in [false, true] {
+            assert_eq!(
+                admitted_execution_posture(pinned, resumed, false).unwrap(),
+                !pinned
             );
-            assert!(admitted_execution_posture(resuming, false, false, true).unwrap());
-            assert!(
-                !admitted_execution_posture(resuming, true, true, false).unwrap(),
-                "only a matching dangerous opt-in drops confinement"
-            );
-            assert!(
-                admitted_execution_posture(resuming, true, true, true).unwrap(),
-                "--confine restores the shell and file-writer boundary"
-            );
-            for (pinned, opt_in) in [(true, false), (false, true)] {
-                assert!(
-                    admitted_execution_posture(resuming, pinned, opt_in, false).is_err(),
-                    "a CLI bit cannot silently change a checkpoint's bypass"
-                );
-            }
+            assert!(admitted_execution_posture(pinned, resumed, true).unwrap());
+            assert!(admitted_execution_posture(pinned, Some(pinned), true).unwrap());
+            assert!(admitted_execution_posture(pinned, Some(!pinned), false).is_err());
         }
+        assert_eq!(
+            requested_permission_bypass(true, true, false, None),
+            Some(true)
+        );
+        assert_eq!(
+            requested_permission_bypass(true, false, true, None),
+            Some(false)
+        );
+        assert_eq!(
+            requested_permission_bypass(true, false, false, Some(PermissionMode::Plan)),
+            None,
+            "Plan changes the mode overlay, not immutable bypass authority"
+        );
         assert_eq!(
             default_permission_mode(true),
             iteron_protocol::PermissionMode::Default
@@ -5552,6 +5649,48 @@ mod tests {
             Cli::try_parse_from(["iteron", "--ask-permissions"])
                 .unwrap()
                 .ask_permissions
+        );
+    }
+
+    #[test]
+    fn public_permission_warning_names_the_risk_and_tightening_controls() {
+        for text in [
+            "WARNING",
+            "host authority",
+            "--ask-permissions",
+            "--confine",
+            "--mode plan",
+            "explicit denies",
+        ] {
+            assert!(dangerous_bypass_notice().contains(text));
+        }
+    }
+
+    #[test]
+    fn explicit_submission_budget_flags_are_not_expanded_by_public_defaults() {
+        let cli = Cli::try_parse_from([
+            "iteron",
+            "--max-turns",
+            "20",
+            "--max-wall-secs",
+            "180",
+            "--max-consecutive-tool-errors",
+            "2",
+            "--max-usd",
+            "0.5",
+            "--max-tokens",
+            "1024",
+        ])
+        .unwrap();
+        assert_eq!(cli.max_turns, Some(20));
+        assert_eq!(cli.max_wall_secs, Some(180));
+        assert_eq!(cli.max_consecutive_tool_errors, Some(2));
+        assert_eq!(cli.max_usd, Some(0.5));
+        assert_eq!(cli.max_tokens, Some(1024));
+        assert_eq!(config::tighten(Some(20), Budget::default().max_turns), 20);
+        assert_eq!(
+            config::tighten(Some(180), Budget::default().max_wall_secs),
+            180
         );
     }
 

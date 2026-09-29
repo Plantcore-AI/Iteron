@@ -183,8 +183,11 @@ fn responses_reasoning_effort(
     if error_profile != ErrorProfile::OpenAi || !is_openai_reasoning_family(model_id) {
         return None;
     }
-    // The adapter's portable, catalog-proven OpenAI enum ends at `high`. Clamp stronger Core
-    // values instead of emitting `xhigh`/`max` as unproven labels.
+    // GPT-6 documents `xhigh` and `max`; older recognized families retain the conservative
+    // `high` ceiling until their stronger effort labels are proven here.
+    if crate::model_matches_family(model_id, "gpt-6") {
+        return Some(requested);
+    }
     Some(match requested {
         ReasoningEffort::XHigh | ReasoningEffort::Max => ReasoningEffort::High,
         supported => supported,
@@ -208,7 +211,7 @@ fn responses_effort_application(
 }
 
 fn is_openai_reasoning_family(model_id: &str) -> bool {
-    ["o1", "o3", "o4", "gpt-5", "codex"]
+    ["o1", "o3", "o4", "gpt-5", "gpt-6", "codex"]
         .into_iter()
         .any(|family| crate::model_matches_family(model_id, family))
 }
@@ -832,8 +835,12 @@ impl ResponseParser {
                 "function call changed output index".into(),
             ));
         }
-        let event_name = required_str(value, "name")?;
-        if event_name != meta_name {
+        let event_name = if value.get("name").is_some() {
+            required_str(value, "name")?
+        } else {
+            meta_name.as_str()
+        };
+        if event_name.is_empty() || event_name != meta_name.as_str() {
             return Err(ProviderError::Decode("function call changed name".into()));
         }
         let arguments = required_str(value, "arguments")?;
@@ -1981,7 +1988,7 @@ mod tests {
             ),
             Some(ReasoningEffort::High)
         );
-        for model in ["gpt-4.1", "gpt-4o", "gpt-50", "unknown"] {
+        for model in ["gpt-4.1", "gpt-4o", "gpt-50", "gpt-60", "gpt-6x", "unknown"] {
             assert_eq!(
                 responses_reasoning_effort(ErrorProfile::OpenAi, model, ReasoningEffort::Medium),
                 None,
@@ -2015,6 +2022,160 @@ mod tests {
         assert!(
             body.get("tools").is_some(),
             "tool semantics must be unchanged"
+        );
+    }
+
+    #[test]
+    fn gpt_6_luna_low_effort_is_sent_on_the_responses_wire() {
+        let mut request = request();
+        request.model = "gpt-6-luna".into();
+        request.reasoning_effort = ReasoningEffort::Low;
+
+        let body = request_body(&request, ErrorProfile::OpenAi, TEST_SCOPE).unwrap();
+        assert_eq!(body["reasoning"]["effort"], "low");
+        assert_eq!(body["reasoning"]["summary"], "auto");
+    }
+
+    #[test]
+    fn gpt_6_extended_efforts_are_sent_exactly() {
+        for requested in [ReasoningEffort::XHigh, ReasoningEffort::Max] {
+            let mut request = request();
+            request.model = "gpt-6-luna".into();
+            request.reasoning_effort = requested;
+
+            let body = request_body(&request, ErrorProfile::OpenAi, TEST_SCOPE).unwrap();
+            assert_eq!(body["reasoning"]["effort"], requested.label());
+            assert_eq!(
+                responses_effort_application(ErrorProfile::OpenAi, &request.model, requested),
+                EffortApplication::Exact { requested }
+            );
+        }
+    }
+
+    fn parser_with_function_metadata() -> ResponseParser {
+        let mut parser = ResponseParser::default();
+        parser
+            .push_frame(
+                frame(serde_json::json!({
+                    "type":"response.output_item.added",
+                    "output_index":1,
+                    "item":{
+                        "id":"fc_synthetic",
+                        "type":"function_call",
+                        "call_id":"call_synthetic",
+                        "name":"tool_search"
+                    }
+                })),
+                None,
+                None,
+            )
+            .unwrap();
+        parser
+    }
+
+    #[test]
+    fn function_done_without_name_uses_added_metadata() {
+        let mut parser = parser_with_function_metadata();
+        let items = parser
+            .push_frame(
+                frame(serde_json::json!({
+                    "type":"response.function_call_arguments.done",
+                    "item_id":"fc_synthetic",
+                    "output_index":1,
+                    "arguments":"{\"query\":\"example\"}"
+                })),
+                None,
+                None,
+            )
+            .unwrap();
+        assert!(matches!(
+            items.as_slice(),
+            [StreamItem::ToolUseComplete(tool)]
+                if tool.id == "call_synthetic"
+                    && tool.name == "tool_search"
+                    && tool.input == serde_json::json!({"query":"example"})
+        ));
+        let terminal = parser
+            .push_frame(
+                frame(serde_json::json!({
+                    "type":"response.completed",
+                    "response":{
+                        "status":"completed",
+                        "output":[
+                            {"id":"rs_synthetic","type":"reasoning",
+                             "encrypted_content":"synthetic-encrypted-content","summary":[]},
+                            {"id":"fc_synthetic","type":"function_call",
+                             "call_id":"call_synthetic","name":"tool_search",
+                             "arguments":"{\"query\":\"example\"}","status":"completed"}
+                        ],
+                        "usage":usage()
+                    }
+                })),
+                None,
+                None,
+            )
+            .unwrap();
+        assert!(matches!(
+            terminal.as_slice(),
+            [StreamItem::TurnComplete {
+                stop_reason: StopReason::ToolUse,
+                ..
+            }]
+        ));
+    }
+
+    #[test]
+    fn function_done_with_changed_name_fails() {
+        for name in ["other_tool", ""] {
+            let mut parser = parser_with_function_metadata();
+            let result = parser.push_frame(
+                frame(serde_json::json!({
+                    "type":"response.function_call_arguments.done",
+                    "item_id":"fc_synthetic",
+                    "output_index":1,
+                    "name":name,
+                    "arguments":"{}"
+                })),
+                None,
+                None,
+            );
+            assert!(
+                matches!(result, Err(ProviderError::Decode(message)) if message == "function call changed name")
+            );
+        }
+    }
+
+    #[test]
+    fn function_done_without_prior_metadata_fails() {
+        let mut parser = ResponseParser::default();
+        let result = parser.push_frame(
+            frame(serde_json::json!({
+                "type":"response.function_call_arguments.done",
+                "item_id":"fc_synthetic",
+                "output_index":1,
+                "arguments":"{}"
+            })),
+            None,
+            None,
+        );
+        assert!(
+            matches!(result, Err(ProviderError::Decode(message)) if message == "function_call_arguments.done lacked prior metadata")
+        );
+    }
+
+    #[test]
+    fn duplicate_function_done_without_name_fails() {
+        let mut parser = parser_with_function_metadata();
+        let done = serde_json::json!({
+            "type":"response.function_call_arguments.done",
+            "item_id":"fc_synthetic",
+            "output_index":1,
+            "arguments":"{}"
+        });
+        parser.push_frame(frame(done.clone()), None, None).unwrap();
+        let result = parser.push_frame(frame(done), None, None);
+        assert!(
+            matches!(result, Err(ProviderError::Decode(message)) if message == "duplicate function_call_arguments.done")
         );
     }
 

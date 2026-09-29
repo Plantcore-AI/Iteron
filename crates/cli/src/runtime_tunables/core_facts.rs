@@ -226,7 +226,7 @@ pub(crate) fn apply_core_facts(
     literal_with_override(
         builder,
         "bypass_permissions",
-        boolv(false),
+        boolv(true),
         input.bypass_permissions.origin,
         boolv(input.bypass_permissions.value),
     )?;
@@ -359,7 +359,7 @@ fn add_budget_values(
     literal_with_override(
         builder,
         "max_wall_secs",
-        int(3_600),
+        int(86_400),
         input.budget_origins.max_wall_secs,
         int(i64v(b.max_wall_secs, "max_wall_secs")?),
     )?;

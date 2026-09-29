@@ -1736,6 +1736,17 @@ mod tests {
     }
 
     #[cfg(unix)]
+    async fn wait_until_file_contains(path: &std::path::Path, needle: &str) -> bool {
+        for _ in 0..500 {
+            if std::fs::read_to_string(path).is_ok_and(|contents| contents.contains(needle)) {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        false
+    }
+
+    #[cfg(unix)]
     fn pid_file(tag: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!(
             "iteron-mcp-{tag}-{}-{}",
@@ -1832,9 +1843,10 @@ mod tests {
             client.negotiated_protocol_version(),
             STATEFUL_REQUESTED_PROTOCOL_VERSION
         );
-        assert!(wait_until_file_exists(&initialized_path).await);
-        let initialized = std::fs::read_to_string(&initialized_path).unwrap();
-        assert!(initialized.contains("notifications/initialized"));
+        assert!(
+            wait_until_file_contains(&initialized_path, "notifications/initialized").await,
+            "the initialized notification was not durably observed"
+        );
 
         client.terminate().await;
         let _ = std::fs::remove_file(initialized_path);

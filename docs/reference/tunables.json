@@ -1,12 +1,12 @@
 {
   "digest": {
     "algorithm": "sha256",
-    "value": "41d03740d482fe481c5425278c130b21492e75b38eae7178fd5d70e4487d76c2"
+    "value": "50f8e3bc8bb5ad72a4af72c805e95613542e1c7a39c990015b8df886dc8211fb"
   },
   "payload": {
     "schema_version": 4,
     "registry_id": "iteron-tunables",
-    "registry_revision": 26,
+    "registry_revision": 27,
     "canonicalization": "iteron-tunables-json-v4",
     "family_count": 160,
     "scalar_catalogs": [
@@ -923,7 +923,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "7200650e9f03c89ffc0cf7c6e9337fb51640ef382155a0b799de007fd383a548"
+          "value": "02df4f2322abe631da4ed680e068d1074575d009c09631813093a7e2dd06dd48"
         },
         "schema_version": 3,
         "ordinal": 8,
@@ -957,7 +957,7 @@
           "requirement": "optional",
           "value": {
             "type": "integer",
-            "value": 3600
+            "value": 86400
           }
         },
         "source": {
@@ -1380,7 +1380,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "a7ffea4d006ac2af98998f884d34b8a447061779b4bda9c07361b0dafa2ce69a"
+          "value": "33a5d4eca1a084283671c31f4286555728d31521a07bb4baea32c14f308b0154"
         },
         "schema_version": 3,
         "ordinal": 12,
@@ -1412,7 +1412,7 @@
           "requirement": "optional",
           "value": {
             "type": "boolean",
-            "value": false
+            "value": true
           }
         },
         "source": {
@@ -4197,7 +4197,7 @@
       {
         "semantic_digest": {
           "algorithm": "sha256",
-          "value": "f4995c3716ee187267c9919955ee6afef3196167e228e94abe9d0d00f0aa10ba"
+          "value": "ea8b535b983b637179ea05e5465a5644e6e051dba081f506fa37dc7433f77d8a"
         },
         "schema_version": 3,
         "ordinal": 34,
@@ -4231,7 +4231,7 @@
           "requirement": "optional",
           "value": {
             "type": "integer",
-            "value": 5
+            "value": 50
           }
         },
         "source": {
