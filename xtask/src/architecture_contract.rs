@@ -26,6 +26,8 @@ const SCHEDULER_MODULES: &[&str] = &[
 pub(crate) fn validate(root: &Path) -> Result<()> {
     validate_dependency_graph(root)?;
     validate_ticket_profile(root)?;
+    validate_script_profile(root)?;
+    validate_extracted_owners(root)?;
     // The direct public module declaration activates this new contract for historical trusted
     // base comparisons too; old bases remain readable without pretending they contain it.
     let workflow = read(root, "crates/workflow/src/lib.rs", MAX_SOURCE_BYTES)?;
@@ -132,13 +134,23 @@ fn validate_ticket_declaration(source: &str) -> Result<()> {
 }
 
 fn eval_cfg(meta: &syn::Meta, ticket: bool, test: bool, unix: bool) -> Result<bool> {
+    eval_feature_cfg(meta, "ticket-investigation", ticket, test, unix)
+}
+
+fn eval_feature_cfg(
+    meta: &syn::Meta,
+    feature_name: &str,
+    enabled: bool,
+    test: bool,
+    unix: bool,
+) -> Result<bool> {
     match meta {
         syn::Meta::Path(path) if path.is_ident("test") => Ok(test),
         syn::Meta::Path(path) if path.is_ident("unix") => Ok(unix),
         syn::Meta::Path(path) if path.is_ident("windows") => Ok(!unix),
         syn::Meta::NameValue(value) if value.path.is_ident("feature") => match &value.value {
             syn::Expr::Lit(lit) => match &lit.lit {
-                syn::Lit::Str(feature) if feature.value() == "ticket-investigation" => Ok(ticket),
+                syn::Lit::Str(feature) if feature.value() == feature_name => Ok(enabled),
                 syn::Lit::Str(_) => Ok(false),
                 _ => bail!("feature cfg needs string literal"),
             },
@@ -149,7 +161,7 @@ fn eval_cfg(meta: &syn::Meta, ticket: bool, test: bool, unix: bool) -> Result<bo
                 .parse2(list.tokens.clone())?;
             let values = items
                 .iter()
-                .map(|item| eval_cfg(item, ticket, test, unix))
+                .map(|item| eval_feature_cfg(item, feature_name, enabled, test, unix))
                 .collect::<Result<Vec<_>>>()?;
             if list.path.is_ident("any") {
                 Ok(values.into_iter().any(|v| v))
@@ -162,6 +174,171 @@ fn eval_cfg(meta: &syn::Meta, ticket: bool, test: bool, unix: bool) -> Result<bo
             }
         }
         _ => bail!("ticket profile cfg must explicitly express feature/test/platform conditions"),
+    }
+}
+
+fn validate_script_profile(root: &Path) -> Result<()> {
+    let workflow: toml::Value = toml::from_str(&read(
+        root,
+        "crates/workflow/Cargo.toml",
+        MAX_MANIFEST_BYTES,
+    )?)?;
+    let Some(features) = workflow.get("features").and_then(toml::Value::as_table) else {
+        return Ok(());
+    };
+    if !features.contains_key("script-workflows") {
+        return Ok(());
+    }
+    if !features
+        .get("default")
+        .and_then(toml::Value::as_array)
+        .is_some_and(Vec::is_empty)
+    {
+        bail!("default workflow profile must not compile the script engine");
+    }
+    if workflow
+        .get("dependencies")
+        .and_then(|d| d.get("rquickjs"))
+        .and_then(|d| d.get("optional"))
+        .and_then(toml::Value::as_bool)
+        != Some(true)
+    {
+        bail!("QuickJS dependency must be optional");
+    }
+    let source = read(root, "crates/workflow/src/lib.rs", MAX_SOURCE_BYTES)?;
+    for name in ["bindings", "executor", "host", "meta"] {
+        validate_feature_module(&source, name, "script-workflows")?;
+    }
+    let ledger = read(
+        root,
+        "crates/workflow/src/task_dag/mod.rs",
+        MAX_SOURCE_BYTES,
+    )?;
+    validate_feature_module(&ledger, "runtime", "script-workflows")?;
+    let tools: toml::Value =
+        toml::from_str(&read(root, "crates/tools/Cargo.toml", MAX_MANIFEST_BYTES)?)?;
+    if tools
+        .get("features")
+        .and_then(|f| f.get("script-workflows"))
+        .is_none()
+    {
+        bail!("script profile must control the writer schema catalog too");
+    }
+    validate_feature_module(
+        &read(root, "crates/tools/src/lib.rs", MAX_SOURCE_BYTES)?,
+        "workflow_tool",
+        "script-workflows",
+    )?;
+    let cli: toml::Value =
+        toml::from_str(&read(root, "crates/cli/Cargo.toml", MAX_MANIFEST_BYTES)?)?;
+    let forwarded = cli
+        .get("features")
+        .and_then(|f| f.get("script-workflows"))
+        .and_then(toml::Value::as_array)
+        .context("CLI must explicitly forward its optional script feature")?;
+    for edge in [
+        "iteron-workflow/script-workflows",
+        "iteron-tools/script-workflows",
+    ] {
+        if !forwarded.iter().any(|v| v.as_str() == Some(edge)) {
+            bail!("CLI script profile does not forward {edge}");
+        }
+    }
+    Ok(())
+}
+
+fn validate_feature_module(source: &str, name: &str, feature: &str) -> Result<()> {
+    let parsed = syn::parse_file(source)?;
+    let mut found = false;
+    for item in parsed.items {
+        let syn::Item::Mod(module) = item else {
+            continue;
+        };
+        if module.ident != name {
+            continue;
+        }
+        let cfgs = module
+            .attrs
+            .iter()
+            .filter(|a| a.path().is_ident("cfg"))
+            .map(|a| a.parse_args::<syn::Meta>())
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        for unix in [false, true] {
+            let default = cfgs
+                .iter()
+                .map(|m| eval_feature_cfg(m, feature, false, false, unix))
+                .collect::<Result<Vec<_>>>()?
+                .into_iter()
+                .all(|v| v);
+            if default {
+                bail!("optional module {name} is compiled into default production");
+            }
+        }
+        let selected = cfgs
+            .iter()
+            .map(|m| eval_feature_cfg(m, feature, true, false, true))
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .all(|v| v);
+        if !selected {
+            bail!("feature {feature} does not select its module {name}");
+        }
+        found = true;
+    }
+    if !found {
+        bail!("feature {feature} has no module {name}");
+    }
+    Ok(())
+}
+
+fn validate_extracted_owners(root: &Path) -> Result<()> {
+    let facade = read(root, "crates/cli/src/workflow.rs", MAX_SOURCE_BYTES)?;
+    if !facade.lines().any(|l| l.trim() == "mod supervisor;") {
+        return Ok(());
+    }
+    for path in [
+        "crates/cli/src/workflow/launch.rs",
+        "crates/cli/src/workflow/progress.rs",
+        "crates/cli/src/workflow/run_store.rs",
+        "crates/cli/src/workflow/summary.rs",
+        "crates/cli/src/workflow/supervisor.rs",
+        "crates/workflow/src/bindings.rs",
+        "crates/workflow/src/bindings/run_state.rs",
+        "crates/workflow/src/bindings/attempt_executor.rs",
+    ] {
+        let source = read(root, path, MAX_SOURCE_BYTES)?;
+        validate_production_module(path, &source)?;
+        let parsed = syn::parse_file(&source)?;
+        let mut guard = ExplicitImports { violation: false };
+        guard.visit_file(&parsed);
+        if guard.violation {
+            bail!("{path}: wildcard imports or include source fragments hide ownership");
+        }
+    }
+    Ok(())
+}
+
+struct ExplicitImports {
+    violation: bool,
+}
+impl<'ast> Visit<'ast> for ExplicitImports {
+    fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
+        if node.attrs.iter().any(|a| {
+            a.path().is_ident("cfg")
+                && a.parse_args::<syn::Meta>()
+                    .is_ok_and(|m| matches!(m, syn::Meta::Path(p) if p.is_ident("test")))
+        }) {
+            return;
+        }
+        syn::visit::visit_item_mod(self, node);
+    }
+    fn visit_use_tree(&mut self, tree: &'ast syn::UseTree) {
+        self.violation |= matches!(tree, syn::UseTree::Glob(_));
+        syn::visit::visit_use_tree(self, tree);
+    }
+    fn visit_macro(&mut self, node: &'ast syn::Macro) {
+        self.violation |= node.path.is_ident("include");
+        syn::visit::visit_macro(self, node);
     }
 }
 
@@ -464,6 +641,23 @@ mod tests {
 
     #[test]
     fn optional_strategy_is_physically_absent_from_default_production() {
+        assert!(validate_feature_module("mod host;", "host", "script-workflows").is_err());
+        assert!(
+            validate_feature_module(
+                "#[cfg(any(unix, feature = \"script-workflows\"))] mod host;",
+                "host",
+                "script-workflows"
+            )
+            .is_err()
+        );
+        assert!(
+            validate_feature_module(
+                "#[cfg(feature = \"script-workflows\")] mod host;",
+                "host",
+                "script-workflows"
+            )
+            .is_ok()
+        );
         assert!(validate_ticket_declaration("mod investigation_convergence;").is_err());
         assert!(
             validate_ticket_declaration(

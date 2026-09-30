@@ -93,35 +93,93 @@ const SURFACES: &[Surface] = &[
         path: "crates/cli/src/workflow.rs",
         boundary: "cli-host",
         responsibilities: &[
-            "workflow submission/preparation",
-            "background run ownership",
-            "progress persistence/projection",
-            "shutdown/cleanup and replay",
-            "catalog/provider child assembly",
+            "workflow module assembly",
+            "public immutable contracts and owner exports",
         ],
         next_seams: &[
-            "workflow supervisor and cleanup port",
-            "submission/validation adapter",
-            "read-only progress projection",
-            "child runtime composition",
+            "maintain explicit independent owner interfaces; final integration evidence remains",
         ],
     },
     Surface {
         path: "crates/workflow/src/bindings.rs",
         boundary: "workflow-engine",
         responsibilities: &[
-            "QuickJS host bindings",
-            "bounded physical attempt dispatch",
-            "parallel/quorum selection",
-            "journal and task-DAG attribution",
-            "child schema retry",
+            "QuickJS wire adapter",
+            "schema repair and journal attribution coordinator",
+        ],
+        next_seams: &["future narrow schema-repair port if this coordinator grows"],
+    },
+    Surface {
+        path: "crates/cli/src/workflow/supervisor.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "detached run handle ownership",
+            "cancellation and actual settlement",
+            "bounded summary retention and shutdown",
+        ],
+        next_seams: &["final host/provider cleanup and restart integration evidence"],
+    },
+    Surface {
+        path: "crates/cli/src/workflow/progress.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "partial and degraded result retention",
+            "frontend progress delivery and bounded projections",
+        ],
+        next_seams: &["retain separate effect-free progress contracts"],
+    },
+    Surface {
+        path: "crates/cli/src/workflow/run_store.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "workflow sidecar filesystem adapter",
+            "bounded restart inventory readers",
         ],
         next_seams: &[
-            "script-facing adapter",
-            "attempt dispatch service",
-            "parallel group state owner",
-            "typed ledger/controller ports",
+            "sidecar publication and namespace hardening remain distinct from live journal durability",
         ],
+    },
+    Surface {
+        path: "crates/cli/src/workflow/launch.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "directional launch/collect/cancel contract",
+            "in-turn engine adapter",
+        ],
+        next_seams: &["no mutable detached owner state"],
+    },
+    Surface {
+        path: "crates/cli/src/workflow/summary.rs",
+        boundary: "cli-host",
+        responsibilities: &["pure settled/interrupted evidence projections"],
+        next_seams: &["no filesystem or process state"],
+    },
+    Surface {
+        path: "crates/workflow/src/bindings/run_state.rs",
+        boundary: "workflow-engine",
+        responsibilities: &[
+            "run admission counters and phase ownership",
+            "immutable runtime port bundle",
+        ],
+        next_seams: &["retain opaque counters and narrow actions"],
+    },
+    Surface {
+        path: "crates/workflow/src/bindings/attempt_executor.rs",
+        boundary: "workflow-engine",
+        responsibilities: &[
+            "physical child execution and bounded cleanup",
+            "durable attempt settlement coordination",
+        ],
+        next_seams: &["future explicit controller adapter integration for legacy scripts"],
+    },
+    Surface {
+        path: "crates/support/src/durable_windows_state.rs",
+        boundary: "support-bundle",
+        responsibilities: &[
+            "private pinned-handle Windows byte publication",
+            "exclusive lease and unknown-outcome poison",
+        ],
+        next_seams: &["native Windows and device-fault evidence remains"],
     },
     Surface {
         path: "crates/workflow/src/live_scheduler/owner.rs",
@@ -162,6 +220,7 @@ struct ModuleInventory {
 pub(crate) fn print(root: &Path) -> Result<()> {
     let modules = SURFACES
         .iter()
+        .filter(|surface| root.join(surface.path).is_file())
         .map(|surface| measure(root, surface))
         .collect::<Result<Vec<_>>>()?;
     let inventory = Inventory {

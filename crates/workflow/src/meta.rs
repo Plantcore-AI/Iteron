@@ -14,16 +14,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 const DEFAULT_COMPILE_CACHE_ENTRIES: usize = 256;
 
-/// The parsed workflow header (best-effort; every field is optional).
-#[derive(Debug, Clone, Default, serde::Deserialize)]
-pub struct Meta {
-    #[serde(default)]
-    pub name: Option<String>,
-    #[serde(default)]
-    pub description: Option<String>,
-    #[serde(default)]
-    pub phases: Option<Vec<String>>,
-}
+pub use crate::script_contract::Meta;
 
 /// One immutable parse product shared by metadata discovery and execution.
 #[derive(Debug)]

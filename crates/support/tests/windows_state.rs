@@ -116,9 +116,12 @@ fn directory_junction_does_not_gain_storage_authority() {
     let directory = PrivateDirectory::new();
     let alias = directory.0.with_extension("junction");
     let status = Command::new("cmd.exe")
-        .args(["/D", "/C", "mklink", "/J"])
-        .arg(&alias)
-        .arg(&directory.0)
+        .args(["/D", "/S", "/C"])
+        .arg(format!(
+            "mklink /J \"{}\" \"{}\"",
+            alias.display(),
+            directory.0.display()
+        ))
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()

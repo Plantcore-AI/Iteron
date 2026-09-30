@@ -1,3 +1,5 @@
+#![cfg(feature = "script-workflows")]
+
 //! End-to-end proof of the vertical slice with a deterministic mock spawner (no network): a real
 //! 2-agent `parallel()` runs through the QuickJS engine, streams progress, and returns a
 //! declaration-ordered array. This is the CI-safe twin of the CLI's real-model run.

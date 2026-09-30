@@ -51,3 +51,30 @@ through versioned ports. Product assembly still needs real CLI/TUI/API parity, c
 cancellation, provider journeys and Windows restart/fault evidence. Final architecture and
 release receipts must describe the same immutable candidate; this inventory is not a production
 readiness claim.
+
+## Workflow responsibility extraction candidate
+
+The CLI workflow facade now assembles explicit independent contracts and owners. The detached
+supervisor retains all live handles, cancellation/settlement and bounded summary state in
+`workflow/supervisor.rs`; callers observe immutable run info or issue owner actions. Progress
+retention belongs to `workflow/progress.rs`, filesystem sidecars and restart inventory to
+`workflow/run_store.rs`, the directional launch contract to `workflow/launch.rs`, and pure evidence
+formatting to `workflow/summary.rs`. Production code imports explicit ports and types. Existing
+integration tests continue through the facade; their eviction fixture asks the owner to perform
+an action instead of reaching through its mutex.
+
+QuickJS bindings keep wire conversion, journal attribution and schema orchestration. Per-run
+admission/counters/phases live in `bindings/run_state.rs`; physical child execution, bounded cleanup
+and durable attempt settlement in `bindings/attempt_executor.rs`, which imports no JS interpreter.
+The largest extracted modules are the 901-line bindings coordinator and 875-line CLI supervisor.
+These are responsibility moves; adding their module count does not close the other giant owners.
+The maintained inventory reports their source digests and remaining seams.
+
+`script-workflows` is an explicit build profile. Default builds compile the generic live scheduler
+and controller ports without QuickJS, the script compiler/cache, host bindings or script executor;
+the writer catalog omits the Workflow schema. Public legacy execution entries return the typed
+`ScriptWorkflowsUnavailable` before directory creation or child dispatch. Enabled builds retain
+the existing script graph identity and journal semantics. CLI features must forward both the
+workflow engine and tool catalog features together. Default and enabled profiles require final
+same-candidate integration evidence; source guards and physical line counts alone do not accept
+provider cleanup, recovery or end-user journeys.
