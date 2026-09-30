@@ -88,18 +88,90 @@ pub(super) fn events(
         || source.scanned > 64
         || source.events.len() > 64
         || source.delivery != "lossy_content_free_lifecycle_bus_not_durable_replay"
-        || source.events.iter().any(|event| {
-            event.validate().is_err() || event.run_id.as_ref().is_some_and(|origin| origin != run)
-        })
+        || source.events.iter().any(|event| event.validate().is_err())
     {
         return Err(ExtensionReadErrorV1::Unavailable);
     }
+    // The lifecycle bus is shared with children. Only explicit matching origins belong to this
+    // run; an absent origin remains unattributed. Filtering is presentation, not durable replay.
+    let mut filtered_foreign_run = 0_usize;
+    let mut unscoped_observations = 0_usize;
+    let matching = source
+        .events
+        .into_iter()
+        .filter(|event| match &event.run_id {
+            Some(origin) if origin == run => true,
+            Some(_) => {
+                filtered_foreign_run += 1;
+                false
+            }
+            None => {
+                unscoped_observations += 1;
+                false
+            }
+        })
+        .collect::<Vec<_>>();
     let serialized =
-        serde_json::to_value(source.events).map_err(|_| ExtensionReadErrorV1::Unavailable)?;
+        serde_json::to_value(matching).map_err(|_| ExtensionReadErrorV1::Unavailable)?;
     let safe = scrub_strings(serialized);
     bounded(
-        json!({"version":source.version,"name":name,"events":safe,"scanned":source.scanned,"delivery":source.delivery}),
+        json!({"version":source.version,"name":name,"events":safe,"scanned":source.scanned,
+            "filtered_foreign_run":filtered_foreign_run,"unscoped_observations":unscoped_observations,
+            "delivery":source.delivery}),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::events;
+    use iteron_extension_sdk::{
+        EventSubscriptionV1, ExtensionEventReader, ExtensionEventsReadPort,
+    };
+    use iteron_obs::lifecycle::{LifecycleBus, LifecycleCorrelation, LifecycleEmitter};
+    use iteron_protocol::{LifecyclePayload, RunId};
+
+    #[test]
+    fn shared_actual_bus_preserves_matching_rows_and_reports_unattributed_rows() {
+        let bus = LifecycleBus::default();
+        let emitter = LifecycleEmitter::new(bus.clone());
+        let reader = ExtensionEventReader::bind(
+            &bus,
+            EventSubscriptionV1 {
+                version: 1,
+                name: "sample__events".into(),
+                event_ids: vec!["model.request_sent".into()],
+                queue_capacity: 8,
+            },
+            None,
+        )
+        .unwrap();
+        let run = RunId("parent".into());
+        for origin in [
+            Some(run.clone()),
+            Some(RunId("child".into())),
+            None,
+            Some(run.clone()),
+        ] {
+            emitter
+                .emit(
+                    "model.request_sent",
+                    LifecycleCorrelation {
+                        run_id: origin,
+                        ..LifecycleCorrelation::default()
+                    },
+                    LifecyclePayload::default(),
+                )
+                .unwrap();
+        }
+        let projected = events(reader.read(64, 0).unwrap(), &run, "sample__events").unwrap();
+        let rows = projected["events"].as_array().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|row| row["run_id"] == "parent"));
+        assert_eq!(projected["scanned"], 4);
+        assert_eq!(projected["filtered_foreign_run"], 1);
+        assert_eq!(projected["unscoped_observations"], 1);
+        assert!(rows.iter().all(|row| row.get("durable_seq").is_none()));
+    }
 }
 fn scrub_strings(value: Value) -> Value {
     match value {

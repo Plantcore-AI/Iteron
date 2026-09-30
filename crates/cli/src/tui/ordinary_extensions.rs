@@ -105,12 +105,26 @@ fn render_current(app: &mut App, value: &Value) {
             data["delivery"].as_str().unwrap_or("unavailable"),
         ));
         rows.push(item("•", "scanned", &data["scanned"].to_string()));
+        rows.push(item(
+            "•",
+            "other run rows filtered",
+            &data["filtered_foreign_run"].to_string(),
+        ));
+        rows.push(item(
+            "•",
+            "unattributed rows excluded",
+            &data["unscoped_observations"].to_string(),
+        ));
         for event in data["events"].as_array().into_iter().flatten().take(64) {
             rows.push(block::PanelRow::Note(format!(
                 "{} · turn {} · source seq {} · ordinal {}",
                 ui_safe_text(event["event_id"].as_str().unwrap_or("unknown")),
-                event["turn_id"],
-                event["durable_seq"],
+                event["turn_id"]
+                    .as_u64()
+                    .map_or_else(|| "unavailable".into(), |value| value.to_string()),
+                event["durable_seq"]
+                    .as_u64()
+                    .map_or_else(|| "unavailable".into(), |value| value.to_string()),
                 event["ordinal"]
             )));
         }
