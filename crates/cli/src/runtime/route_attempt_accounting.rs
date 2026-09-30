@@ -19,9 +19,10 @@ use std::collections::{HashMap, HashSet};
 /// This is deliberately separate from the logical-turn ledger. A retry or fallback may have
 /// consumed money even though only the eventual winner owns `TurnEnd`; charging that winner again
 /// would be equally wrong. The signed projection identity is the durable idempotency key.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub(super) struct ProviderRouteChargeLedger {
     identities: HashMap<CostProjectionIdentity, String>,
+    charges: HashMap<CostProjectionIdentity, VerifiedProviderRouteCharge>,
     projection_digests: HashSet<String>,
     amount_microusd: u64,
     unknown: bool,
@@ -35,12 +36,34 @@ pub(super) struct VerifiedProviderRouteCharge {
 }
 
 impl ProviderRouteChargeLedger {
+    pub(super) fn contains_exact(
+        &self,
+        charge: &VerifiedProviderRouteCharge,
+    ) -> Result<bool, &'static str> {
+        match self.charges.get(&charge.identity) {
+            Some(prior)
+                if prior.projection_digest == charge.projection_digest
+                    && prior.amount_microusd == charge.amount_microusd =>
+            {
+                Ok(true)
+            }
+            Some(_) => Err("provider route identity conflicts with its exact physical charge"),
+            None => Ok(false),
+        }
+    }
+    pub(super) fn verified_charges(&self) -> impl Iterator<Item = &VerifiedProviderRouteCharge> {
+        self.charges.values()
+    }
     pub(super) fn admit(
         &mut self,
         charge: VerifiedProviderRouteCharge,
     ) -> Result<bool, &'static str> {
+        if self.charges.len() >= 65_536 && !self.charges.contains_key(&charge.identity) {
+            self.unknown = true;
+            return Err("provider charge identity capacity exhausted");
+        }
         if let Some(existing) = self.identities.get(&charge.identity) {
-            return if existing == &charge.projection_digest {
+            return if existing == &charge.projection_digest && self.contains_exact(&charge)? {
                 Ok(false)
             } else {
                 self.unknown = true;
@@ -58,6 +81,7 @@ impl ProviderRouteChargeLedger {
             self.unknown = true;
             return Err("provider route charge total overflowed");
         };
+        self.charges.insert(charge.identity.clone(), charge.clone());
         self.identities
             .insert(charge.identity, charge.projection_digest);
         self.amount_microusd = amount_microusd;

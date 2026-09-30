@@ -4,6 +4,8 @@ use super::persistent_agents::{
     AgentControlPort, AgentObservation, AgentSettlement, LiveAgentMailbox, PersistentAgentHost,
     PersistentAgentRuntime,
 };
+use super::pricing::SharedUsdBudget;
+use super::workflow_spawner::worktree::persistent::PersistentWriterWorktree;
 use super::workflow_spawner::{KernelSpawner, KernelSpawnerContext};
 use super::{Agent, KernelError};
 use async_trait::async_trait;
@@ -28,13 +30,38 @@ pub(super) struct KernelPersistentRuntime {
     spawner: Mutex<KernelSpawner>,
     residents: Mutex<BTreeMap<AgentIdV1, Resident>>,
     control: OnceLock<Weak<dyn AgentControlPort>>,
+    writer: PersistentWriterConfig,
+    money: Option<Arc<SharedUsdBudget>>,
+    pricing: Option<Arc<dyn iteron_obs::PricingPort>>,
     #[cfg(test)]
     fixture: Option<Arc<dyn Fn(&mut Agent) + Send + Sync>>,
+}
+
+struct PersistentWriterConfig {
+    parent: std::path::PathBuf,
+    state: std::path::PathBuf,
+    lock: Arc<tokio::sync::Mutex<()>>,
+    verify: Option<String>,
+    env: Vec<String>,
+    oracle_tail: usize,
+    admitted: bool,
 }
 
 impl KernelPersistentRuntime {
     pub(super) fn new(context: KernelSpawnerContext) -> Self {
         Self {
+            writer: PersistentWriterConfig {
+                parent: context.workspace.clone(),
+                state: context.runtime_state_dir.clone(),
+                lock: context.writer_merge_lock.clone(),
+                verify: context.verify_command.clone(),
+                env: context.sensitive_env_names.clone(),
+                oracle_tail: context.verification_feedback.oracle_output_bytes,
+                admitted: cfg!(any(target_os = "linux", target_os = "macos"))
+                    && context.writer_merge_policy.admit_child(true, true).is_ok(),
+            },
+            money: context.usd_budget.clone(),
+            pricing: context.pricing_port.clone(),
             spawner: Mutex::new(KernelSpawner::new(context)),
             residents: Mutex::new(BTreeMap::new()),
             control: OnceLock::new(),
@@ -49,7 +76,48 @@ impl KernelPersistentRuntime {
             .map_err(|_| ControllerError::Invalid("persistent runtime control is already bound"))
     }
 
-    fn resident(&self, view: &AgentViewV1) -> Result<Resident, ControllerError> {
+    fn restore_monetary(&self, views: &[AgentViewV1], root: AgentIdV1) -> Result<(), KernelError> {
+        let Some(pool) = &self.money else {
+            return Ok(());
+        };
+        let spawner = self
+            .spawner
+            .lock()
+            .map_err(|_| KernelError::AgentControl(ControllerError::Poisoned))?;
+        for view in views
+            .iter()
+            .filter(|view| view.agent_id != root && view.usage.turns > 0)
+        {
+            if matches!(
+                view.state,
+                iteron_protocol::agent_control::AgentStateV1::RecoveryRequired { .. }
+            ) {
+                pool.mark_unknown()
+            }
+            let path = self
+                .writer
+                .state
+                .join("subagents")
+                .join(format!("{}.jsonl", spawner.mint_run_id(view.agent_id.0).0));
+            if !path.exists() {
+                return Err(KernelError::AgentControl(ControllerError::RecoveryRequired));
+            }
+            let scoped = super::replay_scoped_rollout(&path)?;
+            let replay = super::route_attempt_accounting::replay_route_charges(
+                &scoped,
+                self.pricing.as_deref(),
+            )?;
+            pool.merge_recovered_charges(&replay.ledger)
+                .map_err(KernelError::PricingLedger)?;
+        }
+        Ok(())
+    }
+
+    fn resident(
+        &self,
+        view: &AgentViewV1,
+        writer_workspace: Option<&std::path::Path>,
+    ) -> Result<Resident, ControllerError> {
         let mut residents = self
             .residents
             .lock()
@@ -66,7 +134,11 @@ impl KernelPersistentRuntime {
             phase: Some("persistent".into()),
             model: None,
             effort: None,
-            agent_type: Some("generic".into()),
+            agent_type: Some(if writer_workspace.is_some() {
+                iteron_agents::ISOLATED_WRITER_NAME.into()
+            } else {
+                "generic".into()
+            }),
             schema: None,
             cancel: Default::default(),
         };
@@ -74,8 +146,16 @@ impl KernelPersistentRuntime {
             .spawner
             .lock()
             .map_err(|_| ControllerError::Poisoned)?
-            .build_persistent_child(&call, view)
+            .build_persistent_child(&call, view, writer_workspace)
             .map_err(|_| ControllerError::Invalid("persistent child construction failed"))?;
+        child.narrow_policy_capabilities(view.capabilities);
+        child.authority_ceiling = child.authority_ceiling.intersect(view.capabilities);
+        if writer_workspace.is_some() {
+            child
+                .registry
+                .set_inherited_write_scope(view.write_paths.clone())
+                .map_err(|_| ControllerError::Permission)?;
+        }
         let control = self
             .control
             .get()
@@ -99,20 +179,51 @@ impl KernelPersistentRuntime {
 
 #[async_trait]
 impl PersistentAgentRuntime for KernelPersistentRuntime {
+    fn monetary_remaining(&self) -> Result<Option<u64>, ControllerError> {
+        if self.pricing.is_none() {
+            return Ok(None);
+        }
+        self.money
+            .as_ref()
+            .map(|pool| {
+                pool.remaining_microusd()
+                    .map_err(|_| ControllerError::RecoveryRequired)
+            })
+            .transpose()
+    }
+
     fn validate_spawn(&self, command: &AgentCommandV1) -> Result<(), ControllerError> {
         if let AgentCommandV1::Spawn {
             capabilities,
             write_paths,
             ..
         } = command
-            && (*capabilities != CapabilitySet::only(Capability::ReadOnly)
-                || !write_paths.is_empty())
         {
-            // The production investigator factory has an enforced read-only registry. Isolated
-            // writer provisioning/merging remains owned by the workflow writer supervisor.
-            return Err(ControllerError::Invalid(
-                "persistent investigator requires read-only authority and an empty write set",
-            ));
+            let supported = CapabilitySet::from_iter_capabilities([
+                Capability::ReadOnly,
+                Capability::ReversibleLocal,
+            ]);
+            if !capabilities.is_subset_of(supported) || !capabilities.contains(Capability::ReadOnly)
+            {
+                return Err(ControllerError::Permission);
+            }
+            let writer = capabilities.contains(Capability::ReversibleLocal);
+            if writer
+                && (!self.writer.admitted
+                    || write_paths.is_empty()
+                    || self
+                        .writer
+                        .verify
+                        .as_ref()
+                        .is_none_or(|verify| verify.trim().is_empty()))
+            {
+                return Err(ControllerError::Invalid(
+                    "persistent writer needs finite write paths and a host-admitted verification command",
+                ));
+            }
+            if !writer && !write_paths.is_empty() {
+                return Err(ControllerError::Permission);
+            }
         }
         Ok(())
     }
@@ -124,18 +235,96 @@ impl PersistentAgentRuntime for KernelPersistentRuntime {
         initial: Vec<AgentMailboxMessage>,
         mailbox: LiveAgentMailbox,
     ) -> AgentSettlement {
-        let resident = match self.resident(&view) {
-            Ok(resident) => resident,
-            Err(_) => {
-                return AgentSettlement {
-                    summary: "Persistent agent setup failed before provider execution".into(),
-                    tokens: 0,
-                    cost_microusd: 0,
-                    effects_known: true,
-                };
-            }
+        let writer_requested = view.capabilities.contains(Capability::ReversibleLocal);
+        let _writer_lane = if writer_requested {
+            Some(self.writer.lock.lock().await)
+        } else {
+            None
         };
+        let mut worktree = if writer_requested {
+            let id = match self.spawner.lock() {
+                Ok(spawner) => spawner.mint_run_id(view.agent_id.0).0,
+                Err(_) => return unknown_settlement("Persistent writer identity lock failed"),
+            };
+            let Some(control) = self.control.get().and_then(Weak::upgrade) else {
+                return unknown_settlement("Persistent writer owner is unavailable");
+            };
+            let witness = match control.workspace_witness() {
+                Ok(witness) => witness,
+                Err(_) => {
+                    return unknown_settlement("Persistent writer durable evidence is unavailable");
+                }
+            };
+            match PersistentWriterWorktree::provision(
+                self.writer.parent.clone(),
+                self.writer.state.clone(),
+                id,
+                witness.clone(),
+            )
+            .await
+            {
+                Ok((mut worktree, initialized)) => {
+                    if control
+                        .record_workspace_witness(witness.as_ref(), initialized)
+                        .is_err()
+                    {
+                        let _ = worktree.discard().await;
+                        return unknown_settlement(
+                            "Persistent writer baseline could not be persisted",
+                        );
+                    }
+                    Some(worktree)
+                }
+                Err(_) => {
+                    return unknown_settlement(
+                        "Persistent writer worktree provisioning failed; recovery required",
+                    );
+                }
+            }
+        } else {
+            None
+        };
+        let resident =
+            match self.resident(&view, worktree.as_ref().map(PersistentWriterWorktree::path)) {
+                Ok(resident) => resident,
+                Err(_) => {
+                    if let Some(worktree) = &mut worktree {
+                        let _ = worktree.discard().await;
+                    }
+                    return AgentSettlement {
+                        summary: "Persistent agent setup failed before provider execution".into(),
+                        tokens: 0,
+                        cost_microusd: 0,
+                        effects_known: false,
+                        terminal: iteron_agents::AgentWorkflowTerminal::Failed,
+                    };
+                }
+            };
         let mut child = resident.lock().await;
+        child.registry.invalidate_workspace_reads();
+        // Descendant reservations remain unavailable to the parent's own provider requests.
+        child.budget.max_turns = child
+            .budget
+            .max_turns
+            .min(view.budget.turns.saturating_sub(view.reserved.turns));
+        child.budget.max_tokens = Some(
+            child
+                .budget
+                .max_tokens
+                .unwrap_or(u64::MAX)
+                .min(view.budget.tokens.saturating_sub(view.reserved.tokens)),
+        );
+        let cost_ceiling = view
+            .budget
+            .cost_microusd
+            .saturating_sub(view.reserved.cost_microusd);
+        child.budget.max_usd = Some(
+            child
+                .budget
+                .max_usd
+                .unwrap_or(f64::MAX)
+                .min(cost_ceiling as f64 / 1_000_000.0),
+        );
         let tokens_before = total_tokens(child.ledger.usage);
         let cost_before = known_cost(&child.ledger.cost_state());
         child.persistent_mailbox = Some(mailbox.clone());
@@ -160,6 +349,7 @@ impl PersistentAgentRuntime for KernelPersistentRuntime {
                     tokens: 0,
                     cost_microusd: 0,
                     effects_known: false,
+                    terminal: iteron_agents::AgentWorkflowTerminal::StoppedRecovery,
                 };
             }
         };
@@ -209,6 +399,18 @@ impl PersistentAgentRuntime for KernelPersistentRuntime {
         let cleaned = expire_unrequested(&mut child, &mailbox).is_ok();
         child.persistent_mailbox = None;
         let finalized = child.finalize_policy_run().is_ok();
+        let writer_settled = if let Some(worktree) = &mut worktree {
+            settle_writer(
+                worktree,
+                &self.writer,
+                matches!(&result, Ok(iteron_protocol::Outcome::Done)),
+                self.control.get().and_then(Weak::upgrade),
+            )
+            .await
+            .is_ok()
+        } else {
+            true
+        };
         let summary = match &result {
             Ok(outcome) => {
                 let answer = child
@@ -244,12 +446,23 @@ impl PersistentAgentRuntime for KernelPersistentRuntime {
         let cost = cost_before
             .zip(cost_after)
             .and_then(|(before, after)| after.checked_sub(before));
+        let terminal = match &result {
+            Ok(iteron_protocol::Outcome::Done) if writer_settled => {
+                iteron_agents::AgentWorkflowTerminal::Succeeded
+            }
+            Ok(iteron_protocol::Outcome::Interrupted | iteron_protocol::Outcome::Drained) => {
+                iteron_agents::AgentWorkflowTerminal::Cancelled
+            }
+            _ => iteron_agents::AgentWorkflowTerminal::Failed,
+        };
         AgentSettlement {
+            terminal,
             summary,
             tokens,
             cost_microusd: cost.unwrap_or(0),
             effects_known: cleaned
                 && finalized
+                && writer_settled
                 && cost.is_some()
                 && !matches!(
                     result,
@@ -269,6 +482,48 @@ fn known_cost(cost: &CostState) -> Option<u64> {
         } => Some(*amount_microusd),
         CostState::Unknown { .. } => None,
     }
+}
+
+fn unknown_settlement(summary: &str) -> AgentSettlement {
+    AgentSettlement {
+        summary: summary.into(),
+        tokens: 0,
+        cost_microusd: 0,
+        effects_known: false,
+        terminal: iteron_agents::AgentWorkflowTerminal::StoppedRecovery,
+    }
+}
+async fn settle_writer(
+    worktree: &mut PersistentWriterWorktree,
+    config: &PersistentWriterConfig,
+    completed: bool,
+    control: Option<Arc<dyn AgentControlPort>>,
+) -> Result<(), ()> {
+    if !completed {
+        return worktree.discard().await.map_err(|_| ());
+    }
+    let receipt = worktree.prepare_patch().await.map_err(|_| ())?;
+    if receipt.patch_bytes == 0 {
+        return worktree.discard().await.map_err(|_| ());
+    }
+    worktree
+        .verify(
+            &receipt,
+            config.verify.as_deref(),
+            &config.env,
+            config.oracle_tail,
+        )
+        .await
+        .map_err(|_| ())?;
+    let control = control.ok_or(())?;
+    let witness = control.workspace_witness().map_err(|_| ())?.ok_or(())?;
+    let next = worktree
+        .merge(&receipt, witness.clone(), config.state.clone())
+        .await
+        .map_err(|_| ())?;
+    control
+        .record_workspace_witness(Some(&witness), next)
+        .map_err(|_| ())
 }
 
 fn total_tokens(usage: iteron_protocol::Usage) -> u64 {
@@ -366,7 +621,26 @@ impl Agent {
             ))?
             .route
             .clone();
-        let context = self.kernel_spawner_context(&route, "persistent-agents");
+        let mut context = self.kernel_spawner_context(&route, "persistent-agents");
+        if config.root_budget.cost_microusd > 0 && context.pricing_port.is_none() {
+            return Err(KernelError::InvalidRoute(
+                "persistent agents with positive financial ceilings require verified route pricing",
+            ));
+        }
+        context.usd_budget = Some(Arc::new(match &self.usd_budget {
+            Some(parent) => {
+                if config.root_budget.cost_microusd
+                    > parent
+                        .remaining_microusd()
+                        .map_err(KernelError::PricingLedger)?
+                {
+                    return Err(KernelError::AgentControl(ControllerError::Budget));
+                }
+                SharedUsdBudget::child(config.root_budget.cost_microusd, parent.clone())
+                    .map_err(KernelError::PricingLedger)?
+            }
+            None => SharedUsdBudget::from_microusd(config.root_budget.cost_microusd),
+        }));
         let runtime = Arc::new(KernelPersistentRuntime::new(context));
         let directory = self.runtime_state_dir.join(format!(
             "agents-{}",
@@ -378,6 +652,12 @@ impl Agent {
         let controller =
             AgentController::open(journal, config).map_err(KernelError::AgentControl)?;
         let root_id = controller.root_id();
+        runtime.restore_monetary(
+            &controller
+                .list(AgentActor::Operator)
+                .map_err(KernelError::AgentControl)?,
+            root_id,
+        )?;
         let host: Arc<dyn AgentControlPort> = Arc::new(
             PersistentAgentHost::new(controller, runtime.clone(), parallel)
                 .map_err(KernelError::AgentControl)?,
@@ -405,6 +685,46 @@ impl Agent {
             .ok_or(ControllerError::Invalid(
                 "persistent agents are disabled for this session",
             ))
+    }
+
+    pub(crate) fn persistent_agent_host_limits(
+        &self,
+    ) -> Result<super::persistent_agents::AgentHostLimits, ControllerError> {
+        let mut limits = self.persistent_control()?.host_limits()?;
+        limits.root.capabilities = limits
+            .root
+            .capabilities
+            .intersect(self.authority_ceiling)
+            .intersect(self.policy_capabilities);
+        limits.remaining.turns = limits
+            .remaining
+            .turns
+            .min(self.budget.remaining_turns(self.ledger.provider_attempts));
+        if let Some(tokens) = self.remaining_provider_tokens() {
+            limits.remaining.tokens = limits.remaining.tokens.min(tokens)
+        }
+        if let Some(parent) = &self.usd_budget {
+            limits.remaining.cost_microusd = limits.remaining.cost_microusd.min(
+                parent
+                    .remaining_microusd()
+                    .map_err(|_| ControllerError::RecoveryRequired)?,
+            )
+        }
+        limits.remaining.wall_ms = limits
+            .remaining
+            .wall_ms
+            .min(self.budget.max_wall_secs.saturating_mul(1000));
+        if let Some(deadline) = self.run_deadline {
+            limits.remaining.wall_ms = limits.remaining.wall_ms.min(
+                u64::try_from(
+                    deadline
+                        .saturating_duration_since(std::time::Instant::now())
+                        .as_millis(),
+                )
+                .unwrap_or(u64::MAX),
+            )
+        }
+        Ok(limits)
     }
 
     pub(crate) fn persistent_workflow_controller(

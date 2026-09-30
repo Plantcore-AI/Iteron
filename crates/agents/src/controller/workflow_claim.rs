@@ -45,6 +45,15 @@ pub struct AgentWorkflowLease {
     pub initial: Vec<AgentMailboxMessage>,
     pub replayed: bool,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentWorkflowTerminal {
+    Succeeded,
+    Failed,
+    Cancelled,
+    StoppedRecovery,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentWorkflowCompletion {
@@ -53,6 +62,7 @@ pub struct AgentWorkflowCompletion {
     pub summary: String,
     pub usage: AgentUsageV1,
     pub effects_known: bool,
+    pub terminal: AgentWorkflowTerminal,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -166,6 +176,7 @@ impl<J: AgentControllerJournal> AgentController<J> {
         let mut agent = self.inspect(AgentActor::Operator, claim.assigned_agent)?;
         // The runtime sees a tighter absolute ceiling for this execution; durable identity retains
         // its lifetime ceiling and the claim retains the independently bounded node envelope.
+        agent.reserved = AgentUsageV1::default();
         agent.budget.turns = agent.usage.turns.saturating_add(claim.budget.turns);
         agent.budget.tokens = agent.usage.tokens.saturating_add(claim.budget.tokens);
         agent.budget.cost_microusd = agent
@@ -267,6 +278,7 @@ pub(super) fn record_completion(
     summary: &str,
     usage: AgentUsageV1,
     effects_known: bool,
+    terminal: AgentWorkflowTerminal,
 ) {
     for receipt in snapshot
         .workflow_claims
@@ -279,6 +291,7 @@ pub(super) fn record_completion(
             summary: summary.into(),
             usage: AgentUsageV1 { turns: 1, ..usage },
             effects_known,
+            terminal,
         });
     }
 }
@@ -302,6 +315,7 @@ pub(super) fn recover_completion(
                 ..AgentUsageV1::default()
             },
             effects_known: false,
+            terminal: AgentWorkflowTerminal::StoppedRecovery,
         });
         completion.usage.tokens = completion
             .usage
@@ -319,6 +333,7 @@ pub(super) fn recover_completion(
             .checked_add(additional.wall_ms)
             .ok_or(ControllerError::Budget)?;
         completion.effects_known = true;
+        completion.terminal = AgentWorkflowTerminal::StoppedRecovery;
     }
     Ok(())
 }

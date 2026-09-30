@@ -23,6 +23,7 @@ mod git_filters;
 mod git_harness;
 mod git_observe;
 mod grep_tool;
+mod inherited_write_scope;
 mod lsp;
 mod mcp_timing;
 mod mem;
@@ -379,6 +380,7 @@ pub struct Registry {
     /// registries intentionally retain the owner-directed host-wide path behavior documented by
     /// [`resolve_in_root`].
     workspace_boundary: bool,
+    inherited_write_scope: Arc<std::sync::OnceLock<inherited_write_scope::InheritedWriteScope>>,
     process_control: Option<ProcessControl>,
     lsp_control: Option<LspControl>,
     deferred_tool_catalog: Option<tool_search::DeferredToolCatalog>,
@@ -497,6 +499,7 @@ impl Registry {
             observation_focus: Default::default(),
             process_launch_policy: Default::default(),
             workspace_boundary: false,
+            inherited_write_scope: Default::default(),
             process_control: None,
             lsp_control: None,
             deferred_tool_catalog: None,
@@ -555,6 +558,7 @@ impl Registry {
             observation_focus: Default::default(),
             process_launch_policy: Default::default(),
             workspace_boundary: true,
+            inherited_write_scope: Default::default(),
             process_control: None,
             lsp_control: None,
             deferred_tool_catalog: None,
@@ -590,6 +594,7 @@ impl Registry {
             observation_focus: Default::default(),
             process_launch_policy: Default::default(),
             workspace_boundary: false,
+            inherited_write_scope: Default::default(),
             process_control: None,
             lsp_control: None,
             deferred_tool_catalog: None,
@@ -609,6 +614,29 @@ impl Registry {
     /// built-in description tunables namespace even if their spelling resembles an internal tool.
     pub fn register(&mut self, tool: Tool) -> Result<(), ToolError> {
         self.register_with_origin(tool, ToolOrigin::External)
+    }
+
+    /// Install immutable host authority after constructing an isolated writer registry. Empty
+    /// paths deny every write; transport/model input cannot widen this private owner value.
+    pub fn set_inherited_write_scope(&mut self, paths: Vec<String>) -> Result<(), ToolError> {
+        let scope = inherited_write_scope::InheritedWriteScope::new(paths)
+            .map_err(ToolError::Registration)?;
+        self.inherited_write_scope.set(scope).map_err(|_| {
+            ToolError::Registration("inherited write scope is already installed".into())
+        })?;
+        self.confine_execution
+            .store(true, std::sync::atomic::Ordering::Release);
+        Ok(())
+    }
+    /// A host can replace an isolated worktree between turns while retaining the same Agent.
+    /// Cached reads from the previous physical workspace must not survive that replacement.
+    pub fn invalidate_workspace_reads(&self) {
+        self.memo.invalidate();
+    }
+    pub(crate) fn inherited_write_scope_handle(
+        &self,
+    ) -> Arc<std::sync::OnceLock<inherited_write_scope::InheritedWriteScope>> {
+        self.inherited_write_scope.clone()
     }
 
     fn resolve_registered_builtin_description(&mut self, canonical_name: &str) {
@@ -980,6 +1008,8 @@ impl Registry {
         }
         let confine_execution = self.confine_execution.clone();
         let workspace_boundary = self.workspace_boundary;
+        let inherited_scope = self.inherited_write_scope.clone();
+        let inherited_capability = tool.spec.capability;
         let observation_focus = self.observation_focus.clone();
         let id = call.id.clone();
         let executor = tool.run.clone();
@@ -990,6 +1020,13 @@ impl Registry {
             memo.invalidate();
         }
         Box::pin(async move {
+            if let Some(scope) = inherited_scope.get()
+                && let Err(reason) = scope
+                    .validate_tool(&call, inherited_capability)
+                    .and_then(|_| scope.validate_call(&root, &call))
+            {
+                return ToolExecution::Definite(err_result(id, reason));
+            }
             if confine_execution.load(std::sync::atomic::Ordering::Relaxed)
                 && matches!(call.name.as_str(), "write_file" | "edit" | "apply_patch")
                 && let Err(reason) = workspace_boundary::validate_coding_write_call(&root, &call)
@@ -1244,6 +1281,13 @@ impl Registry {
         {
             return ToolExecution::Definite(err_result(id, reason));
         }
+        if let Some(scope) = self.inherited_write_scope.get()
+            && let Err(reason) = scope
+                .validate_tool(&call, tool.spec.capability)
+                .and_then(|_| scope.validate_call(&self.root, &call))
+        {
+            return ToolExecution::Definite(err_result(call.id, reason));
+        }
         if self.workspace_boundary
             && let Err(reason) = workspace_boundary::validate_call(&self.root, &call)
         {
@@ -1321,6 +1365,14 @@ impl Registry {
             && let Err(reason) = workspace_boundary::validate_coding_write_call(&self.root, &call)
         {
             let result = err_result(call.id.clone(), reason);
+            return boxfut::box_it(async move { result });
+        }
+        if let Some(scope) = self.inherited_write_scope.get()
+            && let Err(reason) = scope
+                .validate_tool(&call, tool.spec.capability)
+                .and_then(|_| scope.validate_call(&self.root, &call))
+        {
+            let result = err_result(call.id, reason);
             return boxfut::box_it(async move { result });
         }
         if self.workspace_boundary
@@ -1822,6 +1874,7 @@ mod tests {
             lsp_control: None,
             deferred_tool_catalog: None,
             workspace_boundary: false,
+            inherited_write_scope: Default::default(),
         };
         let bad = ToolSpec {
             name: "leaky".into(),

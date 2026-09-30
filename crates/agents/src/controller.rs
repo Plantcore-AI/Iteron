@@ -19,7 +19,9 @@ use std::collections::BTreeMap;
 mod snapshot_validation;
 mod workflow_claim;
 use snapshot_validation::validate_snapshot;
-pub use workflow_claim::{AgentWorkflowClaim, AgentWorkflowCompletion, AgentWorkflowLease};
+pub use workflow_claim::{
+    AgentWorkflowClaim, AgentWorkflowCompletion, AgentWorkflowLease, AgentWorkflowTerminal,
+};
 
 const MAX_AGENTS: usize = 64;
 const MAX_RECEIPTS: usize = 8_192;
@@ -104,6 +106,48 @@ pub struct AgentControllerSnapshot {
     receipts: BTreeMap<String, RequestReceipt>,
     #[serde(default)]
     workflow_claims: BTreeMap<String, workflow_claim::WorkflowReceipt>,
+    #[serde(default)]
+    workspace_witness: Option<AgentWorkspaceWitness>,
+}
+
+/// Host-minted exact Git tree evidence for serialized isolated writer transactions. It grants
+/// no new capability and cannot be supplied through the model or public control protocol.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentWorkspaceWitness {
+    pub workspace_identity: String,
+    pub base_head: String,
+    pub parent_index_tree: String,
+    pub working_tree: String,
+}
+impl AgentWorkspaceWitness {
+    pub fn validate(&self) -> Result<(), ControllerError> {
+        let valid = |id: &str| {
+            (id.len() == 40 || id.len() == 64) && id.bytes().all(|byte| byte.is_ascii_hexdigit())
+        };
+        let identity: Vec<_> = self.workspace_identity.split(':').collect();
+        if identity.len() != 3
+            || identity[0] != "unix"
+            || identity[1..]
+                .iter()
+                .any(|part| part.parse::<u64>().is_err())
+        {
+            return Err(ControllerError::Invalid(
+                "invalid isolated writer workspace identity",
+            ));
+        }
+        if !valid(&self.base_head)
+            || !valid(&self.parent_index_tree)
+            || !valid(&self.working_tree)
+            || self.base_head.len() != self.parent_index_tree.len()
+            || self.base_head.len() != self.working_tree.len()
+        {
+            return Err(ControllerError::Invalid(
+                "invalid isolated writer tree witness",
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl AgentControllerSnapshot {
@@ -167,6 +211,7 @@ impl<J: AgentControllerJournal> AgentController<J> {
                     mailbox,
                     receipts: BTreeMap::new(),
                     workflow_claims: BTreeMap::new(),
+                    workspace_witness: None,
                 };
                 journal
                     .commit(None, &snapshot)
@@ -207,6 +252,44 @@ impl<J: AgentControllerJournal> AgentController<J> {
     }
     pub fn snapshot(&self) -> &AgentControllerSnapshot {
         &self.snapshot
+    }
+    pub fn workspace_witness(&self) -> Result<Option<AgentWorkspaceWitness>, ControllerError> {
+        self.check_live()?;
+        Ok(self.snapshot.workspace_witness.clone())
+    }
+    pub fn record_workspace_witness(
+        &mut self,
+        expected: Option<&AgentWorkspaceWitness>,
+        witness: AgentWorkspaceWitness,
+    ) -> Result<(), ControllerError> {
+        self.check_live()?;
+        witness.validate()?;
+        if !self
+            .snapshot
+            .config
+            .root_capabilities
+            .contains(Capability::ReversibleLocal)
+        {
+            return Err(ControllerError::Permission);
+        }
+        if self.snapshot.workspace_witness.as_ref() != expected {
+            return Err(ControllerError::RequestConflict);
+        }
+        if let Some(prior) = expected
+            && (prior.workspace_identity != witness.workspace_identity
+                || prior.base_head != witness.base_head
+                || prior.parent_index_tree != witness.parent_index_tree)
+        {
+            return Err(ControllerError::Invalid(
+                "isolated writer changed its immutable repository baseline",
+            ));
+        }
+        if expected == Some(&witness) {
+            return Ok(());
+        }
+        let mut next = self.snapshot.clone();
+        next.workspace_witness = Some(witness);
+        self.commit(next)
     }
 
     pub fn list(&self, actor: AgentActor) -> Result<Vec<AgentViewV1>, ControllerError> {
@@ -656,6 +739,29 @@ impl<J: AgentControllerJournal> AgentController<J> {
         usage: AgentUsageV1,
         effects_known: bool,
     ) -> Result<(), ControllerError> {
+        self.finish_turn_with_terminal(
+            id,
+            epoch,
+            summary,
+            usage,
+            effects_known,
+            if effects_known {
+                AgentWorkflowTerminal::Succeeded
+            } else {
+                AgentWorkflowTerminal::StoppedRecovery
+            },
+        )
+    }
+
+    pub fn finish_turn_with_terminal(
+        &mut self,
+        id: AgentIdV1,
+        epoch: AgentEpochV1,
+        summary: &str,
+        usage: AgentUsageV1,
+        effects_known: bool,
+        terminal: AgentWorkflowTerminal,
+    ) -> Result<(), ControllerError> {
         self.check_live()?;
         if summary.len() > MAX_AGENT_TEXT_BYTES || summary.contains('\0') {
             return Err(ControllerError::Capacity);
@@ -721,6 +827,7 @@ impl<J: AgentControllerJournal> AgentController<J> {
             summary,
             usage,
             effects_known && within_budget,
+            terminal,
         );
         next.mailbox.settle_epoch(id, epoch, active_task);
         next.revision = next_revision(next.revision)?;
@@ -959,6 +1066,12 @@ impl<J: AgentControllerJournal> AgentController<J> {
     fn project(&self, record: &AgentRecord) -> AgentViewV1 {
         let mut view = record.view.clone();
         view.queued_messages = self.snapshot.mailbox.pending_count(view.agent_id);
+        view.reserved = AgentUsageV1 {
+            turns: record.reserved_turns,
+            tokens: record.reserved_tokens,
+            cost_microusd: record.reserved_cost,
+            wall_ms: 0,
+        };
         view.usage = AgentUsageV1 {
             turns: record.turns_used,
             tokens: record.tokens_used,
@@ -992,6 +1105,7 @@ fn record(
             queued_messages: 0,
             last_summary: None,
             usage: AgentUsageV1::default(),
+            reserved: AgentUsageV1::default(),
         },
         next_turn: 1,
         active_task: None,

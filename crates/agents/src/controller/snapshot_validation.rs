@@ -12,6 +12,18 @@ use iteron_protocol::agent_control::{
 
 pub(super) fn validate_snapshot(snapshot: &AgentControllerSnapshot) -> Result<(), ControllerError> {
     snapshot.config.validate()?;
+    if let Some(witness) = &snapshot.workspace_witness {
+        witness.validate()?;
+        if !snapshot
+            .config
+            .root_capabilities
+            .contains(Capability::ReversibleLocal)
+        {
+            return Err(ControllerError::Invalid(
+                "writer witness lacks inherited write authority",
+            ));
+        }
+    }
     if snapshot.version != AGENT_CONTROL_VERSION
         || snapshot.revision > MAX_REVISION
         || snapshot.agents.len() > snapshot.config.max_agents
@@ -32,6 +44,7 @@ pub(super) fn validate_snapshot(snapshot: &AgentControllerSnapshot) -> Result<()
             || !record.view.capabilities.contains(Capability::ReadOnly)
             || record.view.queued_messages != 0
             || record.view.usage != iteron_protocol::agent_control::AgentUsageV1::default()
+            || record.view.reserved != iteron_protocol::agent_control::AgentUsageV1::default()
             || record.view.workspace_scope != snapshot.config.workspace_scope
             || !record
                 .view

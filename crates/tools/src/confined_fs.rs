@@ -12,6 +12,9 @@ use std::path::{Component, Path};
 #[derive(Debug)]
 pub(crate) struct ConfinedTarget {
     root: File,
+    root_path: std::path::PathBuf,
+    scope: Option<crate::inherited_write_scope::InheritedWriteScope>,
+    relative: std::path::PathBuf,
     parents: Vec<(OsString, File)>,
     leaf: OsString,
 }
@@ -50,6 +53,19 @@ fn same_dir(left: &File, right: &File) -> io::Result<bool> {
 
 impl ConfinedTarget {
     pub(crate) fn open(root: &Path, target: &Path, create_parents: bool) -> io::Result<Self> {
+        Self::open_scoped(root, target, create_parents, None)
+    }
+    pub(crate) fn open_scoped(
+        root: &Path,
+        target: &Path,
+        create_parents: bool,
+        scope: Option<&crate::inherited_write_scope::InheritedWriteScope>,
+    ) -> io::Result<Self> {
+        if let Some(scope) = scope {
+            scope
+                .validate_target(root, target)
+                .map_err(io::Error::other)?
+        }
         let canonical_root = root.canonicalize()?;
         let relative = target.strip_prefix(&canonical_root).map_err(|_| {
             io::Error::new(
@@ -57,6 +73,7 @@ impl ConfinedTarget {
                 "target is outside workspace",
             )
         })?;
+        let relative = relative.to_path_buf();
         let mut names = Vec::new();
         for component in relative.components() {
             match component {
@@ -105,6 +122,9 @@ impl ConfinedTarget {
             parents.push((name, next));
         }
         Ok(Self {
+            root_path: canonical_root,
+            relative: relative.to_path_buf(),
+            scope: scope.cloned(),
             root,
             parents,
             leaf,
@@ -116,6 +136,25 @@ impl ConfinedTarget {
     }
 
     pub(crate) fn still_visible(&self) -> io::Result<bool> {
+        if self
+            .scope
+            .as_ref()
+            .is_some_and(|scope| !scope.allows_relative(&self.relative))
+        {
+            return Ok(false);
+        }
+        use std::os::unix::fs::OpenOptionsExt;
+        let current_root = match std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(&self.root_path)
+        {
+            Ok(root) => root,
+            Err(_) => return Ok(false),
+        };
+        if !same_dir(&self.root, &current_root)? {
+            return Ok(false);
+        }
         let mut current = self.root.try_clone()?;
         for (name, expected) in &self.parents {
             let reopened = match open_dir_at(&current, name) {

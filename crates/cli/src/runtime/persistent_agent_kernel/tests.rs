@@ -6,20 +6,47 @@ use iteron_provider::{Provider, ProviderError, StreamItem, TurnRequest, TurnResu
 use std::sync::atomic::{AtomicU64, AtomicUsize};
 
 #[derive(Default)]
-struct Store(Option<AgentControllerSnapshot>);
+struct Store {
+    snapshot: Option<AgentControllerSnapshot>,
+    fail_consumed: bool,
+}
 impl AgentControllerJournal for Store {
     fn load(&mut self) -> Result<Option<AgentControllerSnapshot>, ControllerStoreError> {
-        Ok(self.0.clone())
+        Ok(self.snapshot.clone())
     }
     fn commit(
         &mut self,
         expected: Option<u64>,
         next: &AgentControllerSnapshot,
     ) -> Result<(), ControllerStoreError> {
-        if self.0.as_ref().map(AgentControllerSnapshot::revision) != expected {
+        if self
+            .snapshot
+            .as_ref()
+            .map(AgentControllerSnapshot::revision)
+            != expected
+        {
             return Err(ControllerStoreError::Conflict);
         }
-        self.0 = Some(next.clone());
+        if self.fail_consumed
+            && serde_json::to_value(next).unwrap()["mailbox"]["messages"]
+                .as_object()
+                .unwrap()
+                .values()
+                .any(|message| {
+                    serde_json::from_value::<iteron_protocol::agent_control::AgentMessageStateV1>(
+                        message["state"].clone(),
+                    )
+                    .is_ok_and(|state| {
+                        matches!(
+                            state,
+                            iteron_protocol::agent_control::AgentMessageStateV1::Consumed { .. }
+                        )
+                    })
+                })
+        {
+            return Err(ControllerStoreError::Unavailable);
+        }
+        self.snapshot = Some(next.clone());
         Ok(())
     }
 }
@@ -133,6 +160,20 @@ fn setup(
     Arc<AtomicUsize>,
     Arc<dyn AgentControlPort>,
 ) {
+    setup_with_store(root, provider, block_tool, Store::default())
+}
+
+fn setup_with_store(
+    root: &Workspace,
+    provider: Arc<ProviderFixture>,
+    block_tool: bool,
+    store: Store,
+) -> (
+    PersistentAgentHost<Store>,
+    Arc<KernelPersistentRuntime>,
+    Arc<AtomicUsize>,
+    Arc<dyn AgentControlPort>,
+) {
     let route = iteron_protocol::PricingRoute {
         provider_id: "test-provider".into(),
         model_id: "test-model".into(),
@@ -216,7 +257,7 @@ fn setup(
         max_pending_per_agent: 8,
     };
     let host = PersistentAgentHost::new(
-        AgentController::open(Store::default(), config).unwrap(),
+        AgentController::open(store, config).unwrap(),
         runtime.clone(),
         2,
     )
@@ -324,4 +365,42 @@ async fn real_agent_interrupt_reaps_admitted_tool_before_same_id_followup() {
             && host.inspect(AgentActor::Operator, child).unwrap().state == AgentStateV1::Idle
     })
     .await;
+}
+
+#[tokio::test]
+async fn failed_mailbox_consumption_persists_not_dispatched_and_makes_zero_provider_calls() {
+    let root = Workspace::new();
+    let provider = Arc::new(ProviderFixture::default());
+    let (host, runtime, _, _keepalive) = setup_with_store(
+        &root,
+        provider.clone(),
+        false,
+        Store {
+            snapshot: None,
+            fail_consumed: true,
+        },
+    );
+    let child = spawn(&host, "refuse inclusion when storage fails");
+    until(|| {
+        host.inspect(AgentActor::Operator, child).is_ok_and(|view| {
+            matches!(
+                view.state,
+                AgentStateV1::Idle | AgentStateV1::RecoveryRequired { .. }
+            )
+        })
+    })
+    .await;
+    assert_eq!(provider.requests.load(Ordering::SeqCst), 0);
+    let resident = runtime
+        .residents
+        .lock()
+        .unwrap()
+        .get(&child)
+        .unwrap()
+        .clone();
+    let child = resident.lock().await;
+    let events = iteron_record::replay(child.rollout.path()).unwrap();
+    assert!(events.iter().any(|event| matches!(&event.kind, EventKind::EffectFailed { tool, provider_route_attempt: Some(receipt), .. }
+        if tool == "provider" && matches!(receipt.usage, iteron_protocol::ProviderRouteUsageTruth::NotDispatched)
+            && matches!(receipt.cost, iteron_protocol::ProviderRouteCostTruth::NotDispatched))));
 }

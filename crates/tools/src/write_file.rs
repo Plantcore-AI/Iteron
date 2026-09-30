@@ -545,6 +545,7 @@ impl StagedWrite {
 
 pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
     let confined = registry.confine_execution_handle();
+    let inherited_scope = registry.inherited_write_scope_handle();
     let test_helper_thread = registry.test_helper_thread_handle();
     registry.push_candidate_change_effect_tool(
         ToolSpec {
@@ -574,13 +575,15 @@ pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
         },
         move |call, root| {
             let confined = confined.clone();
+            let inherited_scope=inherited_scope.clone();
             let test_helper_thread = test_helper_thread.clone();
             crate::effectfut::box_it(async move {
-                if confined.load(Ordering::Relaxed) {
+                if inherited_scope.get().is_some() || confined.load(Ordering::Relaxed) {
                     return crate::confined_helper::execute(
                         &root,
                         call,
                         test_helper_thread.load(Ordering::Relaxed),
+                        inherited_scope.get().cloned(),
                     )
                     .await;
                 }
@@ -633,6 +636,20 @@ pub(crate) async fn write_workspace_file_with_hook_and_boundary<F>(
 where
     F: FnOnce(&Path),
 {
+    write_workspace_file_with_scope(root, path, content, confined, None, before_commit).await
+}
+
+pub(crate) async fn write_workspace_file_with_scope<F>(
+    root: &Path,
+    path: &str,
+    content: &str,
+    confined: bool,
+    scope: Option<&crate::inherited_write_scope::InheritedWriteScope>,
+    before_commit: F,
+) -> Result<(), String>
+where
+    F: FnOnce(&Path),
+{
     validate_input(path, content)?;
 
     // First resolution follows symlinks and yields the absolute location whose parents may need
@@ -644,7 +661,7 @@ where
         #[cfg(unix)]
         {
             let target = std::sync::Arc::new(
-                crate::confined_fs::ConfinedTarget::open(root, &initial_target, true)
+                crate::confined_fs::ConfinedTarget::open_scoped(root, &initial_target, true, scope)
                     .map_err(|error| format!("bind {path}: {error}"))?,
             );
             let captured =

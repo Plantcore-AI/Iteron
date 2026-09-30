@@ -242,6 +242,9 @@ pub struct AgentViewV1 {
     pub last_summary: Option<String>,
     #[serde(default)]
     pub usage: AgentUsageV1,
+    /// Lifetime budget reserved for admitted descendants, unavailable to this agent itself.
+    #[serde(default)]
+    pub reserved: AgentUsageV1,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

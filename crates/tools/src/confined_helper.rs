@@ -25,9 +25,11 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[cfg(target_os = "linux")]
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Request {
     root: PathBuf,
     call: ToolUse,
+    scope: Option<crate::inherited_write_scope::InheritedWriteScope>,
     #[cfg(target_os = "linux")]
     root_device: u64,
     #[cfg(target_os = "linux")]
@@ -41,16 +43,27 @@ struct Response {
     outcome_unknown: bool,
 }
 
-pub(crate) async fn execute(root: &Path, call: ToolUse, test_helper_thread: bool) -> ToolExecution {
+pub(crate) async fn execute(
+    root: &Path,
+    call: ToolUse,
+    test_helper_thread: bool,
+    scope: Option<crate::inherited_write_scope::InheritedWriteScope>,
+) -> ToolExecution {
+    if let Some(scope) = &scope
+        && let Err(reason) = scope.validate_call(root, &call)
+    {
+        return ToolExecution::Definite(err_result(call.id, reason));
+    }
     #[cfg(target_os = "macos")]
     {
         let _ = test_helper_thread;
-        execute_descriptor_relative(root, call).await
+        execute_descriptor_relative_scoped(root, call, scope).await
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = root;
         let _ = test_helper_thread;
+        let _ = scope;
         return ToolExecution::Definite(err_result(
             call.id,
             "confined native writes require the Linux Landlock helper".into(),
@@ -59,13 +72,13 @@ pub(crate) async fn execute(root: &Path, call: ToolUse, test_helper_thread: bool
     #[cfg(all(test, target_os = "linux"))]
     {
         let _ = test_helper_thread;
-        execute_in_test_landlock_thread(root.to_path_buf(), call).await
+        execute_in_test_landlock_thread(root.to_path_buf(), call, scope).await
     }
     #[cfg(all(not(test), target_os = "linux"))]
     {
         #[cfg(feature = "test-helper")]
         if test_helper_thread {
-            return execute_in_test_landlock_thread(root.to_path_buf(), call).await;
+            return execute_in_test_landlock_thread(root.to_path_buf(), call, scope).await;
         }
         #[cfg(not(feature = "test-helper"))]
         let _ = test_helper_thread;
@@ -86,6 +99,7 @@ pub(crate) async fn execute(root: &Path, call: ToolUse, test_helper_thread: bool
         let request = Request {
             root: root.0,
             call,
+            scope,
             root_device: root.1,
             root_inode: root.2,
         };
@@ -258,8 +272,16 @@ pub const fn native_write_confinement_notice() -> Option<&'static str> {
     }
 }
 
-#[cfg(any(target_os = "macos", all(test, target_os = "linux")))]
+#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
 async fn execute_descriptor_relative(root: &Path, call: ToolUse) -> ToolExecution {
+    execute_descriptor_relative_scoped(root, call, None).await
+}
+#[cfg(any(target_os = "macos", all(test, target_os = "linux")))]
+async fn execute_descriptor_relative_scoped(
+    root: &Path,
+    call: ToolUse,
+    scope: Option<crate::inherited_write_scope::InheritedWriteScope>,
+) -> ToolExecution {
     // Keep this check at the executor seam as well as registry admission. No fallback may turn
     // an escaping path or Git administration mutation into ordinary host-authority execution.
     let root = match root.canonicalize() {
@@ -275,7 +297,7 @@ async fn execute_descriptor_relative(root: &Path, call: ToolUse) -> ToolExecutio
         return ToolExecution::Definite(err_result(call.id, reason));
     }
     let before = effect_snapshot(&root, &call).await;
-    let result = run_request(&root, call).await;
+    let result = run_request(&root, call, scope.as_ref()).await;
     if result.is_error && error_effect_unknown(before, &result).await {
         ToolExecution::Unknown(result)
     } else {
@@ -284,7 +306,11 @@ async fn execute_descriptor_relative(root: &Path, call: ToolUse) -> ToolExecutio
 }
 
 #[cfg(all(any(test, feature = "test-helper"), target_os = "linux"))]
-async fn execute_in_test_landlock_thread(root: PathBuf, call: ToolUse) -> ToolExecution {
+async fn execute_in_test_landlock_thread(
+    root: PathBuf,
+    call: ToolUse,
+    scope: Option<crate::inherited_write_scope::InheritedWriteScope>,
+) -> ToolExecution {
     let id = call.id.clone();
     let (sender, receiver) = tokio::sync::oneshot::channel();
     std::thread::spawn(move || {
@@ -298,7 +324,7 @@ async fn execute_in_test_landlock_thread(root: PathBuf, call: ToolUse) -> ToolEx
                 .build()?;
             Ok(runtime.block_on(async {
                 let before = effect_snapshot(&root, &call).await;
-                let result = run_request(&root, call).await;
+                let result = run_request(&root, call, scope.as_ref()).await;
                 let outcome_unknown =
                     result.is_error && error_effect_unknown(before, &result).await;
                 Response {
@@ -386,6 +412,11 @@ fn helper_entry_inner() -> io::Result<()> {
     ) {
         return Err(io::Error::other("unsupported helper operation"));
     }
+    if let Some(scope) = &request.scope {
+        scope
+            .validate_call(&request.root, &request.call)
+            .map_err(io::Error::other)?
+    }
     close_inherited_descriptors()?;
     #[cfg(debug_assertions)]
     debug_pause_if("ITERON_HELPER_PAUSE_BEFORE_LANDLOCK");
@@ -396,7 +427,7 @@ fn helper_entry_inner() -> io::Result<()> {
         .build()?;
     let response = runtime.block_on(async {
         let before = effect_snapshot(&root, &request.call).await;
-        let result = run_request(&root, request.call).await;
+        let result = run_request(&root, request.call, request.scope.as_ref()).await;
         let outcome_unknown = result.is_error && error_effect_unknown(before, &result).await;
         Response {
             result,
@@ -520,7 +551,16 @@ pub(crate) fn debug_pause_if(name: &str) {
 pub(crate) fn debug_pause_if(_name: &str) {}
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-async fn run_request(root: &Path, call: ToolUse) -> ToolResult {
+async fn run_request(
+    root: &Path,
+    call: ToolUse,
+    scope: Option<&crate::inherited_write_scope::InheritedWriteScope>,
+) -> ToolResult {
+    if let Some(scope) = scope
+        && let Err(reason) = scope.validate_call(root, &call)
+    {
+        return err_result(call.id, reason);
+    }
     let id = call.id;
     match call.name.as_str() {
         "write_file" => {
@@ -530,7 +570,16 @@ async fn run_request(root: &Path, call: ToolUse) -> ToolResult {
             let Some(content) = call.input.get("content").and_then(|value| value.as_str()) else {
                 return err_result(id, "write_file: missing string field `content`".into());
             };
-            match crate::write_file::write_workspace_file(root, path, content, true).await {
+            match crate::write_file::write_workspace_file_with_scope(
+                root,
+                path,
+                content,
+                true,
+                scope,
+                |_| {},
+            )
+            .await
+            {
                 Ok(()) => ok_result(id, format!("wrote {path} ({} bytes)", content.len())),
                 Err(error) => err_result(id, error),
             }
@@ -551,13 +600,23 @@ async fn run_request(root: &Path, call: ToolUse) -> ToolResult {
                 .get("new")
                 .and_then(|value| value.as_str())
                 .unwrap_or("");
-            match crate::edit::edit_workspace_file(root, path, old, new, true).await {
+            match crate::edit::edit_workspace_file_with_scope(
+                root,
+                path,
+                old,
+                new,
+                true,
+                scope,
+                |_| {},
+            )
+            .await
+            {
                 Ok(()) => ok_result(id, format!("edited {path} (1 replacement)")),
                 Err(error) => err_result(id, error),
             }
         }
         "apply_patch" => {
-            match crate::multi_file_patch::apply_patch_confined(root, &call.input).await {
+            match crate::multi_file_patch::apply_patch_scoped(root, &call.input, scope).await {
                 Ok(message) => ok_result(id, message),
                 Err(error) => err_result(id, error),
             }

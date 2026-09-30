@@ -62,7 +62,7 @@ fn child_provider_governor(
 
 mod activity;
 mod tunables;
-mod worktree;
+pub(super) mod worktree;
 
 /// One terminal/journal-safe refusal line. This is the final choke point for child setup and
 /// runtime failures: redact credential shapes, render terminal controls visibly, and retain at
@@ -467,7 +467,7 @@ impl KernelSpawner {
     /// A deterministic, filesystem-safe child run id: namespaced by the parent tenant+run+workflow
     /// (so two concurrent workflows never collide) and made unique per spawn by the monotone
     /// ordinal. Mirrors the char classes of the parent's private `subagent_run_id`.
-    fn mint_run_id(&self, ordinal: u64) -> RunId {
+    pub(super) fn mint_run_id(&self, ordinal: u64) -> RunId {
         let mut digest = Sha256::new();
         for value in [
             self.cx.tenant.0.as_bytes(),
@@ -513,24 +513,51 @@ impl KernelSpawner {
         &mut self,
         call: &AgentCall,
         view: &iteron_protocol::agent_control::AgentViewV1,
+        writer_workspace: Option<&Path>,
     ) -> Result<Agent, String> {
+        let prior_runtime = view.usage.turns > 1
+            || view.incarnation > 1
+            || view.usage.tokens > 0
+            || view.usage.cost_microusd > 0;
+        if prior_runtime {
+            let path = self
+                .cx
+                .runtime_state_dir
+                .join("subagents")
+                .join(format!("{}.jsonl", self.mint_run_id(view.agent_id.0).0));
+            if !path.is_file()
+                || std::fs::metadata(&path).map_or(true, |metadata| metadata.len() == 0)
+            {
+                return Err(safe_agent_refusal(
+                    "existing persistent identity requires its durable runtime journal",
+                ));
+            }
+        }
         let previous = self.cx.budget.clone();
-        self.cx.budget.max_turns = self.cx.budget.max_turns.min(view.budget.turns);
+        self.cx.budget.max_turns = self
+            .cx
+            .budget
+            .max_turns
+            .min(view.budget.turns.saturating_sub(view.reserved.turns));
         self.cx.budget.max_tokens = Some(
             self.cx
                 .budget
                 .max_tokens
-                .unwrap_or(view.budget.tokens)
-                .min(view.budget.tokens),
+                .unwrap_or(view.budget.tokens.saturating_sub(view.reserved.tokens))
+                .min(view.budget.tokens.saturating_sub(view.reserved.tokens)),
         );
         self.cx.budget.max_wall_secs = self
             .cx
             .budget
             .max_wall_secs
             .min(view.budget.wall_ms.div_ceil(1_000));
-        let ceiling = view.budget.cost_microusd as f64 / 1_000_000.0;
+        let ceiling = view
+            .budget
+            .cost_microusd
+            .saturating_sub(view.reserved.cost_microusd) as f64
+            / 1_000_000.0;
         self.cx.budget.max_usd = Some(self.cx.budget.max_usd.unwrap_or(ceiling).min(ceiling));
-        let built = self.build_child_in_mode(call, view.agent_id.0, None, true);
+        let built = self.build_child_in_mode(call, view.agent_id.0, writer_workspace, true);
         self.cx.budget = previous;
         built
     }
@@ -734,8 +761,14 @@ impl KernelSpawner {
         sub.telemetry = cx.telemetry.clone();
         sub.activity = cx.activity.clone();
         sub.token_calibration = cx.token_calibration.clone();
-        if cx.usd_budget.is_some() {
-            sub.usd_budget = cx.usd_budget.clone();
+        if let Some(parent) = &cx.usd_budget {
+            let ceiling = sub.usd_budget.as_ref().map_or_else(
+                || parent.ceiling_microusd(),
+                |budget| budget.ceiling_microusd(),
+            );
+            sub.usd_budget = Some(Arc::new(
+                SharedUsdBudget::child(ceiling, parent.clone()).map_err(safe_agent_refusal)?,
+            ));
         }
         sub.session_spawn_ledger = cx.session_spawn_ledger.clone();
         let child_capabilities = if is_writer {

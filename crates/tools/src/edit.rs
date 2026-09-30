@@ -425,6 +425,21 @@ pub(crate) async fn edit_workspace_file_with_hook_and_boundary<F>(
 where
     F: FnOnce(&std::path::Path),
 {
+    edit_workspace_file_with_scope(root, path, old, new, confined, None, before_commit).await
+}
+
+pub(crate) async fn edit_workspace_file_with_scope<F>(
+    root: &std::path::Path,
+    path: &str,
+    old: &str,
+    new: &str,
+    confined: bool,
+    scope: Option<&crate::inherited_write_scope::InheritedWriteScope>,
+    before_commit: F,
+) -> Result<(), String>
+where
+    F: FnOnce(&std::path::Path),
+{
     if path.is_empty()
         || path.len()
             > iteron_tunables::param_integer("tools.edit.max_edit_path_bytes", MAX_EDIT_PATH_BYTES)
@@ -450,7 +465,7 @@ where
     #[cfg(unix)]
     let confined_target = if confined {
         Some(std::sync::Arc::new(
-            crate::confined_fs::ConfinedTarget::open(root, &target, false)
+            crate::confined_fs::ConfinedTarget::open_scoped(root, &target, false, scope)
                 .map_err(|error| format!("bind {path}: {error}"))?,
         ))
     } else {
@@ -510,6 +525,7 @@ where
 
 pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
     let confined = r.confine_execution_handle();
+    let inherited_scope = r.inherited_write_scope_handle();
     let test_helper_thread = r.test_helper_thread_handle();
     r.push_candidate_change_effect_tool(
         ToolSpec {
@@ -536,13 +552,15 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
         },
         move |call, root| {
             let confined = confined.clone();
+            let inherited_scope=inherited_scope.clone();
             let test_helper_thread = test_helper_thread.clone();
             crate::effectfut::box_it(async move {
-                if confined.load(std::sync::atomic::Ordering::Relaxed) {
+                if inherited_scope.get().is_some() || confined.load(std::sync::atomic::Ordering::Relaxed) {
                     return crate::confined_helper::execute(
                         &root,
                         call,
                         test_helper_thread.load(std::sync::atomic::Ordering::Relaxed),
+                        inherited_scope.get().cloned(),
                     )
                     .await;
                 }

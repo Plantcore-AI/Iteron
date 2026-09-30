@@ -31,6 +31,7 @@ pub use catalog::{AgentCatalog, AgentCatalogRuntimeIdentity, LoadError};
 pub use controller::{
     AgentActor, AgentController, AgentControllerConfig, AgentControllerJournal,
     AgentControllerSnapshot, AgentWorkflowClaim, AgentWorkflowCompletion, AgentWorkflowLease,
+    AgentWorkflowTerminal, AgentWorkspaceWitness,
 };
 pub use controller_error::{ControllerError, ControllerStoreError};
 pub use controller_file::AgentFileJournal;

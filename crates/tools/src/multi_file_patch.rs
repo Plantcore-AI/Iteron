@@ -70,6 +70,7 @@ struct PatchIoStats {
 
 pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
     let confined = registry.confine_execution_handle();
+    let inherited_scope = registry.inherited_write_scope_handle();
     let test_helper_thread = registry.test_helper_thread_handle();
     registry.push_candidate_change_effect_tool(
         ToolSpec {
@@ -123,13 +124,15 @@ pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
         },
         move |call, root| {
             let confined = confined.clone();
+            let inherited_scope=inherited_scope.clone();
             let test_helper_thread = test_helper_thread.clone();
             crate::effectfut::box_it(async move {
-                if confined.load(std::sync::atomic::Ordering::Relaxed) {
+                if inherited_scope.get().is_some() || confined.load(std::sync::atomic::Ordering::Relaxed) {
                     return crate::confined_helper::execute(
                         &root,
                         call,
                         test_helper_thread.load(std::sync::atomic::Ordering::Relaxed),
+                        inherited_scope.get().cloned(),
                     )
                     .await;
                 }
@@ -153,26 +156,48 @@ async fn execute_patch(
     stats: &mut PatchIoStats,
     confined: bool,
 ) -> Result<(usize, usize), PatchFailure> {
+    execute_patch_scoped(root, input, stats, confined, None).await
+}
+async fn execute_patch_scoped(
+    root: &Path,
+    input: &Value,
+    stats: &mut PatchIoStats,
+    confined: bool,
+    scope: Option<&crate::inherited_write_scope::InheritedWriteScope>,
+) -> Result<(usize, usize), PatchFailure> {
     let requests = parse_requests(input)?;
     let total_hunks = requests.iter().map(|file| file.hunks.len()).sum::<usize>();
-    let plans = plan_patch(root, requests, stats, confined).await?;
+    let plans = plan_patch_scoped(root, requests, stats, confined, scope).await?;
     commit_patch(root, &plans, stats, confined).await?;
     Ok((plans.len(), total_hunks))
 }
 
-pub(crate) async fn apply_patch_confined(root: &Path, input: &Value) -> Result<String, String> {
-    let mut stats = PatchIoStats::default();
-    execute_patch(root, input, &mut stats, true)
-        .await
-        .map(|(files, hunks)| format!("patched {files} files ({hunks} hunks)"))
-        .map_err(|failure| failure.model_json())
-}
-
+#[cfg(test)]
 async fn plan_patch(
     root: &Path,
     requests: Vec<FilePatch>,
     stats: &mut PatchIoStats,
     confined: bool,
+) -> Result<Vec<PlannedFile>, PatchFailure> {
+    plan_patch_scoped(root, requests, stats, confined, None).await
+}
+pub(crate) async fn apply_patch_scoped(
+    root: &Path,
+    input: &Value,
+    scope: Option<&crate::inherited_write_scope::InheritedWriteScope>,
+) -> Result<String, String> {
+    execute_patch_scoped(root, input, &mut PatchIoStats::default(), true, scope)
+        .await
+        .map(|(files, hunks)| format!("patched {files} files ({hunks} hunks)"))
+        .map_err(|failure| failure.model_json())
+}
+
+async fn plan_patch_scoped(
+    root: &Path,
+    requests: Vec<FilePatch>,
+    stats: &mut PatchIoStats,
+    confined: bool,
+    scope: Option<&crate::inherited_write_scope::InheritedWriteScope>,
 ) -> Result<Vec<PlannedFile>, PatchFailure> {
     #[cfg(not(unix))]
     if confined {
@@ -214,8 +239,8 @@ async fn plan_patch(
         #[cfg(unix)]
         let confined_target = if confined {
             Some(Arc::new(
-                crate::confined_fs::ConfinedTarget::open(root, &target, false).map_err(
-                    |error| {
+                crate::confined_fs::ConfinedTarget::open_scoped(root, &target, false, scope)
+                    .map_err(|error| {
                         PatchFailure::file(
                             "path_outside_workspace",
                             "bind",
@@ -223,8 +248,7 @@ async fn plan_patch(
                             &request.path,
                             error.to_string(),
                         )
-                    },
-                )?,
+                    })?,
             ))
         } else {
             None

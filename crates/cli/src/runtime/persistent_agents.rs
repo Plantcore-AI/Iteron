@@ -28,6 +28,15 @@ const MAX_INPUT_BATCH: usize = 128;
 /// decoded from command JSON. Queries are current observations and must not be memoized.
 #[async_trait]
 pub(crate) trait AgentControlPort: Send + Sync {
+    fn workspace_witness(
+        &self,
+    ) -> Result<Option<iteron_agents::AgentWorkspaceWitness>, ControllerError>;
+    fn record_workspace_witness(
+        &self,
+        expected: Option<&iteron_agents::AgentWorkspaceWitness>,
+        witness: iteron_agents::AgentWorkspaceWitness,
+    ) -> Result<(), ControllerError>;
+    fn host_limits(&self) -> Result<AgentHostLimits, ControllerError>;
     fn workflow_port(&self) -> Arc<dyn iteron_workflow::live_scheduler::WorkflowControllerPort>;
     fn workflow_completion(
         &self,
@@ -55,6 +64,16 @@ pub(crate) trait AgentControlPort: Send + Sync {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct AgentHostLimits {
+    pub root: AgentViewV1,
+    pub remaining: iteron_protocol::agent_control::AgentBudgetV1,
+    /// None is absence of independently known monetary admission truth; never an invented cap.
+    pub monetary_remaining: Option<u64>,
+    pub max_agents: usize,
+    pub max_concurrency: usize,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct AgentObservation {
     pub revision: u64,
     pub agents: Vec<AgentViewV1>,
@@ -69,6 +88,7 @@ pub(crate) struct AgentSettlement {
     pub tokens: u64,
     pub cost_microusd: u64,
     pub effects_known: bool,
+    pub terminal: iteron_agents::AgentWorkflowTerminal,
 }
 
 #[async_trait]
@@ -85,6 +105,9 @@ pub(crate) trait PersistentAgentRuntime: Send + Sync {
 
     /// Called before durable spawn acceptance; rejects unsupported authority/profile combinations.
     fn validate_spawn(&self, command: &AgentCommandV1) -> Result<(), ControllerError>;
+    fn monetary_remaining(&self) -> Result<Option<u64>, ControllerError> {
+        Ok(None)
+    }
 }
 
 trait MailboxPort: Send + Sync {
@@ -115,10 +138,6 @@ pub(crate) struct LiveAgentMailbox {
 }
 
 impl LiveAgentMailbox {
-    pub fn epoch(&self) -> AgentEpochV1 {
-        self.epoch
-    }
-
     pub fn stop_requested(&self) -> bool {
         !matches!(self.port.state(self.id), Ok(AgentStateV1::Running { epoch }) if epoch == self.epoch)
     }
@@ -331,6 +350,7 @@ struct Shared<J> {
     controller: Mutex<AgentController<J>>,
     runtime: Arc<dyn PersistentAgentRuntime>,
     permits: Arc<Semaphore>,
+    parallel: usize,
     changed: watch::Sender<u64>,
     pending_settlements: Mutex<BTreeMap<AgentIdV1, (AgentEpochV1, AgentSettlement, u64)>>,
 }
@@ -368,6 +388,7 @@ impl<J: AgentControllerJournal + Send + 'static> PersistentAgentHost<J> {
                 controller: Mutex::new(controller),
                 runtime,
                 permits: Arc::new(Semaphore::new(parallel)),
+                parallel,
                 changed,
                 pending_settlements: Mutex::new(BTreeMap::new()),
             }),
@@ -397,7 +418,7 @@ impl<J: AgentControllerJournal + Send + 'static> PersistentAgentHost<J> {
             .controller
             .lock()
             .map_err(|_| ControllerError::Poisoned)?;
-        let settled = controller.finish_turn_with_usage(
+        let settled = controller.finish_turn_with_terminal(
             id,
             epoch,
             &result.summary,
@@ -408,6 +429,7 @@ impl<J: AgentControllerJournal + Send + 'static> PersistentAgentHost<J> {
                 wall_ms,
             },
             result.effects_known,
+            result.terminal,
         );
         self.notify(controller.revision());
         settled
@@ -444,6 +466,7 @@ impl<J: AgentControllerJournal + Send + 'static> PersistentAgentHost<J> {
                     tokens: 0,
                     cost_microusd: 0,
                     effects_known: false,
+                    terminal: iteron_agents::AgentWorkflowTerminal::StoppedRecovery,
                 },
             };
             let elapsed = u64::try_from(started.elapsed().as_millis())
@@ -509,6 +532,7 @@ impl<J: AgentControllerJournal + Send + 'static> PersistentAgentHost<J> {
                                     tokens: 0,
                                     cost_microusd: 0,
                                     effects_known: true,
+                                    terminal: iteron_agents::AgentWorkflowTerminal::Failed,
                                 };
                                 self.shared
                                     .pending_settlements
@@ -540,6 +564,82 @@ impl<J: AgentControllerJournal + Send + 'static> PersistentAgentHost<J> {
 
 #[async_trait]
 impl<J: AgentControllerJournal + Send + 'static> AgentControlPort for PersistentAgentHost<J> {
+    fn workspace_witness(
+        &self,
+    ) -> Result<Option<iteron_agents::AgentWorkspaceWitness>, ControllerError> {
+        self.shared
+            .controller
+            .lock()
+            .map_err(|_| ControllerError::Poisoned)?
+            .workspace_witness()
+    }
+    fn record_workspace_witness(
+        &self,
+        expected: Option<&iteron_agents::AgentWorkspaceWitness>,
+        witness: iteron_agents::AgentWorkspaceWitness,
+    ) -> Result<(), ControllerError> {
+        let mut controller = self
+            .shared
+            .controller
+            .lock()
+            .map_err(|_| ControllerError::Poisoned)?;
+        controller.record_workspace_witness(expected, witness)?;
+        self.notify(controller.revision());
+        Ok(())
+    }
+    fn host_limits(&self) -> Result<AgentHostLimits, ControllerError> {
+        let controller = self
+            .shared
+            .controller
+            .lock()
+            .map_err(|_| ControllerError::Poisoned)?;
+        let root = controller.inspect(AgentActor::Operator, controller.root_id())?;
+        let views = controller.list(AgentActor::Operator)?;
+        if views
+            .iter()
+            .any(|view| matches!(view.state, AgentStateV1::RecoveryRequired { .. }))
+        {
+            return Err(ControllerError::RecoveryRequired);
+        }
+        let mut used = AgentUsageV1::default();
+        for view in views {
+            used.turns = used
+                .turns
+                .checked_add(view.usage.turns)
+                .ok_or(ControllerError::Budget)?;
+            used.tokens = used
+                .tokens
+                .checked_add(view.usage.tokens)
+                .ok_or(ControllerError::Budget)?;
+            used.cost_microusd = used
+                .cost_microusd
+                .checked_add(view.usage.cost_microusd)
+                .ok_or(ControllerError::Budget)?;
+            used.wall_ms = used
+                .wall_ms
+                .checked_add(view.usage.wall_ms)
+                .ok_or(ControllerError::Budget)?;
+        }
+        let monetary_remaining = self.shared.runtime.monetary_remaining()?;
+        let remaining = iteron_protocol::agent_control::AgentBudgetV1 {
+            turns: root.budget.turns.saturating_sub(used.turns),
+            tokens: root.budget.tokens.saturating_sub(used.tokens),
+            cost_microusd: root
+                .budget
+                .cost_microusd
+                .saturating_sub(used.cost_microusd)
+                .min(monetary_remaining.unwrap_or(0)),
+            wall_ms: root.budget.wall_ms.saturating_sub(used.wall_ms),
+        };
+        Ok(AgentHostLimits {
+            root,
+            remaining,
+            monetary_remaining,
+            max_agents: controller.snapshot().config().max_agents,
+            max_concurrency: self.shared.parallel,
+        })
+    }
+
     fn workflow_port(&self) -> Arc<dyn iteron_workflow::live_scheduler::WorkflowControllerPort> {
         Arc::new(self.clone())
     }

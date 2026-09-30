@@ -109,6 +109,7 @@ impl PersistentAgentRuntime for Runtime {
             tokens: 1,
             cost_microusd: 0,
             effects_known: true,
+            terminal: iteron_agents::AgentWorkflowTerminal::Succeeded,
         }
     }
 }

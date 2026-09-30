@@ -488,3 +488,124 @@ fn tampered_snapshot_cannot_bypass_authority_budget_or_mailbox_hash() {
         );
     }
 }
+
+#[test]
+fn runtime_wall_anchor_cannot_be_recovered_with_zero_usage() {
+    let store = Store::default();
+    let cfg = config(8);
+    let mut controller = AgentController::open(store.clone(), cfg.clone()).unwrap();
+    let id = child(&mut controller, "wall-recovery");
+    let epoch = controller.begin_runtime_turn(id, 10_000).unwrap().unwrap();
+    drop(controller);
+    let mut reopened = AgentController::open(store, cfg).unwrap();
+    assert_eq!(reopened.recovery_anchor(id, epoch).unwrap(), Some(10_000));
+    assert!(matches!(
+        reopened.reconcile_stopped(id, epoch, true, false),
+        Err(ControllerError::RecoveryRequired)
+    ));
+    assert!(
+        reopened
+            .reconcile_stopped_with_usage(id, epoch, true, false, Default::default())
+            .is_err()
+    );
+    reopened
+        .reconcile_stopped_with_usage(
+            id,
+            epoch,
+            true,
+            false,
+            iteron_protocol::agent_control::AgentUsageV1 {
+                wall_ms: 100,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        reopened
+            .inspect(AgentActor::Operator, id)
+            .unwrap()
+            .usage
+            .wall_ms,
+        100
+    );
+}
+
+#[test]
+fn workflow_claim_binds_exact_agent_epoch_and_typed_terminal_atomically() {
+    use iteron_agents::{AgentWorkflowClaim, AgentWorkflowTerminal};
+    let mut controller = AgentController::open(Store::default(), config(8)).unwrap();
+    let id = child(&mut controller, "workflow-agent");
+    let epoch = controller.begin_turn(id).unwrap().unwrap();
+    let inputs = controller.deliver(id, epoch, true).unwrap();
+    controller
+        .mark_consumed(
+            id,
+            epoch,
+            &inputs.iter().map(|message| message.id).collect::<Vec<_>>(),
+        )
+        .unwrap();
+    controller
+        .finish_turn(id, epoch, "initial task", 1, 0, true)
+        .unwrap();
+    let claim = AgentWorkflowClaim {
+        workflow_id: "workflow".into(),
+        node_id: 1,
+        attempt: 1,
+        input_digest: "a".repeat(64),
+        assigned_agent: id,
+        task: "exact task".into(),
+        budget: AgentBudgetV1 {
+            turns: 1,
+            tokens: 10,
+            cost_microusd: 10,
+            wall_ms: 100,
+        },
+        deadline_unix_ms: 10_100,
+    };
+    let before = controller.revision();
+    let lease = controller
+        .claim_workflow_task(claim.clone(), 10_000)
+        .unwrap();
+    assert_eq!(controller.revision(), before + 1);
+    assert_eq!(lease.agent.agent_id, id);
+    assert_eq!(lease.initial.len(), 1);
+    assert_eq!(lease.initial[0].text.as_deref(), Some("exact task"));
+    assert!(
+        controller
+            .claim_workflow_task(claim.clone(), 10_001)
+            .unwrap()
+            .replayed
+    );
+    let mut changed = claim.clone();
+    changed.task = "altered".into();
+    assert!(matches!(
+        controller.claim_workflow_task(changed, 10_001),
+        Err(ControllerError::RequestConflict)
+    ));
+    controller
+        .mark_consumed(id, lease.epoch, &[lease.initial[0].id])
+        .unwrap();
+    controller
+        .finish_turn_with_terminal(
+            id,
+            lease.epoch,
+            "stopped physically",
+            iteron_protocol::agent_control::AgentUsageV1 {
+                tokens: 2,
+                cost_microusd: 1,
+                wall_ms: 20,
+                ..Default::default()
+            },
+            true,
+            AgentWorkflowTerminal::Cancelled,
+        )
+        .unwrap();
+    let completion = controller.workflow_completion(&claim).unwrap().unwrap();
+    assert_eq!(completion.terminal, AgentWorkflowTerminal::Cancelled);
+    assert!(completion.effects_known);
+    assert_eq!(completion.epoch, lease.epoch);
+    assert!(matches!(
+        controller.claim_workflow_task(claim, 10_050),
+        Err(ControllerError::RecoveryRequired)
+    ));
+}

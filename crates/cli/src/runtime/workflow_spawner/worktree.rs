@@ -8,6 +8,8 @@ use std::process::{Command, ExitStatus, Stdio};
 use iteron_verify::Oracle as _;
 use sha2::{Digest as _, Sha256};
 
+pub(in crate::runtime) mod persistent;
+
 /// Symlink verdict for a path whose metadata cannot be read at all: provisioning refuses it rather
 /// than treating an unreadable owner directory as safe.
 const UNREADABLE_PATH_IS_SYMLINK: bool = true;
@@ -17,7 +19,7 @@ const MAX_WRITER_PATCH_BYTES: u64 = 128 * 1024 * 1024;
 const VERIFY_TIMEOUT_SECS: u64 = 600;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum MergeFailureKind {
+pub(in crate::runtime) enum MergeFailureKind {
     ParentNotRepository,
     ParentDirty,
     ParentAdvanced,
@@ -54,8 +56,8 @@ impl MergeFailureKind {
 }
 
 #[derive(Debug)]
-pub(super) struct MergeFailure {
-    pub(super) kind: MergeFailureKind,
+pub(in crate::runtime) struct MergeFailure {
+    pub(in crate::runtime) kind: MergeFailureKind,
     detail: String,
 }
 
@@ -67,7 +69,7 @@ impl MergeFailure {
         }
     }
 
-    pub(super) fn public_summary(&self) -> String {
+    pub(in crate::runtime) fn public_summary(&self) -> String {
         format!(
             "writer merge requires human resolution [{}]: {}",
             self.kind.code(),
@@ -77,15 +79,15 @@ impl MergeFailure {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct MergeReceipt {
-    pub(super) patch_digest_sha256: Option<String>,
-    pub(super) patch_bytes: u64,
+pub(in crate::runtime) struct MergeReceipt {
+    pub(in crate::runtime) patch_digest_sha256: Option<String>,
+    pub(in crate::runtime) patch_bytes: u64,
     sealed_index_tree: String,
 }
 
 /// An exact Git worktree registered under the parent repository. The path is derived below the
 /// runtime-owned state directory and never accepted from the model.
-pub(super) struct WriterWorktree {
+pub(in crate::runtime) struct WriterWorktree {
     parent: PathBuf,
     path: PathBuf,
     patch_path: PathBuf,
@@ -94,7 +96,7 @@ pub(super) struct WriterWorktree {
 }
 
 impl WriterWorktree {
-    pub(super) async fn provision(
+    pub(in crate::runtime) async fn provision(
         parent: PathBuf,
         runtime_state: PathBuf,
         child_id: String,
@@ -109,14 +111,14 @@ impl WriterWorktree {
             })?
     }
 
-    pub(super) fn path(&self) -> &Path {
+    pub(in crate::runtime) fn path(&self) -> &Path {
         &self.path
     }
 
     /// Stage the child's bounded registry edits and materialize a content-addressable patch before
     /// verification. Verification may create ignored build output, but may not alter tracked or
     /// non-ignored source after this point.
-    pub(super) async fn prepare_patch(&self) -> Result<MergeReceipt, MergeFailure> {
+    pub(in crate::runtime) async fn prepare_patch(&self) -> Result<MergeReceipt, MergeFailure> {
         let path = self.path.clone();
         let patch_path = self.patch_path.clone();
         let base_head = self.base_head.clone();
@@ -130,7 +132,7 @@ impl WriterWorktree {
             })?
     }
 
-    pub(super) async fn verify(
+    pub(in crate::runtime) async fn verify(
         &self,
         receipt: &MergeReceipt,
         command: Option<&str>,
@@ -178,7 +180,10 @@ impl WriterWorktree {
 
     /// Apply the prepared patch only after revalidating the parent HEAD and cleanliness while the
     /// caller holds the session-wide writer mutex.
-    pub(super) async fn merge(&mut self, receipt: &MergeReceipt) -> Result<(), MergeFailure> {
+    pub(in crate::runtime) async fn merge(
+        &mut self,
+        receipt: &MergeReceipt,
+    ) -> Result<(), MergeFailure> {
         let parent = self.parent.clone();
         let patch_path = self.patch_path.clone();
         let base_head = self.base_head.clone();
@@ -194,7 +199,7 @@ impl WriterWorktree {
         self.cleanup().await
     }
 
-    pub(super) async fn discard(&mut self) -> Result<(), MergeFailure> {
+    pub(in crate::runtime) async fn discard(&mut self) -> Result<(), MergeFailure> {
         self.cleanup().await
     }
 
@@ -236,6 +241,15 @@ fn provision_sync(
     require_clean(&canonical_parent)?;
     let base_head = head(&canonical_parent)?;
 
+    provision_at_head(canonical_parent, runtime_state, child_id, base_head)
+}
+
+fn provision_at_head(
+    canonical_parent: PathBuf,
+    runtime_state: PathBuf,
+    child_id: &str,
+    base_head: String,
+) -> Result<WriterWorktree, MergeFailure> {
     let owner = runtime_state.join("writer-worktrees");
     std::fs::create_dir_all(&owner).map_err(|error| {
         MergeFailure::new(MergeFailureKind::WorktreeProvision, error.to_string())
@@ -287,6 +301,15 @@ fn prepare_patch_sync(
     patch_path: &Path,
     base_head: &str,
 ) -> Result<MergeReceipt, MergeFailure> {
+    prepare_patch_against(worktree, patch_path, base_head, base_head)
+}
+
+fn prepare_patch_against(
+    worktree: &Path,
+    patch_path: &Path,
+    base_head: &str,
+    diff_base: &str,
+) -> Result<MergeReceipt, MergeFailure> {
     require_head(worktree, base_head, MergeFailureKind::WorktreeState)?;
     require_git_success(
         worktree,
@@ -301,7 +324,7 @@ fn prepare_patch_sync(
             OsStr::new("--binary"),
             OsStr::new("--full-index"),
             OsStr::new(&output_arg),
-            OsStr::new(base_head),
+            OsStr::new(diff_base),
             OsStr::new("--"),
         ],
     )?;
@@ -584,7 +607,7 @@ fn has_untracked(path: &Path) -> Result<bool, MergeFailure> {
 }
 
 fn git_quiet<const N: usize>(path: &Path, args: [&str; N]) -> Result<bool, MergeFailure> {
-    let status = git_command(path)
+    let status = git_command(path)?
         .args(args)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -638,7 +661,7 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    let mut child = git_command(path)
+    let mut child = git_command(path)?
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -673,7 +696,7 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    let mut child = git_command(path)
+    let mut child = git_command(path)?
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -719,7 +742,7 @@ where
     })
 }
 
-fn git_command(path: &Path) -> Command {
+fn raw_git_command(path: &Path) -> Command {
     let mut command = Command::new("git");
     command
         .arg("-c")
@@ -728,13 +751,52 @@ fn git_command(path: &Path) -> Command {
         .arg("core.fsmonitor=false")
         .arg("-c")
         .arg("credential.helper=")
-        .arg("-C")
-        .arg(path)
+        .arg("-c")
+        .arg("core.attributesFile=/dev/null")
+        .arg("-c")
+        .arg("diff.external=")
+        .current_dir(path)
         .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_ATTR_NOSYSTEM", "1")
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_PAGER", "cat")
         .stdin(Stdio::null());
+    // Ambient Git process configuration cannot retarget the trusted repository/index or inject
+    // a command. No configuration values or command strings are read or printed.
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("GIT_") {
+            command.env_remove(key);
+        }
+    }
     command
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_ATTR_NOSYSTEM", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_PAGER", "cat");
+    command
+}
+
+fn git_command(path: &Path) -> Result<Command, MergeFailure> {
+    let status = raw_git_command(path)
+        .args(["config", "--name-only", "--get-regexp", "^filter\\."])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|_| {
+            MergeFailure::new(
+                MergeFailureKind::WorktreeState,
+                "Git filter configuration inspection failed",
+            )
+        })?;
+    if status.code() != Some(1) {
+        return Err(MergeFailure::new(
+            MergeFailureKind::WorktreeState,
+            "isolated writer refuses repository filter driver configuration",
+        ));
+    }
+    Ok(raw_git_command(path))
 }
 
 fn read_bounded(mut reader: impl Read) -> Vec<u8> {
@@ -829,7 +891,7 @@ mod tests {
     }
 
     fn git_ok(path: &Path, args: &[&str]) {
-        let output = git_command(path).args(args).output().unwrap();
+        let output = git_command(path).unwrap().args(args).output().unwrap();
         assert!(
             output.status.success(),
             "git {args:?} failed: {}",
