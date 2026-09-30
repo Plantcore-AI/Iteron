@@ -177,7 +177,11 @@ impl<J: AgentControllerJournal> AgentController<J> {
         // The runtime sees a tighter absolute ceiling for this execution; durable identity retains
         // its lifetime ceiling and the claim retains the independently bounded node envelope.
         agent.reserved = AgentUsageV1::default();
-        agent.budget.turns = agent.usage.turns.saturating_add(claim.budget.turns);
+        agent.budget.turns = agent
+            .usage
+            .turns
+            .saturating_sub(1)
+            .saturating_add(claim.budget.turns);
         agent.budget.tokens = agent.usage.tokens.saturating_add(claim.budget.tokens);
         agent.budget.cost_microusd = agent
             .usage
@@ -266,7 +270,8 @@ pub(super) fn settlement_fits(
         .values()
         .filter(|receipt| receipt.claim.assigned_agent == id && receipt.epoch == epoch)
         .all(|receipt| {
-            usage.tokens <= receipt.claim.budget.tokens
+            usage.turns <= receipt.claim.budget.turns
+                && usage.tokens <= receipt.claim.budget.tokens
                 && usage.cost_microusd <= receipt.claim.budget.cost_microusd
                 && usage.wall_ms <= receipt.claim.budget.wall_ms
         })
@@ -289,7 +294,10 @@ pub(super) fn record_completion(
             agent_id: id,
             epoch,
             summary: summary.into(),
-            usage: AgentUsageV1 { turns: 1, ..usage },
+            usage: AgentUsageV1 {
+                turns: usage.turns.max(1),
+                ..usage
+            },
             effects_known,
             terminal,
         });
@@ -317,6 +325,11 @@ pub(super) fn recover_completion(
             effects_known: false,
             terminal: AgentWorkflowTerminal::StoppedRecovery,
         });
+        completion.usage.turns = completion
+            .usage
+            .turns
+            .checked_add(additional.turns)
+            .ok_or(ControllerError::Budget)?;
         completion.usage.tokens = completion
             .usage
             .tokens
@@ -370,7 +383,7 @@ pub(super) fn validate_claims(snapshot: &AgentControllerSnapshot) -> Result<(), 
                 || completion.epoch != receipt.epoch
                 || completion.summary.len() > MAX_AGENT_TEXT_BYTES
                 || completion.summary.contains('\0')
-                || completion.usage.turns != 1
+                || completion.usage.turns == 0
             {
                 return Err(ControllerError::Invalid(
                     "invalid durable workflow completion",

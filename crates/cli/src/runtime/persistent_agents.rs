@@ -84,6 +84,7 @@ pub(crate) struct AgentObservation {
 /// cleanup is effects_known=false and leaves durable ownership quarantined.
 #[derive(Clone)]
 pub(crate) struct AgentSettlement {
+    pub turns: u32,
     pub summary: String,
     pub tokens: u64,
     pub cost_microusd: u64,
@@ -423,7 +424,7 @@ impl<J: AgentControllerJournal + Send + 'static> PersistentAgentHost<J> {
             epoch,
             &result.summary,
             AgentUsageV1 {
-                turns: 0,
+                turns: result.turns,
                 tokens: result.tokens,
                 cost_microusd: result.cost_microusd,
                 wall_ms,
@@ -461,6 +462,7 @@ impl<J: AgentControllerJournal + Send + 'static> PersistentAgentHost<J> {
             let result = match tokio::time::timeout(wall, execution).await {
                 Ok(Ok(result)) => result,
                 Ok(Err(_)) | Err(_) => AgentSettlement {
+                    turns: 0,
                     summary: "Agent deadline expired; physical effects require reconciliation"
                         .into(),
                     tokens: 0,
@@ -527,6 +529,7 @@ impl<J: AgentControllerJournal + Send + 'static> PersistentAgentHost<J> {
                             Ok(initial) => initial,
                             Err(error) => {
                                 let result = AgentSettlement {
+                                    turns: 0,
                                     summary: "Mailbox delivery failed before runtime dispatch"
                                         .into(),
                                     tokens: 0,

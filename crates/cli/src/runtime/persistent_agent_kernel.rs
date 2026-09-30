@@ -25,6 +25,7 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Duration;
 
 type Resident = Arc<tokio::sync::Mutex<Agent>>;
+mod budget;
 
 pub(super) struct KernelPersistentRuntime {
     spawner: Mutex<KernelSpawner>,
@@ -32,7 +33,10 @@ pub(super) struct KernelPersistentRuntime {
     control: OnceLock<Weak<dyn AgentControlPort>>,
     writer: PersistentWriterConfig,
     money: Option<Arc<SharedUsdBudget>>,
+    agent_money: Mutex<BTreeMap<AgentIdV1, Arc<SharedUsdBudget>>>,
     pricing: Option<Arc<dyn iteron_obs::PricingPort>>,
+    readonly_ceiling: Option<iteron_protocol::Budget>,
+    writer_ceiling: iteron_protocol::Budget,
     #[cfg(test)]
     fixture: Option<Arc<dyn Fn(&mut Agent) + Send + Sync>>,
 }
@@ -61,7 +65,13 @@ impl KernelPersistentRuntime {
                     && context.writer_merge_policy.admit_child(true, true).is_ok(),
             },
             money: context.usd_budget.clone(),
+            agent_money: Mutex::new(BTreeMap::new()),
             pricing: context.pricing_port.clone(),
+            readonly_ceiling: context
+                .execution_policy
+                .child_ceiling
+                .map(|ceiling| ceiling.narrow_budget(context.budget.clone())),
+            writer_ceiling: context.budget.clone(),
             spawner: Mutex::new(KernelSpawner::new(context)),
             residents: Mutex::new(BTreeMap::new()),
             control: OnceLock::new(),
@@ -80,6 +90,8 @@ impl KernelPersistentRuntime {
         let Some(pool) = &self.money else {
             return Ok(());
         };
+        self.restore_monetary_chains(views, root)
+            .map_err(KernelError::AgentControl)?;
         let spawner = self
             .spawner
             .lock()
@@ -107,7 +119,15 @@ impl KernelPersistentRuntime {
                 &scoped,
                 self.pricing.as_deref(),
             )?;
-            pool.merge_recovered_charges(&replay.ledger)
+            let own_pool = self
+                .agent_money
+                .lock()
+                .map_err(|_| KernelError::AgentControl(ControllerError::Poisoned))?
+                .get(&view.agent_id)
+                .cloned()
+                .ok_or(KernelError::AgentControl(ControllerError::UnknownAgent))?;
+            own_pool
+                .merge_recovered_charges(&replay.ledger)
                 .map_err(KernelError::PricingLedger)?;
         }
         Ok(())
@@ -142,11 +162,13 @@ impl KernelPersistentRuntime {
             schema: None,
             cancel: Default::default(),
         };
+        let mut construction = view.clone();
+        construction.reserved = Default::default();
         let mut child = self
             .spawner
             .lock()
             .map_err(|_| ControllerError::Poisoned)?
-            .build_persistent_child(&call, view, writer_workspace)
+            .build_persistent_child(&call, &construction, writer_workspace)
             .map_err(|_| ControllerError::Invalid("persistent child construction failed"))?;
         child.narrow_policy_capabilities(view.capabilities);
         child.authority_ceiling = child.authority_ceiling.intersect(view.capabilities);
@@ -161,6 +183,9 @@ impl KernelPersistentRuntime {
             .get()
             .and_then(Weak::upgrade)
             .ok_or(ControllerError::Closed)?;
+        if let Some(pool) = self.monetary_pool(view)? {
+            child.usd_budget = Some(pool);
+        }
         child
             .install_persistent_agents(control, view.agent_id)
             .map_err(|_| {
@@ -196,6 +221,7 @@ impl PersistentAgentRuntime for KernelPersistentRuntime {
         if let AgentCommandV1::Spawn {
             capabilities,
             write_paths,
+            budget,
             ..
         } = command
         {
@@ -208,6 +234,23 @@ impl PersistentAgentRuntime for KernelPersistentRuntime {
                 return Err(ControllerError::Permission);
             }
             let writer = capabilities.contains(Capability::ReversibleLocal);
+            let ceiling = if writer {
+                Some(&self.writer_ceiling)
+            } else {
+                self.readonly_ceiling.as_ref()
+            }
+            .ok_or(ControllerError::Permission)?;
+            if budget.turns > ceiling.max_turns
+                || budget.wall_ms > ceiling.max_wall_secs.saturating_mul(1000)
+                || ceiling
+                    .max_tokens
+                    .is_some_and(|tokens| budget.tokens > tokens)
+                || ceiling
+                    .max_usd
+                    .is_some_and(|cost| budget.cost_microusd as f64 / 1_000_000.0 > cost)
+            {
+                return Err(ControllerError::Budget);
+            }
             if writer
                 && (!self.writer.admitted
                     || write_paths.is_empty()
@@ -284,47 +327,42 @@ impl PersistentAgentRuntime for KernelPersistentRuntime {
         } else {
             None
         };
-        let resident =
-            match self.resident(&view, worktree.as_ref().map(PersistentWriterWorktree::path)) {
-                Ok(resident) => resident,
-                Err(_) => {
-                    if let Some(worktree) = &mut worktree {
-                        let _ = worktree.discard().await;
-                    }
-                    return AgentSettlement {
-                        summary: "Persistent agent setup failed before provider execution".into(),
-                        tokens: 0,
-                        cost_microusd: 0,
-                        effects_known: false,
-                        terminal: iteron_agents::AgentWorkflowTerminal::Failed,
-                    };
+        let lifetime = match self
+            .control
+            .get()
+            .and_then(Weak::upgrade)
+            .and_then(|control| control.inspect(AgentActor::Operator, view.agent_id).ok())
+        {
+            Some(lifetime) => lifetime,
+            None => return unknown_settlement("Persistent agent lifetime identity is unavailable"),
+        };
+        let resident = match self.resident(
+            &lifetime,
+            worktree.as_ref().map(PersistentWriterWorktree::path),
+        ) {
+            Ok(resident) => resident,
+            Err(_) => {
+                if let Some(worktree) = &mut worktree {
+                    let _ = worktree.discard().await;
                 }
-            };
-        let mut child = resident.lock().await;
-        child.registry.invalidate_workspace_reads();
-        // Descendant reservations remain unavailable to the parent's own provider requests.
-        child.budget.max_turns = child
-            .budget
-            .max_turns
-            .min(view.budget.turns.saturating_sub(view.reserved.turns));
-        child.budget.max_tokens = Some(
-            child
-                .budget
-                .max_tokens
-                .unwrap_or(u64::MAX)
-                .min(view.budget.tokens.saturating_sub(view.reserved.tokens)),
-        );
-        let cost_ceiling = view
-            .budget
-            .cost_microusd
-            .saturating_sub(view.reserved.cost_microusd);
-        child.budget.max_usd = Some(
-            child
-                .budget
-                .max_usd
-                .unwrap_or(f64::MAX)
-                .min(cost_ceiling as f64 / 1_000_000.0),
-        );
+                return AgentSettlement {
+                    turns: 0,
+                    summary: "Persistent agent setup failed before provider execution".into(),
+                    tokens: 0,
+                    cost_microusd: 0,
+                    effects_known: false,
+                    terminal: iteron_agents::AgentWorkflowTerminal::Failed,
+                };
+            }
+        };
+        let mut retained = resident.lock().await;
+        retained.registry.invalidate_workspace_reads();
+        let mut child = match budget::TurnBudget::admit(&mut retained, &view) {
+            Ok(child) => child,
+            Err(_) => {
+                return unknown_settlement("Persistent execution budget could not be admitted");
+            }
+        };
         let tokens_before = total_tokens(child.ledger.usage);
         let cost_before = known_cost(&child.ledger.cost_state());
         child.persistent_mailbox = Some(mailbox.clone());
@@ -345,6 +383,7 @@ impl PersistentAgentRuntime for KernelPersistentRuntime {
             Ok(texts) => texts.join("\n\n"),
             Err(_) => {
                 return AgentSettlement {
+                    turns: 0,
                     summary: "Persistent mailbox rendering failed".into(),
                     tokens: 0,
                     cost_microusd: 0,
@@ -443,9 +482,17 @@ impl PersistentAgentRuntime for KernelPersistentRuntime {
         };
         let cost_after = known_cost(&child.ledger.cost_state());
         let tokens = total_tokens(child.ledger.usage).saturating_sub(tokens_before);
-        let cost = cost_before
-            .zip(cost_after)
-            .and_then(|(before, after)| after.checked_sub(before));
+        let cost = child.physical_cost().or_else(|| {
+            child
+                .usd_budget
+                .is_none()
+                .then(|| {
+                    cost_before
+                        .zip(cost_after)
+                        .and_then(|(before, after)| after.checked_sub(before))
+                })
+                .flatten()
+        });
         let terminal = match &result {
             Ok(iteron_protocol::Outcome::Done) if writer_settled => {
                 iteron_agents::AgentWorkflowTerminal::Succeeded
@@ -456,6 +503,7 @@ impl PersistentAgentRuntime for KernelPersistentRuntime {
             _ => iteron_agents::AgentWorkflowTerminal::Failed,
         };
         AgentSettlement {
+            turns: child.attempts(),
             terminal,
             summary,
             tokens,
@@ -486,6 +534,7 @@ fn known_cost(cost: &CostState) -> Option<u64> {
 
 fn unknown_settlement(summary: &str) -> AgentSettlement {
     AgentSettlement {
+        turns: 0,
         summary: summary.into(),
         tokens: 0,
         cost_microusd: 0,

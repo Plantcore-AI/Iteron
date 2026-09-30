@@ -45,7 +45,7 @@ impl SharedUsdBudget {
     /// Separate child ceiling with the same exact charge identity admitted into every ancestor.
     /// The host constructs the acyclic parent chain; model/client JSON cannot supply a parent.
     pub(super) fn child(ceiling_microusd: u64, parent: Arc<Self>) -> Result<Self, &'static str> {
-        if parent.depth >= 16 {
+        if parent.depth >= 64 {
             return Err("monetary ancestry exceeds its hard depth");
         }
         let mut child = Self::from_microusd(ceiling_microusd);
@@ -357,7 +357,6 @@ impl SharedUsdBudget {
         !self.reservation_settled.load(Ordering::Acquire)
     }
 
-    #[cfg(test)]
     pub(super) fn spent_microusd(&self) -> u64 {
         self.spent_microusd.load(Ordering::Acquire)
     }

@@ -18,10 +18,12 @@ use std::collections::BTreeMap;
 
 mod snapshot_validation;
 mod workflow_claim;
+mod workspace_witness;
 use snapshot_validation::validate_snapshot;
 pub use workflow_claim::{
     AgentWorkflowClaim, AgentWorkflowCompletion, AgentWorkflowLease, AgentWorkflowTerminal,
 };
+pub use workspace_witness::AgentWorkspaceWitness;
 
 const MAX_AGENTS: usize = 64;
 const MAX_RECEIPTS: usize = 8_192;
@@ -108,46 +110,6 @@ pub struct AgentControllerSnapshot {
     workflow_claims: BTreeMap<String, workflow_claim::WorkflowReceipt>,
     #[serde(default)]
     workspace_witness: Option<AgentWorkspaceWitness>,
-}
-
-/// Host-minted exact Git tree evidence for serialized isolated writer transactions. It grants
-/// no new capability and cannot be supplied through the model or public control protocol.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AgentWorkspaceWitness {
-    pub workspace_identity: String,
-    pub base_head: String,
-    pub parent_index_tree: String,
-    pub working_tree: String,
-}
-impl AgentWorkspaceWitness {
-    pub fn validate(&self) -> Result<(), ControllerError> {
-        let valid = |id: &str| {
-            (id.len() == 40 || id.len() == 64) && id.bytes().all(|byte| byte.is_ascii_hexdigit())
-        };
-        let identity: Vec<_> = self.workspace_identity.split(':').collect();
-        if identity.len() != 3
-            || identity[0] != "unix"
-            || identity[1..]
-                .iter()
-                .any(|part| part.parse::<u64>().is_err())
-        {
-            return Err(ControllerError::Invalid(
-                "invalid isolated writer workspace identity",
-            ));
-        }
-        if !valid(&self.base_head)
-            || !valid(&self.parent_index_tree)
-            || !valid(&self.working_tree)
-            || self.base_head.len() != self.parent_index_tree.len()
-            || self.base_head.len() != self.working_tree.len()
-        {
-            return Err(ControllerError::Invalid(
-                "invalid isolated writer tree witness",
-            ));
-        }
-        Ok(())
-    }
 }
 
 impl AgentControllerSnapshot {
@@ -252,44 +214,6 @@ impl<J: AgentControllerJournal> AgentController<J> {
     }
     pub fn snapshot(&self) -> &AgentControllerSnapshot {
         &self.snapshot
-    }
-    pub fn workspace_witness(&self) -> Result<Option<AgentWorkspaceWitness>, ControllerError> {
-        self.check_live()?;
-        Ok(self.snapshot.workspace_witness.clone())
-    }
-    pub fn record_workspace_witness(
-        &mut self,
-        expected: Option<&AgentWorkspaceWitness>,
-        witness: AgentWorkspaceWitness,
-    ) -> Result<(), ControllerError> {
-        self.check_live()?;
-        witness.validate()?;
-        if !self
-            .snapshot
-            .config
-            .root_capabilities
-            .contains(Capability::ReversibleLocal)
-        {
-            return Err(ControllerError::Permission);
-        }
-        if self.snapshot.workspace_witness.as_ref() != expected {
-            return Err(ControllerError::RequestConflict);
-        }
-        if let Some(prior) = expected
-            && (prior.workspace_identity != witness.workspace_identity
-                || prior.base_head != witness.base_head
-                || prior.parent_index_tree != witness.parent_index_tree)
-        {
-            return Err(ControllerError::Invalid(
-                "isolated writer changed its immutable repository baseline",
-            ));
-        }
-        if expected == Some(&witness) {
-            return Ok(());
-        }
-        let mut next = self.snapshot.clone();
-        next.workspace_witness = Some(witness);
-        self.commit(next)
     }
 
     pub fn list(&self, actor: AgentActor) -> Result<Vec<AgentViewV1>, ControllerError> {
@@ -783,6 +707,10 @@ impl<J: AgentControllerJournal> AgentController<J> {
             .agents
             .get_mut(&id)
             .ok_or(ControllerError::UnknownAgent)?;
+        record.turns_used = record
+            .turns_used
+            .checked_add(usage.turns.saturating_sub(1))
+            .ok_or(ControllerError::Budget)?;
         record.tokens_used = record
             .tokens_used
             .checked_add(usage.tokens)
@@ -796,6 +724,10 @@ impl<J: AgentControllerJournal> AgentController<J> {
             .checked_add(usage.wall_ms)
             .ok_or(ControllerError::Budget)?;
         let within_budget = workflow_budget_fits
+            && record
+                .turns_used
+                .checked_add(record.reserved_turns)
+                .is_some_and(|used| used <= record.view.budget.turns)
             && record
                 .tokens_used
                 .checked_add(record.reserved_tokens)
@@ -877,11 +809,9 @@ impl<J: AgentControllerJournal> AgentController<J> {
         if current.view.state != (AgentStateV1::RecoveryRequired { epoch }) {
             return Err(ControllerError::StaleEpoch);
         }
-        if recovered_usage.turns != 0
-            || (current.runtime_started_at_unix_ms.is_some() && recovered_usage.wall_ms == 0)
-        {
+        if current.runtime_started_at_unix_ms.is_some() && recovered_usage.wall_ms == 0 {
             return Err(ControllerError::Invalid(
-                "recovery needs measured elapsed usage without double-counting its turn",
+                "recovery needs measured incremental elapsed usage",
             ));
         }
         let mut next = self.snapshot.clone();
@@ -889,6 +819,10 @@ impl<J: AgentControllerJournal> AgentController<J> {
             .agents
             .get_mut(&id)
             .ok_or(ControllerError::UnknownAgent)?;
+        record.turns_used = record
+            .turns_used
+            .checked_add(recovered_usage.turns)
+            .ok_or(ControllerError::Budget)?;
         record.tokens_used = record
             .tokens_used
             .checked_add(recovered_usage.tokens)
@@ -903,9 +837,13 @@ impl<J: AgentControllerJournal> AgentController<J> {
             .ok_or(ControllerError::Budget)?;
         if !close
             && (record
-                .tokens_used
-                .checked_add(record.reserved_tokens)
-                .is_none_or(|used| used > record.view.budget.tokens)
+                .turns_used
+                .checked_add(record.reserved_turns)
+                .is_none_or(|used| used > record.view.budget.turns)
+                || record
+                    .tokens_used
+                    .checked_add(record.reserved_tokens)
+                    .is_none_or(|used| used > record.view.budget.tokens)
                 || record
                     .cost_used
                     .checked_add(record.reserved_cost)

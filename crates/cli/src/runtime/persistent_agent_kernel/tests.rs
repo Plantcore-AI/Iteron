@@ -404,3 +404,61 @@ async fn failed_mailbox_consumption_persists_not_dispatched_and_makes_zero_provi
         if tool == "provider" && matches!(receipt.usage, iteron_protocol::ProviderRouteUsageTruth::NotDispatched)
             && matches!(receipt.cost, iteron_protocol::ProviderRouteCostTruth::NotDispatched))));
 }
+
+#[tokio::test]
+async fn small_workflow_node_does_not_shrink_resident_lifetime_and_physical_turns_settle() {
+    let root = Workspace::new();
+    let provider = Arc::new(ProviderFixture::default());
+    let (host, runtime, _, _keepalive) = setup(&root, provider, true);
+    let child = spawn(&host, "seed lifetime context");
+    until(|| host.inspect(AgentActor::Operator, child).unwrap().state == AgentStateV1::Idle).await;
+    let resident = runtime
+        .residents
+        .lock()
+        .unwrap()
+        .get(&child)
+        .unwrap()
+        .clone();
+    let original = resident.lock().await.budget.clone();
+    for (node, task, turns) in [(1, "one request node", 1), (2, "block-tool", 2)] {
+        let scheduled = iteron_workflow::live_scheduler::ScheduledTaskV1 {
+            workflow_id: "resident-workflow".into(),
+            node_id: node,
+            attempt: 1,
+            input_digest: format!("sha256:{}", "d".repeat(64)),
+            assigned_agent: child.0,
+            task: task.into(),
+            budget: iteron_workflow::task_dag::TaskBudget {
+                max_turns: turns,
+                max_tokens: 4_000,
+                max_cost_microusd: 50_000,
+                max_wall_ms: 5_000,
+            },
+            deadline_unix_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64
+                + 5_000,
+        };
+        host.workflow_port()
+            .dispatch(scheduled.clone())
+            .await
+            .unwrap();
+        until(|| host.workflow_completion(&scheduled).unwrap().is_some()).await;
+        let completion = host.workflow_completion(&scheduled).unwrap().unwrap();
+        assert!(completion.effects_known);
+        assert_eq!(
+            completion.terminal,
+            iteron_agents::AgentWorkflowTerminal::Succeeded
+        );
+        assert_eq!(completion.usage.turns, turns);
+        assert_eq!(resident.lock().await.budget, original);
+    }
+    assert_eq!(
+        host.inspect(AgentActor::Operator, child)
+            .unwrap()
+            .usage
+            .turns,
+        4
+    );
+}

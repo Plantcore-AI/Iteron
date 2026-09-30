@@ -40,7 +40,7 @@ pub(super) fn validate_snapshot(snapshot: &AgentControllerSnapshot) -> Result<()
             || *id != record.view.agent_id
             || record.view.incarnation == 0
             || record.next_turn == 0
-            || record.next_turn != u64::from(record.turns_used) + 1
+            || record.next_turn > u64::from(record.turns_used) + 1
             || !record.view.capabilities.contains(Capability::ReadOnly)
             || record.view.queued_messages != 0
             || record.view.usage != iteron_protocol::agent_control::AgentUsageV1::default()

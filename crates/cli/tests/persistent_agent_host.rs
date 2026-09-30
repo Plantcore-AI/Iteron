@@ -105,6 +105,7 @@ impl PersistentAgentRuntime for Runtime {
             tokio::time::sleep(Duration::from_millis(2)).await;
         }
         AgentSettlement {
+            turns: 1,
             summary: "physically settled fixture".into(),
             tokens: 1,
             cost_microusd: 0,
