@@ -48,6 +48,9 @@ impl PlantcoreCommand {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum WireControl {
+    AgentsV1 {
+        command: iteron_protocol::client_agent_control::ClientAgentControlV1,
+    },
     ArtifactsV1 {
         command: iteron_protocol::client_artifact::ClientArtifactCommandV1,
     },
@@ -242,6 +245,9 @@ where
 
 impl WireControl {
     pub(super) fn is_read_only(&self) -> bool {
+        if let Self::AgentsV1 { command } = self {
+            return command.is_read_only();
+        }
         if matches!(self, Self::ArtifactsV1 { .. }) {
             return true;
         }
@@ -265,6 +271,7 @@ impl WireControl {
 
     pub(super) fn into_app_server(self) -> Control {
         match self {
+            Self::AgentsV1 { command } => Control::PersistentAgents(command),
             Self::ArtifactsV1 { .. } => {
                 unreachable!("artifact reads address the public resident projection")
             }
@@ -497,6 +504,7 @@ pub(super) fn reply_value(reply: ControlReply) -> Value {
             "message": error.message,
         }),
         ControlReply::ThreadLifecycle(value) => value,
+        ControlReply::PersistentAgents(value) => value,
         ControlReply::State(snapshot) => json!({
             "type": "state",
             "state": snapshot_value(&snapshot),

@@ -178,6 +178,15 @@ impl PausedProvider {
     }
 
     fn spawn_inner(chunks: usize, respond: bool) -> Self {
+        Self::spawn_bounded(chunks, respond, 1)
+    }
+
+    fn spawn_two_requests() -> Self {
+        Self::spawn_bounded(1, true, 2)
+    }
+
+    fn spawn_bounded(chunks: usize, respond: bool, requests: usize) -> Self {
+        assert!((1..=2).contains(&requests));
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let (seen_tx, request_seen) = sync_channel(1);
@@ -196,15 +205,19 @@ impl PausedProvider {
             ("x".repeat(1023) + " ").repeat(60)
         };
         let thread = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("provider accepts one request");
-            stream.set_read_timeout(Some(io_timeout())).unwrap();
-            read_http_request(&mut stream);
-            seen_tx.send(()).unwrap();
-            release_rx
-                .recv_timeout(timeout())
-                .expect("test releases the provider response");
-            if respond {
-                write_success(&mut stream, chunks, &content);
+            for _ in 0..requests {
+                let (mut stream, _) = listener
+                    .accept()
+                    .expect("provider accepts a bounded request");
+                stream.set_read_timeout(Some(io_timeout())).unwrap();
+                read_http_request(&mut stream);
+                seen_tx.send(()).unwrap();
+                release_rx
+                    .recv_timeout(timeout())
+                    .expect("test releases the provider response");
+                if respond {
+                    write_success(&mut stream, chunks, &content);
+                }
             }
             completed_tx.send(()).unwrap();
         });
@@ -659,6 +672,142 @@ fn public_artifact_ids_survive_tcp_projection_and_download_the_published_bytes()
         ),
     );
     assert_eq!(receive(&mut reader)["reply"]["type"], "artifact_refused_v1");
+    drop(reader);
+    drop(connection);
+    stop(child);
+    provider.finish();
+}
+
+#[test]
+fn real_public_agent_receipts_survive_connection_changes_and_controls_stay_live_during_parent_turn()
+{
+    fn reply(reader: &mut BufReader<TcpStream>, id: u64) -> Value {
+        for _ in 0..64 {
+            let frame = receive(reader);
+            if frame["type"] == "control_reply" && frame["request_id"] == id {
+                return frame;
+            }
+        }
+        panic!("bounded public control reply not observed");
+    }
+
+    let provider = PausedProvider::spawn_two_requests();
+    let scratch = Scratch::new(&provider.api_root);
+    let (child, token, address) = spawn_core(&scratch);
+    let mut connection = connect(address);
+    send(&mut connection, hello(&token, PROTOCOL_VERSION, 0));
+    let mut reader = BufReader::new(connection.try_clone().unwrap());
+    assert_eq!(receive(&mut reader)["type"], "hello");
+    send(
+        &mut connection,
+        json!({"type":"submit","protocol_version":PROTOCOL_VERSION,"op":{"op":"user_input","text":"establish the real parent route"}}),
+    );
+    provider.request_seen.recv_timeout(timeout()).unwrap();
+    provider.release.send(()).unwrap();
+    let terminal = receive_result_within_timeout(&mut reader);
+    assert_eq!(terminal["result"]["outcome"], "done");
+    send(
+        &mut connection,
+        control(201, PROTOCOL_VERSION, json!({"type":"turn_budget","set":4})),
+    );
+    assert_eq!(reply(&mut reader, 201)["reply"]["type"], "turn_budget");
+    send(
+        &mut connection,
+        control(
+            202,
+            PROTOCOL_VERSION,
+            json!({"type":"agents_v1","command":{
+                "type":"enable","capabilities":["read_only"],
+                "budget":{"turns":1,"tokens":20000,"cost_microusd":1000000,"wall_ms":1000},
+                "max_agents":4,"max_pending_per_agent":8,"parallel":2,
+            }}),
+        ),
+    );
+    let enabled = reply(&mut reader, 202);
+    assert_eq!(enabled["reply"]["type"], "agents_enabled_v1", "{enabled}");
+    let root_id = enabled["reply"]["agents"][0]["agent_id"].as_u64().unwrap();
+    send(
+        &mut connection,
+        control(
+            203,
+            PROTOCOL_VERSION,
+            json!({"type":"agents_v1","command":{
+                "type":"command","request_id":"root-message-1","command":{"type":"send_message","agent_id":root_id,"text":"accepted mailbox probe"},
+            }}),
+        ),
+    );
+    let acceptance = reply(&mut reader, 203);
+    assert_eq!(
+        acceptance["reply"]["type"], "agent_receipt_v1",
+        "{acceptance}"
+    );
+    let message_id = acceptance["reply"]["receipt"]["message_id"]
+        .as_u64()
+        .unwrap();
+    send(
+        &mut connection,
+        json!({"type":"submit","protocol_version":PROTOCOL_VERSION,"op":{"op":"user_input","text":"continue the parent while observing its controller"}}),
+    );
+    provider.request_seen.recv_timeout(timeout()).unwrap();
+    send(
+        &mut connection,
+        control(
+            204,
+            PROTOCOL_VERSION,
+            json!({"type":"agents_v1","command":{"type":"list"}}),
+        ),
+    );
+    let live = reply(&mut reader, 204);
+    assert_eq!(live["reply"]["type"], "agents_v1");
+    assert_eq!(live["reply"]["agents"][0]["queued_messages"], 1);
+
+    let mut observer = connect(address);
+    let mut greeting = hello(
+        &token,
+        PROTOCOL_VERSION - 1,
+        terminal["seq"].as_u64().unwrap(),
+    );
+    greeting["observation_only"] = json!(true);
+    send(&mut observer, greeting);
+    let mut observed = BufReader::new(observer.try_clone().unwrap());
+    assert_eq!(receive(&mut observed)["type"], "hello");
+    send(
+        &mut observer,
+        control(
+            205,
+            PROTOCOL_VERSION - 1,
+            json!({"type":"agents_v1","command":{"type":"message_receipt","message_id":message_id}}),
+        ),
+    );
+    let message = reply(&mut observed, 205);
+    assert_eq!(message["reply"]["message"]["state"]["type"], "accepted");
+    send(
+        &mut observer,
+        control(
+            206,
+            PROTOCOL_VERSION - 1,
+            json!({"type":"agents_v1","command":{
+                "type":"command","request_id":"observer-mutation","command":{"type":"send_message","agent_id":root_id,"text":"forbidden"},
+            }}),
+        ),
+    );
+    let mut mutation_rejected = false;
+    for _ in 0..64 {
+        let frame = receive(&mut observed);
+        if frame["type"] == "error" {
+            assert_eq!(frame["code"], "observer_authority");
+            mutation_rejected = true;
+            break;
+        }
+    }
+    assert!(mutation_rejected);
+    provider.release.send(()).unwrap();
+    assert_eq!(
+        receive_result_within_timeout(&mut reader)["result"]["outcome"],
+        "done"
+    );
+    drop(observed);
+    drop(observer);
     drop(reader);
     drop(connection);
     stop(child);

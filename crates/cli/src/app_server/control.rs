@@ -3,6 +3,9 @@
 use super::*;
 
 pub(super) fn is_immediate_control(control: &Control) -> bool {
+    if let Control::PersistentAgents(command) = control {
+        return !command.is_enable();
+    }
     matches!(
         control,
         Control::OperatorStatus
@@ -283,6 +286,9 @@ pub(super) async fn apply_immediate_control(
     request: ControlRequest,
 ) {
     match request.control {
+        Control::PersistentAgents(command) => {
+            operator_status.agents.dispatch(command, request.reply);
+        }
         Control::OperatorStatus => {
             let _ = request.reply.send(ControlReply::OperatorStatus(Box::new(
                 operator_status.snapshot().await,
@@ -432,7 +438,17 @@ pub(super) async fn apply_control(
         ));
         return;
     }
+    if let Control::PersistentAgents(command) = &request.control
+        && !command.is_enable()
+    {
+        let Control::PersistentAgents(command) = request.control else {
+            unreachable!()
+        };
+        operator_status.agents.dispatch(command, request.reply);
+        return;
+    }
     let reply = match request.control {
+        Control::PersistentAgents(command) => super::agent_control::enable(agent, command),
         Control::ThreadLifecycle(command) => super::thread_lifecycle::apply(agent, command),
         Control::PlantcoreRunBootstrapV1(payload) => {
             if *started {

@@ -175,6 +175,7 @@ pub(crate) enum ControlKind {
     },
     Memory,
     ThreadLifecycle,
+    PersistentAgents,
     ToolRule {
         tool: String,
         verdict: iteron_protocol::Verdict,
@@ -201,6 +202,7 @@ impl ControlKind {
             Self::TurnBudget { .. } => "turn budget",
             Self::Memory => "memory control",
             Self::ThreadLifecycle => "thread history control",
+            Self::PersistentAgents => "persistent agent control",
             Self::ToolRule { .. } => "tool permission rule",
             Self::WorkflowsInventory => "workflow inventory",
             Self::Mcp => "MCP control",

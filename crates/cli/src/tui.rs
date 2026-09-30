@@ -39,6 +39,7 @@ mod mcp_command;
 mod mcp_input;
 mod mouse_capture;
 mod notification;
+mod persistent_agents;
 mod picker_catalog;
 mod product_projection;
 mod session_adoption;
@@ -1256,6 +1257,8 @@ struct App {
     workflows_dir: Option<std::path::PathBuf>,
     /// Local output cursor for `/jobs attach`; the process remains owned by the runtime supervisor.
     attached_job: Option<jobs::AttachedJob>,
+    /// Public controller snapshots used to target the exact observed incarnation/turn.
+    persistent_agent_views: Vec<iteron_protocol::agent_control::AgentViewV1>,
     /// The active color theme (ADR-015 §4).
     theme: theme::Theme,
     /// Captured once at startup; runtime `/theme` previews are projected to the same terminal depth.

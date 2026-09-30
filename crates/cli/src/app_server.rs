@@ -51,6 +51,7 @@
 //!   reaching the side-buffer ceiling applies backpressure rather than losing bytes. Everything
 //!   else, and `Done` above all, is delivered even if that means waiting for the reader.
 
+mod agent_control;
 #[path = "app_server/backpressure.rs"]
 mod backpressure;
 mod client_artifacts;
@@ -511,6 +512,7 @@ pub(crate) enum Control {
     /// `/status` — one content-free snapshot from the exact runtime-owned authorities.
     OperatorStatus,
     ThreadLifecycle(iteron_protocol::thread_lifecycle::ThreadLifecycleCommandV1),
+    PersistentAgents(iteron_protocol::client_agent_control::ClientAgentControlV1),
     /// `/effort`
     SetEffort(iteron_protocol::Effort),
     /// `/mode`
@@ -667,6 +669,7 @@ pub(crate) enum ControlReply {
     /// The current runtime state. Answers `Snapshot` and every successful mutation.
     State(Box<SessionSnapshot>),
     ThreadLifecycle(serde_json::Value),
+    PersistentAgents(serde_json::Value),
     /// `/status` — runtime policy identity plus live bounded owner health.
     OperatorStatus(Box<OperatorStatusSnapshot>),
     /// The runtime refused, with the operator-facing reason.

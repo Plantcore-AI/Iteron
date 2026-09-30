@@ -32,6 +32,7 @@ impl App {
             workflows_panel: workflows_panel::View::default(),
             workflows_dir: None,
             attached_job: None,
+            persistent_agent_views: Vec::new(),
             theme,
             color_depth,
             theme_epoch: 0,

@@ -684,6 +684,10 @@ pub(super) fn apply_transcript_effect_event(
                 Some(app_server::ControlReply::Memory(reply)),
             ) => command_dispatch::render_memory_reply(app, reply),
             (
+                transcript_effect::ControlKind::PersistentAgents,
+                Some(app_server::ControlReply::PersistentAgents(value)),
+            ) => super::persistent_agents::render(app, &value),
+            (
                 transcript_effect::ControlKind::ThreadLifecycle,
                 Some(app_server::ControlReply::ThreadLifecycle(value)),
             ) => {

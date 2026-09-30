@@ -5,6 +5,7 @@ use super::*;
 const LSP_STATUS_DEADLINE: std::time::Duration = std::time::Duration::from_millis(100);
 
 pub(super) struct OperatorStatusSources {
+    pub(super) agents: super::agent_control::AgentControlSurface,
     runtime: crate::runtime::RuntimeOperatorStatusSources,
     processes: Option<iteron_tools::ProcessControl>,
     language_servers: Option<iteron_tools::LspControl>,
@@ -47,6 +48,7 @@ impl OperatorStatusSources {
         workflows: Arc<crate::workflow::WorkflowSupervisor>,
     ) -> Self {
         Self {
+            agents: super::agent_control::AgentControlSurface::capture(agent),
             runtime: agent.operator_status_sources(),
             processes,
             language_servers,
@@ -58,6 +60,7 @@ impl OperatorStatusSources {
     /// Refresh identities that can change only at an idle control boundary (model/run adoption).
     /// The live owner handles remain the same Arcs and are intentionally retained.
     pub(super) fn refresh_runtime(&mut self, agent: &Agent) {
+        self.agents.refresh(agent);
         self.runtime = agent.operator_status_sources();
     }
 

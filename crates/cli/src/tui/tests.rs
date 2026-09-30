@@ -3,6 +3,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn live_agent_views_render_exact_state_and_preserve_observed_epoch_for_controls() {
+        use iteron_protocol::agent_control::{AgentBudgetV1, AgentEpochV1, AgentIdV1, AgentStateV1, AgentViewV1};
+        let view = AgentViewV1 {
+            agent_id: AgentIdV1(2),
+            parent_id: Some(AgentIdV1(1)),
+            label: "bounded investigator".into(),
+            workspace_scope: "workspace-scope".into(),
+            incarnation: 7,
+            state: AgentStateV1::Running { epoch: AgentEpochV1 { incarnation: 7, turn: 3 } },
+            capabilities: iteron_protocol::capability_set::CapabilitySet::only(iteron_protocol::Capability::ReadOnly),
+            budget: AgentBudgetV1 { turns: 2, tokens: 1000, cost_microusd: 1000, wall_ms: 1000 },
+            write_paths: Vec::new(),
+            queued_messages: 1,
+            last_summary: None,
+        };
+        let mut app = App::new();
+        persistent_agents::render(&mut app, &serde_json::json!({"type":"agents_v1","agents":[view]}));
+        assert_eq!(app.persistent_agent_views[0].state.epoch(), Some(AgentEpochV1 { incarnation: 7, turn: 3 }));
+        let panel = app.transcript.last().unwrap().to_text();
+        assert!(panel.contains("bounded investigator"));
+        assert!(panel.contains("running"));
+        assert!(panel.contains("queued 1"));
+        let screen = render_text(&mut app, 120, 24);
+        assert!(screen.contains("live agents"));
+        assert!(screen.contains("bounded investigator"));
+    }
+
+    #[test]
     fn artifact_panel_and_open_render_the_same_scrubbed_public_content() {
         let (submissions, _receive) = tokio::sync::mpsc::channel(1);
         let session = Session::for_test(submissions);

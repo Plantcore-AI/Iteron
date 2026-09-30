@@ -60,6 +60,34 @@ over 1 MiB. This does not claim a recursively flattened fork export. TUI history
 the same controls: `/sessions rename RUN TITLE`, `archive RUN`, `unarchive RUN`, `pin RUN`,
 `unpin RUN`, `read RUN`, `export RUN`, and `delete RUN permanently`.
 
+## Persistent agent controls V1
+
+Send `{"type":"agents_v1","command":{...}}`. `enable` requests bounded capabilities, budgets,
+agent/mailbox capacities and parallelism. It contains no workspace path, actor identity or recovery
+evidence. The host derives its scope from the actual recorded owner and validates the requested
+envelope against immutable authority and current parent budgets. Ordinary sessions allocate no
+persistent controller until this explicit idle-boundary operation succeeds.
+
+`command` carries an exact `request_id` and the existing typed Spawn/SendMessage/FollowupTask/
+Steer/Interrupt/Close vocabulary. Other commands are `list`, `inspect`, `message_receipt` and
+`wait` (1–60,000 ms). The server binds authenticated ordinary control requests to Operator;
+model tools bind their own host AgentId. JSON cannot supply either authority. At most eight
+public controller operations are pending at once. Reads and controls remain usable while the
+parent turn is running; a bounded wait does not pause that parent turn. Observers can issue
+only the read commands.
+
+Acceptance receipts, mailbox delivery and provider request inclusion remain separate. `consumed`
+means the host included a message in a provider request, without claiming model comprehension.
+Steer/Interrupt target an exact incarnation/turn epoch; stale epochs are refused. Only host effect
+reconciliation can release RecoveryRequired executions.
+
+The TUI keeps `/agents` and `/agents definitions` for the pinned definition catalog. Live commands
+use `/agents live`, `enable TURNS TOKENS USD WALL_SECONDS`, `spawn PARENT TASK`, `inspect ID`,
+`send ID TEXT`, `followup ID TEXT`, `steer ID TEXT`, `interrupt ID`, `close ID [tree]`, `receipt ID`
+and `wait [REVISION] [MS]`. Spawn defaults to one read-only investigator turn inside the observed
+parent envelope; the host may refuse exhausted reservations. Inspect shows actual state and the
+latest bounded summary. Steering and interruption use the latest epoch observed in that view.
+
 ## Client artifacts V1
 
 Send `{"type":"artifacts_v1","command":{"type":"list","thread_id":"..."}}` or a

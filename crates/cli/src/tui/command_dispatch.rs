@@ -777,7 +777,11 @@ pub(super) fn handle_registered_command(
             }
         }
         SlashCommand::Agents => {
-            show_agent_catalog(app, session);
+            if arg.trim().is_empty() || arg.trim() == "definitions" {
+                show_agent_catalog(app, session);
+            } else {
+                super::persistent_agents::queue(app, session, transcript_effects, interrupt, arg);
+            }
         }
         SlashCommand::Skills => {
             let home = crate::config::config_home();
