@@ -1,11 +1,11 @@
 //! Actual initial/retry physical admission coordinator. Its consumed journal/scope lifetime
-//! orders namespace identity, provider intent, logical-start and mailbox barriers before IO.
+//! orders namespace identity, provider intent and logical-start barriers before IO. Mailbox
+//! consumption belongs to the actual native prepared-request proof, after serialization.
 //! Transport, route selection and financial ledgers retain their separate owners.
 #[cfg(test)]
 use super::DurableAppendFault;
 use super::KernelError;
 use super::effect_journal_owner::UnknownCause;
-use super::persistent_agents::LiveAgentMailbox;
 use super::plantcore::PlantcoreRuntime;
 use super::policy_evidence_recorder::PolicyEvidenceRecorder;
 use super::provider_attempt_journal::{ProviderAttemptJournal, ProviderIntent};
@@ -36,7 +36,6 @@ pub(super) struct ProviderAdmissionJournal<'a> {
 pub(super) struct ProviderDispatchScope<'a> {
     pub(super) workspace: &'a Path,
     pub(super) plantcore: &'a PlantcoreRuntime,
-    pub(super) mailbox: Option<&'a LiveAgentMailbox>,
     pub(super) events: &'a ProviderRouteEvents,
     pub(super) control: &'a SessionControlState,
     pub(super) deadline: Option<Instant>,
@@ -102,17 +101,6 @@ impl ProviderDispatchOwner<'_> {
             self.release_zero(route);
             settled?;
             return Err(error);
-        }
-        if let Some(mailbox) = self.scope.mailbox
-            && let Err(error) = mailbox.confirm_request(&route.request().messages)
-        {
-            let settled = self.close_zero(
-                route,
-                "durable agent mailbox inclusion failed before dispatch",
-            );
-            self.release_zero(route);
-            settled?;
-            return Err(KernelError::AgentControl(error));
         }
         Ok(None)
     }

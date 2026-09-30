@@ -156,7 +156,6 @@ impl Harness {
             scope: ProviderDispatchScope {
                 workspace: &self.workspace,
                 plantcore: &self.plantcore,
-                mailbox: None,
                 events: &self.events,
                 control: &self.controls,
                 deadline: None,
