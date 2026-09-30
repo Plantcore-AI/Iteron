@@ -12,7 +12,7 @@ use iteron_protocol::{
 use iteron_record::Rollout;
 use iteron_tools::Registry;
 
-fn config() -> AgentControllerConfig {
+pub(super) fn config() -> AgentControllerConfig {
     AgentControllerConfig {
         workspace_scope: "cold-cohort-fixture".into(),
         root_capabilities: CapabilitySet::only(Capability::ReadOnly),
@@ -26,7 +26,7 @@ fn config() -> AgentControllerConfig {
         max_pending_per_agent: 8,
     }
 }
-fn make_main(
+pub(super) fn make_main(
     workspace: &Workspace,
     run: &RunId,
     provider: Arc<ProviderFixture>,

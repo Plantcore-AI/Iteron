@@ -82,6 +82,16 @@ fn key(scope: &str, effect: &str) -> String {
     format!("sha256:{:x}", hash.finalize())
 }
 impl AgentControllerSnapshot {
+    pub(super) fn has_provider_epoch_receipt(
+        &self,
+        id: AgentIdV1,
+        epoch: Option<AgentEpochV1>,
+    ) -> bool {
+        self.provider_budget
+            .receipts
+            .values()
+            .any(|receipt| receipt.request.agent_id == id && receipt.request.epoch == epoch)
+    }
     pub(super) fn primary_provider_scope_owner(&self, scope: &str) -> Option<AgentIdV1> {
         self.provider_budget
             .bindings
@@ -569,6 +579,42 @@ pub(super) fn reopen(state: &mut ProviderBudgetState) -> bool {
     } else {
         false
     }
+}
+/// Same conservative per-task envelope used by actual admission, including live reservations.
+pub(super) fn admitted_epoch_usage(
+    snapshot: &AgentControllerSnapshot,
+    id: AgentIdV1,
+    epoch: AgentEpochV1,
+) -> Result<AgentUsageV1, ControllerError> {
+    let mut usage = AgentUsageV1::default();
+    for receipt in snapshot
+        .provider_budget
+        .receipts
+        .values()
+        .filter(|receipt| receipt.request.agent_id == id && receipt.request.epoch == Some(epoch))
+    {
+        usage.turns = usage.turns.checked_add(1).ok_or(ControllerError::Budget)?;
+        let (tokens, cost) = match receipt.terminal {
+            Some(AgentProviderBudgetTerminal::Known {
+                tokens,
+                cost_microusd,
+            }) => (tokens, cost_microusd),
+            Some(AgentProviderBudgetTerminal::NotDispatched) => (0, 0),
+            _ => (
+                receipt.request.max_tokens,
+                receipt.request.max_cost_microusd,
+            ),
+        };
+        usage.tokens = usage
+            .tokens
+            .checked_add(tokens)
+            .ok_or(ControllerError::Budget)?;
+        usage.cost_microusd = usage
+            .cost_microusd
+            .checked_add(cost)
+            .ok_or(ControllerError::Budget)?;
+    }
+    Ok(usage)
 }
 pub(super) fn epoch_usage(
     snapshot: &AgentControllerSnapshot,

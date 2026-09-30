@@ -17,6 +17,8 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
 mod cohort_binding;
+mod output_funding;
+pub use output_funding::AgentProviderBudgetAllowance;
 mod parent_turn;
 mod provider_budget;
 mod snapshot_validation;

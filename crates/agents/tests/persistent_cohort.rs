@@ -274,3 +274,186 @@ fn legacy_controller_snapshot_does_not_gain_an_empty_field_during_hash_verificat
     let recovered: AgentControllerSnapshot = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(serde_json::to_vec(&recovered).unwrap(), bytes);
 }
+
+#[test]
+fn advisory_allowance_retains_child_reservations_and_pending_physical_bounds() {
+    let store = Store::default();
+    let (mut owner, origin) = setup(store.clone());
+    owner
+        .execute(
+            AgentActor::Operator,
+            "reserved-child",
+            AgentCommandV1::Spawn {
+                parent_id: owner.root_id(),
+                label: "child".into(),
+                task: "work".into(),
+                capabilities: config().root_capabilities,
+                budget: budget(16),
+                write_paths: vec![],
+            },
+        )
+        .unwrap();
+    let room = owner
+        .provider_budget_allowance(owner.root_id(), None)
+        .unwrap();
+    assert_eq!(
+        (room.turns, room.tokens, room.cost_microusd),
+        (4, 4000, 4000)
+    );
+    let physical = request(&origin.provider_scope(), 1000);
+    owner.reserve_provider_budget(physical.clone()).unwrap();
+    let room = owner
+        .provider_budget_allowance(owner.root_id(), None)
+        .unwrap();
+    assert_eq!(
+        (room.turns, room.tokens, room.cost_microusd),
+        (3, 3000, 3000)
+    );
+    drop(owner);
+    let reopened = AgentController::open(store, config()).unwrap();
+    assert_eq!(
+        reopened.provider_budget_allowance(reopened.root_id(), None),
+        Err(ControllerError::RecoveryRequired)
+    );
+}
+
+#[test]
+fn first_physical_slot_is_already_owned_but_not_dispatched_retry_still_uses_a_slot() {
+    let (mut owner, _) = setup(Store::default());
+    let id = owner
+        .execute(
+            AgentActor::Operator,
+            "two-slots",
+            AgentCommandV1::Spawn {
+                parent_id: owner.root_id(),
+                label: "child".into(),
+                task: "work".into(),
+                capabilities: config().root_capabilities,
+                budget: budget(2),
+                write_paths: vec![],
+            },
+        )
+        .unwrap()
+        .agent_id;
+    let epoch = owner.begin_turn(id).unwrap().unwrap();
+    let scope = sha('e');
+    owner.bind_provider_budget(id, &scope).unwrap();
+    assert_eq!(
+        owner
+            .provider_budget_allowance(id, Some(epoch))
+            .unwrap()
+            .turns,
+        2
+    );
+    let mut first = request(&scope, 100);
+    first.agent_id = id;
+    first.epoch = Some(epoch);
+    owner.reserve_provider_budget(first.clone()).unwrap();
+    assert_eq!(
+        owner
+            .provider_budget_allowance(id, Some(epoch))
+            .unwrap()
+            .turns,
+        1
+    );
+    owner
+        .settle_provider_budget(
+            id,
+            &scope,
+            &first.effect_id,
+            &first.route,
+            AgentProviderBudgetTerminal::NotDispatched,
+            &sha('f'),
+        )
+        .unwrap();
+    let room = owner.provider_budget_allowance(id, Some(epoch)).unwrap();
+    assert_eq!(
+        (room.turns, room.tokens, room.cost_microusd),
+        (1, 2000, 2000)
+    );
+    let mut second = first.clone();
+    second.effect_id = "physical-2".into();
+    second.route.physical_attempt = 2;
+    owner.reserve_provider_budget(second).unwrap();
+    assert_eq!(
+        owner
+            .provider_budget_allowance(id, Some(epoch))
+            .unwrap()
+            .turns,
+        0
+    );
+    assert_eq!(
+        owner.provider_budget_allowance(id, None),
+        Err(ControllerError::StaleEpoch)
+    );
+}
+
+#[test]
+fn workflow_allowance_uses_the_exact_node_envelope_including_live_reservations() {
+    let (mut owner, _) = setup(Store::default());
+    let id = owner
+        .execute(
+            AgentActor::Operator,
+            "workflow-slots",
+            AgentCommandV1::Spawn {
+                parent_id: owner.root_id(),
+                label: "child".into(),
+                task: "initial".into(),
+                capabilities: config().root_capabilities,
+                budget: budget(3),
+                write_paths: vec![],
+            },
+        )
+        .unwrap()
+        .agent_id;
+    let initial = owner.begin_turn(id).unwrap().unwrap();
+    owner.deliver(id, initial, true).unwrap();
+    owner
+        .finish_turn(id, initial, "initial finished", 1, 0, true)
+        .unwrap();
+    let task = iteron_agents::AgentWorkflowClaim {
+        workflow_id: "funding-workflow".into(),
+        node_id: 1,
+        attempt: 1,
+        input_digest: "a".repeat(64),
+        assigned_agent: id,
+        task: "one node".into(),
+        budget: AgentBudgetV1 {
+            turns: 1,
+            tokens: 50,
+            cost_microusd: 30,
+            wall_ms: 1000,
+        },
+        deadline_unix_ms: 2000,
+    };
+    let lease = owner.claim_workflow_task(task, 1000).unwrap();
+    let scope = sha('e');
+    owner.bind_provider_budget(id, &scope).unwrap();
+    let room = owner
+        .provider_budget_allowance(id, Some(lease.epoch))
+        .unwrap();
+    assert_eq!((room.turns, room.tokens, room.cost_microusd), (1, 50, 30));
+    let mut physical = request(&scope, 20);
+    physical.agent_id = id;
+    physical.epoch = Some(lease.epoch);
+    physical.max_tokens = 40;
+    owner.reserve_provider_budget(physical.clone()).unwrap();
+    let room = owner
+        .provider_budget_allowance(id, Some(lease.epoch))
+        .unwrap();
+    assert_eq!((room.turns, room.tokens, room.cost_microusd), (0, 10, 10));
+    owner
+        .settle_provider_budget(
+            id,
+            &scope,
+            &physical.effect_id,
+            &physical.route,
+            AgentProviderBudgetTerminal::NotDispatched,
+            &sha('f'),
+        )
+        .unwrap();
+    let room = owner
+        .provider_budget_allowance(id, Some(lease.epoch))
+        .unwrap();
+    assert_eq!((room.turns, room.tokens, room.cost_microusd), (0, 50, 30));
+}
