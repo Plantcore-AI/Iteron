@@ -5,8 +5,8 @@ use iteron_protocol::{Message, ReasoningEffort};
 use iteron_provider::TurnRequest;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-struct Port {
-    input: AgentMailboxMessage,
+pub(in crate::runtime::persistent_agents) struct Port {
+    pub(in crate::runtime::persistent_agents) input: AgentMailboxMessage,
     commits: AtomicUsize,
     refuse: AtomicBool,
 }
@@ -56,7 +56,12 @@ impl MailboxPort for Port {
         })
     }
 }
-fn mailbox() -> (LiveAgentMailbox, Arc<Port>) {
+pub(in crate::runtime::persistent_agents) fn mailbox() -> (LiveAgentMailbox, Arc<Port>) {
+    mailbox_with_sender(None)
+}
+pub(in crate::runtime::persistent_agents) fn mailbox_with_sender(
+    sender: Option<AgentIdV1>,
+) -> (LiveAgentMailbox, Arc<Port>) {
     let epoch = AgentEpochV1 {
         incarnation: 3,
         turn: 4,
@@ -65,7 +70,7 @@ fn mailbox() -> (LiveAgentMailbox, Arc<Port>) {
     let port = Arc::new(Port {
         input: AgentMailboxMessage {
             id: AgentMessageIdV1(19),
-            sender: Some(AgentIdV1(8)),
+            sender,
             receiver: AgentIdV1(7),
             sequence: 1,
             kind: AgentMessageKindV1::Message,

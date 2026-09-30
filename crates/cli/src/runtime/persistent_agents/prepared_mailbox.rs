@@ -20,21 +20,31 @@ type TextDigest = [u8; 32];
 pub(super) struct MailboxWitnesses {
     pub(super) envelopes: BTreeMap<AgentMessageIdV1, String>,
     projections: BTreeMap<TextDigest, BTreeSet<AgentMessageIdV1>>,
+    agent_sources: BTreeSet<AgentMessageIdV1>,
+    admitted_agent_sources: BTreeSet<AgentMessageIdV1>,
 }
 impl MailboxWitnesses {
     pub(super) fn register_envelope(
         &mut self,
         id: AgentMessageIdV1,
         envelope: String,
+        agent_authored: bool,
     ) -> Result<(), ControllerError> {
         if self.envelopes.len() >= MAX_INPUT_BATCH && !self.envelopes.contains_key(&id) {
             return Err(ControllerError::Capacity);
         }
         self.register(&[id], &envelope)?;
         self.envelopes.insert(id, envelope);
+        if agent_authored {
+            self.agent_sources.insert(id);
+        }
         Ok(())
     }
-    fn register(&mut self, ids: &[AgentMessageIdV1], text: &str) -> Result<(), ControllerError> {
+    pub(super) fn register(
+        &mut self,
+        ids: &[AgentMessageIdV1],
+        text: &str,
+    ) -> Result<(), ControllerError> {
         let digest = digest(text);
         if text.len() > MAX_BODY_BYTES
             || ids.len() > MAX_INPUT_BATCH
@@ -46,9 +56,44 @@ impl MailboxWitnesses {
         self.projections.entry(digest).or_default().extend(ids);
         Ok(())
     }
+    pub(super) fn has_projection(&self, ids: &[AgentMessageIdV1], text: &str) -> bool {
+        self.projections.get(&digest(text)).is_some_and(|bound| {
+            ids.iter()
+                .all(|id| bound.contains(id) && self.envelopes.contains_key(id))
+        })
+    }
+    pub(super) fn admit_source_projection(
+        &mut self,
+        ids: &[AgentMessageIdV1],
+        projection_sha256: &str,
+    ) -> Result<(), ControllerError> {
+        let bound = self.projections.iter().find_map(|(hash, bound)| {
+            (hash
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+                == projection_sha256)
+                .then_some(bound)
+        });
+        if !bound.is_some_and(|bound| {
+            ids.iter().all(|id| {
+                bound.contains(id)
+                    && self.envelopes.contains_key(id)
+                    && self.agent_sources.contains(id)
+            })
+        }) {
+            return Err(ControllerError::Invalid(
+                "agent source admission is not bound to its host projection",
+            ));
+        }
+        self.admitted_agent_sources.extend(ids);
+        Ok(())
+    }
     fn remove(&mut self, ids: &[AgentMessageIdV1]) {
         for id in ids {
             self.envelopes.remove(id);
+            self.agent_sources.remove(id);
+            self.admitted_agent_sources.remove(id);
             for projection in self.projections.values_mut() {
                 projection.remove(id);
             }
@@ -125,6 +170,11 @@ impl LiveAgentMailbox {
             });
         }
         let ids = native_included(wire, &witnesses.projections)?;
+        if ids.iter().any(|id| {
+            witnesses.agent_sources.contains(id) && !witnesses.admitted_agent_sources.contains(id)
+        }) {
+            return Err(RequestCaptureError::Unavailable);
+        }
         Ok(PreparedMailboxDelivery {
             ids,
             owner: self.witnesses.clone(),
@@ -305,4 +355,4 @@ fn native_user_fields(
 
 #[cfg(test)]
 #[path = "prepared_mailbox_tests.rs"]
-mod tests;
+pub(super) mod tests;
