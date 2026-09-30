@@ -7,10 +7,10 @@ use super::{
     ServerEvent, SubmissionDeduplicator, SubmissionId, SubmissionLifecycleState, TurnId,
     TurnSubmission, apply_immediate_control, expire_pending_turns, is_immediate_control,
     is_plantcore_admitted_control, kernel_submission_kind, legacy_user_prompt_context, mcp_input,
-    mpsc, product_turn_accepts, publish_settled, publish_stop_hook_observation, publish_submission,
-    publish_workflow_progress, queue_population, receive_next_submission,
-    receive_stop_hook_observation, reject_replayed_submission, route, run_legacy_hook,
-    run_lifecycle_gate, settle_kernel_submission_events,
+    mpsc, product_turn_accepts, publish_runtime_event, publish_settled,
+    publish_stop_hook_observation, publish_submission, publish_workflow_progress, queue_population,
+    receive_next_submission, receive_stop_hook_observation, reject_replayed_submission, route,
+    run_legacy_hook, run_lifecycle_gate,
 };
 
 pub(super) struct RunningTurnPump<'a> {
@@ -107,41 +107,14 @@ impl RunningTurnPump<'_> {
                 // is still producing, not in one lump at the end.
                 biased;
                 Some(runtime_event) = runtime_ui_rx.recv() => {
-                    let runtime_bytes = frontend_channels.runtime_event_bytes(&runtime_event);
-                    match runtime_event {
-                        crate::runtime::RuntimeFrontendEvent::Ui(ui) => {
-                            settle_kernel_submission_events(
-                                events,
-                                pending_kernel_submissions,
-                                &ui,
-                            ).await;
-                            if events.publish(ServerEvent::Ui(ui)).await.is_err() {
-                                // The frontend is gone. Keep the turn running to its own
-                                // safe point rather than dropping the future mid-effect.
-                            }
-                        }
-                        crate::runtime::RuntimeFrontendEvent::Plantcore(event) => {
-                            let _ = events.publish(ServerEvent::Plantcore(event)).await;
-                        }
-                    }
-                    frontend_channels.release_ui_bytes(runtime_bytes);
+                    publish_runtime_event(
+                        events, pending_kernel_submissions, &frontend_channels, runtime_event,
+                    ).await;
                 }
                 runtime_event = frontend_channels.recv_authoritative() => {
-                    let runtime_bytes = frontend_channels.runtime_event_bytes(&runtime_event);
-                    match runtime_event {
-                        crate::runtime::RuntimeFrontendEvent::Ui(ui) => {
-                            settle_kernel_submission_events(
-                                events,
-                                pending_kernel_submissions,
-                                &ui,
-                            ).await;
-                            let _ = events.publish(ServerEvent::Ui(ui)).await;
-                        }
-                        crate::runtime::RuntimeFrontendEvent::Plantcore(event) => {
-                            let _ = events.publish(ServerEvent::Plantcore(event)).await;
-                        }
-                    }
-                    frontend_channels.release_ui_bytes(runtime_bytes);
+                    publish_runtime_event(
+                        events, pending_kernel_submissions, &frontend_channels, runtime_event,
+                    ).await;
                 }
                 Some(progress) = workflow_rx.recv() => {
                     // Same policy as the UI stream: a frontend that hung up never

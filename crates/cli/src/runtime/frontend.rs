@@ -74,6 +74,7 @@ fn runtime_frontend_event_heap_bytes(event: &super::RuntimeFrontendEvent) -> usi
     match event {
         super::RuntimeFrontendEvent::Ui(event) => ui_event_heap_bytes(event),
         super::RuntimeFrontendEvent::Plantcore(_) => ENVELOPE.0.saturating_add(64 * 1024),
+        super::RuntimeFrontendEvent::TurnPublication(_) => ENVELOPE.0.saturating_add(512),
     }
 }
 
@@ -356,6 +357,9 @@ impl FrontendChannelHealth {
                 refusal_must_fail_run(event),
             ),
             super::RuntimeFrontendEvent::Plantcore(_) => (true, true),
+            // These facts already have exact durable provenance and a recovery read port. A
+            // presentation refusal cannot retroactively change a confirmed terminal outcome.
+            super::RuntimeFrontendEvent::TurnPublication(_) => (true, false),
         };
         if self.has_authoritative_pending() {
             let bytes = runtime_frontend_event_heap_bytes(&event);
@@ -670,6 +674,19 @@ impl Agent {
         self.resident_ui_tx.as_ref().is_none_or(|tx| {
             self.frontend_saturation
                 .try_send_runtime(tx, super::RuntimeFrontendEvent::Plantcore(event))
+        })
+    }
+
+    pub(super) fn turn_publication_ui(
+        &self,
+        event: iteron_protocol::turn_publication::TurnPublicationEventV1,
+    ) -> bool {
+        if event.validate().is_err() || event.run_id != *self.rollout.run_id() {
+            return false;
+        }
+        self.resident_ui_tx.as_ref().is_none_or(|tx| {
+            self.frontend_saturation
+                .try_send_runtime(tx, super::RuntimeFrontendEvent::TurnPublication(event))
         })
     }
 

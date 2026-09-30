@@ -5,7 +5,7 @@
 //! turn, distinct from the App Server's user-facing `ProductTurnId`.
 
 use crate::{Outcome, RunId, SessionId, TurnId};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de};
 
 pub const TURN_PUBLICATION_VERSION: u32 = 1;
 pub const MAX_TURN_PUBLICATION_EVENTS: usize = 256;
@@ -148,13 +148,30 @@ pub struct TurnPublicationSnapshotV1 {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum TurnPublicationReadV1 {
-    Read { thread_id: SessionId },
+    Read {
+        #[serde(deserialize_with = "deserialize_thread")]
+        thread_id: SessionId,
+    },
+    /// Opt into separate live publication frames on this authenticated connection. The reply is
+    /// the same recovery snapshot; source sequences deduplicate snapshot/stream overlap.
+    Subscribe {
+        #[serde(deserialize_with = "deserialize_thread")]
+        thread_id: SessionId,
+    },
+}
+
+fn deserialize_thread<'de, D: Deserializer<'de>>(deserializer: D) -> Result<SessionId, D::Error> {
+    let thread = SessionId::deserialize(deserializer)?;
+    if thread.0.is_empty() || thread.0.len() > 256 || thread.0.chars().any(char::is_control) {
+        return Err(de::Error::custom("invalid publication thread identity"));
+    }
+    Ok(thread)
 }
 
 impl TurnPublicationReadV1 {
     pub fn thread_id(&self) -> &SessionId {
         match self {
-            Self::Read { thread_id } => thread_id,
+            Self::Read { thread_id } | Self::Subscribe { thread_id } => thread_id,
         }
     }
 }
@@ -172,6 +189,9 @@ mod tests {
             source_seq: 8,
             fact: TurnPublicationFactV1::AnswerAvailable { message_seq: 7 },
         };
+        assert!(event.validate().is_ok());
+        // AgentConfig begins at runtime turn zero; it is an actual provider/terminal identity.
+        event.turn_id = TurnId(0);
         assert!(event.validate().is_ok());
         event.source_seq = 7;
         assert!(event.validate().is_err());

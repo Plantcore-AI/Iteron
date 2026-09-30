@@ -294,6 +294,7 @@ pub(crate) async fn drive(launch: FrontendLaunch) -> anyhow::Result<u8> {
             )),
             app_server::ServerEvent::Submission { .. } => continue,
             app_server::ServerEvent::Plantcore(_) => continue,
+            app_server::ServerEvent::TurnPublication(_) => continue,
             // Live activity is already projected by interactive/headless frontends. The frozen
             // one-shot stream-json schema has no activity record, so never forge one here.
             app_server::ServerEvent::Activity(_) => continue,
@@ -332,6 +333,7 @@ pub(crate) async fn drive(launch: FrontendLaunch) -> anyhow::Result<u8> {
             )),
             app_server::ServerEvent::Submission { .. } => continue,
             app_server::ServerEvent::Plantcore(_) => continue,
+            app_server::ServerEvent::TurnPublication(_) => continue,
             app_server::ServerEvent::Activity(_) => continue,
             app_server::ServerEvent::McpInputRequested(_) => continue,
             app_server::ServerEvent::RunEnded { .. } => continue,

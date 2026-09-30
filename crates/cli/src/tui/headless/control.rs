@@ -48,6 +48,9 @@ impl PlantcoreCommand {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum WireControl {
+    TurnPublicationsV1 {
+        command: iteron_protocol::turn_publication::TurnPublicationReadV1,
+    },
     InventoryV1 {
         query: iteron_protocol::client_inventory::ClientInventoryQueryV1,
     },
@@ -268,7 +271,8 @@ impl WireControl {
         }
         matches!(
             self,
-            Self::InventoryV1 { .. }
+            Self::TurnPublicationsV1 { .. }
+                | Self::InventoryV1 { .. }
                 | Self::ProductV1 {
                     command: ProductControlV1::ThreadRead { .. }
                         | ProductControlV1::TerminalDiagnosticsRead { .. }
@@ -285,6 +289,9 @@ impl WireControl {
 
     pub(super) fn into_app_server(self) -> Control {
         match self {
+            Self::TurnPublicationsV1 { .. } => {
+                unreachable!("publication reads address the public resident projection")
+            }
             Self::InventoryV1 { query } => Control::Inventory(query),
             Self::SelectModelV1 { selection } => Control::SelectModelV1(selection),
             Self::LiveWorkflowV1 { command } => Control::LiveWorkflow(command),

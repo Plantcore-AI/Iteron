@@ -181,6 +181,9 @@ pub(crate) enum ServerEvent {
     Ui(UiEvent),
     /// A PlantCore resident fact kept outside the frozen CLI UI vocabulary.
     Plantcore(crate::runtime::PlantcoreUiEvent),
+    /// Content-free observations from the exact committed answer/Done source, separate from
+    /// runtime ownership release and advisory maintenance.
+    TurnPublication(iteron_protocol::turn_publication::TurnPublicationEventV1),
     /// A run reached a terminal state, with the runtime state the frontend mirrors.
     ///
     /// **Never dropped under backpressure** — this is the authoritative answer to "what happened",
@@ -291,6 +294,7 @@ pub(super) fn event_heap_bytes(event: &ServerEvent) -> usize {
             ),
         ServerEvent::Notice(text) => text.len(),
         ServerEvent::Submission { .. } | ServerEvent::Lagged { .. } => 128,
+        ServerEvent::TurnPublication(_) => 512,
         ServerEvent::WorkflowRun(_) => 64 * 1024,
         ServerEvent::Activity(_) => 512,
         ServerEvent::McpInputRequested(prompt) => prompt

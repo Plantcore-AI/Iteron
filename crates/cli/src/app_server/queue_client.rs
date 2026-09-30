@@ -307,6 +307,13 @@ impl AppServerClient {
         self.contract.events_read(after)
     }
 
+    pub(crate) fn turn_publications_v1(
+        &self,
+        command: iteron_protocol::turn_publication::TurnPublicationReadV1,
+    ) -> serde_json::Value {
+        self.contract.turn_publications_v1(command)
+    }
+
     pub(crate) fn product_terminal_diagnostics_v1(
         &self,
         turn_id: iteron_protocol::product_contract::ProductTurnId,

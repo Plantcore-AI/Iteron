@@ -390,6 +390,12 @@ impl EventPublisher {
     }
 
     pub(super) async fn send(&mut self, mut event: ServerEvent) -> Result<(), ()> {
+        if let ServerEvent::TurnPublication(publication) = &event
+            && (publication.validate().is_err()
+                || self.run_id.as_ref() != Some(&publication.run_id))
+        {
+            return Err(());
+        }
         let reject_authoritative = !self.lossless
             && event.is_authoritative()
             && self.queue_policy.authoritative_overflow() == AuthoritativeOverflow::Reject;

@@ -8,10 +8,10 @@ use super::{
     TerminalSummary, TurnLifecycleState, TurnSubmission, apply_control, clean_session_owned_tools,
     discard_expired_product_steers, expire_pending_turns, expire_queued_after_drain,
     first_prompt_title, forward_runtime_notifications, input_ready_activity,
-    legacy_user_prompt_context, mcp_input, mpsc, outcome_name, publish_settled,
-    publish_stop_hook_observation, publish_submission, publish_workflow_progress, queue_population,
-    receive_stop_hook_observation, reject_replayed_submission, route, run_legacy_hook,
-    run_lifecycle_gate, session_hooks, session_services, settle_kernel_submission_events,
+    legacy_user_prompt_context, mcp_input, mpsc, outcome_name, publish_runtime_event,
+    publish_settled, publish_stop_hook_observation, publish_submission, publish_workflow_progress,
+    queue_population, receive_stop_hook_observation, reject_replayed_submission, route,
+    run_legacy_hook, run_lifecycle_gate, session_hooks, session_services,
     settle_kernel_submissions_at_turn_end, snapshot_of, turn_pump,
 };
 
@@ -292,39 +292,15 @@ impl AppServer {
                         continue
                     }
                     Some(runtime_event) = runtime_ui_rx.recv() => {
-                        let runtime_bytes = frontend_channels.runtime_event_bytes(&runtime_event);
-                        match runtime_event {
-                            crate::runtime::RuntimeFrontendEvent::Ui(ui) => {
-                                settle_kernel_submission_events(
-                                    &mut events,
-                                    &mut pending_kernel_submissions,
-                                    &ui,
-                                ).await;
-                                let _ = events.publish(ServerEvent::Ui(ui)).await;
-                            }
-                            crate::runtime::RuntimeFrontendEvent::Plantcore(event) => {
-                                let _ = events.publish(ServerEvent::Plantcore(event)).await;
-                            }
-                        }
-                        frontend_channels.release_ui_bytes(runtime_bytes);
+                        publish_runtime_event(
+                            &mut events, &mut pending_kernel_submissions, &frontend_channels, runtime_event,
+                        ).await;
                         continue
                     }
                     runtime_event = frontend_channels.recv_authoritative() => {
-                        let runtime_bytes = frontend_channels.runtime_event_bytes(&runtime_event);
-                        match runtime_event {
-                            crate::runtime::RuntimeFrontendEvent::Ui(ui) => {
-                                settle_kernel_submission_events(
-                                    &mut events,
-                                    &mut pending_kernel_submissions,
-                                    &ui,
-                                ).await;
-                                let _ = events.publish(ServerEvent::Ui(ui)).await;
-                            }
-                            crate::runtime::RuntimeFrontendEvent::Plantcore(event) => {
-                                let _ = events.publish(ServerEvent::Plantcore(event)).await;
-                            }
-                        }
-                        frontend_channels.release_ui_bytes(runtime_bytes);
+                        publish_runtime_event(
+                            &mut events, &mut pending_kernel_submissions, &frontend_channels, runtime_event,
+                        ).await;
                         continue
                     }
                     Some(request) = mcp_input_requests.recv() => {
@@ -704,40 +680,22 @@ impl AppServer {
             // still queued here. Draining before the terminal event is what keeps the
             // transcript ordered.
             while let Ok(runtime_event) = runtime_ui_rx.try_recv() {
-                let runtime_bytes = frontend_channels.runtime_event_bytes(&runtime_event);
-                match runtime_event {
-                    crate::runtime::RuntimeFrontendEvent::Ui(ui) => {
-                        settle_kernel_submission_events(
-                            &mut events,
-                            &mut pending_kernel_submissions,
-                            &ui,
-                        )
-                        .await;
-                        let _ = events.publish(ServerEvent::Ui(ui)).await;
-                    }
-                    crate::runtime::RuntimeFrontendEvent::Plantcore(event) => {
-                        let _ = events.publish(ServerEvent::Plantcore(event)).await;
-                    }
-                }
-                frontend_channels.release_ui_bytes(runtime_bytes);
+                publish_runtime_event(
+                    &mut events,
+                    &mut pending_kernel_submissions,
+                    &frontend_channels,
+                    runtime_event,
+                )
+                .await;
             }
             while let Some(runtime_event) = frontend_channels.try_pop_authoritative() {
-                let runtime_bytes = frontend_channels.runtime_event_bytes(&runtime_event);
-                match runtime_event {
-                    crate::runtime::RuntimeFrontendEvent::Ui(ui) => {
-                        settle_kernel_submission_events(
-                            &mut events,
-                            &mut pending_kernel_submissions,
-                            &ui,
-                        )
-                        .await;
-                        let _ = events.publish(ServerEvent::Ui(ui)).await;
-                    }
-                    crate::runtime::RuntimeFrontendEvent::Plantcore(event) => {
-                        let _ = events.publish(ServerEvent::Plantcore(event)).await;
-                    }
-                }
-                frontend_channels.release_ui_bytes(runtime_bytes);
+                publish_runtime_event(
+                    &mut events,
+                    &mut pending_kernel_submissions,
+                    &frontend_channels,
+                    runtime_event,
+                )
+                .await;
             }
             // The workflow seam drains with it: an in-turn run settles inside the turn, so
             // its terminal rows and its `Finished` are queued here exactly like the last
@@ -795,40 +753,22 @@ impl AppServer {
             // the run's ordinary UI tail was already drained above. Publish and settle those
             // before the generic turn-end fallback consumes pending receipts.
             while let Ok(runtime_event) = runtime_ui_rx.try_recv() {
-                let runtime_bytes = frontend_channels.runtime_event_bytes(&runtime_event);
-                match runtime_event {
-                    crate::runtime::RuntimeFrontendEvent::Ui(ui) => {
-                        settle_kernel_submission_events(
-                            &mut events,
-                            &mut pending_kernel_submissions,
-                            &ui,
-                        )
-                        .await;
-                        let _ = events.publish(ServerEvent::Ui(ui)).await;
-                    }
-                    crate::runtime::RuntimeFrontendEvent::Plantcore(event) => {
-                        let _ = events.publish(ServerEvent::Plantcore(event)).await;
-                    }
-                }
-                frontend_channels.release_ui_bytes(runtime_bytes);
+                publish_runtime_event(
+                    &mut events,
+                    &mut pending_kernel_submissions,
+                    &frontend_channels,
+                    runtime_event,
+                )
+                .await;
             }
             while let Some(runtime_event) = frontend_channels.try_pop_authoritative() {
-                let runtime_bytes = frontend_channels.runtime_event_bytes(&runtime_event);
-                match runtime_event {
-                    crate::runtime::RuntimeFrontendEvent::Ui(ui) => {
-                        settle_kernel_submission_events(
-                            &mut events,
-                            &mut pending_kernel_submissions,
-                            &ui,
-                        )
-                        .await;
-                        let _ = events.publish(ServerEvent::Ui(ui)).await;
-                    }
-                    crate::runtime::RuntimeFrontendEvent::Plantcore(event) => {
-                        let _ = events.publish(ServerEvent::Plantcore(event)).await;
-                    }
-                }
-                frontend_channels.release_ui_bytes(runtime_bytes);
+                publish_runtime_event(
+                    &mut events,
+                    &mut pending_kernel_submissions,
+                    &frontend_channels,
+                    runtime_event,
+                )
+                .await;
             }
             discard_expired_product_steers(&mut snapshot, &pending_kernel_submissions);
             settle_kernel_submissions_at_turn_end(
@@ -1019,6 +959,9 @@ impl AppServer {
                 memo_hits,
                 memo_misses,
             };
+            // Reconcile bounded observations from the actual record owner after the Agent borrow
+            // ends. Presentation saturation cannot turn an already confirmed Done into failure.
+            events.contract.bind_artifact_owner(&agent);
             if events
                 .publish(ServerEvent::RunEnded {
                     snapshot: Box::new(snapshot),

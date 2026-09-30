@@ -119,6 +119,10 @@ pub(super) enum ServerFrame {
         request_id: u64,
         reply: Value,
     },
+    TurnPublicationV1 {
+        protocol_version: u32,
+        publication: iteron_protocol::turn_publication::TurnPublicationEventV1,
+    },
     Error {
         protocol_version: u32,
         code: &'static str,
@@ -147,6 +151,7 @@ impl ServerFrame {
             Self::Hello { .. }
             | Self::Rollout { .. }
             | Self::ControlReply { .. }
+            | Self::TurnPublicationV1 { .. }
             | Self::Error { .. }
             | Self::FrameChunk { .. } => None,
         }
@@ -159,6 +164,7 @@ impl ServerFrame {
             Self::Result { seq, .. } => LogicalIdentity::live("result", *seq),
             Self::Rollout { rollout_seq, .. } => LogicalIdentity::rollout(*rollout_seq),
             Self::ControlReply { .. } => LogicalIdentity::control("control_reply"),
+            Self::TurnPublicationV1 { .. } => LogicalIdentity::control("turn_publication_v1"),
             Self::Error { .. } => LogicalIdentity::control("error"),
             Self::FrameChunk { .. } => {
                 bail!("an already-fragmented frame cannot be fragmented recursively")

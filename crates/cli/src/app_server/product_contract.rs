@@ -131,6 +131,7 @@ struct Projection {
     assistant_scrubber: ProductStreamScrubber,
     reasoning_scrubber: ProductStreamScrubber,
     artifacts: super::client_artifacts::ArtifactCatalog,
+    publications: super::turn_publication::PublicationReader,
     artifact_scope: Option<crate::artifacts::ArtifactReadScope>,
 }
 
@@ -184,7 +185,13 @@ impl ContractReader {
                 agent.workspace.clone(),
             )
         });
-        self.with_mut(|projection| projection.artifact_scope = scope);
+        let recovered = agent.recovered_turn_publications_v1().map_err(|_| ());
+        self.with_mut(|projection| {
+            projection.artifact_scope = scope;
+            projection
+                .publications
+                .recover(agent.rollout.run_id(), recovered);
+        });
     }
 
     fn with_mut<R>(&self, action: impl FnOnce(&mut Projection) -> R) -> R {
@@ -205,6 +212,9 @@ impl ContractReader {
                 return;
             }
             projection.artifacts.bind_thread(&thread_id);
+            projection
+                .publications
+                .bind(thread_id.clone(), run_id.clone());
             projection.snapshot = Some(ThreadSnapshotV1 {
                 contract_version: PRODUCT_CONTRACT_VERSION,
                 thread_id,
@@ -273,6 +283,9 @@ impl ContractReader {
                 return false;
             }
             if let Some(snapshot) = projection.snapshot.as_mut() {
+                projection
+                    .publications
+                    .bind(snapshot.thread_id.clone(), run_id.clone());
                 snapshot.run_id = run_id;
                 snapshot.turn = None;
                 snapshot.submissions.clear();
@@ -312,7 +325,19 @@ impl ContractReader {
         event: &ServerEvent,
         terminal_spill_bytes: Option<usize>,
     ) {
-        self.with_mut(|projection| projection.observe(seq, event, terminal_spill_bytes));
+        self.with_mut(|projection| {
+            if let ServerEvent::TurnPublication(publication) = event {
+                projection.publications.observe(publication);
+            }
+            projection.observe(seq, event, terminal_spill_bytes);
+        });
+    }
+
+    pub(super) fn turn_publications_v1(
+        &self,
+        command: iteron_protocol::turn_publication::TurnPublicationReadV1,
+    ) -> serde_json::Value {
+        self.with_mut(|projection| projection.publications.read(command))
     }
 
     pub(super) fn artifacts_v1(

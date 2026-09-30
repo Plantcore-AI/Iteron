@@ -91,6 +91,7 @@ mod transcript_export;
 mod transcript_layout;
 mod transcript_viewer;
 mod tunables_view;
+mod turn_publication;
 mod workflow_panel_projection;
 mod workflow_region;
 mod workflow_rehydrate;

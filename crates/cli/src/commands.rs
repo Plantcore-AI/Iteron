@@ -33,6 +33,7 @@ pub enum SlashCommand {
     Workflows,
     Jobs,
     Artifacts,
+    Finalization,
     Fork,
     Rewind,
     Resume,
@@ -95,6 +96,7 @@ impl SlashCommand {
             | Self::Workflows
             | Self::Jobs
             | Self::Artifacts
+            | Self::Finalization
             | Self::Fork
             | Self::Rewind
             | Self::Resume
@@ -246,6 +248,12 @@ pub const COMMANDS: &[Cmd] = &[
         name: "artifacts",
         args: "[HASH_PREFIX]",
         help: "list or open bounded artifacts published by this thread",
+    },
+    Cmd {
+        command: SlashCommand::Finalization,
+        name: "finalization",
+        args: "",
+        help: "inspect durable answer availability and turn finalization separately",
     },
     Cmd {
         command: SlashCommand::Fork,

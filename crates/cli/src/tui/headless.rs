@@ -177,6 +177,7 @@ struct Shared {
     auth_token: BearerToken,
     ring: Mutex<ReplayRing>,
     live: broadcast::Sender<u64>,
+    publications: broadcast::Sender<iteron_protocol::turn_publication::TurnPublicationEventV1>,
     outbound_budget: Arc<Semaphore>,
     frame_preparers: Arc<Semaphore>,
     fragment_encoders: Arc<Semaphore>,
@@ -436,6 +437,10 @@ impl Shared {
         // sequence numbers across the projection would manufacture holes that every correct client
         // must reject. The single event pump assigns a dense cursor only to frames it publishes;
         // it still validates the source EQ independently before calling this method.
+        if let ServerEvent::TurnPublication(publication) = &event {
+            let _ = self.publications.send(publication.clone());
+            return Ok((turn, assistant, legacy));
+        }
         if matches!(
             event,
             ServerEvent::Submission { .. }
@@ -512,6 +517,7 @@ impl Shared {
                     logical.push((true, summary.result_for_schema(machine_schema_version)?));
                 }
                 ServerEvent::Submission { .. }
+                | ServerEvent::TurnPublication(_)
                 | ServerEvent::WorkflowRun(_)
                 | ServerEvent::Activity(_)
                 | ServerEvent::McpInputRequested(_) => {
@@ -707,12 +713,16 @@ pub(crate) async fn serve(
         "cli.tui.headless.live_capacity",
         LIVE_CAPACITY,
     ));
+    // These content-free facts have their own source sequences. They cannot create holes in the
+    // frozen presentation replay cursor or appear without an explicit authenticated subscription.
+    let (publications, _) = broadcast::channel(64);
     let shared = Arc::new(Shared {
         client: handle.client,
         control: handle.control.downgrade(),
         auth_token,
         ring: Mutex::new(ReplayRing::production()),
         live,
+        publications,
         outbound_budget: Arc::new(Semaphore::new(max_in_flight_server_bytes())),
         frame_preparers: Arc::new(Semaphore::new(1)),
         fragment_encoders: Arc::new(Semaphore::new(1)),
@@ -984,6 +994,8 @@ async fn serve_connection(
     ));
 
     let mut live = shared.live.subscribe();
+    let mut publication_updates = shared.publications.subscribe();
+    let mut publications_enabled = false;
     let (cursor, requested, fallback, lost_result, oldest) = {
         let ring = shared.ring.lock().await;
         let cursor = shared.cursor.load(Ordering::Acquire);
@@ -1099,6 +1111,8 @@ async fn serve_connection(
     let mut pending_control: Option<control::Pending> = None;
     loop {
         tokio::select! {
+            // Publication facts are queued before the corresponding legacy terminal frame.
+            biased;
             inbound = tokio::time::timeout_at(
                 idle_deadline,
                 reader.next_frame_with_partial_timeout(iteron_tunables::param_duration("cli.tui.headless.partial_frame_timeout", PARTIAL_FRAME_TIMEOUT)),
@@ -1255,6 +1269,23 @@ async fn serve_connection(
                         }
                         drop(input_guard);
                         match control {
+                            control::WireControl::TurnPublicationsV1 { command } => {
+                                let subscribe = matches!(&command, iteron_protocol::turn_publication::TurnPublicationReadV1::Subscribe { .. });
+                                if subscribe {
+                                    // Subscribe before the snapshot read. Any overlap is explicit
+                                    // and deduplicated by the actual current-run source sequence.
+                                    publication_updates = shared.publications.subscribe();
+                                }
+                                let reply = shared.client.turn_publications_v1(command);
+                                if subscribe && reply["type"] == "turn_publications_v1" {
+                                    publications_enabled = true;
+                                }
+                                send_frame(
+                                    &mut writer, &shared.outbound_budget, &shared.frame_preparers,
+                                    &shared.fragment_encoders,
+                                    ServerFrame::ControlReply { protocol_version: PROTOCOL_VERSION, request_id, reply },
+                                ).await?;
+                            }
                             control::WireControl::ArtifactsV1 { command } => {
                                 send_frame(
                                     &mut writer,
@@ -1352,6 +1383,28 @@ async fn serve_connection(
                 )
                 .await?;
                 idle_deadline = tokio::time::Instant::now() + iteron_tunables::param_duration("cli.tui.headless.authenticated_idle_timeout", AUTHENTICATED_IDLE_TIMEOUT);
+            }
+            publication = publication_updates.recv(), if publications_enabled => {
+                match publication {
+                    Ok(publication) => {
+                        let current = shared.client.thread_snapshot_v1();
+                        if current.as_ref().is_some_and(|thread| thread.run_id == publication.run_id) {
+                            send_frame(
+                                &mut writer, &shared.outbound_budget, &shared.frame_preparers,
+                                &shared.fragment_encoders,
+                                ServerFrame::TurnPublicationV1 { protocol_version: PROTOCOL_VERSION, publication },
+                            ).await?;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        send_frame(
+                            &mut writer, &shared.outbound_budget, &shared.frame_preparers,
+                            &shared.fragment_encoders,
+                            error_frame("turn_publication_gap", "publication updates exceeded the bounded queue; read turn_publications_v1 to reconcile durable facts"),
+                        ).await?;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => publications_enabled = false,
+                }
             }
             outbound = live.recv() => {
                 match outbound {
