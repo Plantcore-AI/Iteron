@@ -70,3 +70,35 @@ private file publication/reopen, single-writer leases, lost/corrupt state and na
 These tests establish scheduler and journal contracts. Product CLI/TUI/API dispatch through a
 real persistent controller, real provider/process cancellation and cross-platform durability are
 separate integration evidence; this module alone does not establish those journeys.
+
+## Live session host
+
+The CLI `workflow::live_session` service instantiates and retains actual `WorkflowScheduler`
+owners. The public version 1 commands are `open`, `read`, `replan`, `pump`, `interrupt` and
+`reconcile`. Only `read` is an observer command. Wire commands contain no state path, budget,
+actor identity, terminal result or effect-recovery evidence. A fresh service requires operator
+`open` before observer reads, including after restart; observer reads never initialize or repair
+journals.
+
+The composition root supplies a private application-state namespace and actual persistent-agent
+host limits. Admission uses the parent's intersected remaining turn/token/wall and independently
+known monetary room; missing monetary evidence refuses admission. The durable registry retains
+original graph ceilings, absolute deadlines and aggregate reservations through restart. A graph's
+initializing entry is published before its journal, and its active entry is published before any
+execution. Losing an active graph directory/snapshot refuses recovery instead of creating a new
+graph. Finished graphs retain their admission reservation and node state.
+
+Operator commands run in bounded owned workers so a disconnected observer cannot drop an
+admitted write-ahead dispatch. A finite background driver rotates graph and receipt queries and
+performs at most four controller/graph operations per batch. It dispatches through the real
+persistent-agent controller, then settles only exact admitted-task and epoch receipts. Typed
+succeeded, failed, cancelled and stopped-recovery outcomes stay distinct; known cleanup by
+itself is never a successful result. Unknown effects remain quarantined and repeated cumulative
+receipts do not charge usage again. Background failures appear in the immutable view.
+
+The host test source uses actual controller/host owners and private filesystem journals with a
+fixture provider runtime. Cases cover pending-node replanning during execution, dependency
+settlement, completed and active graph reopen without replay, lost indexed state, unknown-effect
+quarantine, writer exclusion, observer I/O exclusion and disconnected command observation.
+These added cases await the final integrated candidate test run; real provider and native
+Windows/storage evidence remain separate requirements.

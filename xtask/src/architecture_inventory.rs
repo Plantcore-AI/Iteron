@@ -191,8 +191,46 @@ const SURFACES: &[Surface] = &[
             "restart/effect reconciliation",
         ],
         next_seams: &[
-            "already separated controller and journal ports; product adapters still require integration",
+            "actual live session consumes controller/journal ports; final product/provider evidence remains",
         ],
+    },
+    Surface {
+        path: "crates/cli/src/workflow/live_session/registry.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "durable live graph instance admission and retained aggregate reservations",
+            "single registry and live scheduler instance ownership",
+            "initializing-to-active graph publication and restart restoration",
+        ],
+        next_seams: &["final product/provider/native platform journey evidence"],
+    },
+    Surface {
+        path: "crates/cli/src/workflow/live_session/mod.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "bounded owned operator command admission and observer cancellation",
+            "trusted controller budget policy minting",
+            "finite background pump lifecycle",
+        ],
+        next_seams: &["maintain provider-independent typed controller composition"],
+    },
+    Surface {
+        path: "crates/cli/src/workflow/live_session/store.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "private durable registry CAS/filesystem adapter",
+            "exclusive namespace lease and indexed graph journal admission",
+        ],
+        next_seams: &["native Windows and storage fault evidence remains"],
+    },
+    Surface {
+        path: "crates/cli/src/workflow/live_session/pump.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "bounded graph/controller command coordination",
+            "exact persisted task/epoch/terminal receipt authentication",
+        ],
+        next_seams: &["no independently mutable graph or agent state"],
     },
 ];
 

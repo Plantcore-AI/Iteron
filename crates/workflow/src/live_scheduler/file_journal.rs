@@ -56,6 +56,39 @@ mod unix {
             }
             // SAFETY: `open` returned a fresh valid descriptor and ownership transfers once.
             let directory = unsafe { File::from_raw_fd(raw) };
+            Self::from_directory(directory)
+        }
+
+        /// Open one host-computed component relative to the pinned private registry directory.
+        /// No absolute path lookup can redirect graph admission after a namespace rename.
+        pub fn open_relative(
+            parent: &File,
+            component: &std::ffi::CStr,
+        ) -> Result<Self, WorkflowStoreError> {
+            if component.to_bytes().is_empty()
+                || component
+                    .to_bytes()
+                    .iter()
+                    .any(|byte| !byte.is_ascii_alphanumeric() && *byte != b'_')
+            {
+                return Err(WorkflowStoreError::Unavailable);
+            }
+            // SAFETY: terminated single component and live borrowed parent; no final-link follow.
+            let raw = unsafe {
+                libc::openat(
+                    parent.as_raw_fd(),
+                    component.as_ptr(),
+                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+                )
+            };
+            if raw < 0 {
+                return Err(WorkflowStoreError::Unavailable);
+            }
+            // SAFETY: successful openat transfers its new descriptor once.
+            Self::from_directory(unsafe { File::from_raw_fd(raw) })
+        }
+
+        fn from_directory(directory: File) -> Result<Self, WorkflowStoreError> {
             let metadata = directory
                 .metadata()
                 .map_err(|_| WorkflowStoreError::Unavailable)?;

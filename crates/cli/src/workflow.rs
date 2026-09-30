@@ -22,6 +22,7 @@ use iteron_workflow::{AgentSpawner, RunReport, RunSpec, WorkflowEngine};
 
 mod launch;
 mod live;
+pub(crate) mod live_session;
 mod policy_checkpoint;
 mod progress;
 mod projection;
