@@ -127,6 +127,7 @@ mod persistent_provider_budget;
 mod plantcore;
 mod provider_effect_identity;
 pub(crate) use plantcore::{DispatchGate, ResumeActivation};
+mod optional_tool_round;
 mod ordered_tool_call;
 mod policy_evidence;
 pub(crate) mod policy_evidence_recorder;
@@ -3324,103 +3325,14 @@ impl Agent {
                 );
             }
             // ---- collect tool results in DETERMINISTIC tool_use order (ADR-006 R7) ----
-            let mut workspace_candidate_changes = std::collections::BTreeSet::new();
-            let mut workspace_candidate_paths = std::collections::BTreeSet::new();
-            let mut unauthorized_candidate_changes = std::collections::BTreeSet::new();
-            let mut owner_evidence_blocked_changes = std::collections::BTreeSet::new();
-            let repair_evidence_submissions = if investigation_convergence.enabled() {
-                returned_tools
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(index, tool)| {
-                        self.registry
-                            .is_repair_evidence_submission(tool, &self.workspace)
-                            .then_some(index)
-                    })
-                    .collect::<std::collections::BTreeSet<_>>()
-            } else {
-                std::collections::BTreeSet::new()
-            };
-            // The graph workflow waits for a receipt result before granting graph-confined
-            // mutation. General coding does not enter that workflow or scan for its receipts.
-            if investigation_convergence.enabled() || self.verify_command.is_some() {
-                let candidate_owner_evidence_required =
-                    investigation_convergence.candidate_owner_evidence_required();
-                let candidate_mutation_authorized = investigation_convergence
-                    .candidate_change_allowed()
-                    && !candidate_owner_evidence_required
-                    && repair_evidence_submissions.is_empty();
-                let receipt_path_restricted = !investigation_convergence
-                    .authorized_repair_paths()
-                    .is_empty();
-                let authorized_candidate_paths = investigation_convergence
-                    .authorized_repair_paths()
-                    .iter()
-                    .filter_map(|path| self.workspace.join(path).canonicalize().ok())
-                    .collect::<std::collections::BTreeSet<_>>();
-                for (index, tool, _) in provider_round.tools().deferred() {
-                    if !self.registry.is_candidate_change_tool(&tool.name) {
-                        continue;
-                    }
-                    let candidate_paths = self
-                        .registry
-                        .workspace_candidate_paths(tool, &self.workspace);
-                    if !investigation_convergence.enabled() {
-                        // An explicit verifier tracks changed paths without imposing the
-                        // graph's RepairIntent path restrictions on a general coding turn.
-                        workspace_candidate_changes.insert(*index);
-                        if let Some(paths) = candidate_paths {
-                            workspace_candidate_paths.extend(paths);
-                        }
-                        continue;
-                    }
-                    let Some(paths) = candidate_paths else {
-                        unauthorized_candidate_changes.insert(*index);
-                        continue;
-                    };
-                    if paths.is_empty()
-                        || !candidate_mutation_authorized
-                        || (receipt_path_restricted
-                            && !paths
-                                .iter()
-                                .all(|path| authorized_candidate_paths.contains(path)))
-                    {
-                        unauthorized_candidate_changes.insert(*index);
-                        if candidate_owner_evidence_required {
-                            owner_evidence_blocked_changes.insert(*index);
-                        }
-                    } else {
-                        workspace_candidate_changes.insert(*index);
-                        workspace_candidate_paths.extend(paths);
-                    }
-                }
-            }
-            let workspace_targeted_observations = if investigation_convergence.enabled() {
-                returned_tools
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(index, tool)| {
-                        self.registry
-                            .is_workspace_targeted_observation(tool, &self.workspace)
-                            .then_some(index)
-                    })
-                    .collect::<std::collections::BTreeSet<_>>()
-            } else {
-                std::collections::BTreeSet::new()
-            };
-            let workspace_localization_observations = if investigation_convergence.enabled() {
-                returned_tools
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(index, tool)| {
-                        self.registry
-                            .is_workspace_localization_observation(tool, &self.workspace)
-                            .then_some(index)
-                    })
-                    .collect::<std::collections::BTreeSet<_>>()
-            } else {
-                std::collections::BTreeSet::new()
-            };
+            let optional_tool_round = optional_tool_round::OptionalToolRound::prepare(
+                &investigation_convergence,
+                self.verify_command.is_some(),
+                &self.registry,
+                &self.workspace,
+                provider_round.tools(),
+                &returned_tools,
+            );
             let result_projection_budget =
                 self.turn_result_projection_budget(context_budget_inspection, &returned_tools);
             if total_tools > 0 {
@@ -3857,20 +3769,16 @@ impl Agent {
             // gate auto-approves, with no declared write path in common, executes concurrently
             // under the same governor the pure path uses; the loop below then owns every call that
             // group did not take, in the order it always ran them.
-            if investigation_convergence.enabled() || self.verify_command.is_some() {
+            if optional_tool_round.tracked() {
                 candidate_workspace_baseline
-                    .capture_before(
-                        workspace_candidate_paths
-                            .iter()
-                            .map(std::path::PathBuf::as_path),
-                    )
+                    .capture_before(optional_tool_round.paths())
                     .await;
             }
             let batch = self.select_concurrent_deferred_batch(
                 &deferred,
                 argument_trust,
                 messages,
-                &unauthorized_candidate_changes,
+                optional_tool_round.excluded(),
             )?;
             if batch.len() > 1 {
                 let effecting_governor = iteron_sched::Governor::new(
@@ -3904,14 +3812,10 @@ impl Agent {
                 if results[idx].is_some() {
                     continue;
                 }
-                if unauthorized_candidate_changes.contains(&idx) {
+                if let Some(reason) = optional_tool_round.refusal(idx) {
                     let r = ToolResult {
                         tool_use_id: tu.id.clone(),
-                        content: if owner_evidence_blocked_changes.contains(&idx) {
-                            "refused: candidate revision requires one bounded stable-key owner search before another mutation".into()
-                        } else {
-                            "refused: candidate mutation is outside the exact path authorized by the typed RepairIntent receipt".into()
-                        },
+                        content: reason.into(),
                         is_error: true,
                         trust: Trust::Workspace,
                         latency_ms: 0,
@@ -4448,108 +4352,21 @@ impl Agent {
 
             submitted_turn.settle_tool_round(any_error);
 
-            let attempted_workspace_candidate_change = !workspace_candidate_changes.is_empty();
-            let completed_workspace_candidate_change =
-                workspace_candidate_changes.iter().any(|index| {
-                    results
-                        .get(*index)
-                        .and_then(Option::as_ref)
-                        .is_some_and(|result| !result.is_error)
-                });
-            let candidate_diff_state = if (investigation_convergence.enabled()
-                || self.verify_command.is_some())
-                && (attempted_workspace_candidate_change
-                    || (investigation_convergence.candidate_review_active() && total_tools > 0))
-            {
+            let candidate_diff_state = if optional_tool_round.requires_diff(
+                investigation_convergence.candidate_review_active(),
+                total_tools,
+            ) {
                 Some(candidate_workspace_baseline.diff_state().await)
             } else {
                 None
             };
-            let mutation_failure_signature = if investigation_convergence.enabled() {
-                workspace_candidate_changes
-                    .iter()
-                    .filter_map(|index| {
-                        let result = results.get(*index)?.as_ref()?;
-                        if !result.is_error {
-                            return None;
-                        }
-                        let tool = returned_tools.get(*index)?;
-                        Some(
-                            investigation_convergence::InvestigationConvergence::mutation_failure_signature(
-                                &tool.name,
-                                &result.content,
-                            ),
-                        )
-                    })
-                    .next_back()
-            } else {
-                None
-            };
-            // Targeted observations mark localization but do not consume a fixed round allowance;
-            // legitimate dependent evidence can remain multi-hop. Only a successful, tool-owned
-            // comparison result closes the evidence phase below.
-            let completed_targeted_observation =
-                workspace_targeted_observations.iter().any(|index| {
-                    results
-                        .get(*index)
-                        .and_then(Option::as_ref)
-                        .is_some_and(|result| !result.is_error)
-                });
-            let completed_localization_scopes = workspace_localization_observations
-                .iter()
-                .filter(|index| {
-                    results
-                        .get(**index)
-                        .and_then(Option::as_ref)
-                        .is_some_and(|result| !result.is_error)
-                })
-                .filter_map(|index| returned_tools.get(*index))
-                .filter_map(|tool| {
-                    investigation_convergence::InvestigationConvergence::localization_scope(
-                        &tool.name,
-                        &tool.input,
-                    )
-                })
-                .collect::<Vec<_>>();
-            // `next_back`, not `last`: the source is a `DoubleEndedIterator`, so taking the final
-            // element by walking the whole chain is work with no result to show for it.
-            let completed_repair_evidence = repair_evidence_submissions
-                .iter()
-                .filter_map(|index| results.get(*index).and_then(Option::as_ref))
-                .filter_map(iteron_tools::tool_result_repair_evidence)
-                .next_back();
-            let exact_localization_read = completed_localization_scopes
-                .iter()
-                .any(|scope| scope.starts_with("read_file:"));
-            let completed_stable_key_search = investigation_convergence.enabled() && workspace_localization_observations
-                .iter()
-                .filter_map(|index| {
-                    let tool = returned_tools.get(*index)?;
-                    let result = results.get(*index)?.as_ref()?;
-                    (!result.is_error).then_some((tool, result))
-                })
-                .any(|(tool, result)| {
-                    tool.name == "grep"
-                        && tool
-                            .input
-                            .get("pattern")
-                            .and_then(serde_json::Value::as_str)
-                            .is_some_and(|pattern| {
-                                investigation_convergence::InvestigationConvergence::stable_key_search_supports_owner(
-                                    pattern,
-                                    iteron_tools::tool_result_workspace_evidence(result),
-                                )
-                            })
-                });
-            let localization_request =
-                if investigation_convergence.enabled() && completed_repair_evidence.is_none() {
-                    investigation_convergence.observe_localization_scopes_for_round(
-                        completed_localization_scopes,
-                        !any_error && !attempted_workspace_candidate_change,
-                    )
-                } else {
-                    None
-                };
+            let optional_settlement = optional_tool_round.settle(
+                &mut investigation_convergence,
+                &returned_tools,
+                &results,
+                any_error,
+                candidate_diff_state,
+            );
             // `tool_search` mutates the session-local visible schema set. Do not reuse the
             // pre-search projection on the next model turn, or the tool it just exposed remains
             // impossible to call despite the successful discovery receipt.
@@ -4589,26 +4406,7 @@ impl Agent {
                 }
                 blocks.extend(projected.into_iter().take(remaining));
             }
-            let candidate_request = candidate_diff_state.and_then(|diff| {
-                investigation_convergence.observe_candidate_round(
-                    diff,
-                    attempted_workspace_candidate_change,
-                    mutation_failure_signature,
-                    exact_localization_read,
-                    completed_stable_key_search,
-                )
-            });
-            let convergence_request = candidate_request
-                .or_else(|| {
-                    investigation_convergence.observe_round(
-                        None,
-                        completed_targeted_observation,
-                        completed_repair_evidence,
-                        total_tools > 0,
-                    )
-                })
-                .or(localization_request);
-            if let Some(request) = convergence_request {
+            if let Some(request) = optional_settlement.request {
                 blocks.push(Block::Text {
                     text: format!(
                         "{} [budget: {} provider turn(s) remain]",
@@ -4629,7 +4427,7 @@ impl Agent {
             // A completed candidate-edit batch gives the configured independent gate strictly
             // newer workspace evidence. Run it now: a cheap failure is better repair evidence than
             // another provider review turn, while a pass can finish without a "done" round trip.
-            let automatic_verification = if completed_workspace_candidate_change
+            let automatic_verification = if optional_settlement.completed_change
                 && matches!(
                     candidate_diff_state,
                     Some(investigation_convergence::CandidateDiffState::Changed(_))

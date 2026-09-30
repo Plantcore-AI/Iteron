@@ -16,6 +16,8 @@ observation; it does not grant permission or acquire mutable ownership of anothe
 | `runtime/early_tool_executor.rs` | Physical streamed task, fair execution lock and governor permit owner | Already-admitted call plus immutable execution/hook/cancellation/publication scope → owned task and actual receipt; drop revokes task without claiming physical effect truth |
 | `runtime/deferred_tools.rs` | Pure leading batch selection | Actual registry metadata, immutable operation ceilings and bounded failed-action view → auto-authorized non-conflicting leading declarations; stops at a prompt/denial/repeat/unknown write set |
 | `runtime/ordered_tool_call.rs` | One actual ordered registry effect and observer lifetime owner | Already-permitted ToolIntent → actual WAL intent → captured registry future → physical terminal/receipt → bounded spill cleanup and post hook; frozen cancellation/events/publication ports, no Agent proxy |
+| `runtime/optional_tool_round.rs` | Optional completed-round classifications and candidate evidence | Explicit ticket strategy or existing `--verify` → tracked proposals/paths → actual result settlement; ordinary coding returns no tracker before registry scans; no tool permission, execution or added completion gate |
+| `queue_policy.rs` | Shared bounded frontend queue contract | Pinned SQ/EQ policy → runtime configuration and frontend wiring; the runtime does not import its App Server adapter |
 | `runtime/deferred_tool_batch.rs` | Actual admitted batch coordinator and ticket/result lifetime owner | Concrete journal/ledger/cache + frozen registry/hook/cancel/publication/projection ports; all intents before execution, physical settlement before publication status, all post observers before ToolEnd |
 | `runtime/deferred_batch_executor.rs` | Physical futures, governor permits and cancellation scope for an already-admitted batch | Accepts `ToolIntent`, immutable registry/governor/cancellation ports; returns declaration-ordered `DeferredToolReceipt` |
 | `runtime/artifact_publication.rs` | Trusted full-output publication adapter | `ToolOutputPublicationPort` receives repaired raw `ToolResult` and actual effect-known flag before spill/truncation |
@@ -81,8 +83,8 @@ into an unknown tool execution or automatically replay the tool.
 
 These modules are independent owners/adapters with explicit imports, not `Agent` implementation
 text fragments. Their size/import guards and source inventory run through the maintained xtask.
-The remaining `Agent` field aggregate and provider/ordered effect coordinator are unfinished
-architecture work; these extractions alone do not close the giant-runtime requirement. Final
+The remaining `Agent` field aggregate, request preparation and route/tool admission coordination
+are unfinished architecture work; these extractions alone do not close the giant-runtime requirement. Final
 acceptance needs the integrated default/optional profiles and actual concurrent tool, cancellation,
 raw-artifact, frontend and restart journeys.
 

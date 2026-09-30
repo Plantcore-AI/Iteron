@@ -22,6 +22,50 @@ struct Surface {
 
 const SURFACES: &[Surface] = &[
     Surface {
+        path: "crates/cli/src/queue_policy.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "shared SQ/EQ capacities and bounded overflow contract",
+            "immutable checkpoint policy decoded without a runtime dependency on frontend adapters",
+        ],
+        next_seams: &[
+            "priority reservation still reads existing tunables; no broader frozen-field claim",
+        ],
+    },
+    Surface {
+        path: "crates/cli/src/runtime/optional_tool_round.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "optional proposal classification, candidate path and completed-result state for one round",
+            "ticket-only localization and typed repair receipt projection; existing explicit verifier observes changed paths",
+        ],
+        next_seams: &[
+            "ordinary coding returns no tracker before registry/path scans; no tool admission or completion gate",
+        ],
+    },
+    Surface {
+        path: "crates/cli/src/tui/headless/connection.rs",
+        boundary: "cli-tui",
+        responsibilities: &[
+            "physical socket and immutable authenticated client negotiation",
+            "replay cursor, pending reply and independent bounded observation subscriptions",
+        ],
+        next_seams: &[
+            "explicit source/read/write ports; final real TCP and cancellation evidence pending",
+        ],
+    },
+    Surface {
+        path: "crates/cli/src/tui/headless/commands.rs",
+        boundary: "cli-tui",
+        responsibilities: &[
+            "run-local command receipts and bounded exact command replay",
+            "captured dispatch-gate and SQ control signal adapter",
+        ],
+        next_seams: &[
+            "aggregate retained-command byte budget is being completed before final source freeze",
+        ],
+    },
+    Surface {
         path: "crates/cli/src/runtime.rs",
         boundary: "cli-host",
         responsibilities: &[
