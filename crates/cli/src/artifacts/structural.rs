@@ -1,7 +1,7 @@
 //! Typed native diff manifests preserve only validated retained structural references.
 //! Arbitrary JSON and all free text continue through ordinary secret redaction.
 
-use super::{ArtifactStoreError, ArtifactTextSchema, DurableArtifactStore};
+use super::{ArtifactSchema, ArtifactStoreError, DurableArtifactStore};
 use iteron_protocol::client_artifact::ClientArtifactDescriptorV1;
 use iteron_tools::NativeMutationReceipt;
 use serde::Serialize;
@@ -66,9 +66,9 @@ impl DurableArtifactStore {
         let mut served = Vec::with_capacity(snapshots.len());
         for (path, before, after) in snapshots {
             let before = before
-                .map(|text| self.publish_text(source, ArtifactTextSchema::FileSnapshot, text, &[]))
+                .map(|text| self.publish_text(source, ArtifactSchema::FileSnapshot, text, &[]))
                 .transpose()?;
-            let after = self.publish_text(source, ArtifactTextSchema::FileSnapshot, after, &[])?;
+            let after = self.publish_text(source, ArtifactSchema::FileSnapshot, after, &[])?;
             dependencies.extend(before.iter().cloned());
             dependencies.push(after.clone());
             served.push(ServedDiffFile {
@@ -89,12 +89,6 @@ impl DurableArtifactStore {
         .map_err(|_| ArtifactStoreError::InvalidRequest)?;
         // This private publication gate verifies every exact descriptor against the live scoped
         // catalog and CAS, then binds actual private source handles under the same writer lease.
-        self.publish_served(
-            source,
-            ArtifactTextSchema::FileDiff,
-            &body,
-            &[],
-            &dependencies,
-        )
+        self.publish_served(source, ArtifactSchema::FileDiff, &body, &[], &dependencies)
     }
 }

@@ -88,6 +88,7 @@ fn materialization_overflow_remains_visible_and_does_not_grow_the_source_owner()
     let audit = iteron_ctx::ContextMaterializationAudit {
         segments: vec![source; iteron_ctx::MAX_CONTEXT_LEDGER_SEGMENTS + 5],
         dropped: 2,
+        ..Default::default()
     };
     owner.replace_materialized(&audit, 9);
     assert_eq!(

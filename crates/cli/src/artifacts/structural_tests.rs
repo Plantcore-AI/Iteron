@@ -1,7 +1,7 @@
 //! Real native receipts, retained structural references and quota dependency closure.
 
 use super::{Fixture, erase};
-use crate::artifacts::{ArtifactTextSchema, DurableArtifactStore, MAX_ARTIFACTS, storage};
+use crate::artifacts::{ArtifactSchema, DurableArtifactStore, MAX_ARTIFACTS, storage};
 use base64::Engine;
 use iteron_protocol::ToolUse;
 use iteron_protocol::client_artifact::{ClientArtifactCommandV1, ClientArtifactDescriptorV1};
@@ -153,7 +153,7 @@ async fn arbitrary_json_and_forged_descriptor_do_not_enter_the_structural_exempt
         serde_json::from_value(manifest["files"][0]["after"].clone()).unwrap();
     let untrusted_json = json!({"after":real,"basis":"guarded_native_commit", "api_key":"sk-proj-abcdefghijklmnopqrstuvwxyz0123456789"}).to_string();
     let generic = store
-        .publish_text(2, ArtifactTextSchema::ToolOutput, &untrusted_json, &[])
+        .publish_text(2, ArtifactSchema::ToolOutput, &untrusted_json, &[])
         .unwrap();
     let scrubbed = download(&fixture, &store, &generic);
     assert_eq!(
@@ -171,7 +171,7 @@ async fn arbitrary_json_and_forged_descriptor_do_not_enter_the_structural_exempt
         store
             .publish_served(
                 3,
-                ArtifactTextSchema::FileDiff,
+                ArtifactSchema::FileDiff,
                 "a forged structural manifest",
                 &[],
                 &[forged]
@@ -287,7 +287,7 @@ async fn quota_eviction_removes_every_manifest_that_depends_on_the_same_snapshot
         store
             .publish_text(
                 100 + index as u64,
-                ArtifactTextSchema::ToolOutput,
+                ArtifactSchema::ToolOutput,
                 &format!("independent bounded quota item {index}\n"),
                 &[],
             )
@@ -322,7 +322,7 @@ async fn quota_eviction_removes_every_manifest_that_depends_on_the_same_snapshot
         store
             .publish_served(
                 999,
-                ArtifactTextSchema::FileDiff,
+                ArtifactSchema::FileDiff,
                 "cannot restore a missing reference",
                 &[],
                 &[source_a]

@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use iteron_protocol::{RunId, Seq, TenantId, ToolResult, ToolUse};
 
-use crate::artifacts::{ArtifactTextSchema, DurableArtifactStore};
+use crate::artifacts::{ArtifactSchema, DurableArtifactStore};
 
 pub(crate) const PUBLICATION_UNAVAILABLE: &str =
     "Artifact retention is unavailable for this captured output";
@@ -92,7 +92,7 @@ impl CapturedOutputPublisher {
     fn publish_text(
         &self,
         sequence: u64,
-        schema: ArtifactTextSchema,
+        schema: ArtifactSchema,
         text: &str,
     ) -> Result<(), String> {
         self.retain_text(sequence, schema, text).map(|_| ())
@@ -101,7 +101,7 @@ impl CapturedOutputPublisher {
     fn retain_text(
         &self,
         sequence: u64,
-        schema: ArtifactTextSchema,
+        schema: ArtifactSchema,
         text: &str,
     ) -> Result<iteron_protocol::client_artifact::ClientArtifactDescriptorV1, String> {
         if sequence == 0 {
@@ -139,14 +139,14 @@ impl ToolOutputPublicationPort for CapturedOutputPublisher {
             return Err(PUBLICATION_UNAVAILABLE.into());
         }
         let source = *self.sources.get(&call.id).ok_or(PUBLICATION_UNAVAILABLE)?;
-        self.publish_text(source, ArtifactTextSchema::ToolOutput, &result.content)?;
+        self.publish_text(source, ArtifactSchema::ToolOutput, &result.content)?;
         // Capture the complete admitted replacement, rather than the line-capped UI diff.
         // Unknown or failed executions cannot prove that an edit landed.
         if effects_known
             && !result.is_error
             && let Some(diff) = admitted_replacement(call)
         {
-            self.publish_text(source, ArtifactTextSchema::CapturedReplacement, &diff)?;
+            self.publish_text(source, ArtifactSchema::CapturedReplacement, &diff)?;
         }
         Ok(())
     }
@@ -168,7 +168,12 @@ impl ToolOutputPublicationPort for CapturedOutputPublisher {
         unavailable |= self.publish(call, result, known).is_err();
         for output in &captured.captured_outputs {
             let schema = match output.schema.as_str() {
-                "iteron.mcp-result.v1" => ArtifactTextSchema::McpResult,
+                "iteron.mcp-result.v1" => ArtifactSchema::McpResult,
+                "iteron.browser-observation.v1"
+                    if matches!(call.name.as_str(), "browser" | "computer") =>
+                {
+                    ArtifactSchema::BrowserObservation
+                }
                 _ => {
                     unavailable = true;
                     continue;
@@ -262,7 +267,7 @@ impl super::Agent {
             .output_publisher(BTreeMap::new())
             .publish_text(
                 source.0,
-                ArtifactTextSchema::FinalAnswer,
+                ArtifactSchema::FinalAnswer,
                 &self.run_assistant_text,
             )
             .is_err()

@@ -1,6 +1,6 @@
 //! Sealed, content-free physical request manifests. Only this constructor computes commitments;
 //! free text and the retained body are scrubbed. Raw endpoints and authentication are absent.
-use super::{ArtifactStoreError, ArtifactTextSchema, DurableArtifactStore};
+use super::{ArtifactSchema, ArtifactStoreError, DurableArtifactStore};
 use iteron_ctx::{ContextSegmentEvidence, MAX_CONTEXT_LEDGER_SEGMENTS};
 use iteron_kernel::effects::EffectTicket;
 use iteron_protocol::client_artifact::ClientArtifactDescriptorV1;
@@ -164,7 +164,7 @@ impl DurableArtifactStore {
             }
             chunks.push(self.publish_served(
                 scope.source_event_seq.0,
-                ArtifactTextSchema::ProviderRequestBody,
+                ArtifactSchema::ProviderRequestBody,
                 &remaining[..end],
                 &[],
                 &[],
@@ -215,7 +215,7 @@ impl DurableArtifactStore {
         // closed enums/numbers, and already scrubbed route text. Generic JSON receives no bypass.
         self.publish_served(
             scope.source_event_seq.0,
-            ArtifactTextSchema::ProviderRequestManifest,
+            ArtifactSchema::ProviderRequestManifest,
             &text,
             &[],
             &chunks,
@@ -236,7 +236,7 @@ impl DurableArtifactStore {
         .map_err(|_| ArtifactStoreError::Corrupt)?;
         self.publish_served(
             scope.source_event_seq.0,
-            ArtifactTextSchema::ProviderRequestManifest,
+            ArtifactSchema::ProviderRequestManifest,
             &text,
             &[],
             std::slice::from_ref(prepared),
@@ -260,7 +260,7 @@ impl DurableArtifactStore {
         .map_err(|_| ArtifactStoreError::Corrupt)?;
         self.publish_served(
             scope.source_event_seq.0,
-            ArtifactTextSchema::ProviderRequestManifest,
+            ArtifactSchema::ProviderRequestManifest,
             &text,
             &[],
             &[],

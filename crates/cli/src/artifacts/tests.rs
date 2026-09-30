@@ -1,6 +1,8 @@
 use super::*;
 use iteron_protocol::{Effort, Event, EventKind, TurnId};
 
+#[path = "captured_image_tests.rs"]
+mod captured_image_tests;
 #[path = "structural_tests.rs"]
 mod structural_tests;
 
@@ -91,7 +93,7 @@ fn complete_scrubbed_bytes_are_downloadable_after_owner_restart_with_exact_ident
     let served = iteron_record::redact::scrub(&full);
     let descriptor = fixture
         .store()
-        .publish_text(37, ArtifactTextSchema::ToolOutput, &full, &[])
+        .publish_text(37, ArtifactSchema::ToolOutput, &full, &[])
         .unwrap();
     assert_eq!(descriptor.bytes, served.len() as u64);
     assert!(descriptor.complete);
@@ -162,7 +164,7 @@ fn scope_locators_offsets_and_forged_sources_fail_closed() {
     );
     let store = fixture.store();
     let descriptor = store
-        .publish_text(1, ArtifactTextSchema::ToolOutput, "safe", &[])
+        .publish_text(1, ArtifactSchema::ToolOutput, "safe", &[])
         .unwrap();
     for (thread, id, offset, max_bytes) in [
         (
@@ -196,14 +198,14 @@ fn scope_locators_offsets_and_forged_sources_fail_closed() {
     };
     assert!(
         store
-            .publish_text(2, ArtifactTextSchema::ToolOutput, "derived", &[source])
+            .publish_text(2, ArtifactSchema::ToolOutput, "derived", &[source])
             .is_err()
     );
     assert!(
         store
             .publish_text(
                 3,
-                ArtifactTextSchema::ToolOutput,
+                ArtifactSchema::ToolOutput,
                 &"x".repeat(MAX_PRIVATE_CONTENT_BYTES + 1),
                 &[]
             )
@@ -218,7 +220,7 @@ fn incomplete_publication_and_release_intents_recover_without_republishing_stale
     let discarded = store
         .publish_text(
             1,
-            ArtifactTextSchema::ToolOutput,
+            ArtifactSchema::ToolOutput,
             "interrupted publication",
             &[],
         )
@@ -246,7 +248,7 @@ fn incomplete_publication_and_release_intents_recover_without_republishing_stale
     );
     let fresh = fixture
         .store()
-        .publish_text(2, ArtifactTextSchema::ToolOutput, "new publication", &[])
+        .publish_text(2, ArtifactSchema::ToolOutput, "new publication", &[])
         .unwrap();
     {
         let file = storage::ManifestFile::acquire(&store, false)
@@ -261,7 +263,7 @@ fn incomplete_publication_and_release_intents_recover_without_republishing_stale
         file.write(&manifest).unwrap();
     }
     store
-        .publish_text(3, ArtifactTextSchema::ToolOutput, "after release", &[])
+        .publish_text(3, ArtifactSchema::ToolOutput, "after release", &[])
         .unwrap();
     for id in [discarded.artifact_id, fresh.artifact_id] {
         assert!(
@@ -318,7 +320,7 @@ fn real_source_revocation_reaches_scrubbed_public_derivative() {
     let artifact = store
         .publish_text(
             8,
-            ArtifactTextSchema::ToolOutput,
+            ArtifactSchema::ToolOutput,
             raw,
             &[PrivateContentSource {
                 owner: RunId("owner".into()),
@@ -358,7 +360,7 @@ fn verified_session_erasure_removes_exact_public_catalog_and_revokes_restart_dow
     let fixture = Fixture::new();
     fixture
         .store()
-        .publish_text(1, ArtifactTextSchema::FinalAnswer, "owned answer", &[])
+        .publish_text(1, ArtifactSchema::FinalAnswer, "owned answer", &[])
         .unwrap();
     let receipt = erase(
         &fixture,
@@ -399,12 +401,12 @@ fn symlink_namespace_and_manifest_cannot_redirect_public_artifact_storage() {
     .unwrap();
     assert!(
         store
-            .publish_text(1, ArtifactTextSchema::ToolOutput, "safe", &[])
+            .publish_text(1, ArtifactSchema::ToolOutput, "safe", &[])
             .is_err()
     );
     std::fs::remove_file(fixture.0.join("runs/.public-artifacts")).unwrap();
     store
-        .publish_text(1, ArtifactTextSchema::ToolOutput, "safe", &[])
+        .publish_text(1, ArtifactSchema::ToolOutput, "safe", &[])
         .unwrap();
     let file = storage::ManifestFile::acquire(&store, false)
         .unwrap()
@@ -439,15 +441,10 @@ fn identical_bytes_keep_first_schema_source_and_retained_identity() {
     let fixture = Fixture::new();
     let store = fixture.store();
     let first = store
-        .publish_text(7, ArtifactTextSchema::ToolOutput, "same served bytes", &[])
+        .publish_text(7, ArtifactSchema::ToolOutput, "same served bytes", &[])
         .unwrap();
     let later = store
-        .publish_text(
-            91,
-            ArtifactTextSchema::FinalAnswer,
-            "same served bytes",
-            &[],
-        )
+        .publish_text(91, ArtifactSchema::FinalAnswer, "same served bytes", &[])
         .unwrap();
     assert_eq!(later, first);
     assert_eq!(later.schema, "iteron.tool-output.v1");
@@ -465,7 +462,7 @@ fn identical_bytes_keep_first_schema_source_and_retained_identity() {
     assert_eq!(listing["artifacts"][0]["source_event_seq"], 7);
     assert!(
         store
-            .publish_text(0, ArtifactTextSchema::ToolOutput, "unknown origin", &[])
+            .publish_text(0, ArtifactSchema::ToolOutput, "unknown origin", &[])
             .is_err()
     );
 

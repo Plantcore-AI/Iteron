@@ -1,8 +1,10 @@
 //! Durable, scoped public artifacts. Runtime producers and public clients share this owner.
 //!
-//! Public identity names the scrubbed bytes actually served. Content handles participate in the
+//! Public identity names the exact served bytes: scrubbed text or captured binary data.
+//! Content handles participate in the
 //! record owner's erasure and source-revocation graph. No client-supplied file locator is admitted.
 
+mod captured_image;
 pub(crate) mod request_manifest;
 mod storage;
 mod structural;
@@ -66,7 +68,7 @@ impl ArtifactReadScope {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum ArtifactTextSchema {
+pub(crate) enum ArtifactSchema {
     ToolOutput,
     McpResult,
     FinalAnswer,
@@ -75,9 +77,12 @@ pub(crate) enum ArtifactTextSchema {
     CapturedReplacement,
     ProviderRequestBody,
     ProviderRequestManifest,
+    ViewportImage,
+    ViewportImageObservation,
+    BrowserObservation,
 }
 
-impl ArtifactTextSchema {
+impl ArtifactSchema {
     fn schema(self) -> &'static str {
         match self {
             Self::ToolOutput => "iteron.tool-output.v1",
@@ -88,12 +93,29 @@ impl ArtifactTextSchema {
             Self::CapturedReplacement => "iteron.captured-replacement.v1",
             Self::ProviderRequestBody => "iteron.provider-request-body.v1",
             Self::ProviderRequestManifest => "iteron.provider-request-manifest.v1",
+            Self::ViewportImage => "iteron.viewport-image.v1",
+            Self::ViewportImageObservation => "iteron.viewport-image-observation.v1",
+            Self::BrowserObservation => "iteron.browser-observation.v1",
+        }
+    }
+
+    fn mime_type(self) -> &'static str {
+        match self {
+            Self::ViewportImage => "image/png",
+            _ => "text/plain; charset=utf-8",
         }
     }
 
     fn namespace(self) -> (PrivateContentNamespace, PrivateContentClass) {
         match self {
-            Self::ToolOutput | Self::McpResult => (
+            Self::ToolOutput
+            | Self::McpResult
+            | Self::ViewportImage
+            | Self::ViewportImageObservation => (
+                PrivateContentNamespace::ToolArtifact,
+                PrivateContentClass::ToolOutput,
+            ),
+            Self::BrowserObservation => (
                 PrivateContentNamespace::ToolArtifact,
                 PrivateContentClass::ToolOutput,
             ),
@@ -172,7 +194,7 @@ struct Entry {
 #[serde(deny_unknown_fields)]
 struct ContentRef {
     sequence: u64,
-    schema: ArtifactTextSchema,
+    schema: ArtifactSchema,
     handle: PrivateContentHandle,
 }
 
@@ -246,7 +268,7 @@ impl DurableArtifactStore {
 
     fn private(
         &self,
-        schema: ArtifactTextSchema,
+        schema: ArtifactSchema,
     ) -> Result<PrivateContentDerivativeStore, ArtifactStoreError> {
         let (namespace, class) = schema.namespace();
         PrivateContentDerivativeStore::open_registered(
@@ -285,7 +307,7 @@ impl DurableArtifactStore {
                 || entry.descriptor.schema != entry.content.schema.schema()
                 || entry.descriptor.required_capability != Capability::ReadOnly
                 || !entry.descriptor.complete
-                || entry.descriptor.mime_type != "text/plain; charset=utf-8"
+                || entry.descriptor.mime_type != entry.content.schema.mime_type()
             {
                 return Err(ArtifactStoreError::Corrupt);
             }
@@ -340,12 +362,15 @@ impl DurableArtifactStore {
     pub(crate) fn publish_text(
         &self,
         source_event_seq: u64,
-        schema: ArtifactTextSchema,
+        schema: ArtifactSchema,
         text: &str,
         sources: &[PrivateContentSource],
     ) -> Result<ClientArtifactDescriptorV1, ArtifactStoreError> {
         if text.len() > MAX_PRIVATE_CONTENT_BYTES || sources.len() > MAX_SOURCES {
             return Err(ArtifactStoreError::Capacity);
+        }
+        if matches!(schema, ArtifactSchema::ViewportImage) {
+            return Err(ArtifactStoreError::InvalidRequest);
         }
         let served = iteron_record::redact::scrub(text);
         self.publish_served(source_event_seq, schema, &served, sources, &[])
@@ -354,8 +379,28 @@ impl DurableArtifactStore {
     fn publish_served(
         &self,
         source_event_seq: u64,
-        schema: ArtifactTextSchema,
+        schema: ArtifactSchema,
         served: &str,
+        sources: &[PrivateContentSource],
+        dependencies: &[ClientArtifactDescriptorV1],
+    ) -> Result<ClientArtifactDescriptorV1, ArtifactStoreError> {
+        if matches!(schema, ArtifactSchema::ViewportImage) {
+            return Err(ArtifactStoreError::InvalidRequest);
+        }
+        self.publish_bytes(
+            source_event_seq,
+            schema,
+            served.as_bytes(),
+            sources,
+            dependencies,
+        )
+    }
+
+    fn publish_bytes(
+        &self,
+        source_event_seq: u64,
+        schema: ArtifactSchema,
+        served: &[u8],
         sources: &[PrivateContentSource],
         dependencies: &[ClientArtifactDescriptorV1],
     ) -> Result<ClientArtifactDescriptorV1, ArtifactStoreError> {
@@ -367,7 +412,7 @@ impl DurableArtifactStore {
         {
             return Err(ArtifactStoreError::Capacity);
         }
-        let artifact_id = hex::encode(Sha256::digest(served.as_bytes()));
+        let artifact_id = hex::encode(Sha256::digest(served));
         let file =
             storage::ManifestFile::acquire(self, true)?.ok_or(ArtifactStoreError::Unavailable)?;
         let mut manifest = file.read()?.unwrap_or_else(|| self.empty_manifest());
@@ -445,20 +490,20 @@ impl DurableArtifactStore {
         file.write(&manifest)?;
         let private = self.private(schema)?;
         let handle = private
-            .put_derived(Seq(sequence), served.as_bytes(), &private_sources)
+            .put_derived(Seq(sequence), served, &private_sources)
             .map_err(|_| ArtifactStoreError::Unavailable)?;
         if handle != reference.handle
             || private
                 .read_at(Seq(sequence), &handle)
                 .map_err(|_| ArtifactStoreError::Corrupt)?
-                != served.as_bytes()
+                != served
         {
             return Err(ArtifactStoreError::Corrupt);
         }
         let descriptor = ClientArtifactDescriptorV1 {
             artifact_id,
             schema: schema.schema().into(),
-            mime_type: "text/plain; charset=utf-8".into(),
+            mime_type: schema.mime_type().into(),
             bytes: served.len() as u64,
             complete: true,
             required_capability: Capability::ReadOnly,
