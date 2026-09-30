@@ -71,6 +71,7 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 [dev-dependencies]
+ed25519-dalek = { workspace = true }
 # Tests pin a registry-driven resolved tunable set rather than inventing a snapshot.
 iteron-record = { path = "../record", features = ["test-fixtures"] }
 # CLI unit tests run under libtest, which cannot self-exec the production helper entry point.

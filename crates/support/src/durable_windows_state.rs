@@ -469,6 +469,79 @@ fn flush_directory(file: &File) -> Result<(), WindowsStateError> {
     Ok(())
 }
 
+/// Publish an exact host-derived package filename without adding metadata files to its signed tree.
+/// Create-new semantics preserve an existing file. Empty package files are legitimate. A failed
+/// write/flush after creation reports unknown; callers must not confirm a registry reference.
+pub fn publish_private_file(path: &Path, bytes: &[u8]) -> Result<(), WindowsStateError> {
+    publish_private_file_with_barrier(path, bytes, flush_directory)
+}
+
+fn publish_private_file_with_barrier(
+    path: &Path,
+    bytes: &[u8],
+    barrier: fn(&File) -> Result<(), WindowsStateError>,
+) -> Result<(), WindowsStateError> {
+    if bytes.len() > 8 * 1024 * 1024 {
+        return Err(WindowsStateError::Unavailable);
+    }
+    let identity = Identity::current()?;
+    let parent = path.parent().ok_or(WindowsStateError::Unavailable)?;
+    let name = path.file_name().ok_or(WindowsStateError::Unavailable)?;
+    let pinned = pin_directory_chain(parent)?;
+    let directory = pinned.last().ok_or(WindowsStateError::Unavailable)?;
+    identity.validate_handle(directory, true)?;
+    let mut file = open_file_relative(directory, &identity, name, FILE_CREATE, false, 0)?
+        .ok_or(WindowsStateError::Unavailable)?;
+    file.write_all(bytes)
+        .and_then(|_| file.sync_all())
+        .map_err(|_| WindowsStateError::OutcomeUnknown)?;
+    barrier(directory).map_err(|_| WindowsStateError::OutcomeUnknown)?;
+    Ok(())
+}
+
+/// Synchronize the real private directory namespace through retained non-reparse ancestor handles.
+pub fn sync_private_directory(path: &Path) -> Result<(), WindowsStateError> {
+    let identity = Identity::current()?;
+    let pinned = pin_directory_chain(path)?;
+    let directory = pinned.last().ok_or(WindowsStateError::Unavailable)?;
+    identity.validate_handle(directory, true)?;
+    flush_directory(directory)
+}
+
+/// Confirm an existing verified package file before a new registry generation references it.
+pub fn sync_private_file(path: &Path) -> Result<(), WindowsStateError> {
+    let identity = Identity::current()?;
+    let pinned = pin_directory_chain(path.parent().ok_or(WindowsStateError::Unavailable)?)?;
+    let parent = pinned.last().ok_or(WindowsStateError::Unavailable)?;
+    identity.validate_handle(parent, true)?;
+    let file = open_file_relative(
+        parent,
+        &identity,
+        path.file_name().ok_or(WindowsStateError::Unavailable)?,
+        FILE_OPEN,
+        false,
+        FILE_SHARE_READ,
+    )?
+    .ok_or(WindowsStateError::Unavailable)?;
+    if file
+        .metadata()
+        .map_err(|_| WindowsStateError::Unavailable)?
+        .len()
+        > 8 * 1024 * 1024
+    {
+        return Err(WindowsStateError::Unavailable);
+    }
+    file.sync_all()
+        .map_err(|_| WindowsStateError::OutcomeUnknown)
+}
+
+/// Flush a host-derived parent link through non-reparse pinned handles. This does not rewrite ACLs
+/// or grant write access: the native handle must already authorize the real namespace barrier.
+pub fn sync_directory_namespace(path: &Path) -> Result<(), WindowsStateError> {
+    let pinned = pin_directory_chain(path)?;
+    flush_directory(pinned.last().ok_or(WindowsStateError::Unavailable)?)
+}
+
 /// One private namespace and one writer lease. Names are fixed by a trusted adapter, never by a
 /// model or workspace payload; snapshots and their schema/CAS remain owned by the domain caller.
 pub struct WindowsSnapshotStore {
@@ -673,7 +746,50 @@ fn open_relative(
     share: u32,
 ) -> Result<Option<File>, WindowsStateError> {
     component(name)?;
-    let mut units = name.encode_utf16().collect::<Vec<_>>();
+    open_file_relative(
+        directory,
+        identity,
+        std::ffi::OsStr::new(name),
+        disposition,
+        delete,
+        share,
+    )
+}
+
+fn open_file_relative(
+    directory: &File,
+    identity: &Identity,
+    name: &std::ffi::OsStr,
+    disposition: u32,
+    delete: bool,
+    share: u32,
+) -> Result<Option<File>, WindowsStateError> {
+    let mut units = name.encode_wide().collect::<Vec<_>>();
+    // A single Win32 filename; aliases/ADS/device syntax cannot escape its pinned parent.
+    if units.is_empty()
+        || units.len() > 255
+        || units
+            .iter()
+            .any(|unit| *unit < 32 || matches!(*unit, 34 | 42 | 47 | 58 | 60 | 62 | 63 | 92 | 124))
+        || units.last().is_some_and(|unit| matches!(*unit, 32 | 46))
+        || name == std::ffi::OsStr::new(".")
+        || name == std::ffi::OsStr::new("..")
+    {
+        return Err(WindowsStateError::Unavailable);
+    }
+    let text = name.to_str().ok_or(WindowsStateError::Unavailable)?;
+    let base = text
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+    if matches!(base.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (base.len() == 4
+            && (base.starts_with("COM") || base.starts_with("LPT"))
+            && matches!(base.as_bytes()[3], b'1'..=b'9'))
+    {
+        return Err(WindowsStateError::Unavailable);
+    }
     let unicode = UNICODE_STRING {
         Length: (units.len() * 2) as u16,
         MaximumLength: (units.len() * 2) as u16,
@@ -838,5 +954,44 @@ mod directory_barrier_tests {
         // native barriers; the failed prior attempt never became a success or a fresh namespace.
         super::provision_private_directory(&path).unwrap();
         std::fs::remove_dir(path).unwrap();
+    }
+    #[test]
+    fn exact_package_files_are_create_new_and_failed_namespace_barrier_is_unknown() {
+        let directory =
+            std::env::temp_dir().join(format!("iteron-package-file-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        super::provision_private_directory(&directory).unwrap();
+        let exact = directory.join("SKILL.md");
+        super::publish_private_file(&exact, b"body").unwrap();
+        assert_eq!(std::fs::read(&exact).unwrap(), b"body");
+        assert!(super::publish_private_file(&exact, b"replacement").is_err());
+        assert_eq!(std::fs::read(&exact).unwrap(), b"body");
+        super::publish_private_file(&directory.join("empty"), b"").unwrap();
+        super::publish_private_file(&directory.join("notes-中文.md"), b"unicode filename").unwrap();
+        for name in [
+            "CON",
+            "NUL.txt",
+            "nested/file",
+            "alternate:stream",
+            "trailing.",
+        ] {
+            assert!(super::publish_private_file(&directory.join(name), b"unreachable").is_err());
+        }
+        let lost = directory.join("signature.json");
+        fn refuse(_directory: &File) -> Result<(), WindowsStateError> {
+            Err(WindowsStateError::OutcomeUnknown)
+        }
+        assert_eq!(
+            super::publish_private_file_with_barrier(&lost, b"signed", refuse),
+            Err(WindowsStateError::OutcomeUnknown)
+        );
+        assert_eq!(std::fs::read(&lost).unwrap(), b"signed");
+        super::sync_private_directory(&directory).unwrap();
+        assert_eq!(
+            std::fs::read_dir(&directory).unwrap().count(),
+            4,
+            "no .json suffix, lock or sidecar invented in signed tree"
+        );
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }

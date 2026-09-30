@@ -18,7 +18,12 @@ use crate::{Manifest, Version, valid_name};
 mod prepared;
 pub use prepared::PreparedPluginInstall;
 mod verification;
-use verification::*;
+use verification::{
+    MAX_PACKAGE_FILES, VerificationCacheEntry, VerifiedPackage, metadata_digest, read_bounded,
+    verify_package,
+};
+mod storage;
+use storage::{copy_tree, ensure_directory_chain, sync_dir, sync_existing_tree, write_new_private};
 
 const MAX_REGISTRY_BYTES: usize = 4 * 1024 * 1024;
 const MAX_REGISTRY_GENERATIONS: usize = 4096;
@@ -155,7 +160,7 @@ impl PluginStore {
             return Err(PackageError::MalformedKey(key_id.to_owned()));
         }
         let dir = self.root.join("trusted-keys");
-        fs::create_dir_all(&dir)?;
+        ensure_directory_chain(&dir)?;
         let path = dir.join(format!("{key_id}.pub"));
         if let Ok(existing) = read_bounded(&path, 64) {
             return if existing == public_key {
@@ -338,6 +343,7 @@ impl PluginStore {
             .take()
             .ok_or_else(|| PackageError::NoRollback(name.to_owned()))?;
         self.verify_cached(name, &target)?;
+        sync_existing_tree(&self.cache_path(name, &target))?;
         installed.current = target.clone();
         self.commit_state(state)?;
         Ok(target)
@@ -451,7 +457,7 @@ impl PluginStore {
     ) -> Result<(), PackageError> {
         let path = self.verification_cache_path(name, artifact);
         let parent = path.parent().expect("verification cache path has parent");
-        fs::create_dir_all(parent)?;
+        ensure_directory_chain(parent)?;
         let bytes = serde_json::to_vec(&VerificationCacheEntry::from_verified(verified, metadata))
             .map_err(|error| PackageError::InvalidPackage {
                 path: path.clone(),
@@ -495,12 +501,13 @@ impl PluginStore {
         let destination = self.cache_path(name, artifact);
         if destination.exists() {
             let verified = self.verify_cached(name, artifact)?;
+            sync_existing_tree(&destination)?;
             let metadata = metadata_digest(&destination)?;
             self.write_verification_cache(name, artifact, &verified, metadata)?;
             return Ok(());
         }
         let parent = destination.parent().expect("cache path has parent");
-        fs::create_dir_all(parent)?;
+        ensure_directory_chain(parent)?;
         let temp = parent.join(format!(
             ".install-{}-{}",
             std::process::id(),
@@ -512,10 +519,14 @@ impl PluginStore {
                 reason: "stale private installation directory exists".into(),
             });
         }
-        fs::create_dir(&temp)?;
+        ensure_directory_chain(&temp)?;
         copy_tree(source, &temp)?;
         let copied = verify_package(&temp, |key_id| self.read_key(key_id))?;
-        if copied.digest != artifact.digest {
+        if copied.manifest.plugin != name
+            || copied.manifest.version != artifact.version
+            || copied.key_id != artifact.key_id
+            || copied.digest != artifact.digest
+        {
             return Err(PackageError::InvalidPackage {
                 path: temp,
                 reason: "package changed while it was being installed".into(),
@@ -602,7 +613,7 @@ impl PluginStore {
             return Err(PackageError::MalformedRegistry);
         }
         let dir = self.root.join("state");
-        fs::create_dir_all(&dir)?;
+        ensure_directory_chain(&dir)?;
         let path = dir.join(format!("registry-{:016}.json", state.generation));
         write_new_private(&path, &bytes)?;
         sync_dir(&dir)?;
@@ -655,6 +666,9 @@ impl PluginStore {
 
 #[cfg(test)]
 mod tests {
+    use super::verification::{
+        DOMAIN, MANIFEST_FILE, SIGNATURE_FILE, SignatureEnvelope, tree_digest,
+    };
     use super::*;
     use base64::Engine as _;
     use ed25519_dalek::{Signer as _, SigningKey};
@@ -703,6 +717,86 @@ mod tests {
         )
         .unwrap();
         path
+    }
+
+    #[test]
+    fn prepared_receipt_pins_store_source_and_exact_signed_artifact() {
+        let root = temp("prepared");
+        let store = PluginStore::new(root.join("store"));
+        let other = PluginStore::new(root.join("other"));
+        let key = SigningKey::from_bytes(&[21; 32]);
+        for target in [&store, &other] {
+            target
+                .trust_key("publisher", key.verifying_key().as_bytes())
+                .unwrap();
+        }
+        let source = package(&root, "review", Version(1, 0, 0), &key);
+        let receipt = store.prepare_install(&source).unwrap();
+        assert!(other.install_prepared(&receipt).is_err());
+        assert!(other.list().unwrap().is_empty());
+        let artifact = store.install_prepared(&receipt).unwrap();
+        assert_eq!(&artifact, receipt.artifact());
+        assert_eq!(
+            PluginStore::new(store.root())
+                .runtime_packages()
+                .unwrap()
+                .active[0]
+                .manifest
+                .version,
+            Version(1, 0, 0)
+        );
+        let v2 = package(&root, "review", Version(2, 0, 0), &key);
+        let receipt2 = store.prepare_install(&v2).unwrap();
+        fs::write(v2.join("skills/review.md"), "substituted").unwrap();
+        assert!(store.install_prepared(&receipt2).is_err());
+        assert_eq!(store.list().unwrap()[0].1.current, artifact);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn signature_only_source_race_cannot_publish_another_trusted_publisher() {
+        let root = temp("prepared-signature-race");
+        let store = PluginStore::new(root.join("store"));
+        let original = SigningKey::from_bytes(&[22; 32]);
+        let substituted = SigningKey::from_bytes(&[23; 32]);
+        store
+            .trust_key("publisher", original.verifying_key().as_bytes())
+            .unwrap();
+        store
+            .trust_key("other-publisher", substituted.verifying_key().as_bytes())
+            .unwrap();
+        let source = package(&root, "review", Version(1, 0, 0), &original);
+        let receipt = store.prepare_install(&source).unwrap();
+        // This is the real copy boundary after source verification, with only signature.json
+        // changed. The signature file is deliberately absent from the signed tree digest.
+        let mut message = DOMAIN.to_vec();
+        message.extend_from_slice(&tree_digest(&source).unwrap());
+        fs::write(
+            source.join(SIGNATURE_FILE),
+            serde_json::to_vec(&SignatureEnvelope {
+                key_id: "other-publisher".into(),
+                signature: base64::engine::general_purpose::STANDARD
+                    .encode(substituted.sign(&message).to_bytes()),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            store.verify_source(&source).unwrap().digest,
+            receipt.artifact().digest
+        );
+        assert!(
+            store
+                .cache_verified(&source, receipt.plugin(), receipt.artifact())
+                .is_err()
+        );
+        assert!(
+            !store
+                .cache_path(receipt.plugin(), receipt.artifact())
+                .exists()
+        );
+        assert!(store.list().unwrap().is_empty());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
