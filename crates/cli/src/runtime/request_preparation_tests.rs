@@ -321,3 +321,143 @@ fn actual_route_rebind_rechecks_output_headroom_and_keeps_original_policy_reques
     drop(agent);
     let _ = std::fs::remove_dir_all(directory);
 }
+
+struct RecoveryObservedProvider {
+    calls: std::sync::atomic::AtomicUsize,
+}
+#[async_trait::async_trait]
+impl Provider for RecoveryObservedProvider {
+    fn physical_output_token_ceiling(
+        &self,
+        budget: iteron_provider::output_ceiling::ProviderOutputBudget<'_>,
+    ) -> Result<Option<u32>, ProviderError> {
+        Ok(Some(budget.requested_max_tokens))
+    }
+    async fn turn(
+        &self,
+        _: &TurnRequest,
+        _: &mut (dyn FnMut(StreamItem) + Send),
+    ) -> Result<TurnResult, ProviderError> {
+        panic!("recovery must cross actual observed serialization")
+    }
+    async fn turn_observed(
+        &self,
+        request: &TurnRequest,
+        on_item: &mut (dyn FnMut(StreamItem) + Send),
+        observer: &dyn iteron_provider::request_capture::ProviderRequestObserver,
+    ) -> Result<TurnResult, ProviderError> {
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "model":request.model,"messages":request.messages,"system":request.system,
+            "max_tokens":request.max_tokens,
+        }))
+        .unwrap();
+        observer
+            .prepared(iteron_provider::request_capture::ProviderWireRequest {
+                adapter: iteron_provider::AdapterKind::OpenAiCompatibleChat,
+                method: "POST",
+                endpoint: "https://request-recovery-fixture.invalid/v1",
+                content_type: "application/json",
+                body: &bytes,
+                serialized_output_tokens: request.max_tokens,
+                request,
+            })
+            .map_err(|_| ProviderError::RequestCaptureRefusedBeforeDispatch)?;
+        observer
+            .dispatching()
+            .map_err(|_| ProviderError::RequestCaptureRefusedBeforeDispatch)?;
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let text = "Preserved operator task and current bounded continuation.";
+        on_item(StreamItem::TextDelta(text.into()));
+        Ok(TurnResult {
+            blocks: vec![Block::Text { text: text.into() }],
+            stop_reason: iteron_protocol::StopReason::EndTurn,
+            usage: iteron_provider::UsageReport::complete(iteron_protocol::Usage::default()),
+        })
+    }
+}
+
+#[tokio::test]
+async fn real_recovery_summary_cannot_replace_transcript_after_its_writer_refuses() {
+    let (directory, mut agent, messages) = fixture();
+    let provider = Arc::new(RecoveryObservedProvider {
+        calls: std::sync::atomic::AtomicUsize::new(0),
+    });
+    agent.provider = provider.clone();
+    agent
+        .transcript_state
+        .replace_restored(Some(messages.clone()));
+    agent.fail_next_durable_append = Some(DurableAppendFault::Compaction);
+    assert!(matches!(agent.run("").await, Err(KernelError::Record(_))));
+    assert_eq!(provider.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(
+        agent.transcript_state.working().as_ref().unwrap(),
+        &messages
+    );
+    assert!(!agent.compaction_state.compacted());
+    let run = agent.rollout.run_id().clone();
+    let store = agent.rollout.path().parent().unwrap().to_path_buf();
+    drop(agent);
+    let reopened = Rollout::open_existing(&store, &run, TenantId::default()).unwrap();
+    let rows = iteron_record::replay(reopened.path()).unwrap();
+    assert!(
+        !rows
+            .iter()
+            .any(|event| matches!(event.kind, EventKind::Compaction { .. }))
+    );
+    assert_eq!(
+        rows.iter()
+            .filter(
+                |event| matches!(&event.kind,EventKind::EffectDone{tool,..} if tool=="provider")
+            )
+            .count(),
+        1
+    );
+    drop(reopened);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
+async fn real_recovery_publishes_seed_before_the_main_request_and_retains_it_on_reopen() {
+    let (directory, mut agent, messages) = fixture();
+    let provider = Arc::new(RecoveryObservedProvider {
+        calls: std::sync::atomic::AtomicUsize::new(0),
+    });
+    agent.provider = provider.clone();
+    agent.transcript_state.replace_restored(Some(messages));
+    assert_eq!(agent.run("").await.unwrap(), crate::runtime::Outcome::Done);
+    assert_eq!(provider.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert!(agent.compaction_state.compacted());
+    let run = agent.rollout.run_id().clone();
+    let store = agent.rollout.path().parent().unwrap().to_path_buf();
+    drop(agent);
+    let reopened = Rollout::open_existing(&store, &run, TenantId::default()).unwrap();
+    let rows = iteron_record::replay(reopened.path()).unwrap();
+    let compacted = rows
+        .iter()
+        .position(|event| matches!(event.kind, EventKind::Compaction { .. }))
+        .unwrap();
+    let provider_intents = rows
+        .iter()
+        .enumerate()
+        .filter_map(|(index, event)| {
+            matches!(&event.kind,EventKind::EffectIntent{tool,..} if tool=="provider")
+                .then_some(index)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(provider_intents.len(), 2);
+    assert!(provider_intents[0] < compacted && compacted < provider_intents[1]);
+    assert_eq!(
+        rows.iter()
+            .filter(
+                |event| matches!(&event.kind,EventKind::EffectDone{tool,..} if tool=="provider")
+            )
+            .count(),
+        2
+    );
+    assert!(
+        rows.iter()
+            .any(|event| matches!(&event.kind,EventKind::Done{outcome} if outcome=="Done"))
+    );
+    drop(reopened);
+    std::fs::remove_dir_all(directory).unwrap();
+}
