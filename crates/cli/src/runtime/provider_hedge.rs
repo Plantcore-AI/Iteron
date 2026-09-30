@@ -425,23 +425,6 @@ impl Agent {
             closed?;
             return Err(error);
         }
-        if let Some(mailbox) = &self.persistent_mailbox
-            && let Err(error) = mailbox.confirm_request(&request.messages)
-        {
-            // Every physical intent/reservation is durable; none of the prepared futures has
-            // been polled. A failed receipt therefore closes every attempt as NotDispatched.
-            let closed = self.close_prepared_hedges_without_dispatch(
-                turn,
-                route_id,
-                prepared,
-                "durable mailbox inclusion failed before hedge provider dispatch",
-            );
-            if let Some(budget) = &self.usd_budget {
-                budget.settle_not_dispatched();
-            }
-            closed?;
-            return Err(KernelError::AgentControl(error));
-        }
         let live_capacity = iteron_tunables::param_integer(
             "cli.runtime.provider_hedge.hedge_live_queue_items",
             HEDGE_LIVE_QUEUE_ITEMS,

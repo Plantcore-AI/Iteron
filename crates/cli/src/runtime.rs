@@ -3985,7 +3985,6 @@ impl Agent {
             scope: provider_dispatch::ProviderDispatchScope {
                 workspace: &self.workspace,
                 plantcore: &self.plantcore,
-                mailbox: self.persistent_mailbox.as_ref(),
                 events,
                 control: &self.control,
                 deadline: self.run_deadline,

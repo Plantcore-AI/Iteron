@@ -3,7 +3,6 @@ use super::{
     AgentActor, AgentControllerJournal, AgentEpochV1, AgentSettlement, AgentStateV1, AgentViewV1,
     ControllerError, LiveAgentMailbox, MAX_INPUT_BATCH, PersistentAgentHost, weak_mailbox,
 };
-use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -134,7 +133,9 @@ impl<J: AgentControllerJournal + Send + 'static> PersistentAgentHost<J> {
                 id,
                 epoch,
                 port: Arc::new(weak_mailbox::WeakMailbox::new(self)),
-                witnesses: Arc::new(Mutex::new(BTreeMap::new())),
+                witnesses: Arc::new(Mutex::new(
+                    super::prepared_mailbox::MailboxWitnesses::default(),
+                )),
                 deferred: Arc::new(Mutex::new(initial)),
             },
         })

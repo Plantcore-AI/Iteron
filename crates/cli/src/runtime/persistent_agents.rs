@@ -19,6 +19,7 @@ use tokio::sync::{Semaphore, watch};
 
 #[path = "persistent_agents/parent_turn.rs"]
 mod parent_turn;
+pub(super) mod prepared_mailbox;
 #[path = "persistent_agents/weak_mailbox.rs"]
 mod weak_mailbox;
 pub(crate) use parent_turn::ParentRuntimeTurn;
@@ -167,7 +168,7 @@ pub(crate) struct LiveAgentMailbox {
     id: AgentIdV1,
     epoch: AgentEpochV1,
     port: Arc<dyn MailboxPort>,
-    witnesses: Arc<Mutex<BTreeMap<AgentMessageIdV1, String>>>,
+    witnesses: Arc<Mutex<prepared_mailbox::MailboxWitnesses>>,
     deferred: Arc<Mutex<Vec<AgentMailboxMessage>>>,
 }
 
@@ -230,10 +231,7 @@ impl LiveAgentMailbox {
             .witnesses
             .lock()
             .map_err(|_| ControllerError::Poisoned)?;
-        if witnesses.len() >= MAX_INPUT_BATCH && !witnesses.contains_key(&input.id) {
-            return Err(ControllerError::Capacity);
-        }
-        witnesses.insert(input.id, envelope.clone());
+        witnesses.register_envelope(input.id, envelope.clone())?;
         Ok(envelope)
     }
 
@@ -337,33 +335,6 @@ impl LiveAgentMailbox {
         Ok(changed)
     }
 
-    /// Called at the actual provider-dispatch boundary, after durable request/effect admission.
-    /// Assistant text and tool results cannot forge delivery confirmation.
-    pub fn confirm_request(&self, messages: &[Message]) -> Result<(), ControllerError> {
-        let mut witnesses = self
-            .witnesses
-            .lock()
-            .map_err(|_| ControllerError::Poisoned)?;
-        let ids: Vec<_> = witnesses
-            .iter()
-            .filter_map(|(id, envelope)| {
-                messages
-                    .iter()
-                    .any(|message| {
-                        message.role == Role::User && message.content.iter().any(|block| {
-                    matches!(block, Block::Text { text } if text.contains(envelope))
-                })
-                    })
-                    .then_some(*id)
-            })
-            .collect();
-        self.port.consumed(self.id, self.epoch, &ids)?;
-        for id in ids {
-            witnesses.remove(&id);
-        }
-        Ok(())
-    }
-
     /// Remove envelopes that never entered a model request before this epoch settled. The
     /// runtime persists the revised transcript, so a follow-up/restart cannot apply stale steer.
     pub fn expire_unrequested(&self, messages: &mut [Message]) -> Result<bool, ControllerError> {
@@ -378,7 +349,7 @@ impl LiveAgentMailbox {
         {
             for block in &mut message.content {
                 if let Block::Text { text } = block {
-                    for (id, envelope) in witnesses.iter() {
+                    for (id, envelope) in witnesses.envelopes.iter() {
                         if text.contains(envelope) {
                             *text = text.replace(
                                 envelope,
@@ -507,7 +478,7 @@ impl<J: AgentControllerJournal + Send + 'static> PersistentAgentHost<J> {
             id: view.agent_id,
             epoch,
             port: Arc::new(weak_mailbox::WeakMailbox::new(self)),
-            witnesses: Arc::new(Mutex::new(BTreeMap::new())),
+            witnesses: Arc::new(Mutex::new(prepared_mailbox::MailboxWitnesses::default())),
             deferred: Arc::new(Mutex::new(Vec::new())),
         };
         tokio::spawn(async move {

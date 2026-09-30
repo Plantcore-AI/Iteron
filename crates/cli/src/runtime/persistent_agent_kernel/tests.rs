@@ -84,6 +84,9 @@ struct ProviderFixture {
     tool_started: AtomicUsize,
     texts: Mutex<Vec<String>>,
     systems: Mutex<Vec<String>>,
+    prepared: AtomicUsize,
+    omit_native_user: bool,
+    unsupported_capture: bool,
 }
 
 #[async_trait]
@@ -91,12 +94,79 @@ impl Provider for ProviderFixture {
     fn provider_instance_id(&self) -> Option<&str> {
         Some("test-provider")
     }
+    fn physical_input_token_ceiling(&self, _: &str) -> Option<u64> {
+        // Explicit immutable fixture contract; never reuse the runtime planning window.
+        Some(100_000)
+    }
     fn physical_output_token_ceiling(
         &self,
         budget: iteron_provider::output_ceiling::ProviderOutputBudget<'_>,
     ) -> Result<Option<u32>, ProviderError> {
         // This actual fixture returns at most one output token and never expands the request.
         Ok(Some(budget.requested_max_tokens))
+    }
+    async fn turn_observed(
+        &self,
+        request: &TurnRequest,
+        on_item: &mut (dyn FnMut(StreamItem) + Send),
+        observer: &dyn iteron_provider::request_capture::ProviderRequestObserver,
+    ) -> Result<TurnResult, ProviderError> {
+        if self.unsupported_capture {
+            observer
+                .unavailable("fixture_without_native_capture")
+                .map_err(|_| ProviderError::RequestCaptureRefusedBeforeDispatch)?;
+        } else {
+            let messages: Vec<_> = request
+                .messages
+                .iter()
+                .map(|message| {
+                    let role = if message.role == iteron_protocol::Role::User {
+                        "user"
+                    } else {
+                        "assistant"
+                    };
+                    let content: Vec<_> = message
+                        .content
+                        .iter()
+                        .filter_map(|block| {
+                            if let Block::Text { text } = block {
+                                Some(serde_json::json!({"type":"text","text":text}))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    serde_json::json!({"role":role,"content":content})
+                })
+                .collect();
+            let messages = if self.omit_native_user {
+                vec![
+                    serde_json::json!({"role":"user","content":[{"type":"text","text":"omitted mailbox input"}]}),
+                ]
+            } else {
+                messages
+            };
+            let body = serde_json::to_vec(&serde_json::json!({
+                "system":request.system,"messages":messages,"max_tokens":request.max_tokens
+            }))
+            .unwrap();
+            observer
+                .prepared(iteron_provider::request_capture::ProviderWireRequest {
+                    adapter: iteron_provider::AdapterKind::AnthropicMessages,
+                    method: "POST",
+                    endpoint: "https://fixture.invalid/v1/messages",
+                    content_type: "application/json",
+                    body: &body,
+                    serialized_output_tokens: request.max_tokens,
+                    request,
+                })
+                .map_err(|_| ProviderError::RequestCaptureRefusedBeforeDispatch)?;
+            self.prepared.fetch_add(1, Ordering::SeqCst);
+            observer
+                .dispatching()
+                .map_err(|_| ProviderError::RequestCaptureRefusedBeforeDispatch)?;
+        }
+        self.turn(request, on_item).await
     }
     async fn turn(
         &self,
@@ -616,3 +686,6 @@ async fn small_workflow_node_does_not_shrink_resident_lifetime_and_physical_turn
 mod parent_turn;
 
 mod memory_epochs;
+
+#[path = "tests/native_mailbox.rs"]
+mod native_mailbox;

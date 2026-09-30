@@ -17,5 +17,6 @@ impl Agent {
             &materials,
             dropped,
         )
+        .with_mailbox(self.persistent_mailbox.clone())
     }
 }

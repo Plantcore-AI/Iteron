@@ -1,5 +1,6 @@
 //! One immutable physical-ticket scope and one actual publication state. This observer holds
 //! neither the runtime nor Rollout; streaming tool admission keeps its own exclusive journal.
+use super::persistent_agents::LiveAgentMailbox;
 use crate::artifacts::{DurableArtifactStore, request_manifest::RequestManifestScope};
 use iteron_ctx::ContextSegmentEvidence;
 use iteron_ctx::context_provenance::{
@@ -25,6 +26,7 @@ pub(super) struct RequestManifestFactory {
     materials: Vec<CapturedContextMaterial>,
     materials_dropped: u32,
     inclusion: Arc<AtomicBool>,
+    mailbox: Option<LiveAgentMailbox>,
 }
 
 impl RequestManifestFactory {
@@ -54,12 +56,17 @@ impl RequestManifestFactory {
             },
             materials_dropped,
             inclusion: Arc::new(AtomicBool::new(false)),
+            mailbox: None,
             sources: if admitted {
                 sources.to_vec()
             } else {
                 Vec::new()
             },
         }
+    }
+    pub(super) fn with_mailbox(mut self, mailbox: Option<LiveAgentMailbox>) -> Self {
+        self.mailbox = mailbox;
+        self
     }
     pub(super) fn for_ticket(
         &self,
@@ -79,6 +86,7 @@ impl RequestManifestFactory {
             .ok(),
             state: Mutex::new(PublicationState::Initial),
             inclusion: self.inclusion.clone(),
+            mailbox: self.mailbox.clone(),
         })
     }
     pub(super) fn context_inclusion_confirmed(&self) -> bool {
@@ -98,6 +106,7 @@ struct RequestManifestObserver {
     scope: Option<RequestManifestScope>,
     state: Mutex<PublicationState>,
     inclusion: Arc<AtomicBool>,
+    mailbox: Option<LiveAgentMailbox>,
 }
 
 impl RequestManifestObserver {
@@ -122,10 +131,20 @@ impl ProviderRequestObserver for RequestManifestObserver {
             return Err(RequestCaptureError::ReconciliationNeeded);
         }
         *state = PublicationState::Faulted;
+        let mailbox_proof = self
+            .mailbox
+            .as_ref()
+            .map(|mailbox| mailbox.prepared_delivery(&wire))
+            .transpose()?;
         let context_included = super::request_inclusion::context_included(&wire);
         let prepared = store
             .publish_prepared_request(scope, wire)
             .map_err(|_| RequestCaptureError::ReconciliationNeeded)?;
+        if let (Some(mailbox), Some(proof)) = (&self.mailbox, mailbox_proof) {
+            mailbox
+                .confirm_prepared(proof)
+                .map_err(|_| RequestCaptureError::ReconciliationNeeded)?;
+        }
         *state = PublicationState::Prepared(prepared);
         if context_included {
             self.inclusion.store(true, Ordering::Release);
@@ -161,6 +180,9 @@ impl ProviderRequestObserver for RequestManifestObserver {
         store
             .publish_request_unavailable(scope, reason)
             .map_err(|_| RequestCaptureError::ReconciliationNeeded)?;
+        if let Some(mailbox) = &self.mailbox {
+            mailbox.refuse_unsupported_pending()?;
+        }
         *state = PublicationState::Unsupported;
         Ok(())
     }

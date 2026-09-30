@@ -342,8 +342,8 @@ impl Agent {
             let message = if runtime_notification || resolved_memory.is_some() {
                 Message::user_text(text)
             } else {
-                Message::user_text(format!(
-                    "Operator steering received while the run was active:\n{text}"
+                Message::user_text(super::persistent_agents::prepared_mailbox::steer_text(
+                    &text,
                 ))
             };
             if let Some(resolved) = &resolved_memory {

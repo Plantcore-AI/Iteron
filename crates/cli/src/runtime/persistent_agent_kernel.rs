@@ -328,12 +328,8 @@ impl PersistentAgentRuntime for KernelPersistentRuntime {
         child.control.reset_after_adoption();
         let (tx, rx) = tokio::sync::mpsc::channel(128);
         child.set_inbound_control(rx);
-        let task = match initial
-            .iter()
-            .map(|input| mailbox.render(input))
-            .collect::<Result<Vec<_>, _>>()
-        {
-            Ok(texts) => texts.join("\n\n"),
+        let task = match mailbox.render_initial(&initial) {
+            Ok(text) => text,
             Err(_) => {
                 return AgentSettlement {
                     turns: 0,
@@ -371,7 +367,7 @@ impl PersistentAgentRuntime for KernelPersistentRuntime {
                         }
                         if let Ok(inputs) = mailbox.receive() {
                             for input in inputs {
-                                let Ok(text) = mailbox.render(&input) else {
+                                let Ok(text) = mailbox.render_steer(&input) else {
                                     stop.store(true, Ordering::Release);
                                     break;
                                 };
