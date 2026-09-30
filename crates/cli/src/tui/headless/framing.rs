@@ -119,6 +119,14 @@ pub(super) enum ServerFrame {
         request_id: u64,
         reply: Value,
     },
+    AdvisoryMaintenanceV1 {
+        protocol_version: u32,
+        event: iteron_protocol::advisory_maintenance_control::MaintenanceEventV1,
+    },
+    MaintenanceAvailabilityV1 {
+        protocol_version: u32,
+        observation: iteron_protocol::advisory_maintenance_control::MaintenanceAvailabilityV1,
+    },
     TurnPublicationV1 {
         protocol_version: u32,
         publication: iteron_protocol::turn_publication::TurnPublicationEventV1,
@@ -152,6 +160,8 @@ impl ServerFrame {
             | Self::Rollout { .. }
             | Self::ControlReply { .. }
             | Self::TurnPublicationV1 { .. }
+            | Self::AdvisoryMaintenanceV1 { .. }
+            | Self::MaintenanceAvailabilityV1 { .. }
             | Self::Error { .. }
             | Self::FrameChunk { .. } => None,
         }
@@ -165,6 +175,12 @@ impl ServerFrame {
             Self::Rollout { rollout_seq, .. } => LogicalIdentity::rollout(*rollout_seq),
             Self::ControlReply { .. } => LogicalIdentity::control("control_reply"),
             Self::TurnPublicationV1 { .. } => LogicalIdentity::control("turn_publication_v1"),
+            Self::AdvisoryMaintenanceV1 { .. } => {
+                LogicalIdentity::control("advisory_maintenance_v1")
+            }
+            Self::MaintenanceAvailabilityV1 { .. } => {
+                LogicalIdentity::control("maintenance_availability_v1")
+            }
             Self::Error { .. } => LogicalIdentity::control("error"),
             Self::FrameChunk { .. } => {
                 bail!("an already-fragmented frame cannot be fragmented recursively")

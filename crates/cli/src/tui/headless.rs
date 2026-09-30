@@ -4,6 +4,7 @@
 //! transport adapter. A client must complete the version handshake before it can submit an op or
 //! make a control request.
 
+mod advisory_maintenance;
 mod auth;
 mod control;
 mod framing;
@@ -179,6 +180,7 @@ struct Shared {
     ring: Mutex<ReplayRing>,
     live: broadcast::Sender<u64>,
     publications: broadcast::Sender<iteron_protocol::turn_publication::TurnPublicationEventV1>,
+    maintenance: broadcast::Sender<crate::app_server::ServerEvent>,
     outbound_budget: Arc<Semaphore>,
     frame_preparers: Arc<Semaphore>,
     fragment_encoders: Arc<Semaphore>,
@@ -438,6 +440,13 @@ impl Shared {
         // sequence numbers across the projection would manufacture holes that every correct client
         // must reject. The single event pump assigns a dense cursor only to frames it publishes;
         // it still validates the source EQ independently before calling this method.
+        if matches!(
+            &event,
+            ServerEvent::AdvisoryMaintenance(_) | ServerEvent::MaintenanceAvailability(_)
+        ) {
+            let _ = self.maintenance.send(event.clone());
+            return Ok((turn, assistant, legacy));
+        }
         if let ServerEvent::TurnPublication(publication) = &event {
             let _ = self.publications.send(publication.clone());
             return Ok((turn, assistant, legacy));
@@ -519,6 +528,8 @@ impl Shared {
                 }
                 ServerEvent::Submission { .. }
                 | ServerEvent::TurnPublication(_)
+                | ServerEvent::AdvisoryMaintenance(_)
+                | ServerEvent::MaintenanceAvailability(_)
                 | ServerEvent::WorkflowRun(_)
                 | ServerEvent::Activity(_)
                 | ServerEvent::McpInputRequested(_) => {
@@ -717,6 +728,7 @@ pub(crate) async fn serve(
     // These content-free facts have their own source sequences. They cannot create holes in the
     // frozen presentation replay cursor or appear without an explicit authenticated subscription.
     let (publications, _) = broadcast::channel(64);
+    let (maintenance, _) = broadcast::channel(64);
     let shared = Arc::new(Shared {
         client: handle.client,
         control: handle.control.downgrade(),
@@ -724,6 +736,7 @@ pub(crate) async fn serve(
         ring: Mutex::new(ReplayRing::production()),
         live,
         publications,
+        maintenance,
         outbound_budget: Arc::new(Semaphore::new(max_in_flight_server_bytes())),
         frame_preparers: Arc::new(Semaphore::new(1)),
         fragment_encoders: Arc::new(Semaphore::new(1)),
@@ -996,6 +1009,9 @@ async fn serve_connection(
 
     let mut live = shared.live.subscribe();
     let mut publication_updates = shared.publications.subscribe();
+    let mut maintenance = shared.maintenance.subscribe();
+    let mut maintenance_subscribed = false;
+    let mut maintenance_last = None;
     let mut publications_enabled = false;
     let (cursor, requested, fallback, lost_result, oldest) = {
         let ring = shared.ring.lock().await;
@@ -1268,6 +1284,17 @@ async fn serve_connection(
                         }
                         drop(input_guard);
                         match control {
+                            control::WireControl::MaintenanceV1 { command } => {
+                                let subscribe = matches!(&command, iteron_protocol::advisory_maintenance_control::MaintenanceReadV1::Subscribe { .. });
+                                if subscribe { maintenance = shared.maintenance.subscribe(); }
+                                let reply = shared.client.maintenance_v1(command);
+                                if subscribe && matches!(reply["type"].as_str(), Some("maintenance_snapshot_v1" | "maintenance_unavailable_v1")) {
+                                    maintenance_subscribed = true;
+                                    maintenance_last = reply["event"]["run_id"].as_str().zip(reply["event"]["observation"]["journal_revision"].as_u64()).map(|(run, revision)| (run.to_owned(), revision));
+                                }
+                                send_frame(&mut writer, &shared.outbound_budget, &shared.frame_preparers, &shared.fragment_encoders,
+                                    ServerFrame::ControlReply { protocol_version, request_id, reply }).await?;
+                            }
                             control::WireControl::TurnPublicationsV1 { command } => {
                                 let subscribe = matches!(&command, iteron_protocol::turn_publication::TurnPublicationReadV1::Subscribe { .. });
                                 if subscribe {
@@ -1382,6 +1409,16 @@ async fn serve_connection(
                 )
                 .await?;
                 idle_deadline = tokio::time::Instant::now() + iteron_tunables::param_duration("cli.tui.headless.authenticated_idle_timeout", AUTHENTICATED_IDLE_TIMEOUT);
+            }
+            event = maintenance.recv(), if maintenance_subscribed => {
+                match event {
+                    Ok(event) => advisory_maintenance::send(&mut writer, &shared.client, &shared.outbound_budget,
+                        &shared.frame_preparers, &shared.fragment_encoders, &mut maintenance_last, event).await?,
+                    Err(broadcast::error::RecvError::Lagged(_)) => send_frame(&mut writer,
+                        &shared.outbound_budget, &shared.frame_preparers, &shared.fragment_encoders,
+                        error_frame("maintenance_gap", "maintenance snapshots exceeded the bounded queue; read maintenance_v1 to reconcile current journal state")).await?,
+                    Err(broadcast::error::RecvError::Closed) => maintenance_subscribed = false,
+                }
             }
             publication = publication_updates.recv(), if publications_enabled => {
                 match publication {

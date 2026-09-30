@@ -2404,6 +2404,10 @@
       "paths": [
         {
           "kind": "file",
+          "path": "crates/protocol/src/advisory_maintenance_control.rs"
+        },
+        {
+          "kind": "file",
           "path": "crates/record/src/bounded_replay.rs"
         },
         {
@@ -2576,6 +2580,10 @@
       "reviewers": [],
       "requires_independent_review": true,
       "paths": [
+        {
+          "kind": "file",
+          "path": "crates/protocol/src/advisory_maintenance_control.rs"
+        },
         {
           "kind": "file",
           "path": "crates/record/src/bounded_replay.rs"
@@ -2848,6 +2856,10 @@
       "reviewers": [],
       "requires_independent_review": true,
       "paths": [
+        {
+          "kind": "file",
+          "path": "crates/protocol/src/advisory_maintenance_control.rs"
+        },
         {
           "kind": "file",
           "path": "crates/record/src/bounded_replay.rs"

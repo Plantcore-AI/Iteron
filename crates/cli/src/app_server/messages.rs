@@ -184,6 +184,10 @@ pub(crate) enum ServerEvent {
     /// Content-free observations from the exact committed answer/Done source, separate from
     /// runtime ownership release and advisory maintenance.
     TurnPublication(iteron_protocol::turn_publication::TurnPublicationEventV1),
+    AdvisoryMaintenance(iteron_protocol::advisory_maintenance_control::MaintenanceEventV1),
+    MaintenanceAvailability(
+        iteron_protocol::advisory_maintenance_control::MaintenanceAvailabilityV1,
+    ),
     /// A run reached a terminal state, with the runtime state the frontend mirrors.
     ///
     /// **Never dropped under backpressure** — this is the authoritative answer to "what happened",
@@ -208,7 +212,9 @@ pub(crate) enum ServerEvent {
     ///
     /// Reported rather than hidden: a transcript with a silent hole in it is worse than one that
     /// says where the hole is.
-    Lagged { dropped: usize },
+    Lagged {
+        dropped: usize,
+    },
     /// One live update for a QuickJS workflow-script run (ADR-0001 step 1).
     ///
     /// A second payload rather than a `UiEvent` variant, because `UiEvent` is the frozen, published
@@ -240,6 +246,7 @@ impl ServerEvent {
         match self {
             Self::Ui(UiEvent::Text(_) | UiEvent::Thinking(_)) => false,
             Self::Activity(activity) => activity.state.is_terminal(),
+            Self::AdvisoryMaintenance(_) | Self::MaintenanceAvailability(_) => false,
             Self::WorkflowRun(crate::workflow::WorkflowRunUiEvent::Progress {
                 event: iteron_workflow::events::ProgressEvent::AgentActivity { .. },
                 ..
@@ -295,6 +302,8 @@ pub(super) fn event_heap_bytes(event: &ServerEvent) -> usize {
         ServerEvent::Notice(text) => text.len(),
         ServerEvent::Submission { .. } | ServerEvent::Lagged { .. } => 128,
         ServerEvent::TurnPublication(_) => 512,
+        ServerEvent::AdvisoryMaintenance(_) => 32 * 1024,
+        ServerEvent::MaintenanceAvailability(_) => 1024,
         ServerEvent::WorkflowRun(_) => 64 * 1024,
         ServerEvent::Activity(_) => 512,
         ServerEvent::McpInputRequested(prompt) => prompt

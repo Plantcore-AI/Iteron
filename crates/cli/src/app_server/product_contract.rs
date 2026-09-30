@@ -133,6 +133,7 @@ struct Projection {
     artifacts: super::client_artifacts::ArtifactCatalog,
     publications: super::turn_publication::PublicationReader,
     artifact_scope: Option<crate::artifacts::ArtifactReadScope>,
+    maintenance: Option<super::advisory_maintenance::MaintenanceBinding>,
 }
 
 impl std::fmt::Debug for Projection {
@@ -186,8 +187,16 @@ impl ContractReader {
             )
         });
         let recovered = agent.recovered_turn_publications_v1().map_err(|_| ());
+        let maintenance_port = agent.advisory_maintenance_port();
         self.with_mut(|projection| {
             projection.artifact_scope = scope;
+            projection.maintenance = projection.snapshot.as_ref().and_then(|snapshot| {
+                maintenance_port.map(|port| super::advisory_maintenance::MaintenanceBinding {
+                    thread_id: snapshot.thread_id.clone(),
+                    run_id: snapshot.run_id.clone(),
+                    port,
+                })
+            });
             projection
                 .publications
                 .recover(agent.rollout.run_id(), recovered);
@@ -211,6 +220,7 @@ impl ContractReader {
             {
                 return;
             }
+            projection.maintenance = None;
             projection.artifacts.bind_thread(&thread_id);
             projection
                 .publications
@@ -282,6 +292,7 @@ impl ContractReader {
             {
                 return false;
             }
+            projection.maintenance = None;
             if let Some(snapshot) = projection.snapshot.as_mut() {
                 projection
                     .publications
@@ -338,6 +349,19 @@ impl ContractReader {
         command: iteron_protocol::turn_publication::TurnPublicationReadV1,
     ) -> serde_json::Value {
         self.with_mut(|projection| projection.publications.read(command))
+    }
+
+    pub(super) fn maintenance_binding(
+        &self,
+    ) -> Option<super::advisory_maintenance::MaintenanceBinding> {
+        self.with_mut(|projection| projection.maintenance.clone())
+    }
+
+    pub(super) fn maintenance_v1(
+        &self,
+        command: iteron_protocol::advisory_maintenance_control::MaintenanceReadV1,
+    ) -> serde_json::Value {
+        super::advisory_maintenance::read(self, command)
     }
 
     pub(super) fn artifacts_v1(

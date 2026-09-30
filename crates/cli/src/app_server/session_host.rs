@@ -130,6 +130,8 @@ impl AppServer {
             mut plantcore,
         } = self;
         let mut pending_mcp_inputs = std::collections::BTreeMap::new();
+        let mut maintenance =
+            super::advisory_maintenance::MaintenanceObserver::new(events.contract.clone());
 
         let session_services::SessionServices {
             mut runtime_ui_rx,
@@ -242,7 +244,6 @@ impl AppServer {
                 TurnTrigger::Runtime(notification)
             } else {
                 tokio::select! {
-                    biased;
                     Some(queued) = priority_submissions.recv() => {
                         events.record_lifecycle(
                             "queue.depth_changed",
@@ -289,6 +290,10 @@ impl AppServer {
                     }
                     Some(activity_event) = activity.recv() => {
                         let _ = events.publish(ServerEvent::Activity(activity_event)).await;
+                        continue
+                    }
+                    maintenance_event = maintenance.next() => {
+                        let _ = events.publish(maintenance_event).await;
                         continue
                     }
                     Some(runtime_event) = runtime_ui_rx.recv() => {
@@ -639,6 +644,7 @@ impl AppServer {
                 };
                 tokio::pin!(running);
                 turn_pump::RunningTurnPump {
+                    maintenance: &mut maintenance,
                     runtime_ui_rx: &mut runtime_ui_rx,
                     frontend_channels: &frontend_channels,
                     workflow_rx: &mut workflow_rx,

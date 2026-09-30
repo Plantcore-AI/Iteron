@@ -48,6 +48,9 @@ impl PlantcoreCommand {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum WireControl {
+    MaintenanceV1 {
+        command: iteron_protocol::advisory_maintenance_control::MaintenanceReadV1,
+    },
     TurnPublicationsV1 {
         command: iteron_protocol::turn_publication::TurnPublicationReadV1,
     },
@@ -271,7 +274,8 @@ impl WireControl {
         }
         matches!(
             self,
-            Self::TurnPublicationsV1 { .. }
+            Self::MaintenanceV1 { .. }
+                | Self::TurnPublicationsV1 { .. }
                 | Self::InventoryV1 { .. }
                 | Self::ProductV1 {
                     command: ProductControlV1::ThreadRead { .. }
@@ -289,6 +293,9 @@ impl WireControl {
 
     pub(super) fn into_app_server(self) -> Control {
         match self {
+            Self::MaintenanceV1 { .. } => {
+                unreachable!("maintenance reads address the actual readonly owner port")
+            }
             Self::TurnPublicationsV1 { .. } => {
                 unreachable!("publication reads address the public resident projection")
             }

@@ -61,6 +61,8 @@ impl PendingCosmetic {
             // this conservative charge also accounts for maps/enums/channel allocation.
             ServerEvent::WorkflowRun(_) => 4 * 1024,
             ServerEvent::Activity(_) => 512,
+            ServerEvent::AdvisoryMaintenance(_) => 32 * 1024,
+            ServerEvent::MaintenanceAvailability(_) => 1024,
             _ => 0,
         }
     }
@@ -92,6 +94,20 @@ impl PendingCosmetic {
             {
                 existing.push_str(delta);
                 self.bytes = self.bytes.saturating_add(bytes);
+                return None;
+            }
+            (
+                Some(ServerEvent::AdvisoryMaintenance(existing)),
+                ServerEvent::AdvisoryMaintenance(next),
+            ) if existing.thread_id == next.thread_id && existing.run_id == next.run_id => {
+                *existing = next.clone();
+                return None;
+            }
+            (
+                Some(ServerEvent::MaintenanceAvailability(existing)),
+                ServerEvent::MaintenanceAvailability(next),
+            ) if existing.thread_id == next.thread_id && existing.run_id == next.run_id => {
+                *existing = next.clone();
                 return None;
             }
             // Same-part workflow activity is already cumulative. Preserve only the newest
@@ -395,6 +411,22 @@ impl EventPublisher {
                 || self.run_id.as_ref() != Some(&publication.run_id))
         {
             return Err(());
+        }
+        match &event {
+            ServerEvent::AdvisoryMaintenance(event)
+                if event.validate().is_err()
+                    || self.run_id.as_ref() != Some(&event.run_id)
+                    || self.session_id.as_ref() != Some(&event.thread_id) =>
+            {
+                return Err(());
+            }
+            ServerEvent::MaintenanceAvailability(event)
+                if self.run_id.as_ref() != Some(&event.run_id)
+                    || self.session_id.as_ref() != Some(&event.thread_id) =>
+            {
+                return Err(());
+            }
+            _ => {}
         }
         let reject_authoritative = !self.lossless
             && event.is_authoritative()

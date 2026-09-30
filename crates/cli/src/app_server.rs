@@ -111,6 +111,7 @@ pub(crate) use queue_wiring::wire;
 use queue_wiring::wire_with_queue_policy;
 pub(crate) use queue_wiring::{ServerEnds, advertised_version};
 
+mod advisory_maintenance;
 mod agent_control;
 #[path = "app_server/backpressure.rs"]
 mod backpressure;

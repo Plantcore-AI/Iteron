@@ -2660,3 +2660,46 @@ async fn paused_next_provider_dispatch_drained_by_worker_publishes_run_ended() {
         .unwrap();
     let _ = std::fs::remove_dir_all(&workspace);
 }
+
+#[tokio::test]
+async fn maintenance_reader_captures_actual_host_owner_and_refuses_foreign_thread() {
+    use iteron_protocol::advisory_maintenance_control::{MaintenanceEventV1, MaintenanceReadV1};
+    let workspace = temp_workspace("maintenance-read");
+    let agent = agent_in(&workspace);
+    let port = agent.advisory_maintenance_port().expect("actual host port");
+    let actual = port
+        .wait(0, 10_000)
+        .await
+        .expect("actual independent journal barrier");
+    let (handle, mut ends) = wire().unwrap();
+    let thread = SessionId("session-control-plane".into());
+    ends.events
+        .bind_lifecycle_identity(thread.clone(), agent.rollout.run_id().clone());
+    ends.events.contract.bind_artifact_owner(&agent);
+    let reply = handle.client.maintenance_v1(MaintenanceReadV1::Read {
+        thread_id: thread.clone(),
+        after_revision: 0,
+        limit: 64,
+    });
+    let event: MaintenanceEventV1 = serde_json::from_value(reply["event"].clone()).unwrap();
+    event.validate().unwrap();
+    assert_eq!(event.observation, actual);
+    let denied = handle.client.maintenance_v1(MaintenanceReadV1::Read {
+        thread_id: SessionId("foreign".into()),
+        after_revision: 0,
+        limit: 64,
+    });
+    assert_eq!(denied["type"], "maintenance_refused_v1");
+    assert!(ends.events.contract.rebind_run(RunId("other".into())));
+    let stale = handle.client.maintenance_v1(MaintenanceReadV1::Read {
+        thread_id: thread,
+        after_revision: 0,
+        limit: 64,
+    });
+    assert_eq!(stale["type"], "maintenance_unavailable_v1");
+    drop(ends);
+    drop(handle);
+    drop(port);
+    drop(agent);
+    let _ = std::fs::remove_dir_all(workspace);
+}

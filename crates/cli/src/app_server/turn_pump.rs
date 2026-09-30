@@ -14,6 +14,7 @@ use super::{
 };
 
 pub(super) struct RunningTurnPump<'a> {
+    pub(super) maintenance: &'a mut super::advisory_maintenance::MaintenanceObserver,
     pub(super) runtime_ui_rx: &'a mut mpsc::Receiver<crate::runtime::RuntimeFrontendEvent>,
     pub(super) frontend_channels: &'a crate::runtime::FrontendChannelHealth,
     pub(super) workflow_rx: &'a mut mpsc::Receiver<crate::workflow::WorkflowRunUiEvent>,
@@ -65,6 +66,7 @@ impl RunningTurnPump<'_> {
         mut running: std::pin::Pin<&mut F>,
     ) -> TurnCompletion {
         let Self {
+            maintenance,
             runtime_ui_rx,
             frontend_channels,
             workflow_rx,
@@ -106,6 +108,9 @@ impl RunningTurnPump<'_> {
                 // again: a burst of deltas must reach the frontend while the turn
                 // is still producing, not in one lump at the end.
                 biased;
+                maintenance_event = maintenance.next() => {
+                    let _ = events.publish(maintenance_event).await;
+                }
                 Some(runtime_event) = runtime_ui_rx.recv() => {
                     publish_runtime_event(
                         events, pending_kernel_submissions, &frontend_channels, runtime_event,

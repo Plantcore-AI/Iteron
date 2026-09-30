@@ -307,6 +307,13 @@ impl AppServerClient {
         self.contract.events_read(after)
     }
 
+    pub(crate) fn maintenance_v1(
+        &self,
+        command: iteron_protocol::advisory_maintenance_control::MaintenanceReadV1,
+    ) -> serde_json::Value {
+        self.contract.maintenance_v1(command)
+    }
+
     pub(crate) fn turn_publications_v1(
         &self,
         command: iteron_protocol::turn_publication::TurnPublicationReadV1,

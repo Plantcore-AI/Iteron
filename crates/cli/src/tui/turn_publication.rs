@@ -45,6 +45,7 @@ fn outcome_label(outcome: TurnFinalOutcomeV1) -> &'static str {
 }
 
 pub(super) fn render(app: &mut App, session: &Session) {
+    super::advisory_maintenance::render(app, session);
     let Some(thread) = session.client.thread_snapshot_v1() else {
         app.note(
             block::NoticeLevel::Warn,

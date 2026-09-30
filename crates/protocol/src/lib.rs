@@ -140,6 +140,7 @@ pub use tunables_snapshot::{
     RunGenesisFixedAuthorityBindingV2, RunGenesisFixedAuthorityIdV2, RunGenesisTunableEntryV2,
     RunGenesisTunablesSnapshotV2, RunGenesisTunablesVersionV2, is_extension_server_binding_id,
 };
+pub mod advisory_maintenance_control;
 pub mod client_agent_control;
 pub mod client_artifact;
 pub mod client_inventory;

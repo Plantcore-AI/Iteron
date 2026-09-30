@@ -44,6 +44,7 @@ use composer_render::{format_attachment_size, render_composer, render_pending_la
 #[cfg(test)]
 use composer_render::approval_action_line;
 
+mod advisory_maintenance;
 mod app_init;
 mod app_input_state;
 mod app_picker;
