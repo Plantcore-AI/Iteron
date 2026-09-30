@@ -1,11 +1,15 @@
 //! Bounded ephemeral two-human authorization owner. Restart/adoption creates a fresh owner;
 //! historical approval receipts cannot reinstall permission or recover transient approvals.
-use super::journal::{AuthorizationAudit, HighAssuranceJournal};
+use super::journal::HighAssuranceJournal;
 use super::types::{
     CONTRACT_VERSION, HighAssurancePolicy, HighAssuranceScope, HighAssuranceViewV1,
     HumanApprovalChallengeV1, MAX_PENDING, SignedHumanApprovalV1, fixed_hex, frame, identifier,
 };
 use ed25519_dalek::Signature;
+use iteron_protocol::high_assurance::{
+    EnrolledHumanEvidenceV1, HighAssuranceAuthorizationV1, HighAssuranceProfileEvidenceV1,
+    HumanSignatureProofV1,
+};
 use iteron_protocol::{
     Capability, EffectId, Event, EventKind, ToolUse, TurnId, capability_set::CapabilitySet,
 };
@@ -17,7 +21,7 @@ use std::time::{Duration, Instant};
 
 struct Pending {
     challenge: HumanApprovalChallengeV1,
-    signers: BTreeMap<String, String>,
+    signers: BTreeMap<String, HumanSignatureProofV1>,
     monotonic_expires: Instant,
 }
 #[derive(Default)]
@@ -55,17 +59,40 @@ impl HighAssuranceOwner {
         policy: Arc<HighAssurancePolicy>,
         scope: HighAssuranceScope,
     ) -> Arc<Self> {
-        let mut hash = Sha256::new();
-        hash.update(b"iteron.high-assurance-scope.v1\0");
-        frame(&mut hash, scope.tenant_id.0.as_bytes());
-        frame(&mut hash, scope.run_id.0.as_bytes());
-        frame(&mut hash, scope.workspace_sha256.as_bytes());
+        let scope_digest = scope.commitment();
         Arc::new(Self {
             policy,
             scope,
-            scope_digest: hex::encode(hash.finalize()),
+            scope_digest,
             state: Mutex::new(State::default()),
         })
+    }
+    pub(crate) fn profile_evidence(&self) -> HighAssuranceProfileEvidenceV1 {
+        let configuration = &self.policy.configuration;
+        HighAssuranceProfileEvidenceV1 {
+            version: CONTRACT_VERSION,
+            policy_sha256: self.policy.digest.clone(),
+            scope_sha256: self.scope_digest.clone(),
+            profile_display: configuration.profile_id.clone(),
+            enrolled_humans: self
+                .policy
+                .humans
+                .iter()
+                .map(|(subject, key)| EnrolledHumanEvidenceV1 {
+                    subject_sha256: hex::encode(Sha256::digest(subject.as_bytes())),
+                    subject_display: subject.clone(),
+                    public_key_hex: hex::encode(key.as_bytes()),
+                })
+                .collect(),
+            configured_max_cost_microusd: configuration.max_cost_microusd,
+            verifier_command_sha256: configuration
+                .verifier_commands
+                .iter()
+                .map(|command| hex::encode(Sha256::digest(command.as_bytes())))
+                .collect(),
+            verifier_timeout_secs: configuration.verifier_timeout_secs,
+            max_verifier_runs: configuration.max_verifier_runs,
+        }
     }
     pub(crate) fn policy(&self) -> &Arc<HighAssurancePolicy> {
         &self.policy
@@ -117,16 +144,24 @@ impl HighAssuranceOwner {
             .verification_us
             .saturating_add(u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX));
         verified.map_err(|_| "human_approval_signature_invalid")?;
-        let mut commitment = Sha256::new();
-        frame(&mut commitment, approval.subject.as_bytes());
-        frame(&mut commitment, key.as_bytes());
-        frame(&mut commitment, &signature.to_bytes());
+        let subject_sha256 = hex::encode(Sha256::digest(approval.subject.as_bytes()));
+        let proof = HumanSignatureProofV1 {
+            proof_sha256: HumanSignatureProofV1::commitment(
+                &subject_sha256,
+                key.as_bytes(),
+                &signature.to_bytes(),
+            ),
+            subject_sha256,
+            subject_display: approval.subject.clone(),
+            public_key_hex: hex::encode(key.as_bytes()),
+            signature_hex: hex::encode(signature.to_bytes()),
+        };
         state
             .pending
             .get_mut(&approval.challenge.operation_sha256)
             .expect("same locked pending challenge")
             .signers
-            .insert(approval.subject, hex::encode(commitment.finalize()));
+            .insert(approval.subject, proof);
         state.approved = state.approved.saturating_add(1);
         Ok(())
     }
@@ -153,9 +188,7 @@ impl HighAssuranceOwner {
             return Err("high_assurance_clock_unavailable");
         }
         let operation = operation_digest(call, required)?;
-        if journal.rollout.tenant() != &self.scope.tenant_id
-            || journal.rollout.run_id() != &self.scope.run_id
-        {
+        if !journal.in_scope(&self.scope) {
             return Err("high_assurance_journal_scope_mismatch");
         }
         let mut state = self
@@ -203,20 +236,17 @@ impl HighAssuranceOwner {
             state.refused = state.refused.saturating_add(1);
             return Ok(answer);
         }
-        let signer_commitments: Vec<_> = pending.signers.values().cloned().collect();
+        let signers: Vec<_> = pending.signers.values().take(2).cloned().collect();
+        let evidence = HighAssuranceAuthorizationV1 {
+            version: CONTRACT_VERSION,
+            challenge: pending.challenge.clone(),
+            authorized_at_unix_secs: now,
+            signers,
+            signature_verification_us: state.verification_us,
+        };
+        self.profile_evidence().authenticates(&evidence)?;
         let seq = journal
-            .authorized(
-                turn,
-                AuthorizationAudit {
-                    schema: "iteron.high-assurance-authorization.v1",
-                    policy_sha256: &self.policy.digest,
-                    scope_sha256: &self.scope_digest,
-                    challenge_id: &pending.challenge.challenge_id,
-                    operation_sha256: &operation,
-                    signer_commitments_sha256: &signer_commitments,
-                    signature_verification_us: state.verification_us,
-                },
-            )
+            .authorized(turn, evidence)
             .map_err(|_| "high_assurance_authorization_record_unavailable")?;
         // Consume only after the real audit barrier. Keeping the owner lock through that sync
         // prevents concurrent retries from spending the same two signed approvals twice.
@@ -260,10 +290,25 @@ impl HighAssuranceOwner {
     }
     /// Called only at the real extra-verifier admission boundary. Admissions remain consumed on
     /// failure/cancellation, so no unknown subprocess can obtain a replacement budget slot.
+    pub(crate) fn preflight_verifier_capacity(&self) -> Result<(), &'static str> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| "high_assurance_owner_unavailable")?;
+        if state.verifier_admissions >= self.policy.configuration.max_verifier_runs {
+            return Err("high_assurance_verifier_ceiling");
+        }
+        Ok(())
+    }
     pub(crate) fn admit_verifier(
         &self,
         ticket: &iteron_kernel::effects::EffectTicket,
     ) -> Result<(), &'static str> {
+        if ticket.verification_profile_identity()
+            != Some((self.policy.digest.as_str(), self.scope_digest.as_str()))
+        {
+            return Err("high_assurance_verifier_intent_scope_mismatch");
+        }
         let mut state = self
             .state
             .lock()
@@ -310,7 +355,21 @@ impl HighAssuranceOwner {
         let mut recovered = BTreeMap::new();
         for event in events {
             match &event.kind {
-                EventKind::EffectIntent { id, tool, .. } if tool == "verify" => {
+                EventKind::EffectIntent {
+                    id,
+                    tool,
+                    arguments,
+                    ..
+                } if tool == "verify"
+                    && arguments
+                        .get("high_assurance_policy_sha256")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(self.policy.digest.as_str())
+                    && arguments
+                        .get("high_assurance_scope_sha256")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(self.scope_digest.as_str()) =>
+                {
                     if recovered.contains_key(id) {
                         return Err("high_assurance_duplicate_verify_record");
                     }
@@ -321,11 +380,12 @@ impl HighAssuranceOwner {
                 }
                 EventKind::EffectDone { id, tool, .. }
                 | EventKind::EffectFailed { id, tool, .. }
-                    if tool == "verify" =>
+                    if recovered.contains_key(id) =>
                 {
-                    let Some(observed) = recovered.get_mut(id) else {
+                    if tool != "verify" {
                         return Err("high_assurance_unmatched_verify_terminal");
-                    };
+                    }
+                    let observed = recovered.get_mut(id).expect("actual scoped intent");
                     if *observed {
                         return Err("high_assurance_duplicate_verify_terminal");
                     }

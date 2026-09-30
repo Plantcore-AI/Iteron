@@ -91,6 +91,7 @@ fn two_actual_signatures_authorize_one_exact_operation_only_after_real_durable_a
         })
         .unwrap();
     let mut journal = HighAssuranceJournal {
+        workspace: &directory,
         rollout: &mut rollout,
         ledger: &mut ledger,
         record_failed: &mut failed,
@@ -134,16 +135,24 @@ fn two_actual_signatures_authorize_one_exact_operation_only_after_real_durable_a
     );
     let rows = iteron_record::replay(journal.rollout.path()).unwrap();
     assert_eq!(rows.len(), 2);
-    let EventKind::Notice { text } = &rows[1].kind else {
-        panic!("actual audit barrier")
+    let EventKind::HighAssuranceAuditV1 {
+        audit: iteron_protocol::high_assurance::HighAssuranceAuditV1::Authorized { evidence },
+    } = &rows[1].kind
+    else {
+        panic!("actual typed audit barrier")
     };
-    let audit: serde_json::Value = serde_json::from_str(text).unwrap();
-    assert_eq!(
-        audit["signer_commitments_sha256"].as_array().unwrap().len(),
-        2
-    );
-    assert!(!text.contains("exact approved change"));
-    assert!(!text.contains("human-a"));
+    evidence.validate().unwrap();
+    owner.profile_evidence().authenticates(evidence).unwrap();
+    assert_eq!(evidence.signers.len(), 2);
+    let retained = serde_json::to_string(evidence).unwrap();
+    assert!(!retained.contains("exact approved change"));
+    assert_eq!(evidence.challenge, challenge);
+    // Structural cryptographic proof must survive the actual generic record redaction path.
+    assert_eq!(evidence.signers[0].public_key_hex.len(), 64);
+    assert_eq!(evidence.signers[0].signature_hex.len(), 128);
+    let mut forged = evidence.clone();
+    forged.signers[1].public_key_hex = forged.signers[0].public_key_hex.clone();
+    assert!(forged.validate().is_err());
     assert!(matches!(
         owner
             .authorize(
@@ -186,6 +195,7 @@ fn scope_expiry_operation_mutation_and_untrusted_human_alias_cannot_reuse_approv
     let mut failed = false;
     let diagnostics = DiagnosticEmitter::default();
     let mut journal = HighAssuranceJournal {
+        workspace: &directory,
         rollout: &mut rollout,
         ledger: &mut ledger,
         record_failed: &mut failed,
@@ -277,7 +287,7 @@ fn duplicate_enrollment_key_is_not_a_second_human_and_verifier_admissions_are_fi
                 tool_use_id: format!("verify-correlation-{ordinal}"),
                 kind: "verify".into(),
                 capability: Capability::CodeExecuting,
-                audit_arguments: serde_json::json!({"command_sha256":"a".repeat(64)}),
+                audit_arguments: serde_json::json!({"command_sha256":"a".repeat(64),"high_assurance_policy_sha256":owner.policy().digest(),"high_assurance_scope_sha256":owner.profile_evidence().scope_sha256}),
                 workspace: "fixture".into(),
                 provider_route_attempt: None,
             },
@@ -292,6 +302,7 @@ fn duplicate_enrollment_key_is_not_a_second_human_and_verifier_admissions_are_fi
             .observe_verifier_terminal(first.effect_id(), Some(1))
             .is_err()
     );
+    owner.preflight_verifier_capacity().unwrap();
     owner.admit_verifier(&first).unwrap();
     owner
         .observe_verifier_terminal(first.effect_id(), Some(7))
@@ -302,6 +313,7 @@ fn duplicate_enrollment_key_is_not_a_second_human_and_verifier_admissions_are_fi
             .is_err()
     );
     owner.admit_verifier(&second).unwrap();
+    assert!(owner.preflight_verifier_capacity().is_err());
     assert!(owner.admit_verifier(&third).is_err());
     assert_eq!(owner.view(1).unwrap().verifier_admissions, 2);
     assert_eq!(owner.view(1).unwrap().verifier_wall_ms, Some(7));
@@ -316,4 +328,79 @@ fn duplicate_enrollment_key_is_not_a_second_human_and_verifier_admissions_are_fi
     );
     drop(rollout);
     std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn actual_configured_roster_scrubs_only_labels_and_wrong_workspace_cannot_authorize() {
+    use iteron_protocol::high_assurance::HighAssuranceAuditV1;
+    let directory = directory();
+    let other = directory.join("other-workspace");
+    std::fs::create_dir_all(&other).unwrap();
+    let run = RunId("scoped-audit".into());
+    let tenant = TenantId::default();
+    let scope = HighAssuranceScope::from_host(tenant.clone(), run.clone(), &directory).unwrap();
+    let mut configuration = configuration();
+    let canary = format!("sk-{}", "a".repeat(40));
+    configuration.profile_id = canary.clone();
+    configuration.humans[0].subject = canary.clone();
+    let policy = Arc::new(HighAssurancePolicy::from_operator(configuration).unwrap());
+    let owner = HighAssuranceOwner::from_host(policy, scope);
+    let original = owner.profile_evidence();
+    let mut rollout = Rollout::open(&directory, &run, tenant).unwrap();
+    rollout
+        .append(&iteron_protocol::Event {
+            seq: iteron_protocol::Seq::ZERO,
+            turn: iteron_protocol::TurnId(0),
+            kind: EventKind::HighAssuranceAuditV1 {
+                audit: HighAssuranceAuditV1::Configured {
+                    evidence: original.clone(),
+                },
+            },
+        })
+        .unwrap();
+    let retained = iteron_record::replay(rollout.path()).unwrap();
+    let EventKind::HighAssuranceAuditV1 {
+        audit: HighAssuranceAuditV1::Configured { evidence },
+    } = &retained[0].kind
+    else {
+        panic!("actual typed operator roster")
+    };
+    evidence.validate().unwrap();
+    assert!(!serde_json::to_string(evidence).unwrap().contains(&canary));
+    assert_eq!(evidence.policy_sha256, original.policy_sha256);
+    assert_eq!(evidence.scope_sha256, original.scope_sha256);
+    for (actual, expected) in evidence
+        .enrolled_humans
+        .iter()
+        .zip(&original.enrolled_humans)
+    {
+        assert_eq!(actual.public_key_hex, expected.public_key_hex);
+        assert_eq!(actual.subject_sha256, expected.subject_sha256);
+    }
+    let mut ledger = Ledger::default();
+    let mut failed = false;
+    let diagnostics = DiagnosticEmitter::default();
+    let mut journal = HighAssuranceJournal {
+        workspace: &other,
+        rollout: &mut rollout,
+        ledger: &mut ledger,
+        record_failed: &mut failed,
+        diagnostics: &diagnostics,
+    };
+    assert_eq!(
+        owner
+            .authorize(
+                &call(),
+                CapabilitySet::only(Capability::ReversibleLocal),
+                iteron_protocol::TurnId(1),
+                10,
+                &mut journal
+            )
+            .unwrap_err(),
+        "high_assurance_journal_scope_mismatch"
+    );
+    assert_eq!(
+        iteron_record::replay(journal.rollout.path()).unwrap().len(),
+        1
+    );
 }
