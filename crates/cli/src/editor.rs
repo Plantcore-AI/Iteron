@@ -777,6 +777,30 @@ impl Editor {
         self.delete_range_synchronized(lo, hi);
     }
 
+    /// Replace a completion token at verified UTF-8 boundaries while keeping unrelated chips and
+    /// paste stores. Deletion still reconciles any tag actually inside the replaced range.
+    pub(crate) fn replace_completion_span(
+        &mut self,
+        start: usize,
+        end: usize,
+        replacement: &str,
+    ) -> bool {
+        let text = self.text();
+        if start > end
+            || end > text.len()
+            || !text.is_char_boundary(start)
+            || !text.is_char_boundary(end)
+        {
+            return false;
+        }
+        let start_char = text[..start].chars().count();
+        let end_char = text[..end].chars().count();
+        self.delete_span(start_char, end_char);
+        self.set_cursor(start_char);
+        self.insert_str(replacement);
+        true
+    }
+
     /// Ctrl-W: delete the word before the cursor (skip trailing non-word chars, then a word run).
     pub fn delete_word_before(&mut self) {
         let i = self.word_boundary_left();

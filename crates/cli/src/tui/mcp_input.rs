@@ -70,7 +70,7 @@ impl App {
     ) -> Result<(), app_server::McpInputPrompt> {
         if self.pending_mcp_input.is_none() {
             self.pending_mcp_input = Some(PendingMcpInput::new(prompt));
-            self.completion = None;
+            self.completions.dismiss();
             self.status = "MCP server is waiting for your input".into();
             return Ok(());
         }

@@ -1,4 +1,14 @@
-use super::*;
+use super::{
+    App, ApprovalChoice, AttachmentEffectState, CostState, Editor, Effort, PermissionMode,
+    RouteView, block, hyperlink, mouse_capture, theme, transcript_layout, transcript_viewer,
+    ui_safe_text, workflow_region, workflows_panel,
+};
+use ratatui::style::{Color, Style};
+#[cfg(test)]
+use std::collections::HashSet;
+use std::collections::VecDeque;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 impl App {
     #[cfg(test)]
@@ -86,10 +96,7 @@ impl App {
             turns: 0,
             pending: None,
             approval_choice: ApprovalChoice::Deny,
-            completion: None,
-            completion_due: None,
-            completion_generation: 0,
-            completion_job: None,
+            completions: super::completion_owner::CompletionOwner::default(),
             picker: None,
             session_picker_job: None,
             session_picker_backing: None,
@@ -129,128 +136,19 @@ impl App {
         }
     }
 
-    /// Recompute the autocomplete menu from the current editor state (called after each edit while
-    /// idle or while composing a queued follow-up). Sets `self.completion` to a slash menu, a file
-    /// menu, or None. A running agent must not degrade the editor into a text-only field.
     #[cfg(test)]
     pub(super) fn refresh_completion(&mut self, repo: &std::path::Path) {
-        let text = self.editor.text();
-        self.completion = build_completion(&text, self.editor.cursor(), repo);
+        self.completions.refresh(&self.editor, repo);
     }
-
     pub(super) fn schedule_completion(&mut self) {
-        self.completion_generation = self.completion_generation.wrapping_add(1);
-        let text = self.editor.text();
-        if commands::slash_prefix(&text).is_some() {
-            self.completion_due = None;
-            self.completion =
-                build_completion(&text, self.editor.cursor(), std::path::Path::new("."));
-            return;
-        }
-        self.completion_due = Some(
-            Instant::now()
-                + iteron_tunables::param_duration(
-                    "cli.tui.completion_debounce",
-                    std::time::Duration::from_millis(75),
-                ),
-        );
-        self.completion = None;
+        self.completions.schedule(&self.editor, Instant::now());
     }
-}
-
-pub(super) fn build_completion(
-    text: &str,
-    cursor_chars: usize,
-    repo: &std::path::Path,
-) -> Option<Completion> {
-    if text.contains('\n') {
-        return None; // no menu in multi-line mode
-    }
-    // slash-command menu
-    if let Some(prefix) = commands::slash_prefix(text) {
-        let items: Vec<(String, String)> = commands::complete_slash(prefix)
-            .into_iter()
-            .map(|c| (c.name.to_string(), format!("{}  {}", c.args, c.help)))
-            .collect();
-        if !items.is_empty() {
-            return Some(Completion {
-                items,
-                sel: 0,
-                token_start: 1,
-                lead: '/',
-            });
-        }
-        return None;
-    }
-    // @file menu (path completion at the cursor)
-    let cursor_bytes = byte_index(text, cursor_chars);
-    if let Some((at, partial)) = commands::at_mention_at(text, cursor_bytes) {
-        let matches = complete_path(repo, partial);
-        if !matches.is_empty() {
-            let items = matches.into_iter().map(|p| (p, String::new())).collect();
-            return Some(Completion {
-                items,
-                sel: 0,
-                token_start: at + 1,
-                lead: '@',
-            });
-        }
-    }
-    None
-}
-
-impl App {
-    /// Accept the selected completion: replace the WHOLE token (from `token_start` to the next
-    /// whitespace or end — not just up to the cursor) with the chosen item + a single trailing
-    /// space, and place the cursor right after it. Replacing the whole token fixes corruption when
-    /// the cursor is in the middle of the token (review).
     pub(super) fn accept_completion(&mut self) {
-        let Some(comp) = self.completion.take() else {
-            return;
-        };
-        let Some((item, _)) = comp.items.get(comp.sel).cloned() else {
-            return;
-        };
-        let text = self.editor.text();
-        let token_end = text[comp.token_start.min(text.len())..]
-            .find(char::is_whitespace)
-            .map(|i| comp.token_start + i)
-            .unwrap_or(text.len());
-        // A directory item (ends with '/') gets NO trailing space, so the mention token stays open
-        // and the menu re-populates for drill-down (review: accepting a dir closed the menu).
-        let sep = if item.ends_with('/') { "" } else { " " };
-        let mut new = String::new();
-        new.push_str(&text[..comp.token_start]);
-        new.push_str(&item);
-        new.push_str(sep);
-        new.push_str(text[token_end..].trim_start_matches(' ')); // avoid a double space
-        let want =
-            text[..comp.token_start].chars().count() + item.chars().count() + sep.chars().count();
-        self.editor.clear();
-        self.editor.insert_str(&new);
-        self.editor.home();
-        for _ in 0..want {
-            self.editor.right();
-        }
+        self.completions.accept(&mut self.editor);
     }
-
-    /// Enter activates a slash-menu entry when the command has no required arguments. Tab remains
-    /// completion-only, and commands with required arguments (for example `/memory`) leave the
-    /// composer open for the missing value. Keeping this decision separate from dispatch prevents
-    /// one physical Enter from both opening a picker and accepting its first row.
     pub(super) fn accept_completion_for_enter(&mut self) -> bool {
-        let submit = self.completion.as_ref().is_some_and(|completion| {
-            if completion.lead != '/' {
-                return false;
-            }
-            let Some((name, _)) = completion.items.get(completion.sel) else {
-                return false;
-            };
-            commands::COMMANDS.iter().any(|command| {
-                command.name == name && (command.args.is_empty() || command.args.starts_with('['))
-            })
-        });
-        self.accept_completion();
+        let submit = self.completions.enter_submits();
+        self.completions.accept(&mut self.editor);
         submit
     }
 

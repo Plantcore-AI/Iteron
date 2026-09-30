@@ -464,7 +464,7 @@ pub(super) fn submit_operation(
             // clock; only the later accepted activity changes its semantic label.
             app.awaiting_first_token_since = None;
             app.provider_accepted = false;
-            app.completion = None;
+            app.completions.dismiss();
             Some(submission_id)
         }
         Err(app_server::SubmitError::Busy) => {

@@ -682,7 +682,7 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
     // (review CRITICAL: an unclamped rect on a short terminal made ratatui's Clear index out of the
     // buffer and panic the whole TUI). Items are WINDOWED around the selection so a selection past
     // the visible rows stays on screen.
-    if let Some(comp) = &app.completion {
+    if let Some(comp) = app.completions.view() {
         let rows: Vec<PopupRow> = comp
             .items
             .iter()

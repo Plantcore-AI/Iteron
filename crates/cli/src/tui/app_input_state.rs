@@ -82,7 +82,7 @@ impl App {
         let command = format_resume_command(run_id);
         self.editor.clear();
         self.editor.insert_str(&command);
-        self.completion = None;
+        self.completions.dismiss();
         self.resume_handoff = Some(command.clone());
         self.note(
             block::NoticeLevel::Info,

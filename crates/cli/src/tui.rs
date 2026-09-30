@@ -58,6 +58,7 @@ mod capability_fs;
 mod clipboard;
 mod command_dispatch;
 mod command_surfaces;
+mod completion_owner;
 mod composer_images;
 mod context_chips;
 mod control_submission;
@@ -119,7 +120,6 @@ use crate::runtime::{
 };
 use crate::semantic_text::{is_unsafe_display_char, ui_safe_json, ui_safe_text};
 use crate::{block, keymap, prompt_history, startup, surface, theme};
-use app_init::build_completion;
 use block::spinner;
 use command_surfaces::{
     apply_transcript_effect_event, clear_conversation, ensure_real_workspace_dir,
@@ -128,6 +128,8 @@ use command_surfaces::{
     schedule_transcript_viewer_effect, show_agent_catalog, transcript_export_body,
     write_new_synced,
 };
+#[cfg(test)]
+use completion_owner::Completion;
 use composer_images::{
     AttachmentEffectResult, AttachmentFollowup, AttachmentOrigin, AttachmentWorkerOutput,
     attach_bare_image_paths, dropped_image_reference, finish_attachment_effect,
@@ -401,17 +403,6 @@ fn command_token(line: &str, theme: &theme::Theme) -> Option<(String, String, Co
     };
     let end = line.find(char::is_whitespace).unwrap_or(line.len());
     Some((line[..end].to_string(), line[end..].to_string(), color))
-}
-
-/// An open autocomplete menu (slash commands or `@file` paths).
-struct Completion {
-    /// Menu entries: (replacement-token, one-line description).
-    items: Vec<(String, String)>,
-    sel: usize,
-    /// Byte index in the input where the token being completed starts (after '/' or '@').
-    token_start: usize,
-    /// The prefix char ('/' for slash, '@' for file) — kept for the accepted replacement.
-    lead: char,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -784,11 +775,7 @@ struct App {
     pending: Option<Pending>,
     /// Keyboard focus inside the blocking permission decision. Deny is the fail-closed default.
     approval_choice: ApprovalChoice,
-    /// The open autocomplete menu, if any.
-    completion: Option<Completion>,
-    completion_due: Option<Instant>,
-    completion_generation: u64,
-    completion_job: Option<tokio::task::JoinHandle<(u64, String, Option<Completion>)>>,
+    completions: completion_owner::CompletionOwner,
     /// The open selection picker, if any (owns the keyboard while open).
     picker: Option<Picker>,
     /// One cancel-on-replacement session-page worker. Opening the modal is immediate; disk/index

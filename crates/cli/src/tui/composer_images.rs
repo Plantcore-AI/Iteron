@@ -485,7 +485,7 @@ pub(super) fn handle_composer_paste(app: &mut App, workspace: &Path, pasted: &st
                         note_image_refusal(app, &image_path, &error);
                     }
                 }
-                app.completion = None;
+                app.completions.dismiss();
             }
             #[cfg(not(test))]
             queue_image_path_effect(
@@ -502,7 +502,7 @@ pub(super) fn handle_composer_paste(app: &mut App, workspace: &Path, pasted: &st
             );
             #[cfg(not(test))]
             {
-                app.completion = None;
+                app.completions.dismiss();
             }
         }
         Ok(None) => {
@@ -528,7 +528,7 @@ pub(super) fn handle_composer_paste(app: &mut App, workspace: &Path, pasted: &st
                         block::NoticeLevel::Info,
                         "file queued · reading in background · you can keep typing",
                     );
-                    app.completion = None;
+                    app.completions.dismiss();
                 }
                 // A paste too big to read is held aside as one tag rather than
                 // dumped line by line into the composer: the operator keeps a

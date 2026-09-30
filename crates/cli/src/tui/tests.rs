@@ -1628,7 +1628,8 @@ mod tests {
         app.editor.insert_str("quit");
         app.refresh_completion(&repo);
         assert_eq!(
-            app.completion
+            app.completions
+                .view()
                 .as_ref()
                 .and_then(|menu| menu.items.get(menu.sel))
                 .map(|item| item.0.as_str()),
@@ -2315,7 +2316,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         app.editor.insert_str("line1");
         app.editor.newline();
         app.editor.insert_str("line2");
-        app.completion = None;
+        app.completions.dismiss();
         term.draw(|f| draw(f, &mut app)).unwrap();
         // running + a pending approval
         app.running = true;
@@ -2346,7 +2347,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         app.editor.clear();
         app.editor.insert_str("/"); // 25-command menu -> tall popup
         app.refresh_completion(&std::env::temp_dir());
-        assert!(app.completion.is_some());
+        assert!(app.completions.is_open());
         for (w, h) in [
             (80u16, 24u16),
             (40, 9),
@@ -2361,9 +2362,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         }
         // selection windowing: move past the visible window, still no panic on a short terminal
         for _ in 0..20 {
-            if let Some(c) = app.completion.as_mut() {
-                c.sel = (c.sel + 1) % c.items.len();
-            }
+            app.completions.navigate(KeyCode::Down);
             let mut t = Terminal::new(TestBackend::new(40, 8)).unwrap();
             t.draw(|f| draw(f, &mut app)).unwrap();
         }
@@ -2792,8 +2791,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
         app.schedule_completion();
 
-        assert!(app.completion.is_some());
-        assert!(app.completion_due.is_none());
+        assert!(app.completions.is_open());
+        assert!(app.completions.due().is_none());
     }
 
     #[test]
@@ -3576,7 +3575,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     fn popup_keeps_selected_detail_discoverable_on_compact_width() {
         let mut app = App::new();
         app.editor.insert_str("/m");
-        app.completion = Some(Completion {
+        app.completions.install_fixture(Completion {
             items: vec![(
                 "model".into(),
                 "choose a provider, family, and available model".into(),
@@ -4390,7 +4389,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         let repo = std::env::temp_dir();
         app.editor.insert_str("/mod");
         app.refresh_completion(&repo);
-        let comp = app.completion.as_ref().expect("slash menu should open");
+        let comp = app.completions.view().expect("slash menu should open");
         assert!(
             comp.items.iter().any(|(n, _)| n == "model" || n == "mode"),
             "expected model/mode"
@@ -4415,7 +4414,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             "permissions is runnable without an argument and should activate on Enter"
         );
         assert_eq!(app.editor.text(), "/permissions ");
-        assert!(app.completion.is_none());
+        assert!(!app.completions.is_open());
         assert!(
             !app.accept_completion_for_enter(),
             "the consumed completion cannot emit a second submit signal"
@@ -4433,7 +4432,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             "memory requires an argument, so Enter completes without dispatching"
         );
         assert_eq!(app.editor.text(), "/memory ");
-        assert!(app.completion.is_none());
+        assert!(!app.completions.is_open());
     }
 
     #[test]
@@ -4444,7 +4443,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         let mut app = App::new();
         app.editor.insert_str("look @hel");
         app.refresh_completion(&dir);
-        let comp = app.completion.as_ref().expect("@file menu should open");
+        let comp = app.completions.view().expect("@file menu should open");
         assert_eq!(comp.lead, '@');
         assert!(comp.items.iter().any(|(p, _)| p == "hello.txt"));
         app.accept_completion();
@@ -4457,6 +4456,39 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     }
 
     #[test]
+    fn accepting_file_completion_preserves_unrelated_actual_png_and_paste_stores() {
+        let root =
+            std::env::temp_dir().join(format!("iteron-completion-media-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("readme.txt"), "actual completion candidate").unwrap();
+        let mut app = App::new();
+        app.editor
+            .attach_image_bytes("kept.png", &png_1x1())
+            .unwrap();
+        app.editor.insert_str(" ");
+        app.editor
+            .capture_paste("kept pasted first line\nsecond line")
+            .unwrap();
+        app.editor.insert_str(" @rea");
+        let images = app.editor.attachments().clone();
+        app.refresh_completion(&root);
+        assert!(app.completions.is_open());
+        app.accept_completion();
+        assert!(app.editor.text().ends_with("@readme.txt "));
+        assert_eq!(app.editor.attachments().as_slice(), images.as_slice());
+        assert_eq!(app.editor.pastes().len(), 1);
+        assert!(
+            app.editor
+                .submission_text()
+                .contains("kept pasted first line\nsecond line")
+        );
+        let screen = render_text(&mut app, 100, 18);
+        assert!(screen.contains("kept.png"), "{screen}");
+        assert!(screen.contains("@readme.txt"), "{screen}");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn accept_completion_replaces_whole_token_mid_cursor() {
         let mut app = App::new();
         let repo = std::env::temp_dir();
@@ -4466,7 +4498,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             app.editor.right();
         } // cursor in the middle: "/mod|el"
         app.refresh_completion(&repo);
-        assert!(app.completion.is_some());
+        assert!(app.completions.is_open());
         app.accept_completion();
         let t = app.editor.text();
         assert!(
@@ -4491,19 +4523,19 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         let repo = std::env::temp_dir();
         app.editor.insert_str("just a task");
         app.refresh_completion(&repo);
-        assert!(app.completion.is_none());
+        assert!(!app.completions.is_open());
         app.editor.clear();
         app.editor.insert_str("/mode");
         app.editor.newline();
         app.refresh_completion(&repo);
-        assert!(app.completion.is_none(), "no menu in multi-line");
+        assert!(!app.completions.is_open(), "no menu in multi-line");
 
         app.editor.clear();
         app.editor.insert_str("/mod");
         app.running = true;
         app.refresh_completion(&repo);
         assert!(
-            app.completion.is_some(),
+            app.completions.is_open(),
             "running follow-ups keep slash/@ completion"
         );
     }

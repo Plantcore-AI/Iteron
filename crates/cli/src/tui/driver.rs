@@ -5,14 +5,14 @@ use super::{
     FRAME_COALESCE, InputThreadControl, Instant, PreparedAdoption, PreparedAdoptionResult,
     PromptHistoryMode, ProviderDirectory, RouteView, SPINNER_TICK, Session, TERMINAL_READ_SLICE,
     TermGuard, Terminal, TerminalOptions, VecDeque, Viewport, app_server, apply_server_event,
-    apply_session_page_result, apply_transcript_effect_event, block, build_completion,
-    cached_workspace_dirty, dispatch_slash_command, draw, finish_attachment_effect, hyperlink,
-    input_dispatch, keymap, local_job_wake, next_wake, notification, product_projection,
-    project_recorded_transcript, prompt_history, report_stopped_workflows, restore_terminal,
-    schedule_transcript_viewer_effect, service_input_control, session_display_name,
-    slash_command_body, startup, submit_queued_model_input, submit_turn, terminal_input, theme,
-    transcript_effect, update_keymap_status, wait_for_forced_server_shutdown,
-    wait_for_server_shutdown, wake_until, workflow_region, workspace_command,
+    apply_session_page_result, apply_transcript_effect_event, block, cached_workspace_dirty,
+    dispatch_slash_command, draw, finish_attachment_effect, hyperlink, input_dispatch, keymap,
+    local_job_wake, next_wake, notification, product_projection, project_recorded_transcript,
+    prompt_history, report_stopped_workflows, restore_terminal, schedule_transcript_viewer_effect,
+    service_input_control, session_display_name, slash_command_body, startup,
+    submit_queued_model_input, submit_turn, terminal_input, theme, transcript_effect,
+    update_keymap_status, wait_for_forced_server_shutdown, wait_for_server_shutdown, wake_until,
+    workflow_region, workspace_command,
 };
 
 pub(crate) struct RunConfig {
@@ -559,23 +559,7 @@ pub async fn run(
             }
             redraw = true;
         }
-        if app
-            .completion_job
-            .as_ref()
-            .is_some_and(|job| job.is_finished())
-        {
-            let job = app
-                .completion_job
-                .take()
-                .expect("finished completion job was present");
-            if let Ok((generation, source, completion)) = job.await
-                && generation == app.completion_generation
-                && source == app.editor.text()
-            {
-                app.completion = completion;
-                redraw = true;
-            }
-        }
+        redraw |= app.completions.poll_ready(&app.editor).await;
         if app
             .workspace_command_job
             .as_ref()
@@ -595,19 +579,7 @@ pub async fn run(
             }
             redraw = true;
         }
-        if app.completion_job.is_none()
-            && app.completion_due.is_some_and(|due| due <= Instant::now())
-        {
-            app.completion_due = None;
-            let source = app.editor.text();
-            let cursor = app.editor.cursor();
-            let generation = app.completion_generation;
-            let completion_repo = repo.clone();
-            app.completion_job = Some(tokio::task::spawn_blocking(move || {
-                let completion = build_completion(&source, cursor, &completion_repo);
-                (generation, source, completion)
-            }));
-        }
+        app.completions.start_due(&app.editor, &repo, Instant::now());
         if app.attachment_job.is_some()
             && app.attachment_effect_state == AttachmentEffectState::Queued
         {
@@ -826,7 +798,7 @@ pub async fn run(
                 spinner_tick,
             )
         };
-        if let Some(completion_due) = app.completion_due {
+        if let Some(completion_due) = app.completions.due() {
             wake = Some(wake.map_or(completion_due, |scheduled| scheduled.min(completion_due)));
         }
         if let Some(due) = resize_due {
@@ -835,7 +807,7 @@ pub async fn run(
         let local_job_active = app.session_picker_job.is_some()
             || app.session_preview_job.is_some()
             || app.session_adoption_job.is_some()
-            || app.completion_job.is_some()
+            || app.completions.has_worker()
             || app.workspace_command_job.is_some()
             || app.attachment_job.is_some();
         wake = local_job_wake(wake, now, local_job_active);

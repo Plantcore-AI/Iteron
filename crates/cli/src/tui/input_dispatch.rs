@@ -361,7 +361,7 @@ pub(super) async fn dispatch<B: ratatui::backend::Backend>(
 
             let alt = k.modifiers.contains(KeyModifiers::ALT);
             let shift = k.modifiers.contains(KeyModifiers::SHIFT);
-            let menu_open = app.completion.is_some();
+            let menu_open = app.completions.is_open();
 
             if let Some(action) = mapped_action {
                 match action {
@@ -380,7 +380,7 @@ pub(super) async fn dispatch<B: ratatui::backend::Backend>(
                         {
                             Ok(Ok(edited)) => {
                                 app.editor.replace_text(&edited);
-                                app.completion = None;
+                                app.completions.dismiss();
                                 app.resume_handoff = None;
                                 app.note(
                                     block::NoticeLevel::Ok,
@@ -495,7 +495,7 @@ pub(super) async fn dispatch<B: ratatui::backend::Backend>(
                         );
                     } else if app.editor.has_submission() {
                         app.editor.clear_recoverable();
-                        app.completion = None;
+                        app.completions.dismiss();
                         app.resume_handoff = None;
                     } else {
                         app.force_quit_requested =
@@ -518,36 +518,15 @@ pub(super) async fn dispatch<B: ratatui::backend::Backend>(
                     queue_permission_mode(app, session, transcript_effects, interrupt, next);
                 }
                 // ---- completion menu navigation (menu open) ----
-                KeyCode::Down if menu_open => {
-                    if let Some(c) = app.completion.as_mut() {
-                        c.sel = (c.sel + 1) % c.items.len();
-                    }
-                }
-                KeyCode::Up if menu_open => {
-                    if let Some(c) = app.completion.as_mut() {
-                        c.sel = (c.sel + c.items.len() - 1) % c.items.len();
-                    }
-                }
-                // Unified menu nav (TUI v3 §9 — same PageUp/PageDown/Home/End as the picker).
-                KeyCode::PageDown if menu_open => {
-                    if let Some(c) = app.completion.as_mut() {
-                        c.sel = (c.sel + 8).min(c.items.len().saturating_sub(1));
-                    }
-                }
-                KeyCode::PageUp if menu_open => {
-                    if let Some(c) = app.completion.as_mut() {
-                        c.sel = c.sel.saturating_sub(8);
-                    }
-                }
-                KeyCode::Home if menu_open => {
-                    if let Some(c) = app.completion.as_mut() {
-                        c.sel = 0;
-                    }
-                }
-                KeyCode::End if menu_open => {
-                    if let Some(c) = app.completion.as_mut() {
-                        c.sel = c.items.len().saturating_sub(1);
-                    }
+                KeyCode::Down
+                | KeyCode::Up
+                | KeyCode::PageDown
+                | KeyCode::PageUp
+                | KeyCode::Home
+                | KeyCode::End
+                    if menu_open =>
+                {
+                    app.completions.navigate(k.code);
                 }
                 KeyCode::Tab if menu_open => {
                     app.accept_completion();
@@ -560,7 +539,7 @@ pub(super) async fn dispatch<B: ratatui::backend::Backend>(
                         // but the picker opened by that command does not see the same key.
                         let line = app.editor.take_submit();
                         let trimmed = line.trim();
-                        app.completion = None;
+                        app.completions.dismiss();
                         if let Some(cmd) = trimmed.strip_prefix('/') {
                             if pending_slash_commands.len() < 8 {
                                 pending_slash_commands.push_back((cmd.to_owned(), None));
@@ -578,7 +557,7 @@ pub(super) async fn dispatch<B: ratatui::backend::Backend>(
                     }
                 }
                 KeyCode::Esc if menu_open => {
-                    app.completion = None;
+                    app.completions.dismiss();
                 }
                 // ---- input history (idle, no menu) ----
                 KeyCode::Up if !app.running => {
@@ -680,7 +659,7 @@ pub(super) async fn dispatch<B: ratatui::backend::Backend>(
                         let line = app.editor.text();
                         let trimmed = line.trim().to_string();
                         let has_attachments = app.editor.chip_count() > 0;
-                        app.completion = None;
+                        app.completions.dismiss();
                         if trimmed.is_empty() && !has_attachments {
                             // nothing
                         } else if !has_attachments && let Some(cmd) = slash_command_body(&trimmed) {
@@ -827,7 +806,7 @@ pub(super) async fn dispatch<B: ratatui::backend::Backend>(
                             }
                         }
                     }
-                    app.completion = None;
+                    app.completions.dismiss();
                 }
                 // Codex/Claude-style explicit queue: Tab defers the text until this run ends.
                 KeyCode::Tab if app.running && !app.editor.is_empty() => {
@@ -842,7 +821,7 @@ pub(super) async fn dispatch<B: ratatui::backend::Backend>(
                             app.editor.insert_str(&text);
                         }
                     }
-                    app.completion = None;
+                    app.completions.dismiss();
                 }
                 // Esc while running interrupts at the next safe point (like the leading agent).
                 KeyCode::Esc if app.running => {
