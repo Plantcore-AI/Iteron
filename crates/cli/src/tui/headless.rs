@@ -6,20 +6,32 @@
 
 mod advisory_maintenance;
 mod auth;
+mod commands;
+mod connection;
 mod control;
 mod framing;
 mod input;
 mod turn_publication;
 
 use self::auth::BearerToken;
+use self::commands::PlantcoreCommands;
+#[cfg(test)]
+use self::commands::{
+    admit_plantcore_command, dispatch_gate_command_reply, replayed_plantcore_reply,
+    submit_sq_plantcore_command,
+};
+#[cfg(test)]
+use self::connection::session_identity_mismatch;
+use self::connection::{ConnectionServices, ConnectionSession};
+#[cfg(test)]
 use self::control::PlantcoreCommand;
+#[cfg(test)]
+use self::framing::send_encoded_frame;
 use self::framing::{
     EncodedServerFrame, ReplayRing, ServerFrame, max_in_flight_server_bytes,
-    max_pinned_replay_bytes, send_encoded_frame, send_frame, send_recording_fault,
+    max_pinned_replay_bytes, send_frame,
 };
-use self::input::{
-    ClientFrame, FrameBytes, FrameReader, MAX_CLIENT_FRAME_BYTES, MAX_PENDING_CLIENT_BYTES,
-};
+use self::input::MAX_PENDING_CLIENT_BYTES;
 #[cfg(test)]
 use crate::app_server::TerminalSummary;
 use crate::app_server::{AppServerClient, Attached, ControlRequest, ServerEvent};
@@ -27,7 +39,6 @@ use crate::output;
 use crate::runtime::{PlantcoreUiEvent, UiEvent};
 use anyhow::{Context, Result, bail};
 use iteron_protocol::PROTOCOL_VERSION;
-use iteron_protocol::product_contract::PRODUCT_CONTRACT_VERSION;
 use serde_json::{Value, json};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -35,7 +46,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::io::AsyncWrite;
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 use tokio::sync::{Mutex, Semaphore, broadcast, mpsc};
 use tokio::task::JoinSet;
 
@@ -192,130 +203,9 @@ struct Shared {
     session_id: String,
     plantcore: bool,
     machine_schema_version: u32,
-    plantcore_commands: Mutex<std::collections::BTreeMap<String, RecordedCommand>>,
+    commands: PlantcoreCommands,
     dispatch_gate: Option<Arc<crate::runtime::DispatchGate>>,
-    interrupt: Arc<std::sync::atomic::AtomicBool>,
-    drain: Arc<std::sync::atomic::AtomicBool>,
     recording_fault: Mutex<Option<crate::app_server::RecordingAppServerFault>>,
-}
-
-#[derive(Clone)]
-struct RecordedCommand {
-    command: PlantcoreCommand,
-    reply: Option<Value>,
-    completed: tokio::sync::watch::Sender<bool>,
-}
-
-#[derive(Clone)]
-struct PreparedPlantcoreReply {
-    value: Value,
-    resume_activation: Option<crate::runtime::ResumeActivation>,
-}
-
-fn replayed_plantcore_reply(value: Value) -> PreparedPlantcoreReply {
-    PreparedPlantcoreReply {
-        value,
-        resume_activation: None,
-    }
-}
-
-#[cfg(test)]
-fn admit_plantcore_command(
-    recorded: &mut std::collections::BTreeMap<String, RecordedCommand>,
-    command_id: String,
-    command: PlantcoreCommand,
-    submit: impl FnOnce(
-        iteron_protocol::Op,
-    ) -> Result<iteron_protocol::SubmissionId, crate::app_server::SubmitError>,
-) -> Value {
-    const MAX_RECORDED_COMMANDS: usize = 4096;
-    if let Some(previous) = recorded.get(&command_id) {
-        if previous.command == command {
-            return previous.reply.clone().unwrap_or_else(|| {
-                json!({
-                    "type": "plantcore_command_reply_v1",
-                    "command_id": command_id,
-                    "status": "rejected",
-                    "reason": "busy",
-                })
-            });
-        }
-        return json!({
-            "type": "plantcore_command_reply_v1",
-            "command_id": command_id,
-            "status": "rejected",
-            "reason": "command_conflict",
-        });
-    }
-    if recorded.len() >= MAX_RECORDED_COMMANDS {
-        return json!({
-            "type": "plantcore_command_reply_v1",
-            "command_id": command_id,
-            "status": "rejected",
-            "reason": "command_window_exhausted",
-        });
-    }
-    let reply = submit_sq_plantcore_command(None, &command_id, &command, submit);
-    recorded.insert(
-        command_id,
-        RecordedCommand {
-            command,
-            reply: Some(reply.clone()),
-            completed: tokio::sync::watch::channel(true).0,
-        },
-    );
-    reply
-}
-
-fn submit_sq_plantcore_command(
-    dispatch_gate: Option<&Arc<crate::runtime::DispatchGate>>,
-    command_id: &str,
-    command: &PlantcoreCommand,
-    submit: impl FnOnce(
-        iteron_protocol::Op,
-    ) -> Result<iteron_protocol::SubmissionId, crate::app_server::SubmitError>,
-) -> Value {
-    let Some(op) = command.clone().into_op() else {
-        return plantcore_command_rejection(command_id, "dispatch_gate_unavailable");
-    };
-    let submitted = match dispatch_gate {
-        Some(gate) => {
-            let submitted = if matches!(
-                command,
-                PlantcoreCommand::Interrupt | PlantcoreCommand::Drain
-            ) {
-                gate.terminalize_if_accepted(|| submit(op))
-            } else {
-                gate.submit_if_admitted(|| submit(op))
-            };
-            match submitted {
-                Ok(submitted) => submitted,
-                Err(reason) => return plantcore_command_rejection(command_id, reason),
-            }
-        }
-        None => submit(op),
-    };
-    match submitted {
-        Ok(submission_id) => json!({
-            "type": "plantcore_command_reply_v1",
-            "command_id": command_id,
-            "status": "accepted",
-            "safe_point": "kernel_submission_queue",
-            "submission_id": submission_id.0,
-        }),
-        Err(crate::app_server::SubmitError::Busy) => json!({
-            "type": "plantcore_command_reply_v1",
-            "command_id": command_id,
-            "status": "rejected",
-            "reason": "busy",
-        }),
-        Err(crate::app_server::SubmitError::Disconnected) => json!({
-            "type": "plantcore_command_reply_v1",
-            "command_id": command_id,
-            "status": "rejected",
-            "reason": "runtime_disconnected",
-        }),
-    }
 }
 
 fn submit_plantcore_initial_input<T, E>(
@@ -337,95 +227,28 @@ fn submit_plantcore_initial_input<T, E>(
 }
 
 impl Shared {
-    async fn submit_plantcore_command(
-        &self,
-        command_id: String,
-        command: PlantcoreCommand,
-    ) -> PreparedPlantcoreReply {
-        const MAX_RECORDED_COMMANDS: usize = 4096;
-        let pending_replay = {
-            let mut recorded = self.plantcore_commands.lock().await;
-            if let Some(previous) = recorded.get(&command_id) {
-                if previous.command != command {
-                    return PreparedPlantcoreReply {
-                        value: plantcore_command_rejection(&command_id, "command_conflict"),
-                        resume_activation: None,
-                    };
-                }
-                if let Some(reply) = &previous.reply {
-                    return replayed_plantcore_reply(reply.clone());
-                }
-                Some(previous.completed.subscribe())
-            } else {
-                if recorded.len() >= MAX_RECORDED_COMMANDS {
-                    return PreparedPlantcoreReply {
-                        value: plantcore_command_rejection(&command_id, "command_window_exhausted"),
-                        resume_activation: None,
-                    };
-                }
-                recorded.insert(
-                    command_id.clone(),
-                    RecordedCommand {
-                        command: command.clone(),
-                        reply: None,
-                        completed: tokio::sync::watch::channel(false).0,
-                    },
-                );
-                None
-            }
-        };
-        if let Some(mut completed) = pending_replay {
-            let _ = completed.wait_for(|done| *done).await;
-            let recorded = self.plantcore_commands.lock().await;
-            return recorded
-                .get(&command_id)
-                .and_then(|recorded| recorded.reply.clone())
-                .map(replayed_plantcore_reply)
-                .unwrap_or_else(|| PreparedPlantcoreReply {
-                    value: plantcore_command_rejection(&command_id, "runtime_disconnected"),
-                    resume_activation: None,
-                });
+    fn connection_services(&self) -> ConnectionServices<'_> {
+        ConnectionServices {
+            client: &self.client,
+            control: &self.control,
+            auth_token: &self.auth_token,
+            ring: &self.ring,
+            live: &self.live,
+            publications: &self.publications,
+            maintenance: &self.maintenance,
+            outbound_budget: &self.outbound_budget,
+            frame_preparers: &self.frame_preparers,
+            fragment_encoders: &self.fragment_encoders,
+            replay_retention: &self.replay_retention,
+            rollout_replays: &self.rollout_replays,
+            cursor: &self.cursor,
+            rollout_path: &self.rollout_path,
+            session_id: &self.session_id,
+            plantcore: self.plantcore,
+            commands: &self.commands,
+            dispatch_gate: &self.dispatch_gate,
+            recording_fault: &self.recording_fault,
         }
-
-        let prepared = if let Some(reply) =
-            dispatch_gate_command_reply(self.dispatch_gate.as_ref(), &command_id, &command).await
-        {
-            reply
-        } else {
-            let reply = submit_sq_plantcore_command(
-                self.dispatch_gate.as_ref(),
-                &command_id,
-                &command,
-                |op| self.client.submit_identified(op),
-            );
-            if reply["status"] == "accepted" {
-                match command {
-                    PlantcoreCommand::Interrupt => {
-                        self.interrupt.store(true, Ordering::SeqCst);
-                    }
-                    PlantcoreCommand::Drain => {
-                        self.drain.store(true, Ordering::SeqCst);
-                    }
-                    PlantcoreCommand::Steer { .. }
-                    | PlantcoreCommand::PauseDispatchAfterSafePoint
-                    | PlantcoreCommand::ResumeDispatch => {}
-                }
-            }
-            PreparedPlantcoreReply {
-                value: reply,
-                resume_activation: None,
-            }
-        };
-        let mut recorded = self.plantcore_commands.lock().await;
-        let entry = recorded
-            .get_mut(&command_id)
-            .expect("the bounded command record was inserted before execution");
-        if let Some(existing) = &entry.reply {
-            return replayed_plantcore_reply(existing.clone());
-        }
-        entry.reply = Some(prepared.value.clone());
-        entry.completed.send_replace(true);
-        prepared
     }
 
     async fn publish(
@@ -613,65 +436,6 @@ impl Shared {
     }
 }
 
-fn plantcore_command_rejection(command_id: &str, reason: &'static str) -> Value {
-    json!({
-        "type": "plantcore_command_reply_v1",
-        "command_id": command_id,
-        "status": "rejected",
-        "reason": reason,
-    })
-}
-
-async fn dispatch_gate_command_reply(
-    gate: Option<&Arc<crate::runtime::DispatchGate>>,
-    command_id: &str,
-    command: &PlantcoreCommand,
-) -> Option<PreparedPlantcoreReply> {
-    let result = match command {
-        PlantcoreCommand::PauseDispatchAfterSafePoint => match gate {
-            Some(gate) => gate.pause_after_safe_point().await.map(|()| {
-                (
-                    json!({
-                        "type": "plantcore_command_reply_v1",
-                        "command_id": command_id,
-                        "status": "accepted",
-                        "safe_point": "dispatch_gate_active",
-                    }),
-                    None,
-                )
-            }),
-            None => Err("dispatch_gate_unavailable"),
-        },
-        PlantcoreCommand::ResumeDispatch => match gate {
-            Some(gate) => gate.prepare_resume().map(|activation| {
-                (
-                    json!({
-                        "type": "plantcore_command_reply_v1",
-                        "command_id": command_id,
-                        "status": "accepted",
-                        "safe_point": "dispatch_gate_open",
-                    }),
-                    Some(activation),
-                )
-            }),
-            None => Err("dispatch_gate_unavailable"),
-        },
-        PlantcoreCommand::Steer { .. } | PlantcoreCommand::Interrupt | PlantcoreCommand::Drain => {
-            return None;
-        }
-    };
-    Some(match result {
-        Ok((value, resume_activation)) => PreparedPlantcoreReply {
-            value,
-            resume_activation,
-        },
-        Err(reason) => PreparedPlantcoreReply {
-            value: plantcore_command_rejection(command_id, reason),
-            resume_activation: None,
-        },
-    })
-}
-
 fn validate_listen(listen: SocketAddr, plantcore: bool) -> Result<()> {
     let required_plantcore_listen = SocketAddr::from(([127, 0, 0, 1], 0));
     if plantcore && listen != required_plantcore_listen {
@@ -729,6 +493,12 @@ pub(crate) async fn serve(
     // frozen presentation replay cursor or appear without an explicit authenticated subscription.
     let (publications, _) = broadcast::channel(64);
     let (maintenance, _) = broadcast::channel(64);
+    let commands = PlantcoreCommands::new(
+        handle.client.clone(),
+        dispatch_gate.clone(),
+        interrupt,
+        drain,
+    );
     let shared = Arc::new(Shared {
         client: handle.client,
         control: handle.control.downgrade(),
@@ -748,10 +518,8 @@ pub(crate) async fn serve(
         session_id,
         plantcore,
         machine_schema_version,
-        plantcore_commands: Mutex::new(std::collections::BTreeMap::new()),
+        commands,
         dispatch_gate,
-        interrupt,
-        drain,
         recording_fault: Mutex::new(recording_fault),
     });
     let mut events = handle.events;
@@ -856,7 +624,7 @@ pub(crate) async fn serve(
                 let frame_budget = frame_budget.clone();
                 connections.spawn(async move {
                     let _permit = permit;
-                    if serve_connection(socket, &shared, frame_budget).await.is_err() {
+                    if ConnectionSession::new(socket, shared.connection_services(), frame_budget).run().await.is_err() {
                         // Untrusted client errors never reach synchronous stderr. Record only a
                         // saturating aggregate for the fixed-size shutdown diagnostic.
                         shared.record_client_failure();
@@ -894,661 +662,6 @@ pub(crate) async fn serve(
         bail!("headless event pump stopped before transport shutdown");
     }
     Ok(())
-}
-
-fn session_identity_mismatch(
-    plantcore: bool,
-    resident_session_id: &str,
-    requested_session_id: Option<&str>,
-    resume_from: Option<u64>,
-) -> bool {
-    plantcore
-        && (requested_session_id.is_some_and(|requested| requested != resident_session_id)
-            || resume_from.is_some_and(|cursor| cursor > 0) && requested_session_id.is_none())
-}
-
-async fn serve_connection(
-    socket: TcpStream,
-    shared: &Shared,
-    frame_budget: Arc<Semaphore>,
-) -> Result<()> {
-    let (reader, mut writer) = socket.into_split();
-    let mut reader = FrameReader::new(reader, frame_budget);
-    let hello = tokio::time::timeout(
-        iteron_tunables::param_duration("cli.tui.headless.handshake_timeout", HANDSHAKE_TIMEOUT),
-        reader.next_frame(),
-    )
-    .await
-    .context("headless handshake timed out")??
-    .context("client disconnected before handshake")?;
-    let ParsedClientFrame {
-        frame: hello,
-        input_guard: hello_input_guard,
-    } = parse_client_frame(hello).await?;
-    let (version, resume_from, requested_session_id, product_contract_version, observation_only) =
-        match hello {
-            ClientFrame::Hello {
-                bearer_token,
-                protocol_version,
-                resume_from,
-                session_id,
-                product_contract_version,
-                observation_only,
-            } if shared.auth_token.authorizes(&bearer_token) => (
-                protocol_version,
-                resume_from,
-                session_id,
-                product_contract_version,
-                observation_only,
-            ),
-            ClientFrame::Hello { .. }
-            | ClientFrame::Submit { .. }
-            | ClientFrame::Control { .. } => {
-                // Do not expose even the negotiated protocol version until the capability check has
-                // succeeded. Missing/malformed tokens fail during bounded parsing on the same path.
-                bail!("headless client authorization failed");
-            }
-        };
-    drop(hello_input_guard);
-    let negotiated =
-        iteron_protocol::client_negotiation::negotiate_client_v1(version, observation_only);
-    if negotiated.is_err() {
-        send_frame(
-            &mut writer,
-            &shared.outbound_budget,
-            &shared.frame_preparers,
-            &shared.fragment_encoders,
-            error_frame(
-                "protocol_version_mismatch",
-                &format!(
-                    "unsupported SQ/EQ protocol version {version}; expected {PROTOCOL_VERSION}"
-                ),
-            ),
-        )
-        .await?;
-        return Ok(());
-    }
-    let negotiated = negotiated.expect("negotiation refusal returned before client access");
-    if product_contract_version.is_some_and(|version| version != PRODUCT_CONTRACT_VERSION) {
-        send_frame(
-            &mut writer,
-            &shared.outbound_budget,
-            &shared.frame_preparers,
-            &shared.fragment_encoders,
-            error_frame(
-                "product_contract_version_mismatch",
-                "unsupported product contract version; expected 1",
-            ),
-        )
-        .await?;
-        return Ok(());
-    }
-    if session_identity_mismatch(
-        shared.plantcore,
-        &shared.session_id,
-        requested_session_id.as_deref(),
-        resume_from,
-    ) {
-        send_frame(
-            &mut writer,
-            &shared.outbound_budget,
-            &shared.frame_preparers,
-            &shared.fragment_encoders,
-            error_frame(
-                "session_mismatch",
-                "resume requires the same Run-local resident session identity",
-            ),
-        )
-        .await?;
-        return Ok(());
-    }
-    reader.set_max_frame_bytes(iteron_tunables::param_integer(
-        "cli.tui.headless.input.max_client_frame_bytes",
-        MAX_CLIENT_FRAME_BYTES,
-    ));
-
-    let mut live = shared.live.subscribe();
-    let mut publication_updates = shared.publications.subscribe();
-    let mut maintenance = shared.maintenance.subscribe();
-    let mut maintenance_subscribed = false;
-    let mut maintenance_last = None;
-    let mut maintenance_gap_tick = tokio::time::interval(Duration::from_secs(1));
-    maintenance_gap_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut maintenance_gap_seen = (String::new(), 0);
-    let mut publications_enabled = false;
-    let (cursor, requested, fallback, lost_result, oldest) = {
-        let ring = shared.ring.lock().await;
-        let cursor = shared.cursor.load(Ordering::Acquire);
-        let requested = resume_from.unwrap_or(cursor);
-        (
-            cursor,
-            requested,
-            ring.rollout_required(requested, cursor),
-            ring.lost_result_after(requested),
-            ring.oldest_seq(),
-        )
-    };
-    if requested > cursor {
-        send_frame(
-            &mut writer,
-            &shared.outbound_budget,
-            &shared.frame_preparers,
-            &shared.fragment_encoders,
-            error_frame(
-                "cursor_ahead",
-                &format!("resume cursor {requested} is ahead of server cursor {cursor}"),
-            ),
-        )
-        .await?;
-        return Ok(());
-    }
-    if lost_result {
-        send_frame(
-            &mut writer,
-            &shared.outbound_budget,
-            &shared.frame_preparers,
-            &shared.fragment_encoders,
-            error_frame(
-                "cursor_expired",
-                "the requested cursor predates an exact terminal result retained by this server",
-            ),
-        )
-        .await?;
-        return Ok(());
-    }
-    send_frame(
-        &mut writer,
-        &shared.outbound_budget,
-        &shared.frame_preparers,
-        &shared.fragment_encoders,
-        ServerFrame::Hello {
-            protocol_version: PROTOCOL_VERSION,
-            session_id: shared.session_id.clone(),
-            cursor,
-            replay_source: if fallback { "rollout" } else { "ring" },
-            product_contract_version,
-            client_access: observation_only.then_some(negotiated.access),
-        },
-    )
-    .await?;
-    if fallback {
-        send_rollout(
-            &mut writer,
-            &shared.outbound_budget,
-            &shared.frame_preparers,
-            &shared.fragment_encoders,
-            &shared.rollout_replays,
-            &shared.rollout_path,
-        )
-        .await?;
-    }
-    let mut delivered = if fallback {
-        oldest
-            .context("headless replay ring is empty behind a nonzero live cursor")?
-            .saturating_sub(1)
-    } else {
-        requested
-    };
-    while delivered < cursor {
-        let expected = delivered
-            .checked_add(1)
-            .context("headless replay cursor exhausted")?;
-        let frame = shared
-            .ring
-            .lock()
-            .await
-            .try_lease(expected, &shared.replay_retention);
-        let Some(frame) = frame else {
-            send_frame(
-                &mut writer,
-                &shared.outbound_budget,
-                &shared.frame_preparers,
-                &shared.fragment_encoders,
-                error_frame(
-                    "slow_client",
-                    "replay sequence left the bounded ring or its aggregate retention budget; reconnect with resume_from",
-                ),
-            )
-            .await?;
-            return Ok(());
-        };
-        debug_assert_eq!(frame.seq(), expected);
-        send_encoded_frame(
-            &mut writer,
-            &shared.outbound_budget,
-            &shared.fragment_encoders,
-            frame,
-        )
-        .await?;
-        delivered = expected;
-    }
-
-    let mut idle_deadline = tokio::time::Instant::now()
-        + iteron_tunables::param_duration(
-            "cli.tui.headless.authenticated_idle_timeout",
-            AUTHENTICATED_IDLE_TIMEOUT,
-        );
-    let mut pending_control: Option<control::Pending> = None;
-    loop {
-        tokio::select! {
-            inbound = tokio::time::timeout_at(
-                idle_deadline,
-                reader.next_frame_with_partial_timeout(iteron_tunables::param_duration("cli.tui.headless.partial_frame_timeout", PARTIAL_FRAME_TIMEOUT)),
-            ), if pending_control.is_none() => {
-                let Some(bytes) = inbound
-                    .context("authenticated headless client idle timeout")??
-                else {
-                    return Ok(());
-                };
-                idle_deadline = tokio::time::Instant::now() + iteron_tunables::param_duration("cli.tui.headless.authenticated_idle_timeout", AUTHENTICATED_IDLE_TIMEOUT);
-                let ParsedClientFrame { frame, input_guard } =
-                    parse_client_frame(bytes).await?;
-                match frame {
-                    ClientFrame::Hello { .. } => {
-                        drop(input_guard);
-                        send_frame(
-                            &mut writer,
-                            &shared.outbound_budget,
-                            &shared.frame_preparers,
-                            &shared.fragment_encoders,
-                            error_frame(
-                                "duplicate_handshake",
-                                "the version handshake is already complete",
-                            ),
-                        )
-                        .await?;
-                        return Ok(());
-                    }
-                    ClientFrame::Submit { protocol_version, op } => {
-                        if !negotiated.accepts_submission(protocol_version) {
-                            drop(op);
-                            drop(input_guard);
-                            send_frame(
-                                &mut writer,
-                                &shared.outbound_budget,
-                                &shared.frame_preparers,
-                                &shared.fragment_encoders,
-                                error_frame(
-                                    if observation_only { "observer_authority" } else { "protocol_version_mismatch" },
-                                    if observation_only {
-                                        "this connection negotiated observation authority; submissions are unavailable"
-                                    } else {
-                                        "submission protocol version does not match the server"
-                                    },
-                                ),
-                            )
-                            .await?;
-                            continue;
-                        }
-                        if shared.plantcore {
-                            let mut recording_fault = shared.recording_fault.lock().await;
-                            if recording_fault.is_some() {
-                                match submit_plantcore_initial_input(
-                                    shared.dispatch_gate.as_ref(),
-                                    op,
-                                    |_| Ok::<_, std::convert::Infallible>(()),
-                                ) {
-                                    Ok(Ok(())) => {}
-                                    Ok(Err(never)) => match never {},
-                                    Err(reason) => {
-                                        drop(recording_fault);
-                                        drop(input_guard);
-                                        send_frame(
-                                            &mut writer,
-                                            &shared.outbound_budget,
-                                            &shared.frame_preparers,
-                                            &shared.fragment_encoders,
-                                            error_frame("submission_refused", reason),
-                                        )
-                                        .await?;
-                                        continue;
-                                    }
-                                }
-                                let fault = recording_fault
-                                    .take()
-                                    .expect("the recording fault was checked while locked");
-                                drop(recording_fault);
-                                drop(input_guard);
-                                send_recording_fault(
-                                    &mut writer,
-                                    &shared.outbound_budget,
-                                    &shared.frame_preparers,
-                                    &shared.fragment_encoders,
-                                    fault,
-                                    delivered
-                                        .checked_add(1)
-                                        .context("headless recording fault cursor exhausted")?,
-                                )
-                                .await?;
-                                return Ok(());
-                            }
-                            drop(recording_fault);
-                        }
-                        let submission = if shared.plantcore {
-                            match submit_plantcore_initial_input(
-                                shared.dispatch_gate.as_ref(),
-                                op,
-                                |op| shared.client.submit(op),
-                            ) {
-                                Ok(submission) => submission,
-                                Err(reason) => {
-                                    drop(input_guard);
-                                    send_frame(
-                                        &mut writer,
-                                        &shared.outbound_budget,
-                                        &shared.frame_preparers,
-                                        &shared.fragment_encoders,
-                                        error_frame("submission_refused", reason),
-                                    )
-                                    .await?;
-                                    continue;
-                                }
-                            }
-                        } else {
-                            shared.client.submit(op)
-                        };
-                        // The parsed operation keeps the completed input-frame authority until the
-                        // SQ has either acquired its own byte permit or refused the submission.
-                        drop(input_guard);
-                        if let Err(error) = submission {
-                            send_frame(
-                                &mut writer,
-                                &shared.outbound_budget,
-                                &shared.frame_preparers,
-                                &shared.fragment_encoders,
-                                error_frame("submission_refused", &error.to_string()),
-                            ).await?;
-                        }
-                    }
-                    ClientFrame::Control {
-                        protocol_version,
-                        request_id,
-                        control,
-                    } => {
-                        if !negotiated.accepts_control(protocol_version, control.is_read_only()) {
-                            drop(control);
-                            drop(input_guard);
-                            send_frame(
-                                &mut writer,
-                                &shared.outbound_budget,
-                                &shared.frame_preparers,
-                                &shared.fragment_encoders,
-                                error_frame(
-                                    if observation_only { "observer_authority" } else { "protocol_version_mismatch" },
-                                    if observation_only {
-                                        "this connection accepts only read controls stamped with its negotiated client version"
-                                    } else {
-                                        "control request protocol version does not match the server"
-                                    },
-                                ),
-                            )
-                            .await?;
-                            continue;
-                        }
-                        drop(input_guard);
-                        match control {
-                            control::WireControl::MaintenanceV1 { command } => {
-                                let subscribe = matches!(&command, iteron_protocol::advisory_maintenance_control::MaintenanceReadV1::Subscribe { .. });
-                                if subscribe { maintenance = shared.maintenance.subscribe(); }
-                                let reply = shared.client.maintenance_v1(command);
-                                if subscribe && matches!(reply["type"].as_str(), Some("maintenance_snapshot_v1" | "maintenance_unavailable_v1")) {
-                                    maintenance_subscribed = true;
-                                    maintenance_last = reply["event"]["run_id"].as_str().zip(reply["event"]["observation"]["journal_revision"].as_u64()).map(|(run, revision)| (run.to_owned(), revision));
-                                }
-                                send_frame(&mut writer, &shared.outbound_budget, &shared.frame_preparers, &shared.fragment_encoders,
-                                    ServerFrame::ControlReply { protocol_version, request_id, reply }).await?;
-                            }
-                            control::WireControl::TurnPublicationsV1 { command } => {
-                                let subscribe = matches!(&command, iteron_protocol::turn_publication::TurnPublicationReadV1::Subscribe { .. });
-                                if subscribe {
-                                    // Subscribe before the snapshot read. Any overlap is explicit
-                                    // and deduplicated by the actual current-run source sequence.
-                                    publication_updates = shared.publications.subscribe();
-                                }
-                                let reply = shared.client.turn_publications_v1(command);
-                                if subscribe && reply["type"] == "turn_publications_v1" {
-                                    publications_enabled = true;
-                                }
-                                send_frame(
-                                    &mut writer, &shared.outbound_budget, &shared.frame_preparers,
-                                    &shared.fragment_encoders,
-                                    ServerFrame::ControlReply { protocol_version: PROTOCOL_VERSION, request_id, reply },
-                                ).await?;
-                            }
-                            control::WireControl::ArtifactsV1 { command } => {
-                                send_frame(
-                                    &mut writer,
-                                    &shared.outbound_budget,
-                                    &shared.frame_preparers,
-                                    &shared.fragment_encoders,
-                                    ServerFrame::ControlReply {
-                                        protocol_version: PROTOCOL_VERSION,
-                                        request_id,
-                                        reply: shared.client.artifacts_v1(command),
-                                    },
-                                ).await?;
-                            }
-                            control::WireControl::ProductV1 { command } => {
-                                let reply = if product_contract_version.is_none() {
-                                    json!({
-                                        "type": "control_refused_v1",
-                                        "contract_version": PRODUCT_CONTRACT_VERSION,
-                                        "reason_code": "contract_not_negotiated",
-                                    })
-                                } else if shared.plantcore {
-                                    json!({
-                                        "type": "control_refused_v1",
-                                        "contract_version": PRODUCT_CONTRACT_VERSION,
-                                        "reason_code": "mode_unavailable",
-                                    })
-                                } else {
-                                    control::product_reply(&shared.client, command)
-                                };
-                                send_frame(
-                                    &mut writer,
-                                    &shared.outbound_budget,
-                                    &shared.frame_preparers,
-                                    &shared.fragment_encoders,
-                                    ServerFrame::ControlReply {
-                                        protocol_version: PROTOCOL_VERSION,
-                                        request_id,
-                                        reply,
-                                    },
-                                )
-                                .await?;
-                            }
-                            control::WireControl::PlantcoreCommandV1 {
-                                command_id,
-                                command,
-                            } => {
-                                let prepared = shared
-                                    .submit_plantcore_command(command_id, command)
-                                    .await;
-                                let resume_activation = prepared.resume_activation;
-                                send_frame(
-                                    &mut writer,
-                                    &shared.outbound_budget,
-                                    &shared.frame_preparers,
-                                    &shared.fragment_encoders,
-                                    ServerFrame::ControlReply {
-                                        protocol_version: PROTOCOL_VERSION,
-                                        request_id,
-                                        reply: prepared.value,
-                                    },
-                                )
-                                .await?;
-                                if let (Some(gate), Some(activation)) =
-                                    (&shared.dispatch_gate, resume_activation)
-                                {
-                                    gate.activate_resume(activation)
-                                        .map_err(anyhow::Error::msg)?;
-                                }
-                            }
-                            control => {
-                                let sender = shared
-                                    .control
-                                    .upgrade()
-                                    .context("headless App Server control channel closed")?;
-                                pending_control =
-                                    Some(control::dispatch(sender, request_id, control));
-                            }
-                        }
-                    }
-                }
-            }
-            reply = control::receive(&mut pending_control), if pending_control.is_some() => {
-                let (request_id, reply) = reply?;
-                pending_control = None;
-                send_frame(
-                    &mut writer,
-                    &shared.outbound_budget,
-                    &shared.frame_preparers,
-                    &shared.fragment_encoders,
-                    ServerFrame::ControlReply {
-                        protocol_version: PROTOCOL_VERSION,
-                        request_id,
-                        reply: control::reply_value(reply),
-                    },
-                )
-                .await?;
-                idle_deadline = tokio::time::Instant::now() + iteron_tunables::param_duration("cli.tui.headless.authenticated_idle_timeout", AUTHENTICATED_IDLE_TIMEOUT);
-            }
-            _ = maintenance_gap_tick.tick(), if maintenance_subscribed => {
-                let gap = shared.client.maintenance_gaps();
-                let run = gap["run_id"].as_str().unwrap_or_default();
-                let count = gap["presentation_gaps"].as_u64().unwrap_or(0);
-                if maintenance_gap_seen.0 != run { maintenance_gap_seen = (run.to_owned(), 0); }
-                if count > maintenance_gap_seen.1 {
-                    maintenance_gap_seen.1 = count;
-                    send_frame(&mut writer, &shared.outbound_budget, &shared.frame_preparers, &shared.fragment_encoders,
-                        error_frame("maintenance_gap", "optional observations exceeded the bounded session presentation queue; read maintenance_v1 for actual current journal state")).await?;
-                }
-            }
-            event = maintenance.recv(), if maintenance_subscribed => {
-                match event {
-                    Ok(event) => advisory_maintenance::send(&mut writer, &shared.client, &shared.outbound_budget,
-                        &shared.frame_preparers, &shared.fragment_encoders, &mut maintenance_last, event).await?,
-                    Err(broadcast::error::RecvError::Lagged(_)) => send_frame(&mut writer,
-                        &shared.outbound_budget, &shared.frame_preparers, &shared.fragment_encoders,
-                        error_frame("maintenance_gap", "maintenance snapshots exceeded the bounded queue; read maintenance_v1 to reconcile current journal state")).await?,
-                    Err(broadcast::error::RecvError::Closed) => maintenance_subscribed = false,
-                }
-            }
-            publication = publication_updates.recv(), if publications_enabled => {
-                match publication {
-                    Ok(publication) => {
-                        turn_publication::send(
-                            &mut writer, &shared.client, &shared.outbound_budget,
-                            &shared.frame_preparers, &shared.fragment_encoders, publication,
-                        ).await?;
-                    }
-                    Err(broadcast::error::RecvError::Lagged(_)) => {
-                        send_frame(
-                            &mut writer, &shared.outbound_budget, &shared.frame_preparers,
-                            &shared.fragment_encoders,
-                            error_frame("turn_publication_gap", "publication updates exceeded the bounded queue; read turn_publications_v1 to reconcile durable facts"),
-                        ).await?;
-                    }
-                    Err(broadcast::error::RecvError::Closed) => publications_enabled = false,
-                }
-            }
-            outbound = live.recv() => {
-                if publications_enabled {
-                    // The publication source is enqueued before its corresponding legacy
-                    // terminal. Drain at most one bounded channel window before that terminal,
-                    // while keeping the outer select fair to input and other output.
-                    for _ in 0..64 {
-                        match publication_updates.try_recv() {
-                            Ok(publication) => turn_publication::send(
-                                &mut writer, &shared.client, &shared.outbound_budget,
-                                &shared.frame_preparers, &shared.fragment_encoders, publication,
-                            ).await?,
-                            Err(broadcast::error::TryRecvError::Lagged(_)) => {
-                                send_frame(
-                                    &mut writer, &shared.outbound_budget, &shared.frame_preparers,
-                                    &shared.fragment_encoders,
-                                    error_frame("turn_publication_gap", "publication updates exceeded the bounded queue; read turn_publications_v1 to reconcile durable facts"),
-                                ).await?;
-                            }
-                            Err(broadcast::error::TryRecvError::Empty | broadcast::error::TryRecvError::Closed) => break,
-                        }
-                    }
-                }
-                match outbound {
-                    Ok(seq) if seq <= delivered => {
-                        // Subscription happens before the ring snapshot; a frame replayed from the
-                        // snapshot can therefore still have an already-queued notification.
-                    }
-                    Ok(seq) => {
-                        let frame = shared.ring.lock().await.notified_next(
-                            delivered,
-                            seq,
-                            &shared.replay_retention,
-                        );
-                        let Some(frame) = frame else {
-                            send_frame(
-                                &mut writer,
-                                &shared.outbound_budget,
-                                &shared.frame_preparers,
-                                &shared.fragment_encoders,
-                                error_frame(
-                                    "slow_client",
-                                    "live sequence gapped or left the bounded replay ring; reconnect with resume_from",
-                                ),
-                            )
-                            .await?;
-                            return Ok(());
-                        };
-                        send_encoded_frame(
-                            &mut writer,
-                            &shared.outbound_budget,
-                            &shared.fragment_encoders,
-                            frame,
-                        )
-                        .await?;
-                        delivered = seq;
-                        idle_deadline =
-                            tokio::time::Instant::now() + iteron_tunables::param_duration("cli.tui.headless.authenticated_idle_timeout", AUTHENTICATED_IDLE_TIMEOUT);
-                    }
-                    Err(broadcast::error::RecvError::Lagged(_)) => {
-                        send_frame(
-                            &mut writer,
-                            &shared.outbound_budget,
-                            &shared.frame_preparers,
-                            &shared.fragment_encoders,
-                            error_frame(
-                                "slow_client",
-                                "client fell behind the bounded live queue; reconnect with resume_from",
-                            ),
-                        )
-                        .await?;
-                        return Ok(());
-                    }
-                    Err(broadcast::error::RecvError::Closed) => return Ok(()),
-                }
-            }
-        }
-    }
-}
-
-struct ParsedClientFrame {
-    frame: ClientFrame,
-    input_guard: FrameBytes,
-}
-
-async fn parse_client_frame(bytes: FrameBytes) -> Result<ParsedClientFrame> {
-    // Parsing a legal multimodal submission can scan tens of MiB. Moving the owned, byte-budgeted
-    // frame into the blocking pool keeps its input authority attached to the parsed Op until SQ
-    // admission and guarantees its zeroizing Drop runs before those permits return.
-    tokio::task::spawn_blocking(move || {
-        let frame = input::parse(&bytes)?;
-        Ok(ParsedClientFrame {
-            frame,
-            input_guard: bytes,
-        })
-    })
-    .await
-    .context("headless client-frame parser task join")?
 }
 
 async fn send_rollout<W: AsyncWrite + Unpin>(
