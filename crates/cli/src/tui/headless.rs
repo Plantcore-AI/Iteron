@@ -1012,6 +1012,9 @@ async fn serve_connection(
     let mut maintenance = shared.maintenance.subscribe();
     let mut maintenance_subscribed = false;
     let mut maintenance_last = None;
+    let mut maintenance_gap_tick = tokio::time::interval(Duration::from_secs(1));
+    maintenance_gap_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut maintenance_gap_seen = (String::new(), 0);
     let mut publications_enabled = false;
     let (cursor, requested, fallback, lost_result, oldest) = {
         let ring = shared.ring.lock().await;
@@ -1409,6 +1412,17 @@ async fn serve_connection(
                 )
                 .await?;
                 idle_deadline = tokio::time::Instant::now() + iteron_tunables::param_duration("cli.tui.headless.authenticated_idle_timeout", AUTHENTICATED_IDLE_TIMEOUT);
+            }
+            _ = maintenance_gap_tick.tick(), if maintenance_subscribed => {
+                let gap = shared.client.maintenance_gaps();
+                let run = gap["run_id"].as_str().unwrap_or_default();
+                let count = gap["presentation_gaps"].as_u64().unwrap_or(0);
+                if maintenance_gap_seen.0 != run { maintenance_gap_seen = (run.to_owned(), 0); }
+                if count > maintenance_gap_seen.1 {
+                    maintenance_gap_seen.1 = count;
+                    send_frame(&mut writer, &shared.outbound_budget, &shared.frame_preparers, &shared.fragment_encoders,
+                        error_frame("maintenance_gap", "optional observations exceeded the bounded session presentation queue; read maintenance_v1 for actual current journal state")).await?;
+                }
             }
             event = maintenance.recv(), if maintenance_subscribed => {
                 match event {

@@ -104,12 +104,10 @@ impl RunningTurnPump<'_> {
         let mut drain_admission_closed = false;
         loop {
             tokio::select! {
-                // Biased so the event stream is served before the turn is polled
-                // again: a burst of deltas must reach the frontend while the turn
-                // is still producing, not in one lump at the end.
-                biased;
+                // Independent observers share fair polling with the runtime and its completion.
+                // SessionHost drains queued runtime observations after the future completes.
                 maintenance_event = maintenance.next() => {
-                    let _ = events.publish(maintenance_event).await;
+                    events.try_publish_maintenance(maintenance_event);
                 }
                 Some(runtime_event) = runtime_ui_rx.recv() => {
                     publish_runtime_event(

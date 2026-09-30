@@ -75,6 +75,11 @@ pub(super) fn render(app: &mut App, session: &Session) {
     }
     let observation = event.observation;
     let mut rows = vec![
+        item(
+            "•",
+            "presentation gaps",
+            &reply["presentation"]["presentation_gaps"].to_string(),
+        ),
         item("•", "source", "independent maintenance journal"),
         item("•", "revision", &observation.journal_revision.to_string()),
         item(

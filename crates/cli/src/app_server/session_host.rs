@@ -293,7 +293,7 @@ impl AppServer {
                         continue
                     }
                     maintenance_event = maintenance.next() => {
-                        let _ = events.publish(maintenance_event).await;
+                        events.try_publish_maintenance(maintenance_event);
                         continue
                     }
                     Some(runtime_event) = runtime_ui_rx.recv() => {

@@ -307,6 +307,10 @@ impl AppServerClient {
         self.contract.events_read(after)
     }
 
+    pub(crate) fn maintenance_gaps(&self) -> serde_json::Value {
+        self.contract.maintenance_gaps()
+    }
+
     pub(crate) fn maintenance_v1(
         &self,
         command: iteron_protocol::advisory_maintenance_control::MaintenanceReadV1,

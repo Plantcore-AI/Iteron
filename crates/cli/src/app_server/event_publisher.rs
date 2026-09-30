@@ -520,6 +520,55 @@ impl EventPublisher {
         }
     }
 
+    /// Optional maintenance has its own nonblocking admission. It never enters cosmetic flush
+    /// or borrows terminal backpressure. Loss is an explicit bounded presentation counter; the
+    /// actual journal remains available through Read regardless of this queue's capacity.
+    pub(super) fn try_publish_maintenance(&mut self, event: ServerEvent) -> bool {
+        let valid = match &event {
+            ServerEvent::AdvisoryMaintenance(event) => {
+                event.validate().is_ok()
+                    && self.run_id.as_ref() == Some(&event.run_id)
+                    && self.session_id.as_ref() == Some(&event.thread_id)
+            }
+            ServerEvent::MaintenanceAvailability(event) => {
+                self.run_id.as_ref() == Some(&event.run_id)
+                    && self.session_id.as_ref() == Some(&event.thread_id)
+            }
+            _ => false,
+        };
+        if !valid {
+            return false;
+        }
+        let charge = event_heap_bytes(&event).max(1);
+        let admitted = (|| {
+            let permits = u32::try_from(charge).ok()?;
+            let permit = self
+                .byte_budget
+                .clone()
+                .try_acquire_many_owned(permits)
+                .ok()?;
+            let slot = self.events.try_reserve().ok()?;
+            let seq = self.next_seq;
+            let next = seq.checked_add(1)?;
+            let envelope = EventEnvelope {
+                seq,
+                protocol_version: PROTOCOL_VERSION,
+                event,
+                assistant_text_spill: None,
+                _byte_permit: Some(permit),
+            };
+            self.contract.observe_with_spill(seq, &envelope.event, None);
+            self.next_seq = next;
+            slot.send(envelope);
+            Some(())
+        })()
+        .is_some();
+        if !admitted {
+            self.contract.note_maintenance_gap();
+        }
+        admitted
+    }
+
     /// Publish one event, applying the bounded-queue policy.
     ///
     /// Authoritative events wait for room. The owner policy cumulatively coalesces cosmetic stream

@@ -57,7 +57,7 @@ pub(super) fn read(reader: &ContractReader, command: MaintenanceReadV1) -> Value
             if event.validate().is_err() {
                 return json!({"type":"maintenance_unavailable_v1","reason_code":"invalid_observation"});
             }
-            json!({"type":"maintenance_snapshot_v1","event":event})
+            json!({"type":"maintenance_snapshot_v1","event":event,"presentation":reader.maintenance_gaps()})
         }
         Ok(_) => json!({"type":"maintenance_refused_v1","reason_code":"run_scope_changed"}),
         Err(error) => json!({"type":"maintenance_unavailable_v1","reason_code":error_code(error)}),

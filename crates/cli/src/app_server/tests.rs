@@ -2703,3 +2703,66 @@ async fn maintenance_reader_captures_actual_host_owner_and_refuses_foreign_threa
     drop(agent);
     let _ = std::fs::remove_dir_all(workspace);
 }
+
+#[tokio::test]
+async fn optional_maintenance_saturation_does_not_flush_or_await_parent_cosmetic_tail() {
+    use iteron_protocol::advisory_maintenance_control::{MaintenanceEventV1, MaintenanceReadV1};
+    let workspace = temp_workspace("maintenance-saturated");
+    let agent = agent_in(&workspace);
+    let port = agent.advisory_maintenance_port().unwrap();
+    let observation = port.wait(0, 10_000).await.unwrap();
+    let policy = AppServerQueuePolicy::new(
+        SQ_PRIORITY_CAPACITY + 1,
+        1_000_000,
+        1,
+        CosmeticOverflow::Coalesce,
+        AuthoritativeOverflow::Reject,
+    )
+    .unwrap();
+    let (mut handle, mut ends) = wire_with_queue_policy(false, policy).unwrap();
+    let thread = SessionId("session-control-plane".into());
+    ends.events
+        .bind_lifecycle_identity(thread.clone(), agent.rollout.run_id().clone());
+    ends.events.contract.bind_artifact_owner(&agent);
+    ends.events
+        .publish(ServerEvent::Notice("occupied mandatory queue entry".into()))
+        .await
+        .unwrap();
+    assert!(
+        ends.events
+            .pending_cosmetic
+            .push(ServerEvent::Ui(UiEvent::Text(
+                "pending assistant data".into()
+            )))
+            .is_none()
+    );
+    let pending_bytes = ends.events.pending_cosmetic.bytes;
+    let next_seq = ends.events.next_seq;
+    let event = ServerEvent::AdvisoryMaintenance(MaintenanceEventV1 {
+        thread_id: thread.clone(),
+        run_id: agent.rollout.run_id().clone(),
+        observation: observation.clone(),
+    });
+    assert!(!ends.events.try_publish_maintenance(event.clone()));
+    assert_eq!(ends.events.next_seq, next_seq);
+    assert_eq!(ends.events.pending_cosmetic.bytes, pending_bytes);
+    let current = handle.client.maintenance_v1(MaintenanceReadV1::Read {
+        thread_id: thread,
+        after_revision: 0,
+        limit: 64,
+    });
+    assert_eq!(current["presentation"]["presentation_gaps"], 1);
+    assert_eq!(
+        current["event"]["observation"]["journal_revision"],
+        observation.journal_revision
+    );
+    assert_eq!(handle.events.recv().await.unwrap().seq, 0);
+    assert!(ends.events.try_publish_maintenance(event));
+    assert_eq!(handle.events.recv().await.unwrap().seq, next_seq);
+    assert_eq!(ends.events.pending_cosmetic.bytes, pending_bytes);
+    drop(ends);
+    drop(handle);
+    drop(port);
+    drop(agent);
+    let _ = std::fs::remove_dir_all(workspace);
+}

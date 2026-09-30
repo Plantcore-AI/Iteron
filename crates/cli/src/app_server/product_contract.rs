@@ -134,6 +134,7 @@ struct Projection {
     publications: super::turn_publication::PublicationReader,
     artifact_scope: Option<crate::artifacts::ArtifactReadScope>,
     maintenance: Option<super::advisory_maintenance::MaintenanceBinding>,
+    maintenance_gaps: u64,
 }
 
 impl std::fmt::Debug for Projection {
@@ -221,6 +222,7 @@ impl ContractReader {
                 return;
             }
             projection.maintenance = None;
+            projection.maintenance_gaps = 0;
             projection.artifacts.bind_thread(&thread_id);
             projection
                 .publications
@@ -293,6 +295,7 @@ impl ContractReader {
                 return false;
             }
             projection.maintenance = None;
+            projection.maintenance_gaps = 0;
             if let Some(snapshot) = projection.snapshot.as_mut() {
                 projection
                     .publications
@@ -349,6 +352,21 @@ impl ContractReader {
         command: iteron_protocol::turn_publication::TurnPublicationReadV1,
     ) -> serde_json::Value {
         self.with_mut(|projection| projection.publications.read(command))
+    }
+
+    pub(super) fn note_maintenance_gap(&self) {
+        self.with_mut(|projection| {
+            projection.maintenance_gaps = projection.maintenance_gaps.saturating_add(1)
+        });
+    }
+    pub(super) fn maintenance_gaps(&self) -> serde_json::Value {
+        self.with_mut(|projection| {
+            serde_json::json!({
+                "thread_id": projection.snapshot.as_ref().map(|snapshot| &snapshot.thread_id),
+                "run_id": projection.snapshot.as_ref().map(|snapshot| &snapshot.run_id),
+                "presentation_gaps": projection.maintenance_gaps,
+            })
+        })
     }
 
     pub(super) fn maintenance_binding(
