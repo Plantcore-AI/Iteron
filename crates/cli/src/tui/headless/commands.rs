@@ -12,8 +12,34 @@ use std::sync::{
 };
 use tokio::sync::Mutex;
 
+// Aggregate retained heap charge includes actual incoming String capacities and conservative
+// node/watch/closed reply storage. No eviction: a previously recorded command remains replayable.
+const MAX_COMMAND_REPLAY_BYTES: usize = 16 * 1024 * 1024;
+const MAX_RECORDED_COMMANDS: usize = 4096;
+const COMMAND_RECORD_AND_REPLY_RESERVE: usize = 16 * 1024;
+#[derive(Default)]
+struct CommandRecords {
+    commands: BTreeMap<String, RecordedCommand>,
+    retained_bytes: usize,
+}
+fn command_charge(id: &String, command: &PlantcoreCommand) -> Option<usize> {
+    let text = match command {
+        PlantcoreCommand::Steer { text } => text.capacity(),
+        _ => 0,
+    };
+    id.capacity()
+        .checked_add(text)?
+        .checked_add(COMMAND_RECORD_AND_REPLY_RESERVE)
+}
+fn rejected(id: &str, reason: &'static str) -> PreparedPlantcoreReply {
+    PreparedPlantcoreReply {
+        value: plantcore_command_rejection(id, reason),
+        resume_activation: None,
+    }
+}
+
 pub(super) struct PlantcoreCommands {
-    recorded: Mutex<BTreeMap<String, RecordedCommand>>,
+    recorded: Mutex<CommandRecords>,
     client: AppServerClient,
     dispatch_gate: Option<Arc<DispatchGate>>,
     interrupt: Arc<AtomicBool>,
@@ -27,7 +53,7 @@ impl PlantcoreCommands {
         drain: Arc<AtomicBool>,
     ) -> Self {
         Self {
-            recorded: Mutex::new(BTreeMap::new()),
+            recorded: Mutex::new(CommandRecords::default()),
             client,
             dispatch_gate,
             interrupt,
@@ -39,10 +65,9 @@ impl PlantcoreCommands {
         command_id: String,
         command: PlantcoreCommand,
     ) -> PreparedPlantcoreReply {
-        const MAX_RECORDED_COMMANDS: usize = 4096;
         let pending_replay = {
             let mut recorded = self.recorded.lock().await;
-            if let Some(previous) = recorded.get(&command_id) {
+            if let Some(previous) = recorded.commands.get(&command_id) {
                 if previous.command != command {
                     return PreparedPlantcoreReply {
                         value: plantcore_command_rejection(&command_id, "command_conflict"),
@@ -54,13 +79,21 @@ impl PlantcoreCommands {
                 }
                 Some(previous.completed.subscribe())
             } else {
-                if recorded.len() >= MAX_RECORDED_COMMANDS {
-                    return PreparedPlantcoreReply {
-                        value: plantcore_command_rejection(&command_id, "command_window_exhausted"),
-                        resume_activation: None,
-                    };
+                let Some(charge) = command_charge(&command_id, &command) else {
+                    return rejected(&command_id, "command_window_exhausted");
+                };
+                if recorded.commands.len() >= MAX_RECORDED_COMMANDS
+                    || recorded
+                        .retained_bytes
+                        .checked_add(charge)
+                        .is_none_or(|bytes| bytes > MAX_COMMAND_REPLAY_BYTES)
+                {
+                    return rejected(&command_id, "command_window_exhausted");
                 }
-                recorded.insert(
+                // Reserve command/body/key/node/watch and the closed bounded receipt before
+                // cloning the retained command or dispatching its gate/SQ operation.
+                recorded.retained_bytes += charge;
+                recorded.commands.insert(
                     command_id.clone(),
                     RecordedCommand {
                         command: command.clone(),
@@ -75,6 +108,7 @@ impl PlantcoreCommands {
             let _ = completed.wait_for(|done| *done).await;
             let recorded = self.recorded.lock().await;
             return recorded
+                .commands
                 .get(&command_id)
                 .and_then(|recorded| recorded.reply.clone())
                 .map(replayed_plantcore_reply)
@@ -115,6 +149,7 @@ impl PlantcoreCommands {
         };
         let mut recorded = self.recorded.lock().await;
         let entry = recorded
+            .commands
             .get_mut(&command_id)
             .expect("the bounded command record was inserted before execution");
         if let Some(existing) = &entry.reply {
@@ -302,4 +337,59 @@ pub(super) async fn dispatch_gate_command_reply(
             resume_activation: None,
         },
     })
+}
+
+#[cfg(test)]
+mod byte_budget_tests {
+    use super::{MAX_COMMAND_REPLAY_BYTES, PlantcoreCommand, PlantcoreCommands};
+    use std::sync::{Arc, atomic::AtomicBool};
+
+    #[tokio::test]
+    async fn actual_owner_exhausts_retained_bytes_before_sq_and_retains_exact_prior_replay() {
+        let (handle, mut ends) = crate::app_server::wire().unwrap();
+        let owner = PlantcoreCommands::new(
+            handle.client,
+            None,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+        );
+        let text = "x".repeat(iteron_protocol::task::MAX_TASK_TEXT_BYTES);
+        let first = owner
+            .submit(
+                "first".into(),
+                PlantcoreCommand::Steer { text: text.clone() },
+            )
+            .await;
+        assert_eq!(first.value["status"], "accepted");
+        assert!(ends.priority_submissions.try_recv().is_ok());
+        let mut accepted = 1;
+        for index in 1..32 {
+            let reply = owner
+                .submit(
+                    format!("command-{index}"),
+                    PlantcoreCommand::Steer { text: text.clone() },
+                )
+                .await;
+            if reply.value["reason"] == "command_window_exhausted" {
+                assert!(
+                    ends.priority_submissions.try_recv().is_err(),
+                    "exhaustion must precede SQ dispatch"
+                );
+                break;
+            }
+            assert_eq!(reply.value["status"], "accepted");
+            assert!(ends.priority_submissions.try_recv().is_ok());
+            accepted += 1;
+        }
+        assert!(accepted < 32);
+        let charged = owner.recorded.lock().await.retained_bytes;
+        assert!(charged <= MAX_COMMAND_REPLAY_BYTES);
+        let replay = owner
+            .submit("first".into(), PlantcoreCommand::Steer { text })
+            .await;
+        assert_eq!(replay.value, first.value);
+        assert!(replay.resume_activation.is_none());
+        assert!(ends.priority_submissions.try_recv().is_err());
+        assert_eq!(owner.recorded.lock().await.retained_bytes, charged);
+    }
 }
