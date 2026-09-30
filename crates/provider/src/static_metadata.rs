@@ -189,6 +189,18 @@ impl StaticProviderMetadata {
             .expect("the provider metadata this build ships is valid schema-v1 JSON")
     }
 
+    /// Physical native baseline from this build's literal document. No tunable or configured
+    /// metadata is read. Unknown endpoint/model pairs remain unknown, even if a replacement
+    /// document claims a window. Planning metadata may narrow its own UI/prompt budget separately.
+    pub(crate) fn shipped_physical_input_ceiling(api_root: &str, model: &str) -> Option<u64> {
+        static SHIPPED: OnceLock<StaticProviderMetadata> = OnceLock::new();
+        SHIPPED
+            .get_or_init(Self::shipped)
+            .route_model_capabilities(api_root, model)
+            .and_then(|caps| caps.context_window_tokens)
+            .filter(|window| *window > 0)
+    }
+
     /// Parse a replacement document through the same strict schema and semantic validation as the
     /// production file loader. This is also the stable refresh seam for embedding frontends.
     pub fn from_slice(bytes: &[u8]) -> Result<Self, ProviderError> {

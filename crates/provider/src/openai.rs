@@ -902,16 +902,10 @@ fn apply_unique_reported_usage(
 #[async_trait::async_trait]
 impl Provider for OpenAiCompat {
     fn physical_input_token_ceiling(&self, model: &str) -> Option<u64> {
-        self.api_root
-            .as_ref()
-            .and_then(|root| {
-                self.static_metadata
-                    .route_model_capabilities(root.as_str(), model)
-            })
-            .and_then(|caps| caps.context_window_tokens)
-            .filter(|window| *window > 0)
+        self.api_root.as_ref().and_then(|root| {
+            crate::usage_bounds::physical_input_ceiling(&self.static_metadata, root.as_str(), model)
+        })
     }
-
     fn usage_bound_semantics(&self) -> crate::ProviderUsageBoundSemantics {
         if self.error_profile == ErrorProfile::OpenAi
             && self

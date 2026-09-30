@@ -1825,7 +1825,8 @@ impl Provider for HealthReportingProvider {
         // smaller planning value to reduce the adapter's already attested ceiling.
         match (inner, captured) {
             (Some(inner), Some(captured)) => Some(inner.max(captured)),
-            (inner, captured) => inner.or(captured),
+            (Some(inner), None) => Some(inner),
+            (None, _) => None,
         }
     }
 

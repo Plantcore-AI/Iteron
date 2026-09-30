@@ -1525,12 +1525,12 @@ fn incomplete_failure(
 #[async_trait::async_trait]
 impl Provider for OpenAiResponses {
     fn physical_input_token_ceiling(&self, model: &str) -> Option<u64> {
-        crate::StaticProviderMetadata::embedded()
-            .route_model_capabilities(self.root.as_str(), model)
-            .and_then(|caps| caps.context_window_tokens)
-            .filter(|window| *window > 0)
+        crate::usage_bounds::physical_input_ceiling(
+            &crate::StaticProviderMetadata::embedded(),
+            self.root.as_str(),
+            model,
+        )
     }
-
     fn usage_bound_semantics(&self) -> crate::ProviderUsageBoundSemantics {
         if self.error_profile == ErrorProfile::OpenAi && self.root.as_str() == DEFAULT_ROOT {
             crate::ProviderUsageBoundSemantics::PartitionedInput
