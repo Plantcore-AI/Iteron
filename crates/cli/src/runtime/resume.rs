@@ -315,7 +315,11 @@ impl Agent {
                 self.observed_trust = Trust::governing(events.into_iter().flat_map(|event| {
                     match event.kind {
                         EventKind::ToolDone { result, .. } => vec![result.trust],
-                        EventKind::MemoryReferenceAdmittedV1 { .. } => vec![Trust::Untrusted],
+                        kind @ EventKind::MemoryReferenceAdmittedV1 { .. } => {
+                            super::memory_activation::replay_reference_trust(&kind)
+                                .into_iter()
+                                .collect()
+                        }
                         EventKind::Message { message } => message
                             .content
                             .into_iter()
@@ -604,7 +608,11 @@ impl Agent {
         let observed_trust = Trust::governing(events.iter().flat_map(|event| {
             match &event.kind {
                 EventKind::ToolDone { result, .. } => vec![result.trust],
-                EventKind::MemoryReferenceAdmittedV1 { .. } => vec![Trust::Untrusted],
+                kind @ EventKind::MemoryReferenceAdmittedV1 { .. } => {
+                    super::memory_activation::replay_reference_trust(kind)
+                        .into_iter()
+                        .collect()
+                }
                 EventKind::Message { message } => message
                     .content
                     .iter()

@@ -154,3 +154,37 @@ fn rejected_publication_does_not_replace_the_actual_plan_state() {
             .is_err()
     );
 }
+
+#[test]
+fn oversized_model_plan_is_refused_without_publication_or_state_change() {
+    let workspace = gate_integration_tests::temp_ws("task-plan-hostile-envelope");
+    let run = RunId("task-plan-hostile-envelope".into());
+    let mut owner = agent(&workspace, &run);
+    let initial = owner.task_plan_snapshot();
+    let mut input = replacement(0, Seq(1));
+    input["steps"] = serde_json::Value::Array(
+        (0..33)
+            .map(|_| {
+                serde_json::json!({
+                    "description":"request outside the allowed plan envelope", "status":"pending"
+                })
+            })
+            .collect(),
+    );
+    assert!(
+        owner
+            .execute_task_plan(TurnId(0), &call("hostile", input))
+            .unwrap()
+            .is_error
+    );
+    assert_eq!(owner.task_plan_snapshot(), initial);
+    let record = owner.rollout.path().to_owned();
+    drop(owner);
+    assert!(
+        !iteron_record::replay(&record)
+            .unwrap()
+            .iter()
+            .any(|event| matches!(event.kind, EventKind::TaskPlanUpdatedV1 { .. }))
+    );
+    std::fs::remove_dir_all(workspace).unwrap();
+}

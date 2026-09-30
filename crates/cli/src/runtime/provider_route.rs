@@ -544,22 +544,20 @@ impl Agent {
                     Some(request_observer.as_ref()),
                 )
                 .await;
-                let accounting = self.route_attempt_accounting(
-                    turn,
-                    route_turn.route_id(),
-                    route_turn.physical_attempt(),
-                    &result,
-                    self.pricing_now(),
-                )?;
-                let monetary_followup_safe =
-                    route_attempt_accounting::monetary_followup_safe(&accounting);
+                let ticket = route_turn
+                    .take_ticket()
+                    .expect("provider intent remains open until settlement");
+                let projected_at_unix_secs = self.pricing_now();
                 let broker_started = Instant::now();
-                self.settle_kernel_effect(
-                    route_turn
-                        .take_ticket()
-                        .expect("provider intent remains open until settlement"),
-                    provider_settlement(turn, route_turn.ordinal(), &result, accounting.clone()),
-                )?;
+                let (accounting, monetary_followup_safe) =
+                    self.provider_attempt_journal().settle_observed(
+                        ticket,
+                        super::provider_attempt_journal::ProviderObservedAttempt {
+                            route_id: route_turn.route_id(),
+                            result: &result,
+                            projected_at_unix_secs,
+                        },
+                    )?;
                 self.observe_plantcore_provider_attempt(turn, &accounting)
                     .map_err(|reason| KernelError::ContextResolution(reason.into()))?;
                 self.commit_provider_route_charge(turn, &accounting)?;
@@ -675,44 +673,6 @@ pub(super) use super::provider_transport_attempt::{
 };
 
 /// Classify one paid physical attempt after it crosses the effect boundary.
-pub(super) fn provider_settlement(
-    turn: TurnId,
-    ordinal: usize,
-    result: &Result<iteron_provider::TurnResult, KernelError>,
-    accounting: iteron_protocol::ProviderRouteAttemptAccounting,
-) -> effects::Settlement {
-    let class = effect_class::EffectClass::Provider;
-    let id = effect_class::effect_id(turn, class, ordinal);
-    let tool = effect_class_label(class).to_string();
-    match result {
-        Ok(_) => effects::Settlement::Definite(EventKind::EffectDone {
-            id,
-            tool,
-            duration_ms: None,
-            provider_route_attempt: Some(accounting),
-        }),
-        Err(KernelError::Provider(error)) if provider_outcome_is_unobservable(error) => {
-            effects::Settlement::Definite(EventKind::EffectUnknown {
-                id,
-                tool,
-                reason: format!(
-                    "provider request was dispatched and produced no authoritative outcome ({}); \
-                     billing remains unknown and continuation requires separate budget admission",
-                    error.public_summary()
-                ),
-                provider_route_attempt: Some(accounting),
-            })
-        }
-        Err(error) => effects::Settlement::Definite(EventKind::EffectFailed {
-            id,
-            tool,
-            reason: strict_utf8_head(&error.public_summary(), EFFECT_REASON_MAX_BYTES),
-            duration_ms: None,
-            provider_route_attempt: Some(accounting),
-        }),
-    }
-}
-
 pub(super) fn provider_outcome_is_unobservable(error: &iteron_provider::ProviderError) -> bool {
     matches!(
         error,

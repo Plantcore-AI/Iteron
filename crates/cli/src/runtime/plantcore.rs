@@ -35,6 +35,23 @@ pub(super) struct PlantcoreRuntime {
     dispatch_gate: Option<Arc<DispatchGate>>,
 }
 
+impl PlantcoreRuntime {
+    pub(super) fn observe_provider_attempt(
+        &mut self,
+        turn: iteron_protocol::TurnId,
+        accounting: &ProviderRouteAttemptAccounting,
+    ) -> Result<(), &'static str> {
+        if !self.enabled {
+            return Ok(());
+        }
+        let turn_number = u64::from(turn.0);
+        if turn_number == 0 {
+            return Err("PlantCore provider turn must be positive");
+        }
+        record_provider_attempt(self, turn_number, accounting)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DispatchGatePhase {
     NotAdmitted,
@@ -462,14 +479,7 @@ impl Agent {
         turn: iteron_protocol::TurnId,
         accounting: &ProviderRouteAttemptAccounting,
     ) -> Result<(), &'static str> {
-        if !self.plantcore.enabled {
-            return Ok(());
-        }
-        let turn_number = u64::from(turn.0);
-        if turn_number == 0 {
-            return Err("PlantCore provider turn must be positive");
-        }
-        record_provider_attempt(&mut self.plantcore, turn_number, accounting)
+        self.plantcore.observe_provider_attempt(turn, accounting)
     }
 
     pub(super) fn plantcore_terminal(&self) -> Option<PlantcoreTerminal> {

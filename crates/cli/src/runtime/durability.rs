@@ -326,50 +326,20 @@ impl Agent {
         class: effect_class::EffectClass,
         ordinal: usize,
         capability: Capability,
-        mut audit_arguments: serde_json::Value,
+        audit_arguments: serde_json::Value,
     ) -> Result<effects::EffectTicket, KernelError> {
-        let mut persistent_bounds = None;
-        let provider_route_attempt = if class == effect_class::EffectClass::Provider {
-            let route_id = audit_arguments
-                .get("route_id")
-                .and_then(serde_json::Value::as_str)
-                .ok_or(KernelError::InvalidRouteMetadata {
-                    field: "provider_route_attempt.route_id",
-                    reason: "provider effect audit projection omitted the selected route",
-                })?;
-            let physical_attempt = audit_arguments
-                .get("physical_attempt")
-                .and_then(serde_json::Value::as_u64)
-                .and_then(|value| u32::try_from(value).ok())
-                .ok_or(KernelError::InvalidRouteMetadata {
-                    field: "provider_route_attempt.physical_attempt",
-                    reason: "provider effect audit projection omitted a bounded physical ordinal",
-                })?;
-            persistent_bounds = self.persistent_provider_bounds(
-                route_id,
-                audit_arguments
-                    .get("max_tokens")
-                    .and_then(serde_json::Value::as_u64)
-                    .unwrap_or(0),
-            )?;
-            let identity = route_attempt_accounting::route_attempt_identity(
-                route_id,
-                physical_attempt,
-                persistent_bounds
-                    .map(|(_, cost)| cost)
-                    .or_else(|| self.active_provider_cost_reservation()),
-            )?;
-            // The typed identity above is the durable route evidence. Raw provider/model strings
-            // are operator-controlled and can contain paths or credential-like material, so the
-            // generic audit projection must not persist a second, unsafe copy.
-            if let Some(arguments) = audit_arguments.as_object_mut() {
-                arguments.remove("route_id");
-                arguments.remove("model");
-            }
-            Some(identity)
-        } else {
-            None
-        };
+        if class == effect_class::EffectClass::Provider {
+            let workspace = self.workspace.clone();
+            return self.provider_attempt_journal().open(
+                &workspace,
+                provider_attempt_journal::ProviderIntent {
+                    turn,
+                    ordinal,
+                    capability,
+                    audit: audit_arguments,
+                },
+            );
+        }
         let effect = effects::BrokeredEffect {
             turn,
             effect_id: effect_class::effect_id(turn, class, ordinal),
@@ -378,12 +348,8 @@ impl Agent {
             capability,
             audit_arguments,
             workspace: effect_workspace(&self.workspace),
-            provider_route_attempt: provider_route_attempt.clone(),
+            provider_route_attempt: None,
         };
-        // `EffectIntent` is appended by the kernel broker rather than `emit_durable_seq`, so the
-        // focused durability fault must be injected at this exact production boundary.  Keeping
-        // the seam here proves that no executor/provider call can exist after an intent fsync
-        // failure, and lets the caller close any pre-dispatch monetary reservation as known zero.
         #[cfg(test)]
         if self.fail_next_durable_append == Some(DurableAppendFault::EffectIntent) {
             self.fail_next_durable_append = None;
@@ -393,50 +359,27 @@ impl Agent {
                 std::io::Error::other("injected durable effect-intent append failure"),
             )));
         }
-        let Agent {
-            rollout,
-            effect_journal,
-            ..
-        } = self;
-        match effect_journal.open(rollout, effect) {
-            Ok(ticket) => {
-                if let (Some((max_tokens, _)), Some(identity)) =
-                    (persistent_bounds, provider_route_attempt.as_ref())
-                    && let Err(error) = self.reserve_persistent_provider(
-                        ticket.turn(),
-                        ticket.effect_id(),
-                        identity,
-                        max_tokens,
-                    )
-                {
-                    let id = ticket.effect_id().clone();
-                    let accounting = iteron_protocol::ProviderRouteAttemptAccounting {
-                        version: identity.version,
-                        route_id: identity.route_id.clone(),
-                        physical_attempt: identity.physical_attempt,
-                        max_cost_reservation_microusd: None,
-                        usage: iteron_protocol::ProviderRouteUsageTruth::NotDispatched,
-                        cost: iteron_protocol::ProviderRouteCostTruth::NotDispatched,
-                    };
-                    let closed = self.settle_kernel_effect(
-                        ticket,
-                        effects::Settlement::Definite(EventKind::EffectFailed {
-                            id,
-                            tool: "provider".into(),
-                            reason: "persistent budget refused before dispatch".into(),
-                            duration_ms: None,
-                            provider_route_attempt: Some(accounting),
-                        }),
-                    );
-                    if let Some(budget) = &self.usd_budget {
-                        budget.settle_not_dispatched();
-                    }
-                    closed?;
-                    return Err(error);
-                }
-                Ok(ticket)
-            }
-            Err(error) => Err(self.effect_boundary_failed(error)),
+        let started = Instant::now();
+        let opened = self.effect_journal.open(&mut self.rollout, effect);
+        self.ledger.record_fsync_latency_us(elapsed_us(started));
+        opened.map_err(|error| self.effect_boundary_failed(error))
+    }
+
+    pub(super) fn provider_attempt_journal(
+        &mut self,
+    ) -> provider_attempt_journal::ProviderAttemptJournal<'_> {
+        let financial = self.provider_financial_context();
+        let pricing_now = self.pricing_now();
+        provider_attempt_journal::ProviderAttemptJournal {
+            rollout: &mut self.rollout,
+            effects: &mut self.effect_journal,
+            ledger: &mut self.ledger,
+            record_failed: &mut self.record_failed,
+            diagnostics: &self.diagnostics,
+            financial,
+            pricing_now,
+            #[cfg(test)]
+            fault: &mut self.fail_next_durable_append,
         }
     }
 
@@ -464,53 +407,17 @@ impl Agent {
         settlement: effects::Settlement,
         cause: UnknownCause,
     ) -> Result<(), KernelError> {
-        let turn = ticket.turn();
-        let id = ticket.effect_id().clone();
-        let identity = ticket.provider_route_attempt().cloned();
-        let provider_accounting = identity.as_ref().map(|identity| match &settlement {
-            effects::Settlement::Definite(
-                EventKind::EffectDone {
-                    provider_route_attempt: Some(accounting),
-                    ..
-                }
-                | EventKind::EffectFailed {
-                    provider_route_attempt: Some(accounting),
-                    ..
-                }
-                | EventKind::EffectUnknown {
-                    provider_route_attempt: Some(accounting),
-                    ..
-                },
-            ) => accounting.clone(),
-            _ => iteron_protocol::ProviderRouteAttemptAccounting::outcome_unobservable(
-                identity.clone(),
-            ),
-        });
-        match self
-            .effect_journal
-            .settle(&mut self.rollout, ticket, settlement, cause)
-        {
-            Ok(()) => {
-                if let Some(accounting) = provider_accounting {
-                    self.settle_persistent_provider(turn, &id, &accounting)?;
-                }
-                Ok(())
-            }
-            Err(error) => {
-                if let Some(identity) = identity {
-                    // A failed terminal barrier cannot release an admitted bound. Conservatively
-                    // quarantine the cohort even when another live agent still has budget room.
-                    let _ = self.settle_persistent_provider(
-                        turn,
-                        &id,
-                        &iteron_protocol::ProviderRouteAttemptAccounting::outcome_unobservable(
-                            identity,
-                        ),
-                    );
-                }
-                Err(self.effect_boundary_failed(error))
-            }
+        if ticket.provider_route_attempt().is_some() {
+            return self
+                .provider_attempt_journal()
+                .settle(ticket, settlement, cause);
         }
+        let started = Instant::now();
+        let committed = self
+            .effect_journal
+            .settle(&mut self.rollout, ticket, settlement, cause);
+        self.ledger.record_fsync_latency_us(elapsed_us(started));
+        committed.map_err(|error| self.effect_boundary_failed(error))
     }
 
     /// Run one lifecycle hook across the effect boundary.

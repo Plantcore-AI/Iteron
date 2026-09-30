@@ -29,7 +29,7 @@ pub(super) struct ProviderRetrySchedule {
     pub(super) limit: u32,
 }
 impl ProviderRouteEvents {
-    fn emit(&self, id: &str, payload: LifecyclePayload) {
+    pub(super) fn emit(&self, id: &str, payload: LifecyclePayload) {
         let Some(emitter) = &self.lifecycle else {
             return;
         };

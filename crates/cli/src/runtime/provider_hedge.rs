@@ -556,8 +556,8 @@ impl Agent {
                 }
                 AttemptTerminal::Completed {
                     index,
-                    ordinal,
-                    physical_attempt,
+                    ordinal: _,
+                    physical_attempt: _,
                     ticket,
                     permit,
                     dispatch_permit,
@@ -565,24 +565,16 @@ impl Agent {
                     rate_limit,
                     result,
                 } => {
-                    let accounting = self.route_attempt_accounting(
-                        turn,
-                        route_id,
-                        physical_attempt,
-                        &result,
-                        self.pricing_now(),
-                    )?;
-                    monetary_followup_safe &=
-                        route_attempt_accounting::monetary_followup_safe(&accounting);
-                    self.settle_kernel_effect(
+                    let projected_at_unix_secs = self.pricing_now();
+                    let (accounting, safe) = self.provider_attempt_journal().settle_observed(
                         ticket,
-                        provider_route::provider_settlement(
-                            turn,
-                            ordinal,
-                            &result,
-                            accounting.clone(),
-                        ),
+                        super::provider_attempt_journal::ProviderObservedAttempt {
+                            route_id,
+                            result: &result,
+                            projected_at_unix_secs,
+                        },
                     )?;
+                    monetary_followup_safe &= safe;
                     self.observe_plantcore_provider_attempt(turn, &accounting)
                         .map_err(|reason| KernelError::ContextResolution(reason.into()))?;
                     self.commit_provider_route_charge(turn, &accounting)?;

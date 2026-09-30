@@ -129,13 +129,17 @@ pub(crate) mod policy_evidence_recorder;
 mod pricing;
 mod private_attachments;
 mod provider_accounting;
+mod provider_attempt_journal;
+mod provider_attempt_pump;
 mod provider_charge_evidence;
 mod provider_financial_context;
 mod provider_governor_state;
 mod provider_hedge;
 mod provider_output_request;
 mod provider_route;
+mod provider_route_admission;
 mod provider_route_events;
+mod provider_route_journal;
 mod provider_route_turn;
 mod resume;
 mod route_attempt_accounting;
@@ -2705,7 +2709,6 @@ impl Agent {
             let request_manifests = self.request_manifest_factory();
             let provider_result = loop {
                 let provider_attempt_started = Instant::now();
-                let attempt_stream_item_base = provider_evidence.stream_items();
                 let mut hedged_dispatch = if provider_refusal.is_none() && use_hedge {
                     let primary_permit = route_turn.take_route_permit();
                     Some(
@@ -2726,17 +2729,7 @@ impl Agent {
                 } else {
                     None
                 };
-                if let Some(dispatch) = &hedged_dispatch {
-                    route_turn.observe_hedged_identity(
-                        dispatch.last_physical_attempt,
-                        dispatch.scheduled_attempts,
-                    )?;
-                }
-                let mut monetary_followup_safe = hedged_dispatch
-                    .as_ref()
-                    .is_none_or(|dispatch| dispatch.monetary_followup_safe);
-                let hedged_this_attempt = hedged_dispatch.is_some();
-                let attempt_receipt = {
+                let physical_attempt = {
                     let request_observer = route_turn.ticket().map(|ticket| {
                         request_manifests.for_ticket(ticket, route_turn.request().max_tokens)
                     });
@@ -2801,18 +2794,16 @@ impl Agent {
                             },
                         },
                     );
-                    provider_stream_attempt::ProviderStreamAttempt {
-                        observer: &mut provider_evidence,
-                        tools: tool_admission,
-                    }
-                    .run(
-                        provider_stream_attempt::ProviderAttemptScope {
-                            provider: route_turn.provider(),
-                            request: route_turn.request(),
-                            // Root installs a trusted immutable observer for this exact physical
-                            // ticket; absence remains explicitly unavailable capture evidence.
-                            request_observer,
+                    provider_attempt_pump::ProviderAttemptPump::run(
+                        &mut route_turn,
+                        provider_stream_attempt::ProviderStreamAttempt {
+                            observer: &mut provider_evidence,
+                            tools: tool_admission,
+                        },
+                        provider_attempt_pump::ProviderAttemptTransport {
+                            observer: request_observer,
                             deadline: provider_deadline,
+                            started: provider_attempt_started,
                             cancellation: provider_transport_attempt::ProviderCancellation {
                                 interrupt: provider_interrupt.clone(),
                                 force_cancel: provider_force_cancel.clone(),
@@ -2824,49 +2815,35 @@ impl Agent {
                         hedged_dispatch.take(),
                         provider_refusal.take(),
                     )
-                    .await
+                    .await?
                 };
-                let result = attempt_receipt.result;
                 if request_manifests.context_inclusion_confirmed() {
                     self.observe_memory_provider_exposure(turn_id);
                 }
-                let attempt_rate_limit = attempt_receipt.quota;
-                route_turn.observe_active(provider_attempt_started.elapsed());
-                // High-frequency deltas stay on the bounded UI stream. Lifecycle telemetry gets
-                // one aggregate row only after this physical dispatch has a terminal, so a long
-                // answer cannot evict higher-value governance events from the flight recorder.
-                if route_turn.ticket().is_some() || hedged_this_attempt {
-                    route_events.physical_stream_terminal(
-                        provider_evidence
-                            .stream_items()
-                            .saturating_sub(attempt_stream_item_base),
-                    );
-                }
-                let single_dispatched = route_turn.ticket().is_some();
-                if let Some(ticket) = route_turn.take_ticket() {
-                    let accounting = self.route_attempt_accounting(
-                        turn_id,
-                        route_turn.route_id(),
-                        route_turn.physical_attempt(),
-                        &result,
-                        usd_attempt.projected_at_unix_secs(),
-                    )?;
-                    monetary_followup_safe =
-                        route_attempt_accounting::monetary_followup_safe(&accounting);
-                    let settlement = provider_route::provider_settlement(
-                        turn_id,
-                        route_turn.ordinal(),
-                        &result,
-                        accounting.clone(),
-                    );
-                    let broker_started = Instant::now();
-                    self.settle_kernel_effect(ticket, settlement)?;
-                    self.observe_plantcore_provider_attempt(turn_id, &accounting)
-                        .map_err(|reason| KernelError::ContextResolution(reason.into()))?;
-                    self.commit_provider_route_charge(turn_id, &accounting)?;
-                    self.ledger
-                        .record_broker_latency_us(elapsed_us(broker_started));
-                }
+                let financial = self.provider_financial_context();
+                let pricing_now = self.pricing_now();
+                let completed = physical_attempt.settle(
+                    &mut route_turn,
+                    provider_attempt_journal::ProviderAttemptJournal {
+                        rollout: &mut self.rollout,
+                        effects: &mut self.effect_journal,
+                        ledger: &mut self.ledger,
+                        record_failed: &mut self.record_failed,
+                        diagnostics: &self.diagnostics,
+                        financial,
+                        pricing_now,
+                        #[cfg(test)]
+                        fault: &mut self.fail_next_durable_append,
+                    },
+                    &route_events,
+                    &mut self.plantcore,
+                    usd_attempt.projected_at_unix_secs(),
+                )?;
+                let result = completed.result;
+                let monetary_followup_safe = completed.monetary_followup_safe;
+                let single_dispatched = completed.single_dispatched;
+                let hedged_this_attempt = completed.hedged;
+                let attempt_rate_limit = completed.quota;
                 if single_dispatched && !hedged_this_attempt {
                     self.observe_governed_route_attempt(
                         turn_id,

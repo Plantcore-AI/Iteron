@@ -11,6 +11,7 @@ pub(super) use super::provider_charge_evidence::{
 };
 
 impl Agent {
+    #[cfg(test)]
     pub(super) fn route_attempt_accounting(
         &self,
         turn: TurnId,

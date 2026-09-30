@@ -4,10 +4,7 @@ use super::{
     Agent, KernelError, persistent_agents, replay_scoped_rollout, route_attempt_accounting,
 };
 use iteron_agents::ControllerError;
-use iteron_protocol::{
-    EventKind, ProviderRouteAttemptAccounting, ProviderRouteAttemptIdentity,
-    ProviderRouteUsageTruth, TurnId,
-};
+use iteron_protocol::{EventKind, ProviderRouteUsageTruth, TurnId};
 use persistent_agents::RuntimeProviderBudgetPort;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -78,54 +75,6 @@ impl Agent {
 
     pub(super) fn provider_scope(&self) -> String {
         provider_scope_for(self.rollout.tenant(), self.rollout.run_id())
-    }
-
-    /// Before intent creation, obtain an independently authenticated worst-case charge. Missing
-    /// pricing never becomes zero. The signed route must match the exact selected physical route.
-    pub(super) fn persistent_provider_bounds(
-        &self,
-        route_id: &str,
-        max_output: u64,
-    ) -> Result<Option<(u64, u64)>, KernelError> {
-        self.provider_financial_context()
-            .cohort_bounds(route_id, max_output, self.pricing_now())
-    }
-
-    /// The durable provider EffectIntent already exists; this second durable CAS must succeed
-    /// before transport dispatch or model-input inclusion. The host mints agent id and epoch.
-    pub(super) fn reserve_persistent_provider(
-        &self,
-        turn: TurnId,
-        effect_id: &iteron_protocol::EffectId,
-        route: &ProviderRouteAttemptIdentity,
-        max_tokens: u64,
-    ) -> Result<(), KernelError> {
-        self.provider_financial_context()
-            .reserve_cohort(turn, effect_id, route, max_tokens)
-    }
-
-    /// Retrieve the exact pre-dispatch reservation for typed physical accounting. Root USD and
-    /// child node USD pools can have different views; neither may replace controller evidence.
-    pub(super) fn persistent_provider_cost_reservation(
-        &self,
-        turn: TurnId,
-        route_id: &str,
-        physical: u32,
-    ) -> Result<Option<u64>, KernelError> {
-        self.provider_financial_context()
-            .cohort_reservation(turn, route_id, physical)
-    }
-
-    /// Called only after the provider terminal became durable. A corrupt/unknown proof keeps
-    /// conservative reservations; it cannot release the cohort's shared remaining budget.
-    pub(super) fn settle_persistent_provider(
-        &self,
-        turn: TurnId,
-        effect_id: &iteron_protocol::EffectId,
-        accounting: &ProviderRouteAttemptAccounting,
-    ) -> Result<(), KernelError> {
-        self.provider_financial_context()
-            .settle_cohort(turn, effect_id, accounting)
     }
 
     /// Trusted enable validates remaining ceilings against all exact physical receipts in the

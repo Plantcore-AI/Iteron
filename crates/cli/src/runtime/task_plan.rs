@@ -77,6 +77,14 @@ impl TaskPlanOwner {
             return Err("inspect does not replace a task plan");
         };
         let revision = self.snapshot.as_ref().map_or(0, |plan| plan.revision);
+        if steps.len() > iteron_protocol::task_plan::MAX_PLAN_STEPS
+            || obligations.len() > iteron_protocol::task_plan::MAX_PLAN_OBLIGATIONS
+            || steps.iter().any(|step| step.description.len() > 512)
+            || obligations.iter().any(|text| text.len() > 512)
+            || !bounded_json(&(&steps, &obligations))
+        {
+            return Err("task plan input exceeds bounded owner admission");
+        }
         if expected_revision != revision || observed_submission_seq != self.latest_submission {
             return Err("task scope or revision changed; inspect and revise the plan");
         }
@@ -162,6 +170,15 @@ impl super::Agent {
         turn: iteron_protocol::TurnId,
         call: &iteron_protocol::ToolUse,
     ) -> Result<iteron_protocol::ToolResult, super::KernelError> {
+        if !bounded_input(&call.input) {
+            return Ok(iteron_protocol::ToolResult {
+                tool_use_id: call.id.clone(),
+                content: "task plan input exceeds bounded owner admission".into(),
+                is_error: true,
+                trust: iteron_protocol::Trust::Untrusted,
+                latency_ms: 0,
+            });
+        }
         let input = serde_json::from_value::<TaskPlanInput>(call.input.clone());
         let content = match input {
             Ok(TaskPlanInput::Inspect) => Ok(self.task_plan_snapshot().to_string()),
@@ -186,4 +203,84 @@ impl super::Agent {
             latency_ms: 0,
         })
     }
+}
+
+fn bounded_input(value: &serde_json::Value) -> bool {
+    use serde_json::Value;
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    if object.len() > 5 {
+        return false;
+    }
+    match object.get("operation").and_then(Value::as_str) {
+        Some("inspect") => return object.len() == 1,
+        Some("replace") if object.len() == 5 => {}
+        _ => return false,
+    }
+    if object
+        .get("expected_revision")
+        .and_then(Value::as_u64)
+        .is_none()
+        || object
+            .get("observed_submission_seq")
+            .and_then(Value::as_u64)
+            .is_none_or(|seq| seq == 0)
+    {
+        return false;
+    }
+    let Some(steps) = object.get("steps").and_then(Value::as_array) else {
+        return false;
+    };
+    let Some(obligations) = object.get("obligations").and_then(Value::as_array) else {
+        return false;
+    };
+    if steps.is_empty()
+        || steps.len() > iteron_protocol::task_plan::MAX_PLAN_STEPS
+        || obligations.len() > iteron_protocol::task_plan::MAX_PLAN_OBLIGATIONS
+    {
+        return false;
+    }
+    for step in steps {
+        let Some(fields) = step.as_object() else {
+            return false;
+        };
+        if fields.len() != 2
+            || fields
+                .get("description")
+                .and_then(Value::as_str)
+                .is_none_or(|text| text.len() > 512)
+            || !matches!(
+                fields.get("status").and_then(Value::as_str),
+                Some("pending" | "in_progress" | "completed")
+            )
+        {
+            return false;
+        }
+    }
+    if obligations
+        .iter()
+        .any(|item| item.as_str().is_none_or(|text| text.len() > 512))
+    {
+        return false;
+    }
+    bounded_json(value)
+}
+
+fn bounded_json(value: &impl serde::Serialize) -> bool {
+    struct ByteCount(usize);
+    impl std::io::Write for ByteCount {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 = self
+                .0
+                .checked_add(bytes.len())
+                .filter(|total| *total <= iteron_protocol::task_plan::MAX_PLAN_BYTES)
+                .ok_or_else(|| std::io::Error::other("bounded plan input exceeded"))?;
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    serde_json::to_writer(ByteCount(0), value).is_ok()
 }
