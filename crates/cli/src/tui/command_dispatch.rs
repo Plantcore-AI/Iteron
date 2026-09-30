@@ -749,6 +749,9 @@ pub(super) fn handle_registered_command(
             }
         }
         SlashCommand::Artifacts => super::artifacts::render(app, session, arg),
+        SlashCommand::ActivityCenter => {
+            super::activity_center::queue(app, session, transcript_effects, interrupt, arg)
+        }
         SlashCommand::Finalization => super::turn_publication::render(app, session),
         SlashCommand::Jobs => jobs::queue(app, session, transcript_effects, interrupt, arg),
         SlashCommand::Fork => {

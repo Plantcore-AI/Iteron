@@ -178,6 +178,7 @@ pub(crate) enum ControlKind {
     PersistentAgents,
     LiveWorkflow,
     Inventory,
+    ActivityCenter,
     ToolRule {
         tool: String,
         verdict: iteron_protocol::Verdict,
@@ -206,6 +207,7 @@ impl ControlKind {
             Self::ThreadLifecycle => "thread history control",
             Self::PersistentAgents => "persistent agent control",
             Self::LiveWorkflow => "live workflow control",
+            Self::ActivityCenter => "activity center",
             Self::Inventory => "runtime inventory",
             Self::ToolRule { .. } => "tool permission rule",
             Self::WorkflowsInventory => "workflow inventory",

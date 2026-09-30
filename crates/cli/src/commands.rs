@@ -34,6 +34,7 @@ pub enum SlashCommand {
     Jobs,
     Artifacts,
     Finalization,
+    ActivityCenter,
     Fork,
     Rewind,
     Resume,
@@ -97,6 +98,7 @@ impl SlashCommand {
             | Self::Jobs
             | Self::Artifacts
             | Self::Finalization
+            | Self::ActivityCenter
             | Self::Fork
             | Self::Rewind
             | Self::Resume
@@ -248,6 +250,12 @@ pub const COMMANDS: &[Cmd] = &[
         name: "artifacts",
         args: "[HASH_PREFIX]",
         help: "list or open bounded artifacts published by this thread",
+    },
+    Cmd {
+        command: SlashCommand::ActivityCenter,
+        name: "activity",
+        args: "[list|attach|stop TYPE ID]",
+        help: "inspect and stop actual processes, agents, workflows, MCP operations and verifiers",
     },
     Cmd {
         command: SlashCommand::Finalization,

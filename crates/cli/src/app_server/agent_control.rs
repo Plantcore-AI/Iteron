@@ -16,14 +16,14 @@ const MAX_PENDING_CONTROLS: usize = 8;
 
 pub(super) struct AgentControlSurface {
     port: Mutex<Option<Arc<dyn AgentControlPort>>>,
-    capacity: Arc<Semaphore>,
+    capacity: Mutex<Option<Arc<Semaphore>>>,
 }
 
 impl AgentControlSurface {
     pub(super) fn capture(agent: &Agent) -> Self {
         Self {
             port: Mutex::new(agent.persistent_agent_control_port()),
-            capacity: Arc::new(Semaphore::new(MAX_PENDING_CONTROLS)),
+            capacity: Mutex::new(None),
         }
     }
 
@@ -62,7 +62,13 @@ impl AgentControlSurface {
             ));
             return;
         };
-        let Ok(permit) = self.capacity.clone().try_acquire_owned() else {
+        let capacity = self
+            .capacity
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_or_insert_with(|| Arc::new(Semaphore::new(MAX_PENDING_CONTROLS)))
+            .clone();
+        let Ok(permit) = capacity.try_acquire_owned() else {
             let _ = reply.send(ControlReply::Refused(
                 "persistent agent control is busy; retry after a pending request settles".into(),
             ));

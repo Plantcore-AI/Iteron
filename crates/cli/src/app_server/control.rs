@@ -8,7 +8,8 @@ pub(super) fn is_immediate_control(control: &Control) -> bool {
     }
     matches!(
         control,
-        Control::OperatorStatus
+        Control::ActivityCenter(_)
+            | Control::OperatorStatus
             | Control::Inventory(_)
             | Control::LiveWorkflow(_)
             | Control::Workflow(WorkflowControl::Inventory | WorkflowControl::Cancel { .. })
@@ -288,6 +289,11 @@ pub(super) async fn apply_immediate_control(
     request: ControlRequest,
 ) {
     match request.control {
+        Control::ActivityCenter(command) => {
+            operator_status
+                .activity
+                .dispatch(events.contract.clone(), command, request.reply);
+        }
         Control::Inventory(query) => {
             let _ = request.reply.send(operator_status.inventory.read(query));
         }
@@ -458,6 +464,12 @@ pub(super) async fn apply_control(
         return;
     }
     let reply = match request.control {
+        Control::ActivityCenter(command) => {
+            operator_status
+                .activity
+                .dispatch(events.contract.clone(), command, request.reply);
+            return;
+        }
         Control::Inventory(query) => operator_status.inventory.read(query),
         Control::SelectModelV1(request) => match agent
             .client_inventory_owner()

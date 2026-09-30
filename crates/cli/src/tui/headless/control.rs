@@ -48,6 +48,9 @@ impl PlantcoreCommand {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum WireControl {
+    ActivityCenterV1 {
+        command: iteron_protocol::activity_control::ActivityControlV1,
+    },
     MaintenanceV1 {
         command: iteron_protocol::advisory_maintenance_control::MaintenanceReadV1,
     },
@@ -260,6 +263,9 @@ where
 
 impl WireControl {
     pub(super) fn is_read_only(&self) -> bool {
+        if let Self::ActivityCenterV1 { command } = self {
+            return command.is_read_only();
+        }
         if let Self::LiveWorkflowV1 { command } = self {
             return command.is_read_only();
         }
@@ -293,6 +299,7 @@ impl WireControl {
 
     pub(super) fn into_app_server(self) -> Control {
         match self {
+            Self::ActivityCenterV1 { command } => Control::ActivityCenter(command),
             Self::MaintenanceV1 { .. } => {
                 unreachable!("maintenance reads address the actual readonly owner port")
             }
@@ -536,6 +543,7 @@ pub(super) fn reply_value(reply: ControlReply) -> Value {
         }),
         ControlReply::ThreadLifecycle(value) => value,
         ControlReply::PersistentAgents(value) => value,
+        ControlReply::ActivityCenter(value) => value,
         ControlReply::Inventory(value) => value,
         ControlReply::LiveWorkflow(value) => json!({
             "type": "live_workflow_v1",

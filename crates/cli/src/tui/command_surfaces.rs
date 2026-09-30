@@ -692,6 +692,10 @@ pub(super) fn apply_transcript_effect_event(
                 Some(app_server::ControlReply::LiveWorkflow(value)),
             ) => super::live_workflows::render(app, &value),
             (
+                transcript_effect::ControlKind::ActivityCenter,
+                Some(app_server::ControlReply::ActivityCenter(value)),
+            ) => super::activity_center::render(app, &value),
+            (
                 transcript_effect::ControlKind::Inventory,
                 Some(app_server::ControlReply::Inventory(value)),
             ) => super::inventory::render(app, &value),

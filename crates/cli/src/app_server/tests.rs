@@ -2766,3 +2766,58 @@ async fn optional_maintenance_saturation_does_not_flush_or_await_parent_cosmetic
     drop(agent);
     let _ = std::fs::remove_dir_all(workspace);
 }
+
+#[tokio::test]
+async fn activity_center_reads_real_owner_ports_and_rejects_unminted_verifier_labels() {
+    use iteron_protocol::activity_control::{ActivityControlV1, ActivityTargetV1};
+    let workspace = temp_workspace("activity-center");
+    let agent = agent_in(&workspace);
+    let (handle, mut ends) = wire().unwrap();
+    let thread = SessionId("session-control-plane".into());
+    let run = agent.rollout.run_id().clone();
+    ends.events
+        .bind_lifecycle_identity(thread.clone(), run.clone());
+    let (settled, _) = mpsc::channel(1);
+    let workflows = crate::workflow::WorkflowSupervisor::new(settled);
+    let surface = super::activity_control::ActivitySurface::capture(
+        &agent,
+        agent.registry.process_control(),
+        None,
+        workflows,
+    );
+    let (reply, receive) = tokio::sync::oneshot::channel();
+    surface.dispatch(
+        ends.events.contract.clone(),
+        ActivityControlV1::List {
+            thread_id: thread.clone(),
+            run_id: run.clone(),
+        },
+        reply,
+    );
+    let ControlReply::ActivityCenter(view) = receive.await.unwrap() else {
+        panic!("real activity reply")
+    };
+    assert_eq!(view["data"]["owners"]["processes"], true);
+    assert_eq!(view["data"]["owners"]["persistent_agents"], false);
+    assert_eq!(view["data"]["owners"]["mcp"], false);
+    assert!(view["data"]["activities"].as_array().unwrap().is_empty());
+    for scope in [thread.clone(), SessionId("foreign-thread".into())] {
+        let (reply, receive) = tokio::sync::oneshot::channel();
+        surface.dispatch(
+            ends.events.contract.clone(),
+            ActivityControlV1::Stop {
+                thread_id: scope,
+                run_id: run.clone(),
+                request_id: "stop-unminted".into(),
+                target: ActivityTargetV1::Verifier {
+                    task_id: "turn-0:verification".into(),
+                },
+            },
+            reply,
+        );
+        assert!(matches!(receive.await.unwrap(), ControlReply::Refused(_)));
+    }
+    assert_eq!(handle.client.thread_snapshot_v1().unwrap().run_id, run);
+    drop(agent);
+    let _ = std::fs::remove_dir_all(&workspace);
+}
