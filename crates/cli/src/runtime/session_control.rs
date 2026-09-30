@@ -29,6 +29,8 @@ pub(super) struct SessionControlState {
     force_cancel_requested: bool,
     drain_requested: bool,
     owns_drain: bool,
+    owns_interrupt: bool,
+    owns_force_cancel: bool,
 }
 impl Default for SessionControlState {
     fn default() -> Self {
@@ -40,6 +42,8 @@ impl Default for SessionControlState {
             force_cancel_requested: false,
             drain_requested: false,
             owns_drain: true,
+            owns_interrupt: true,
+            owns_force_cancel: true,
         }
     }
 }
@@ -90,9 +94,19 @@ impl SessionControlState {
     }
     pub(super) fn bind_interrupt(&mut self, flag: Arc<AtomicBool>) {
         self.interrupt = Some(flag);
+        self.owns_interrupt = true;
     }
     pub(super) fn bind_force_cancel(&mut self, flag: Arc<AtomicBool>) {
         self.force_cancel = flag;
+        self.owns_force_cancel = true;
+    }
+    pub(super) fn inherit_interrupt(&mut self, flag: Arc<AtomicBool>) {
+        self.interrupt = Some(flag);
+        self.owns_interrupt = false;
+    }
+    pub(super) fn inherit_force_cancel(&mut self, flag: Arc<AtomicBool>) {
+        self.force_cancel = flag;
+        self.owns_force_cancel = false;
     }
     pub(super) fn bind_drain(&mut self, flag: Arc<AtomicBool>) {
         self.drain = flag;
@@ -104,13 +118,17 @@ impl SessionControlState {
     }
     pub(super) fn clear_interrupt_after_terminal(&mut self) {
         self.interrupt_requested = false;
-        if let Some(flag) = &self.interrupt {
+        if self.owns_interrupt
+            && let Some(flag) = &self.interrupt
+        {
             flag.store(false, Ordering::SeqCst);
         }
     }
     pub(super) fn clear_force_cancel_after_terminal(&mut self) {
         self.force_cancel_requested = false;
-        self.force_cancel.store(false, Ordering::SeqCst);
+        if self.owns_force_cancel {
+            self.force_cancel.store(false, Ordering::SeqCst);
+        }
     }
     pub(super) fn clear_drain_after_terminal(&mut self) {
         self.drain_requested = false;
@@ -123,7 +141,9 @@ impl SessionControlState {
     pub(super) fn reset_after_adoption(&mut self) {
         self.interrupt_requested = false;
         self.force_cancel_requested = false;
-        self.force_cancel.store(false, Ordering::Release);
+        if self.owns_force_cancel {
+            self.force_cancel.store(false, Ordering::Release);
+        }
     }
     pub(super) fn clear_cancel_after_terminal(&mut self) {
         self.clear_force_cancel_after_terminal();

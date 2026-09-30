@@ -121,3 +121,28 @@ fn failed_append_restore_retains_source_order_and_overflow_never_evicts_a_steer(
     assert_eq!(entries[255].submission_id, Some(SubmissionId(255)));
     assert!(inbox.is_empty());
 }
+
+#[test]
+fn child_terminal_and_adoption_preserve_caller_owned_interrupt_and_force() {
+    let interrupt = Arc::new(AtomicBool::new(true));
+    let force = Arc::new(AtomicBool::new(true));
+    let mut parent = SessionControlState::default();
+    let mut child = SessionControlState::default();
+    parent.bind_interrupt(interrupt.clone());
+    parent.bind_force_cancel(force.clone());
+    child.inherit_interrupt(interrupt.clone());
+    child.inherit_force_cancel(force.clone());
+    child.request(InboundControl::Interrupt);
+    child.request(InboundControl::ForceCancel);
+    child.clear_cancel_after_terminal();
+    assert!(interrupt.load(Ordering::SeqCst));
+    assert!(force.load(Ordering::SeqCst));
+    child.reset_after_adoption();
+    assert!(interrupt.load(Ordering::SeqCst));
+    assert!(force.load(Ordering::SeqCst));
+    assert_eq!(parent.requested(), InboundControl::ForceCancel);
+    assert_eq!(child.requested(), InboundControl::ForceCancel);
+    parent.clear_cancel_after_terminal();
+    assert_eq!(parent.requested(), InboundControl::None);
+    assert_eq!(child.requested(), InboundControl::None);
+}
