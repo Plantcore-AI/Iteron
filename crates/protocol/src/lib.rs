@@ -141,6 +141,7 @@ pub use tunables_snapshot::{
 };
 pub mod client_agent_control;
 pub mod client_artifact;
+pub mod client_inventory;
 pub mod client_negotiation;
 pub mod thread_lifecycle;
 

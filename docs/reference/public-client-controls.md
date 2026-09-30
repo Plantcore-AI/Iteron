@@ -88,6 +88,29 @@ and `wait [REVISION] [MS]`. Spawn defaults to one read-only investigator turn in
 parent envelope; the host may refuse exhausted reservations. Inspect shows actual state and the
 latest bounded summary. Steering and interruption use the latest epoch observed in that view.
 
+## Captured inventory and model selection V1
+
+`inventory_v1` accepts a bounded query with `kind`, optional model `provider_id`, `offset` and
+`limit` (1–100). Kinds cover overview, providers, models, verified plugins, installed tools,
+hook event counts, pinned agents, captured skill metadata, effective checkpoint and permissions.
+Responses declare provenance, availability, total and next offset. Missing skill metadata before
+the context owner captures it, legacy V1 value reconstruction, and missing bootstrap evidence
+remain explicitly unavailable. Reads do not discover mutable configuration, skill or package files.
+
+Provider/model records come from the immutable bootstrap catalog and declare stale/unavailable
+evidence and actual captured capability limits. Plugin identity is the verified parsed manifest's
+serde JSON SHA-256 (`parsed_manifest_serde_json_sha256_v1`), with version and surfaces actually
+materialized; this digest does not claim to hash raw package bytes. Hook commands, credentials,
+provider endpoints, package paths, prompts and skill bodies are excluded from these inventories.
+Effective config pages project the real sealed runtime checkpoint. Tool declared gates are
+informative: actual dispatch also intersects the task envelope and operation requirements.
+
+`select_model_v1` requires provider/model and exact inventory, catalog and capability digests.
+The trusted captured owner resolves the actual provider handle and applies the shared durable
+model-selection transaction. Stale, absent or mismatched routes are refused. Observation-only
+connections may read inventory but cannot select a model. The TUI's `/config KIND [OFFSET]`
+and `/skills` use this same projection; `/model` sends typed identities to the host.
+
 ## Live workflow V1
 
 The `live_workflow_v1` control carries a strict `command` tagged request: `open`, `read`,

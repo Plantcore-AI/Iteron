@@ -20,7 +20,7 @@ use crate::source::{
 };
 use iteron_protocol::Trust;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 #[path = "skills_metadata.rs"]
 mod metadata;
@@ -112,6 +112,21 @@ pub struct SkillCatalog {
 #[derive(Default)]
 pub struct SkillCatalogCache {
     current: Mutex<Option<(SkillCatalogKey, SkillCatalogStamp, Arc<SkillCatalog>)>>,
+}
+
+pub(crate) fn shared_catalog_cache() -> &'static SkillCatalogCache {
+    static CACHE: OnceLock<SkillCatalogCache> = OnceLock::new();
+    CACHE.get_or_init(SkillCatalogCache::default)
+}
+
+/// Read only the metadata snapshot already used by the real context owner. This performs no
+/// directory discovery, body read, refresh or execution and may return absent before first use.
+pub fn captured_metadata_for(
+    operator_home: Option<&Path>,
+    repo: &Path,
+    dependencies: &[(PathBuf, PathBuf)],
+) -> Option<Arc<SkillCatalog>> {
+    shared_catalog_cache().snapshot_for(operator_home, repo, dependencies)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

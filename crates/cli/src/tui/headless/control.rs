@@ -48,6 +48,12 @@ impl PlantcoreCommand {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum WireControl {
+    InventoryV1 {
+        query: iteron_protocol::client_inventory::ClientInventoryQueryV1,
+    },
+    SelectModelV1 {
+        selection: iteron_protocol::client_inventory::ClientModelSelectionV1,
+    },
     LiveWorkflowV1 {
         command: crate::workflow::live_session::LiveWorkflowCommandV1,
     },
@@ -262,11 +268,13 @@ impl WireControl {
         }
         matches!(
             self,
-            Self::ProductV1 {
-                command: ProductControlV1::ThreadRead { .. }
-                    | ProductControlV1::TerminalDiagnosticsRead { .. }
-                    | ProductControlV1::EventsRead { .. }
-            } | Self::OperatorStatus
+            Self::InventoryV1 { .. }
+                | Self::ProductV1 {
+                    command: ProductControlV1::ThreadRead { .. }
+                        | ProductControlV1::TerminalDiagnosticsRead { .. }
+                        | ProductControlV1::EventsRead { .. }
+                }
+                | Self::OperatorStatus
                 | Self::WorkflowsList
                 | Self::McpStatus
                 | Self::JobsList
@@ -277,6 +285,8 @@ impl WireControl {
 
     pub(super) fn into_app_server(self) -> Control {
         match self {
+            Self::InventoryV1 { query } => Control::Inventory(query),
+            Self::SelectModelV1 { selection } => Control::SelectModelV1(selection),
             Self::LiveWorkflowV1 { command } => Control::LiveWorkflow(command),
             Self::AgentsV1 { command } => Control::PersistentAgents(command),
             Self::ArtifactsV1 { .. } => {
@@ -512,6 +522,7 @@ pub(super) fn reply_value(reply: ControlReply) -> Value {
         }),
         ControlReply::ThreadLifecycle(value) => value,
         ControlReply::PersistentAgents(value) => value,
+        ControlReply::Inventory(value) => value,
         ControlReply::LiveWorkflow(value) => json!({
             "type": "live_workflow_v1",
             "contract_version": crate::workflow::live_session::LIVE_WORKFLOW_CONTRACT_VERSION,
@@ -1027,6 +1038,16 @@ mod tests {
         assert_eq!(reply["type"], "product_events_error_v1");
         assert_eq!(reply["error"]["type"], "cursor_ahead");
         assert_eq!(reply["error"]["latest_cursor"], 0);
+    }
+
+    #[test]
+    fn inventory_is_observable_but_model_selection_requires_control_authority() {
+        let wire: WireControl =
+            serde_json::from_value(json!({"type":"inventory_v1","query":{"kind":"plugins"}}))
+                .unwrap();
+        assert!(wire.is_read_only());
+        let wire:WireControl=serde_json::from_value(json!({"type":"select_model_v1","selection":{"inventory_digest_sha256":"a".repeat(64),"provider_id":"p","model_id":"m","catalog_digest_sha256":"b".repeat(64),"capability_digest_sha256":"c".repeat(64)}})).unwrap();
+        assert!(!wire.is_read_only());
     }
 
     #[test]

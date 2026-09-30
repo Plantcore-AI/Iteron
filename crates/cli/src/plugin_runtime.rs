@@ -15,6 +15,8 @@ use iteron_marketplace::{
 
 pub(crate) use candidate::CandidateFile;
 pub(crate) use implementation::VerifiedImplementationActivation;
+mod inventory;
+pub(crate) use inventory::RuntimePluginIdentity;
 
 /// Capability token for minting [`crate::config::McpServerOrigin`] plugin provenance. Its fields
 /// and constructor are private to this verified materialization module; config parsing and other
@@ -65,6 +67,7 @@ pub(crate) struct LspRoute {
 
 #[derive(Default)]
 pub(crate) struct RuntimePlugins {
+    inventory: inventory::PluginInventory,
     pub mcp_servers: Vec<McpServerConfig>,
     pub hooks: BTreeMap<String, Vec<String>>,
     pub agents: Vec<AgentArtifact>,
@@ -75,6 +78,9 @@ pub(crate) struct RuntimePlugins {
 }
 
 impl RuntimePlugins {
+    pub(crate) fn inventory_snapshot(&self) -> Vec<RuntimePluginIdentity> {
+        self.inventory.snapshot()
+    }
     /// Materialize an operator-supplied research activation without consulting ambient plugin
     /// state. The explicit CLI path and digest are the operator-intent boundary for this mode;
     /// marketplace verification still owns catalog, manifest, artifact, and capability checks.
@@ -127,6 +133,12 @@ impl RuntimePlugins {
             .map(|plugin| (plugin.manifest.plugin.as_str(), plugin))
             .collect::<BTreeMap<_, _>>();
         let mut runtime = Self::default();
+        for plugin in roots.values() {
+            runtime
+                .inventory
+                .register(plugin)
+                .map_err(anyhow::Error::msg)?;
+        }
         for quarantine in packages.quarantined {
             runtime.note(format!("plugin quarantined: {quarantine}"));
         }
@@ -144,6 +156,24 @@ impl RuntimePlugins {
         runtime.materialize_non_implementations(&composition.wiring, &roots);
         runtime.implementation =
             implementation::materialize(&composition.wiring, &roots, host_ceiling, candidate)?;
+        if runtime
+            .implementation
+            .as_ref()
+            .is_some_and(VerifiedImplementationActivation::is_plugin_governed)
+        {
+            for slot in composition
+                .wiring
+                .slots()
+                .into_iter()
+                .filter(|slot| slot.surface == Surface::Implementation)
+            {
+                if let Some(binding) = binding_for(&composition.wiring, &slot) {
+                    runtime
+                        .inventory
+                        .bound(&binding.plugin, slot.surface, &slot.key);
+                }
+            }
+        }
         Ok(runtime)
     }
 
@@ -185,6 +215,7 @@ impl RuntimePlugins {
                     .entry(event.to_owned())
                     .or_default()
                     .push(binding.detail.clone());
+                self.inventory.bound(&binding.plugin, Surface::Hook, event);
             }
         }
     }
@@ -204,6 +235,8 @@ impl RuntimePlugins {
                 root: plugin.artifact_root.clone(),
                 directory,
             });
+            self.inventory
+                .bound(&binding.plugin, Surface::Skill, &slot.key);
         } else {
             self.note(format!(
                 "plugin {} skill {:?} refused: skills/{}/SKILL.md is missing",
@@ -230,6 +263,8 @@ impl RuntimePlugins {
                 root: plugin.artifact_root.clone(),
                 path,
             });
+            self.inventory
+                .bound(&binding.plugin, Surface::Agent, &slot.key);
         } else {
             self.note(format!(
                 "plugin {} agent {:?} refused: agents/{}.md is missing",
@@ -254,6 +289,8 @@ impl RuntimePlugins {
                         VerifiedMcpPluginOrigin::new(plugin),
                     );
                     self.mcp_servers.push(server);
+                    self.inventory
+                        .bound(&binding.plugin, Surface::McpServer, &slot.key);
                 } else {
                     self.note(format!(
                         "plugin {} MCP {:?} refused: {} capability not admitted",
@@ -298,6 +335,8 @@ impl RuntimePlugins {
                     language: slot.key.clone(),
                     command,
                 });
+                self.inventory
+                    .bound(&binding.plugin, Surface::LanguageServer, &slot.key);
             }
             _ => self.note(format!(
                 "plugin {} LSP {:?} refused: command must be a bounded JSON argv array",
@@ -351,6 +390,7 @@ fn contribution_artifact(contribution: &Contribution, root: &Path) -> Option<Pat
 mod tests {
     use super::*;
     use iteron_marketplace::{Manifest, compose};
+    use sha2::Digest;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -398,6 +438,7 @@ mod tests {
         };
         let roots = BTreeMap::from([("complete", &plugin)]);
         let mut runtime = RuntimePlugins::default();
+        runtime.inventory.register(&plugin).unwrap();
         runtime.materialize_non_implementations(&compose(&[manifest]).wiring, &roots);
         assert_eq!(runtime.skills.len(), 1);
         assert_eq!(runtime.agents.len(), 1);
@@ -416,6 +457,23 @@ mod tests {
         );
         assert_eq!(runtime.lsp_routes[0].command[0], "custom-rust-lsp");
         assert!(runtime.diagnostics.is_empty(), "{:?}", runtime.diagnostics);
+        let inventory = runtime.inventory_snapshot();
+        assert_eq!(inventory[0].plugin_id, "complete");
+        assert_eq!(inventory[0].bound_surfaces.len(), 5);
+        assert_eq!(
+            inventory[0].manifest_digest_sha256,
+            hex::encode(sha2::Sha256::digest(
+                serde_json::to_vec(&plugin.manifest).unwrap()
+            ))
+        );
+        let metadata = serde_json::to_string(&inventory).unwrap();
+        for private in ["check-tool", "custom-rust-lsp", "docs-server"] {
+            assert!(!metadata.contains(private));
+        }
         std::fs::remove_dir_all(root).unwrap();
+        assert_eq!(
+            serde_json::to_string(&runtime.inventory_snapshot()).unwrap(),
+            metadata
+        );
     }
 }

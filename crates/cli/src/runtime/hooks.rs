@@ -619,6 +619,14 @@ impl Hooks {
         }
     }
 
+    /// Exact installed event counts; command bodies and environment names stay private.
+    pub(crate) fn inventory_events(&self) -> Vec<(String, usize)> {
+        self.by_event
+            .iter()
+            .map(|(event, commands)| (event.clone(), commands.len()))
+            .collect()
+    }
+
     fn command_count(&self) -> usize {
         self.by_event.values().map(Vec::len).sum()
     }

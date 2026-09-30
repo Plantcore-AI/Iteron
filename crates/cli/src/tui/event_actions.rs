@@ -456,15 +456,12 @@ pub(super) fn queue_model_selection(
     interrupt: &Arc<AtomicBool>,
     selection: ModelSelection,
 ) {
-    let provider = match directory.build(&selection) {
-        Ok(provider) => provider,
-        Err(error) => {
-            app.note(
-                block::NoticeLevel::Err,
-                format!("cannot switch model: {error}"),
-            );
-            return;
-        }
+    let Some(inventory_digest) = session.facts.client_inventory_digest.as_ref() else {
+        app.note(
+            block::NoticeLevel::Warn,
+            "host model inventory is unavailable for this session",
+        );
+        return;
     };
     let changed =
         session.model() != selection.model_id || app.route.provider_id != selection.provider_id;
@@ -476,15 +473,15 @@ pub(super) fn queue_model_selection(
     let capabilities = directory.selection_capabilities(&selection);
     let request = transcript_effect::Request::Control {
         sender: session.control_sender(),
-        control: app_server::Control::SelectModel(Box::new(app_server::ModelSelection {
-            provider,
-            provider_id: selection.provider_id.clone(),
-            model_id: selection.model_id.clone(),
-            catalog_digest,
-            capability_digest,
-            context_window_tokens: capabilities.context_window_tokens,
-            max_output_tokens: capabilities.max_output_tokens,
-        })),
+        control: app_server::Control::SelectModelV1(
+            iteron_protocol::client_inventory::ClientModelSelectionV1 {
+                inventory_digest_sha256: inventory_digest.clone(),
+                provider_id: selection.provider_id.clone(),
+                model_id: selection.model_id.clone(),
+                catalog_digest_sha256: catalog_digest,
+                capability_digest_sha256: capability_digest,
+            },
+        ),
         interrupt: interrupt.clone(),
         kind: transcript_effect::ControlKind::Model {
             selection,

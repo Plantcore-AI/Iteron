@@ -9,6 +9,7 @@ pub(super) fn is_immediate_control(control: &Control) -> bool {
     matches!(
         control,
         Control::OperatorStatus
+            | Control::Inventory(_)
             | Control::LiveWorkflow(_)
             | Control::Workflow(WorkflowControl::Inventory | WorkflowControl::Cancel { .. })
             | Control::Job(_)
@@ -287,6 +288,9 @@ pub(super) async fn apply_immediate_control(
     request: ControlRequest,
 ) {
     match request.control {
+        Control::Inventory(query) => {
+            let _ = request.reply.send(operator_status.inventory.read(query));
+        }
         Control::LiveWorkflow(command) => {
             operator_status
                 .live_workflows
@@ -454,6 +458,15 @@ pub(super) async fn apply_control(
         return;
     }
     let reply = match request.control {
+        Control::Inventory(query) => operator_status.inventory.read(query),
+        Control::SelectModelV1(request) => match agent
+            .client_inventory_owner()
+            .ok_or("bootstrap inventory is unavailable".to_owned())
+            .and_then(|owner| owner.resolve(&request))
+        {
+            Ok(selection) => super::model_control::apply(agent, events, selection).await,
+            Err(reason) => ControlReply::Refused(reason),
+        },
         Control::LiveWorkflow(command) => {
             operator_status
                 .live_workflows
@@ -529,58 +542,7 @@ pub(super) async fn apply_control(
             }
         }
         Control::SelectModel(selection) => {
-            // One transaction, in the kernel's required order: the durable audit append happens
-            // FIRST, so a failure leaves the old selection in force rather than a half-applied one.
-            let ModelSelection {
-                provider,
-                provider_id,
-                model_id,
-                catalog_digest,
-                capability_digest,
-                context_window_tokens,
-                max_output_tokens,
-            } = *selection;
-            let changed = agent.model != model_id;
-            match agent.record_operator_model_selection(
-                provider,
-                provider_id,
-                model_id,
-                catalog_digest,
-                capability_digest,
-            ) {
-                Ok(()) => {
-                    agent.model_context_window = context_window_tokens;
-                    agent.model_max_output_tokens = max_output_tokens;
-                    if changed {
-                        // Last-turn usage belongs to the model that produced it. Carrying it across
-                        // a switch would print the old model's token counts under the new one's
-                        // name; the frontend used to clear this itself, back when it held the
-                        // ledger.
-                        agent.ledger.last_turn_usage = None;
-                    }
-                    match agent.bind_selected_rate_card() {
-                        Ok(bound) => {
-                            if !bound && agent.budget.max_usd.is_some_and(|ceiling| ceiling > 0.0) {
-                                // Advisory, not a refusal: the route is recorded and in force. The
-                                // operator needs to know the ceiling will stop provider calls, so it
-                                // goes out on the EQ where every other runtime advisory goes.
-                                let _ = events
-                                    .publish(ServerEvent::Notice(
-                                        "selected route has no active verified rate card; the USD \
-                                         ceiling will block provider calls"
-                                            .into(),
-                                    ))
-                                    .await;
-                            }
-                            ControlReply::State(Box::new(snapshot_of(agent)))
-                        }
-                        Err(error) => ControlReply::Refused(error.public_summary()),
-                    }
-                }
-                Err(error) => ControlReply::Refused(format!(
-                    "cannot record model switch; old selection retained: {error}"
-                )),
-            }
+            super::model_control::apply(agent, events, *selection).await
         }
         Control::Compact { focus } => {
             let reply = match agent.compact_now(focus).await {

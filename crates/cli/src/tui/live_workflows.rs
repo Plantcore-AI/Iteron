@@ -147,13 +147,17 @@ pub(super) fn render(app: &mut App, reply: &LiveWorkflowReplyV1) {
         )));
     }
     for record in view.nodes.iter().take(MAX_RENDERED_NODES) {
-        rows.push(item(&format!(
-            "{} · {} · agent {} · {}",
-            record.node.id,
-            ui_safe_text(&record.node.label),
-            record.node.assigned_agent,
-            state_label(&record.state)
-        )));
+        rows.push(item(
+            "◇",
+            &format!(
+                "{} · {} · agent {} · {}",
+                record.node.id,
+                ui_safe_text(&record.node.label),
+                record.node.assigned_agent,
+                state_label(&record.state)
+            ),
+            "",
+        ));
         if let WorkflowNodeStateV1::RecoveryRequired { reason, .. } = &record.state {
             rows.push(block::PanelRow::Note(format!(
                 "recovery: {}",

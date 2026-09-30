@@ -56,9 +56,11 @@ mod agent_control;
 mod backpressure;
 mod client_artifacts;
 mod control;
+mod inventory_control;
 mod live_workflow_control;
 mod mcp_control;
 mod mcp_input;
+mod model_control;
 mod operator_status;
 mod plantcore;
 mod product_contract;
@@ -515,6 +517,8 @@ pub(crate) enum Control {
     ThreadLifecycle(iteron_protocol::thread_lifecycle::ThreadLifecycleCommandV1),
     PersistentAgents(iteron_protocol::client_agent_control::ClientAgentControlV1),
     LiveWorkflow(crate::workflow::live_session::LiveWorkflowCommandV1),
+    Inventory(iteron_protocol::client_inventory::ClientInventoryQueryV1),
+    SelectModelV1(iteron_protocol::client_inventory::ClientModelSelectionV1),
     /// `/effort`
     SetEffort(iteron_protocol::Effort),
     /// `/mode`
@@ -673,6 +677,7 @@ pub(crate) enum ControlReply {
     ThreadLifecycle(serde_json::Value),
     PersistentAgents(serde_json::Value),
     LiveWorkflow(Box<crate::workflow::live_session::LiveWorkflowReplyV1>),
+    Inventory(serde_json::Value),
     /// `/status` — runtime policy identity plus live bounded owner health.
     OperatorStatus(Box<OperatorStatusSnapshot>),
     /// The runtime refused, with the operator-facing reason.
@@ -1503,6 +1508,7 @@ pub(crate) struct SessionFacts {
     /// Exact immutable runtime checkpoint. Production composition always supplies V2; Option is
     /// retained only for narrow wire tests that construct an unbound Agent.
     pub(crate) tunables_checkpoint: Option<iteron_record::TunablesCheckpoint>,
+    pub(crate) client_inventory_digest: Option<String>,
 }
 
 /// Everything a client needs to talk to a running App Server, and nothing more.
@@ -1620,6 +1626,9 @@ fn attach_with_plantcore(
         dependency_skill_dirs: agent.dependency_skill_dirs().to_vec(),
         agent_catalog: agent.agent_catalog_snapshot(),
         tunables_checkpoint: agent.tunables_checkpoint().ok().cloned(),
+        client_inventory_digest: agent
+            .client_inventory_owner()
+            .map(|owner| owner.digest().to_owned()),
     };
     let initial_state = snapshot_of(&mut agent);
     if let Some(telemetry) = handle.lifecycle_otel.clone() {

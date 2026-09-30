@@ -11,7 +11,6 @@ use iteron_protocol::context::{
 use iteron_protocol::{Trust, home, slot::StrategySlot};
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
-use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::ContextPlan;
@@ -255,8 +254,7 @@ impl ContextPort for DefaultContextPort {
         }
 
         if plan.include_skills && builder.remaining_bytes() > 0 {
-            static SKILL_CACHE: OnceLock<skills::SkillCatalogCache> = OnceLock::new();
-            let cache = SKILL_CACHE.get_or_init(skills::SkillCatalogCache::default);
+            let cache = skills::shared_catalog_cache();
             // One immutable metadata snapshot is pinned for the process. Normal turns perform no
             // directory enumeration or body reads; explicit `use_skill` still loads the selected
             // body directly. A new process (or a future operator-owned refresh command) establishes

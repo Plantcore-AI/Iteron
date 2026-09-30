@@ -2673,6 +2673,17 @@ impl ProviderDirectory {
         &self.entries
     }
 
+    /// Clone the exact captured catalog/configuration for host controls. Selection through this
+    /// owner never runs deferred discovery or silently replaces its advertised identity.
+    pub(crate) fn frozen_client_snapshot(&self) -> Self {
+        Self {
+            entries: self.entries.clone(),
+            health: self.health.clone(),
+            deferred: None,
+            refresh_activity: ProviderRefreshActivity::default(),
+        }
+    }
+
     /// The entries a display surface should OFFER, in the same order `entries` returns them.
     ///
     /// This is strictly a presentation filter. Everything dropped here stays fully routable through
@@ -4500,6 +4511,75 @@ mod tests {
         ));
         entry.catalog_provenance = CatalogProvenance::DynamicFresh;
         entry
+    }
+
+    #[test]
+    fn public_inventory_freezes_catalog_and_resolves_only_matching_host_route_identities() {
+        use iteron_protocol::client_inventory::{
+            ClientInventoryKindV1, ClientInventoryQueryV1, ClientModelSelectionV1,
+        };
+        let entry = catalogued_entry(
+            "inventory-fixture",
+            "https://provider.example.invalid/v1",
+            "model-a",
+        );
+        let health = ProviderHealthStore::new(4);
+        health.mark_ready(entry.id());
+        let mut directory = ProviderDirectory {
+            entries: Arc::new(vec![entry]),
+            health,
+            deferred: None,
+            refresh_activity: ProviderRefreshActivity::default(),
+        };
+        let selected = ModelSelection {
+            provider_id: "inventory-fixture".into(),
+            model_id: "model-a".into(),
+        };
+        let owner = crate::client_inventory::ClientInventoryOwner::capture(
+            &directory,
+            &crate::plugin_runtime::RuntimePlugins::default(),
+            &selected,
+        )
+        .unwrap();
+        let query = ClientInventoryQueryV1 {
+            kind: ClientInventoryKindV1::Models,
+            provider_id: None,
+            offset: 0,
+            limit: 1,
+        };
+        let before = owner.read(&query).unwrap();
+        let record = &before["records"][0];
+        let mut request = ClientModelSelectionV1 {
+            inventory_digest_sha256: owner.digest().into(),
+            provider_id: selected.provider_id.clone(),
+            model_id: selected.model_id.clone(),
+            catalog_digest_sha256: record["catalog_digest_sha256"].as_str().unwrap().into(),
+            capability_digest_sha256: record["capability_digest_sha256"].as_str().unwrap().into(),
+        };
+        assert_eq!(
+            owner.resolve(&request).unwrap().provider_id,
+            selected.provider_id
+        );
+        Arc::make_mut(&mut directory.entries)[0].catalog = Some(snapshot(
+            "inventory-fixture",
+            vec![descriptor(
+                "new-model",
+                Compatibility::Compatible,
+                Selectability::Selectable,
+            )],
+        ));
+        assert_eq!(
+            owner.read(&query).unwrap(),
+            before,
+            "mutable discovery does not replace captured evidence"
+        );
+        request.capability_digest_sha256 = "0".repeat(64);
+        assert!(owner.resolve(&request).is_err());
+        request.model_id = "new-model".into();
+        assert!(owner.resolve(&request).is_err());
+        let text = before.to_string();
+        assert!(!text.contains("provider.example.invalid"));
+        assert!(!text.contains("test-key"));
     }
 
     fn test_scope_key(path: &Path) -> CatalogCacheScopeKey {

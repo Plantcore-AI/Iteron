@@ -790,58 +790,10 @@ pub(super) fn handle_registered_command(
             }
         }
         SlashCommand::Skills => {
-            let home = crate::config::config_home();
-            let cat = iteron_ctx::skills::SkillCatalog::discover_for_operator_with_dependencies(
-                home.as_deref(),
-                session.workspace(),
-                session.dependency_skill_dirs(),
-            );
-            let mut rows: Vec<block::PanelRow> = cat
-                .defs()
-                .iter()
-                .map(|s| item("◇", &s.name, &skill_hint(&s.description)))
-                .collect();
-            if rows.is_empty() {
-                rows.push(block::PanelRow::Note(
-                    "no skills (add <repo>/.iteron/skills or <repo>/.agents/skills)".into(),
-                ));
-            }
-            for e in cat.errors() {
-                rows.push(block::PanelRow::Note(format!(
-                    "rejected: {} ({})",
-                    e.source, e.reason
-                )));
-            }
-            app.panel("◇", "skills", rows);
+            super::inventory::queue(app, session, transcript_effects, interrupt, "skills")
         }
         SlashCommand::Config => {
-            // `/config` used to re-read the REPOSITORY config document, so it reported what was on
-            // disk instead of the layered value the kernel enforces: `iteron --max-turns 5` printed
-            // `max_turns: default`. It reads the one resolved route and the same effective limits
-            // the budget was built from (I-26).
-            let mut rows: Vec<block::PanelRow> = app
-                .route
-                .rows()
-                .iter()
-                .map(|(key, value)| kv(key, value))
-                .collect();
-            rows.push(kv(
-                "harness profile",
-                session.runtime_profile_id().unwrap_or("unrecognized"),
-            ));
-            rows.push(kv(
-                "tunables digest",
-                session.tunables_effective_digest().unwrap_or("not pinned"),
-            ));
-            rows.push(kv("effort", session.effort().label()));
-            rows.push(kv("mode", &permission_mode_row_value(session)));
-            for (key, value) in app.route.limits.rows() {
-                rows.push(kv(key, &value));
-            }
-            rows.push(block::PanelRow::Note(
-                "persist a choice with `iteron config set <key> <value>`".into(),
-            ));
-            app.panel("⚙", "config", rows);
+            super::inventory::queue(app, session, transcript_effects, interrupt, arg)
         }
         SlashCommand::Tunables => {
             let requested = arg.trim();
@@ -1054,27 +1006,4 @@ pub(super) fn render_memory_reply(app: &mut App, reply: app_server::MemoryContro
             app.push(fg(Color::Red), format!("no memory {id}"));
         }
     }
-}
-
-/// One scannable line for a `/skills` row.
-///
-/// A `SKILL.md` description is prose written for the model — several sentences, and in CJK a
-/// "120 character" description is ~360 bytes. Rendered verbatim, every row wrapped to three or
-/// more lines and the panel stopped being a list. opencode truncates its list rows for the same
-/// reason; the full text is one `use_skill` away. Counts CHARACTERS, so the budget means the same
-/// thing in every script.
-fn skill_hint(description: &str) -> String {
-    // Roughly one row at a common terminal width, minus the label column.
-    let skill_hint_chars =
-        iteron_tunables::param_usize("cli.tui.command_dispatch.skill_hint_chars", 88);
-    let flat: String = description.split_whitespace().collect::<Vec<_>>().join(" ");
-    if flat.chars().count() <= skill_hint_chars {
-        return flat;
-    }
-    let mut out: String = flat
-        .chars()
-        .take(skill_hint_chars.saturating_sub(1))
-        .collect();
-    out.push('…');
-    out
 }
