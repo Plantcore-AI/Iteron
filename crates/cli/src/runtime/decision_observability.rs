@@ -26,10 +26,6 @@ const ABSENT_CANDIDATE_SCORE_PPM: i64 = 0;
 /// Rank reported for a candidate the audit's rank vector has no entry for.
 const ABSENT_CANDIDATE_RANK: u32 = 0;
 
-/// Bytes held back from `MAX_STEER_BYTES` for the operator-memory notification's own prose, so the
-/// quoted fact cannot push the assembled notification past the steer ceiling.
-const MEMORY_NOTIFICATION_PROSE_RESERVE_BYTES: usize = 1024;
-
 /// Headroom below `window / this` raises the context high-watermark event — one order of magnitude
 /// left is the last point at which an operator can still act before compaction is forced.
 const CONTEXT_HIGH_WATERMARK_DIVISOR: u64 = 10;
@@ -76,57 +72,63 @@ impl Agent {
         text: &str,
         superseded_id: Option<&str>,
     ) -> Result<(), &'static str> {
-        if self.inbox.len() >= super::inbound_control::inbound_poll_limit() {
-            return Err("the bounded session refresh queue is full");
-        }
-        let source_turn = TurnId(self.seq_turn);
-        let destination_turn = if self.working_set.is_some() {
-            TurnId(
-                self.seq_turn
-                    .checked_add(1)
-                    .ok_or("turn identity exhausted")?,
-            )
-        } else {
-            source_turn
-        };
-        let fact_digest_sha256 = digest(text.as_bytes());
-        let fact = strict_utf8_head(
+        let workspace = self
+            .memory_workspace
+            .as_deref()
+            .ok_or("memory workspace unavailable")?;
+        let activation = super::memory_activation::MemoryActivation::capture(
+            workspace,
+            id,
             text,
-            iteron_tunables::param_integer("cli.runtime.max_steer_bytes", MAX_STEER_BYTES)
-                .saturating_sub(iteron_tunables::param_integer(
-                    "cli.runtime.decision_observability.memory_notification_prose_reserve_bytes",
-                    MEMORY_NOTIFICATION_PROSE_RESERVE_BYTES,
-                )),
-        );
-        let notification = match superseded_id {
-            Some(old_id) => format!(
-                "{MEMORY_ADDED_NOTIFICATION_PREFIX}\nMemory `{id}` was updated explicitly by the \
-                 operator and supersedes `{old_id}` in this session. Exact replacement fact:\n{fact}\n\n\
-                 Use the replacement when relevant and disregard the superseded wording. \
-                 `read_memory` can retrieve it by id; the stable REC-INJECT prefix remains unchanged."
-            ),
-            None => format!(
-                "{MEMORY_ADDED_NOTIFICATION_PREFIX}\nMemory `{id}` was added explicitly by the operator \
-                 and is available in this session. Exact fact:\n{fact}\n\nUse this fact when relevant. \
-                 `read_memory` can retrieve it by id; the stable REC-INJECT prefix remains unchanged."
-            ),
-        };
+            superseded_id,
+            TurnId(self.seq_turn),
+        )?;
+        self.registry.invalidate_pure_cache();
+        self.context_refresh_requested = true;
+        if let Some(old_id) = superseded_id {
+            self.inbox.retire_memory(old_id);
+        }
+        self.inbox.retire_memory(id);
         self.inbox
-            .push(super::inbound_control::PendingSteer::internal(notification))
+            .push(super::inbound_control::PendingSteer::memory(activation))
             .map_err(|_| "the bounded session refresh queue is full")?;
+        Ok(())
+    }
+    pub(crate) fn deactivate_session_memory(&mut self, id: &str) -> Result<(), &'static str> {
+        self.registry.invalidate_pure_cache();
+        self.context_refresh_requested = true;
+        self.inbox.retire_memory(id);
+        let workspace = self
+            .memory_workspace
+            .as_deref()
+            .ok_or("memory workspace unavailable")?;
+        let activation = super::memory_activation::MemoryActivation::capture_deletion(
+            workspace,
+            id,
+            TurnId(self.seq_turn),
+        )?;
+        self.inbox
+            .push(super::inbound_control::PendingSteer::memory(activation))
+            .map_err(|_| "memory was deleted, but the bounded refresh queue is full")?;
+        Ok(())
+    }
+    pub(super) fn record_memory_safe_point(
+        &mut self,
+        turn: TurnId,
+        source_turn: TurnId,
+        body_digest: [u8; 32],
+    ) {
         if self.session_memory_visibility.len() == iteron_ctx::MAX_MEMORY_TRACE_VISIBILITY {
             self.session_memory_visibility.pop_front();
         }
         self.session_memory_visibility
             .push_back(MemoryVisibilityEvidence {
-                fact_id: memory_fact_id(fact_digest_sha256),
-                fact_digest_sha256,
+                fact_id: memory_fact_id(body_digest),
+                fact_digest_sha256: body_digest,
                 source_turn,
-                destination_turn,
+                destination_turn: turn,
                 state: MemoryVisibilityState::Scheduled,
             });
-        self.registry.invalidate_pure_cache();
-        Ok(())
     }
 
     /// Make an operator-added fact part of this turn's in-process context. This is deliberately
@@ -196,8 +198,8 @@ impl Agent {
         );
     }
 
-    /// Commit the exact point at which serialized memory crosses the provider transport boundary.
-    /// "Used" here means provider-context exposure; it never claims the model relied on the fact.
+    /// The actual native serialized buffer contains this context and its retained publication
+    /// succeeded. "Used" proves request inclusion; it does not prove remote processing.
     pub(super) fn observe_memory_provider_exposure(&mut self, turn: TurnId) {
         let used = self
             .session_memory_visibility
@@ -229,8 +231,7 @@ impl Agent {
             );
         }
 
-        // Stable recalled memory is serialized before request construction. Attribute it only now,
-        // once the provider boundary is actually admitted, and only once for this physical turn.
+        // Attribute stable recalled memory only after the actual prepared-buffer proof.
         let recalled = self
             .memory_traces
             .snapshot()
@@ -260,7 +261,7 @@ impl Agent {
                     Some(turn),
                     LifecyclePayload {
                         count: Some(count),
-                        reason_code: Some("provider_transport_admitted".into()),
+                        reason_code: Some("serialized_request_inclusion_confirmed".into()),
                         ..LifecyclePayload::default()
                     },
                 );
@@ -269,6 +270,14 @@ impl Agent {
     }
 
     pub(super) fn observe_memory_provider_refusal(&mut self, turn: TurnId) {
+        self.observe_memory_without_inclusion(turn, "provider_dispatch_refused");
+    }
+
+    pub(super) fn observe_memory_inclusion_unconfirmed(&mut self, turn: TurnId) {
+        self.observe_memory_without_inclusion(turn, "serialized_request_inclusion_unconfirmed");
+    }
+
+    fn observe_memory_without_inclusion(&mut self, turn: TurnId, reason: &'static str) {
         let mut count = 0u64;
         for evidence in self
             .session_memory_visibility
@@ -305,7 +314,7 @@ impl Agent {
                 Some(turn),
                 LifecyclePayload {
                     count: Some(count),
-                    reason_code: Some("provider_dispatch_refused".into()),
+                    reason_code: Some(reason.into()),
                     ..LifecyclePayload::default()
                 },
             );
@@ -1098,7 +1107,7 @@ impl Agent {
                             .copied()
                             .unwrap_or(iteron_ctx::SCORE_SCALE),
                     ),
-                    confidence_ppm: 0,
+                    confidence_ppm: i64::from(candidate.confidence_ppm),
                     combined_ppm: audit.scores_ppm.get(index).copied().unwrap_or(
                         iteron_tunables::param_integer(
                             "cli.runtime.decision_observability.absent_candidate_score_ppm",

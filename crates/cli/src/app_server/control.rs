@@ -266,15 +266,24 @@ async fn apply_memory_control(agent: &mut Agent, control: MemoryControl) -> Cont
             if let crate::runtime::hooks::HookDecision::Deny(reason) = report.decision {
                 return ControlReply::Refused(reason);
             }
-            if iteron_ctx::MemoryStore::at(&workspace).remove(&id) {
-                agent.lifecycle_event(
-                    "memory.fact.deleted",
-                    Some(turn),
-                    LifecyclePayload::default(),
-                );
-                ControlReply::Memory(MemoryControlReply::Deleted { id })
-            } else {
-                ControlReply::Memory(MemoryControlReply::Missing { id })
+            match iteron_ctx::MemoryStore::at(&workspace).remove_checked(&id) {
+                Ok(true) => {
+                    agent.lifecycle_event(
+                        "memory.fact.deleted",
+                        Some(turn),
+                        LifecyclePayload::default(),
+                    );
+                    match agent.deactivate_session_memory(&id) {
+                        Ok(()) => ControlReply::Memory(MemoryControlReply::Deleted { id }),
+                        Err(reason) => ControlReply::Refused(format!(
+                            "memory was deleted, but current-session refresh failed: {reason}"
+                        )),
+                    }
+                }
+                Ok(false) => ControlReply::Memory(MemoryControlReply::Missing { id }),
+                Err(error) => {
+                    ControlReply::Refused(format!("memory delete failed or is uncertain: {error}"))
+                }
             }
         }
     }

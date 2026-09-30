@@ -307,6 +307,7 @@ impl Agent {
                 self.observed_trust = Trust::governing(events.into_iter().flat_map(|event| {
                     match event.kind {
                         EventKind::ToolDone { result, .. } => vec![result.trust],
+                        EventKind::MemoryReferenceAdmittedV1 { .. } => vec![Trust::Untrusted],
                         EventKind::Message { message } => message
                             .content
                             .into_iter()
@@ -595,6 +596,7 @@ impl Agent {
         let observed_trust = Trust::governing(events.iter().flat_map(|event| {
             match &event.kind {
                 EventKind::ToolDone { result, .. } => vec![result.trust],
+                EventKind::MemoryReferenceAdmittedV1 { .. } => vec![Trust::Untrusted],
                 EventKind::Message { message } => message
                     .content
                     .iter()

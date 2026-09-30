@@ -8,6 +8,7 @@ use iteron_protocol::client_artifact::ClientArtifactDescriptorV1;
 use iteron_provider::request_capture::{
     ProviderRequestObserver, ProviderWireRequest, RequestCaptureError,
 };
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 #[cfg(test)]
@@ -18,6 +19,7 @@ pub(super) struct RequestManifestFactory {
     store: Option<DurableArtifactStore>,
     budget: Budget,
     sources: Vec<ContextSegmentEvidence>,
+    inclusion: Arc<AtomicBool>,
 }
 
 impl RequestManifestFactory {
@@ -33,6 +35,7 @@ impl RequestManifestFactory {
                 .then(|| DurableArtifactStore::from_rollout_writer(rollout, workspace).ok())
                 .flatten(),
             budget: budget.clone(),
+            inclusion: Arc::new(AtomicBool::new(false)),
             sources: if admitted {
                 sources.to_vec()
             } else {
@@ -55,7 +58,11 @@ impl RequestManifestFactory {
             )
             .ok(),
             state: Mutex::new(PublicationState::Initial),
+            inclusion: self.inclusion.clone(),
         })
+    }
+    pub(super) fn context_inclusion_confirmed(&self) -> bool {
+        self.inclusion.load(Ordering::Acquire)
     }
 }
 
@@ -70,6 +77,7 @@ struct RequestManifestObserver {
     store: Option<DurableArtifactStore>,
     scope: Option<RequestManifestScope>,
     state: Mutex<PublicationState>,
+    inclusion: Arc<AtomicBool>,
 }
 
 impl RequestManifestObserver {
@@ -94,10 +102,14 @@ impl ProviderRequestObserver for RequestManifestObserver {
             return Err(RequestCaptureError::ReconciliationNeeded);
         }
         *state = PublicationState::Faulted;
+        let context_included = super::request_inclusion::context_included(&wire);
         let prepared = store
             .publish_prepared_request(scope, wire)
             .map_err(|_| RequestCaptureError::ReconciliationNeeded)?;
         *state = PublicationState::Prepared(prepared);
+        if context_included {
+            self.inclusion.store(true, Ordering::Release);
+        }
         Ok(())
     }
     fn dispatching(&self) -> Result<(), RequestCaptureError> {

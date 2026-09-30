@@ -178,6 +178,7 @@ impl Agent {
         route_retry_index: u32,
         primary_admission_preacquired: bool,
         mut primary_permit: Option<AttemptPermit>,
+        request_manifests: &super::request_manifest::RequestManifestFactory,
     ) -> Result<HedgedProviderDispatch, KernelError> {
         if self
             .usd_budget
@@ -389,9 +390,7 @@ impl Agent {
             last_physical_attempt = Some(physical_attempt);
             cancellation.push((index, attempt_cancel.clone()));
             prepared.push(PreparedAttempt {
-                request_observer: self
-                    .request_manifest_factory()
-                    .for_ticket(&ticket, request.max_tokens),
+                request_observer: request_manifests.for_ticket(&ticket, request.max_tokens),
                 index,
                 ordinal,
                 physical_attempt,

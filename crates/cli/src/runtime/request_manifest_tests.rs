@@ -21,6 +21,7 @@ const ENDPOINT: &str = "https://fixture.invalid/v1?credential=private_endpoint_c
 struct ExactRequest {
     requests: Mutex<Vec<Vec<u8>>>,
     exceeds_admission: bool,
+    omit_context: bool,
 }
 #[async_trait::async_trait]
 impl Provider for ExactRequest {
@@ -47,7 +48,17 @@ impl Provider for ExactRequest {
         observer: &dyn ProviderRequestObserver,
     ) -> Result<TurnResult, ProviderError> {
         let serialized_output_tokens = request.max_tokens + u32::from(self.exceeds_admission);
-        let bytes=serde_json::to_vec(&serde_json::json!({"model":request.model,"system":request.system,"messages":request.messages,"max_tokens":serialized_output_tokens})).unwrap();
+        let mut messages = vec![serde_json::json!({"role":"system","content":request.system})];
+        messages.extend(
+            request
+                .messages
+                .iter()
+                .map(|message| serde_json::to_value(message).unwrap()),
+        );
+        if self.omit_context {
+            messages = vec![serde_json::json!({"role":"user","content":"omitted context"})];
+        }
+        let bytes = serde_json::to_vec(&serde_json::json!({"model":request.model,"messages":messages,"max_tokens":serialized_output_tokens})).unwrap();
         observer
             .prepared(ProviderWireRequest {
                 adapter: AdapterKind::OpenAiCompatibleChat,
@@ -247,4 +258,52 @@ async fn actual_manifest_refuses_serialized_output_above_the_physical_admission_
         if tool == "provider" && matches!(accounting.usage, iteron_protocol::ProviderRouteUsageTruth::NotDispatched)
         && matches!(accounting.cost, iteron_protocol::ProviderRouteCostTruth::NotDispatched))));
     let _ = std::fs::remove_dir_all(workspace);
+}
+
+#[tokio::test]
+async fn memory_used_requires_actual_serialized_inclusion_and_successful_retained_publication() {
+    for (tag, omit_context, exceeds_admission, expected_used) in [
+        ("included", false, false, true),
+        ("omitted", true, false, false),
+        ("capture-refused", false, true, false),
+    ] {
+        let workspace = gate_integration_tests::temp_ws(tag);
+        let run = RunId(format!("memory-manifest-{tag}"));
+        let provider = Arc::new(ExactRequest {
+            omit_context,
+            exceeds_admission,
+            ..Default::default()
+        });
+        let mut owner = agent(&workspace, &run, provider.clone());
+        owner.memory_workspace = Some(workspace.clone());
+        let store = iteron_ctx::MemoryStore::at(&workspace);
+        let id = store
+            .add("memory inclusion canary with exact reference bytes")
+            .unwrap();
+        owner
+            .activate_session_memory(&id, "memory inclusion canary with exact reference bytes")
+            .unwrap();
+        let outcome = owner.run("consult the reference").await;
+        if exceeds_admission {
+            assert!(matches!(
+                outcome,
+                Err(crate::runtime::KernelError::Provider(
+                    ProviderError::RequestCaptureRefusedBeforeDispatch
+                ))
+            ));
+            assert!(provider.requests.lock().unwrap().is_empty());
+        } else {
+            assert_eq!(outcome.unwrap(), Outcome::Done);
+        }
+        assert_eq!(
+            owner
+                .session_memory_visibility
+                .iter()
+                .any(|evidence| evidence.state == iteron_ctx::MemoryVisibilityState::Used),
+            expected_used
+        );
+        assert_eq!(owner.observed_trust, iteron_protocol::Trust::Untrusted);
+        drop(owner);
+        std::fs::remove_dir_all(workspace).unwrap();
+    }
 }

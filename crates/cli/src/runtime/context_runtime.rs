@@ -245,6 +245,16 @@ impl ContextBudgetRecoveryStage {
 }
 
 impl Agent {
+    pub(super) fn begin_user_memory_decision(&mut self) {
+        if self.memory_workspace.is_none() {
+            return;
+        }
+        self.context_refresh_requested = true;
+        self.injected = None;
+        self.injected_trust = None;
+        self.context_source_evidence.clear();
+        self.registry.invalidate_pure_cache();
+    }
     pub(super) fn token_calibration_route(&self) -> (&str, &str) {
         self.selected_route.as_ref().map_or_else(
             || {

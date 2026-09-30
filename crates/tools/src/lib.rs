@@ -1425,10 +1425,15 @@ impl Registry {
                 }
                 input
             });
-            let pending = match self
-                .memo
-                .key(&call.name, memo_input.as_ref().unwrap_or(&call.input))
-            {
+            // Memory eligibility depends on expiry and file fingerprints, including ambient
+            // changes. Keep early read-only dispatch but do not memoize this dynamic result.
+            let memo_key = if tool.spec.name == "read_memory" {
+                None
+            } else {
+                self.memo
+                    .key(&call.name, memo_input.as_ref().unwrap_or(&call.input))
+            };
+            let pending = match memo_key {
                 Some(key) => match self.memo.lookup(key) {
                     Lookup::Hit(mut hit) => {
                         if call.name == "read_file"

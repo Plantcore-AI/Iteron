@@ -369,6 +369,7 @@ impl Agent {
             };
             let (result, monetary_followup_safe) = if use_hedge {
                 let primary_permit = route_turn.take_route_permit();
+                let request_manifests = self.request_manifest_factory();
                 let dispatch = self
                     .execute_hedged_provider_turn(
                         turn,
@@ -384,6 +385,7 @@ impl Agent {
                         route_turn.retry_index(),
                         route_turn.first_attempt(),
                         primary_permit,
+                        &request_manifests,
                     )
                     .await?;
                 route_turn.observe_hedged_identity(

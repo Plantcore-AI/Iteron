@@ -77,17 +77,33 @@ impl SessionSubmissionInbox {
         self.pending.clear();
         self.pending_bytes = 0;
     }
+    pub(super) fn retire_memory(&mut self, id: &str) {
+        self.pending.retain(|steer| {
+            !steer
+                .memory
+                .as_ref()
+                .is_some_and(|activation| activation.id() == id)
+        });
+        self.pending_bytes = self.pending.iter().map(|steer| steer.text.len()).sum();
+    }
     pub(super) fn reclaim(&mut self) -> (Vec<UnadmittedSteer>, usize) {
-        let entries = self
-            .pending
-            .drain(..)
-            .map(|steer| UnadmittedSteer {
-                text: steer.text,
-                client_visible: steer.client_visible,
-                submission_id: steer.submission_id,
-            })
-            .collect::<Vec<_>>();
-        self.pending_bytes = 0;
+        let mut entries = Vec::new();
+        let mut retained = std::collections::VecDeque::new();
+        while let Some(steer) = self.pending.pop_front() {
+            if steer.memory.is_some() {
+                // A sealed host receipt survives as typed state in the same Agent. Exporting it
+                // as an ordinary text notification would lose scope/version admission proof.
+                retained.push_back(steer);
+            } else {
+                entries.push(UnadmittedSteer {
+                    text: steer.text,
+                    client_visible: steer.client_visible,
+                    submission_id: steer.submission_id,
+                });
+            }
+        }
+        self.pending = retained;
+        self.pending_bytes = self.pending.iter().map(|steer| steer.text.len()).sum();
         let visible = entries.iter().filter(|steer| steer.client_visible).count();
         (entries, visible)
     }

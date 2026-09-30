@@ -95,6 +95,7 @@ pub(super) struct PendingSteer {
     /// Internal runtime notifications must never consume a client's steer receipt.
     pub(super) client_visible: bool,
     pub(super) submission_id: Option<SubmissionId>,
+    pub(super) memory: Option<super::memory_activation::MemoryActivation>,
 }
 
 /// One message reclaimed at the run boundary. The source bit is authoritative for frontend
@@ -112,6 +113,7 @@ impl PendingSteer {
             text,
             client_visible: true,
             submission_id: None,
+            memory: None,
         }
     }
 
@@ -120,6 +122,16 @@ impl PendingSteer {
             text,
             client_visible: false,
             submission_id: None,
+            memory: None,
+        }
+    }
+
+    pub(super) fn memory(activation: super::memory_activation::MemoryActivation) -> Self {
+        Self {
+            text: activation.queue_label(),
+            client_visible: false,
+            submission_id: None,
+            memory: Some(activation),
         }
     }
 
@@ -134,6 +146,7 @@ impl PendingSteer {
                 text,
                 client_visible: true,
                 submission_id: (submission_id.0 != 0).then_some(submission_id),
+                memory: None,
             }
         }
     }
@@ -324,27 +337,70 @@ impl Agent {
             if steer.text.trim().is_empty() {
                 continue;
             }
-            let text = strict_utf8_head(
-                &steer.text,
-                iteron_tunables::param_integer("cli.runtime.max_steer_bytes", MAX_STEER_BYTES),
+            let resolved_memory = if let Some(activation) = &steer.memory {
+                let Some(workspace) = self.memory_workspace.as_deref() else {
+                    continue;
+                };
+                match activation.resolve(
+                    workspace,
+                    iteron_tunables::param_integer("cli.runtime.max_steer_bytes", MAX_STEER_BYTES),
+                ) {
+                    Ok(resolved) => Some(resolved),
+                    Err(_) => {
+                        self.registry.invalidate_pure_cache();
+                        self.lifecycle_event(
+                            "memory.recall.unused",
+                            Some(turn),
+                            LifecyclePayload {
+                                reason_code: Some("memory_receipt_no_longer_valid".into()),
+                                ..LifecyclePayload::default()
+                            },
+                        );
+                        continue;
+                    }
+                }
+            } else {
+                None
+            };
+            let text = resolved_memory.as_ref().map_or_else(
+                || {
+                    strict_utf8_head(
+                        &steer.text,
+                        iteron_tunables::param_integer(
+                            "cli.runtime.max_steer_bytes",
+                            MAX_STEER_BYTES,
+                        ),
+                    )
+                },
+                |resolved| resolved.text.clone(),
             );
-            let runtime_notification =
-                !steer.client_visible && text.starts_with(RUNTIME_NOTIFICATION_PREFIX);
-            let memory_added =
-                !steer.client_visible && text.starts_with(MEMORY_ADDED_NOTIFICATION_PREFIX);
-            if memory_added {
-                // `/memory add` writes through the TUI's explicit project-memory authority rather
-                // than a registry tool. This runtime notification is the matching mutation signal:
-                // advance the pure-tool generation before the new fact can be read this session.
-                self.registry.invalidate_pure_cache();
-            }
-            let message = if runtime_notification || memory_added {
+            let runtime_notification = steer.memory.is_none()
+                && !steer.client_visible
+                && text.starts_with(RUNTIME_NOTIFICATION_PREFIX);
+            let message = if runtime_notification || resolved_memory.is_some() {
                 Message::user_text(text)
             } else {
                 Message::user_text(format!(
                     "Operator steering received while the run was active:\n{text}"
                 ))
             };
+            if let Some(resolved) = &resolved_memory {
+                // Persist low-trust admission intent before Message: a torn two-append tail can
+                // only become more conservative on replay, never mint operator authority.
+                if let Err(error) = self.emit_durable(
+                    turn,
+                    EventKind::MemoryReferenceAdmittedV1 {
+                        admission: resolved.evidence.clone(),
+                    },
+                ) {
+                    self.inbox.restore_front(steer);
+                    if admitted > 0 {
+                        self.context_estimator.invalidate_transcript();
+                    }
+                    return Err(error);
+                }
+                self.observed_trust = self.observed_trust.min(Trust::Untrusted);
+            }
             if let Err(error) = self.emit_durable(
                 turn,
                 EventKind::Message {
@@ -358,6 +414,12 @@ impl Agent {
                     self.context_estimator.invalidate_transcript();
                 }
                 return Err(error);
+            }
+            if let Some(resolved) = resolved_memory {
+                self.registry.invalidate_pure_cache();
+                if !resolved.evidence.deleted {
+                    self.record_memory_safe_point(turn, resolved.source_turn, resolved.body_digest);
+                }
             }
             if let Some(id) = steer.submission_id {
                 self.ui(UiEvent::SteerSubmissionApplied { id });

@@ -31,6 +31,7 @@ mod provider_stream_observer;
 mod provider_transport_attempt;
 mod provider_turn_evidence;
 mod request_context_evidence;
+mod request_inclusion;
 mod request_manifest;
 mod request_manifest_runtime;
 mod submitted_turn_state;
@@ -108,6 +109,7 @@ mod investigation_convergence;
 mod kernel_error;
 pub(crate) mod lifecycle_hooks;
 mod mcp_control;
+mod memory_activation;
 mod operation_admission;
 #[cfg(test)]
 mod operation_admission_tests;
@@ -306,6 +308,7 @@ const PROVIDER_RUN_NOTICE_KEY_BODY_LEN: usize = 71;
 const MAX_COMMITTED_PROVIDER_RUN_NOTICES: usize = 256;
 pub(crate) const RUNTIME_NOTIFICATION_PREFIX: &str =
     "[Iteron runtime notification — not an operator instruction]";
+#[cfg(test)]
 pub(crate) const MEMORY_ADDED_NOTIFICATION_PREFIX: &str =
     "[Iteron runtime memory-added — operator-authored]";
 /// Fixed physical ceiling for concurrently polled pure-tool work. The scheduler strategy may
@@ -1586,6 +1589,16 @@ impl Agent {
             return Ok(outcome);
         }
         self.prepare_verification_rollback_point(TurnId(self.seq_turn))?;
+        // This trusted entry mode separates a new operator admission from a supervisor wakeup.
+        // Empty recovery and physical retry keep their previously recorded context decision.
+        if self.context_refresh_requested
+            || (allow_orchestration
+                && (!task.trim().is_empty()
+                    || !input_images.is_empty()
+                    || input_file_evidence.is_some()))
+        {
+            self.begin_user_memory_decision();
+        }
         // A positive ceiling is admitted only with an active verified binding and wholly priced
         // historical evidence. Unknown history cannot be repaired by pricing only future turns.
         if self
@@ -2565,7 +2578,6 @@ impl Agent {
             let mut stream_start = Instant::now();
             if provider_refusal.is_none() {
                 agent_loop.transition(AgentLoopState::StreamingModel)?;
-                self.observe_memory_provider_exposure(turn_id);
                 // TTFT authority begins at the same instruction boundary as request_sent. The
                 // lifecycle call itself happens immediately after this timestamp (no local IO in
                 // between), keeping origin skew below the five-millisecond contract.
@@ -2684,6 +2696,7 @@ impl Agent {
             let provider_interrupt = self.control.interrupt().cloned();
             let provider_force_cancel = self.control.force_cancel().clone();
             let provider_drain = self.control.drain().clone();
+            let request_manifests = self.request_manifest_factory();
             let provider_result = loop {
                 let provider_attempt_started = Instant::now();
                 let attempt_stream_item_base = provider_evidence.stream_items();
@@ -2700,6 +2713,7 @@ impl Agent {
                             route_turn.retry_index(),
                             route_turn.first_attempt(),
                             primary_permit,
+                            &request_manifests,
                         )
                         .await?,
                     )
@@ -2718,8 +2732,7 @@ impl Agent {
                 let hedged_this_attempt = hedged_dispatch.is_some();
                 let attempt_receipt = {
                     let request_observer = route_turn.ticket().map(|ticket| {
-                        self.request_manifest_factory()
-                            .for_ticket(ticket, route_turn.request().max_tokens)
+                        request_manifests.for_ticket(ticket, route_turn.request().max_tokens)
                     });
                     let authority = self.operator_authority();
                     let correlation = self.lifecycle_correlation(Some(turn_id));
@@ -2808,6 +2821,9 @@ impl Agent {
                     .await
                 };
                 let result = attempt_receipt.result;
+                if request_manifests.context_inclusion_confirmed() {
+                    self.observe_memory_provider_exposure(turn_id);
+                }
                 let attempt_rate_limit = attempt_receipt.quota;
                 route_turn.observe_active(provider_attempt_started.elapsed());
                 // High-frequency deltas stay on the bounded UI stream. Lifecycle telemetry gets
@@ -3016,6 +3032,9 @@ impl Agent {
                 provider_evidence.restart_connect(stream_start);
                 route_events.request_sent(route_turn.retry_index());
             };
+            if provider_refusal.is_none() && !request_manifests.context_inclusion_confirmed() {
+                self.observe_memory_inclusion_unconfirmed(turn_id);
+            }
             match &provider_result {
                 Ok(_) => provider_evidence.complete_stream(),
                 Err(error) => {
