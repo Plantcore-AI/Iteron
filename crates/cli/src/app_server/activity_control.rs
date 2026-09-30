@@ -11,7 +11,7 @@ use iteron_protocol::{
 };
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
-use tokio::sync::{Semaphore, oneshot};
+use tokio::sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock, Semaphore, oneshot};
 
 #[derive(Clone)]
 struct Binding {
@@ -25,6 +25,7 @@ pub(super) struct ActivitySurface {
     mcp: Option<crate::mcp::McpRuntimeControl>,
     workflows: Arc<crate::workflow::WorkflowSupervisor>,
     capacity: Arc<Semaphore>,
+    scope_gate: Arc<RwLock<()>>,
 }
 impl ActivitySurface {
     pub(super) fn capture(
@@ -39,7 +40,37 @@ impl ActivitySurface {
             mcp,
             workflows,
             capacity: Arc::new(Semaphore::new(8)),
+            scope_gate: Arc::new(RwLock::new(())),
         }
+    }
+    /// The sole runtime adoption path holds this exclusive lease before swapping journals.
+    /// Admitted detached owner controls retain a read lease through their actual effects.
+    pub(super) async fn adoption_barrier(&self) -> Result<OwnedRwLockWriteGuard<()>, &'static str> {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            self.scope_gate.clone().write_owned(),
+        )
+        .await
+        .map_err(|_| "admitted owner control still running; retry adoption")
+    }
+    pub(super) fn scope_lease(
+        &self,
+        reader: &ContractReader,
+        thread: &iteron_protocol::SessionId,
+        run: &RunId,
+    ) -> Result<OwnedRwLockReadGuard<()>, &'static str> {
+        let lease = self
+            .scope_gate
+            .clone()
+            .try_read_owned()
+            .map_err(|_| "session adoption is pending")?;
+        if reader
+            .snapshot()
+            .is_none_or(|snapshot| snapshot.thread_id != *thread || snapshot.run_id != *run)
+        {
+            return Err("activity scope mismatch");
+        }
+        Ok(lease)
     }
     pub(super) fn refresh(&self, agent: &Agent) {
         *self
@@ -57,6 +88,14 @@ impl ActivitySurface {
             let _ = reply.send(ControlReply::Refused(reason.into()));
             return;
         }
+        let scope = command.scope();
+        let lease = match self.scope_lease(&reader, scope.0, scope.1) {
+            Ok(lease) => lease,
+            Err(reason) => {
+                let _ = reply.send(ControlReply::Refused(reason.into()));
+                return;
+            }
+        };
         let binding = self
             .binding
             .lock()
@@ -90,6 +129,17 @@ impl ActivitySurface {
                 command,
             )
             .await;
+            let value = value.map(|mut value| {
+                if let Some(activities)=value["activities"].as_array_mut() {
+                    for activity in activities {
+                        activity["owner_scope"] = match activity["target"]["kind"].as_str() {
+                            Some("process"|"mcp"|"workflow")=>json!({"kind":"resident_session","thread_id":thread,"creation_run_id":null}),
+                            _=>json!({"kind":"physical_run","run_id":run}),
+                        };
+                    }
+                }
+                value
+            });
             let result = if reader
                 .snapshot()
                 .is_some_and(|snapshot| snapshot.thread_id == thread && snapshot.run_id == run)
@@ -105,6 +155,7 @@ impl ActivitySurface {
             };
             let _ = reply.send(result);
             drop(permit);
+            drop(lease);
         });
     }
 }

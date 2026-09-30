@@ -46,6 +46,37 @@ pub(crate) struct McpRuntimeControl {
 }
 
 impl McpRuntimeControl {
+    pub(crate) fn install_extension_dispatch_policy(
+        &self,
+        policy: Arc<dyn iteron_protocol::extension_dispatch::ExtensionDispatchPolicy>,
+    ) -> Result<(), &'static str> {
+        let _configuration = self
+            .configuration_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for server in self.servers.values() {
+            let slot = match server.as_ref() {
+                ManagedServer::Stdio(server) => &server.extension_dispatch,
+                ManagedServer::Http(server) => &server.extension_dispatch,
+            };
+            if let Some(current) = slot.get() {
+                if !Arc::ptr_eq(current, &policy) {
+                    return Err("MCP extension dispatch policy already installed");
+                }
+            }
+        }
+        for server in self.servers.values() {
+            let slot = match server.as_ref() {
+                ManagedServer::Stdio(server) => &server.extension_dispatch,
+                ManagedServer::Http(server) => &server.extension_dispatch,
+            };
+            if slot.get().is_none() {
+                let _ = slot.set(policy.clone());
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn register(
         registry: &mut Registry,
         servers: &[McpServerConfig],
@@ -497,6 +528,8 @@ pub(crate) struct McpServerHealth {
 }
 
 struct ManagedStdioServer {
+    extension_dispatch:
+        OnceLock<Arc<dyn iteron_protocol::extension_dispatch::ExtensionDispatchPolicy>>,
     config: McpServerConfig,
     resolved_command: PathBuf,
     sensitive_env_names: Vec<String>,
@@ -513,6 +546,16 @@ struct ManagedState {
 }
 
 impl ManagedStdioServer {
+    fn dispatch_admitted(&self) -> bool {
+        self.config.origin.label() != "plugin"
+            || self.extension_dispatch.get().is_none_or(|policy| {
+                policy.admits(
+                    iteron_protocol::extension_dispatch::ExtensionSurfaceV1::McpServer,
+                    &self.config.name,
+                )
+            })
+    }
+
     fn new(
         config: McpServerConfig,
         sensitive_env_names: Vec<String>,
@@ -525,6 +568,7 @@ impl ManagedStdioServer {
         })?;
         let resolved_command = resolve_executable(command)?;
         Ok(Self {
+            extension_dispatch: OnceLock::new(),
             config,
             resolved_command,
             sensitive_env_names,
@@ -595,6 +639,9 @@ impl ManagedStdioServer {
     async fn search(&self, query: &str, limit: usize) -> Result<String, iteron_mcp::McpError> {
         let cancellation = self.operation_cancellation();
         let mut state = self.state.lock().await;
+        if !self.dispatch_admitted() {
+            return Err(iteron_mcp::McpError::LifecycleStopped);
+        }
         if state.stopped {
             return Err(iteron_mcp::McpError::LifecycleStopped);
         }
@@ -638,6 +685,9 @@ impl ManagedStdioServer {
     {
         let cancellation = self.operation_cancellation();
         let mut state = self.state.lock().await;
+        if !self.dispatch_admitted() {
+            return definite_mcp_error(iteron_mcp::McpError::LifecycleStopped);
+        }
         if state.stopped {
             return definite_mcp_error(iteron_mcp::McpError::LifecycleStopped);
         }
@@ -674,6 +724,9 @@ impl ManagedStdioServer {
     {
         let cancellation = self.operation_cancellation();
         let mut state = self.state.lock().await;
+        if !self.dispatch_admitted() {
+            return definite_mcp_error(iteron_mcp::McpError::LifecycleStopped);
+        }
         if state.stopped {
             return definite_mcp_error(iteron_mcp::McpError::LifecycleStopped);
         }
@@ -782,6 +835,8 @@ impl ManagedStdioServer {
 }
 
 struct ManagedHttpServer {
+    extension_dispatch:
+        OnceLock<Arc<dyn iteron_protocol::extension_dispatch::ExtensionDispatchPolicy>>,
     config: McpServerConfig,
     sensitive_env_names: Vec<String>,
     mrtr_handler: Arc<OnceLock<Arc<dyn iteron_mcp::McpMrtrHandler>>>,
@@ -803,6 +858,16 @@ struct ManagedHttpState {
 }
 
 impl ManagedHttpServer {
+    fn dispatch_admitted(&self) -> bool {
+        self.config.origin.label() != "plugin"
+            || self.extension_dispatch.get().is_none_or(|policy| {
+                policy.admits(
+                    iteron_protocol::extension_dispatch::ExtensionSurfaceV1::McpServer,
+                    &self.config.name,
+                )
+            })
+    }
+
     fn new(
         config: McpServerConfig,
         sensitive_env_names: Vec<String>,
@@ -810,6 +875,7 @@ impl ManagedHttpServer {
     ) -> anyhow::Result<Self> {
         let binding = http_server_binding(&config)?;
         Ok(Self {
+            extension_dispatch: OnceLock::new(),
             config,
             sensitive_env_names,
             mrtr_handler,
@@ -1025,6 +1091,9 @@ impl ManagedHttpServer {
         let runtime = self.runtime()?;
         let deadline = Instant::now() + runtime.deadlines.http().startup();
         let mut state = self.state.lock().await;
+        if !self.dispatch_admitted() {
+            return Err(iteron_mcp::McpError::LifecycleStopped);
+        }
         if state.stopped {
             return Err(iteron_mcp::McpError::LifecycleStopped);
         }
@@ -1070,6 +1139,9 @@ impl ManagedHttpServer {
         let deadline = started + runtime.deadlines.http().tool_call();
         let startup_deadline = deadline.min(started + runtime.deadlines.http().startup());
         let mut state = self.state.lock().await;
+        if !self.dispatch_admitted() {
+            return definite_mcp_error(iteron_mcp::McpError::LifecycleStopped);
+        }
         if state.stopped {
             return definite_mcp_error(iteron_mcp::McpError::LifecycleStopped);
         }
@@ -1080,6 +1152,9 @@ impl ManagedHttpServer {
             Ok(generation) => generation,
             Err(error) => return definite_mcp_error(error),
         };
+        if !self.dispatch_admitted() {
+            return definite_mcp_error(iteron_mcp::McpError::LifecycleStopped);
+        }
         let namespaced = if name.starts_with(&format!("{}__", self.config.name)) {
             name.to_owned()
         } else {
@@ -1171,6 +1246,9 @@ impl ManagedHttpServer {
         let deadline = started + runtime.deadlines.http().tool_call();
         let startup_deadline = deadline.min(started + runtime.deadlines.http().startup());
         let mut state = self.state.lock().await;
+        if !self.dispatch_admitted() {
+            return definite_mcp_error(iteron_mcp::McpError::LifecycleStopped);
+        }
         if state.stopped {
             return definite_mcp_error(iteron_mcp::McpError::LifecycleStopped);
         }
@@ -1181,6 +1259,9 @@ impl ManagedHttpServer {
             Ok(generation) => generation,
             Err(error) => return definite_mcp_error(error),
         };
+        if !self.dispatch_admitted() {
+            return definite_mcp_error(iteron_mcp::McpError::LifecycleStopped);
+        }
         let Some(client) = state.client.clone() else {
             return definite_mcp_error(iteron_mcp::McpError::LifecycleFailed);
         };

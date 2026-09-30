@@ -15,3 +15,11 @@ pub enum ExtensionSurfaceV1 {
 pub trait ExtensionDispatchPolicy: Send + Sync + std::fmt::Debug {
     fn admits(&self, surface: ExtensionSurfaceV1, key: &str) -> bool;
 }
+
+pub fn language_server_dispatch_key(language: &str, command: &str) -> String {
+    use sha2::{Digest, Sha256};
+    format!(
+        "{language}/{}",
+        hex::encode(Sha256::digest(command.as_bytes()))
+    )
+}

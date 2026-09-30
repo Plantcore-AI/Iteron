@@ -169,6 +169,7 @@ impl Driver {
         document: &SourceDocument,
         query: QueryKind,
         request_timeout: Duration,
+        dispatch: Option<&Arc<dyn iteron_protocol::extension_dispatch::ExtensionDispatchPolicy>>,
     ) -> Result<Value, LspToolError> {
         lock(&self.lifecycle).guard_request()?;
         let snapshot = lock(&self.documents).open(document.uri(), 1)?;
@@ -192,26 +193,36 @@ impl Driver {
             armed: true,
         };
         let response = self.responses.register(correlation.id()).await?;
-        self.write(&json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": document.uri(),
-                    "languageId": document.adapter().language_id(),
-                    "version": wire_version,
-                    "text": document.text()
+        self.write_admitted(
+            &json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": document.uri(),
+                        "languageId": document.adapter().language_id(),
+                        "version": wire_version,
+                        "text": document.text()
+                    }
                 }
-            }
-        }))
+            }),
+            document,
+            dispatch,
+            false,
+        )
         .await?;
         lease.note_server_document_open();
-        self.write(&json!({
-            "jsonrpc": "2.0",
-            "id": correlation.wire_id(),
-            "method": lsp_query.method(),
-            "params": lsp_query.params(document.uri(), query.position())?
-        }))
+        self.write_admitted(
+            &json!({
+                "jsonrpc": "2.0",
+                "id": correlation.wire_id(),
+                "method": lsp_query.method(),
+                "params": lsp_query.params(document.uri(), query.position())?
+            }),
+            document,
+            dispatch,
+            true,
+        )
         .await?;
         let value = tokio::time::timeout(request_timeout, response.receive())
             .await
@@ -290,6 +301,33 @@ impl Driver {
         .await?;
         lock(&self.lifecycle).apply(Event::Initialized(self.epoch), self.now_ms())?;
         Ok(())
+    }
+
+    async fn write_admitted(
+        &self,
+        value: &Value,
+        document: &SourceDocument,
+        dispatch: Option<&Arc<dyn iteron_protocol::extension_dispatch::ExtensionDispatchPolicy>>,
+        started: bool,
+    ) -> Result<(), LspToolError> {
+        let mut writer = self.stdin.lock().await;
+        if dispatch.is_some_and(|policy| {
+            !policy.admits(
+                iteron_protocol::extension_dispatch::ExtensionSurfaceV1::LanguageServer,
+                &iteron_protocol::extension_dispatch::language_server_dispatch_key(
+                    document.adapter().language_id(),
+                    document.command(),
+                ),
+            )
+        }) {
+            return Err(if started {
+                LspToolError::OperationCancelled
+            } else {
+                LspToolError::DispatchRevoked
+            });
+        }
+        let writer = writer.as_mut().ok_or(LspToolError::Transport)?;
+        write_value(writer, value).await
     }
 
     async fn write(&self, value: &Value) -> Result<(), LspToolError> {

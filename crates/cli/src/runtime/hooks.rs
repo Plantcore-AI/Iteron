@@ -151,6 +151,8 @@ pub struct Hooks {
     /// `Hooks` into workflow children carries the same AppServer-owned observer instead of making
     /// each child grow a detached finalization task.
     stop_observer: Option<StopHookDispatcher>,
+    extension_dispatch:
+        Option<Arc<dyn iteron_protocol::extension_dispatch::ExtensionDispatchPolicy>>,
 }
 
 impl Default for Hooks {
@@ -166,6 +168,7 @@ impl Default for Hooks {
             plantcore_workspace_executable: None,
             parallelism: std::sync::Arc::new(tokio::sync::Semaphore::new(max_parallel_hooks())),
             stop_observer: None,
+            extension_dispatch: None,
         }
     }
 }
@@ -470,6 +473,28 @@ fn validate_plantcore_workspace_executable(path: &Path) -> Result<(), &'static s
 }
 
 impl Hooks {
+    pub(crate) fn install_extension_dispatch_policy(
+        &mut self,
+        policy: Arc<dyn iteron_protocol::extension_dispatch::ExtensionDispatchPolicy>,
+    ) -> Result<(), &'static str> {
+        if let Some(current) = &self.extension_dispatch {
+            if Arc::ptr_eq(current, &policy) {
+                return Ok(());
+            }
+            return Err("hook extension dispatch policy is already installed");
+        }
+        self.extension_dispatch = Some(policy);
+        Ok(())
+    }
+    fn extension_dispatch_admitted(&self, event: &str, command: &str) -> bool {
+        self.extension_dispatch.as_ref().is_none_or(|policy| {
+            policy.admits(
+                iteron_protocol::extension_dispatch::ExtensionSurfaceV1::Hook,
+                &crate::plugin_runtime::dispatch::hook_key(event, command),
+            )
+        })
+    }
+
     pub(crate) fn preflight_plantcore_workspace_gate() -> Result<(), &'static str> {
         let _ = resolve_plantcore_workspace_executable()?;
         Ok(())
@@ -773,7 +798,9 @@ impl Hooks {
                     .acquire()
                     .await
                     .expect("the hook concurrency semaphore is never closed");
-                let out = if cancel.is_some_and(|flag| flag.load(Ordering::Acquire))
+                let out = if !self.extension_dispatch_admitted(event.key(), &cmd) {
+                    HookRun::NotStarted("verified plugin future hook dispatch was revoked".into())
+                } else if cancel.is_some_and(|flag| flag.load(Ordering::Acquire))
                     || drain.is_some_and(|flag| flag.load(Ordering::Acquire))
                 {
                     HookRun::Cancelled
@@ -994,15 +1021,19 @@ impl Hooks {
                     .acquire()
                     .await
                     .expect("the hook concurrency semaphore is never closed");
-                let outcome = run_one_with_sensitive_env_names_cancellable(
-                    &command,
-                    context_json,
-                    timeout,
-                    &self.sensitive_env_names,
-                    cancel,
-                    drain,
-                )
-                .await;
+                let outcome = if !self.extension_dispatch_admitted(event_id, &command) {
+                    HookRun::NotStarted("verified plugin future hook dispatch was revoked".into())
+                } else {
+                    run_one_with_sensitive_env_names_cancellable(
+                        &command,
+                        context_json,
+                        timeout,
+                        &self.sensitive_env_names,
+                        cancel,
+                        drain,
+                    )
+                    .await
+                };
                 (index, ticket, outcome)
             })
             .buffer_unordered(max_parallel_hooks())
@@ -1322,7 +1353,7 @@ fn digest_part(digest: &mut Sha256, bytes: &[u8]) {
 
 impl super::Agent {
     /// Install exactly the hook catalog named by the immutable tunables checkpoint.
-    pub(crate) fn install_hooks(&mut self, hooks: Hooks) -> Result<(), super::KernelError> {
+    pub(crate) fn install_hooks(&mut self, mut hooks: Hooks) -> Result<(), super::KernelError> {
         if self.hooks_runtime_installed {
             return Err(super::KernelError::ExecutionPolicy(
                 "hook runtime was already installed".into(),
@@ -1334,6 +1365,11 @@ impl super::Agent {
             .ok_or(super::KernelError::TunablesNotResolved)?
             .hooks
             .as_ref();
+        if let Some(policy) = self.extension_dispatch_policy() {
+            hooks
+                .install_extension_dispatch_policy(policy)
+                .map_err(|reason| super::KernelError::ContextResolution(reason.into()))?;
+        }
         let actual = (!hooks.is_empty()).then(|| hooks.catalog_identity());
         if expected != actual.as_ref() {
             return Err(super::KernelError::ExecutionPolicy(

@@ -2821,3 +2821,61 @@ async fn activity_center_reads_real_owner_ports_and_rejects_unminted_verifier_la
     drop(agent);
     let _ = std::fs::remove_dir_all(&workspace);
 }
+
+#[tokio::test]
+async fn activity_owner_generation_blocks_adoption_and_rejects_stale_effects_before_dispatch() {
+    use iteron_protocol::activity_control::{ActivityControlV1, ActivityTargetV1};
+    let workspace = temp_workspace("activity-generation");
+    let agent = agent_in(&workspace);
+    let (_handle, mut ends) = wire().unwrap();
+    let thread = SessionId("session-control-plane".into());
+    let old_run = agent.rollout.run_id().clone();
+    let new_run = RunId("new-run".into());
+    ends.events
+        .bind_lifecycle_identity(thread.clone(), old_run.clone());
+    let (settled, _) = mpsc::channel(1);
+    let surface = Arc::new(super::activity_control::ActivitySurface::capture(
+        &agent,
+        None,
+        None,
+        crate::workflow::WorkflowSupervisor::new(settled),
+    ));
+    let lease = surface
+        .scope_lease(&ends.events.contract, &thread, &old_run)
+        .unwrap();
+    let mut adoption = Box::pin(surface.adoption_barrier());
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(10), &mut adoption)
+            .await
+            .is_err()
+    );
+    drop(lease);
+    let exclusive = adoption.await.unwrap();
+    assert!(
+        surface
+            .scope_lease(&ends.events.contract, &thread, &old_run)
+            .is_err()
+    );
+    assert!(ends.events.rebind_contract_run(new_run.clone()));
+    drop(exclusive);
+    // A stale stop is refused by the lease admission before execute() or a cancellation signal.
+    let (reply, receive) = tokio::sync::oneshot::channel();
+    surface.dispatch(
+        ends.events.contract.clone(),
+        ActivityControlV1::Stop {
+            thread_id: thread,
+            run_id: old_run,
+            request_id: "stale-stop".into(),
+            target: ActivityTargetV1::Verifier {
+                task_id: "unminted".into(),
+            },
+        },
+        reply,
+    );
+    let ControlReply::Refused(reason) = receive.await.unwrap() else {
+        panic!("stale effect must be refused")
+    };
+    assert!(reason.contains("scope"));
+    drop(agent);
+    let _ = std::fs::remove_dir_all(&workspace);
+}

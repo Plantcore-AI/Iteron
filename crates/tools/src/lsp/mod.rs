@@ -101,6 +101,8 @@ enum LspToolError {
     IdentityExhausted,
     #[error("language-server runtime policy is invalid")]
     InvalidPolicy,
+    #[error("verified plugin future language-server dispatch was revoked")]
+    DispatchRevoked,
     #[error("language-server runtime policy is immutable after first activation")]
     PolicyLocked,
     #[error("language-server pool reached its fixed {limit}-server ceiling")]
@@ -204,6 +206,17 @@ pub struct LspControlError {
 }
 
 impl LspControl {
+    pub fn install_extension_dispatch_policy(
+        &self,
+        policy: Arc<dyn iteron_protocol::extension_dispatch::ExtensionDispatchPolicy>,
+    ) -> Result<(), LspControlError> {
+        self.launcher
+            .install_extension_dispatch_policy(policy)
+            .map_err(|error| LspControlError {
+                message: error.to_string(),
+            })
+    }
+
     pub fn configure_policy(&self, policy: LspRuntimePolicy) -> Result<(), LspControlError> {
         self.launcher
             .configure_policy(policy)

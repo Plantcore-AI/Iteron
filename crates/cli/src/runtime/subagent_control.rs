@@ -158,6 +158,7 @@ impl Agent {
         cx.context_home_dir = self.context_home_dir.clone();
         cx.dependency_skill_dirs = self.dependency_skill_dirs.clone();
         cx.agent_catalog = self.agent_catalog.clone();
+        cx.plugin_management = self.plugin_management_port();
         cx.drain = Some(self.control.drain().clone());
         cx.lifecycle_emitter = self.lifecycle_emitter.clone();
         cx.lifecycle_telemetry = self.lifecycle_telemetry.clone();

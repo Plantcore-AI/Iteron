@@ -454,6 +454,19 @@ pub(super) async fn apply_control(
         ));
         return;
     }
+    // A detached owner operation cannot outlive its admitted selection into a new run.
+    // Hold the actual generation barrier BEFORE adoption mutates Agent or the public projection.
+    let _activity_adoption = if matches!(&request.control, Control::AdoptRun(_)) {
+        match operator_status.activity.adoption_barrier().await {
+            Ok(lease) => Some(lease),
+            Err(reason) => {
+                let _ = request.reply.send(ControlReply::Refused(reason.into()));
+                return;
+            }
+        }
+    } else {
+        None
+    };
     if let Control::PersistentAgents(command) = &request.control
         && !command.is_enable()
     {

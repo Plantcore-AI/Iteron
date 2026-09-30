@@ -1069,6 +1069,10 @@ impl Agent {
             // the pure frozen slot and the injected world adapter.
             let context_opportunity =
                 self.begin_policy_decision(policy_evidence::CONTEXT_SLOT, Some(turn))?;
+            let eligible_skill_dirs = self.eligible_dependency_skill_dirs();
+            let dependency_skill_dirs = eligible_skill_dirs
+                .as_deref()
+                .unwrap_or(&self.dependency_skill_dirs);
             let resolved = match strategy_runtime::resolve_live_context(
                 self.context_strategy.as_ref(),
                 self.memory_strategy.as_ref(),
@@ -1076,7 +1080,7 @@ impl Agent {
                 strategy_runtime::LiveContextRequest {
                     workspace: &ws,
                     home_dir: self.context_home_dir.as_deref(),
-                    dependency_skill_dirs: &self.dependency_skill_dirs,
+                    dependency_skill_dirs,
                     turn,
                     task,
                     memory_benchmark_scope: self.memory_benchmark_scope,

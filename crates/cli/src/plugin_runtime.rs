@@ -71,7 +71,7 @@ pub(crate) struct LspRoute {
 #[derive(Default)]
 pub(crate) struct RuntimePlugins {
     inventory: inventory::PluginInventory,
-    dispatch_mask: std::sync::Arc<dispatch::DispatchMask>,
+    dispatch_mask: Option<std::sync::Arc<dispatch::DispatchMask>>,
     store_root: Option<PathBuf>,
     composition: serde_json::Value,
     captured_configuration: serde_json::Value,
@@ -156,6 +156,9 @@ impl RuntimePlugins {
             store_root: Some(root.to_path_buf()),
             ..Self::default()
         };
+        if !roots.is_empty() {
+            runtime.dispatch_mask = Some(std::sync::Arc::new(dispatch::DispatchMask::default()));
+        }
         runtime.captured_configuration = serde_json::to_value(&packages.captured_configuration)
             .map_err(|_| anyhow::anyhow!("captured plugin registry unavailable"))?;
         runtime.composition = serde_json::json!({
@@ -164,10 +167,15 @@ impl RuntimePlugins {
             "refusals":composition.report.refusals().iter().take(256).map(|refusal|iteron_record::redact::scrub(&refusal.to_string())).collect::<Vec<_>>()
         });
         for plugin in roots.values() {
-            std::sync::Arc::get_mut(&mut runtime.dispatch_mask)
-                .expect("bootstrap mask is private")
-                .register_plugin(&plugin.manifest.plugin)
-                .map_err(anyhow::Error::msg)?;
+            std::sync::Arc::get_mut(
+                runtime
+                    .dispatch_mask
+                    .as_mut()
+                    .expect("verified plugins own mask"),
+            )
+            .expect("bootstrap mask is private")
+            .register_plugin(&plugin.manifest.plugin)
+            .map_err(anyhow::Error::msg)?;
             runtime
                 .inventory
                 .register(plugin)
@@ -206,24 +214,36 @@ impl RuntimePlugins {
                 }
             }
         }
+        if let Some(implementation) = runtime.implementation.as_mut() {
+            implementation.bind_dispatch_policy(runtime.dispatch_mask.as_ref().map(|mask| {
+                mask.clone()
+                    as std::sync::Arc<
+                        dyn iteron_protocol::extension_dispatch::ExtensionDispatchPolicy,
+                    >
+            }));
+        }
         Ok(runtime)
     }
 
     fn record_binding(&mut self, plugin: &str, surface: Surface, key: &str) {
         self.inventory.bound(plugin, surface, key);
-        if surface != Surface::Hook {
-            std::sync::Arc::get_mut(&mut self.dispatch_mask)
-                .expect("bootstrap mask is private")
-                .bind(plugin, dispatch::surface(surface), key)
-                .expect("bounded verified materialized binding");
+        if !matches!(surface, Surface::Hook | Surface::LanguageServer) {
+            std::sync::Arc::get_mut(
+                self.dispatch_mask
+                    .as_mut()
+                    .expect("verified plugins own mask"),
+            )
+            .expect("bootstrap mask is private")
+            .bind(plugin, dispatch::surface(surface), key)
+            .expect("bounded verified materialized binding");
         }
     }
     pub(crate) fn dispatch_policy(
         &self,
     ) -> Option<std::sync::Arc<dyn iteron_protocol::extension_dispatch::ExtensionDispatchPolicy>>
     {
-        self.store_root.as_ref().map(|_| {
-            self.dispatch_mask.clone()
+        self.dispatch_mask.as_ref().map(|mask| {
+            mask.clone()
                 as std::sync::Arc<dyn iteron_protocol::extension_dispatch::ExtensionDispatchPolicy>
         })
     }
@@ -264,9 +284,20 @@ impl RuntimePlugins {
         let Some(root) = &self.store_root else {
             return Ok(None);
         };
+        if self.prepared_installs.is_empty()
+            && self.captured_configuration["plugins"]
+                .as_array()
+                .is_none_or(Vec::is_empty)
+        {
+            return Ok(None);
+        }
+        let mask = self
+            .dispatch_mask
+            .get_or_insert_with(|| std::sync::Arc::new(dispatch::DispatchMask::default()))
+            .clone();
         let owner = PluginManagementOwner::new(
             root,
-            self.dispatch_mask.clone(),
+            mask,
             self.inventory_snapshot(),
             self.composition.clone(),
             self.captured_configuration.clone(),
@@ -315,14 +346,18 @@ impl RuntimePlugins {
                     .or_default()
                     .push(binding.detail.clone());
                 self.record_binding(&binding.plugin, Surface::Hook, event);
-                std::sync::Arc::get_mut(&mut self.dispatch_mask)
-                    .expect("bootstrap mask is private")
-                    .bind(
-                        &binding.plugin,
-                        iteron_protocol::extension_dispatch::ExtensionSurfaceV1::Hook,
-                        &dispatch::hook_key(event, &binding.detail),
-                    )
-                    .expect("bounded verified hook binding");
+                std::sync::Arc::get_mut(
+                    self.dispatch_mask
+                        .as_mut()
+                        .expect("verified plugins own mask"),
+                )
+                .expect("bootstrap mask is private")
+                .bind(
+                    &binding.plugin,
+                    iteron_protocol::extension_dispatch::ExtensionSurfaceV1::Hook,
+                    &dispatch::hook_key(event, &binding.detail),
+                )
+                .expect("bounded verified hook binding");
             }
         }
     }
@@ -440,6 +475,31 @@ impl RuntimePlugins {
                     command,
                 });
                 self.record_binding(&binding.plugin, Surface::LanguageServer, &slot.key);
+                let command_identity = self
+                    .lsp_routes
+                    .last()
+                    .expect("route just materialized")
+                    .command
+                    .iter()
+                    .map(|part| format!("'{}'", part.replace('\'', "'\\''")))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let key = iteron_protocol::extension_dispatch::language_server_dispatch_key(
+                    &slot.key,
+                    &command_identity,
+                );
+                std::sync::Arc::get_mut(
+                    self.dispatch_mask
+                        .as_mut()
+                        .expect("verified plugins own mask"),
+                )
+                .expect("bootstrap mask is private")
+                .bind(
+                    &binding.plugin,
+                    iteron_protocol::extension_dispatch::ExtensionSurfaceV1::LanguageServer,
+                    &key,
+                )
+                .expect("bounded verified route binding");
             }
             _ => self.note(format!(
                 "plugin {} LSP {:?} refused: command must be a bounded JSON argv array",
@@ -542,10 +602,16 @@ mod tests {
         let roots = BTreeMap::from([("complete", &plugin)]);
         let mut runtime = RuntimePlugins::default();
         runtime.inventory.register(&plugin).unwrap();
-        std::sync::Arc::get_mut(&mut runtime.dispatch_mask)
-            .unwrap()
-            .register_plugin(&plugin.manifest.plugin)
-            .unwrap();
+        runtime.dispatch_mask = Some(std::sync::Arc::new(dispatch::DispatchMask::default()));
+        std::sync::Arc::get_mut(
+            runtime
+                .dispatch_mask
+                .as_mut()
+                .expect("verified plugins own mask"),
+        )
+        .unwrap()
+        .register_plugin(&plugin.manifest.plugin)
+        .unwrap();
         runtime.materialize_non_implementations(&compose(&[manifest]).wiring, &roots);
         assert_eq!(runtime.skills.len(), 1);
         assert_eq!(runtime.agents.len(), 1);

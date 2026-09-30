@@ -242,6 +242,7 @@ pub struct KernelSpawnerContext {
     /// Exact accepted definitions resolved once by the composition root. Every spawned worker
     /// inherits this same immutable set; it never performs filesystem discovery itself.
     pub agent_catalog: Arc<AgentCatalog>,
+    pub(crate) plugin_management: Option<Arc<crate::plugin_runtime::PluginManagementOwner>>,
     /// Policy projection pinned for the entire workflow lineage.
     pub boot_bundle: Arc<iteron_agents::BootBundle>,
     /// Complete typed policy generation behind the projection. The spawner and every child retain
@@ -425,6 +426,7 @@ impl KernelSpawnerContext {
             context_home_dir: None,
             dependency_skill_dirs: Vec::new(),
             agent_catalog: Arc::new(AgentCatalog::builtin_only()),
+            plugin_management: None,
             boot_bundle: compiled_policy_bundle.boot_bundle(),
             compiled_policy_bundle,
             permission_mode: PermissionMode::default(),
@@ -598,6 +600,14 @@ impl KernelSpawner {
         // rollout or provider effect exists; in particular, the historical magic name `writer`
         // can no longer turn model-controlled data into a coding registry.
         let requested_type = call.agent_type.as_deref().unwrap_or("generic");
+        if cx.plugin_management.as_ref().is_some_and(|owner| {
+            !owner.dispatch_policy().admits(
+                iteron_protocol::extension_dispatch::ExtensionSurfaceV1::Agent,
+                requested_type,
+            )
+        }) {
+            return Err("verified plugin future agent dispatch was revoked".into());
+        }
         let agent_def = cx
             .agent_catalog
             .get(requested_type)
@@ -824,6 +834,10 @@ impl KernelSpawner {
         sub.composition_environment_context = cx.environment_context.clone();
         sub.environment_context = cx.environment_context.clone();
         sub.bypass_permissions = cx.bypass_permissions;
+        if let Some(owner) = &cx.plugin_management {
+            sub.install_plugin_management(owner.clone())
+                .map_err(|error| safe_agent_refusal(&error.public_summary()))?;
+        }
         sub.pin_agent_catalog((*cx.agent_catalog).clone())
             .map_err(|error| {
                 safe_agent_refusal(&format!(

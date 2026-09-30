@@ -6,7 +6,7 @@ use iteron_sandbox::{Confinement, SandboxError, spawn_confined_process_from_work
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use tokio::sync::Mutex as AsyncMutex;
 
@@ -33,6 +33,8 @@ pub(super) struct Launcher {
     policy: Mutex<LspRuntimePolicy>,
     pool: Mutex<BTreeMap<PoolKey, Arc<AsyncMutex<ServerSlot>>>>,
     activated: AtomicBool,
+    extension_dispatch:
+        OnceLock<Arc<dyn iteron_protocol::extension_dispatch::ExtensionDispatchPolicy>>,
 }
 
 impl Launcher {
@@ -45,9 +47,39 @@ impl Launcher {
             policy: Mutex::new(policy),
             pool: Mutex::new(BTreeMap::new()),
             activated: AtomicBool::new(false),
+            extension_dispatch: OnceLock::new(),
         })
     }
 
+    pub(super) fn install_extension_dispatch_policy(
+        &self,
+        policy: Arc<dyn iteron_protocol::extension_dispatch::ExtensionDispatchPolicy>,
+    ) -> Result<(), LspToolError> {
+        if let Some(current) = self.extension_dispatch.get() {
+            return if Arc::ptr_eq(current, &policy) {
+                Ok(())
+            } else {
+                Err(LspToolError::PolicyLocked)
+            };
+        }
+        if self.activated.load(Ordering::Acquire) {
+            return Err(LspToolError::PolicyLocked);
+        }
+        self.extension_dispatch
+            .set(policy)
+            .map_err(|_| LspToolError::PolicyLocked)
+    }
+    fn dispatch_admitted(&self, document: &SourceDocument) -> bool {
+        self.extension_dispatch.get().is_none_or(|policy| {
+            policy.admits(
+                iteron_protocol::extension_dispatch::ExtensionSurfaceV1::LanguageServer,
+                &iteron_protocol::extension_dispatch::language_server_dispatch_key(
+                    document.adapter().language_id(),
+                    document.command(),
+                ),
+            )
+        })
+    }
     pub(super) fn configure_policy(&self, policy: LspRuntimePolicy) -> Result<(), LspToolError> {
         let policy = LspRuntimePolicy::new(policy.routes, policy.recovery)
             .map_err(|_| LspToolError::InvalidPolicy)?;
@@ -124,10 +156,16 @@ impl Launcher {
             slot = slot_handle.lock() => slot,
         };
 
+        if !self.dispatch_admitted(&document) {
+            return Err(RunFailure::new(LspToolError::DispatchRevoked, false));
+        }
         let reused_server = slot.driver.is_some();
         if slot.driver.is_none() {
             self.wait_for_restart(&mut slot, policy.recovery, deadline, &mut cancelled)
                 .await?;
+            if !self.dispatch_admitted(&document) {
+                return Err(RunFailure::new(LspToolError::DispatchRevoked, false));
+            }
             let restarting = slot.spawned_once;
             // An initial spawn failure is still an attempted server lifetime. Mark it before the
             // fallible operation so repeated spawn/initialize failures consume the same bounded
@@ -180,7 +218,7 @@ impl Launcher {
             biased;
             _ = &mut cancelled => Err(LspToolError::OperationCancelled),
             _ = tokio::time::sleep_until(deadline) => Err(LspToolError::OperationTimeout),
-            result = driver.execute(&document, query, request_timeout) => result,
+            result = driver.execute(&document, query, request_timeout, self.extension_dispatch.get()) => result,
         };
         match result {
             Ok(value) => {
@@ -205,7 +243,8 @@ impl Launcher {
             Err(error) => {
                 if matches!(
                     &error,
-                    LspToolError::OperationCancelled
+                    LspToolError::DispatchRevoked
+                        | LspToolError::OperationCancelled
                         | LspToolError::OperationTimeout
                         | LspToolError::ResponseTimeout
                         | LspToolError::ServerResponse { .. }
