@@ -278,6 +278,24 @@ const SURFACES: &[Surface] = &[
         ],
         next_seams: &["disjoint journal/admission ports; no executor receives mutable Agent"],
     },
+    Surface {
+        path: "crates/cli/src/runtime/submitted_turn_state.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "single submission recovery receipt/error/continuation owner",
+            "encoded receipt identity/count/byte bounds and immutable first receipts",
+        ],
+        next_seams: &["private state; typed context/recovery mutations only"],
+    },
+    Surface {
+        path: "crates/cli/src/runtime/provider_turn_evidence.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "single transport/semantic/timing/quota observation owner",
+            "bounded interrupted text/thinking prefix retention",
+        ],
+        next_seams: &["physical provider dispatch and monetary admission remain independent"],
+    },
 ];
 
 #[derive(Serialize)]
