@@ -36,6 +36,13 @@ pub(super) struct PlantcoreRuntime {
 }
 
 impl PlantcoreRuntime {
+    pub(super) async fn enter_external_dispatch(&self) -> Result<Option<DispatchPermit>, ()> {
+        match self.dispatch_gate.as_ref() {
+            Some(gate) => gate.enter().await.map(Some).ok_or(()),
+            None => Ok(None),
+        }
+    }
+
     pub(super) fn observe_provider_attempt(
         &mut self,
         turn: iteron_protocol::TurnId,
@@ -380,10 +387,7 @@ impl Agent {
     pub(super) async fn enter_plantcore_external_dispatch(
         &self,
     ) -> Result<Option<DispatchPermit>, ()> {
-        match self.plantcore.dispatch_gate.as_ref() {
-            Some(gate) => gate.enter().await.map(Some).ok_or(()),
-            None => Ok(None),
-        }
+        self.plantcore.enter_external_dispatch().await
     }
 
     pub(super) async fn cross_plantcore_logical_turn_gate(&self) -> Result<(), ()> {

@@ -28,6 +28,7 @@ mod extension_control;
 mod tool_execution_journal;
 
 mod kernel_effect_bridge;
+mod provider_dispatch;
 mod provider_round;
 mod provider_stream_attempt;
 mod provider_stream_observer;
@@ -2347,138 +2348,16 @@ impl Agent {
                 activity: self.activity.clone(),
             };
             let use_hedge = admission.use_hedge;
-            if provider_refusal.is_none() && !use_hedge {
-                match self.enter_plantcore_external_dispatch().await {
-                    Ok(permit) => route_turn.assign_dispatch_permit(permit),
-                    Err(()) => {
-                        provider_refusal = Some(iteron_provider::ProviderError::Interrupted.into());
-                    }
-                }
-            }
             route_turn.assign_route_permit(admission.primary_route_permit);
-            if provider_refusal.is_some() {
-                drop(route_turn.take_route_permit());
-                if let Some(budget) = &self.usd_budget {
-                    budget.settle_not_dispatched();
-                }
-            }
-            self.lifecycle_event(
-                if provider_refusal.is_some() {
-                    "model.route_rejected"
-                } else {
-                    "model.route_selected"
-                },
-                Some(turn_id),
-                LifecyclePayload {
-                    reason_code: provider_refusal
-                        .as_ref()
-                        .map(|_| "provider_dispatch_refused".into()),
-                    ..LifecyclePayload::default()
-                },
-            );
-            let provider_class = effect_class::EffectClass::Provider;
-            let initial_ticket = match (&provider_refusal, use_hedge) {
-                // A refusal means nothing was dispatched, so nothing is admitted and no intent is
-                // written. Recording one would invent an effect out of a request that never left.
-                (Some(_), _) | (None, true) => None,
-                (None, false) => {
-                    let (ordinal, physical) = match self.next_provider_effect_identity(turn_id) {
-                        Ok(identity) => identity,
-                        Err(error) => {
-                            drop(route_turn.take_route_permit());
-                            drop(route_turn.take_dispatch_permit());
-                            if let Some(budget) = &self.usd_budget {
-                                budget.settle_not_dispatched();
-                            }
-                            return Err(error);
-                        }
-                    };
-                    route_turn.assign_identity(ordinal, physical);
-                    let (objective_score, objective_evidence) =
-                        self.objective_rank_evidence(route_turn.route_id());
-                    let broker_started = Instant::now();
-                    let ticket = match self.open_kernel_effect(
-                        turn_id,
-                        provider_class,
-                        route_turn.ordinal(),
-                        Capability::IrreversibleExternal,
-                        serde_json::json!({
-                            "model": route_turn.request().model,
-                            "route_id": route_turn.route_id(),
-                            "route_transition": route_turn.transition(),
-                            "messages": route_turn.request().messages.len(),
-                            "tools": route_turn.request().tools.len(),
-                            "max_tokens": route_turn.request().max_tokens,
-                            "requested_max_tokens": route_turn.requested_max_tokens(),
-                            "physical_attempt": route_turn.physical_attempt(),
-                            "route_retry_index": 0,
-                            "route_objective_score_millionths": objective_score,
-                            "route_objective_evidence": objective_evidence,
-                        }),
-                    ) {
-                        Ok(ticket) => ticket,
-                        Err(error) => {
-                            drop(route_turn.take_route_permit());
-                            if let Some(budget) = &self.usd_budget {
-                                budget.settle_not_dispatched();
-                            }
-                            return Err(error);
-                        }
-                    };
-                    self.ledger
-                        .record_broker_latency_us(elapsed_us(broker_started));
-                    Some(ticket)
-                }
+            let (score, digest) = self.objective_rank_evidence(route_turn.route_id());
+            let objective = provider_dispatch::ProviderObjectiveEvidence {
+                score,
+                digest: digest.map(str::to_owned),
             };
-            route_turn.assign_ticket(initial_ticket);
-            if provider_refusal.is_none()
-                && !use_hedge
-                && let Err(error) = self.begin_provider_attempt_after_intent(turn_id)
-            {
-                let ticket = route_turn
-                    .take_ticket()
-                    .expect("non-hedged provider intent was opened immediately above");
-                let settlement = self.close_provider_intent_without_dispatch(
-                    turn_id,
-                    route_turn.ordinal(),
-                    route_turn.route_id(),
-                    route_turn.physical_attempt(),
-                    ticket,
-                    "logical provider turn could not become durable before dispatch",
-                );
-                drop(route_turn.take_route_permit());
-                if let Some(budget) = &self.usd_budget {
-                    budget.settle_not_dispatched();
-                }
-                settlement?;
-                return Err(error);
-            }
-            if provider_refusal.is_none()
-                && !use_hedge
-                && let Some(mailbox) = &self.persistent_mailbox
-                && let Err(error) = mailbox.confirm_request(&route_turn.request().messages)
-            {
-                // Mailbox inclusion must become durable before provider IO. An inclusion
-                // failure has known zero dispatch, even though the provider WAL is already open.
-                let settlement = match route_turn.take_ticket() {
-                    Some(ticket) => self.close_provider_intent_without_dispatch(
-                        turn_id,
-                        route_turn.ordinal(),
-                        route_turn.route_id(),
-                        route_turn.physical_attempt(),
-                        ticket,
-                        "durable agent mailbox inclusion failed before dispatch",
-                    ),
-                    None => Ok(()),
-                };
-                drop(route_turn.take_route_permit());
-                drop(route_turn.take_dispatch_permit());
-                if let Some(budget) = &self.usd_budget {
-                    budget.settle_not_dispatched();
-                }
-                settlement?;
-                return Err(KernelError::AgentControl(error));
-            }
+            provider_refusal = self
+                .provider_dispatch_owner(&route_events)
+                .initial(&mut route_turn, provider_refusal, use_hedge, objective)
+                .await?;
             let activity_sink = self.activity.clone();
             let mut connect_activity = None;
             let mut running_provider_activity = None;
@@ -2832,75 +2711,22 @@ impl Agent {
                     }
                 }
                 if !use_hedge {
-                    let route_permit = self
+                    let permit = self
                         .admit_governed_route_attempt(turn_id, route_turn.route_id())
                         .await?;
-                    route_turn.assign_route_permit(route_permit);
-                    match self.enter_plantcore_external_dispatch().await {
-                        Ok(permit) => route_turn.assign_dispatch_permit(permit),
-                        Err(()) => {
-                            drop(route_turn.take_route_permit());
-                            if let Some(budget) = &self.usd_budget {
-                                budget.settle_not_dispatched();
-                            }
-                            break Err(iteron_provider::ProviderError::Interrupted.into());
-                        }
-                    }
-                    if let Some(refusal) = self.provider_dispatch_refusal() {
-                        drop(route_turn.take_dispatch_permit());
-                        drop(route_turn.take_route_permit());
-                        if let Some(budget) = &self.usd_budget {
-                            budget.settle_not_dispatched();
-                        }
-                        break Err(refusal);
-                    }
-                    self.reserve_provider_followup_if_needed(route_turn.request())?;
-                    let (ordinal, physical) = match self.next_provider_effect_identity(turn_id) {
-                        Ok(identity) => identity,
-                        Err(error) => {
-                            drop(route_turn.take_route_permit());
-                            drop(route_turn.take_dispatch_permit());
-                            if let Some(budget) = &self.usd_budget {
-                                budget.settle_not_dispatched();
-                            }
-                            break Err(error);
-                        }
+                    route_turn.assign_route_permit(permit);
+                    let (score, digest) = self.objective_rank_evidence(route_turn.route_id());
+                    let objective = provider_dispatch::ProviderObjectiveEvidence {
+                        score,
+                        digest: digest.map(str::to_owned),
                     };
-                    route_turn.assign_identity(ordinal, physical);
-                    let (objective_score, objective_evidence) =
-                        self.objective_rank_evidence(route_turn.route_id());
-                    let broker_started = Instant::now();
-                    let ticket = match self.open_kernel_effect(
-                        turn_id,
-                        provider_class,
-                        route_turn.ordinal(),
-                        Capability::IrreversibleExternal,
-                        serde_json::json!({
-                            "model": route_turn.request().model,
-                            "route_id": route_turn.route_id(),
-                            "route_transition": route_turn.transition(),
-                            "messages": route_turn.request().messages.len(),
-                            "tools": route_turn.request().tools.len(),
-                            "max_tokens": route_turn.request().max_tokens,
-                            "requested_max_tokens": route_turn.requested_max_tokens(),
-                            "physical_attempt": route_turn.physical_attempt(),
-                            "route_retry_index": route_turn.retry_index(),
-                            "route_objective_score_millionths": objective_score,
-                            "route_objective_evidence": objective_evidence,
-                        }),
-                    ) {
-                        Ok(ticket) => Some(ticket),
-                        Err(error) => {
-                            drop(route_turn.take_route_permit());
-                            if let Some(budget) = &self.usd_budget {
-                                budget.settle_not_dispatched();
-                            }
-                            break Err(error);
-                        }
-                    };
-                    route_turn.assign_ticket(ticket);
-                    self.ledger
-                        .record_broker_latency_us(elapsed_us(broker_started));
+                    if let Err(error) = self
+                        .provider_dispatch_owner(&route_events)
+                        .followup(&mut route_turn, false, objective)
+                        .await
+                    {
+                        break Err(error);
+                    }
                 }
                 provider_round.restart_connect()?;
                 route_events.request_sent(route_turn.retry_index());
@@ -4627,6 +4453,42 @@ impl Agent {
 
     /// Assemble the ordered effect owner from real disjoint state ports. No permission or
     /// provider authority reaches its executor, and the external permit remains with this loop.
+    fn provider_dispatch_owner<'a>(
+        &'a mut self,
+        events: &'a provider_route_events::ProviderRouteEvents,
+    ) -> provider_dispatch::ProviderDispatchOwner<'a> {
+        let financial = self.provider_financial_context();
+        let pricing_now = self.pricing_now();
+        provider_dispatch::ProviderDispatchOwner {
+            journal: provider_dispatch::ProviderAdmissionJournal {
+                physical: provider_attempt_journal::ProviderAttemptJournal {
+                    rollout: &mut self.rollout,
+                    effects: &mut self.effect_journal,
+                    ledger: &mut self.ledger,
+                    record_failed: &mut self.record_failed,
+                    diagnostics: &self.diagnostics,
+                    financial,
+                    pricing_now,
+                    #[cfg(test)]
+                    fault: &mut self.fail_next_durable_append,
+                },
+                terminal: &mut self.terminal_record,
+                policy: self.policy_evidence.as_mut(),
+                publications: &mut self.turn_publications,
+            },
+            scope: provider_dispatch::ProviderDispatchScope {
+                workspace: &self.workspace,
+                plantcore: &self.plantcore,
+                mailbox: self.persistent_mailbox.as_ref(),
+                events,
+                control: &self.control,
+                deadline: self.run_deadline,
+                #[cfg(test)]
+                pricing_now_unix_secs: self.pricing_now_unix_secs,
+            },
+        }
+    }
+
     fn ordered_tool_call(
         &mut self,
         turn: TurnId,
