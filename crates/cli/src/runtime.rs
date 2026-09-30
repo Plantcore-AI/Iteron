@@ -97,6 +97,7 @@ mod orchestration_route;
 mod permission_policy;
 mod persistent_agent_kernel;
 pub(crate) mod persistent_agents;
+mod persistent_parent_turn;
 mod persistent_provider_budget;
 mod plantcore;
 pub(crate) use plantcore::{DispatchGate, ResumeActivation};
@@ -1526,6 +1527,7 @@ impl Agent {
     ) -> Result<Outcome, KernelError> {
         self.run_assistant_text.clear();
         self.last_assistant_source = None;
+        let parent_turn = self.begin_parent_runtime_bridge(task)?;
         let mut outcome = self
             .run_with_images_mode_inner(
                 task,
@@ -1545,7 +1547,11 @@ impl Agent {
         {
             outcome = Err(cleanup_error);
         }
-        self.settle_failed_policy_turn(&outcome)?;
+        if let Err(error) = self.settle_failed_policy_turn(&outcome) {
+            outcome = Err(error);
+        }
+        self.finish_parent_runtime_bridge(parent_turn, &outcome)
+            .await?;
         outcome
     }
 
@@ -1936,6 +1942,7 @@ impl Agent {
             // Steering is a real submission, not a post-run local queue. Admit it only here, at a
             // turn boundary, before the next request projection is built.
             self.admit_pending_steers(TurnId(self.seq_turn), messages)?;
+            self.admit_parent_mailbox(TurnId(self.seq_turn), messages)?;
             let mut turn_id = TurnId(self.seq_turn);
             self.observe_session_memory_activation(turn_id, relevance_task);
             let context_observation_started = Instant::now();
@@ -2500,6 +2507,7 @@ impl Agent {
                 return Err(error);
             }
             if provider_refusal.is_none()
+                && !use_hedge
                 && let Some(mailbox) = &self.persistent_mailbox
                 && let Err(error) = mailbox.confirm_request(&req.messages)
             {

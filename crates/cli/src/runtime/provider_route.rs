@@ -451,6 +451,25 @@ impl Agent {
                     settlement?;
                     return Err(error);
                 }
+                if let Some(mailbox) = &self.persistent_mailbox
+                    && let Err(error) = mailbox.confirm_request(&governed_request.messages)
+                {
+                    let settlement = self.close_provider_intent_without_dispatch(
+                        turn,
+                        ordinal,
+                        &route_id,
+                        physical_attempt,
+                        ticket,
+                        "durable mailbox inclusion failed before internal provider dispatch",
+                    );
+                    drop(route_permit);
+                    drop(dispatch_permit);
+                    if let Some(budget) = &self.usd_budget {
+                        budget.settle_not_dispatched();
+                    }
+                    settlement?;
+                    return Err(KernelError::AgentControl(error));
+                }
                 let result = execute_admitted_provider_turn(
                     provider.clone(),
                     self.run_deadline.unwrap_or_else(|| {
