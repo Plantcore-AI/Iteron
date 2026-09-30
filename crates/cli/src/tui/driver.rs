@@ -476,24 +476,10 @@ pub async fn run(
             redraw=true;
         }
         redraw |= app.completions.poll_ready(&app.editor).await;
-        if app
-            .workspace_command_job
-            .as_ref()
-            .is_some_and(|job| job.is_finished())
-        {
-            let job = app
-                .workspace_command_job
-                .take()
-                .expect("finished workspace command job was present");
-            match job.await {
-                Ok(actions) => workspace_command::apply(&mut app, &session, &providers, actions),
-                Err(error) if error.is_cancelled() => {}
-                Err(error) => app.note(
-                    block::NoticeLevel::Err,
-                    format!("workspace command worker failed: {error}"),
-                ),
-            }
-            redraw = true;
+        let workspace_scope=if app.workspace_commands.is_busy() {session.client.thread_snapshot_v1()} else {None};
+        if let Some(actions)=app.workspace_commands.poll(workspace_scope.as_ref()).await {
+            workspace_command::apply(&mut app,&mut session,&providers,actions);
+            redraw=true;
         }
         app.completions.start_due(&app.editor, &repo, Instant::now());
         redraw |= app.attachments.poll_progress();
@@ -698,7 +684,7 @@ pub async fn run(
         let local_job_active = app.pickers.has_worker()
             || app.navigation.has_work()
             || app.completions.has_worker()
-            || app.workspace_command_job.is_some()
+            || app.workspace_commands.is_busy()
             || app.attachments.is_busy();
         wake = local_job_wake(wake, now, local_job_active);
         let mut next_input = None;
@@ -860,9 +846,7 @@ pub async fn run(
     }
     let _ = app.pickers.close();
     app.navigation.invalidate();
-    if let Some(job) = app.workspace_command_job.take() {
-        job.abort();
-    }
+    app.workspace_commands.close();
     Ok(())
     }
     .await;

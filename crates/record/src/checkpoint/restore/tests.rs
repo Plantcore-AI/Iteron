@@ -1,4 +1,4 @@
-use super::{overlaps, restore};
+use super::{overlaps, physically_overlaps, restore};
 use crate::checkpoint::{checkpoint, checkpoint_excluding_runtime_state};
 use iteron_protocol::{RunId, Seq};
 use std::{path::PathBuf, process::Command};
@@ -89,5 +89,38 @@ fn protection_includes_ancestors_and_descendants_but_not_prefix_neighbours() {
     }
     for path in [".iteron/config.json", ".iteron/runs-old/a", ".iteron-run"] {
         assert!(!overlaps(path, ".iteron/runs"), "{path}");
+    }
+}
+
+#[test]
+fn physical_protection_resolves_existing_ancestors_before_appending_missing_paths() {
+    let repo = Repository::new("physical-scope");
+    let runs = repo.0.join(".iteron/runs");
+    std::fs::create_dir_all(&runs).unwrap();
+    let workspace = repo.0.canonicalize().unwrap();
+    let protected = runs.canonicalize().unwrap();
+    assert!(
+        physically_overlaps(
+            &workspace,
+            ".iteron/runs/missing/live.jsonl",
+            Some(&protected)
+        )
+        .unwrap()
+    );
+    assert!(physically_overlaps(&workspace, ".iteron", Some(&protected)).unwrap());
+    assert!(
+        !physically_overlaps(
+            &workspace,
+            ".iteron/runs-neighbour/missing",
+            Some(&protected)
+        )
+        .unwrap()
+    );
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&runs, repo.0.join("alias")).unwrap();
+        assert!(
+            physically_overlaps(&workspace, "alias/missing/live.jsonl", Some(&protected)).unwrap()
+        );
     }
 }

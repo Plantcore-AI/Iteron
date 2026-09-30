@@ -28,6 +28,10 @@ pub(super) struct WorkspaceCheckpointOwner {
     last_turn: Option<TurnId>,
 }
 impl WorkspaceCheckpointOwner {
+    pub(super) fn invalidate_after_restore(&mut self) {
+        self.latest = None;
+        self.last_turn = None;
+    }
     pub(super) fn latest(&self) -> Option<&Snapshot> {
         self.latest.as_ref()
     }

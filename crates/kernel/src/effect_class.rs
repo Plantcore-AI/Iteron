@@ -35,6 +35,8 @@ pub enum EffectClass {
     Verify,
     /// One workspace checkpoint (a real tree write, not merely a durable marker).
     Checkpoint,
+    /// One operator workspace restore and its pre-mutation safety checkpoint.
+    WorkspaceRestore,
     /// One in-turn workflow launch.
     Workflow,
     /// One telemetry export (#105). Projecting the record outward is a network/file effect like any
@@ -58,13 +60,14 @@ pub const EFFECT_ID_PREFIX: &str = "fx1-";
 impl EffectClass {
     /// Every class, for exhaustive conformance tests. Kept beside the enum so a new class that
     /// forgets to register itself fails the boundary test rather than silently escaping it.
-    pub const ALL: [EffectClass; 8] = [
+    pub const ALL: [EffectClass; 9] = [
         EffectClass::RegistryTool,
         EffectClass::Provider,
         EffectClass::Hook,
         EffectClass::Subagent,
         EffectClass::Verify,
         EffectClass::Checkpoint,
+        EffectClass::WorkspaceRestore,
         EffectClass::Workflow,
         EffectClass::Telemetry,
     ];
@@ -81,6 +84,7 @@ impl EffectClass {
             EffectClass::Subagent => Some("subagent"),
             EffectClass::Verify => Some("verify"),
             EffectClass::Checkpoint => Some("checkpoint"),
+            EffectClass::WorkspaceRestore => Some("workspace_restore"),
             EffectClass::Workflow => Some("workflow"),
             EffectClass::Telemetry => Some("telemetry"),
         }
@@ -98,6 +102,7 @@ impl EffectClass {
             EffectClass::Subagent => Some("sa"),
             EffectClass::Verify => Some("vf"),
             EffectClass::Checkpoint => Some("cp"),
+            EffectClass::WorkspaceRestore => Some("wr"),
             EffectClass::Workflow => Some("wf"),
             EffectClass::Telemetry => Some("tm"),
         }

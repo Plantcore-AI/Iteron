@@ -65,6 +65,7 @@ mod ordinary_extensions;
 mod plugin_control;
 mod session_factory;
 mod session_host;
+mod workspace_rewind_control;
 pub(crate) use session_host::AppServer;
 
 mod submission_settlement;
@@ -88,7 +89,7 @@ pub(crate) use messages::{
     AdoptRun, Control, ControlReply, ControlRequest, EventEnvelope, EventEnvelopeError, JobControl,
     McpControl, McpControlReply, MemoryControl, MemoryControlReply, NavigatedSession, ServerEvent,
     SessionSnapshot, SideRequest, TerminalAuthority, TerminalSummary, WorkflowControl,
-    WorkflowControlReply,
+    WorkflowControlReply, WorkspaceRewound,
 };
 mod text_spill;
 mod turn_pump;

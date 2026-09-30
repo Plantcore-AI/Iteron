@@ -478,7 +478,7 @@ pub(super) async fn apply_control(
     // the two identities cannot diverge if a live product turn still owns this thread.
     if matches!(
         &request.control,
-        Control::AdoptRun(_) | Control::SessionNavigate { .. }
+        Control::AdoptRun(_) | Control::SessionNavigate { .. } | Control::WorkspaceRewind { .. }
     ) && !events.can_rebind_contract_run()
     {
         let _ = request.reply.send(ControlReply::Refused(
@@ -490,7 +490,7 @@ pub(super) async fn apply_control(
     // Hold the actual generation barrier BEFORE adoption mutates Agent or the public projection.
     let _activity_adoption = if matches!(
         &request.control,
-        Control::AdoptRun(_) | Control::SessionNavigate { .. }
+        Control::AdoptRun(_) | Control::SessionNavigate { .. } | Control::WorkspaceRewind { .. }
     ) {
         match operator_status.activity.adoption_barrier().await {
             Ok(lease) => Some(lease),
@@ -511,7 +511,55 @@ pub(super) async fn apply_control(
         operator_status.agents.dispatch(command, request.reply);
         return;
     }
+    let mut rewind_presentation = None;
     let (control, navigation) = match request.control {
+        Control::WorkspaceRewind { command, cancel } => {
+            let prepared = match session_factory {
+                Some(factory) => {
+                    match super::workspace_rewind_control::origin(agent, &events.contract, &command)
+                    {
+                        Ok(origin) => {
+                            super::workspace_rewind_control::prepare(
+                                agent, factory, origin, command, cancel,
+                            )
+                            .await
+                        }
+                        Err(reason) => Err(reason),
+                    }
+                }
+                None => Err("trusted session factory unavailable".into()),
+            };
+            match prepared {
+                Ok(super::workspace_rewind_control::RewindControlResult::Observed(
+                    presentation,
+                )) => {
+                    let _ = request.reply.send(ControlReply::WorkspaceRewound(Box::new(
+                        super::WorkspaceRewound {
+                            presentation,
+                            navigation: None,
+                        },
+                    )));
+                    return;
+                }
+                Ok(super::workspace_rewind_control::RewindControlResult::Adopt {
+                    native,
+                    presentation,
+                    admission,
+                    reply,
+                }) => {
+                    rewind_presentation = Some(reply);
+                    (
+                        Control::AdoptRun(Box::new(native)),
+                        Some((presentation, admission)),
+                    )
+                }
+                Err(reason) => {
+                    let _ = request.reply.send(ControlReply::Refused(reason));
+                    return;
+                }
+            }
+        }
+
         Control::SessionNavigate { command, cancel } => {
             let Some(factory) = session_factory else {
                 let _ = request.reply.send(ControlReply::Refused(
@@ -582,8 +630,8 @@ pub(super) async fn apply_control(
         other => (other, None),
     };
     let reply = match control {
-        Control::SessionNavigate { .. } => {
-            unreachable!("session navigation is normalized by the trusted host factory")
+        Control::SessionNavigate { .. } | Control::WorkspaceRewind { .. } => {
+            unreachable!("session navigation and rewind are normalized by the trusted host factory")
         }
         Control::OrdinaryExtensions(command) => {
             operator_status.ordinary_extensions.dispatch(
@@ -883,6 +931,35 @@ pub(super) async fn apply_control(
             )),
             other => other,
         }
+    } else {
+        reply
+    };
+    let reply = if let Some(mut presentation) = rewind_presentation {
+        let navigation = match reply {
+            ControlReply::SessionNavigated(navigation) => {
+                if let Some(execution) = presentation.execution.as_mut() {
+                    execution.conversation_adopted = true;
+                }
+                Some(navigation)
+            }
+            ControlReply::Refused(reason) => {
+                if let Some(execution) = presentation.execution.as_mut() {
+                    execution.reason = Some(reason);
+                }
+                None
+            }
+            _ => {
+                if let Some(execution) = presentation.execution.as_mut() {
+                    execution.reason =
+                        Some("host adoption did not return a selected-state receipt".into());
+                }
+                None
+            }
+        };
+        ControlReply::WorkspaceRewound(Box::new(super::WorkspaceRewound {
+            presentation,
+            navigation,
+        }))
     } else {
         reply
     };

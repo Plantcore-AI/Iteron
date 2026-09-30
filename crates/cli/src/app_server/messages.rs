@@ -349,6 +349,10 @@ pub(super) fn event_heap_bytes(event: &ServerEvent) -> usize {
 /// **Folding these into the SQ is a WS1 protocol change, not a WS6 one.** When `Op` grows the
 /// variants, each arm here becomes a `route()` case and this enum shrinks to nothing.
 pub(crate) enum Control {
+    WorkspaceRewind {
+        command: iteron_protocol::workspace_rewind::WorkspaceRewindCommandV1,
+        cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    },
     SessionNavigate {
         command: iteron_protocol::session_navigation::SessionNavigationV1,
         /// Host-minted local observer cancellation. The public wire can never supply a signal.
@@ -504,6 +508,7 @@ pub(crate) enum SideRequest {
 /// What a control request answers with.
 #[derive(Debug)]
 pub(crate) enum ControlReply {
+    WorkspaceRewound(Box<WorkspaceRewound>),
     SessionNavigated(Box<NavigatedSession>),
     OrdinaryExtensions(serde_json::Value),
     PluginManagement(serde_json::Value),
@@ -645,4 +650,11 @@ pub(crate) struct NavigatedSession {
     pub(crate) snapshot: SessionSnapshot,
     pub(crate) tunables_checkpoint: iteron_record::TunablesCheckpoint,
     pub(crate) compaction_trigger_tokens: usize,
+}
+
+/// Workspace execution facts and, only when the actual host adoption succeeded, selected state.
+#[derive(Debug)]
+pub(crate) struct WorkspaceRewound {
+    pub(crate) presentation: iteron_protocol::workspace_rewind::WorkspaceRewindReplyV1,
+    pub(crate) navigation: Option<Box<NavigatedSession>>,
 }

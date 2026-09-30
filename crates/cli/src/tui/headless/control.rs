@@ -48,6 +48,9 @@ impl PlantcoreCommand {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum WireControl {
+    WorkspaceRewindV1 {
+        command: iteron_protocol::workspace_rewind::WorkspaceRewindCommandV1,
+    },
     SessionNavigateV1 {
         command: iteron_protocol::session_navigation::SessionNavigationV1,
     },
@@ -272,6 +275,9 @@ where
 
 impl WireControl {
     pub(super) fn is_read_only(&self) -> bool {
+        if let Self::WorkspaceRewindV1 { command } = self {
+            return command.is_read_only();
+        }
         if matches!(self, Self::OrdinaryExtensionsV1 { .. }) {
             return true;
         }
@@ -314,6 +320,10 @@ impl WireControl {
 
     pub(super) fn into_app_server(self) -> Control {
         match self {
+            Self::WorkspaceRewindV1 { command } => Control::WorkspaceRewind {
+                command,
+                cancel: None,
+            },
             Self::SessionNavigateV1 { command } => Control::SessionNavigate {
                 command,
                 cancel: None,
@@ -562,6 +572,10 @@ pub(super) fn reply_value(reply: ControlReply) -> Value {
             "code": error.code,
             "message": error.message,
         }),
+        ControlReply::WorkspaceRewound(reply) => {
+            let navigation=reply.navigation.map(|navigation|json!({"navigation":navigation.presentation,"state":snapshot_value(&navigation.snapshot)}));
+            json!({"type":"workspace_rewound_v1","rewind":reply.presentation,"adoption":navigation})
+        }
         ControlReply::SessionNavigated(reply) => {
             json!({"type":"session_navigated_v1","navigation":reply.presentation,"state":snapshot_value(&reply.snapshot)})
         }
@@ -1228,5 +1242,30 @@ mod tests {
             .err()
             .expect("oversized job input must be refused");
         assert!(error.to_string().contains("job input exceeds"));
+    }
+}
+
+#[cfg(test)]
+mod workspace_rewind_wire_tests {
+    use super::WireControl;
+    use serde_json::json;
+    #[test]
+    fn observer_reads_are_distinct_from_operator_apply_and_accept_no_native_locator() {
+        let base = json!({"type":"workspace_rewind_v1","command":{"action":"preview","thread_id":"t","run_id":"r","target":{"run_id":"parent","seq":3},"scope":"code_only","unrecorded":"keep"}});
+        assert!(
+            serde_json::from_value::<WireControl>(base.clone())
+                .unwrap()
+                .is_read_only()
+        );
+        let mut apply = base.clone();
+        apply["command"]["action"] = json!("apply");
+        assert!(
+            !serde_json::from_value::<WireControl>(apply)
+                .unwrap()
+                .is_read_only()
+        );
+        let mut forged = base;
+        forged["command"]["workspace"] = json!("/other-root");
+        assert!(serde_json::from_value::<WireControl>(forged).is_err());
     }
 }

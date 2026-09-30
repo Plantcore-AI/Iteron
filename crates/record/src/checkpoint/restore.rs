@@ -25,13 +25,16 @@ pub(super) fn restore(
         .map(|root| runtime_state_relative(&workspace, root))
         .transpose()?
         .flatten();
+    let protected = runtime_state.map(Path::canonicalize).transpose()?;
     let isolated = IsolatedGit::create(&snapshot.run, snapshot.at, &workspace)?;
     isolated.run(&["read-tree", &snapshot.tree_ref])?;
     let snapshot_files = nul_path_set(&isolated.run(&["ls-files", "-z"])?)?;
     // Older snapshots may contain runtime files. Refuse before the first working-file mutation;
     // silently dropping them would misrepresent the requested tree as an exact restore.
     for path in &snapshot_files {
-        if excluded.as_ref().is_some_and(|root| overlaps(path, root)) {
+        if excluded.as_ref().is_some_and(|root| overlaps(path, root))
+            || physically_overlaps(&workspace, path, protected.as_deref())?
+        {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "checkpoint intersects the protected runtime-state directory",
@@ -44,11 +47,16 @@ pub(super) fn restore(
         &workspace,
         &["ls-files", "-z", "-o", "-c", "--exclude-standard"],
     )?;
-    let mut removals = nul_path_set(&current)?
-        .into_iter()
-        .filter(|path| !snapshot_files.contains(path))
-        .filter(|path| !excluded.as_ref().is_some_and(|root| overlaps(path, root)))
-        .collect::<Vec<_>>();
+    let mut removals = Vec::new();
+    for path in nul_path_set(&current)? {
+        if snapshot_files.contains(&path)
+            || excluded.as_ref().is_some_and(|root| overlaps(&path, root))
+            || physically_overlaps(&workspace, &path, protected.as_deref())?
+        {
+            continue;
+        }
+        removals.push(path);
+    }
     removals.sort_unstable();
     if delete_unrecorded {
         for path in &removals {
@@ -68,6 +76,48 @@ pub(super) fn restore(
         }
     }
     Ok(())
+}
+
+fn physically_overlaps(
+    workspace: &Path,
+    path: &str,
+    protected: Option<&Path>,
+) -> Result<bool, RecordError> {
+    let Some(protected) = protected else {
+        return Ok(false);
+    };
+    let mut existing = workspace.join(path);
+    let mut missing = Vec::new();
+    loop {
+        match existing.canonicalize() {
+            Ok(mut resolved) => {
+                for component in missing.iter().rev() {
+                    resolved.push(component);
+                }
+                return Ok(resolved.starts_with(protected) || protected.starts_with(&resolved));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                let component = existing
+                    .file_name()
+                    .ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "restore destination has no existing workspace ancestor",
+                        )
+                    })?
+                    .to_owned();
+                missing.push(component);
+                if !existing.pop() || !existing.starts_with(workspace) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "restore destination is outside its canonical workspace",
+                    )
+                    .into());
+                }
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
 }
 
 fn overlaps(path: &str, protected: &str) -> bool {

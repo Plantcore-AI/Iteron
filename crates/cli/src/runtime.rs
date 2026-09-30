@@ -58,6 +58,7 @@ mod turn_publication;
 #[cfg(test)]
 mod turn_publication_runtime_tests;
 mod workspace_checkpoint;
+pub(crate) mod workspace_rewind;
 #[cfg(test)]
 mod workspace_checkpoint_tests;
 use effect_descriptor::{

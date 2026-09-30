@@ -693,7 +693,7 @@ struct App {
     navigation: session_navigation::SessionNavigationOwner,
     /// At most one disk/process-heavy slash command. Completion carries bounded semantic actions;
     /// the key/render loop never awaits Git, record traversal, or workspace mutation.
-    workspace_command_job: Option<tokio::task::JoinHandle<Vec<workspace_command::Action>>>,
+    workspace_commands: workspace_command::WorkspaceCommands,
     attachments: attachment_owner::AttachmentOwner,
     activities: std::collections::BTreeMap<String, PresentedActivity>,
     /// Recently terminalized activity ids. A late cosmetic event cannot resurrect an old-turn

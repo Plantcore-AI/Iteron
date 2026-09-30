@@ -1,5 +1,7 @@
 //! Trusted native session factory. Provider constructors, verified replay and writer leases never
 //! cross into presentation. Existing SQ slot permits exclude submissions through the journal swap.
+mod workspace_rewind;
+pub(super) use workspace_rewind::{PreparedRewind, RewindPreparation};
 #[cfg(test)]
 mod tests;
 use crate::app_server::{AppServerClient, ModelSelection};
@@ -73,6 +75,13 @@ pub(super) struct PreparationOrigin {
     pub(super) run: RunId,
     pub(super) selection: RouteSelection,
     pub(super) checkpoint: iteron_record::TunablesCheckpoint,
+}
+enum NativeSessionStart {
+    Fresh {
+        created_at: u64,
+        route: ModelSelection,
+    },
+    Existing,
 }
 pub(super) struct PreparedSession {
     origin: PreparationOrigin,
@@ -171,29 +180,25 @@ impl SessionFactory {
     ) -> Result<PreparedSession, String> {
         cancelled(cancel.as_deref())?;
         // Refuse a unavailable current route before the first new-record creation effect.
-        let created_at = if matches!(&command, SessionNavigationV1::New { .. }) {
-            Some(
-                std::time::SystemTime::now()
+        let start = if matches!(&command, SessionNavigationV1::New { .. }) {
+            NativeSessionStart::Fresh {
+                created_at: std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map_err(|_| "new session clock unavailable")?
                     .as_secs(),
-            )
+                route: self.build_route(&origin.selection)?,
+            }
         } else {
-            None
+            NativeSessionStart::Existing
         };
-        let fresh_route = if matches!(&command, SessionNavigationV1::New { .. }) {
-            Some(self.build_route(&origin.selection)?)
-        } else {
-            None
-        };
-        let (rollout, fresh, scoped) = match command {
+        let (rollout, scoped) = match command {
             SessionNavigationV1::New { .. } => {
                 let mut entropy = [0_u8; 16];
                 getrandom::fill(&mut entropy).map_err(|_| "new session identity unavailable")?;
                 let run = RunId(format!("run-{}", hex::encode(entropy)));
                 let rollout = Rollout::open(&self.runs, &run, self.tenant.clone())
                     .map_err(|_| "new session writer unavailable")?;
-                (rollout, true, Vec::new())
+                (rollout, Vec::new())
             }
             SessionNavigationV1::Resume { target_run_id, .. } => {
                 // Lock before replay so route/source recovery cannot race an unrelated writer.
@@ -201,7 +206,7 @@ impl SessionFactory {
                     Rollout::open_existing(&self.runs, &target_run_id, self.tenant.clone())
                         .map_err(|_| "session writer unavailable; another process may own it")?;
                 let scoped = self.verified(&target_run_id)?;
-                (rollout, false, scoped)
+                (rollout, scoped)
             }
             SessionNavigationV1::Fork { through_seq, .. } => {
                 let parent = self.verified(&origin.run)?;
@@ -238,7 +243,7 @@ impl SessionFactory {
                 let scoped = self
                     .verified(&run)
                     .map_err(|reason| format!("{reason}; retained run {}", run.0))?;
-                (rollout, false, scoped)
+                (rollout, scoped)
             }
         };
         // A new/forked journal can already exist here. Cancellation never claims its creation was
@@ -252,6 +257,22 @@ impl SessionFactory {
                 rollout.run_id().0
             ));
         }
+        self.finish_native(origin, rollout, start, scoped, admission)
+    }
+    fn finish_native(
+        &self,
+        origin: PreparationOrigin,
+        rollout: Rollout,
+        start: NativeSessionStart,
+        scoped: Vec<ScopedEvent>,
+        admission: SubmissionExclusionLease,
+    ) -> Result<PreparedSession, String> {
+        let (fresh, created_at, admitted_route) = match start {
+            NativeSessionStart::Fresh { created_at, route } => {
+                (true, Some(created_at), Some(route))
+            }
+            NativeSessionStart::Existing => (false, None, None),
+        };
         let recorded = recorded_route(&scoped);
         let (selection, substituted) = match recorded {
             Some((Some(provider_id), model_id)) => {
@@ -281,7 +302,7 @@ impl SessionFactory {
                 },
             ),
         };
-        let route = match fresh_route {
+        let route = match admitted_route {
             Some(route) => route,
             None => self
                 .build_route(&selection)

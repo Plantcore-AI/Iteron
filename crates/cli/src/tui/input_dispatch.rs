@@ -638,6 +638,11 @@ pub(super) async fn dispatch<B: ratatui::backend::Backend>(
                     let _ = transcript_effects.cancel();
                     app.note(block::NoticeLevel::Warn, "cancelling local effect…");
                 }
+                KeyCode::Esc if !app.running && app.workspace_commands.is_busy() => {
+                    app.workspace_commands.cancel();
+                    app.status =
+                        "idle · cancelling workspace command before mutation if possible".into();
+                }
                 KeyCode::Esc if !app.running && app.navigation.adoption_busy() => {
                     app.navigation.cancel_adoption();
                     app.status = "idle · session loading cancelled".into();

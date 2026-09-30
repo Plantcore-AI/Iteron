@@ -727,7 +727,7 @@ pub(super) fn handle_registered_command(
         }
         SlashCommand::Diff => {
             let stat = arg.trim() == "stat";
-            workspace_command::queue_diff(app, session.workspace().to_path_buf(), stat);
+            workspace_command::queue_diff(app, session, stat);
         }
         SlashCommand::Sessions => {
             handle_sessions_command(app, session, directory, transcript_effects, interrupt, arg);
@@ -925,12 +925,7 @@ pub(super) fn handle_registered_command(
             }
         }
         SlashCommand::Rewind => {
-            workspace_command::queue_rewind(
-                app,
-                session.workspace().to_path_buf(),
-                session.rollout_path().to_path_buf(),
-                arg.to_owned(),
-            );
+            workspace_command::queue_rewind(app, session, arg.to_owned());
         }
         SlashCommand::Resume => {
             if arg.is_empty() {

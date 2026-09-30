@@ -73,7 +73,7 @@ impl App {
             completions: super::completion_owner::CompletionOwner::default(),
             pickers: super::picker_owner::PickerOwner::default(),
             navigation: super::session_navigation::SessionNavigationOwner::default(),
-            workspace_command_job: None,
+            workspace_commands: workspace_command::WorkspaceCommands::default(),
             attachments: super::attachment_owner::AttachmentOwner::default(),
             activities: std::collections::BTreeMap::new(),
             retired_activity_ids: VecDeque::new(),

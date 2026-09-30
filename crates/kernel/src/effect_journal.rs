@@ -218,6 +218,11 @@ impl EffectJournal {
 /// *name* here; every harness-dispatched class records its class label, and those are the ones the
 /// halt policy has never covered.
 pub fn kind_blocks_resume(kind: &str) -> bool {
+    // A restore can partially mutate working files. Its unknown outcome requires reconciliation,
+    // unlike a failed capture of an otherwise unchanged checkpoint tree.
+    if kind == "workspace_restore" {
+        return true;
+    }
     !EffectClass::ALL
         .iter()
         .filter_map(|class| class.label())
