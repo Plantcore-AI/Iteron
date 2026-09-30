@@ -94,6 +94,7 @@ mod orchestration_route;
 mod permission_policy;
 mod persistent_agent_kernel;
 pub(crate) mod persistent_agents;
+mod persistent_provider_budget;
 mod plantcore;
 pub(crate) use plantcore::{DispatchGate, ResumeActivation};
 mod policy_evidence;

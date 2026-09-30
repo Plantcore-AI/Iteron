@@ -426,6 +426,11 @@ impl EffectTicket {
     pub fn effect_id(&self) -> &EffectId {
         &self.effect_id
     }
+
+    /// Physical route identity authenticated by the durable provider intent.
+    pub fn provider_route_attempt(&self) -> Option<&iteron_protocol::ProviderRouteAttemptIdentity> {
+        self.provider_route_attempt.as_ref()
+    }
 }
 
 /// Whole milliseconds, rounded UP and saturating.
