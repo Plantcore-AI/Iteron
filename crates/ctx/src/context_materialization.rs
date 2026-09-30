@@ -1,6 +1,10 @@
 //! Content-free audit of the world port's bounded context materialization.
 
 use crate::context_ledger::MAX_CONTEXT_LEDGER_SEGMENTS;
+use crate::context_provenance::{
+    CapturedContextMaterial, ContextMaterialUnavailableV1, MAX_CONTEXT_MATERIALS,
+    MAX_CONTEXT_PROVENANCE_BYTES, MaterialRender, MaterialSource,
+};
 use crate::{
     CacheClass, ContextDecision, ContextDecisionReason, ContextSegmentEvidence, ContextSegmentId,
     ContextSourceClass,
@@ -16,6 +20,8 @@ use sha2::{Digest, Sha256};
 pub struct ContextMaterializationAudit {
     pub segments: Vec<ContextSegmentEvidence>,
     pub dropped: u32,
+    pub materials: Vec<CapturedContextMaterial>,
+    pub dropped_materials: u32,
 }
 
 pub(crate) struct AuditedGrantBuilder<'a> {
@@ -24,6 +30,7 @@ pub(crate) struct AuditedGrantBuilder<'a> {
     audit: ContextMaterializationAudit,
     bytes: usize,
     next_ordinal: u32,
+    retained_material_bytes: usize,
 }
 
 impl<'a> AuditedGrantBuilder<'a> {
@@ -34,6 +41,7 @@ impl<'a> AuditedGrantBuilder<'a> {
             audit: ContextMaterializationAudit::default(),
             bytes: 0,
             next_ordinal: 0,
+            retained_material_bytes: 0,
         }
     }
 
@@ -42,16 +50,31 @@ impl<'a> AuditedGrantBuilder<'a> {
     }
 
     pub(crate) fn push(&mut self, text: String, trust: Trust, source: ContextSource) {
-        if text.is_empty() {
-            return;
-        }
+        let mut render = MaterialRender::default();
+        render.append(
+            MaterialSource::unavailable(
+                source_class(source),
+                ContextMaterialUnavailableV1::SourceOwnerDidNotCapture,
+            ),
+            &text,
+        );
+        self.push_materialized(render, trust, source);
+    }
+
+    pub(crate) fn push_materialized(
+        &mut self,
+        render: MaterialRender,
+        trust: Trust,
+        source: ContextSource,
+    ) {
+        let text = &render.text;
         let ordinal = self.next_ordinal;
         self.next_ordinal = self.next_ordinal.saturating_add(1);
         let bytes_before = text.len();
         let admitted = if self.segments.len() == MAX_CONTEXT_SEGMENTS {
             String::new()
         } else {
-            bounded_text(&text, self.remaining_bytes())
+            bounded_text(text, self.remaining_bytes())
         };
         let decision = if admitted.is_empty() {
             ContextDecision::Rejected
@@ -70,6 +93,33 @@ impl<'a> AuditedGrantBuilder<'a> {
             }
         };
         let effective_trust = trust.min(self.request.trust_ceiling);
+        let retained_prefix_bytes = if admitted.len() == text.len() {
+            text.len()
+        } else {
+            admitted.len().saturating_sub("\n… (truncated)".len())
+        };
+        self.audit.dropped_materials = self.audit.dropped_materials.saturating_add(render.dropped);
+        for mut material in render.admit(ordinal, &admitted, retained_prefix_bytes, effective_trust)
+        {
+            if self.audit.materials.len() == MAX_CONTEXT_MATERIALS {
+                self.audit.dropped_materials = self.audit.dropped_materials.saturating_add(1);
+                continue;
+            }
+            if material.captured_bytes()
+                > MAX_CONTEXT_PROVENANCE_BYTES.saturating_sub(self.retained_material_bytes)
+            {
+                material = material.without_retained_source();
+            }
+            // Rendered fragments are individually bounded by the same grant byte ceiling.
+            if material.captured_bytes()
+                > MAX_CONTEXT_PROVENANCE_BYTES.saturating_sub(self.retained_material_bytes)
+            {
+                self.audit.dropped_materials = self.audit.dropped_materials.saturating_add(1);
+                continue;
+            }
+            self.retained_material_bytes += material.captured_bytes();
+            self.audit.materials.push(material);
+        }
         if self.audit.segments.len() == MAX_CONTEXT_LEDGER_SEGMENTS {
             self.audit.dropped = self.audit.dropped.saturating_add(1);
         } else {

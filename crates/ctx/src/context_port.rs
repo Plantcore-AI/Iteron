@@ -1,6 +1,7 @@
 //! Bounded materialization of a pure context plan.
 
 use crate::context_materialization::AuditedGrantBuilder;
+use crate::context_provenance::{ContextMaterialUnavailableV1, MaterialRender, MaterialSource};
 use crate::memory::{
     FileMemory, MemStore, MemTier, MemoryRecallAudit, MemoryRecallStrategy, MemoryStrategy,
 };
@@ -181,13 +182,13 @@ impl ContextPort for DefaultContextPort {
                         )));
                     }
                     let selected = confined_root(&workspace, root)?;
-                    let text = outline::repo_outline_for_task_at_depth(
+                    let text = outline::repo_outline_materialized_at_depth(
                         &selected,
                         *depth,
                         builder.remaining_bytes().saturating_div(3),
                         &plan.task,
                     );
-                    builder.push(text, Trust::Workspace, ContextSource::RepoOutline);
+                    builder.push_materialized(text, Trust::Workspace, ContextSource::RepoOutline);
                 }
                 ContextSelector::Instructions { scope } => {
                     let home_core = input.home_dir.as_deref().map(|home| home::path(home, ""));
@@ -202,17 +203,36 @@ impl ContextPort for DefaultContextPort {
                         *scope,
                         input.materialization.instruction_discovery,
                     );
-                    let rendered =
-                        bundle.render_with_policy(input.materialization.instruction_discovery);
-                    builder.push(rendered, Trust::Untrusted, ContextSource::Instructions);
+                    let rendered = bundle.render_materialized_with_policy(
+                        input.materialization.instruction_discovery,
+                    );
+                    builder.push_materialized(
+                        rendered,
+                        Trust::Untrusted,
+                        ContextSource::Instructions,
+                    );
                 }
                 ContextSelector::MemoryKeys { keys } => {
                     if input.memory_benchmark_scope.is_some() {
                         continue;
                     }
                     for key in keys {
-                        if let Ok(fact) = FileMemory.read_fact(&stores, key) {
-                            builder.push(fact.framed(), fact.trust(), ContextSource::Memory);
+                        match FileMemory.read_fact(&stores, key) {
+                            Ok(fact) => builder.push_materialized(
+                                fact.render_materialized(),
+                                fact.trust(),
+                                ContextSource::Memory,
+                            ),
+                            Err(_) => {
+                                let mut render = MaterialRender::default();
+                                render.refuse(MaterialSource::unavailable(crate::ContextSourceClass::WorkspaceMemory,
+                                    ContextMaterialUnavailableV1::SourceReadRefused { reason: "memory resolution unavailable or excluded by current owner policy".into() }).with_key(key));
+                                builder.push_materialized(
+                                    render,
+                                    Trust::Untrusted,
+                                    ContextSource::Memory,
+                                );
+                            }
                         }
                     }
                 }
@@ -245,8 +265,8 @@ impl ContextPort for DefaultContextPort {
             );
             memory_audit = Some(exact_audit);
             if !segment.is_empty() {
-                builder.push(
-                    segment.render(),
+                builder.push_materialized(
+                    segment.render_materialized(),
                     segment.governing_trust(),
                     ContextSource::Memory,
                 );
@@ -283,7 +303,7 @@ impl ContextPort for DefaultContextPort {
                         })
                 });
             let active = skills::active_paths_from_text(&plan.task);
-            let listing = catalog.listing_for_task(
+            let listing = catalog.listing_materialized_for_task(
                 input
                     .materialization
                     .skill_listing_bytes
@@ -291,10 +311,10 @@ impl ContextPort for DefaultContextPort {
                 &plan.task,
                 &active,
             );
-            if !listing.is_empty()
+            if !listing.text.is_empty()
                 && let Some(trust) = catalog.governing_trust()
             {
-                builder.push(listing, trust, ContextSource::Skills);
+                builder.push_materialized(listing, trust, ContextSource::Skills);
             }
         }
 

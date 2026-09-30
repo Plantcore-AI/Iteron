@@ -12,6 +12,10 @@
 use std::path::Path;
 use walkdir::WalkDir;
 
+use crate::ContextSourceClass;
+use crate::context_provenance::{
+    ContextMaterialRootV1, ContextMaterialUnavailableV1, MaterialRender, MaterialSource,
+};
 use crate::instructions::suspicious_unicode;
 use crate::source::{SourceScope, read_bounded_utf8};
 
@@ -384,6 +388,7 @@ struct OutlineFile {
     declarations: Vec<String>,
     signals: outline_relevance::FileSignals,
     relevance: outline_relevance::Relevance,
+    material: MaterialSource,
 }
 
 /// Preserve the tunable query envelope before the private ranker expands compound identifiers.
@@ -486,6 +491,31 @@ fn repo_outline_for_task_at_limits(
     token_budget: usize,
     query: &str,
 ) -> String {
+    repo_outline_materialized_at_limits(root, max_files, depth, token_budget, query).text
+}
+
+pub(crate) fn repo_outline_materialized_at_depth(
+    root: &Path,
+    depth: u8,
+    token_budget: usize,
+    query: &str,
+) -> MaterialRender {
+    repo_outline_materialized_at_limits(
+        root,
+        iteron_tunables::param_usize("ctx.outline.max_outline_code_files", MAX_OUTLINE_CODE_FILES),
+        depth,
+        token_budget,
+        query,
+    )
+}
+
+fn repo_outline_materialized_at_limits(
+    root: &Path,
+    max_files: usize,
+    depth: u8,
+    token_budget: usize,
+    query: &str,
+) -> MaterialRender {
     let max_outline_code_files =
         iteron_tunables::param_usize("ctx.outline.max_outline_code_files", MAX_OUTLINE_CODE_FILES);
     let max_outline_entries =
@@ -515,6 +545,8 @@ fn repo_outline_for_task_at_limits(
     let declaration_keywords =
         iteron_tunables::param_str_list("ctx.outline.declaration_keywords", DECLARATION_KEYWORDS);
     let mut files: Vec<OutlineFile> = Vec::new();
+    let mut materialized = MaterialRender::default();
+    let mut retained_source_bytes = 0usize;
     let mut rejected = 0usize;
     let mut bounded_omitted = 0usize;
     let mut total_source_bytes = 0usize;
@@ -567,7 +599,27 @@ fn repo_outline_for_task_at_limits(
             SourceScope::Repository,
         ) {
             Ok(Some(content)) => content,
-            Ok(None) | Err(_) => {
+            Ok(None) => {
+                materialized.refuse(MaterialSource::refused(
+                    ContextSourceClass::WorkspaceOutline,
+                    ContextMaterialRootV1::Workspace,
+                    root,
+                    entry.path(),
+                    ContextMaterialUnavailableV1::Missing,
+                ));
+                rejected += 1;
+                continue;
+            }
+            Err(error) => {
+                materialized.refuse(MaterialSource::refused(
+                    ContextSourceClass::WorkspaceOutline,
+                    ContextMaterialRootV1::Workspace,
+                    root,
+                    entry.path(),
+                    ContextMaterialUnavailableV1::SourceReadRefused {
+                        reason: iteron_protocol::text::head(error.reason(), 512),
+                    },
+                ));
                 rejected += 1;
                 continue;
             }
@@ -598,7 +650,23 @@ fn repo_outline_for_task_at_limits(
             .into_iter()
             .map(|(line, declaration)| format!("  {line}: {declaration}"))
             .collect();
+        let mut material = MaterialSource::file(
+            ContextSourceClass::WorkspaceOutline,
+            ContextMaterialRootV1::Workspace,
+            root,
+            entry.path(),
+            &content,
+            false,
+        );
+        if content.len()
+            > crate::context_provenance::MAX_CONTEXT_PROVENANCE_BYTES
+                .saturating_sub(retained_source_bytes)
+        {
+            material = material.without_bytes();
+        }
+        retained_source_bytes += material.retained_bytes();
         files.push(OutlineFile {
+            material,
             path: rel,
             declarations,
             signals,
@@ -640,10 +708,13 @@ fn repo_outline_for_task_at_limits(
         };
         let cost = crate::estimate_tokens(&block);
         if used + cost > token_budget {
+            materialized.refuse(file.material);
             dropped += 1;
             continue;
         }
+        let start = out.len();
         out.push_str(&block);
+        materialized.contribution(file.material, start, out.len());
         used += cost;
     }
     if dropped > 0 {
@@ -667,7 +738,8 @@ fn repo_outline_for_task_at_limits(
             "\n[additional repository entries omitted after the {max_outline_entries}-entry traversal limit]\n"
         ));
     }
-    out
+    materialized.text = out;
+    materialized
 }
 
 #[cfg(test)]

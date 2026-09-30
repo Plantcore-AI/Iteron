@@ -42,6 +42,10 @@ use iteron_protocol::trust::Trust;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::ContextSourceClass;
+use crate::context_provenance::{
+    ContextMaterialRootV1, ContextMaterialUnavailableV1, MaterialRender, MaterialSource,
+};
 use crate::source::{
     SourceEntryKind, SourceError, SourceScope, list_directory_bounded, read_bounded_utf8,
 };
@@ -357,7 +361,8 @@ pub struct MemStore {
 
 #[derive(Debug, Default)]
 struct MemoryBodyCache {
-    entries: HashMap<PathBuf, ([u8; 32], String)>,
+    entries: HashMap<PathBuf, ([u8; 32], String, MaterialSource)>,
+    retained_source_bytes: usize,
     order: VecDeque<PathBuf>,
 }
 
@@ -507,6 +512,22 @@ impl MemStore {
     /// `.md` file — the seed `MemoryStore::load` behaviour — so the R5 model stays strictly
     /// additive (§1.3). Returned sorted by slug for a stable, reproducible order.
     pub fn index_entries(&self) -> Vec<FactRef> {
+        self.index_entries_materialized().0
+    }
+
+    fn material_root(&self) -> ContextMaterialRootV1 {
+        match self.tier {
+            MemTier::User => ContextMaterialRootV1::Operator,
+            MemTier::Dependency => ContextMaterialRootV1::Dependency,
+            MemTier::Project | MemTier::Local => ContextMaterialRootV1::Workspace,
+        }
+    }
+
+    fn index_entries_materialized(&self) -> (Vec<FactRef>, MaterialSource) {
+        let mut material = MaterialSource::unavailable(
+            ContextSourceClass::WorkspaceMemory,
+            ContextMaterialUnavailableV1::SourceOwnerDidNotCapture,
+        );
         let mut entries = match self.read_source(
             &self.index_path(),
             iteron_tunables::param_usize(
@@ -517,19 +538,33 @@ impl MemStore {
                 ),
             ),
         ) {
-            Ok(Some(text)) if !text.trim().is_empty() => text
-                .lines()
-                .filter(|line| !suspicious_unicode(line))
-                .filter_map(|line| parse_index_line(line, self.tier))
-                .collect::<Vec<_>>(),
+            Ok(Some(text)) if !text.trim().is_empty() => {
+                material = MaterialSource::file(
+                    ContextSourceClass::WorkspaceMemory,
+                    self.material_root(),
+                    &self.source_root,
+                    &self.index_path(),
+                    &text,
+                    false,
+                );
+                text.lines()
+                    .filter(|line| !suspicious_unicode(line))
+                    .filter_map(|line| parse_index_line(line, self.tier))
+                    .collect::<Vec<_>>()
+            }
             _ => Vec::new(),
         };
         if entries.is_empty() {
             entries = self.list_facts();
+            // These are actual directory-discovered metadata, not the unread fact-file bytes.
+            material = MaterialSource::gathered(
+                ContextSourceClass::WorkspaceMemory,
+                &entries.iter().map(FactRef::line).collect::<String>(),
+            );
         }
         entries.sort_by(|a, b| a.slug.cmp(&b.slug));
         entries.dedup_by(|a, b| a.slug == b.slug);
-        entries
+        (entries, material)
     }
 
     /// Degrade path: one metadata-only `FactRef` per `.md` file (excluding the index itself).
@@ -576,6 +611,10 @@ impl MemStore {
     /// Read a fact body from disk, bidi-scanned and head-capped. `None` if the file is absent or
     /// suspicious (skipped, never injected).
     fn read_body(&self, slug: &str) -> Option<String> {
+        self.read_body_materialized(slug).map(|(body, _)| body)
+    }
+
+    fn read_body_materialized(&self, slug: &str) -> Option<(String, MaterialSource)> {
         // Guard against a traversal slug from a tree-discovered MEMORY.md index (security review):
         // an index line like `[x](../../../secrets.md)` would otherwise escape the store root (an
         // absolute slug would escape entirely via `join`). read_fact already guards this; the
@@ -589,7 +628,7 @@ impl MemStore {
             .then(|| self.resource_index.refresh_one(&path).ok().flatten())
             .flatten();
         if let Some(indexed) = &indexed
-            && let Some((digest, body)) = self
+            && let Some((digest, body, material)) = self
                 .body_cache
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -597,7 +636,7 @@ impl MemStore {
                 .get(&path)
             && digest == &indexed.sha256
         {
-            return Some(body.clone());
+            return Some((body.clone(), material.clone()));
         }
         let raw = self
             .read_source(
@@ -618,6 +657,15 @@ impl MemStore {
             raw.trim(),
             iteron_tunables::param_usize("ctx.memory.max_fact_bytes", MAX_FACT_BYTES),
         );
+        let mut material = MaterialSource::file(
+            ContextSourceClass::WorkspaceMemory,
+            self.material_root(),
+            &self.source_root,
+            &path,
+            &raw,
+            false,
+        )
+        .mark_truncated(body.len() < raw.trim().len());
         if let Some(indexed) = indexed {
             let mut cache = self
                 .body_cache
@@ -629,14 +677,32 @@ impl MemStore {
                 let Some(oldest) = cache.order.pop_front() else {
                     break;
                 };
-                cache.entries.remove(&oldest);
+                if let Some((_, _, old)) = cache.entries.remove(&oldest) {
+                    cache.retained_source_bytes = cache
+                        .retained_source_bytes
+                        .saturating_sub(old.retained_bytes());
+                }
             }
             if !cache.entries.contains_key(&path) {
                 cache.order.push_back(path.clone());
             }
-            cache.entries.insert(path, (indexed.sha256, body.clone()));
+            if let Some((_, _, old)) = cache.entries.remove(&path) {
+                cache.retained_source_bytes = cache
+                    .retained_source_bytes
+                    .saturating_sub(old.retained_bytes());
+            }
+            if material.retained_bytes()
+                > crate::context_provenance::MAX_CONTEXT_PROVENANCE_BYTES
+                    .saturating_sub(cache.retained_source_bytes)
+            {
+                material = material.without_bytes();
+            }
+            cache.retained_source_bytes += material.retained_bytes();
+            cache
+                .entries
+                .insert(path, (indexed.sha256, body.clone(), material.clone()));
         }
-        Some(body)
+        Some((body, material))
     }
 
     fn cacheable_regular_path(&self, path: &Path) -> bool {
@@ -751,6 +817,8 @@ pub struct Fact {
     body: String,
     trust: Trust,
     bytes: usize,
+    material: MaterialSource,
+    index_material: MaterialSource,
 }
 
 impl Fact {
@@ -773,6 +841,14 @@ impl Fact {
     /// The fact framed for injection, labelled with its trust tier. An Untrusted fact carries the
     /// same "hints, not overrides" caution `ctx::instructions` uses, so a fact that says "ignore
     /// your rules" has no standing.
+    pub(crate) fn render_materialized(&self) -> MaterialRender {
+        let mut render = MaterialRender::default();
+        render.append(self.material.clone(), &self.framed());
+        if self.index_material != self.material {
+            render.contribution(self.index_material.clone(), 0, render.text.len());
+        }
+        render
+    }
     pub fn framed(&self) -> String {
         let label = trust_label(self.trust);
         if self.trust == Trust::Untrusted {
@@ -821,6 +897,7 @@ impl Framed {
 #[derive(Debug, Clone)]
 pub struct MemorySegment {
     index_block: String,
+    index_materials: Vec<(MaterialSource, usize, usize)>,
     recalled: Vec<Fact>,
     instructions: Vec<Framed>,
     governing_trust: Trust,
@@ -852,15 +929,28 @@ impl MemorySegment {
     /// The full injected text, in the fixed order index → recalled facts → instructions. This is
     /// the exact byte string the kernel records; `bytes()` equals its length.
     pub fn render(&self) -> String {
-        let mut out = String::with_capacity(self.bytes);
-        out.push_str(&self.index_block);
+        self.render_materialized().text
+    }
+
+    pub(crate) fn render_materialized(&self) -> MaterialRender {
+        let mut render = MaterialRender::default();
+        render.text.push_str(&self.index_block);
+        for (source, start, end) in &self.index_materials {
+            render.contribution(source.clone(), *start, *end);
+        }
         for fact in &self.recalled {
-            out.push_str(&fact.framed());
+            render.append_materialized(fact.render_materialized());
         }
         for instr in &self.instructions {
-            out.push_str(&instr.render());
+            render.append(
+                MaterialSource::unavailable(
+                    ContextSourceClass::ProjectInstructions,
+                    ContextMaterialUnavailableV1::SourceOwnerDidNotCapture,
+                ),
+                &instr.render(),
+            );
         }
-        out
+        render
     }
 }
 
@@ -1835,6 +1925,8 @@ pub struct FileMemory;
 /// An internal merged view of one indexed fact: its reference, its already-loaded body (when the
 /// file exists and is clean), and the trust of the store it came from.
 struct Merged {
+    material: MaterialSource,
+    index_material: MaterialSource,
     fact_ref: FactRef,
     body: Option<String>,
     trust: Trust,
@@ -1893,6 +1985,7 @@ impl FileMemory {
         let mut conflicted_slugs = HashSet::<String>::new();
         // At most eight bounded path reads per fact and 32 across this whole decision.
         let mut remaining_path_checks = 32usize;
+        let mut remaining_source_bytes = crate::context_provenance::MAX_CONTEXT_PROVENANCE_BYTES;
         let mut remaining_candidates = MAX_MEMORY_CANDIDATES;
         let mut remaining_collision_reads = 32usize;
         let now = if reference_unix_secs == 0 {
@@ -1919,7 +2012,23 @@ impl FileMemory {
             let mut candidates = Vec::new();
             for record in records {
                 let (title, summary) = derive_title_summary(&record.body, &record.id);
+                let serialized = serde_json::to_string(&record).unwrap_or_default();
+                let mut material = MaterialSource::record(
+                    store.material_root(),
+                    &store.source_root,
+                    &store.root.join("records-v1.json"),
+                    &record.id,
+                    record.revision,
+                    &serialized,
+                );
+                if material.retained_bytes() > remaining_source_bytes {
+                    material = material.without_bytes();
+                }
+                remaining_source_bytes =
+                    remaining_source_bytes.saturating_sub(material.retained_bytes());
                 let candidate = Merged {
+                    index_material: material.clone(),
+                    material,
                     fact_ref: FactRef {
                         slug: record.id.clone(),
                         title,
@@ -1946,12 +2055,15 @@ impl FileMemory {
                     Err(_) => audit.exclude(candidate, MemoryRecallExclusionKind::Expired, None),
                 }
             }
-            for fact_ref in store.index_entries().into_iter().take(MAX_MEMORY_FILES) {
+            let (index_entries, index_material) = store.index_entries_materialized();
+            for fact_ref in index_entries.into_iter().take(MAX_MEMORY_FILES) {
                 if record_ids.contains(&fact_ref.slug) {
                     continue;
                 }
                 let modified_unix_secs = store.modified_unix_secs(&fact_ref.slug);
                 let candidate = Merged {
+                    material: index_material.clone(),
+                    index_material: index_material.clone(),
                     fact_ref,
                     body: None,
                     trust: Trust::Untrusted,
@@ -2124,7 +2236,12 @@ impl FileMemory {
                 continue;
             }
             if candidate.body.is_none() {
-                candidate.body = stores[candidate.store_id].read_body(&candidate.fact_ref.slug);
+                if let Some((body, material)) =
+                    stores[candidate.store_id].read_body_materialized(&candidate.fact_ref.slug)
+                {
+                    candidate.body = Some(body);
+                    candidate.material = material;
+                }
             }
             if candidate.body.is_none() {
                 expired.push(index);
@@ -2205,6 +2322,8 @@ impl FileMemory {
             .filter_map(|merged| {
                 let body = merged.body.clone()?;
                 let fact = Fact {
+                    material: merged.material.clone(),
+                    index_material: merged.index_material.clone(),
                     slug: merged.fact_ref.slug.clone(),
                     title: merged.fact_ref.title.clone(),
                     bytes: body.len(),
@@ -2383,6 +2502,7 @@ impl FileMemory {
 
         // 1. Index block: always injected, bounded to index_bytes, tracking which tiers appear.
         let mut index_block = String::new();
+        let mut index_materials = Vec::new();
         let mut included: Vec<Trust> = Vec::new();
         let mut shown = 0usize;
         if !merged.is_empty() {
@@ -2411,7 +2531,13 @@ impl FileMemory {
                     {
                         break;
                     }
+                    let start = index_block.len();
                     index_block.push_str(&line);
+                    index_materials.push((
+                        candidate.index_material.clone(),
+                        start,
+                        index_block.len(),
+                    ));
                     included.push(candidate.trust);
                     shown += 1;
                 }
@@ -2440,6 +2566,8 @@ impl FileMemory {
             .filter_map(|candidate| {
                 let body = candidate.body.clone()?;
                 let fact = Fact {
+                    material: candidate.material.clone(),
+                    index_material: candidate.index_material.clone(),
                     slug: candidate.fact_ref.slug.clone(),
                     title: candidate.fact_ref.title.clone(),
                     bytes: body.len(),
@@ -2541,6 +2669,7 @@ impl FileMemory {
         let governing_trust = Trust::governing(included).unwrap_or(Trust::Trusted);
         let mut segment = MemorySegment {
             index_block,
+            index_materials,
             recalled,
             instructions,
             governing_trust,
@@ -2613,11 +2742,16 @@ impl MemoryStrategy for FileMemory {
             .into_iter()
             .find(|candidate| candidate.fact_ref.slug == slug)
         {
-            let body = candidate
-                .body
-                .or_else(|| stores[candidate.store_id].read_body(slug))
-                .ok_or_else(|| MemError::NotFound(slug.into()))?;
+            let (body, material) = if let Some(body) = candidate.body {
+                (body, candidate.material)
+            } else {
+                stores[candidate.store_id]
+                    .read_body_materialized(slug)
+                    .ok_or_else(|| MemError::NotFound(slug.into()))?
+            };
             return Ok(Fact {
+                index_material: candidate.index_material,
+                material,
                 slug: slug.into(),
                 title: candidate.fact_ref.title,
                 bytes: body.len(),

@@ -13,6 +13,10 @@
 //! (never injected) — the recon-injection incident this repo's own Errors.md records. Every skill's
 //! frontmatter and body is bidi/invisible-Unicode scanned; a suspicious skill is rejected, not run.
 
+use crate::ContextSourceClass;
+use crate::context_provenance::{
+    ContextMaterialRootV1, ContextMaterialUnavailableV1, MaterialRender, MaterialSource,
+};
 use crate::instructions::suspicious_unicode;
 use crate::source::{
     SourceEntryKind, SourcePrefix, SourceScope, list_directory_bounded, read_bounded_utf8,
@@ -73,6 +77,7 @@ pub struct SkillDef {
     /// Optional advertisement controls. These fields never grant tools or other authority.
     pub metadata: SkillMetadata,
     source_path: PathBuf,
+    material: MaterialSource,
 }
 
 impl SkillDef {
@@ -103,6 +108,7 @@ pub struct SkillError {
 pub struct SkillCatalog {
     defs: Vec<SkillDef>,
     errors: Vec<SkillError>,
+    retained_source_bytes: usize,
 }
 
 /// Stable, rebuildable skill snapshot. Callers may paint with
@@ -551,18 +557,28 @@ impl SkillCatalog {
                 continue;
             }
             let skill_md = p.join("SKILL.md");
-            let raw = if metadata_only {
+            let (raw, material) = if metadata_only {
                 match read_bounded_utf8_prefix(root, &skill_md, max_skill_metadata_bytes(), scope) {
-                    Ok(Some(prefix)) => match metadata_document(prefix) {
-                        Ok(raw) => raw,
-                        Err(reason) => {
-                            self.errors.push(SkillError {
-                                source: skill_md.display().to_string(),
-                                reason,
-                            });
-                            continue;
+                    Ok(Some(prefix)) => {
+                        let material = MaterialSource::file(
+                            ContextSourceClass::SkillIndex,
+                            material_root(tier),
+                            root,
+                            &skill_md,
+                            &prefix.text,
+                            prefix.truncated,
+                        );
+                        match metadata_document(prefix) {
+                            Ok(raw) => (raw, material),
+                            Err(reason) => {
+                                self.errors.push(SkillError {
+                                    source: skill_md.display().to_string(),
+                                    reason,
+                                });
+                                continue;
+                            }
                         }
-                    },
+                    }
                     Ok(None) => continue,
                     Err(error) => {
                         self.errors.push(SkillError {
@@ -585,7 +601,17 @@ impl SkillCatalog {
                     ),
                     scope,
                 ) {
-                    Ok(Some(raw)) => raw,
+                    Ok(Some(raw)) => {
+                        let material = MaterialSource::file(
+                            ContextSourceClass::SkillIndex,
+                            material_root(tier),
+                            root,
+                            &skill_md,
+                            &raw,
+                            false,
+                        );
+                        (raw, material)
+                    }
                     Ok(None) => continue,
                     Err(error) => {
                         self.errors.push(SkillError {
@@ -598,6 +624,15 @@ impl SkillCatalog {
             };
             match parse_skill(&raw, &p, tier) {
                 Ok(mut def) => {
+                    let mut material = material;
+                    if material.retained_bytes()
+                        > crate::context_provenance::MAX_CONTEXT_PROVENANCE_BYTES
+                            .saturating_sub(self.retained_source_bytes)
+                    {
+                        material = material.without_bytes();
+                    }
+                    self.retained_source_bytes += material.retained_bytes();
+                    def.material = material;
                     def.source_path = skill_md;
                     self.defs.push(def);
                 }
@@ -699,11 +734,20 @@ impl SkillCatalog {
                     continue;
                 }
             };
+            definition.material = MaterialSource::file(
+                ContextSourceClass::SkillIndex,
+                material_root(tier),
+                &root,
+                &path,
+                &raw,
+                false,
+            );
             definition.source_path = path;
             if let Some(home) = operator_home {
                 let mut catalog = SkillCatalog {
                     defs: vec![definition],
                     errors: Vec::new(),
+                    retained_source_bytes: 0,
                 };
                 catalog.apply_codex_config(home);
                 return Ok(catalog.defs.pop());
@@ -750,6 +794,16 @@ impl SkillCatalog {
         task: &str,
         active_paths: &[PathBuf],
     ) -> String {
+        self.listing_materialized_for_task(budget_bytes, task, active_paths)
+            .text
+    }
+
+    pub(crate) fn listing_materialized_for_task(
+        &self,
+        budget_bytes: usize,
+        task: &str,
+        active_paths: &[PathBuf],
+    ) -> MaterialRender {
         let budget_bytes = budget_bytes.min(
             iteron_tunables::param_usize("ctx.skills.max_listing_bytes", 6_000)
                 .clamp(512, 64 * 1024),
@@ -780,7 +834,7 @@ impl SkillCatalog {
             })
             .collect::<Vec<_>>();
         if candidates.is_empty() {
-            return String::new();
+            return MaterialRender::default();
         }
 
         // Relevance is derived from the current catalog rather than a provider-, language-, or
@@ -851,7 +905,7 @@ impl SkillCatalog {
             })
             .collect::<Vec<_>>();
         if visible.is_empty() {
-            return String::new();
+            return MaterialRender::default();
         }
         visible.sort_by(|left, right| {
             right
@@ -864,8 +918,9 @@ impl SkillCatalog {
             "\n\nAvailable skills (use the `use_skill` tool to load one when relevant):\n",
         );
         if out.len() > budget_bytes {
-            return String::new();
+            return MaterialRender::default();
         }
+        let mut rendered = MaterialRender::default();
         let visible_len = visible.len();
         let omitted = iteron_tunables::param_str(
             "ctx.skills.omitted",
@@ -898,9 +953,12 @@ impl SkillCatalog {
                 }
                 break;
             }
+            let start = out.len();
             out.push_str(&line);
+            rendered.contribution(d.material.clone(), start, out.len());
         }
-        out
+        rendered.text = out;
+        rendered
     }
 }
 
@@ -959,6 +1017,14 @@ fn is_vendor_path(p: &Path) -> bool {
 
 /// Parse a `SKILL.md`: bounded `---` frontmatter then the body. Unknown keys are tolerated for
 /// forward compatibility; malformed known fields are surfaced. Rejects suspicious Unicode.
+fn material_root(tier: SkillTier) -> ContextMaterialRootV1 {
+    match tier {
+        SkillTier::User => ContextMaterialRootV1::Operator,
+        SkillTier::Project => ContextMaterialRootV1::Workspace,
+        SkillTier::Dependency => ContextMaterialRootV1::Dependency,
+    }
+}
+
 fn parse_skill(raw: &str, dir: &Path, tier: SkillTier) -> Result<SkillDef, String> {
     if let Some(cp) = suspicious_unicode(raw) {
         return Err(format!("suspicious Unicode U+{cp:04X}"));
@@ -1001,6 +1067,10 @@ fn parse_skill(raw: &str, dir: &Path, tier: SkillTier) -> Result<SkillDef, Strin
         trust: tier.trust(),
         metadata,
         source_path: dir.join("SKILL.md"),
+        material: MaterialSource::unavailable(
+            ContextSourceClass::SkillIndex,
+            ContextMaterialUnavailableV1::SourceOwnerDidNotCapture,
+        ),
     })
 }
 

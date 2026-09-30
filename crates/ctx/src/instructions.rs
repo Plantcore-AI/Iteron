@@ -11,6 +11,11 @@
 use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 
+use crate::ContextSourceClass;
+use crate::context_provenance::{
+    CapturedContextMaterial, ContextMaterialRendererV1, ContextMaterialRootV1,
+    ContextMaterialUnavailableV1, MaterialRender, MaterialSource,
+};
 use crate::source::{SourceScope, read_bounded_utf8};
 use iteron_protocol::context::InstructionScope;
 
@@ -128,6 +133,7 @@ pub enum Instructions {
 pub struct InstructionSource {
     pub source: String,
     pub content: String,
+    material: MaterialSource,
 }
 
 /// One source that was present/referenced but could not safely enter the merged prefix.
@@ -148,6 +154,8 @@ pub struct InstructionBundle {
     sources: Vec<InstructionSource>,
     rejections: Vec<InstructionRejection>,
     omitted_sources: usize,
+    material_refusals: Vec<MaterialSource>,
+    retained_source_bytes: usize,
 }
 
 impl InstructionBundle {
@@ -174,8 +182,46 @@ impl InstructionBundle {
     }
 
     fn render_with_limit(&self, limit: usize) -> String {
+        self.render_materialized_with_limit(limit).text
+    }
+
+    /// Captured once from the same actual discovery snapshot and renderer as the frontend text.
+    /// The caller later binds actual native request inclusion and durable retention separately.
+    pub fn render_with_provenance(
+        &self,
+        policy: InstructionDiscoveryPolicy,
+    ) -> (String, Vec<CapturedContextMaterial>, u32) {
+        let render = self.render_materialized_with_policy(policy);
+        let materials = render
+            .admit(
+                0,
+                &render.text,
+                render.text.len(),
+                iteron_protocol::Trust::Untrusted,
+            )
+            .into_iter()
+            .map(|material| material.with_renderer(ContextMaterialRendererV1::FrontendInstructions))
+            .collect();
+        (render.text, materials, render.dropped)
+    }
+
+    pub(crate) fn render_materialized_with_policy(
+        &self,
+        policy: InstructionDiscoveryPolicy,
+    ) -> MaterialRender {
+        self.render_materialized_with_limit(policy.total_bytes)
+    }
+
+    fn render_materialized_with_limit(&self, limit: usize) -> MaterialRender {
+        let mut rendered = MaterialRender::default();
+        for source in &self.material_refusals {
+            rendered.refuse(source.clone());
+        }
         if limit == 0 {
-            return String::new();
+            for source in &self.sources {
+                rendered.refuse(source.material.clone());
+            }
+            return rendered;
         }
         let content_limit = limit.saturating_sub(iteron_tunables::param_usize(
             "ctx.instructions.disclosure_reserve_bytes",
@@ -184,26 +230,26 @@ impl InstructionBundle {
                 DISCLOSURE_RESERVE_BYTES,
             ),
         ));
-        let mut output = String::new();
         let mut omitted = self.omitted_sources;
         for source in &self.sources {
             let block = framed(&source.source, &source.content);
-            if block.len() > content_limit.saturating_sub(output.len()) {
+            if block.len() > content_limit.saturating_sub(rendered.text.len()) {
                 omitted = omitted.saturating_add(1);
+                rendered.refuse(source.material.clone());
                 continue;
             }
-            output.push_str(&block);
+            rendered.append(source.material.clone(), &block);
         }
         if omitted > 0 {
             let disclosure = format!(
                 "\n\n[{omitted} instruction sources omitted to keep the merged guidance within {limit} bytes]"
             );
-            if disclosure.len() <= limit.saturating_sub(output.len()) {
-                output.push_str(&disclosure);
+            if disclosure.len() <= limit.saturating_sub(rendered.text.len()) {
+                rendered.text.push_str(&disclosure);
             }
         }
-        debug_assert!(output.len() <= limit);
-        output
+        debug_assert!(rendered.text.len() <= limit);
+        rendered
     }
 }
 
@@ -287,10 +333,34 @@ impl HierarchyDiscovery {
             Ok(Some(raw)) => raw,
             Ok(None) if !required => return,
             Ok(None) => {
+                self.bundle.material_refusals.push(MaterialSource::refused(
+                    ContextSourceClass::ProjectInstructions,
+                    if label_prefix.is_some() {
+                        ContextMaterialRootV1::Operator
+                    } else {
+                        ContextMaterialRootV1::Workspace
+                    },
+                    root,
+                    &target,
+                    ContextMaterialUnavailableV1::Missing,
+                ));
                 self.reject(source, "referenced @import does not exist");
                 return;
             }
             Err(error) => {
+                self.bundle.material_refusals.push(MaterialSource::refused(
+                    ContextSourceClass::ProjectInstructions,
+                    if label_prefix.is_some() {
+                        ContextMaterialRootV1::Operator
+                    } else {
+                        ContextMaterialRootV1::Workspace
+                    },
+                    root,
+                    &target,
+                    ContextMaterialUnavailableV1::SourceReadRefused {
+                        reason: iteron_protocol::text::head(error.reason(), 512),
+                    },
+                ));
                 self.reject(source, error.reason().to_string());
                 return;
             }
@@ -325,8 +395,29 @@ impl HierarchyDiscovery {
             }
         }
         if !body.trim().is_empty() {
+            let mut material = MaterialSource::file(
+                ContextSourceClass::ProjectInstructions,
+                if label_prefix.is_some() {
+                    ContextMaterialRootV1::Operator
+                } else {
+                    ContextMaterialRootV1::Workspace
+                },
+                root,
+                &target,
+                &raw,
+                false,
+            )
+            .mark_truncated(body.trim().len() > self.policy.per_file_bytes);
+            if material.retained_bytes()
+                > crate::context_provenance::MAX_CONTEXT_PROVENANCE_BYTES
+                    .saturating_sub(self.bundle.retained_source_bytes)
+            {
+                material = material.without_bytes();
+            }
+            self.bundle.retained_source_bytes += material.retained_bytes();
             self.bundle.sources.push(InstructionSource {
                 source: source.clone(),
+                material,
                 content: bounded_instruction_content_with_limit(
                     body.trim(),
                     self.policy.per_file_bytes,
@@ -856,12 +947,18 @@ mod tests {
         let bundle = InstructionBundle {
             sources: (0..10)
                 .map(|index| InstructionSource {
+                    material: MaterialSource::unavailable(
+                        ContextSourceClass::ProjectInstructions,
+                        ContextMaterialUnavailableV1::SourceOwnerDidNotCapture,
+                    ),
                     source: format!("nested/{index}/AGENTS.md"),
                     content: "y".repeat(5_000),
                 })
                 .collect(),
             rejections: Vec::new(),
             omitted_sources: 0,
+            material_refusals: Vec::new(),
+            retained_source_bytes: 0,
         };
         let rendered = bundle.render();
         assert!(rendered.len() <= MAX_MERGED_INSTRUCTION_BYTES);
