@@ -19,6 +19,7 @@ struct ObservedProvider {
     sent: AtomicUsize,
     connect_failure_once: bool,
     refuse_capture: bool,
+    stream_failure_once: bool,
 }
 #[async_trait::async_trait]
 impl Provider for ObservedProvider {
@@ -41,7 +42,7 @@ impl Provider for ObservedProvider {
     async fn turn_observed(
         &self,
         request: &TurnRequest,
-        _: &mut (dyn FnMut(StreamItem) + Send),
+        on_item: &mut (dyn FnMut(StreamItem) + Send),
         observer: &dyn ProviderRequestObserver,
     ) -> Result<TurnResult, ProviderError> {
         let attempt = self.attempts.fetch_add(1, Ordering::SeqCst);
@@ -71,6 +72,10 @@ impl Provider for ObservedProvider {
             .dispatching()
             .map_err(|_| ProviderError::RequestCaptureRefusedBeforeDispatch)?;
         self.sent.fetch_add(1, Ordering::SeqCst);
+        if attempt == 0 && self.stream_failure_once {
+            on_item(StreamItem::TextDelta("observed partial output".into()));
+            return Err(ProviderError::Http("fixture response disconnect".into()));
+        }
         Ok(TurnResult {
             blocks: vec![Block::Text {
                 text: "driver journey complete".into(),
@@ -181,4 +186,68 @@ async fn refused_actual_intent_cannot_enter_the_adapter() {
     ));
     assert_eq!(provider.attempts.load(Ordering::SeqCst), 0);
     assert_eq!(provider.sent.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn actual_semantic_disconnect_continues_only_from_retained_output_and_keeps_unknown_charge() {
+    let provider = Arc::new(ObservedProvider {
+        stream_failure_once: true,
+        ..Default::default()
+    });
+    let mut owner = agent(provider.clone(), "driver-response-salvage");
+    assert_eq!(
+        owner.run("complete the fixture").await.unwrap(),
+        Outcome::Done
+    );
+    assert_eq!(provider.sent.load(Ordering::SeqCst), 2);
+    let path = owner.rollout.path().to_owned();
+    drop(owner);
+    let events = iteron_record::replay(&path).unwrap();
+    assert_eq!(events.iter().filter(|event| matches!(&event.kind, EventKind::EffectUnknown { tool,.. } if tool=="provider")).count(),1);
+    assert_eq!(
+        events
+            .iter()
+            .filter(
+                |event| matches!(&event.kind, EventKind::EffectDone {tool,..} if tool=="provider")
+            )
+            .count(),
+        1
+    );
+    assert!(events.iter().any(|event| matches!(&event.kind, EventKind::Message {message}
+        if message.role==iteron_protocol::Role::Assistant && message.content.iter().any(|block| matches!(block, Block::Text {text} if text.contains(crate::runtime::INTERRUPTED_STREAM_MARKER))))));
+}
+#[tokio::test]
+async fn exhausted_semantic_recovery_preserves_exact_observed_prefix_before_error_and_reopen() {
+    let provider = Arc::new(ObservedProvider {
+        stream_failure_once: true,
+        ..Default::default()
+    });
+    let mut owner = agent(provider.clone(), "driver-response-prefix");
+    owner.retry_policy.max_attempts = 1;
+    assert!(matches!(
+        owner.run("complete the fixture").await,
+        Err(KernelError::Provider(ProviderError::Http(_)))
+    ));
+    assert_eq!(provider.sent.load(Ordering::SeqCst), 1);
+    let path = owner.rollout.path().to_owned();
+    drop(owner);
+    let events = iteron_record::replay(&path).unwrap();
+    let prefix = events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            EventKind::Text { delta } => Some(delta.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(prefix, vec!["observed partial output"]);
+    assert!(
+        events.iter().any(
+            |event| matches!(&event.kind,EventKind::EffectUnknown {tool,..} if tool=="provider")
+        )
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(&event.kind, EventKind::TurnEnd { .. }))
+    );
 }
