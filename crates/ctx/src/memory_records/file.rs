@@ -117,6 +117,20 @@ impl Journal {
             )?;
             staging.write_all(bytes)?;
             staging.sync_all()?;
+            #[cfg(test)]
+            if std::env::var_os("ITERON_MEMORY_V1_CRASH_AT_PREPARED").is_some() {
+                let mut marker = open_at(
+                    &self.directory,
+                    c"crash-test-ready",
+                    libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
+                )?;
+                marker.write_all(b"prepared")?;
+                marker.sync_all()?;
+                self.directory.sync_all()?;
+                loop {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+            }
             // SAFETY: both bounded static filenames are relative to the same retained directory.
             if unsafe {
                 libc::renameat(

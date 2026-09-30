@@ -2638,6 +2638,14 @@ impl MemoryStrategy for FileMemory {
         if text.trim().is_empty() || text.len() > crate::memory_records::MAX_RECORD_BODY_BYTES {
             return Err(MemError::Refused("empty or oversized memory fact".into()));
         }
+        // Acquire/provision the owned namespace before resolving a generic store's own scope.
+        // Project constructors already have an existing explicit workspace boundary.
+        let mut owner = crate::memory_records::MemoryRecordOwner::open(
+            &store
+                .record_root()
+                .map_err(|error| MemError::Io(error.to_string()))?,
+        )
+        .map_err(|error| MemError::Io(error.to_string()))?;
         let workspace = store
             .recall_workspace
             .as_deref()
@@ -2648,13 +2656,9 @@ impl MemoryStrategy for FileMemory {
             crate::memory_records::now_unix_seconds(),
         )
         .map_err(|error| MemError::Io(error.to_string()))?;
-        crate::memory_records::MemoryRecordOwner::open(
-            &store
-                .record_root()
-                .map_err(|error| MemError::Io(error.to_string()))?,
-        )
-        .and_then(|mut owner| owner.add(text, metadata))
-        .map_err(|error| MemError::Io(error.to_string()))
+        owner
+            .add(text, metadata)
+            .map_err(|error| MemError::Io(error.to_string()))
     }
 }
 

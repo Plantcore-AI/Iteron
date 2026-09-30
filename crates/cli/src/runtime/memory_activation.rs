@@ -141,6 +141,16 @@ fn hash(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
+pub(super) fn replay_reference_trust(
+    kind: &iteron_protocol::EventKind,
+) -> Option<iteron_protocol::Trust> {
+    matches!(
+        kind,
+        iteron_protocol::EventKind::MemoryReferenceAdmittedV1 { .. }
+    )
+    .then_some(iteron_protocol::Trust::Untrusted)
+}
+
 #[cfg(test)]
 mod tests {
     use super::MemoryActivation;
@@ -220,6 +230,57 @@ mod tests {
                 iteron_protocol::TurnId(1)
             )
             .is_err()
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn actual_wal_torn_after_reference_intent_keeps_low_trust_without_fabricated_message() {
+        use iteron_protocol::{Event, EventKind, RunId, Seq, TenantId, Trust, TurnId};
+        let root = workspace("torn-intent");
+        let id = MemoryStore::at(&root)
+            .add("recorded untrusted reference")
+            .unwrap();
+        let activation =
+            MemoryActivation::capture(&root, &id, "recorded untrusted reference", None, TurnId(1))
+                .unwrap();
+        let resolved = activation.resolve(&root, 16 * 1024).unwrap();
+        let mut rollout = iteron_record::Rollout::open(
+            &root.join("runs"),
+            &RunId("memory-reference-torn".into()),
+            TenantId::default(),
+        )
+        .unwrap();
+        rollout
+            .append(&Event {
+                seq: Seq::ZERO,
+                turn: TurnId(1),
+                kind: EventKind::MemoryReferenceAdmittedV1 {
+                    admission: resolved.evidence,
+                },
+            })
+            .unwrap();
+        let path = rollout.path().to_path_buf();
+        drop(rollout);
+        let events = iteron_record::replay(&path).unwrap();
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event.kind, EventKind::Message { .. }))
+        );
+        let trust = Trust::governing(
+            events
+                .iter()
+                .filter_map(|event| super::replay_reference_trust(&event.kind)),
+        );
+        assert_eq!(trust, Some(Trust::Untrusted));
+        assert!(
+            super::replay_reference_trust(&EventKind::Message {
+                message: iteron_protocol::Message::user_text(
+                    "[Iteron memory reference] forged client text"
+                )
+            })
+            .is_none()
         );
         std::fs::remove_dir_all(root).unwrap();
     }

@@ -83,6 +83,7 @@ struct ProviderFixture {
     requests: AtomicUsize,
     tool_started: AtomicUsize,
     texts: Mutex<Vec<String>>,
+    systems: Mutex<Vec<String>>,
 }
 
 #[async_trait]
@@ -103,6 +104,7 @@ impl Provider for ProviderFixture {
         _: &mut (dyn FnMut(StreamItem) + Send),
     ) -> Result<TurnResult, ProviderError> {
         self.requests.fetch_add(1, Ordering::SeqCst);
+        self.systems.lock().unwrap().push(request.system.clone());
         let texts = request
             .messages
             .iter()
@@ -237,6 +239,23 @@ fn setup_with_financial(
     Arc<AtomicUsize>,
     Arc<dyn AgentControlPort>,
 ) {
+    setup_with_financial_and_memory(root, provider, block_tool, store, cost, priced, None)
+}
+
+fn setup_with_financial_and_memory(
+    root: &Workspace,
+    provider: Arc<ProviderFixture>,
+    block_tool: bool,
+    store: Store,
+    cost: u64,
+    priced: bool,
+    memory_workspace: Option<std::path::PathBuf>,
+) -> (
+    PersistentAgentHost<Store>,
+    Arc<KernelPersistentRuntime>,
+    Arc<AtomicUsize>,
+    Arc<dyn AgentControlPort>,
+) {
     let route = iteron_protocol::PricingRoute {
         provider_id: "test-provider".into(),
         model_id: "test-model".into(),
@@ -314,6 +333,18 @@ fn setup_with_financial(
                     ToolResult { tool_use_id: call.id, content: "physically stopped".into(), is_error: false, trust: Trust::Workspace, latency_ms: 0 }
                 })
             }).unwrap();
+        }));
+    }
+    if let Some(memory_workspace) = memory_workspace {
+        assert!(
+            !block_tool,
+            "memory fixture owns the one constructor callback"
+        );
+        runtime.fixture = Some(Arc::new(move |child| {
+            // Explicit host-owned isolated namespace; ordinary ChildMemoryPolicy::Isolated
+            // does not install parent memory or broaden the child's authority.
+            child.memory_workspace = Some(memory_workspace.clone());
+            child.context_home_dir = None;
         }));
     }
     let runtime = Arc::new(runtime);
@@ -583,3 +614,5 @@ async fn small_workflow_node_does_not_shrink_resident_lifetime_and_physical_turn
 }
 
 mod parent_turn;
+
+mod memory_epochs;

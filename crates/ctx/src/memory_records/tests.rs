@@ -275,3 +275,111 @@ fn ancestor_symlink_refuses_actual_writer() {
     assert!(!outside.join("memory").exists());
     std::fs::remove_dir_all(workspace).unwrap();
 }
+
+#[test]
+fn actual_expiry_boundary_and_stale_deleted_path_preserve_current_truth() {
+    let workspace = workspace("exact-expiry");
+    std::fs::write(workspace.join("source.txt"), "old evidence").unwrap();
+    let now = super::now_unix_seconds();
+    let mut metadata = draft(&workspace);
+    metadata.invalidation = MemoryInvalidation::ExpiresAt {
+        unix_seconds: now + 10,
+    };
+    metadata.bind_path(&workspace, "source.txt").unwrap();
+    let mut owner = MemoryRecordOwner::open(&root(&workspace)).unwrap();
+    let id = owner
+        .add("memory expiry boundary evidence", metadata)
+        .unwrap();
+    drop(owner);
+    let stores = [MemStore::new(root(&workspace), MemTier::Project, true)];
+    let budget = MemBudget::default();
+    let slot = MemoryRecallStrategy::default();
+    let before = FileMemory.recall_with_slot_policy_at(
+        &stores,
+        "expiry boundary evidence",
+        &budget,
+        &slot,
+        now + 9,
+        crate::MemoryRetrievalPolicy::default(),
+    );
+    assert_eq!(before.recalled().len(), 1);
+    let at = FileMemory.recall_with_slot_policy_at(
+        &stores,
+        "expiry boundary evidence",
+        &budget,
+        &slot,
+        now + 10,
+        crate::MemoryRetrievalPolicy::default(),
+    );
+    assert!(at.recalled().is_empty());
+    std::fs::remove_file(workspace.join("source.txt")).unwrap();
+    assert!(MemoryStore::at(&workspace).remove_checked(&id).unwrap());
+    let deletion =
+        MemoryRecordOwner::capture_deletion_receipt(&root(&workspace), &workspace, &id).unwrap();
+    assert!(
+        MemoryRecordOwner::resolve_deletion_receipt(&root(&workspace), &workspace, &deletion)
+            .unwrap()
+            .deleted
+    );
+    std::fs::remove_dir_all(workspace).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn actual_process_death_after_prepared_fsync_keeps_old_committed_memory() {
+    let workspace = workspace("physical-crash");
+    let store = MemoryStore::at(&workspace);
+    let original = store.add("old physically committed memory").unwrap();
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .arg("--exact")
+        .arg("memory_records::tests::memory_prepared_crash_child")
+        .env("ITERON_MEMORY_V1_CRASH_ROOT", &workspace)
+        .env("ITERON_MEMORY_V1_CRASH_AT_PREPARED", "1")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let ready = root(&workspace).join("crash-test-ready");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !ready.exists() && std::time::Instant::now() < deadline {
+        if child.try_wait().unwrap().is_some() {
+            panic!("crash fixture exited before prepare barrier");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let prepared = ready.exists();
+    child.kill().unwrap();
+    let reap_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let mut reaped = false;
+    while std::time::Instant::now() < reap_deadline {
+        if child.try_wait().unwrap().is_some() {
+            reaped = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(
+        prepared && reaped,
+        "physical fixture prepare/reap deadline exceeded"
+    );
+    let reopened = MemoryRecordOwner::open(&root(&workspace)).unwrap();
+    assert_eq!(reopened.revision(), 1);
+    assert_eq!(reopened.records().next().unwrap().id, original);
+    assert_eq!(
+        MemoryStore::at(&workspace).load()[0].text,
+        "old physically committed memory"
+    );
+    drop(reopened);
+    std::fs::remove_dir_all(workspace).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn memory_prepared_crash_child() {
+    let Some(workspace) = std::env::var_os("ITERON_MEMORY_V1_CRASH_ROOT") else {
+        return;
+    };
+    let _ =
+        MemoryStore::at(&PathBuf::from(workspace)).add("new uncommitted memory must not appear");
+    panic!("physical fault fixture did not stop at prepared publication");
+}

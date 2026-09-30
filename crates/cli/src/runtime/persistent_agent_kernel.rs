@@ -355,6 +355,10 @@ impl PersistentAgentRuntime for KernelPersistentRuntime {
                     child.stage_follow_up_transcript().await?;
                     expire_restored(&mut child, &mailbox)?;
                 }
+                // execute owns a newly admitted durable controller epoch. Refresh only here;
+                // provider retries and empty replay within run_leaf retain that epoch's context.
+                // Isolated children without an installed memory namespace take the no-IO path.
+                child.begin_user_memory_decision();
                 child.run_leaf(&task).await
             };
             tokio::pin!(execution);
