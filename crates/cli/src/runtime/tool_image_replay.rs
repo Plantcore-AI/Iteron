@@ -140,6 +140,7 @@ fn retain_witnessed(
         _ => true,
     });
 }
+#[cfg(test)]
 pub(super) fn remove_unverified_images(events: &mut Vec<Event>) {
     events.retain(|event| !matches!(event.kind, EventKind::ToolImageObservedV1 { .. }));
     for event in events {

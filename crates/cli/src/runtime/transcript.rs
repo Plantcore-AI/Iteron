@@ -20,6 +20,7 @@ pub(super) fn merge_adjacent_user_message(messages: &mut Vec<Message>, mut messa
 }
 
 /// Project model messages from canonical events, recovering durable tool terminals after a crash.
+#[cfg(test)]
 pub(super) fn project_messages_from_events(mut events: Vec<Event>) -> Vec<Message> {
     super::tool_image_replay::remove_unverified_images(&mut events);
     project_verified_messages(events)
