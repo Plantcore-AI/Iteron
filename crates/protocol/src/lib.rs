@@ -36,6 +36,7 @@ pub mod intent;
 pub mod lifecycle;
 pub mod memory_reference;
 pub mod message;
+pub mod ordinary_extension_control;
 pub mod permission;
 pub mod plantcore;
 pub mod plugin_control;

@@ -2957,3 +2957,150 @@ async fn plugin_public_control_binds_actual_signed_owner_and_refuses_stale_disab
     let _ = std::fs::remove_dir_all(workspace);
     let _ = std::fs::remove_dir_all(package_root);
 }
+
+#[tokio::test]
+async fn ordinary_sdk_public_reads_actual_host_widgets_events_and_admission_scope() {
+    use crate::plugin_runtime::ordinary::{OrdinaryBinding, OrdinaryDescriptor};
+    use iteron_extension_sdk::{EventSubscriptionV1, StatusFactV1, UiStatusV1};
+    use iteron_protocol::{
+        capability_set::CapabilitySet, ordinary_extension_control::OrdinaryExtensionReadV1,
+    };
+    let workspace = temp_workspace("sdk-public-read");
+    let mut agent = agent_in(&workspace);
+    agent
+        .record_genesis_with_tunables(
+            workspace.display().to_string(),
+            1,
+            "sdk-public".into(),
+            None,
+        )
+        .unwrap();
+    let read_caps = CapabilitySet::only(iteron_protocol::Capability::ReadOnly);
+    agent
+        .install_ordinary_extensions(
+            vec![
+                OrdinaryBinding {
+                    plugin: "sample-sdk".into(),
+                    version: "1.0.0".into(),
+                    manifest_sha256: "a".repeat(64),
+                    surface: iteron_marketplace::Surface::Ui,
+                    key: "sample__status".into(),
+                    capabilities: read_caps,
+                    descriptor: OrdinaryDescriptor::Ui(UiStatusV1 {
+                        version: 1,
+                        name: "sample__status".into(),
+                        label: "Actual host status".into(),
+                        facts: vec![StatusFactV1::Phase, StatusFactV1::ToolCalls],
+                    }),
+                },
+                OrdinaryBinding {
+                    plugin: "sample-sdk".into(),
+                    version: "1.0.0".into(),
+                    manifest_sha256: "a".repeat(64),
+                    surface: iteron_marketplace::Surface::EventSubscription,
+                    key: "sample__events".into(),
+                    capabilities: read_caps,
+                    descriptor: OrdinaryDescriptor::EventSubscription(EventSubscriptionV1 {
+                        version: 1,
+                        name: "sample__events".into(),
+                        event_ids: vec!["model.request_sent".into()],
+                        queue_capacity: 4,
+                    }),
+                },
+            ],
+            &crate::providers::ProviderDirectory::inspect_local(&[]).unwrap(),
+            None,
+        )
+        .unwrap();
+    let captured = agent.ordinary_extensions_port().unwrap();
+    assert_eq!(
+        agent
+            .run("produce an actual ordinary SDK lifecycle observation")
+            .await
+            .unwrap(),
+        iteron_protocol::Outcome::Done
+    );
+    let expected = captured.snapshot().unwrap();
+    let (_handle, mut ends) = wire().unwrap();
+    let thread = SessionId("session-control-plane".into());
+    let run = agent.rollout.run_id().clone();
+    ends.events
+        .bind_lifecycle_identity(thread.clone(), run.clone());
+    let (settled, _) = mpsc::channel(1);
+    let activity = super::activity_control::ActivitySurface::capture(
+        &agent,
+        None,
+        None,
+        crate::workflow::WorkflowSupervisor::new(settled),
+    );
+    let surface = super::ordinary_extensions::OrdinaryExtensionsSurface::capture(&agent);
+    let (reply, receive) = tokio::sync::oneshot::channel();
+    surface.dispatch(
+        &activity,
+        ends.events.contract.clone(),
+        OrdinaryExtensionReadV1::Read {
+            thread_id: thread.clone(),
+            run_id: run.clone(),
+            offset: 0,
+            limit: 8,
+        },
+        reply,
+    );
+    let ControlReply::OrdinaryExtensions(actual) = receive.await.unwrap() else {
+        panic!("actual SDK observation")
+    };
+    assert_eq!(actual["configured"], true);
+    assert_eq!(actual["data"]["catalog_sha256"], expected.catalog_sha256);
+    assert_eq!(actual["data"]["status"]["source"], expected.status.source);
+    assert_eq!(
+        actual["data"]["status"]["widgets"]["items"][0]["name"],
+        "sample__status"
+    );
+    assert_eq!(
+        actual["data"]["status"]["widgets"]["items"][0]["values"]["tool_calls"]["value"],
+        "0"
+    );
+    let (reply, receive) = tokio::sync::oneshot::channel();
+    surface.dispatch(
+        &activity,
+        ends.events.contract.clone(),
+        OrdinaryExtensionReadV1::Events {
+            thread_id: thread.clone(),
+            run_id: run.clone(),
+            name: "sample__events".into(),
+            limit: 64,
+            timeout_ms: 0,
+        },
+        reply,
+    );
+    let ControlReply::OrdinaryExtensions(actual) = receive.await.unwrap() else {
+        panic!("actual lifecycle reader")
+    };
+    assert_eq!(
+        actual["data"]["delivery"],
+        "lossy_content_free_lifecycle_bus_not_durable_replay"
+    );
+    assert!(!actual["data"]["events"].as_array().unwrap().is_empty());
+    let barrier = activity.adoption_barrier().await.unwrap();
+    assert!(
+        ends.events
+            .contract
+            .rebind_run(RunId("new-selected-run".into()))
+    );
+    drop(barrier);
+    let (reply, receive) = tokio::sync::oneshot::channel();
+    surface.dispatch(
+        &activity,
+        ends.events.contract.clone(),
+        OrdinaryExtensionReadV1::Read {
+            thread_id: thread,
+            run_id: run,
+            offset: 0,
+            limit: 8,
+        },
+        reply,
+    );
+    assert!(matches!(receive.await.unwrap(), ControlReply::Refused(_)));
+    drop(agent);
+    let _ = std::fs::remove_dir_all(workspace);
+}

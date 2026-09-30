@@ -349,6 +349,7 @@ pub(super) fn event_heap_bytes(event: &ServerEvent) -> usize {
 /// **Folding these into the SQ is a WS1 protocol change, not a WS6 one.** When `Op` grows the
 /// variants, each arm here becomes a `route()` case and this enum shrinks to nothing.
 pub(crate) enum Control {
+    OrdinaryExtensions(iteron_protocol::ordinary_extension_control::OrdinaryExtensionReadV1),
     PluginManagement(iteron_protocol::plugin_control::PluginControlV1),
     ActivityCenter(iteron_protocol::activity_control::ActivityControlV1),
     /// One-time immutable PlantCore Run admission on the existing versioned control channel.
@@ -511,6 +512,7 @@ pub(crate) struct ModelSelection {
 /// What a control request answers with.
 #[derive(Debug)]
 pub(crate) enum ControlReply {
+    OrdinaryExtensions(serde_json::Value),
     PluginManagement(serde_json::Value),
     ActivityCenter(serde_json::Value),
     PlantcoreBootstrapAccepted(plantcore::PlantcoreBootstrapAccepted),

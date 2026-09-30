@@ -749,6 +749,9 @@ pub(super) fn handle_registered_command(
             }
         }
         SlashCommand::Artifacts => super::artifacts::render(app, session, arg),
+        SlashCommand::Extensions => {
+            super::ordinary_extensions::queue(app, session, transcript_effects, interrupt, arg)
+        }
         SlashCommand::Plugins => {
             super::plugins::queue(app, session, transcript_effects, interrupt, arg)
         }

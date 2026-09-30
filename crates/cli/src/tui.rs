@@ -80,6 +80,7 @@ mod mcp_command;
 mod mcp_input;
 mod mouse_capture;
 mod notification;
+mod ordinary_extensions;
 mod persistent_agents;
 mod picker_catalog;
 mod picker_owner;

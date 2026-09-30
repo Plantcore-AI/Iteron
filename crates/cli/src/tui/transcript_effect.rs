@@ -180,6 +180,7 @@ pub(crate) enum ControlKind {
     Inventory,
     ActivityCenter,
     PluginManagement,
+    OrdinaryExtensions,
     ToolRule {
         tool: String,
         verdict: iteron_protocol::Verdict,
@@ -209,6 +210,7 @@ impl ControlKind {
             Self::PersistentAgents => "persistent agent control",
             Self::LiveWorkflow => "live workflow control",
             Self::ActivityCenter => "activity center",
+            Self::OrdinaryExtensions => "ordinary extensions",
             Self::PluginManagement => "plugin management",
             Self::Inventory => "runtime inventory",
             Self::ToolRule { .. } => "tool permission rule",

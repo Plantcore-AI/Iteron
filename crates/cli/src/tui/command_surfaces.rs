@@ -692,6 +692,10 @@ pub(super) fn apply_transcript_effect_event(
                 Some(app_server::ControlReply::LiveWorkflow(value)),
             ) => super::live_workflows::render(app, &value),
             (
+                transcript_effect::ControlKind::OrdinaryExtensions,
+                Some(app_server::ControlReply::OrdinaryExtensions(value)),
+            ) => super::ordinary_extensions::render(app, session, &value),
+            (
                 transcript_effect::ControlKind::PluginManagement,
                 Some(app_server::ControlReply::PluginManagement(value)),
             ) => super::plugins::render(app, &value),

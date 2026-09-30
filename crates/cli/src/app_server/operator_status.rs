@@ -6,6 +6,7 @@ use std::sync::Arc;
 const LSP_STATUS_DEADLINE: std::time::Duration = std::time::Duration::from_millis(100);
 
 pub(super) struct OperatorStatusSources {
+    pub(super) ordinary_extensions: super::ordinary_extensions::OrdinaryExtensionsSurface,
     pub(super) plugins: super::plugin_control::PluginControlSurface,
     pub(super) activity: super::activity_control::ActivitySurface,
     pub(super) agents: super::agent_control::AgentControlSurface,
@@ -53,6 +54,9 @@ impl OperatorStatusSources {
         workflows: Arc<crate::workflow::WorkflowSupervisor>,
     ) -> Self {
         Self {
+            ordinary_extensions: super::ordinary_extensions::OrdinaryExtensionsSurface::capture(
+                agent,
+            ),
             plugins: super::plugin_control::PluginControlSurface::capture(agent),
             activity: super::activity_control::ActivitySurface::capture(
                 agent,
@@ -74,6 +78,7 @@ impl OperatorStatusSources {
     /// Refresh identities that can change only at an idle control boundary (model/run adoption).
     /// The live owner handles remain the same Arcs and are intentionally retained.
     pub(super) fn refresh_runtime(&mut self, agent: &Agent) {
+        self.ordinary_extensions.refresh(agent);
         self.plugins.refresh(agent);
         self.activity.refresh(agent);
         self.agents.refresh(agent);

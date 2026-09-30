@@ -13,6 +13,7 @@ remain required.
 | `app_server/session_services.rs` | Captured actual controller/workflow/process/MCP/verifier/read ports | Same real owner handles refresh at adoption; shared activity scope leases prevent stale mutation |
 | `app_server/turn_pump.rs` | Borrowed turn future and disjoint frontend channels | Fair runtime/control/event polling; no mutable Agent aggregate |
 | `app_server/presentation.rs` and product/publication readers | Shared bounded immutable projection | Actual source events/receipts → snapshots; views do not grant permissions |
+| `app_server/ordinary_extensions.rs` | Captured same SDK read Arc and lazy detached admission | Authenticated thread/run reads → bounded actual widgets/routes/events; physical reader retains generation lease through work |
 | `tui/session_client.rs` | Client handle, negotiated version and immutable current session facts | Public typed controls and queue submissions; no runtime ownership |
 | `tui/driver.rs` | Terminal/input/event loop and bounded worker coordination | Client events + terminal input → view changes or typed client commands |
 | `tui/completion_owner.rs` | Private menu, debounce, source generation and unique physical completion worker | Exact editor draft → due worker/read-only menu/navigation; stale or dismissed observations cannot reopen the menu |

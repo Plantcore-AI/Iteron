@@ -48,6 +48,9 @@ impl PlantcoreCommand {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum WireControl {
+    OrdinaryExtensionsV1 {
+        command: iteron_protocol::ordinary_extension_control::OrdinaryExtensionReadV1,
+    },
     PluginManagementV1 {
         command: iteron_protocol::plugin_control::PluginControlV1,
     },
@@ -266,6 +269,9 @@ where
 
 impl WireControl {
     pub(super) fn is_read_only(&self) -> bool {
+        if matches!(self, Self::OrdinaryExtensionsV1 { .. }) {
+            return true;
+        }
         if let Self::PluginManagementV1 { command } = self {
             return command.is_read_only();
         }
@@ -305,6 +311,7 @@ impl WireControl {
 
     pub(super) fn into_app_server(self) -> Control {
         match self {
+            Self::OrdinaryExtensionsV1 { command } => Control::OrdinaryExtensions(command),
             Self::PluginManagementV1 { command } => Control::PluginManagement(command),
             Self::ActivityCenterV1 { command } => Control::ActivityCenter(command),
             Self::MaintenanceV1 { .. } => {
@@ -550,6 +557,7 @@ pub(super) fn reply_value(reply: ControlReply) -> Value {
         }),
         ControlReply::ThreadLifecycle(value) => value,
         ControlReply::PersistentAgents(value) => value,
+        ControlReply::OrdinaryExtensions(value) => value,
         ControlReply::PluginManagement(value) => value,
         ControlReply::ActivityCenter(value) => value,
         ControlReply::Inventory(value) => value,
@@ -709,6 +717,22 @@ fn snapshot_value(snapshot: &SessionSnapshot) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ordinary_sdk_observer_wire_is_readonly_and_cannot_install_or_emit() {
+        let source = json!({"type":"ordinary_extensions_v1","command":{"action":"read","thread_id":"thread","run_id":"run","offset":0,"limit":8}});
+        let wire: WireControl = serde_json::from_value(source.clone()).unwrap();
+        assert!(wire.is_read_only());
+        assert!(matches!(
+            wire.into_app_server(),
+            Control::OrdinaryExtensions(_)
+        ));
+        for action in ["install", "emit", "select", "register"] {
+            let mut forged = source.clone();
+            forged["command"]["action"] = json!(action);
+            assert!(serde_json::from_value::<WireControl>(forged).is_err());
+        }
+    }
 
     #[test]
     fn product_turn_start_queues_input_without_inventing_an_admitted_turn() {
