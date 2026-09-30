@@ -442,6 +442,22 @@ impl<J: AgentControllerJournal> AgentController<J> {
         self.snapshot.provider_budget.recovery_required
     }
 
+    /// Bounded host recovery inventory. These are durable physical envelopes, not proof that
+    /// dispatch occurred. Only a matching authenticated rollout terminal can release them.
+    pub fn pending_provider_budget_requests(
+        &self,
+    ) -> Result<Vec<AgentProviderBudgetRequest>, ControllerError> {
+        self.check_live()?;
+        Ok(self
+            .snapshot
+            .provider_budget
+            .receipts
+            .values()
+            .filter(|receipt| receipt.unresolved())
+            .map(|receipt| receipt.request.clone())
+            .collect())
+    }
+
     pub fn provider_budget_baseline(
         &self,
         scope: &str,

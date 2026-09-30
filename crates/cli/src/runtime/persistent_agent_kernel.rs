@@ -26,6 +26,7 @@ use std::time::Duration;
 
 type Resident = Arc<tokio::sync::Mutex<Agent>>;
 mod budget;
+mod recovery;
 
 pub(super) struct KernelPersistentRuntime {
     spawner: Mutex<KernelSpawner>,
@@ -84,53 +85,6 @@ impl KernelPersistentRuntime {
         self.control
             .set(Arc::downgrade(control))
             .map_err(|_| ControllerError::Invalid("persistent runtime control is already bound"))
-    }
-
-    fn restore_monetary(&self, views: &[AgentViewV1], root: AgentIdV1) -> Result<(), KernelError> {
-        let Some(pool) = &self.money else {
-            return Ok(());
-        };
-        self.restore_monetary_chains(views, root)
-            .map_err(KernelError::AgentControl)?;
-        let spawner = self
-            .spawner
-            .lock()
-            .map_err(|_| KernelError::AgentControl(ControllerError::Poisoned))?;
-        for view in views
-            .iter()
-            .filter(|view| view.agent_id != root && view.usage.turns > 0)
-        {
-            if matches!(
-                view.state,
-                iteron_protocol::agent_control::AgentStateV1::RecoveryRequired { .. }
-            ) {
-                pool.mark_unknown()
-            }
-            let path = self
-                .writer
-                .state
-                .join("subagents")
-                .join(format!("{}.jsonl", spawner.mint_run_id(view.agent_id.0).0));
-            if !path.exists() {
-                return Err(KernelError::AgentControl(ControllerError::RecoveryRequired));
-            }
-            let scoped = super::replay_scoped_rollout(&path)?;
-            let replay = super::route_attempt_accounting::replay_route_charges(
-                &scoped,
-                self.pricing.as_deref(),
-            )?;
-            let own_pool = self
-                .agent_money
-                .lock()
-                .map_err(|_| KernelError::AgentControl(ControllerError::Poisoned))?
-                .get(&view.agent_id)
-                .cloned()
-                .ok_or(KernelError::AgentControl(ControllerError::UnknownAgent))?;
-            own_pool
-                .merge_recovered_charges(&replay.ledger)
-                .map_err(KernelError::PricingLedger)?;
-        }
-        Ok(())
     }
 
     fn resident(
@@ -726,15 +680,17 @@ impl Agent {
         let runtime = Arc::new(KernelPersistentRuntime::new(context));
         let mut controller =
             AgentController::open(journal, config).map_err(KernelError::AgentControl)?;
+        let baseline_sequence = baseline.through_sequence;
         controller
             .bind_provider_budget_baseline(&scope, baseline)
             .map_err(KernelError::AgentControl)?;
         let root_id = controller.root_id();
-        runtime.restore_monetary(
-            &controller
-                .list(AgentActor::Operator)
-                .map_err(KernelError::AgentControl)?,
-            root_id,
+        runtime.restore_provider_evidence(
+            &mut controller,
+            self.rollout.path(),
+            self.rollout.tenant(),
+            self.rollout.run_id(),
+            baseline_sequence,
         )?;
         let host: Arc<dyn AgentControlPort> = Arc::new(
             PersistentAgentHost::new(controller, runtime.clone(), parallel)

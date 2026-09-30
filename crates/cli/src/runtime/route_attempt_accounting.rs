@@ -14,6 +14,8 @@ use iteron_protocol::{
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 
+pub(super) mod replay_evidence;
+
 /// Exact, idempotent monetary commits for physical provider attempts.
 ///
 /// This is deliberately separate from the logical-turn ledger. A retry or fallback may have
@@ -534,6 +536,12 @@ pub(super) fn replay_route_charges(
     pricing: Option<&dyn iteron_obs::PricingPort>,
 ) -> Result<ProviderRouteChargeReplay, KernelError> {
     let mut ledger = ProviderRouteChargeLedger::default();
+    let evidence = replay_evidence::ProviderReplayEvidence::inspect(scoped_events);
+    if evidence.has_unknown() {
+        // An intent without a matching physical terminal is missing billing evidence, including
+        // the crash window before the optional controller reservation itself was appended.
+        ledger.mark_unknown();
+    }
     let mut known = Vec::<ReplayedKnownCharge>::new();
     let mut logical = Vec::<(
         iteron_protocol::TenantId,

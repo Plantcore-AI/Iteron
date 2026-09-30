@@ -13,6 +13,19 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+pub(super) fn provider_scope_for(
+    tenant: &iteron_protocol::TenantId,
+    run: &iteron_protocol::RunId,
+) -> String {
+    let mut hash = Sha256::new();
+    hash.update(b"iteron-persistent-provider-run-v1\0");
+    for part in [&tenant.0, &run.0] {
+        hash.update((part.len() as u64).to_be_bytes());
+        hash.update(part.as_bytes());
+    }
+    format!("sha256:{:x}", hash.finalize())
+}
+
 impl Agent {
     /// A fork's root WAL cannot prove separate descendant controller journals and reservations.
     /// Refuse before opening a fresh cohort namespace until an owning ancestry closure can be
@@ -50,13 +63,7 @@ impl Agent {
     }
 
     pub(super) fn provider_scope(&self) -> String {
-        let mut hash = Sha256::new();
-        hash.update(b"iteron-persistent-provider-run-v1\0");
-        for part in [&self.rollout.tenant().0, &self.rollout.run_id().0] {
-            hash.update((part.len() as u64).to_be_bytes());
-            hash.update(part.as_bytes());
-        }
-        format!("sha256:{:x}", hash.finalize())
+        provider_scope_for(self.rollout.tenant(), self.rollout.run_id())
     }
 
     /// Before intent creation, obtain an independently authenticated worst-case charge. Missing
@@ -383,7 +390,7 @@ impl Agent {
     }
 }
 
-fn checked_tokens(usage: iteron_protocol::Usage) -> Result<u64, KernelError> {
+pub(super) fn checked_tokens(usage: iteron_protocol::Usage) -> Result<u64, KernelError> {
     [
         usage.input,
         usage.output,
