@@ -468,6 +468,16 @@ impl<J: AgentControllerJournal + Send + 'static> PersistentAgentHost<J> {
             .controller
             .lock()
             .map_err(|_| ControllerError::Poisoned)?;
+        let current = controller.inspect(AgentActor::Operator, id)?;
+        // Another retained-proof retry may already have persisted this terminal while a worker
+        // was taking its bounded pending snapshot. Only the controller can leave an active epoch
+        // for Idle/Closed; stale snapshots must not reapply usage or overwrite a later lease.
+        if current.state.epoch() != Some(epoch)
+            && current.incarnation >= epoch.incarnation
+            && matches!(current.state, AgentStateV1::Idle | AgentStateV1::Closed)
+        {
+            return Ok(());
+        }
         let settled = controller.finish_turn_with_terminal(
             id,
             epoch,

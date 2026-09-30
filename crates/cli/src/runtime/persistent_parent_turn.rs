@@ -12,7 +12,6 @@ use std::time::{Duration, Instant};
 pub(super) struct ParentTurnGuard {
     control: Arc<dyn AgentControlPort>,
     turn: ParentRuntimeTurn,
-    started: Instant,
     old_interrupt: Option<Arc<AtomicBool>>,
     old_deadline: Option<Instant>,
     settled: bool,
@@ -40,9 +39,7 @@ impl Drop for ParentTurnGuard {
 }
 impl ParentTurnGuard {
     fn elapsed(&self) -> u64 {
-        u64::try_from(self.started.elapsed().as_millis())
-            .unwrap_or(u64::MAX)
-            .max(1)
+        self.turn.elapsed_ms()
     }
 }
 impl Agent {
@@ -63,7 +60,7 @@ impl Agent {
         // This exact descriptor identifies the existing thread submission. The original task is
         // admitted by the normal Message WAL; this marker adds no duplicate instruction authority.
         let source = format!(
-            "Main thread task source sha256:{:x}; original instruction is in the thread journal.",
+            "Main thread task source sha256:{:x}; this descriptor carries no instruction authority.",
             Sha256::digest(task.as_bytes())
         );
         let turn = control
@@ -74,7 +71,8 @@ impl Agent {
             .view
             .budget
             .wall_ms
-            .saturating_sub(turn.view.usage.wall_ms);
+            .saturating_sub(turn.view.usage.wall_ms)
+            .saturating_sub(turn.elapsed_ms());
         let deadline = Instant::now()
             .checked_add(Duration::from_millis(remaining))
             .unwrap_or_else(Instant::now);
@@ -84,7 +82,6 @@ impl Agent {
         let guard = ParentTurnGuard {
             control,
             turn,
-            started: Instant::now(),
             old_interrupt,
             old_deadline,
             settled: false,
@@ -189,7 +186,9 @@ impl Agent {
         self.persistent_mailbox = None;
         self.interrupt = guard.old_interrupt.clone();
         self.run_deadline = guard.old_deadline;
-        guard.settled = result.is_ok();
+        // The host retains this exact physical proof for bounded retry. Drop must never replace
+        // a known terminal with an invented Unknown merely because its final append was refused.
+        guard.settled = true;
         result.map_err(KernelError::AgentControl)
     }
 }

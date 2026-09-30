@@ -9,6 +9,8 @@ use std::sync::atomic::{AtomicU64, AtomicUsize};
 struct Store {
     snapshot: Option<AgentControllerSnapshot>,
     fail_consumed: bool,
+    fail_parent_delivery: bool,
+    fail_parent_terminal: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 impl AgentControllerJournal for Store {
     fn load(&mut self) -> Result<Option<AgentControllerSnapshot>, ControllerStoreError> {
@@ -26,6 +28,31 @@ impl AgentControllerJournal for Store {
             != expected
         {
             return Err(ControllerStoreError::Conflict);
+        }
+        let encoded = serde_json::to_value(next).unwrap();
+        let root_state =
+            serde_json::from_value::<AgentStateV1>(encoded["agents"]["1"]["view"]["state"].clone())
+                .unwrap();
+        if self.fail_parent_delivery
+            && encoded["mailbox"]["messages"].as_object().unwrap().values().any(|message|
+                message["receiver"].as_u64() == Some(1)
+                && serde_json::from_value::<iteron_protocol::agent_control::AgentMessageStateV1>(
+                    message["state"].clone()).is_ok_and(|state|
+                        matches!(state, iteron_protocol::agent_control::AgentMessageStateV1::Delivered { .. })))
+        { return Err(ControllerStoreError::Unavailable); }
+        if root_state == AgentStateV1::Idle
+            && self.snapshot.as_ref().is_some_and(|previous| {
+                serde_json::from_value::<AgentStateV1>(
+                    serde_json::to_value(previous).unwrap()["agents"]["1"]["view"]["state"].clone(),
+                )
+                .is_ok_and(|state| matches!(state, AgentStateV1::Running { .. }))
+            })
+            && self
+                .fail_parent_terminal
+                .as_ref()
+                .is_some_and(|fault| fault.swap(false, Ordering::SeqCst))
+        {
+            return Err(ControllerStoreError::Unavailable);
         }
         if self.fail_consumed
             && serde_json::to_value(next).unwrap()["mailbox"]["messages"]
@@ -410,8 +437,8 @@ async fn failed_mailbox_consumption_persists_not_dispatched_and_makes_zero_provi
         provider.clone(),
         false,
         Store {
-            snapshot: None,
             fail_consumed: true,
+            ..Store::default()
         },
     );
     let child = spawn(&host, "refuse inclusion when storage fails");

@@ -6,12 +6,20 @@ use super::{
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 pub(crate) struct ParentRuntimeTurn {
     pub view: AgentViewV1,
     pub mailbox: LiveAgentMailbox,
     pub(super) epoch: AgentEpochV1,
+    started: Instant,
+}
+impl ParentRuntimeTurn {
+    pub(crate) fn elapsed_ms(&self) -> u64 {
+        u64::try_from(self.started.elapsed().as_millis())
+            .unwrap_or(u64::MAX)
+            .max(1)
+    }
 }
 pub(super) struct ParentStop {
     pub epoch: AgentEpochV1,
@@ -23,6 +31,28 @@ impl<J: AgentControllerJournal + Send + 'static> PersistentAgentHost<J> {
         source: String,
         stop: Arc<AtomicBool>,
     ) -> Result<ParentRuntimeTurn, ControllerError> {
+        let started = Instant::now();
+        let root = self
+            .shared
+            .controller
+            .lock()
+            .map_err(|_| ControllerError::Poisoned)?
+            .root_id();
+        let pending = self
+            .shared
+            .pending_settlements
+            .lock()
+            .map_err(|_| ControllerError::Poisoned)?
+            .get(&root)
+            .cloned();
+        if let Some((epoch, result, wall)) = pending {
+            self.settle(root, epoch, &result, wall)?;
+            self.shared
+                .pending_settlements
+                .lock()
+                .map_err(|_| ControllerError::Poisoned)?
+                .remove(&root);
+        }
         let started_at = u64::try_from(
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -51,29 +81,55 @@ impl<J: AgentControllerJournal + Send + 'static> PersistentAgentHost<J> {
             signal: Arc::downgrade(&stop),
         });
         let id = controller.root_id();
-        let initial = match controller.deliver(id, epoch, true) {
-            Ok(initial) => initial,
+        let prepared = controller.deliver(id, epoch, true).and_then(|initial| {
+            if initial.len() > MAX_INPUT_BATCH {
+                return Err(ControllerError::Capacity);
+            }
+            Ok((initial, controller.inspect(AgentActor::Operator, id)?))
+        });
+        let (initial, view) = match prepared {
+            Ok(prepared) => prepared,
             Err(error) => {
-                let _ = controller.finish_turn_with_usage(
+                stop.store(true, Ordering::Release);
+                let result = AgentSettlement {
+                    turns: 0,
+                    summary: "Parent mailbox preparation failed; recovery is required".into(),
+                    tokens: 0,
+                    cost_microusd: 0,
+                    effects_known: false,
+                    terminal: iteron_agents::AgentWorkflowTerminal::StoppedRecovery,
+                };
+                let wall = u64::try_from(started.elapsed().as_millis())
+                    .unwrap_or(u64::MAX)
+                    .max(1);
+                let quarantined = controller.finish_turn_with_terminal(
                     id,
                     epoch,
-                    "Parent mailbox delivery failed; recovery is required",
-                    Default::default(),
+                    &result.summary,
+                    super::AgentUsageV1 {
+                        wall_ms: wall,
+                        ..Default::default()
+                    },
                     false,
+                    result.terminal,
                 );
                 *signal = None;
                 self.notify(controller.revision());
+                if quarantined.is_err() {
+                    self.shared
+                        .pending_settlements
+                        .lock()
+                        .map_err(|_| ControllerError::Poisoned)?
+                        .insert(id, (epoch, result, wall));
+                }
                 return Err(error);
             }
         };
-        if initial.len() > MAX_INPUT_BATCH {
-            return Err(ControllerError::Capacity);
-        }
-        let view = controller.inspect(AgentActor::Operator, id)?;
         self.notify(controller.revision());
         Ok(ParentRuntimeTurn {
             view,
             epoch,
+            started,
             mailbox: LiveAgentMailbox {
                 id,
                 epoch,
@@ -89,13 +145,23 @@ impl<J: AgentControllerJournal + Send + 'static> PersistentAgentHost<J> {
         result: &AgentSettlement,
         wall_ms: u64,
     ) -> Result<(), ControllerError> {
-        let settled = self.settle(turn.view.agent_id, turn.epoch, result, wall_ms.max(1));
+        let wall_ms = wall_ms.max(turn.elapsed_ms());
+        let settled = self.settle(turn.view.agent_id, turn.epoch, result, wall_ms);
+        // Release the live signal even if retaining a retry proof itself fails. The controller
+        // remains active/poisoned until the exact terminal barrier or trusted recovery succeeds.
         if let Ok(mut signal) = self.shared.parent_stop.lock()
             && signal
                 .as_ref()
                 .is_some_and(|signal| signal.epoch == turn.epoch)
         {
             *signal = None;
+        }
+        if settled.is_err() {
+            self.shared
+                .pending_settlements
+                .lock()
+                .map_err(|_| ControllerError::Poisoned)?
+                .insert(turn.view.agent_id, (turn.epoch, result.clone(), wall_ms));
         }
         settled
     }

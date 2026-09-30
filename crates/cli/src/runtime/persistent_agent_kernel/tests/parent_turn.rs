@@ -218,3 +218,70 @@ async fn actual_root_interrupt_stops_the_current_agent_tool_before_epoch_settlem
             .contains_key(&AgentIdV1(1))
     );
 }
+
+#[tokio::test]
+async fn known_main_terminal_append_refusal_retains_proof_and_retries_once_before_next_epoch() {
+    let workspace = Workspace::new();
+    let provider = Arc::new(ProviderFixture::default());
+    let fault = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let (host, runtime, _, control) = setup_with_store(
+        &workspace,
+        provider.clone(),
+        false,
+        Store {
+            fail_parent_terminal: Some(fault.clone()),
+            ..Store::default()
+        },
+    );
+    let mut main = main_runtime(&runtime, control);
+    assert!(main.run("first actual Main task").await.is_err());
+    assert_eq!(provider.requests.load(Ordering::SeqCst), 1);
+    assert!(!fault.load(Ordering::SeqCst));
+    assert!(matches!(
+        host.inspect(AgentActor::Operator, AgentIdV1(1))
+            .unwrap()
+            .state,
+        AgentStateV1::Running { .. }
+    ));
+    main.stage_follow_up_transcript().await.unwrap();
+    assert_eq!(
+        main.run("next actual Main task").await.unwrap(),
+        Outcome::Done
+    );
+    let view = host.inspect(AgentActor::Operator, AgentIdV1(1)).unwrap();
+    assert_eq!(view.state, AgentStateV1::Idle);
+    assert_eq!(view.usage.turns, 2); // The retained terminal proof cannot charge twice.
+    assert_eq!(view.usage.tokens, 4);
+    assert_eq!(provider.requests.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn failure_after_main_epoch_claim_quarantines_and_releases_the_live_stop_slot() {
+    let workspace = Workspace::new();
+    let provider = Arc::new(ProviderFixture::default());
+    let (host, runtime, _, control) = setup_with_store(
+        &workspace,
+        provider.clone(),
+        false,
+        Store {
+            fail_parent_delivery: true,
+            ..Store::default()
+        },
+    );
+    let mut main = main_runtime(&runtime, control);
+    assert!(main.run("never dispatched Main source").await.is_err());
+    assert_eq!(provider.requests.load(Ordering::SeqCst), 0);
+    assert!(main.persistent_mailbox.is_none());
+    assert!(matches!(
+        host.inspect(AgentActor::Operator, AgentIdV1(1))
+            .unwrap()
+            .state,
+        AgentStateV1::RecoveryRequired { .. }
+    ));
+    assert!(matches!(
+        main.run("must not resurrect the old epoch").await,
+        Err(crate::runtime::KernelError::AgentControl(
+            iteron_agents::ControllerError::RecoveryRequired
+        ))
+    ));
+}

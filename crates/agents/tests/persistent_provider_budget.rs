@@ -481,3 +481,28 @@ fn root_restart_rejects_old_unconsumed_inputs_and_needs_measured_recovery() {
         Err(ControllerError::StaleEpoch)
     ));
 }
+
+#[test]
+fn parent_task_claim_is_one_conservative_slot_even_when_no_provider_request_is_dispatched() {
+    let mut controller = AgentController::open(Store::default(), config()).unwrap();
+    let root = controller.root_id();
+    let epoch = controller
+        .begin_parent_runtime_turn("source refused before any provider intent".into(), 1)
+        .unwrap();
+    controller
+        .finish_turn_with_usage(
+            root,
+            epoch,
+            "definite local refusal",
+            AgentUsageV1 {
+                wall_ms: 1,
+                ..Default::default()
+            },
+            true,
+        )
+        .unwrap();
+    let view = controller.inspect(AgentActor::Operator, root).unwrap();
+    assert_eq!(view.usage.turns, 1); // Admission-slot ceiling; transport requests = 0.
+    assert_eq!(view.usage.tokens, 0);
+    assert_eq!(view.state, AgentStateV1::Idle);
+}
