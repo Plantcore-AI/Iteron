@@ -485,20 +485,7 @@ pub async fn run(
             {
                 match preview.result {
                     Ok(preview) => {
-                        let mut rows = vec![
-                            kv("run", &preview.run),
-                            kv("title", &preview.title),
-                            kv("turns", &preview.turns.to_string()),
-                            kv("state", preview.state),
-                            kv(
-                                "transcript",
-                                &block::plural(preview.total_blocks, "visible block"),
-                            ),
-                        ];
-                        rows.extend(preview.blocks.iter().map(|text| {
-                            block::PanelRow::Note(one_line_preview(text, 160))
-                        }));
-                        app.panel("◫", "session preview", rows);
+                        super::session_inspection::render(&mut app, &preview.inspection);
                         app.status = "idle · session preview ready".into();
                     }
                     Err(error) => {

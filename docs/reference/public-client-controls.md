@@ -189,3 +189,10 @@ The TUI's `/artifacts` lists this catalog with stable 12-character hash prefixes
 terminal-safe text rendering. The same API supports the remaining download pages. General
 binary publication and external screenshots/documents require typed safe producer ownership;
 clients cannot turn an external locator into a retained public artifact.
+
+
+### Verified session inspection and trace
+
+`thread_lifecycle_v1` also accepts `inspect {run_id}` and `trace_read {run_id, after_seq?, limit}`. Both use the authenticated resident tenant and canonical workspace; requests never contain a record locator. Inspection derives the most recent user goal and recorded terminal from verified scoped events, preserving original run/sequence provenance across forks. Changes list only retained execution-proven native FileDiff descriptors. A record terminal is not execution liveness; unbound background owners remain explicitly unavailable. Existing history `active` means selected resident run, not running work.
+
+Trace reads one verified physical record, includes genesis when `after_seq` is absent, and returns at most 64 entries and 512 KiB of redacted display data. Each event reports whether its 64 KiB display window is complete. The cursor is an actual record sequence, independent of the frozen frontend replay cursor. Structural digests inside event display are not an unredacted export or a new chain proof. TUI `/sessions preview RUN` and `/sessions trace RUN [AFTER_SEQ]` use these same controls; `/artifacts` supplies complete retained tool output when available.

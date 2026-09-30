@@ -128,6 +128,7 @@ mod operator_status;
 mod plantcore;
 mod product_contract;
 mod recording_fault;
+mod thread_inspection;
 mod thread_lifecycle;
 pub(crate) mod thread_presentation;
 

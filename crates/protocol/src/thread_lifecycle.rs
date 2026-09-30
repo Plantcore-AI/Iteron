@@ -20,6 +20,16 @@ pub enum ThreadLifecycleCommandV1 {
     Read {
         run_id: RunId,
     },
+    Inspect {
+        run_id: RunId,
+    },
+    TraceRead {
+        run_id: RunId,
+        #[serde(default)]
+        after_seq: Option<u64>,
+        #[serde(default = "default_page_size")]
+        limit: u16,
+    },
     Rename {
         run_id: RunId,
         title: String,
@@ -47,6 +57,8 @@ impl ThreadLifecycleCommandV1 {
         match self {
             Self::List { .. } => None,
             Self::Read { run_id }
+            | Self::Inspect { run_id }
+            | Self::TraceRead { run_id, .. }
             | Self::Rename { run_id, .. }
             | Self::Archive { run_id, .. }
             | Self::Pin { run_id, .. }
@@ -58,7 +70,11 @@ impl ThreadLifecycleCommandV1 {
     pub fn is_read_only(&self) -> bool {
         matches!(
             self,
-            Self::List { .. } | Self::Read { .. } | Self::Export { .. }
+            Self::List { .. }
+                | Self::Read { .. }
+                | Self::Inspect { .. }
+                | Self::TraceRead { .. }
+                | Self::Export { .. }
         )
     }
 
@@ -91,6 +107,11 @@ impl ThreadLifecycleCommandV1 {
                 || title.chars().any(char::is_control))
         {
             return Err("title must be bounded visible text");
+        }
+        if let Self::TraceRead { limit, .. } = self
+            && !(1..=64).contains(limit)
+        {
+            return Err("trace page exceeds its bound");
         }
         if let Self::Delete {
             confirm_permanent_erasure,

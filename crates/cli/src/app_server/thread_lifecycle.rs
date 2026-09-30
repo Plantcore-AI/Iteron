@@ -19,8 +19,24 @@ use super::{ControlReply, thread_presentation};
 
 const MAX_PHYSICAL_EXPORT_BYTES: u64 = 8 * 1024 * 1024;
 
-pub(super) fn apply(agent: &mut Agent, command: ThreadLifecycleCommandV1) -> ControlReply {
-    let result = HistoryScope::from_agent(agent).and_then(|scope| scope.execute(command));
+pub(super) async fn apply(agent: &mut Agent, command: ThreadLifecycleCommandV1) -> ControlReply {
+    let result = match HistoryScope::from_agent(agent) {
+        Ok(scope)
+            if matches!(
+                command,
+                ThreadLifecycleCommandV1::Inspect { .. }
+                    | ThreadLifecycleCommandV1::TraceRead { .. }
+            ) =>
+        {
+            // An explicit bounded record inspection never blocks the session's async executor.
+            // The owned scope contains authenticated identities, not a frontend-supplied path.
+            tokio::task::spawn_blocking(move || scope.execute(command))
+                .await
+                .unwrap_or_else(|_| Err("session inspection worker unavailable".into()))
+        }
+        Ok(scope) => scope.execute(command),
+        Err(reason) => Err(reason),
+    };
     match result {
         Ok(value) => {
             if value["type"] == "thread_deleted_v1" {
@@ -89,6 +105,15 @@ impl HistoryScope {
                 unreachable!("list was dispatched before per-thread metadata access")
             }
             ThreadLifecycleCommandV1::Read { .. } => self.view(&meta),
+            ThreadLifecycleCommandV1::Inspect { .. } => {
+                let mut inspection =
+                    super::thread_inspection::inspect(&self.runs, &meta, &self.workspace)?;
+                inspection["history"] = self.view(&meta)?;
+                Ok(inspection)
+            }
+            ThreadLifecycleCommandV1::TraceRead {
+                after_seq, limit, ..
+            } => super::thread_inspection::trace(&self.runs, &meta, after_seq, limit),
             ThreadLifecycleCommandV1::Rename { title, .. } => {
                 thread_presentation::update(
                     &self.runs,
@@ -169,6 +194,8 @@ impl HistoryScope {
             "created_at": meta.created_at,
             "updated_at": meta.updated_at,
             "active": meta.run_id == self.current,
+            "active_meaning": "selected_resident_run",
+            "workspace": iteron_record::redact::scrub(&meta.cwd.to_string_lossy()),
             "retention": {"archive_reversible": true, "permanent_erasure_reversible": false},
         }))
     }
@@ -353,6 +380,179 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn inspector_uses_latest_verified_goal_and_record_terminal_without_claiming_liveness() {
+        let fixture = Fixture::new();
+        let mut rollout = fixture.write("history", "workspace", TenantId::default());
+        for (sequence, text) in [
+            (1, "initial goal"),
+            (
+                2,
+                "latest goal token=sk-secret-012345678901234567890123456789",
+            ),
+        ] {
+            rollout
+                .append(&Event {
+                    seq: Seq(sequence),
+                    turn: TurnId(0),
+                    kind: EventKind::Message {
+                        message: iteron_protocol::Message::user_text(text),
+                    },
+                })
+                .unwrap();
+        }
+        rollout
+            .append(&Event {
+                seq: Seq(3),
+                turn: TurnId(0),
+                kind: EventKind::Done {
+                    outcome: "Interrupted".into(),
+                },
+            })
+            .unwrap();
+        drop(rollout);
+        let scope = fixture.scope();
+        let result = scope
+            .execute(ThreadLifecycleCommandV1::Inspect {
+                run_id: RunId("history".into()),
+            })
+            .unwrap();
+        assert_eq!(result["recent_goal"]["source_seq"], 2);
+        assert!(
+            result["recent_goal"]["text"]
+                .as_str()
+                .unwrap()
+                .starts_with("latest goal")
+        );
+        assert!(
+            !result
+                .to_string()
+                .contains("sk-secret-012345678901234567890123456789")
+        );
+        assert_eq!(result["recorded_terminal"]["source_seq"], 3);
+        assert_eq!(result["recorded_terminal"]["outcome"], "interrupted");
+        assert_eq!(result["execution_state"]["available"], false);
+        assert_eq!(result["background"]["available"], false);
+        assert_eq!(result["history"]["active"], false);
+        assert_eq!(result["history"]["active_meaning"], "selected_resident_run");
+        assert_eq!(
+            result["workspace"],
+            scope.workspace.to_string_lossy().as_ref()
+        );
+        assert_eq!(
+            result["changes"]["coverage"],
+            "retained_native_commit_receipts"
+        );
+    }
+
+    #[test]
+    fn trace_pages_include_genesis_and_refuse_scope_or_cursor_forgery() {
+        let fixture = Fixture::new();
+        let mut rollout = fixture.write("history", "workspace", TenantId::default());
+        rollout
+            .append(&Event {
+                seq: Seq(1),
+                turn: TurnId(0),
+                kind: EventKind::Message {
+                    message: iteron_protocol::Message::user_text(
+                        "token=sk-secret-012345678901234567890123456789",
+                    ),
+                },
+            })
+            .unwrap();
+        drop(rollout);
+        drop(fixture.write("foreign", "other", TenantId::default()));
+        let scope = fixture.scope();
+        let page = scope
+            .execute(ThreadLifecycleCommandV1::TraceRead {
+                run_id: RunId("history".into()),
+                after_seq: None,
+                limit: 1,
+            })
+            .unwrap();
+        assert_eq!(page["events"][0]["source_seq"], 0);
+        assert_eq!(page["next_seq"], 0);
+        assert_eq!(page["has_more"], true);
+        let next = scope
+            .execute(ThreadLifecycleCommandV1::TraceRead {
+                run_id: RunId("history".into()),
+                after_seq: Some(0),
+                limit: 1,
+            })
+            .unwrap();
+        assert_eq!(next["events"][0]["source_seq"], 1);
+        assert_eq!(next["has_more"], false);
+        assert!(
+            !next
+                .to_string()
+                .contains("sk-secret-012345678901234567890123456789")
+        );
+        for (run, after, limit) in [
+            ("history", Some(2), 1),
+            ("history", None, 0),
+            ("history", None, 65),
+            ("foreign", None, 1),
+            ("../history", None, 1),
+        ] {
+            assert!(
+                scope
+                    .execute(ThreadLifecycleCommandV1::TraceRead {
+                        run_id: RunId(run.into()),
+                        after_seq: after,
+                        limit
+                    })
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn trace_reports_full_redaction_before_its_bounded_display_prefix() {
+        let fixture = Fixture::new();
+        let mut rollout = fixture.write("history", "workspace", TenantId::default());
+        let text = format!(
+            "{} token=sk-secret-012345678901234567890123456789",
+            "界".repeat(30_000)
+        );
+        rollout
+            .append(&Event {
+                seq: Seq(1),
+                turn: TurnId(0),
+                kind: EventKind::Message {
+                    message: iteron_protocol::Message::user_text(text),
+                },
+            })
+            .unwrap();
+        drop(rollout);
+        let result = fixture
+            .scope()
+            .execute(ThreadLifecycleCommandV1::TraceRead {
+                run_id: RunId("history".into()),
+                after_seq: Some(0),
+                limit: 1,
+            })
+            .unwrap();
+        assert_eq!(result["events"][0]["complete"], false);
+        assert!(
+            result["events"][0]["omitted_redacted_bytes"]
+                .as_u64()
+                .unwrap()
+                > 0
+        );
+        assert!(
+            result["events"][0]["display_json_prefix"]
+                .as_str()
+                .unwrap()
+                .len()
+                <= 64 * 1024
+        );
+        assert!(
+            !result
+                .to_string()
+                .contains("sk-secret-012345678901234567890123456789")
+        );
     }
 
     #[test]

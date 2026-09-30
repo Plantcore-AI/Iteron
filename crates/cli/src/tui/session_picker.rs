@@ -67,12 +67,7 @@ pub(super) struct SessionPageResult {
 }
 
 pub(super) struct SessionPreview {
-    pub(super) run: String,
-    pub(super) title: String,
-    pub(super) turns: u32,
-    pub(super) state: &'static str,
-    pub(super) total_blocks: usize,
-    pub(super) blocks: Vec<String>,
+    pub(super) inspection: serde_json::Value,
 }
 
 pub(super) struct SessionPreviewResult {
@@ -138,8 +133,12 @@ pub(super) fn session_picker_items(
             PickItem::flat(
                 view.title.unwrap_or(session.title),
                 format!(
-                    "run {run_id} · {} · {cost} · {route}{flags}",
-                    block::plural(session.turns as usize, "turn")
+                    "run {run_id} · {} · {cost} · {route}{flags} · {} · recorded {}",
+                    block::plural(session.turns as usize, "turn"),
+                    ui_safe_text(&session.cwd.to_string_lossy()),
+                    super::session_inspection::recorded_outcome_label(
+                        session.last_outcome.as_ref()
+                    ),
                 ),
                 run_id == current_run,
                 PickAction::AdoptRun(run_id),
@@ -524,43 +523,15 @@ pub(super) fn maybe_prefetch_session_page(app: &mut App) {
     ));
 }
 
-pub(super) fn start_session_preview(app: &mut App, runs: PathBuf, run: String) {
+pub(super) fn start_session_preview(app: &mut App, session: &Session, run: String) {
     if let Some(previous) = app.session_preview_job.take() {
         previous.abort();
     }
     app.session_preview_generation = app.session_preview_generation.wrapping_add(1);
     let generation = app.session_preview_generation;
-    app.session_preview_job = Some(tokio::task::spawn_blocking(move || {
-        let identity = iteron_protocol::RunId(run.clone());
-        let result = (|| {
-            let metadata = iteron_record::session::meta(&runs, &identity)
-                .map_err(|error| format!("cannot read session metadata: {error}"))?;
-            let events = iteron_record::load_forked(&runs, &identity)
-                .map_err(|error| format!("cannot preview session: {error}"))?;
-            let presentation = session_management::load(&runs, &run).unwrap_or_default();
-            let state = if presentation.archived {
-                "archived"
-            } else if presentation.pinned {
-                "pinned"
-            } else {
-                "active"
-            };
-            let (blocks, total_blocks) = adopted_transcript_blocks(&events);
-            Ok(SessionPreview {
-                run,
-                title: presentation.title.unwrap_or(metadata.title),
-                turns: metadata.turns,
-                state,
-                total_blocks,
-                blocks: blocks
-                    .iter()
-                    .rev()
-                    .take(6)
-                    .rev()
-                    .map(|block| block::Block::new(0, block.clone()).to_text())
-                    .collect(),
-            })
-        })();
+    let sender = session.control_sender();
+    app.session_preview_job = Some(tokio::spawn(async move {
+        let result = super::session_inspection::request(sender, run).await;
         SessionPreviewResult { generation, result }
     }));
 }
@@ -585,11 +556,6 @@ pub(super) fn handle_sessions_command(
         );
         return;
     }
-    let runs = session
-        .rollout_path()
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_default();
     let mut words = argument.splitn(3, char::is_whitespace);
     let action = words.next().unwrap_or_default();
     let run = words.next().unwrap_or_default();
@@ -599,8 +565,8 @@ pub(super) fn handle_sessions_command(
         "switch" | "resume" if !run.is_empty() => {
             start_adopt_session(app, session, directory, run.to_owned())
         }
-        "preview" if !run.is_empty() => start_session_preview(app, runs, run.to_owned()),
-        "rename" | "pin" | "unpin" | "archive" | "unarchive" | "delete" | "read" | "export" if !run.is_empty() => {
+        "preview" if !run.is_empty() => start_session_preview(app, session, run.to_owned()),
+        "rename" | "pin" | "unpin" | "archive" | "unarchive" | "delete" | "read" | "export" | "trace" if !run.is_empty() => {
             use iteron_protocol::thread_lifecycle::ThreadLifecycleCommandV1 as Command;
             let run_id = iteron_protocol::RunId(run.to_owned());
             let command = match action {
@@ -609,6 +575,15 @@ pub(super) fn handle_sessions_command(
                 "archive" | "unarchive" => Command::Archive { run_id, archived: action == "archive" },
                 "delete" => Command::Delete { run_id, confirm_permanent_erasure: tail == "permanently" },
                 "export" => Command::Export { run_id },
+                "trace" => {
+                    let after_seq = if tail.is_empty() { None } else {
+                        match tail.parse::<u64>() {
+                            Ok(sequence) => Some(sequence),
+                            Err(_) => { app.note(block::NoticeLevel::Err, "trace cursor must be an integer"); return; }
+                        }
+                    };
+                    Command::TraceRead { run_id, after_seq, limit: 16 }
+                },
                 _ => Command::Read { run_id },
             };
             command_dispatch::queue_command_control(
@@ -619,7 +594,7 @@ pub(super) fn handle_sessions_command(
         }
         _ => app.note(
             block::NoticeLevel::Err,
-            "usage: /sessions [new|switch RUN|preview RUN|rename RUN TITLE|pin RUN|unpin RUN|archive RUN|unarchive RUN|delete RUN permanently|read RUN|export RUN]",
+            "usage: /sessions [new|switch RUN|preview RUN|rename RUN TITLE|pin RUN|unpin RUN|archive RUN|unarchive RUN|delete RUN permanently|read RUN|export RUN|trace RUN [AFTER_SEQ]]",
         ),
     }
 }

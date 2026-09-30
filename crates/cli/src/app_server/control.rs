@@ -474,7 +474,7 @@ pub(super) async fn apply_control(
             return;
         }
         Control::PersistentAgents(command) => super::agent_control::enable(agent, command),
-        Control::ThreadLifecycle(command) => super::thread_lifecycle::apply(agent, command),
+        Control::ThreadLifecycle(command) => super::thread_lifecycle::apply(agent, command).await,
         Control::PlantcoreRunBootstrapV1(payload) => {
             if *started {
                 ControlReply::PlantcoreProtocolError(super::plantcore::PlantcoreProtocolError {

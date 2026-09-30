@@ -715,6 +715,10 @@ pub(super) fn apply_transcript_effect_event(
                             kv("pinned", &value["pinned"].to_string()),
                         ],
                     );
+                } else if value["type"] == "thread_trace_v1" {
+                    super::session_inspection::render_trace(app, &value);
+                } else if value["type"] == "thread_inspection_v1" {
+                    super::session_inspection::render(app, &value);
                 } else if value["type"] == "thread_export_v1" {
                     app.push(dim(), ui_safe_text(value["content"].as_str().unwrap_or("")));
                 } else {
