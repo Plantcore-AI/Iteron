@@ -50,6 +50,16 @@ struct ToolProvider {
 
 impl ToolProvider {
     fn spawn() -> Self {
+        Self::spawn_for_calls(
+            vec![json!({
+                "index":0,"id":"artifact-large-read","type":"function",
+                "function":{"name":"read_file","arguments":json!({"path":"large-output.txt"}).to_string()}
+            })],
+            true,
+        )
+    }
+
+    fn spawn_for_calls(calls: Vec<Value>, final_answer: bool) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         listener.set_nonblocking(true).unwrap();
@@ -60,10 +70,7 @@ impl ToolProvider {
             read_http_request(&mut first);
             let tool = json!({
                 "id":"artifact-provider", "object":"chat.completion.chunk",
-                "choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{
-                    "index":0,"id":"artifact-large-read","type":"function",
-                    "function":{"name":"read_file","arguments":json!({"path":"large-output.txt"}).to_string()}
-                }]},"finish_reason":null}],"usage":null
+                "choices":[{"index":0,"delta":{"role":"assistant","tool_calls":calls},"finish_reason":null}],"usage":null
             });
             let finish = json!({
                 "id":"artifact-provider", "object":"chat.completion.chunk",
@@ -75,10 +82,12 @@ impl ToolProvider {
             first.flush().unwrap();
             drop(first);
 
-            let mut second = accept_before_deadline(&listener);
-            second.set_read_timeout(Some(timeout())).unwrap();
-            read_http_request(&mut second);
-            write_success(&mut second, 1, "retained native tool complete");
+            if final_answer {
+                let mut second = accept_before_deadline(&listener);
+                second.set_read_timeout(Some(timeout())).unwrap();
+                read_http_request(&mut second);
+                write_success(&mut second, 1, "retained native tool complete");
+            }
             completed_tx.send(()).unwrap();
         });
         Self {
@@ -399,3 +408,7 @@ fn native_large_output_is_complete_after_restart_scoped_and_removed_by_verified_
         "erasure scope is retained data"
     );
 }
+
+#[cfg(unix)]
+#[path = "native_diff_journey.rs"]
+mod native_diff_journey;
