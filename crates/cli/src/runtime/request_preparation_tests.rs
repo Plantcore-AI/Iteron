@@ -289,3 +289,35 @@ fn uncovered_summary_closes_component_bridge_without_recursive_provider_spend() 
     drop(agent);
     std::fs::remove_dir_all(directory).unwrap();
 }
+
+#[test]
+fn actual_route_rebind_rechecks_output_headroom_and_keeps_original_policy_request() {
+    let (directory, mut agent, mut messages) = fixture();
+    messages = vec![Message::user_text(
+        "bounded request after auxiliary route change",
+    )];
+    agent.context_estimator.invalidate_transcript();
+    let mut owner = preparation(&mut agent, &mut messages);
+    owner.bind_route_budget(Some(400), 512).unwrap();
+    let refusal = owner
+        .window_refusal()
+        .expect("actual new route output cannot fit");
+    assert!(matches!(
+        refusal,
+        KernelError::ContextWindowExceeded {
+            reserved_output_tokens: 512,
+            ..
+        }
+    ));
+    assert!(owner.validate().is_err());
+    // A later native route whose true output fits may be rebound before validation. This changes
+    // the serialized physical cap, never the separate original caller policy commitment.
+    owner.bind_route_budget(Some(400), 16).unwrap();
+    owner.validate().unwrap();
+    assert!(owner.bind_route_budget(Some(1_000_000), 64).is_err());
+    let (request, policy) = owner.into_request(config()).unwrap();
+    assert_eq!(request.max_tokens, 16);
+    assert_eq!(policy, 32);
+    drop(agent);
+    let _ = std::fs::remove_dir_all(directory);
+}

@@ -106,14 +106,26 @@ impl<'a> RequestPreparation<'a> {
     }
 
     /// Auxiliary physical work can durably select another resident route. The host supplies
-    /// its real current context-window proof before assessing a candidate/final admission.
-    pub(super) fn bind_execution_window(&mut self, window: Option<u64>) -> Result<(), KernelError> {
+    /// its real current context-window and physical-output proof before assessing a candidate
+    /// or final admission. The original requested policy remains separate and unchanged.
+    pub(super) fn bind_route_budget(
+        &mut self,
+        window: Option<u64>,
+        physical_output: u32,
+    ) -> Result<(), KernelError> {
         if self.phase == PreparationPhase::Validated {
             return Err(KernelError::ContextResolution(
                 "validated request route cannot be rebound".into(),
             ));
         }
+        if physical_output == 0 {
+            return Err(KernelError::InvalidRouteMetadata {
+                field: "physical_output_token_ceiling",
+                reason: "rebound route needs a nonzero physical output ceiling",
+            });
+        }
         self.window = window;
+        self.request.max_tokens = physical_output;
         Ok(())
     }
 
