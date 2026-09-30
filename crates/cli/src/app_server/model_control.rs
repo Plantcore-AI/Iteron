@@ -1,7 +1,7 @@
 //! Durable model-selection transaction shared by all operator clients.
 
 use super::control::snapshot_of;
-use super::*;
+use super::{Agent, ControlReply, EventPublisher, ModelSelection, ServerEvent};
 
 pub(super) async fn apply(
     agent: &mut Agent,

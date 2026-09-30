@@ -186,7 +186,7 @@ fn check_identity(value: &str) -> Result<(), String> {
     if value.is_empty()
         || value.len() > MAX_ID_BYTES
         || value.chars().any(char::is_control)
-        || safe(value) != value
+        || iteron_record::redact::scrub_route_identifier(value) != value
     {
         Err("bootstrap route has an unsafe or oversized identity".into())
     } else {
