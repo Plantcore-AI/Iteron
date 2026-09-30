@@ -337,7 +337,6 @@ fn validate_extracted_owners(root: &Path) -> Result<()> {
         "crates/cli/src/high_assurance/owner.rs",
         "crates/cli/src/high_assurance/journal.rs",
         "crates/cli/src/high_assurance/profile.rs",
-        "crates/protocol/src/high_assurance.rs",
         "crates/cli/src/runtime/provider_route_turn.rs",
         "crates/cli/src/runtime/provider_route_events.rs",
         "crates/cli/src/runtime/tool_turn.rs",

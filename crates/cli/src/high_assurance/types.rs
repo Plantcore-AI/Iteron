@@ -34,9 +34,6 @@ pub(crate) struct HighAssurancePolicy {
     pub(super) digest: String,
 }
 impl HighAssurancePolicy {
-    pub(crate) fn digest(&self) -> &str {
-        &self.digest
-    }
     /// This entry is for a trusted operator configuration reader. Public controls cannot install
     /// or change enrollment. The operator is responsible for attesting distinct human subjects.
     pub(crate) fn from_operator(
@@ -111,14 +108,6 @@ pub(crate) struct HighAssuranceScope {
     pub(super) workspace_sha256: String,
 }
 impl HighAssuranceScope {
-    pub(crate) fn commitment(&self) -> String {
-        let mut hash = Sha256::new();
-        hash.update(b"iteron.high-assurance-scope.v1\0");
-        frame(&mut hash, self.tenant_id.0.as_bytes());
-        frame(&mut hash, self.run_id.0.as_bytes());
-        frame(&mut hash, self.workspace_sha256.as_bytes());
-        hex::encode(hash.finalize())
-    }
     pub(crate) fn from_host(
         tenant: TenantId,
         run: RunId,
@@ -136,7 +125,36 @@ impl HighAssuranceScope {
     }
 }
 
-pub(crate) use iteron_protocol::high_assurance::HumanApprovalChallengeV1;
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct HumanApprovalChallengeV1 {
+    pub version: u32,
+    pub challenge_id: String,
+    pub policy_sha256: String,
+    pub scope_sha256: String,
+    pub operation_sha256: String,
+    pub expires_at_unix_secs: u64,
+}
+impl HumanApprovalChallengeV1 {
+    pub(crate) fn signing_bytes(&self) -> Result<Vec<u8>, &'static str> {
+        if self.version != CONTRACT_VERSION
+            || [
+                &self.challenge_id,
+                &self.policy_sha256,
+                &self.scope_sha256,
+                &self.operation_sha256,
+            ]
+            .iter()
+            .any(|value| fixed_hex::<32>(value).is_none())
+            || self.expires_at_unix_secs == 0
+        {
+            return Err("human_approval_challenge_bounds");
+        }
+        let mut bytes = b"iteron.authenticated-human-operation.v1\0".to_vec();
+        bytes.extend(serde_json::to_vec(self).map_err(|_| "human_approval_challenge_encoding")?);
+        Ok(bytes)
+    }
+}
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SignedHumanApprovalV1 {

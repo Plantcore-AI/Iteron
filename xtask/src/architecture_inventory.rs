@@ -398,16 +398,6 @@ const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/protocol/src/high_assurance.rs",
-        boundary: "protocol-compat",
-        responsibilities: &[
-            "strict immutable actual enrolled-human configuration and independently verifiable dual signature proof vocabulary",
-        ],
-        next_seams: &[
-            "structural commitments preserved across record redaction; exact crypto proof and actual roster matching; history never grants authority",
-        ],
-    },
-    Surface {
         path: "crates/cli/src/high_assurance/owner.rs",
         boundary: "cli-host",
         responsibilities: &[
@@ -420,9 +410,7 @@ const SURFACES: &[Surface] = &[
     Surface {
         path: "crates/cli/src/high_assurance/journal.rs",
         boundary: "cli-host",
-        responsibilities: &[
-            "closed typed dual-signature authorization and actual enrollment audit barrier",
-        ],
+        responsibilities: &["closed content-free dual-signature authorization audit barrier"],
         next_seams: &[
             "actual Rollout and diagnostic/latency ports; no permission widening or executor access",
         ],
