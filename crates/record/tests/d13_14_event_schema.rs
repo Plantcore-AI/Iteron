@@ -997,6 +997,10 @@ fn record_blocks(
                 record_named(named, "record.named.tool-result", result);
                 "tool_result"
             }
+            Block::ToolImage(image) => {
+                record_named(named, "record.named.tool-image", image);
+                "tool_image"
+            }
         };
         seen.insert(tag);
     }

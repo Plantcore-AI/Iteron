@@ -1291,6 +1291,7 @@ impl Agent {
         let tool_trust = messages.iter().flat_map(|message| {
             message.content.iter().filter_map(|block| match block {
                 Block::ToolResult(result) => Some(result.trust),
+                Block::ToolImage(image) => Some(image.trust()),
                 _ => None,
             })
         });

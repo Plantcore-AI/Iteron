@@ -22,7 +22,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::{Mutex, Semaphore, oneshot};
 pub use types::BrowserConfig;
-use types::{BrowserCommand, web_url};
+use types::{BrowserCommand, input_shape, web_url};
 
 type Egress = Arc<OnceLock<Option<crate::EgressAllowPolicy>>>;
 struct View {
@@ -85,11 +85,15 @@ pub fn register(registry: &mut Registry, configuration: BrowserConfig) -> Result
     computer::register(registry, owner)
 }
 impl BrowserOwner {
-    async fn execute(self: Arc<Self>, call: ToolUse) -> CapturedToolExecution {
-        let command = match serde_json::from_value::<BrowserCommand>(call.input.clone()) {
-            Ok(command) => command,
-            Err(_) => return failure(&call.id, "browser_input_refused", false),
-        };
+    async fn execute(self: Arc<Self>, mut call: ToolUse) -> CapturedToolExecution {
+        if input_shape(&call.input, false).is_err() {
+            return failure(&call.id, "browser_input_refused", false);
+        }
+        let command =
+            match serde_json::from_value::<BrowserCommand>(std::mem::take(&mut call.input)) {
+                Ok(command) => command,
+                Err(_) => return failure(&call.id, "browser_input_refused", false),
+            };
         if command.validate().is_err() {
             return failure(&call.id, "browser_input_refused", false);
         }

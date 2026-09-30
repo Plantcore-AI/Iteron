@@ -23,6 +23,7 @@ pub(super) enum EarlyToolOutcome {
         effect_unknown: bool,
         operator_interrupted: bool,
         publication_error: Option<String>,
+        captured_images: Vec<iteron_tools::CapturedToolImage>,
     },
     Refused {
         reason: String,
@@ -159,6 +160,7 @@ impl EarlyToolExecutor {
                 .publication
                 .publish_execution(&admitted.call, &execution)
                 .err();
+            let captured_images = std::mem::take(&mut execution.captured_images);
             let result = execution.into_result();
             let managed = tool_output_spill::manage_result(admitted.spill_store.as_deref(), result);
             EarlyToolOutcome::Completed {
@@ -168,6 +170,7 @@ impl EarlyToolExecutor {
                 effect_unknown,
                 operator_interrupted,
                 publication_error,
+                captured_images,
             }
         });
         EarlyToolTask(handle)

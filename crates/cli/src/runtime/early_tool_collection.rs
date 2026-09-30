@@ -50,6 +50,7 @@ impl EarlyToolCollection<'_> {
         window: EarlyToolWindow,
         results: &mut [Option<ToolResult>],
         any_error: &mut bool,
+        image_projections: &mut Vec<super::tool_images::PendingToolImageProjection>,
     ) -> Result<usize, KernelError> {
         if early.len() > effects::MAX_TOOL_CALLS_PER_TURN
             || early.iter().any(|(index, ..)| *index >= results.len())
@@ -105,6 +106,7 @@ impl EarlyToolCollection<'_> {
                     effect_unknown,
                     operator_interrupted,
                     publication_error,
+                    captured_images,
                 })) => {
                     if let Some(hook) = hook {
                         self.observe_hook(hook, false);
@@ -142,13 +144,29 @@ impl EarlyToolCollection<'_> {
                         );
                         unknown = unknown.saturating_add(1);
                     } else {
-                        self.journal.known_result(
-                            ticket,
-                            &call.name,
-                            result,
-                            overlap_ms.min(result.latency_ms),
-                            &self.scope.events,
-                        )?;
+                        if !captured_images.is_empty() && !result.is_error {
+                            let receipt = self.journal.known_result_receipt(
+                                ticket,
+                                &call.name,
+                                result,
+                                overlap_ms.min(result.latency_ms),
+                                &self.scope.events,
+                            )?;
+                            image_projections.push(
+                                super::tool_images::PendingToolImageProjection {
+                                    receipt,
+                                    images: captured_images,
+                                },
+                            );
+                        } else {
+                            self.journal.known_result(
+                                ticket,
+                                &call.name,
+                                result,
+                                overlap_ms.min(result.latency_ms),
+                                &self.scope.events,
+                            )?;
+                        }
                         if was_effecting && result.is_error {
                             self.journal.failed_actions.insert(
                                 format!("{}::{}", call.name, call.input),

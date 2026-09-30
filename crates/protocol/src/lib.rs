@@ -47,6 +47,7 @@ pub mod slot;
 pub mod task;
 pub mod task_plan;
 pub mod tool;
+pub mod tool_image;
 pub mod trust;
 pub mod tunables_snapshot;
 pub mod wire;

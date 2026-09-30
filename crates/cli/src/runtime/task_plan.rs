@@ -158,7 +158,12 @@ impl TaskPlanOwner {
         let mut owner = Self::default();
         for event in events {
             match &event.kind {
-                EventKind::Message { message } if message.role == Role::User => {
+                EventKind::Message { message }
+                    if message.role == Role::User
+                        && !message.content.iter().any(|block| {
+                            matches!(block, Block::ToolResult(_) | Block::ToolImage(_))
+                        }) =>
+                {
                     owner.observe_submission(event.seq)
                 }
                 EventKind::TaskPlanUpdatedV1 { plan } => {

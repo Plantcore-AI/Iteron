@@ -399,6 +399,7 @@ pub(super) fn adopted_transcript_blocks(
                 }
                 MessageBlock::Thinking { .. }
                 | MessageBlock::ToolResult(_)
+                | MessageBlock::ToolImage(_)
                 | MessageBlock::ProviderState(_) => {}
             }
         }

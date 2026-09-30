@@ -830,6 +830,7 @@ impl Agent {
         }
         if let Some(trust) = Trust::governing(m.content.iter().filter_map(|block| match block {
             Block::ToolResult(result) => Some(result.trust),
+            Block::ToolImage(image) => Some(image.trust()),
             _ => None,
         })) {
             self.observed_trust = self.observed_trust.min(trust);

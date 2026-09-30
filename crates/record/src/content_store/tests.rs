@@ -4,6 +4,71 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_TEST_DIR: AtomicU64 = AtomicU64::new(0);
 
+#[test]
+fn tool_pixels_stay_out_of_jsonl_and_hydrate_only_through_owned_private_cas() {
+    use iteron_protocol::{
+        ImageContent, ImageMediaType, TurnId,
+        tool_image::{ToolImageObservationV1, ToolImageScopeV1},
+    };
+    let dir = test_dir();
+    let tenant = TenantId::default();
+    let run = RunId("tool-image-private-cas".into());
+    let data = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII=";
+    let image = ToolImageObservationV1 {
+        version: 1,
+        owner_tenant: iteron_protocol::TenantId::default(),
+        owner_run: iteron_protocol::RunId("tool-image-private-cas".into()),
+        tool_use_id: "vision-call".into(),
+        terminal_seq: Seq(7),
+        observed_unix_ms: 42,
+        source_url_display: "https://example.com/".into(),
+        scope: ToolImageScopeV1::IsolatedBrowserViewport,
+        artifact_id: "a38a4ff7320a3d8764ac959b264f15e335360d7c1e23a0627dee7f366c95c58f".into(),
+        width: 1,
+        height: 1,
+        image: ImageContent::new(ImageMediaType::Png, data).unwrap(),
+    };
+    let event = iteron_protocol::Event {
+        seq: Seq(8),
+        turn: TurnId(0),
+        kind: iteron_protocol::EventKind::ToolImageObservedV1 {
+            observation: image.clone(),
+        },
+    };
+    let redacted = crate::redact::redact_event(&event);
+    let mut payload = serde_json::to_value(redacted).unwrap();
+    externalize_event_payload(&dir, &tenant, &run, Seq(8), &mut payload).unwrap();
+    let wire = serde_json::to_string(&payload).unwrap();
+    assert!(!wire.contains(data));
+    assert!(wire.contains(&image.artifact_id));
+    let sources = private_content_sources_for_run(&dir, &tenant, &run).unwrap();
+    assert_eq!(sources.len(), 1);
+    assert_eq!(sources[0].owner, run);
+    let edges = std::fs::read_dir(Layout::new(&dir, &tenant).run_reference_dir(&run))
+        .unwrap()
+        .map(|entry| {
+            serde_json::from_slice::<model::ReferenceEdge>(
+                &std::fs::read(entry.unwrap().path()).unwrap(),
+            )
+            .unwrap()
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        edges
+            .iter()
+            .any(|edge| edge.surface == ContentReferenceSurface::ToolArtifact
+                && edge.field_class == "tool_image")
+    );
+    hydrate_event_payload(&dir, &tenant, &mut payload).unwrap();
+    let hydrated: iteron_protocol::Event = serde_json::from_value(payload).unwrap();
+    let iteron_protocol::EventKind::ToolImageObservedV1 { observation } = hydrated.kind else {
+        panic!()
+    };
+    assert_eq!(observation, image);
+    observation.validate().unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 fn test_dir() -> PathBuf {
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

@@ -173,3 +173,36 @@ pub(super) fn web_url(raw: &str) -> Result<Url, &'static str> {
     }
     Ok(url)
 }
+
+/// Admit the finite scalar shape before serde can clone/allocate a provider-controlled Value.
+/// This walks only the top-level object; nested objects/arrays are refused without recursion.
+pub(super) fn input_shape(input: &serde_json::Value, computer: bool) -> Result<(), &'static str> {
+    let object = input.as_object().ok_or("browser_input_object_required")?;
+    if object.len() > 5 {
+        return Err("browser_input_field_bound");
+    }
+    for (key, value) in object {
+        let bound = match (computer, key.as_str()) {
+            (_, "action") => 16,
+            (_, "page_ref") => 128,
+            (false, "url") => 2048,
+            (false, "selector") => 1024,
+            (false, "text") => 4096,
+            (true, "key") => 32,
+            (true, "x" | "y" | "delta_y") => {
+                if value
+                    .as_i64()
+                    .is_none_or(|number| number.unsigned_abs() > 4096)
+                {
+                    return Err("computer_numeric_bounds");
+                }
+                continue;
+            }
+            _ => return Err("browser_input_field_refused"),
+        };
+        if value.as_str().is_none_or(|text| text.len() > bound) {
+            return Err("browser_input_scalar_bounds");
+        }
+    }
+    Ok(())
+}

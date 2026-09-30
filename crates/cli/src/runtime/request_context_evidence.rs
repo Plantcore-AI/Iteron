@@ -319,6 +319,10 @@ impl RequestContextEvidenceOwner {
         }
         let active_task_index = messages.iter().rposition(|message| {
             message.role == Role::User
+                && !message
+                    .content
+                    .iter()
+                    .any(|block| matches!(block, Block::ToolResult(_) | Block::ToolImage(_)))
                 && message
                     .content
                     .iter()
@@ -340,7 +344,7 @@ impl RequestContextEvidenceOwner {
             let has_tool_results = message
                 .content
                 .iter()
-                .any(|block| matches!(block, Block::ToolResult(_)));
+                .any(|block| matches!(block, Block::ToolResult(_) | Block::ToolImage(_)));
             if !has_tool_results {
                 let bytes = serde_json::to_vec(message).unwrap_or_default();
                 let source = if Some(index) == active_task_index {
@@ -368,7 +372,7 @@ impl RequestContextEvidenceOwner {
             let non_results = message
                 .content
                 .iter()
-                .filter(|block| !matches!(block, Block::ToolResult(_)))
+                .filter(|block| !matches!(block, Block::ToolResult(_) | Block::ToolImage(_)))
                 .collect::<Vec<_>>();
             if !non_results.is_empty() {
                 let bytes = serde_json::to_vec(&(message.role, non_results)).unwrap_or_default();
@@ -393,6 +397,11 @@ impl RequestContextEvidenceOwner {
                 ordinal = ordinal.saturating_add(1);
             }
             for block in &message.content {
+                if let Block::ToolImage(image) = block {
+                    record_tool_image_segment(&mut ledger, ordinal, image, estimator);
+                    ordinal = ordinal.saturating_add(1);
+                    continue;
+                }
                 let Block::ToolResult(result) = block else {
                     continue;
                 };
@@ -546,6 +555,59 @@ impl RequestContextEvidenceOwner {
             observations,
         }
     }
+}
+
+fn record_tool_image_segment(
+    ledger: &mut ContextLedger,
+    ordinal: u32,
+    image: &iteron_protocol::tool_image::ToolImageObservationV1,
+    estimator: &RequestEstimator,
+) {
+    let mut hasher = Sha256::new();
+    hasher.update(b"iteron-context-tool-image-v1\0");
+    let mut bytes = 0u64;
+    for value in [
+        image.owner_tenant.0.as_bytes(),
+        image.owner_run.0.as_bytes(),
+        image.tool_use_id.as_bytes(),
+        image.artifact_id.as_bytes(),
+        image.source_url_display.as_bytes(),
+        image.image.data.as_str().as_bytes(),
+    ] {
+        hasher.update((value.len() as u64).to_le_bytes());
+        hasher.update(value);
+        bytes = bytes.saturating_add(value.len() as u64);
+    }
+    for value in [
+        image.terminal_seq.0,
+        image.observed_unix_ms,
+        u64::from(image.width),
+        u64::from(image.height),
+    ] {
+        hasher.update(value.to_le_bytes());
+        bytes = bytes.saturating_add(8);
+    }
+    let tokens = estimator
+        .estimate_decoded_image(u64::from(image.width).saturating_mul(u64::from(image.height)))
+        .tokens
+        .saturating_add(64);
+    ledger.record_segment(ContextSegmentEvidence {
+        segment_id: ContextSegmentId(u64::from(ordinal)),
+        parent_segment_id: None,
+        source_class: ContextSourceClass::TranscriptTool,
+        source_digest_sha256: hasher.finalize().into(),
+        trust: Trust::Untrusted,
+        ordinal,
+        bytes_before: bytes,
+        bytes_after: bytes,
+        estimated_tokens: u64::try_from(tokens).unwrap_or(u64::MAX),
+        actual_tokens: None,
+        token_range: None,
+        cache_class: CacheClass::Uncached,
+        decision: ContextDecision::Selected,
+        reason: ContextDecisionReason::Required,
+        elapsed_us: 0,
+    });
 }
 
 fn record_segment(

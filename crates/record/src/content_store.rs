@@ -798,7 +798,7 @@ fn semantic_namespace(
         return Some(namespace);
     }
     let namespace = match field_class {
-        "tool_arguments" | "tool_result" | "effect_arguments" | "effect_error"
+        "tool_arguments" | "tool_result" | "tool_image" | "effect_arguments" | "effect_error"
         | "artifact_locator" => PrivateContentNamespace::ToolArtifact,
         "memory_context" | "instructions" | "environment" => PrivateContentNamespace::MemoryContext,
         "checkpoint" => PrivateContentNamespace::Checkpoint,
@@ -841,7 +841,12 @@ fn attachment_semantic_class(class: &str) -> bool {
 fn tool_artifact_semantic_class(class: &str) -> bool {
     matches!(
         class,
-        "tool_arguments" | "tool_result" | "effect_arguments" | "effect_error" | "artifact_locator"
+        "tool_arguments"
+            | "tool_result"
+            | "tool_image"
+            | "effect_arguments"
+            | "effect_error"
+            | "artifact_locator"
     )
 }
 

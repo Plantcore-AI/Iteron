@@ -427,6 +427,16 @@ pub(crate) struct Cli {
     #[arg(long, value_name = "PACKAGE_PATH")]
     pub(crate) plugin_candidate: Vec<PathBuf>,
 
+    /// Explicit local W3C ChromeDriver for optional fresh isolated browser/computer tools.
+    /// Registration is not per-action external-effect approval. No driver is installed by default.
+    #[arg(long, value_name = "LOOPBACK_HTTP_DRIVER", requires = "browser_origin")]
+    pub(crate) browser_webdriver: Option<String>,
+
+    /// Exact http(s) origin the isolated browser may contact; repeat at most 32 times.
+    /// Only operator launch arguments supply this authority, never project/model configuration.
+    #[arg(long, value_name = "ORIGIN", requires = "browser_webdriver")]
+    pub(crate) browser_origin: Vec<String>,
+
     /// Print the whole machine-readable optimization surface as JSON and exit: every family,
     /// every exposed parameter, the module axis and the addressable prompt artifacts. This is
     /// what an external optimizer reads to construct a legal profile.

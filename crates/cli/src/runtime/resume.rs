@@ -47,8 +47,10 @@ impl Agent {
         // (replayed up to the fork point and VERIFIED against the recorded parent_hash_at_seq, so a
         // tampered parent is detected — ADR-008 §4). A non-forked run's genesis has no parent, so
         // this returns just its own chain (identical to a plain replay).
-        let events = replay_logical_rollout(path)?;
-        Ok(project_messages_from_events(events))
+        let events = replay_scoped_rollout(path)?;
+        Ok(super::transcript::project_messages_from_scoped_events(
+            events,
+        ))
     }
 
     /// Load a prior run's transcript so `run` continues it instead of starting fresh.
@@ -301,6 +303,7 @@ impl Agent {
                 self.observed_trust = Trust::governing(events.into_iter().flat_map(|event| {
                     match event.kind {
                         EventKind::ToolDone { result, .. } => vec![result.trust],
+                        EventKind::ToolImageObservedV1 { .. } => vec![Trust::Untrusted],
                         kind @ EventKind::MemoryReferenceAdmittedV1 { .. } => {
                             super::memory_activation::replay_reference_trust(&kind)
                                 .into_iter()
@@ -311,6 +314,7 @@ impl Agent {
                             .into_iter()
                             .filter_map(|block| match block {
                                 Block::ToolResult(result) => Some(result.trust),
+                                Block::ToolImage(image) => Some(image.trust()),
                                 _ => None,
                             })
                             .collect(),
@@ -581,6 +585,7 @@ impl Agent {
         let observed_trust = Trust::governing(events.iter().flat_map(|event| {
             match &event.kind {
                 EventKind::ToolDone { result, .. } => vec![result.trust],
+                EventKind::ToolImageObservedV1 { .. } => vec![Trust::Untrusted],
                 kind @ EventKind::MemoryReferenceAdmittedV1 { .. } => {
                     super::memory_activation::replay_reference_trust(kind)
                         .into_iter()
@@ -591,6 +596,7 @@ impl Agent {
                     .iter()
                     .filter_map(|block| match block {
                         Block::ToolResult(result) => Some(result.trust),
+                        Block::ToolImage(image) => Some(image.trust()),
                         _ => None,
                     })
                     .collect(),

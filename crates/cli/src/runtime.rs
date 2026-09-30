@@ -157,6 +157,8 @@ mod strategy_runtime;
 mod subagent_control;
 pub mod telemetry;
 mod terminal_diagnostics;
+mod tool_image_replay;
+mod tool_images;
 mod tool_interrupt;
 pub(crate) mod tool_output_spill;
 mod transcript;
@@ -218,7 +220,9 @@ use sha2::{Digest, Sha256};
 pub use side_conversation::{SideAnswer, SideConversation, SideStatus};
 use std::time::{Duration, Instant};
 use tool_interrupt::{ToolInterruption, await_tool_or_interrupt, interrupted_tool_result};
-use transcript::{merge_adjacent_user_message, project_messages_from_events, reconcile_transcript};
+#[cfg(test)]
+use transcript::project_messages_from_events;
+use transcript::{merge_adjacent_user_message, reconcile_transcript};
 pub(crate) use workflow_spawner::attach_workflow_telemetry;
 #[cfg(test)]
 pub(crate) use workflow_spawner::safe_agent_refusal;
@@ -2388,6 +2392,7 @@ impl Agent {
                 },
             );
 
+            self.admit_tool_image_context(messages, input_images)?;
             let req = TurnRequest {
                 model: self.model.clone(),
                 system: effective_system,
@@ -3864,6 +3869,7 @@ impl Agent {
             } = tool_turn.into_work();
             let mut results: Vec<Option<ToolResult>> = (0..total_tools).map(|_| None).collect();
             let mut any_error = false;
+            let mut image_projections = Vec::new();
             // Replayed recovery results bypass both concurrent and ordered executors.
             deferred.retain(|(index, _, _)| !replayed_tool_results.contains_key(index));
             for (index, result) in replayed_tool_results {
@@ -3884,6 +3890,7 @@ impl Agent {
                     },
                     &mut results,
                     &mut any_error,
+                    &mut image_projections,
                 )
                 .await?;
             if early_unknown_count > 0 {
@@ -3935,6 +3942,7 @@ impl Agent {
                         result_projection_budget,
                         &mut results,
                         &mut any_error,
+                        &mut image_projections,
                     )
                     .await;
                 if let Err(error) = execution {
@@ -4560,6 +4568,7 @@ impl Agent {
                     .tool_output_publication(&tu, ticket.intent_sequence())
                     .publish_execution(&tu, &execution)
                     .err();
+                let captured_images = std::mem::take(&mut execution.captured_images);
                 let mut managed = tool_output_spill::manage_execution(
                     spill_store.as_deref(),
                     execution.execution,
@@ -4586,27 +4595,40 @@ impl Agent {
                     | iteron_tools::ToolExecution::Unknown(result) => result,
                 };
                 result.tool_use_id = tu.id.clone();
-                let settlement = match &execution {
-                    iteron_tools::ToolExecution::Definite(result) => {
-                        effects::Settlement::Definite(EventKind::ToolDone {
-                            result: result.clone(),
-                            effect_id: Some(registry_effect_id.clone()),
-                            tool: Some(tu.name.clone()),
-                        })
+                let image_terminal_recorded = if let iteron_tools::ToolExecution::Definite(result) =
+                    &execution
+                {
+                    if !result.is_error && !captured_images.is_empty() {
+                        let events = self.tool_events(turn_id);
+                        let receipt = self
+                            .tool_execution_journal()
+                            .known_result_receipt(ticket, &tu.name, result, 0, &events)?;
+                        image_projections.push(tool_images::PendingToolImageProjection {
+                            receipt,
+                            images: captured_images,
+                        });
+                        true
+                    } else {
+                        self.settle_kernel_effect_with_cause(
+                            ticket,
+                            effects::Settlement::Definite(EventKind::ToolDone {
+                                result: result.clone(),
+                                effect_id: Some(registry_effect_id.clone()),
+                                tool: Some(tu.name.clone()),
+                            }),
+                            durability::UnknownCause::Unobserved,
+                        )?;
+                        false
                     }
-                    iteron_tools::ToolExecution::Unknown(_) => effects::Settlement::Unknown(
-                        "executor did not report an authoritative terminal; side-effect state is unknown and automatic retry is forbidden".into(),
-                    ),
-                };
-                // A tool may itself return Unknown after a crash or lost helper response. Only
-                // an actual interrupt from `await_tool_or_interrupt` is operator cancellation;
-                // unobserved native effects must keep the durable continuation gate closed.
-                let cause = if operator_interrupted {
-                    durability::UnknownCause::OperatorCancelled
                 } else {
-                    durability::UnknownCause::Unobserved
+                    let cause = if operator_interrupted {
+                        durability::UnknownCause::OperatorCancelled
+                    } else {
+                        durability::UnknownCause::Unobserved
+                    };
+                    self.settle_kernel_effect_with_cause(ticket,effects::Settlement::Unknown("executor did not report an authoritative terminal; side-effect state is unknown and automatic retry is forbidden".into()),cause)?;
+                    false
                 };
-                self.settle_kernel_effect_with_cause(ticket, settlement, cause)?;
                 if publication_error.is_some() {
                     self.ui(UiEvent::Notice(
                         artifact_publication::PUBLICATION_UNAVAILABLE.into(),
@@ -4614,26 +4636,28 @@ impl Agent {
                 }
                 let r = match execution {
                     iteron_tools::ToolExecution::Definite(result) => {
-                        self.observe_process_tool_terminal(
-                            turn_id,
-                            registry_effect_id.clone(),
-                            &tu_ui.name,
-                            &result,
-                            true,
-                        );
-                        self.tool_lifecycle_event(
-                            if result.is_error {
-                                "tool.call_failed"
-                            } else {
-                                "tool.call_completed"
-                            },
-                            turn_id,
-                            Some(registry_effect_id.clone()),
-                            LifecyclePayload {
-                                duration_us: Some(result.latency_ms.saturating_mul(1_000)),
-                                ..LifecyclePayload::default()
-                            },
-                        );
+                        if !image_terminal_recorded {
+                            self.observe_process_tool_terminal(
+                                turn_id,
+                                registry_effect_id.clone(),
+                                &tu_ui.name,
+                                &result,
+                                true,
+                            );
+                            self.tool_lifecycle_event(
+                                if result.is_error {
+                                    "tool.call_failed"
+                                } else {
+                                    "tool.call_completed"
+                                },
+                                turn_id,
+                                Some(registry_effect_id.clone()),
+                                LifecyclePayload {
+                                    duration_us: Some(result.latency_ms.saturating_mul(1_000)),
+                                    ..LifecyclePayload::default()
+                                },
+                            );
+                        }
                         result
                     }
                     iteron_tools::ToolExecution::Unknown(result) => {
@@ -4676,7 +4700,9 @@ impl Agent {
                         return Err(KernelError::UnknownEffects { count: 1 });
                     }
                 };
-                self.ledger.tool(r.latency_ms, 0, r.is_error); // effecting: no overlap
+                if !image_terminal_recorded {
+                    self.ledger.tool(r.latency_ms, 0, r.is_error);
+                } // effecting: no overlap
                 any_error |= r.is_error;
                 // Remember a failure so an identical repeat is short-circuited (ADR-003 dedup).
                 if r.is_error {
@@ -4828,6 +4854,21 @@ impl Agent {
                 .flatten()
                 .map(Block::ToolResult)
                 .collect();
+            for projection in image_projections {
+                let remaining = iteron_protocol::tool_image::MAX_TOOL_IMAGES_PER_MESSAGE
+                    .saturating_sub(
+                        blocks
+                            .iter()
+                            .filter(|block| matches!(block, Block::ToolImage(_)))
+                            .count(),
+                    );
+                let projected =
+                    self.project_captured_tool_images(&projection.receipt, &projection.images);
+                if projected.len() > remaining {
+                    self.ui(UiEvent::Notice("Tool images exceed the model message image envelope; excess retained images remain unavailable in this request".into()));
+                }
+                blocks.extend(projected.into_iter().take(remaining));
+            }
             let candidate_request = candidate_diff_state.and_then(|diff| {
                 investigation_convergence.observe_candidate_round(
                     diff,
@@ -5100,6 +5141,7 @@ impl Agent {
         result_projection_budget: context_runtime::TurnResultProjectionBudget,
         results: &mut [Option<ToolResult>],
         any_error: &mut bool,
+        image_projections: &mut Vec<tool_images::PendingToolImageProjection>,
     ) -> Result<(), KernelError> {
         // The same three pre-effect questions the ordered loop asks, asked once for the whole
         // group. If any is already true, nothing is opened and the loop below still owns every one
@@ -5158,7 +5200,7 @@ impl Agent {
                 events,
             },
         }
-        .execute(batch, results, any_error)
+        .execute(batch, results, any_error, image_projections)
         .await
     }
 

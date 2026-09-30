@@ -197,3 +197,81 @@ fn materialization_overflow_remains_visible_and_does_not_grow_the_source_owner()
     owner.clear();
     assert!(owner.segments().is_empty());
 }
+
+#[test]
+fn tool_pixels_are_untrusted_tool_sources_without_becoming_the_operator_prompt() {
+    use iteron_protocol::{
+        Block, ImageContent, ImageMediaType, Message, Role, RunId, Seq, TenantId, ToolResult,
+        tool_image::{ToolImageObservationV1, ToolImageScopeV1},
+    };
+    let image=ToolImageObservationV1{version:1,owner_tenant:TenantId::default(),owner_run:RunId("image-scope".into()),tool_use_id:"pixels".into(),terminal_seq:Seq(7),observed_unix_ms:42,source_url_display:"https://example.com/".into(),scope:ToolImageScopeV1::IsolatedBrowserViewport,artifact_id:"a38a4ff7320a3d8764ac959b264f15e335360d7c1e23a0627dee7f366c95c58f".into(),width:1,height:1,image:ImageContent::new(ImageMediaType::Png,"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII=").unwrap()};
+    image.validate().unwrap();
+    let messages = vec![
+        Message::user_text("actual operator task"),
+        Message {
+            role: Role::User,
+            content: vec![
+                Block::ToolResult(ToolResult {
+                    tool_use_id: "pixels".into(),
+                    content: "pixels retained".into(),
+                    is_error: false,
+                    trust: Trust::Untrusted,
+                    latency_ms: 1,
+                }),
+                Block::ToolImage(image.clone()),
+            ],
+        },
+    ];
+    let estimator = RequestEstimator::new();
+    let ledger = RequestContextEvidenceOwner::default()
+        .build_request(
+            TurnId(0),
+            RequestContextScope {
+                execution_window: None,
+                request_trust: Trust::Trusted,
+                estimator: &estimator,
+                file: None,
+                image: None,
+            },
+            ContextRequestObservation {
+                system: "system",
+                messages: &messages,
+                tools: &[],
+                images: &[],
+                estimate: iteron_ctx::estimate_request_context("system", &messages, &[]),
+                output_reserved_tokens: 100,
+                elapsed_us: 0,
+            },
+        )
+        .ledger;
+    assert_eq!(
+        ledger
+            .segments
+            .iter()
+            .filter(|segment| segment.source_class == ContextSourceClass::TaskPrompt)
+            .count(),
+        1
+    );
+    let sources = ledger
+        .segments
+        .iter()
+        .filter(|segment| segment.source_class == ContextSourceClass::TranscriptTool)
+        .collect::<Vec<_>>();
+    assert_eq!(sources.len(), 2);
+    assert!(
+        sources
+            .iter()
+            .all(|segment| segment.trust == Trust::Untrusted)
+    );
+    assert!(
+        !ledger
+            .segments
+            .iter()
+            .any(|segment| segment.source_class == ContextSourceClass::ImageAttachment)
+    );
+    assert!(
+        !serde_json::to_string(&ledger)
+            .unwrap()
+            .contains(image.image.data.as_str())
+    );
+}

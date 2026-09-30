@@ -399,17 +399,20 @@ fn msg_to_openai(
     input_images: &[iteron_protocol::ImageContent],
 ) -> Result<Vec<serde_json::Value>, ProviderError> {
     validate_chat_route_scope(route_scope)?;
+    crate::tool_image::validate_message(m)?;
     match m.role {
         Role::User => {
             // Split into any tool_result blocks (role:tool) + text (role:user).
             let mut out = Vec::new();
             let mut text = String::new();
+            let mut tool_images = Vec::new();
             for b in &m.content {
                 match b {
                     Block::Text { text: t } => text.push_str(t),
                     Block::ToolResult(r) => out.push(serde_json::json!({
                         "role":"tool","tool_call_id":r.tool_use_id,"content":r.content
                     })),
+                    Block::ToolImage(observation) => tool_images.push(observation),
                     _ => {}
                 }
             }
@@ -433,6 +436,11 @@ fn msg_to_openai(
                     serde_json::Value::Array(parts)
                 };
                 out.push(serde_json::json!({"role":"user","content":content}));
+            }
+            // Chat tool-role content is text. A labeled companion user image is a tool
+            // observation in our transcript, never a new operator submission or instruction.
+            for observation in tool_images {
+                out.push(serde_json::json!({"role":"user","content":[{"type":"text","text":observation.observation_label()},{"type":"image_url","image_url":{"url":crate::tool_image::data_url(observation)}}]}));
             }
             if out.is_empty() {
                 out.push(serde_json::json!({"role":"user","content":""}));
@@ -489,6 +497,10 @@ fn image_target(
         .rev()
         .find_map(|(index, message)| {
             (message.role == Role::User
+                && !message
+                    .content
+                    .iter()
+                    .any(|block| matches!(block, Block::ToolResult(_) | Block::ToolImage(_)))
                 && message
                     .content
                     .iter()
@@ -1377,6 +1389,35 @@ impl Provider for OpenAiCompat {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn actual_tool_pixels_are_a_labeled_companion_after_text_tool_result() {
+        let message = crate::tool_image::message_fixture();
+        let image = crate::tool_image::fixture();
+        let out = super::msg_to_openai(&message, crate::ErrorProfile::OpenAi, "image-fixture", &[])
+            .unwrap();
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0]["role"], "tool");
+        assert_eq!(out[0]["tool_call_id"], "vision-call");
+        assert_eq!(
+            out[1]["content"][1]["image_url"]["url"],
+            crate::tool_image::data_url(&image)
+        );
+        assert!(
+            out[1]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("UNTRUSTED TOOL IMAGE")
+        );
+        let mut forged = message;
+        let iteron_protocol::Block::ToolImage(observation) = &mut forged.content[1] else {
+            panic!()
+        };
+        observation.tool_use_id = "another-call".into();
+        assert!(
+            super::msg_to_openai(&forged, crate::ErrorProfile::OpenAi, "image-fixture", &[])
+                .is_err()
+        );
+    }
     use super::*;
     use iteron_protocol::{ImageContent, ImageMediaType, Message};
 

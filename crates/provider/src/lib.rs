@@ -28,6 +28,7 @@ pub mod request_capture;
 pub mod responses;
 pub mod sse;
 mod static_metadata;
+mod tool_image;
 mod usage;
 
 pub use anthropic::Anthropic;

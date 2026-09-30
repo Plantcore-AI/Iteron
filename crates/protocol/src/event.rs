@@ -899,6 +899,10 @@ pub enum EventKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tool: Option<String>,
     },
+    /// Private scoped pixels observed after the matching definite ToolDone was confirmed.
+    ToolImageObservedV1 {
+        observation: crate::tool_image::ToolImageObservationV1,
+    },
     /// Write-ahead admission for one effecting tool call. This event must be fsynced before the
     /// registry executor is entered. `(turn, id)` is the correlation key; arguments/workspace are
     /// a scrubbed audit projection, not an ambient capability handle.
@@ -1229,6 +1233,7 @@ impl EventKind {
     /// cannot recover from a new enum value or `null` timing nested inside a known V1 tag.
     pub fn validate_compatibility_tag(&self) -> Result<(), &'static str> {
         match self {
+            Self::ToolImageObservedV1 { observation } => observation.validate(),
             Self::Workflow {
                 version: WorkflowEventVersion::V1,
                 event,

@@ -20,10 +20,26 @@ pub(super) fn merge_adjacent_user_message(messages: &mut Vec<Message>, mut messa
 }
 
 /// Project model messages from canonical events, recovering durable tool terminals after a crash.
-pub(super) fn project_messages_from_events(events: Vec<Event>) -> Vec<Message> {
+pub(super) fn project_messages_from_events(mut events: Vec<Event>) -> Vec<Message> {
+    super::tool_image_replay::remove_unverified_images(&mut events);
+    project_verified_messages(events)
+}
+
+pub(super) fn project_messages_from_scoped_events(
+    events: Vec<iteron_record::ScopedEvent>,
+) -> Vec<Message> {
+    project_verified_messages(super::tool_image_replay::verified_image_events(events))
+}
+
+fn project_verified_messages(events: Vec<Event>) -> Vec<Message> {
     let mut messages = Vec::new();
     let mut pending_turn = None;
-    let mut terminal_results = std::collections::BTreeMap::<String, ToolResult>::new();
+    let mut terminal_results =
+        std::collections::BTreeMap::<String, (iteron_protocol::Seq, ToolResult)>::new();
+    let mut tool_images = std::collections::BTreeMap::<
+        String,
+        Vec<iteron_protocol::tool_image::ToolImageObservationV1>,
+    >::new();
     let mut duplicate_terminal_id = false;
 
     for event in events {
@@ -36,6 +52,7 @@ pub(super) fn project_messages_from_events(events: Vec<Event>) -> Vec<Message> {
                         .any(|block| matches!(block, Block::ToolUse(_)));
                 messages.push(message);
                 terminal_results.clear();
+                tool_images.clear();
                 duplicate_terminal_id = false;
                 pending_turn = has_tool_use.then_some(event.turn);
             }
@@ -46,6 +63,7 @@ pub(super) fn project_messages_from_events(events: Vec<Event>) -> Vec<Message> {
                 // first so separately durable steers cannot shift that coordinate system.
                 messages = iteron_ctx::replay_compaction(reconcile_transcript(messages), compacted);
                 terminal_results.clear();
+                tool_images.clear();
                 duplicate_terminal_id = false;
                 pending_turn = messages.last().and_then(|message| {
                     (matches!(message.role, Role::Assistant)
@@ -58,8 +76,22 @@ pub(super) fn project_messages_from_events(events: Vec<Event>) -> Vec<Message> {
             }
             EventKind::ToolDone { result, .. } if pending_turn == Some(event.turn) => {
                 duplicate_terminal_id |= terminal_results
-                    .insert(result.tool_use_id.clone(), result)
+                    .insert(result.tool_use_id.clone(), (event.seq, result))
                     .is_some();
+            }
+            EventKind::ToolImageObservedV1 { observation } if pending_turn == Some(event.turn) => {
+                let matches = terminal_results.get(&observation.tool_use_id).is_some_and(
+                    |(sequence, result)| *sequence == observation.terminal_seq && !result.is_error,
+                );
+                let images = tool_images
+                    .entry(observation.tool_use_id.clone())
+                    .or_default();
+                if matches
+                    && observation.validate().is_ok()
+                    && images.len() < iteron_protocol::tool_image::MAX_TOOL_IMAGES_PER_MESSAGE
+                {
+                    images.push(observation);
+                }
             }
             _ => {}
         }
@@ -79,11 +111,13 @@ pub(super) fn project_messages_from_events(events: Vec<Event>) -> Vec<Message> {
             })
             .collect();
         if !ordered_calls.is_empty() {
+            let mut images = Vec::new();
             let results = ordered_calls
                 .into_iter()
                 .map(|call| {
                     terminal_results
                         .remove(&call.id)
+                        .map(|(_,result)| {if !result.is_error {let remaining=iteron_protocol::tool_image::MAX_TOOL_IMAGES_PER_MESSAGE.saturating_sub(images.len());images.extend(tool_images.remove(&call.id).unwrap_or_default().into_iter().take(remaining).map(Block::ToolImage));}result})
                         .unwrap_or_else(|| ToolResult {
                             tool_use_id: call.id.clone(),
                             content: "the prior process ended before this tool produced a durable terminal; Iteron did not replay it".into(),
@@ -93,10 +127,12 @@ pub(super) fn project_messages_from_events(events: Vec<Event>) -> Vec<Message> {
                         })
                 })
                 .map(Block::ToolResult)
-                .collect();
+                .collect::<Vec<_>>();
+            let mut content = results;
+            content.extend(images);
             messages.push(Message {
                 role: Role::User,
-                content: results,
+                content,
             });
         }
     }

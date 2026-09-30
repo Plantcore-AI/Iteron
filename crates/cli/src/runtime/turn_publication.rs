@@ -139,9 +139,12 @@ fn eligible_answer_blocks(blocks: &[Block]) -> bool {
     blocks
         .iter()
         .any(|block| matches!(block, Block::Text { text } if !text.trim().is_empty()))
-        && !blocks
-            .iter()
-            .any(|block| matches!(block, Block::ToolUse(_) | Block::ToolResult(_)))
+        && !blocks.iter().any(|block| {
+            matches!(
+                block,
+                Block::ToolUse(_) | Block::ToolResult(_) | Block::ToolImage(_)
+            )
+        })
 }
 
 fn recorded_outcome(outcome: &str) -> Option<Outcome> {

@@ -51,6 +51,7 @@ impl DeferredToolBatch<'_> {
         batch: Vec<AutoApprovedCall>,
         results: &mut [Option<ToolResult>],
         any_error: &mut bool,
+        image_projections: &mut Vec<super::tool_images::PendingToolImageProjection>,
     ) -> Result<(), KernelError> {
         if batch.len() > effects::MAX_TOOL_CALLS_PER_TURN
             || batch.iter().any(|call| call.index >= results.len())
@@ -120,6 +121,7 @@ impl DeferredToolBatch<'_> {
                 projected_visible,
                 operator_interrupted,
                 publication_error,
+                captured_images,
             } = receipt;
             if let Some(visible) = projected_visible {
                 self.scope.events.projected(visible);
@@ -129,7 +131,22 @@ impl DeferredToolBatch<'_> {
                 ManagedToolExecution::Definite(managed) => (managed, true),
                 ManagedToolExecution::Unknown(managed) => (managed, false),
             };
-            let committed = if definite {
+            let committed = if definite && !managed.result.is_error && !captured_images.is_empty() {
+                self.journal
+                    .known_result_receipt(
+                        entry.ticket,
+                        &entry.call.name,
+                        &managed.result,
+                        0,
+                        &self.scope.events,
+                    )
+                    .map(|receipt| {
+                        image_projections.push(super::tool_images::PendingToolImageProjection {
+                            receipt,
+                            images: captured_images,
+                        })
+                    })
+            } else if definite {
                 self.journal.known_result(
                     entry.ticket,
                     &entry.call.name,

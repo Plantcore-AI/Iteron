@@ -234,15 +234,18 @@ fn transcript_to_input(
                 .enumerate()
                 .rev()
                 .find_map(|(message_index, message)| {
-                    (message.role == Role::User)
-                        .then(|| {
-                            message
-                                .content
-                                .iter()
-                                .rposition(|block| matches!(block, Block::Text { .. }))
-                        })
-                        .flatten()
-                        .map(|block_index| (message_index, block_index))
+                    (message.role == Role::User
+                        && !message.content.iter().any(|block| {
+                            matches!(block, Block::ToolResult(_) | Block::ToolImage(_))
+                        }))
+                    .then(|| {
+                        message
+                            .content
+                            .iter()
+                            .rposition(|block| matches!(block, Block::Text { .. }))
+                    })
+                    .flatten()
+                    .map(|block_index| (message_index, block_index))
                 })
                 .ok_or_else(|| {
                     ProviderError::Decode(
@@ -253,6 +256,7 @@ fn transcript_to_input(
     };
     let mut input = Vec::new();
     for (message_index, message) in messages.iter().enumerate() {
+        crate::tool_image::validate_message(message)?;
         if message.role == Role::Assistant
             && let Some(native_output) = matching_native_output(message, route_scope)?
         {
@@ -286,6 +290,10 @@ fn transcript_to_input(
                         "call_id": result.tool_use_id,
                         "output": result.content,
                     }));
+                }
+                Block::ToolImage(observation) => {
+                    flush_message_text(message.role, &mut text_parts, &mut input);
+                    input.push(serde_json::json!({"role":"user","content":[{"type":"input_text","text":observation.observation_label()},{"type":"input_image","image_url":crate::tool_image::data_url(observation)}]}));
                 }
             }
             if image_target == Some((message_index, block_index)) {
@@ -1766,6 +1774,26 @@ fn remaining_timeout(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn actual_tool_pixels_follow_function_output_without_new_operator_semantics() {
+        let message = crate::tool_image::message_fixture();
+        let image = crate::tool_image::fixture();
+        let out = super::transcript_to_input(&[message], "image-fixture", &[]).unwrap();
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0]["type"], "function_call_output");
+        assert_eq!(out[0]["call_id"], "vision-call");
+        assert_eq!(out[1]["content"][1]["type"], "input_image");
+        assert_eq!(
+            out[1]["content"][1]["image_url"],
+            crate::tool_image::data_url(&image)
+        );
+        assert!(
+            out[1]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("terminal_seq=7")
+        );
+    }
     use super::*;
     use iteron_protocol::{
         Capability, ImageContent, ImageMediaType, Purity, ToolResult, ToolSpec, Trust,

@@ -19,6 +19,7 @@ pub(super) struct DeferredToolReceipt {
     pub projected_visible: Option<usize>,
     pub operator_interrupted: bool,
     pub publication_error: Option<String>,
+    pub captured_images: Vec<iteron_tools::CapturedToolImage>,
 }
 
 pub(super) struct DeferredBatchExecutor<'a> {
@@ -103,6 +104,7 @@ impl<'a> DeferredBatchExecutor<'a> {
                     .publish_execution(&admitted_call, &execution)
                     .err()
                     .map(|error| strict_utf8_head(&error, 2_048));
+                let captured_images = std::mem::take(&mut execution.captured_images);
                 let mut managed = tool_output_spill::manage_execution(
                     spill_store.as_deref(),
                     execution.execution,
@@ -120,6 +122,7 @@ impl<'a> DeferredBatchExecutor<'a> {
                     projected_visible,
                     operator_interrupted,
                     publication_error,
+                    captured_images,
                 }
             }
         }))

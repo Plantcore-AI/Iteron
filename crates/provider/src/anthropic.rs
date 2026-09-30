@@ -334,6 +334,7 @@ fn msg_to_json(
     cache_breakpoint: bool,
     input_images: &[iteron_protocol::ImageContent],
 ) -> Result<serde_json::Value, ProviderError> {
+    crate::tool_image::validate_message(m)?;
     let role = match m.role {
         Role::User => "user",
         Role::Assistant => "assistant",
@@ -371,9 +372,10 @@ fn msg_to_json(
             Block::ToolResult(r) => Some(serde_json::json!({
                 "type":"tool_result",
                 "tool_use_id": r.tool_use_id,
-                "content": r.content,
+                "content": crate::tool_image::anthropic_result_content(m,r),
                 "is_error": r.is_error,
             })),
+            Block::ToolImage(_)=>None,
         }))
         .collect();
     mark_cache_breakpoint(&mut content, cache_breakpoint);
@@ -393,6 +395,10 @@ fn image_target(
         .rev()
         .find_map(|(index, message)| {
             (message.role == Role::User
+                && !message
+                    .content
+                    .iter()
+                    .any(|block| matches!(block, Block::ToolResult(_) | Block::ToolImage(_)))
                 && message
                     .content
                     .iter()
@@ -1022,6 +1028,27 @@ impl Provider for Anthropic {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn actual_tool_pixels_are_nested_in_the_matching_tool_result() {
+        let message = crate::tool_image::message_fixture();
+        let image = crate::tool_image::fixture();
+        let out = super::msg_to_json(&message, "image-fixture", false, &[]).unwrap();
+        assert_eq!(out["content"].as_array().unwrap().len(), 1);
+        let result = &out["content"][0];
+        assert_eq!(result["type"], "tool_result");
+        assert_eq!(result["tool_use_id"], "vision-call");
+        assert_eq!(result["content"][2]["type"], "image");
+        assert_eq!(
+            result["content"][2]["source"]["data"],
+            image.image.data.as_str()
+        );
+        assert!(
+            result["content"][1]["text"]
+                .as_str()
+                .unwrap()
+                .contains("UNTRUSTED TOOL IMAGE")
+        );
+    }
     use super::*;
     use iteron_protocol::{ImageContent, ImageMediaType};
 

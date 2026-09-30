@@ -151,6 +151,12 @@ pub(crate) fn assemble(
         })
         .collect();
     let mut registry = Registry::coding_agent_with_lsp_routes(&repo, lsp_routes)?;
+    install_browser(
+        &mut registry,
+        cli.browser_webdriver.as_deref(),
+        &cli.browser_origin,
+        plantcore_serve,
+    )?;
     let completion_notifications = config::resolve_completion_notifications(
         user_file.completion_notifications,
         file.completion_notifications,
@@ -225,6 +231,30 @@ pub(crate) fn assemble(
         mcp_runtime,
         config_warnings,
     })
+}
+
+fn install_browser(
+    registry: &mut Registry,
+    endpoint: Option<&str>,
+    origins: &[String],
+    plantcore_serve: bool,
+) -> anyhow::Result<()> {
+    match (endpoint, origins.is_empty()) {
+        (None, true) => Ok(()),
+        (Some(endpoint), false) if !plantcore_serve => {
+            let configuration =
+                iteron_tools::browser::BrowserConfig::new(endpoint, origins.to_vec())
+                    .map_err(anyhow::Error::msg)?;
+            iteron_tools::browser::register(registry, configuration)?;
+            Ok(())
+        }
+        (Some(_), _) if plantcore_serve => {
+            anyhow::bail!("PlantCore recording mode does not admit browser/computer execution")
+        }
+        _ => anyhow::bail!(
+            "browser requires an explicit local driver and at least one exact operator origin"
+        ),
+    }
 }
 
 pub(crate) fn load_project_config(

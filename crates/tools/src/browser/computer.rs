@@ -1,6 +1,9 @@
 //! A separate typed computer surface restricted to this owner's isolated browser viewport.
 //! This provides no desktop, shell, clipboard, arbitrary key sequence or ambient session access.
-use super::{BrowserOwner, types::BrowserCommand};
+use super::{
+    BrowserOwner,
+    types::{BrowserCommand, input_shape},
+};
 use crate::{CapturedToolExecution, Registry, ToolError, capturedfut};
 use iteron_protocol::{Capability, Purity, ToolSpec, ToolUse};
 use serde::Deserialize;
@@ -59,11 +62,15 @@ struct ComputerOwner {
     viewport: Arc<BrowserOwner>,
 }
 impl ComputerOwner {
-    async fn execute(&self, call: ToolUse) -> CapturedToolExecution {
-        let command = match serde_json::from_value::<ComputerCommand>(call.input.clone()) {
-            Ok(command) => command.into_browser(),
-            Err(_) => return super::failure(&call.id, "computer_input_refused", false),
-        };
+    async fn execute(&self, mut call: ToolUse) -> CapturedToolExecution {
+        if input_shape(&call.input, true).is_err() {
+            return super::failure(&call.id, "computer_input_refused", false);
+        }
+        let command =
+            match serde_json::from_value::<ComputerCommand>(std::mem::take(&mut call.input)) {
+                Ok(command) => command.into_browser(),
+                Err(_) => return super::failure(&call.id, "computer_input_refused", false),
+            };
         if command.validate().is_err() {
             return super::failure(&call.id, "computer_input_refused", false);
         }

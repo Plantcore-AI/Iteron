@@ -45,3 +45,38 @@ they are not native browser proof. The explicitly ignored native gate requires a
 and an actual form POST. All execution and platform evidence is deferred to the final candidate.
 
 Command endpoints and screenshot semantics follow [W3C WebDriver](https://www.w3.org/TR/webdriver2/).
+
+## Explicit operator bootstrap
+
+Supply `--browser-webdriver http://127.0.0.1:9515/` together with one or more
+`--browser-origin https://example.com`. The driver must already be running. These
+flags install both optional surfaces; installing them starts no driver session or
+page connection. Each physical action still requires the admitted capability
+ceiling and its external operation permission. Project configuration cannot install
+the driver or origins. PlantCore recording mode refuses these surfaces.
+
+## Model pixels and private recovery
+
+A confirmed screenshot can enter the transcript as `ToolImage`, explicitly an
+untrusted tool observation. It names the actual successful `ToolDone`, physical
+tenant/run, image hash, dimensions and observation time. Raw PNG bytes are retained
+in the private artifact store; transcript image bytes are externalized into scoped
+private CAS before JSONL storage. Images from an unknown tool terminal are omitted.
+Fork recovery preserves physical origin and refuses ambiguous image attribution.
+
+Model projection admits at most four images per tool-result message and 8 MiB of
+base64 per image. A larger retained PNG remains downloadable, with its model
+projection reported unavailable. The complete request also passes the immutable
+image decoder, aggregate byte and multimodal token envelope. Pixel contents are
+untrusted and are not redacted as text.
+
+OpenAI Chat uses an explicitly labeled companion user image following the actual
+tool messages; Responses uses a labeled `input_image`. These native wire roles do
+not constitute a new operator submission. See the official
+[OpenAI image-input formats](https://developers.openai.com/api/docs/guides/images-vision).
+Anthropic nests the pixels inside the matching `tool_result`, following its
+[tool-result image format](https://platform.claude.com/docs/en/agents-and-tools/tool-use/handle-tool-calls).
+
+Native browser/process gates and final integration tests remain required. The
+computer surface controls an isolated browser viewport. OS desktop control is not
+implemented.

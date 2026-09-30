@@ -387,3 +387,34 @@ async fn screenshot_navigation_race_discards_pixels_and_origin_refusal_has_no_dr
     assert!(raced.captured_images.is_empty());
     assert!(raced.captured_outputs.is_empty());
 }
+
+#[tokio::test]
+async fn oversized_and_nested_inputs_are_refused_before_driver_or_proxy_io() {
+    let root = Root::new();
+    let driver = DriverFixture::new().await;
+    let mut registry = Registry::read_only(&root.0).unwrap();
+    register(
+        &mut registry,
+        BrowserConfig::new(&driver.endpoint, vec!["https://example.com".into()]).unwrap(),
+    )
+    .unwrap();
+    for call in [
+        call("browser", json!({"action":"open","url":"x".repeat(2049)})),
+        call(
+            "browser",
+            json!({"action":"open","url":{"nested":["unbounded-value"]}}),
+        ),
+        call(
+            "computer",
+            json!({"action":"key","page_ref":"x","key":"x".repeat(33)}),
+        ),
+        call(
+            "computer",
+            json!({"action":"pointer","page_ref":"x","x":4097,"y":0}),
+        ),
+    ] {
+        let captured = registry.run_effect_captured(call).await;
+        assert!(matches!(captured.execution,ToolExecution::Definite(result) if result.is_error));
+    }
+    assert!(driver.state.lock().await.requests.is_empty());
+}

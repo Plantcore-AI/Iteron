@@ -948,6 +948,13 @@ fn block_retained_bytes(block: &Block) -> usize {
             .tool_use_id
             .len()
             .saturating_add(result.content.len()),
+        Block::ToolImage(image) => image
+            .image
+            .data
+            .encoded_len()
+            .saturating_add(image.tool_use_id.len())
+            .saturating_add(image.source_url_display.len())
+            .saturating_add(256),
     };
     inline
         .saturating_mul(2)

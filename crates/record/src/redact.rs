@@ -19,6 +19,9 @@ use iteron_protocol::{
 /// `Rollout::append`, so every recorded event is scrubbed regardless of who emitted it.
 pub fn redact_event(event: &Event) -> Event {
     let kind = match &event.kind {
+        EventKind::ToolImageObservedV1 { observation } => EventKind::ToolImageObservedV1 {
+            observation: redact_tool_image(observation),
+        },
         EventKind::ToolDone {
             result,
             effect_id,
@@ -596,6 +599,7 @@ fn redact_message(m: &iteron_protocol::Message) -> iteron_protocol::Message {
                 r.content = scrub(&r.content);
                 Block::ToolResult(r)
             }
+            Block::ToolImage(observation) => Block::ToolImage(redact_tool_image(observation)),
             // Model/user free text, extended-thinking reasoning, and tool-call ARGUMENTS can each
             // carry a secret (code review + fix-verification: all fell through unscrubbed). Scrub
             // the text/thinking and every string in the tool input.
@@ -619,6 +623,17 @@ fn redact_message(m: &iteron_protocol::Message) -> iteron_protocol::Message {
         role: m.role,
         content,
     }
+}
+
+fn redact_tool_image(
+    image: &iteron_protocol::tool_image::ToolImageObservationV1,
+) -> iteron_protocol::tool_image::ToolImageObservationV1 {
+    let mut image = image.clone();
+    image.tool_use_id = scrub_correlation_identifier(&image.tool_use_id);
+    image.source_url_display = scrub(&image.source_url_display);
+    // Pixels are deliberately opaque and private. Text scrubbing would corrupt their bytes;
+    // structural SHA is validated against those actual pixels. No pixel redaction is asserted.
+    image
 }
 
 /// Mask known-secret shapes in `s`, returning the redacted string (unchanged if none found).
