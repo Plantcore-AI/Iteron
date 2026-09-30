@@ -1,6 +1,7 @@
 //! Content-free `/status` projection over the exact session-owned authorities.
 
-use super::*;
+use crate::runtime::Agent;
+use std::sync::Arc;
 
 const LSP_STATUS_DEADLINE: std::time::Duration = std::time::Duration::from_millis(100);
 

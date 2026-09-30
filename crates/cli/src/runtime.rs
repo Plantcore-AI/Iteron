@@ -24,6 +24,8 @@ mod effect_descriptor;
 mod effect_journal_owner;
 mod extension_control;
 mod tool_execution_journal;
+#[cfg(test)]
+mod browser_runtime_tests;
 
 mod kernel_effect_bridge;
 mod provider_stream_attempt;
