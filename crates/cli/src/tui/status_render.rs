@@ -316,8 +316,8 @@ pub(super) fn render_status(f: &mut Frame, area: Rect, density: surface::Density
             Span::styled("◆ ", warn),
             Span::styled("interrupt requested · stopping now", warn),
         ]
-    } else if !app.follow_tail {
-        let unread = if app.unread_updates == 0 {
+    } else if !app.viewport.follows_tail() {
+        let unread = if !app.viewport.has_unread() {
             String::new()
         } else {
             " · new output".to_string()

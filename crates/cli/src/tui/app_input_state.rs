@@ -5,13 +5,7 @@ use super::{
 
 impl App {
     pub(super) fn autoscroll(&mut self) {
-        if self.follow_tail {
-            self.bottom_offset = 0;
-        } else {
-            // Transport deltas are not user-meaningful item counts. This is an honest boolean
-            // signal that visible output changed while the operator was reading history.
-            self.unread_updates = 1;
-        }
+        self.viewport.observe_output();
         // Bounded: evict the oldest settled blocks past the cap. A nonterminal workflow is a live
         // projection of durable state, so pin its one card until RunFinished arrives; otherwise a
         // long foreground transcript can silently discard the only place the terminal update can
@@ -53,9 +47,7 @@ impl App {
     }
 
     pub(super) fn follow_latest(&mut self) {
-        self.follow_tail = true;
-        self.bottom_offset = 0;
-        self.unread_updates = 0;
+        self.viewport.follow_latest();
     }
 
     pub(super) fn set_theme(&mut self, theme: theme::Theme) {
@@ -97,15 +89,10 @@ impl App {
     }
 
     pub(super) fn scroll_up(&mut self, rows: u16) {
-        self.follow_tail = false;
-        self.bottom_offset = self.bottom_offset.saturating_add(rows);
+        self.viewport.scroll_up(rows);
     }
-
     pub(super) fn scroll_down(&mut self, rows: u16) {
-        self.bottom_offset = self.bottom_offset.saturating_sub(rows);
-        if self.bottom_offset == 0 {
-            self.follow_latest();
-        }
+        self.viewport.scroll_down(rows);
     }
 
     pub(super) fn queue_after_turn(&mut self, text: String) -> Result<(), String> {

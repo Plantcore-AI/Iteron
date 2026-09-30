@@ -65,6 +65,7 @@ mod completion_owner;
 mod composer_images;
 mod context_chips;
 mod control_submission;
+mod conversation_viewport;
 mod driver_support;
 mod event_actions;
 mod event_projection;
@@ -708,14 +709,7 @@ struct App {
     force_cancelling: bool,
     cancel_requested_at: Option<Instant>,
     draining: bool,
-    /// Rows scrolled UP from the bottom (0 = pinned to the newest line).
-    bottom_offset: u16,
-    /// Whether new output follows the tail. Scrolling up disables follow until Ctrl-End or the
-    /// viewport returns to the bottom, so streaming never steals the reader's position.
-    follow_tail: bool,
-    unread_updates: u32,
-    last_total_rows: u16,
-    last_view_h: u16,
+    viewport: conversation_viewport::ConversationViewport,
     /// True once the user asks to quit; a forced double-Ctrl-C may set it during an active run.
     quit: bool,
     /// A bounded double-Ctrl-C exits the client even while the runtime owns active work. Teardown

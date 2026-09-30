@@ -463,30 +463,7 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
     }
     let total = u16::try_from(total_rows).unwrap_or(u16::MAX); // saturating (review LOW: >65535 rows)
     let view_h = surface.transcript.height;
-    let max_scroll = total.saturating_sub(view_h);
-    if !app.follow_tail && app.last_view_h > 0 {
-        // Preserve the same absolute rendered-row index when append or layout changes the scrollable
-        // extent. This is exact for append-only updates and shelf height changes; resize/fold can
-        // reflow content at that row, so a future block-id/logical-row anchor is still required.
-        // `bottom_offset` may already include a user PageUp/Down delta made since the previous frame.
-        let previous_extent = app.last_total_rows.saturating_sub(app.last_view_h);
-        if max_scroll >= previous_extent {
-            app.bottom_offset = app
-                .bottom_offset
-                .saturating_add(max_scroll - previous_extent);
-        } else {
-            app.bottom_offset = app
-                .bottom_offset
-                .saturating_sub(previous_extent - max_scroll);
-        }
-    }
-    app.last_total_rows = total;
-    app.last_view_h = view_h;
-    app.bottom_offset = app.bottom_offset.min(max_scroll); // clamp: can't scroll above the top
-    if app.bottom_offset == 0 && !app.follow_tail {
-        app.follow_latest();
-    }
-    let scroll = max_scroll - app.bottom_offset;
+    let scroll = app.viewport.observe_layout(total, view_h);
     // Pass three: materialise the window only. `hyperlink_regions` keeps ABSOLUTE transcript rows —
     // that is the coordinate `apply_to_buffer` subtracts the scroll from — while `row_map` is now
     // viewport-relative, because the hit-test already knows which row the viewport starts at.

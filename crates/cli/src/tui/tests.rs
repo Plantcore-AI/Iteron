@@ -3348,16 +3348,16 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             "the first PageUp delta remains exact when the reading shelf appears"
         );
         let prior_scroll = app.view_scroll;
-        let prior_offset = app.bottom_offset;
+        let prior_offset = app.viewport.offset();
         app.note(block::NoticeLevel::Info, "new output while reading");
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-        assert!(!app.follow_tail);
+        assert!(!app.viewport.follows_tail());
         assert_eq!(
             app.view_scroll, prior_scroll,
             "logical viewport stays anchored"
         );
-        assert!(app.bottom_offset > prior_offset);
-        assert_eq!(app.unread_updates, 1);
+        assert!(app.viewport.offset() > prior_offset);
+        assert_eq!(u32::from(app.viewport.has_unread()), 1);
         assert!(buffer_text(&terminal).contains("new output"));
     }
 
@@ -3474,7 +3474,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         tall.draw(|frame| draw(frame, &mut app)).unwrap();
         assert_eq!(app.view_scroll, 0, "the reference frame shows every row");
         let reference = transcript_rows(&tall, app.view_top, app.view_h);
-        let total = usize::from(app.last_total_rows);
+        let total = usize::from(app.viewport.total_rows());
         assert!(total > 0 && total <= reference.len());
 
         let mut short = Terminal::new(TestBackend::new(60, 14)).unwrap();
@@ -3485,7 +3485,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             "the transcript has to overflow to be a test"
         );
         assert_eq!(
-            usize::from(app.last_total_rows),
+            usize::from(app.viewport.total_rows()),
             total,
             "windowing changes what is built, never how tall the transcript is"
         );
@@ -3542,7 +3542,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             );
         }
         short.draw(|frame| draw(frame, &mut app)).unwrap();
-        assert!(usize::from(app.last_total_rows) > total * 5);
+        assert!(usize::from(app.viewport.total_rows()) > total * 5);
         assert_eq!(app.row_map.len(), view_h);
     }
 
@@ -3562,7 +3562,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         assert!(
-            app.last_total_rows > app.view_h,
+            app.viewport.total_rows() > app.view_h,
             "the scrollbar must be visible"
         );
 
@@ -4377,7 +4377,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             app.push(fg(Color::White), format!("row {i} {}", "x".repeat(80)));
         }
         app.push(fg(Color::White), "NEWESTMARKER");
-        app.bottom_offset = 0; // pinned to bottom
+        app.viewport.fixture_offset(0); // pinned to bottom
         term.draw(|f| draw(f, &mut app)).unwrap();
         let content: String = term
             .backend()
@@ -5163,7 +5163,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
         let before = render_text(&mut app, 100, 30);
         assert!(before.contains("conversation marker"), "{before}");
-        let conversation_rows = app.last_total_rows;
+        let conversation_rows = app.viewport.total_rows();
         let conversation_height = app.view_h;
 
         let run_id = "wf_region_1";
@@ -5201,7 +5201,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             "the conversation is still readable behind it: {live}"
         );
         assert_eq!(
-            app.last_total_rows, conversation_rows,
+            app.viewport.total_rows(),
+            conversation_rows,
             "the transcript renders nothing for a live run — not the tree, not a gap in front of it"
         );
         let region_height = conversation_height - app.view_h;
@@ -5228,7 +5229,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             "the rows it borrowed go back to the conversation"
         );
         assert!(
-            app.last_total_rows > conversation_rows,
+            app.viewport.total_rows() > conversation_rows,
             "which now renders the run's permanent record"
         );
         assert!(
@@ -5425,7 +5426,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         // The landing already has a conversation (the welcome block), so the run is measured as a
         // DELTA against it rather than against an empty transcript.
         let _ = render_text(&mut app, 60, 30);
-        let conversation_rows = app.last_total_rows;
+        let conversation_rows = app.viewport.total_rows();
 
         let run_id = "wf_region_tiny";
         app.workflow_run_started(run_id, "tiny frame audit", &["Explore".to_string()]);
@@ -5441,14 +5442,15 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         // give away, so the region is granted zero — and the tree renders through the transcript.
         let tiny = render_text(&mut app, 60, 4);
         assert!(
-            app.last_total_rows > conversation_rows,
+            app.viewport.total_rows() > conversation_rows,
             "the transcript drew the run rather than dropping it: {tiny}"
         );
 
         // The same run on a frame with room is drawn by the region and by nothing else.
         let roomy = render_text(&mut app, 60, 30);
         assert_eq!(
-            app.last_total_rows, conversation_rows,
+            app.viewport.total_rows(),
+            conversation_rows,
             "the conversation renders nothing for it: {roomy}"
         );
         assert!(roomy.contains("tiny frame audit"), "{roomy}");
