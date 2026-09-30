@@ -283,8 +283,8 @@ fn duplicate_enrollment_key_is_not_a_second_human_and_verifier_admissions_are_fi
             &mut admissions,
             iteron_kernel::effects::BrokeredEffect {
                 turn: iteron_protocol::TurnId(1),
-                effect_id: iteron_protocol::EffectId(format!("vf-1-{ordinal}")),
-                tool_use_id: format!("verify-correlation-{ordinal}"),
+                effect_id: iteron_kernel::effect_class::effect_id(iteron_protocol::TurnId(1), iteron_kernel::effect_class::EffectClass::Verify, ordinal),
+                tool_use_id: iteron_kernel::effect_class::harness_correlation_id(iteron_protocol::TurnId(1), iteron_kernel::effect_class::EffectClass::Verify, ordinal),
                 kind: "verify".into(),
                 capability: Capability::CodeExecuting,
                 audit_arguments: serde_json::json!({"command_sha256":"a".repeat(64),"high_assurance_policy_sha256":owner.policy().digest(),"high_assurance_scope_sha256":owner.profile_evidence().scope_sha256}),
@@ -403,4 +403,46 @@ fn actual_configured_roster_scrubs_only_labels_and_wrong_workspace_cannot_author
         iteron_record::replay(journal.rollout.path()).unwrap().len(),
         1
     );
+}
+
+#[test]
+fn actual_verifier_markers_survive_redaction_without_exempting_commands_or_foreign_tools() {
+    use iteron_kernel::effect_class::{EffectClass, effect_id, harness_correlation_id};
+    let directory = directory();
+    let run = RunId("extra-verify-markers".into());
+    let mut rollout = Rollout::open(&directory, &run, TenantId::default()).unwrap();
+    let turn = iteron_protocol::TurnId(9);
+    let id = effect_id(turn, EffectClass::Verify, 2);
+    let correlation = harness_correlation_id(turn, EffectClass::Verify, 2);
+    let canary = format!("sk-{}", "a".repeat(40));
+    let arguments = serde_json::json!({"command":canary,
+        "high_assurance_policy_sha256":"b".repeat(64),
+        "high_assurance_scope_sha256":"c".repeat(64)});
+    let event = iteron_protocol::Event {
+        seq: iteron_protocol::Seq::ZERO,
+        turn,
+        kind: EventKind::EffectIntent {
+            id,
+            tool_use_id: correlation,
+            tool: "verify".into(),
+            capability: Capability::CodeExecuting,
+            arguments,
+            workspace: "fixture".into(),
+            provider_route_attempt: None,
+        },
+    };
+    rollout.append(&event).unwrap();
+    let rows = iteron_record::replay(rollout.path()).unwrap();
+    let EventKind::EffectIntent { arguments, .. } = &rows[0].kind else {
+        panic!("actual verifier intent")
+    };
+    assert_eq!(arguments["high_assurance_policy_sha256"], "b".repeat(64));
+    assert_eq!(arguments["high_assurance_scope_sha256"], "c".repeat(64));
+    assert!(!arguments["command"].as_str().unwrap().contains(&canary));
+    let mut foreign = event;
+    if let EventKind::EffectIntent { tool, .. } = &mut foreign.kind {
+        *tool = "bash".into();
+    }
+    assert!(rollout.append(&foreign).is_err());
+    assert_eq!(iteron_record::replay(rollout.path()).unwrap().len(), 1);
 }
