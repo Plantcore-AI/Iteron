@@ -108,6 +108,8 @@ impl PublicRecordFailure {
 
 #[derive(Debug, thiserror::Error)]
 pub enum KernelError {
+    #[error("ordinary extension refused: {0}")]
+    OrdinaryExtension(&'static str),
     #[error("persistent agent control failed")]
     AgentControl(#[source] iteron_agents::ControllerError),
     #[error("provider: {0}")]
@@ -339,6 +341,7 @@ impl KernelError {
             Self::TunablesNotResolved => {
                 "runtime tunables were not resolved before execution began".into()
             }
+            Self::OrdinaryExtension(reason) => format!("ordinary extension refused: {reason}"),
             Self::ToolingPolicy(_) => {
                 "resolved process/LSP policy could not be installed before execution".into()
             }

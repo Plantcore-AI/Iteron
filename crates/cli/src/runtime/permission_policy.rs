@@ -39,7 +39,12 @@ pub(super) fn evaluate_operation(
     effects: &OperationEffects,
     policy: OperationPolicy<'_>,
 ) -> OperationAdmission {
-    let admitted = policy.task_ceiling.intersect(policy.policy_capabilities);
+    let task_ceiling = effects
+        .extension_ceiling
+        .map_or(policy.task_ceiling, |extension| {
+            policy.task_ceiling.intersect(extension)
+        });
+    let admitted = task_ceiling.intersect(policy.policy_capabilities);
     let ceiling_blocks = !effects.required.is_subset_of(admitted);
     let taint_blocks = effects.required.iter().any(|cap| cap.is_egress())
         && policy.governing_trust != Trust::Trusted
@@ -55,32 +60,44 @@ pub(super) fn evaluate_operation(
         taint_blocks,
     };
     for capability in effects.required.iter() {
-        // A blanket interpreter/file-writer grant does not authorize extra trust/external
-        // effects. Their exact named class remains separately configurable and deniable.
-        let interpreter = matches!(
-            tool,
-            "bash" | "process_start" | "process_write" | "browser" | "computer"
-        );
-        let operation_name = if interpreter && capability == Capability::IrreversibleExternal {
-            format!("{tool}:external")
-        } else if capability == Capability::TrustMutating
-            && (interpreter || effects.required.contains(Capability::ReversibleLocal))
+        // Evaluate the actual native name and the logical extension name independently. Neither
+        // an alias grant nor bypass can erase a base primitive/class deny.
+        let canonical = effects.canonical_tool.as_deref().unwrap_or(tool);
+        let mut gate_verdict = Verdict::Auto;
+        for name in [Some(tool), (canonical != tool).then_some(canonical)]
+            .into_iter()
+            .flatten()
         {
-            format!("{tool}:trust_mutating")
-        } else {
-            tool.to_owned()
-        };
-        let gate_verdict = if policy.rules.tool_rule(tool) == Some(Verdict::Deny) {
-            Verdict::Deny
-        } else if policy.bypass && policy.mode != PermissionMode::Plan {
-            bypass_verdict(policy.rules, &operation_name, capability)
-        } else {
-            iteron_protocol::gate(policy.mode, policy.rules, &operation_name, capability)
-        };
+            let interpreter = matches!(
+                canonical,
+                "bash" | "process_start" | "process_write" | "browser" | "computer"
+            );
+            let operation_name = if interpreter && capability == Capability::IrreversibleExternal {
+                format!("{name}:external")
+            } else if capability == Capability::TrustMutating
+                && (interpreter || effects.required.contains(Capability::ReversibleLocal))
+            {
+                format!("{name}:trust_mutating")
+            } else {
+                name.to_owned()
+            };
+            let verdict = if policy.rules.tool_rule(name) == Some(Verdict::Deny) {
+                Verdict::Deny
+            } else if policy.bypass && policy.mode != PermissionMode::Plan {
+                bypass_verdict(policy.rules, &operation_name, capability)
+            } else {
+                iteron_protocol::gate(policy.mode, policy.rules, &operation_name, capability)
+            };
+            match verdict {
+                Verdict::Deny => gate_verdict = Verdict::Deny,
+                Verdict::Ask if gate_verdict == Verdict::Auto => gate_verdict = Verdict::Ask,
+                _ => {}
+            }
+        }
         let verdict = constrain_under_authority(
             gate_verdict,
             capability,
-            policy.task_ceiling,
+            task_ceiling,
             policy.policy_capabilities,
             Some(policy.governing_trust),
             policy.authority,

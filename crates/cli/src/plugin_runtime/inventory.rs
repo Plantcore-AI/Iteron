@@ -29,6 +29,11 @@ pub(super) struct PluginInventory {
 }
 
 impl PluginInventory {
+    pub(super) fn identity(&self, plugin: &str) -> Option<&RuntimePluginIdentity> {
+        self.entries
+            .iter()
+            .find(|identity| identity.plugin_id == plugin)
+    }
     pub(super) fn register(&mut self, plugin: &ActivePlugin) -> Result<(), &'static str> {
         if self
             .entries

@@ -79,6 +79,10 @@ pub(super) fn surface(surface: iteron_marketplace::Surface) -> ExtensionSurfaceV
         iteron_marketplace::Surface::McpServer => ExtensionSurfaceV1::McpServer,
         iteron_marketplace::Surface::LanguageServer => ExtensionSurfaceV1::LanguageServer,
         iteron_marketplace::Surface::Implementation => ExtensionSurfaceV1::Implementation,
+        iteron_marketplace::Surface::Tool => ExtensionSurfaceV1::Tool,
+        iteron_marketplace::Surface::Provider => ExtensionSurfaceV1::Provider,
+        iteron_marketplace::Surface::Ui => ExtensionSurfaceV1::Ui,
+        iteron_marketplace::Surface::EventSubscription => ExtensionSurfaceV1::EventSubscription,
     }
 }
 #[cfg(test)]

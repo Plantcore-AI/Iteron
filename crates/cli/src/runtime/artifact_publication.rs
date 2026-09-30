@@ -185,7 +185,7 @@ impl ToolOutputPublicationPort for CapturedOutputPublisher {
             if known
                 && !result.is_error
                 && receipt.tool_use_id() == call.id
-                && receipt.tool_name() == call.name
+                && receipt.logical_tool_name() == call.name
             {
                 unavailable |= self.publish_native(source, receipt).is_err();
             } else {

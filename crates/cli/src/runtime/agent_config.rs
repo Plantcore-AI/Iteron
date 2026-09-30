@@ -138,6 +138,7 @@ impl Agent {
             persistent_mailbox: None,
             client_inventory: None,
             plugin_management: None,
+            ordinary_extensions: None,
             last_assistant_source: None,
             turn_publications,
             provider,

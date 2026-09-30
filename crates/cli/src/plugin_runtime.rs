@@ -23,6 +23,7 @@ pub(crate) use management::PluginManagementOwner;
 #[cfg(all(test, unix))]
 pub(crate) use management_tests::installed_fixture;
 mod inventory;
+pub(crate) mod ordinary;
 pub(crate) use inventory::RuntimePluginIdentity;
 
 /// Capability token for minting [`crate::config::McpServerOrigin`] plugin provenance. Its fields
@@ -88,6 +89,7 @@ pub(crate) struct RuntimePlugins {
     pub lsp_routes: Vec<LspRoute>,
     pub diagnostics: Vec<String>,
     pub implementation: Option<VerifiedImplementationActivation>,
+    ordinary: Vec<ordinary::OrdinaryBinding>,
 }
 
 impl RuntimePlugins {
@@ -199,6 +201,7 @@ impl RuntimePlugins {
                 contest.shadowed.join(", ")
             ));
         }
+        runtime.materialize_ordinary(&composition.wiring);
         runtime.materialize_non_implementations(&composition.wiring, &roots);
         runtime.implementation =
             implementation::materialize(&composition.wiring, &roots, host_ceiling, candidate)?;
@@ -332,7 +335,11 @@ impl RuntimePlugins {
                 Surface::Agent => self.agent(slot, binding, plugin),
                 Surface::McpServer => self.mcp(slot, binding, plugin),
                 Surface::LanguageServer => self.lsp(slot, binding),
-                Surface::Implementation => {}
+                Surface::Implementation
+                | Surface::Tool
+                | Surface::Provider
+                | Surface::Ui
+                | Surface::EventSubscription => {}
                 Surface::Hook => unreachable!("hook slots are chains"),
             }
         }
@@ -532,6 +539,9 @@ fn binding_for<'a>(wiring: &'a Wiring, slot: &Slot) -> Option<&'a Binding> {
         Surface::LanguageServer => wiring.language_server(&slot.key),
         Surface::Implementation => iteron_tunables::ModuleId::parse(&slot.key)
             .and_then(|module| wiring.implementation(module)),
+        Surface::Tool | Surface::Provider | Surface::Ui | Surface::EventSubscription => {
+            wiring.binding(slot.surface, &slot.key)
+        }
         Surface::Hook => None,
     }
 }
@@ -549,7 +559,11 @@ fn contribution_artifact(contribution: &Contribution, root: &Path) -> Option<Pat
         Contribution::Hook { .. }
         | Contribution::McpServer { .. }
         | Contribution::LanguageServer { .. }
-        | Contribution::Implementation { .. } => None,
+        | Contribution::Implementation { .. }
+        | Contribution::Tool { .. }
+        | Contribution::Provider { .. }
+        | Contribution::Ui { .. }
+        | Contribution::EventSubscription { .. } => None,
     }
 }
 

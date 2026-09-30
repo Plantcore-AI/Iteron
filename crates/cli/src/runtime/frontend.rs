@@ -662,6 +662,14 @@ impl Agent {
     }
 
     pub(crate) fn ui(&self, e: UiEvent) -> bool {
+        if let Some(owner) = &self.ordinary_extensions
+            && matches!(
+                &e,
+                UiEvent::Phase(_) | UiEvent::TurnEnd { .. } | UiEvent::Done(_)
+            )
+        {
+            owner.observe(self.operator_status_sources(), &e);
+        }
         let before = self.frontend_saturation.ui_saturation_count();
         let sent = self.frontend_saturation.try_send_frontend(
             self.resident_ui_tx.as_ref(),

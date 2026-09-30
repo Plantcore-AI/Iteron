@@ -125,6 +125,10 @@ pub struct Wiring {
 }
 
 impl Wiring {
+    /// Actual exclusive composition result; host binding remains a separate admission.
+    pub fn binding(&self, surface: Surface, key: &str) -> Option<&Binding> {
+        self.exclusive.get(&Slot::new(surface, key))
+    }
     pub fn skill(&self, name: &str) -> Option<&Binding> {
         self.exclusive.get(&Slot::new(Surface::Skill, name))
     }

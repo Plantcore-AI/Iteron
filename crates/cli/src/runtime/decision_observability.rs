@@ -342,6 +342,11 @@ impl Agent {
         &mut self,
         emitter: iteron_obs::lifecycle::LifecycleEmitter,
     ) {
+        if let Some(owner) = &self.ordinary_extensions {
+            // Same optional SDK read Arc follows the actual session bus. Failed rebind leaves
+            // prior-generation reads unavailable; it cannot block the Main writer.
+            let _ = owner.bind_lifecycle(emitter.bus());
+        }
         self.lifecycle_emitter = Some(emitter);
     }
 

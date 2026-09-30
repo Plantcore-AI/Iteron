@@ -9,6 +9,10 @@ pub enum ExtensionSurfaceV1 {
     McpServer,
     LanguageServer,
     Implementation,
+    Tool,
+    Provider,
+    Ui,
+    EventSubscription,
 }
 /// Evaluated against an existing verified binding at its actual dispatch boundary.
 /// `true` preserves the existing admission; `false` revokes that generation's future dispatch.

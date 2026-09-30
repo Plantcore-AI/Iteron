@@ -121,6 +121,8 @@ mod operation_admission;
 mod operation_admission_tests;
 mod operator_status;
 mod orchestration_route;
+mod ordinary_extension_runtime;
+mod ordinary_extensions;
 mod permission_policy;
 mod persistent_agent_kernel;
 pub(crate) mod persistent_agents;
@@ -1064,6 +1066,7 @@ pub struct Agent {
     persistent_mailbox: Option<persistent_agents::LiveAgentMailbox>,
     client_inventory: Option<std::sync::Arc<crate::client_inventory::ClientInventoryOwner>>,
     plugin_management: Option<std::sync::Arc<crate::plugin_runtime::PluginManagementOwner>>,
+    ordinary_extensions: Option<std::sync::Arc<ordinary_extensions::OrdinaryExtensionHost>>,
     last_assistant_source: Option<Seq>,
     turn_publications: turn_publication::TurnPublicationOwner,
     /// Shared so read-only subagents can use the same provider (ADR-001 fan-out).
@@ -3900,13 +3903,21 @@ impl Agent {
                 }
                 hook_activity.complete();
                 let approval_projection_incomplete = verdict == Verdict::Ask
-                    && ui_approval_arguments(&tu.input)
-                        .get("_truncated_for_ui")
-                        .and_then(serde_json::Value::as_bool)
-                        .unwrap_or(iteron_tunables::param_bool(
-                            "cli.runtime.ui_projection_truncated_when_unmarked",
-                            UI_PROJECTION_TRUNCATED_WHEN_UNMARKED,
-                        ));
+                    && match if self.ordinary_extensions.is_some() {
+                        self.registry.ordinary_call_projection(&tu)
+                    } else {
+                        Ok(None)
+                    } {
+                        Ok(Some(physical)) => ui_approval_arguments(&physical.input),
+                        Ok(None) => ui_approval_arguments(&tu.input),
+                        Err(_) => serde_json::json!({"_truncated_for_ui":true}),
+                    }
+                    .get("_truncated_for_ui")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(iteron_tunables::param_bool(
+                        "cli.runtime.ui_projection_truncated_when_unmarked",
+                        UI_PROJECTION_TRUNCATED_WHEN_UNMARKED,
+                    ));
                 let approved = match verdict {
                     Verdict::Auto => true,
                     Verdict::Deny => false,
@@ -5134,7 +5145,19 @@ impl Agent {
                 )
             })?
         } else {
-            ui_approval_arguments(&tool_use.input)
+            match if self.ordinary_extensions.is_some() {
+                self.registry.ordinary_call_projection(tool_use)
+            } else {
+                Ok(None)
+            } {
+                Ok(Some(physical)) => ui_approval_arguments(&physical.input),
+                Ok(None) => ui_approval_arguments(&tool_use.input),
+                Err(_) => {
+                    return Err(KernelError::OrdinaryExtension(
+                        "ordinary tool arguments could not be resolved for approval",
+                    ));
+                }
+            }
         };
         let workspace = strict_utf8_head(
             &iteron_record::redact::scrub(&self.workspace.display().to_string()),

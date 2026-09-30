@@ -1073,6 +1073,9 @@ async fn run_cli() -> anyhow::Result<u8> {
         agent.arm_recording_harness_error();
     }
 
+    if runtime_plugins.has_ordinary() {
+        runtime_plugins.install_ordinary(&mut agent, &provider_directory)?;
+    }
     agent
         .install_client_inventory(
             client_inventory::ClientInventoryOwner::capture(

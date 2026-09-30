@@ -7,6 +7,7 @@ members = [
     "xtask",
     "crates/changeset",
     "crates/marketplace",
+    "crates/extension-sdk",
     "crates/statusline",
     "crates/support",
     "crates/protocol",

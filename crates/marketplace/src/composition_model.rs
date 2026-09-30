@@ -44,6 +44,10 @@ pub enum Surface {
     LanguageServer,
     /// One externally registered strategy/runtime implementation for a public module seam.
     Implementation,
+    Tool,
+    Provider,
+    Ui,
+    EventSubscription,
 }
 
 impl Surface {
@@ -56,6 +60,10 @@ impl Surface {
             Surface::McpServer => "mcp",
             Surface::LanguageServer => "lsp",
             Surface::Implementation => "implementation",
+            Surface::Tool => "tool",
+            Surface::Provider => "provider",
+            Surface::Ui => "ui",
+            Surface::EventSubscription => "event_subscription",
         }
     }
 
@@ -105,6 +113,23 @@ impl fmt::Display for Slot {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Contribution {
+    /// Bounded inline SDK v1 descriptor; materialization alone does not imply host binding.
+    Tool {
+        name: String,
+        binding: String,
+    },
+    Provider {
+        name: String,
+        binding: String,
+    },
+    Ui {
+        name: String,
+        binding: String,
+    },
+    EventSubscription {
+        name: String,
+        binding: String,
+    },
     Skill {
         name: String,
         description: String,
@@ -135,6 +160,10 @@ pub enum Contribution {
 impl Contribution {
     pub fn surface(&self) -> Surface {
         match self {
+            Contribution::Tool { .. } => Surface::Tool,
+            Contribution::Provider { .. } => Surface::Provider,
+            Contribution::Ui { .. } => Surface::Ui,
+            Contribution::EventSubscription { .. } => Surface::EventSubscription,
             Contribution::Skill { .. } => Surface::Skill,
             Contribution::Agent { .. } => Surface::Agent,
             Contribution::Hook { .. } => Surface::Hook,
@@ -147,7 +176,12 @@ impl Contribution {
     /// The address this contribution claims.
     pub fn slot(&self) -> Slot {
         let key = match self {
-            Contribution::Skill { name, .. } | Contribution::Agent { name, .. } => name,
+            Contribution::Tool { name, .. }
+            | Contribution::Provider { name, .. }
+            | Contribution::Ui { name, .. }
+            | Contribution::EventSubscription { name, .. }
+            | Contribution::Skill { name, .. }
+            | Contribution::Agent { name, .. } => name,
             Contribution::Hook { event, .. } => event,
             Contribution::McpServer { name, .. } => name,
             Contribution::LanguageServer { language, .. } => language,
@@ -164,6 +198,10 @@ impl Contribution {
             Contribution::Skill { description, .. } | Contribution::Agent { description, .. } => {
                 description
             }
+            Contribution::Tool { binding, .. }
+            | Contribution::Provider { binding, .. }
+            | Contribution::Ui { binding, .. }
+            | Contribution::EventSubscription { binding, .. } => binding,
             Contribution::Hook { action, .. } => action,
             Contribution::McpServer { binding, .. } => binding,
             Contribution::LanguageServer { command, .. } => command,

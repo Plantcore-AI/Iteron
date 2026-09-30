@@ -125,6 +125,11 @@ impl DeferredBatchPolicy<'_> {
             {
                 break;
             }
+            // Fixed SDK arguments may hide physical write paths from the logical model call.
+            // Preserve ordered execution until the scheduler accepts the exact projected call.
+            if effects.canonical_tool.is_some() && admission.capability != Capability::ReadOnly {
+                break;
+            }
             let declared = match scheduling_write_paths(&call.name, &call.input) {
                 Ok(paths) => paths,
                 Err(_) => break,

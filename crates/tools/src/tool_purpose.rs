@@ -154,11 +154,12 @@ impl Registry {
     /// verifier remain available. Process continuation tools stay visible so a long-running build
     /// or test started by `bash` can still be polled or terminated cleanly.
     pub fn is_candidate_review_tool(&self, name: &str) -> bool {
+        let canonical = self.canonical_tool_name(name);
         self.is_candidate_change_tool(name)
             || self.tools.iter().any(|tool| {
                 tool.spec.name == name
                     && matches!(
-                        tool.spec.name.as_str(),
+                        canonical,
                         "read_file"
                             | "git_diff"
                             | "bash"
@@ -189,6 +190,13 @@ impl Registry {
         call: &ToolUse,
         workspace: &Path,
     ) -> Option<Vec<PathBuf>> {
+        // Only actual registered recipes can project native semantic evidence. Invalid or
+        // revoked fixed arguments never become candidate progress or localization evidence.
+        match self.ordinary_call_projection(call) {
+            Ok(Some(physical)) => return self.workspace_candidate_paths(&physical, workspace),
+            Err(_) => return None,
+            Ok(None) => {}
+        }
         if !self.is_candidate_change_tool(&call.name) {
             return None;
         }
@@ -213,6 +221,15 @@ impl Registry {
     /// network, and orchestration tools even when those tools could perform a read, because their
     /// arguments do not carry the same bounded semantic contract.
     pub fn is_workspace_targeted_observation(&self, call: &ToolUse, workspace: &Path) -> bool {
+        // Only actual registered recipes can project native semantic evidence. Invalid or
+        // revoked fixed arguments never become candidate progress or localization evidence.
+        match self.ordinary_call_projection(call) {
+            Ok(Some(physical)) => {
+                return self.is_workspace_targeted_observation(&physical, workspace);
+            }
+            Err(_) => return false,
+            Ok(None) => {}
+        }
         if !self.tools.iter().any(|tool| {
             tool.spec.name == call.name && tool.purpose == ToolPurpose::TargetedObservation
         }) {
@@ -261,6 +278,15 @@ impl Registry {
     /// they do not become bounded contract evidence. Runtime strategy advances localization only
     /// after the corresponding tool result succeeds.
     pub fn is_workspace_localization_observation(&self, call: &ToolUse, workspace: &Path) -> bool {
+        // Only actual registered recipes can project native semantic evidence. Invalid or
+        // revoked fixed arguments never become candidate progress or localization evidence.
+        match self.ordinary_call_projection(call) {
+            Ok(Some(physical)) => {
+                return self.is_workspace_localization_observation(&physical, workspace);
+            }
+            Err(_) => return false,
+            Ok(None) => {}
+        }
         if !matches!(
             call.name.as_str(),
             "grep" | "glob" | "list_dir" | "read_file"
@@ -324,6 +350,15 @@ impl Registry {
     /// observation. It does not confer causal or repair authority; positive evidence now requires
     /// a [`crate::RepairEvidenceReceipt`].
     pub fn is_workspace_evidence_comparison(&self, call: &ToolUse, workspace: &Path) -> bool {
+        // Only actual registered recipes can project native semantic evidence. Invalid or
+        // revoked fixed arguments never become candidate progress or localization evidence.
+        match self.ordinary_call_projection(call) {
+            Ok(Some(physical)) => {
+                return self.is_workspace_evidence_comparison(&physical, workspace);
+            }
+            Err(_) => return false,
+            Ok(None) => {}
+        }
         if call.name != "grep"
             || !self.tools.iter().any(|tool| {
                 tool.spec.name == call.name && tool.purpose == ToolPurpose::TargetedObservation

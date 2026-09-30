@@ -33,6 +33,7 @@ iteron-sandbox = { path = "../sandbox" }
 iteron-tunables = { path = "../tunables" }
 iteron-changeset = { path = "../changeset" }
 iteron-marketplace = { path = "../marketplace" }
+iteron-extension-sdk = { path = "../extension-sdk" }
 iteron-statusline = { path = "../statusline" }
 iteron-support = { path = "../support" }
 tokio = { workspace = true }

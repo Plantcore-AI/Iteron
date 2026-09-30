@@ -48,6 +48,7 @@ impl std::fmt::Debug for NativeFileChange {
 pub struct NativeMutationReceipt {
     tool_use_id: String,
     tool_name: String,
+    logical_alias: Option<String>,
     files: Vec<NativeFileChange>,
 }
 impl NativeMutationReceipt {
@@ -56,6 +57,26 @@ impl NativeMutationReceipt {
     }
     pub fn tool_name(&self) -> &str {
         &self.tool_name
+    }
+    pub fn logical_tool_name(&self) -> &str {
+        self.logical_alias.as_deref().unwrap_or(&self.tool_name)
+    }
+    pub(crate) fn bind_registered_alias(
+        &mut self,
+        id: &str,
+        canonical: &str,
+        alias: &str,
+    ) -> Result<(), &'static str> {
+        if self.tool_use_id != id
+            || self.tool_name != canonical
+            || self.logical_alias.is_some()
+            || alias.len() > 64
+            || !alias.contains("__")
+        {
+            return Err("native registered alias mismatch");
+        }
+        self.logical_alias = Some(alias.to_owned());
+        Ok(())
     }
     pub fn files(&self) -> &[NativeFileChange] {
         &self.files
@@ -96,11 +117,12 @@ impl NativeMutationReceipt {
         Ok(Self {
             tool_use_id: id,
             tool_name: name,
+            logical_alias: None,
             files,
         })
     }
     pub(crate) fn matches(&self, id: &str, name: &str) -> bool {
-        self.tool_use_id == id && self.tool_name == name
+        self.tool_use_id == id && self.logical_tool_name() == name
     }
     #[cfg(any(target_os = "linux", test))]
     pub(crate) fn wire(&self) -> NativeReceiptWire {

@@ -10,6 +10,22 @@ pub(crate) struct InheritedWriteScope {
     paths: Vec<String>,
 }
 impl InheritedWriteScope {
+    pub(crate) fn intersection_paths(&self, paths: &[String]) -> Result<Vec<String>, String> {
+        let other = Self::new(paths.to_vec())?;
+        let mut admitted = std::collections::BTreeSet::new();
+        for left in &self.paths {
+            for right in &other.paths {
+                if Path::new(left).starts_with(right) {
+                    admitted.insert(left.clone());
+                } else if Path::new(right).starts_with(left) {
+                    admitted.insert(right.clone());
+                }
+            }
+        }
+        let paths = admitted.into_iter().collect::<Vec<_>>();
+        Self::new(paths.clone())?;
+        Ok(paths)
+    }
     pub(crate) fn validate_tool(
         &self,
         call: &ToolUse,

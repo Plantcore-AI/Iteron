@@ -23,6 +23,10 @@ pub struct OperationEffects {
     pub required: CapabilitySet,
     pub knowledge: EffectKnowledge,
     pub targets: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub canonical_tool: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extension_ceiling: Option<CapabilitySet>,
     pub reason: &'static str,
 }
 
@@ -42,6 +46,8 @@ impl OperationEffects {
             && registered == Capability::CodeExecuting
         {
             return Self {
+                canonical_tool: None,
+                extension_ceiling: None,
                 required: CapabilitySet::from_iter_capabilities([
                     Capability::CodeExecuting,
                     Capability::IrreversibleExternal,
@@ -74,6 +80,8 @@ impl OperationEffects {
             capabilities.push(Capability::TrustMutating);
         }
         Self {
+            canonical_tool: None,
+            extension_ceiling: None,
             required: CapabilitySet::from_iter_capabilities(capabilities),
             knowledge: if complete {
                 EffectKnowledge::Classified
@@ -135,6 +143,8 @@ fn push_target(targets: &mut Vec<String>, value: &str) -> bool {
 
 fn unknown_shell() -> OperationEffects {
     OperationEffects {
+        canonical_tool: None,
+        extension_ceiling: None,
         required: CapabilitySet::from_iter_capabilities([
             Capability::CodeExecuting,
             Capability::ReversibleLocal,
@@ -169,6 +179,8 @@ fn shell_effects(call: &ToolUse) -> OperationEffects {
         && matches!(program, "printf" | "echo" | "pwd" | "true" | "false")
     {
         return OperationEffects {
+            canonical_tool: None,
+            extension_ceiling: None,
             required: CapabilitySet::only(Capability::CodeExecuting),
             knowledge: EffectKnowledge::Classified,
             targets: Vec::new(),

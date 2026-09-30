@@ -55,6 +55,7 @@ impl Agent {
 
     /// Load a prior run's transcript so `run` continues it instead of starting fresh.
     pub fn set_resume(&mut self, messages: Vec<Message>) -> Result<(), KernelError> {
+        self.validate_ordinary_extension_adoption(self.rollout.path())?;
         if self.persistent_agents.is_some() {
             return Err(KernelError::AgentControl(
                 iteron_agents::ControllerError::Invalid(
@@ -699,6 +700,7 @@ impl Agent {
     /// run, its policy publication handle, and its writer lock intact. The target may contain a
     /// successfully committed monotone USD tightening, but is never reported as the active run.
     pub fn adopt_run(&mut self, mut rollout: Rollout) -> Result<AdoptedRun, KernelError> {
+        self.validate_ordinary_extension_adoption(rollout.path())?;
         if self.persistent_agents.is_some() {
             return Err(KernelError::AgentControl(
                 iteron_agents::ControllerError::Invalid(

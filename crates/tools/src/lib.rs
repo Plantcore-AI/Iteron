@@ -11,6 +11,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 mod captured_execution;
+mod ordinary_recipe;
+pub use ordinary_recipe::{MAX_ORDINARY_RECIPES, MAX_RECIPE_BYTES, ToolRecipeV1};
 mod captured_image;
 pub use captured_image::{CapturedImageObservation, CapturedToolImage};
 pub mod browser;
@@ -347,6 +349,7 @@ pub struct Tool {
     run: Arc<dyn Fn(ToolUse, PathBuf) -> registeredfut::BoxFut + Send + Sync>,
     output_owner: ToolOutputOwner,
     purpose: ToolPurpose,
+    recipe: Option<Arc<ordinary_recipe::RecipeBinding>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -915,8 +918,13 @@ impl Registry {
     /// Resolve operation effects from registered authority and actual arguments. A model's
     /// declared write set is a scheduling hint and cannot narrow this host-owned result.
     pub fn operation_effects(&self, call: &ToolUse) -> Option<OperationEffects> {
-        let registered = self.capability_of(&call.name)?;
-        let mut effects = OperationEffects::classify(call, registered);
+        let tool = self.tools.iter().find(|tool| tool.spec.name == call.name)?;
+        let registered = tool.spec.capability;
+        let mut effects = if tool.recipe.is_some() {
+            Self::ordinary_effects(tool, call).ok()?
+        } else {
+            OperationEffects::classify(call, registered)
+        };
         if registered == Capability::ReversibleLocal {
             for target in effects.targets.clone() {
                 if let Ok(resolved) = resolve_in_root(&self.root, &target) {
@@ -962,6 +970,9 @@ impl Registry {
             },
             ceiling,
         )?;
+        let ceiling = effects
+            .extension_ceiling
+            .map_or(ceiling, |extension| ceiling.intersect(extension));
         if !effects.required.is_subset_of(ceiling) {
             return Err(ToolPolicyError::NotEligible);
         }
@@ -1026,13 +1037,22 @@ impl Registry {
         if let Err(error) = schema::validate_arguments(&tool.spec.input_schema, &call.input) {
             return refused(call.id, error.model_json(&tool.spec.name));
         }
+        let call = if tool.recipe.is_some() {
+            let id = call.id.clone();
+            match Self::resolve_ordinary_call(tool, call) {
+                Ok(call) => call,
+                Err(reason) => return refused(id, reason),
+            }
+        } else {
+            call
+        };
         let confine_execution = self.confine_execution.clone();
         let workspace_boundary = self.workspace_boundary;
         let inherited_scope = self.inherited_write_scope.clone();
         let inherited_capability = tool.spec.capability;
         let observation_focus = self.observation_focus.clone();
         let id = call.id.clone();
-        let tool_name = call.name.clone();
+        let tool_name = tool.spec.name.clone();
         let native_owner = tool.purpose == ToolPurpose::CandidateChange;
         let executor = tool.run.clone();
         let root = self.root.clone();
@@ -1301,6 +1321,15 @@ impl Registry {
             return ToolExecution::Definite(err_result(id, error.model_json(&tool.spec.name)))
                 .into();
         }
+        let call = if tool.recipe.is_some() {
+            let id = call.id.clone();
+            match Self::resolve_ordinary_call(tool, call) {
+                Ok(call) => call,
+                Err(reason) => return ToolExecution::Definite(err_result(id, reason)).into(),
+            }
+        } else {
+            call
+        };
         if self
             .confine_execution
             .load(std::sync::atomic::Ordering::Relaxed)
@@ -1323,7 +1352,7 @@ impl Registry {
         }
 
         let is_effecting = tool.spec.purity == Purity::Effecting;
-        let tool_name = call.name.clone();
+        let tool_name = tool.spec.name.clone();
         let native_owner = tool.purpose == ToolPurpose::CandidateChange;
         let registered = (tool.run)(call, self.root.clone()).await;
         let mut outcome = registered.outcome.normalize(&id, &tool_name, native_owner);
@@ -1388,6 +1417,15 @@ impl Registry {
             let result = err_result(call.id.clone(), error.model_json(&tool.spec.name));
             return boxfut::box_it(async move { result });
         }
+        let call = if tool.recipe.is_some() {
+            let id = call.id.clone();
+            match Self::resolve_ordinary_call(tool, call) {
+                Ok(call) => call,
+                Err(reason) => return boxfut::box_it(async move { err_result(id, reason) }),
+            }
+        } else {
+            call
+        };
         if self
             .confine_execution
             .load(std::sync::atomic::Ordering::Relaxed)
@@ -1523,6 +1561,7 @@ impl Registry {
                 run: Arc::new(adapted),
                 output_owner: ToolOutputOwner::Runtime,
                 purpose: ToolPurpose::CandidateChange,
+                recipe: None,
             },
             ToolOrigin::BuiltIn,
         )
@@ -1563,6 +1602,7 @@ impl Registry {
                 run: Arc::new(adapted),
                 output_owner: ToolOutputOwner::Runtime,
                 purpose,
+                recipe: None,
             },
             origin,
         )
@@ -1607,6 +1647,7 @@ impl Registry {
             run: Arc::new(adapted),
             output_owner: ToolOutputOwner::Runtime,
             purpose: ToolPurpose::General,
+            recipe: None,
         })
     }
 
@@ -1636,6 +1677,7 @@ impl Registry {
             run: Arc::new(adapted),
             output_owner: ToolOutputOwner::Runtime,
             purpose: ToolPurpose::General,
+            recipe: None,
         })
     }
 
@@ -1681,6 +1723,7 @@ impl Registry {
             run: Arc::new(adapted),
             output_owner: ToolOutputOwner::Mcp,
             purpose: ToolPurpose::General,
+            recipe: None,
         })
     }
     pub fn register_mcp_effect_captured(
@@ -1720,6 +1763,7 @@ impl Registry {
             run: Arc::new(adapted),
             output_owner: ToolOutputOwner::Mcp,
             purpose: ToolPurpose::General,
+            recipe: None,
         })
     }
 }

@@ -8,7 +8,7 @@ use super::investigation_convergence::{
 use super::tool_turn::ToolTurnOwner;
 use iteron_protocol::{ToolResult, ToolUse};
 use iteron_tools::Registry;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 static EMPTY_INDICES: BTreeSet<usize> = BTreeSet::new();
@@ -27,6 +27,8 @@ struct TrackedRound {
     repair_evidence: BTreeSet<usize>,
     targeted: BTreeSet<usize>,
     localization: BTreeSet<usize>,
+    // Actual immutable native arguments for an admitted SDK projection, never a name guess.
+    projected: BTreeMap<usize, ToolUse>,
 }
 
 pub(super) struct OptionalRoundSettlement {
@@ -49,6 +51,9 @@ impl OptionalToolRound {
         let mut tracked = TrackedRound::default();
         if policy.enabled() {
             for (index, tool) in returned.iter().enumerate() {
+                if let Ok(Some(physical)) = registry.ordinary_call_projection(tool) {
+                    tracked.projected.insert(index, physical);
+                }
                 if registry.is_repair_evidence_submission(tool, workspace) {
                     tracked.repair_evidence.insert(index);
                 }
@@ -183,7 +188,7 @@ impl OptionalToolRound {
             .localization
             .iter()
             .filter(|index| successful(index))
-            .filter_map(|index| returned.get(*index))
+            .filter_map(|index| round.projected.get(index).or_else(|| returned.get(*index)))
             .filter_map(|tool| {
                 InvestigationConvergence::localization_scope(&tool.name, &tool.input)
             })
@@ -199,7 +204,10 @@ impl OptionalToolRound {
             .localization
             .iter()
             .filter_map(|index| {
-                let tool = returned.get(*index)?;
+                let tool = round
+                    .projected
+                    .get(index)
+                    .or_else(|| returned.get(*index))?;
                 let result = results.get(*index)?.as_ref()?;
                 (!result.is_error).then_some((tool, result))
             })

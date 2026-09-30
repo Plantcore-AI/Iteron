@@ -840,6 +840,11 @@ impl ProviderRouteAttemptAccounting {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EventKind {
+    /// Actual immutable ordinary SDK catalog published by the verified host before dispatch.
+    OrdinaryExtensionBindingsV1 {
+        catalog_sha256: String,
+        bindings: u32,
+    },
     TaskPlanUpdatedV1 {
         plan: crate::task_plan::TaskPlanSnapshotV1,
     },
