@@ -21,6 +21,17 @@ impl InboundControl {
     }
 }
 
+#[derive(Clone)]
+pub(super) struct InterruptSignalBinding {
+    flag: Option<Arc<AtomicBool>>,
+    owns_signal: bool,
+}
+impl InterruptSignalBinding {
+    pub(super) fn flag(&self) -> Option<&Arc<AtomicBool>> {
+        self.flag.as_ref()
+    }
+}
+
 pub(super) struct SessionControlState {
     interrupt: Option<Arc<AtomicBool>>,
     force_cancel: Arc<AtomicBool>,
@@ -92,6 +103,16 @@ impl SessionControlState {
     pub(super) fn drain(&self) -> &Arc<AtomicBool> {
         &self.drain
     }
+    pub(super) fn interrupt_binding(&self) -> InterruptSignalBinding {
+        InterruptSignalBinding {
+            flag: self.interrupt.clone(),
+            owns_signal: self.owns_interrupt,
+        }
+    }
+    pub(super) fn restore_interrupt_binding(&mut self, binding: InterruptSignalBinding) {
+        self.interrupt = binding.flag;
+        self.owns_interrupt = binding.owns_signal;
+    }
     pub(super) fn bind_interrupt(&mut self, flag: Arc<AtomicBool>) {
         self.interrupt = Some(flag);
         self.owns_interrupt = true;
@@ -136,14 +157,11 @@ impl SessionControlState {
             self.drain.store(false, Ordering::Relaxed);
         }
     }
-    /// Adoption resets local prior-run requests. A concurrently asserted frontend interrupt and
-    /// inherited drain retain their owner; neither is an adoption receipt of physical shutdown.
+    /// Adoption resets local prior-run requests. Every external atomic retains its current
+    /// value; adoption is not a receipt of physical shutdown or authority to erase a new stop.
     pub(super) fn reset_after_adoption(&mut self) {
         self.interrupt_requested = false;
         self.force_cancel_requested = false;
-        if self.owns_force_cancel {
-            self.force_cancel.store(false, Ordering::Release);
-        }
     }
     pub(super) fn clear_cancel_after_terminal(&mut self) {
         self.clear_force_cancel_after_terminal();

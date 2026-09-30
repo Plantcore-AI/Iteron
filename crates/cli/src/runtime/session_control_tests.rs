@@ -146,3 +146,22 @@ fn child_terminal_and_adoption_preserve_caller_owned_interrupt_and_force() {
     assert_eq!(parent.requested(), InboundControl::None);
     assert_eq!(child.requested(), InboundControl::None);
 }
+
+#[test]
+fn adoption_preserves_even_owned_external_stop_and_binding_restore_keeps_inheritance() {
+    let force = Arc::new(AtomicBool::new(true));
+    let mut owner = SessionControlState::default();
+    owner.bind_force_cancel(force.clone());
+    owner.reset_after_adoption();
+    assert!(force.load(Ordering::Acquire));
+    assert_eq!(owner.requested(), InboundControl::ForceCancel);
+    let parent_interrupt = Arc::new(AtomicBool::new(true));
+    let mut child = SessionControlState::default();
+    child.inherit_interrupt(parent_interrupt.clone());
+    let original = child.interrupt_binding();
+    child.bind_interrupt(Arc::new(AtomicBool::new(false)));
+    child.restore_interrupt_binding(original);
+    child.clear_interrupt_after_terminal();
+    assert!(parent_interrupt.load(Ordering::Acquire));
+    assert_eq!(child.requested(), InboundControl::Interrupt);
+}
