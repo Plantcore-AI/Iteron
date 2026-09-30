@@ -26,6 +26,7 @@ pub mod decision_store;
 mod incremental;
 pub mod instructions;
 pub mod memory;
+pub mod memory_records;
 mod memory_runtime;
 pub mod memory_trace;
 pub mod outline;

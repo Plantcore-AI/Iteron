@@ -379,7 +379,7 @@ fn confined_root(workspace: &Path, root: &str) -> Result<PathBuf, ContextPortErr
 fn memory_stores(workspace: &Path, home_dir: Option<&Path>) -> Vec<MemStore> {
     let mut stores = Vec::new();
     if let Some(home_dir) = home_dir {
-        stores.push(MemStore::user(home_dir));
+        stores.push(MemStore::user(home_dir).with_recall_workspace(workspace));
     }
     // Frontend instruction bytes have their own durable segment; do not attach instruction
     // discovery to this compatibility recall store or the same files would enter context twice.
