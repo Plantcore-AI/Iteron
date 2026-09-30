@@ -38,6 +38,11 @@ pub(super) fn read(reader: &ContractReader, command: MaintenanceReadV1) -> Value
     let Some(binding) = reader.maintenance_binding() else {
         return json!({"type":"maintenance_unavailable_v1","reason_code":"unavailable"});
     };
+    // Snapshot and owner capture may straddle adoption. Authenticate the actual captured binding
+    // as well, then verify that same Arc remains current after its journal read.
+    if binding.thread_id != *command.thread_id() {
+        return json!({"type":"maintenance_refused_v1","reason_code":"thread_scope_changed"});
+    }
     let (after_revision, limit) = match command {
         MaintenanceReadV1::Read {
             after_revision,
