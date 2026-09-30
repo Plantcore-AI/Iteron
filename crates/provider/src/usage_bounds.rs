@@ -14,6 +14,21 @@ pub enum ProviderUsageBoundSemantics {
     PartitionedInput,
 }
 
+/// Preserve the non-configurable physical baseline; host refreshes can increase it. A known
+/// configured route without a shipped physical baseline cannot mint a financial ceiling.
+pub(crate) fn physical_input_ceiling(
+    configured: &crate::StaticProviderMetadata,
+    api_root: &str,
+    model: &str,
+) -> Option<u64> {
+    let baseline = crate::StaticProviderMetadata::shipped_physical_input_ceiling(api_root, model)?;
+    let configured = configured
+        .route_model_capabilities(api_root, model)
+        .and_then(|caps| caps.context_window_tokens)
+        .unwrap_or(0);
+    Some(baseline.max(configured))
+}
+
 #[cfg(test)]
 mod tests {
     use super::ProviderUsageBoundSemantics;
@@ -70,3 +85,7 @@ mod tests {
         assert_eq!(custom.physical_input_token_ceiling("gpt-5.6"), None);
     }
 }
+
+#[cfg(test)]
+#[path = "usage_bounds_tests.rs"]
+mod baseline_tests;
