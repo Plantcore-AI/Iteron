@@ -58,7 +58,7 @@ mod tests {
         };
         let mut app = App::new();
         live_workflows::render(&mut app, &reply);
-        let text = app.transcript.last().unwrap().to_text();
+        let text = app.history.blocks().last().unwrap().to_text();
         for expected in [
             "7 / 11",
             "recovery required",
@@ -112,7 +112,7 @@ mod tests {
                 turn: 3
             })
         );
-        let panel = app.transcript.last().unwrap().to_text();
+        let panel = app.history.blocks().last().unwrap().to_text();
         assert!(panel.contains("bounded investigator"));
         assert!(panel.contains("running"));
         assert!(panel.contains("queued 1"));
@@ -147,14 +147,14 @@ mod tests {
         let id = listing["artifacts"][0]["artifact_id"].as_str().unwrap();
         let mut app = App::new();
         artifacts::render(&mut app, &session, "");
-        let panel = app.transcript.last().unwrap().to_text();
+        let panel = app.history.blocks().last().unwrap().to_text();
         assert!(panel.contains("tool_output"));
         assert!(panel.contains(&id[..12]), "artifact panel: {panel}");
         let screen = render_text(&mut app, 180, 24);
         assert!(screen.contains("thread artifacts"));
         assert!(screen.contains("tool_output"));
         artifacts::render(&mut app, &session, &id[..12]);
-        let content = app.transcript.last().unwrap().to_text();
+        let content = app.history.blocks().last().unwrap().to_text();
         assert!(content.contains("artifact result"));
         assert!(content.contains("[REDACTED"));
         assert!(!content.contains(SECRET));
@@ -216,7 +216,7 @@ mod tests {
 
         let mut app = App::new();
         show_agent_catalog(&mut app, &session);
-        let retained = app.transcript.last().expect("agents panel").to_text();
+        let retained = app.history.blocks().last().expect("agents panel").to_text();
         assert!(retained.contains("pinned-reviewer"));
         assert!(!retained.contains("late-reviewer"));
         assert!(!retained.contains(SECRET));
@@ -761,7 +761,7 @@ mod tests {
         assert!(screen.contains("$0.0123"), "{screen}");
         assert!(screen.contains("crates/cli/src/tui.rs:1"), "{screen}");
         assert!(
-            app.transcript.iter().all(|block| !matches!(
+            app.history.blocks().iter().all(|block| !matches!(
                 block.kind,
                 block::BlockKind::Assistant(_) | block::BlockKind::User(_)
             )),
@@ -929,16 +929,16 @@ mod tests {
 
         project_recorded_transcript(&mut app, &events);
 
-        assert_eq!(app.transcript.len(), 2);
+        assert_eq!(app.history.blocks().len(), 2);
         assert!(
-            matches!(&app.transcript[0].kind, block::BlockKind::User(text) if text == "previous question")
+            matches!(app.history.blocks()[0].kind, block::BlockKind::User(text) if text == "previous question")
         );
         assert!(matches!(
-            &app.transcript[1].kind,
+            app.history.blocks()[1].kind,
             block::BlockKind::Assistant(_)
         ));
         assert!(
-            app.transcript
+            app.history.blocks()
                 .iter()
                 .all(|block| !matches!(block.kind, block::BlockKind::Welcome { .. }))
         );
@@ -1025,7 +1025,7 @@ mod tests {
         let screen = render_text(&mut app, 100, 18);
         assert!(screen.contains("iteron --resume run-42"));
         assert!(
-            app.transcript
+            app.history.blocks()
                 .iter()
                 .any(|block| block.to_text().contains("not resumed here"))
         );
@@ -1784,16 +1784,16 @@ mod tests {
     #[test]
     fn stream_text_accumulates_then_flushes_to_a_block() {
         let mut app = App::new();
-        let base = app.transcript.len();
+        let base = app.history.blocks().len();
         app.stream_text("hello ");
         app.stream_text("world");
         // still buffered as the in-flight block; no committed block yet
-        assert_eq!(app.transcript.len(), base);
+        assert_eq!(app.history.blocks().len(), base);
         assert_eq!(app.assistant.text(), "hello ");
         app.flush_text();
-        assert_eq!(app.transcript.len(), base + 1);
+        assert_eq!(app.history.blocks().len(), base + 1);
         assert!(
-            app.transcript
+            app.history.blocks()
                 .last()
                 .unwrap()
                 .to_text()
@@ -1893,7 +1893,7 @@ mod tests {
         app.flush_text();
         assert_eq!(app.assistant.parsed_source_bytes(), exact.len());
         let block::BlockKind::Assistant(actual) =
-            &app.transcript.last().expect("assistant block").kind
+            app.history.blocks().last().expect("assistant block").kind
         else {
             panic!("stream must finalize as one assistant block");
         };
@@ -1914,7 +1914,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert!(app.assistant.text().contains("[REDACTED"));
         app.flush_text();
         assert!(
-            !app.transcript
+            !app.history.blocks()
                 .last()
                 .expect("assistant block")
                 .to_text()
@@ -1946,7 +1946,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             completion.ok,
             completion.code,
         );
-        let text = app.transcript.last().expect("shell card").to_text();
+        let text = app.history.blocks().last().expect("shell card").to_text();
         assert!(!text.contains(secret));
         assert!(text.contains("[REDACTED"));
         assert!(text.contains("truncated"));
@@ -2063,7 +2063,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 .iter()
                 .all(|input| !input.text.starts_with("foreign"))
         );
-        assert!(app.transcript.iter().any(|block| {
+        assert!(app.history.blocks().iter().any(|block| {
             block
                 .to_text()
                 .contains("64 unadmitted steering submission(s) belong to another client")
@@ -2097,7 +2097,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert_eq!(app.input_lanes.queued().front().unwrap().text, "own 0");
         assert_eq!(app.input_lanes.queued().back().unwrap().text, "legacy 0");
         assert!(
-            app.transcript
+            app.history.blocks()
                 .iter()
                 .any(|block| block.to_text().contains("63 legacy steering submission(s)"))
         );
@@ -2207,18 +2207,18 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             app.toggle_last_fold();
         }
         let _ = render_text(&mut app, 80, 18);
-        assert!(app.geometry.cache_len() <= app.transcript.len());
+        assert!(app.geometry.cache_len() <= app.history.blocks().len());
         assert!(app.geometry.cached_revision(1).is_some());
         assert_eq!(
             app.geometry.cached_revision(1),
-            Some(app.transcript[1].revision)
+            Some(app.history.blocks()[1].revision)
         );
     }
 
     #[test]
     fn unchanged_twelve_hundred_block_transcript_reuses_height_index_between_frames() {
         let mut app = App::new();
-        app.transcript.clear();
+        app.history.clear();
         for index in 0..MAX_BLOCKS {
             app.push_block(block::BlockKind::Notice {
                 level: block::NoticeLevel::Info,
@@ -2244,12 +2244,12 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             app.push(dim(), format!("line {i}"));
         }
         assert!(
-            app.transcript.len() <= MAX_BLOCKS,
+            app.history.blocks().len() <= MAX_BLOCKS,
             "transcript must be bounded, got {}",
-            app.transcript.len()
+            app.history.blocks().len()
         );
         assert!(
-            app.transcript
+            app.history.blocks()
                 .last()
                 .unwrap()
                 .to_text()
@@ -2266,17 +2266,14 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             name: "ultracode".into(),
             class: "repository-wide".into(),
         });
-        let block_id = *app
-            .workflow_index
-            .get(run_id)
-            .expect("active workflow is indexed");
+        let block_id = app.history.workflow_binding(run_id).expect("active workflow is indexed");
 
         for i in 0..(MAX_BLOCKS + 300) {
             app.push(dim(), format!("pressure line {i}"));
         }
-        assert!(app.transcript.len() <= MAX_BLOCKS);
-        assert_eq!(app.workflow_index.get(run_id), Some(&block_id));
-        assert!(app.transcript.iter().any(|block| block.id == block_id));
+        assert!(app.history.blocks().len() <= MAX_BLOCKS);
+        assert_eq!(app.history.workflow_binding(run_id), Some(block_id));
+        assert!(app.history.blocks().iter().any(|block| block.id == block_id));
 
         app.workflow_event(WorkflowUiEvent::RunFinished {
             run_id: run_id.into(),
@@ -2290,9 +2287,9 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             failed_tasks: 1,
             skipped_tasks: 0,
         });
-        assert!(!app.workflow_index.contains_key(run_id));
+        assert!(app.history.workflow_binding(run_id).is_none());
         let card = app
-            .transcript
+            .history.blocks()
             .iter()
             .find(|block| block.id == block_id)
             .and_then(|block| match &block.kind {
@@ -2873,8 +2870,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             app.running = true;
             app.status = "verifying".into();
             app.run_started = Some(Instant::now());
-            app.active_tools
-                .push_back(("tool-1".into(), "Bash(cargo test -p iteron-cli)".into()));
+            app.tools.fixture_active("tool-1".into(), "Bash(cargo test -p iteron-cli)".into());
             app.track_steer("also cover narrow terminals".into(), SubmissionId(1));
             app.queue_after_turn("then update the design record".into())
                 .unwrap();
@@ -3107,7 +3103,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         for theme in [theme::Theme::dark(), theme::Theme::mono()] {
             let mut app = App::new();
             app.theme = theme;
-            app.transcript.clear();
+            app.history.clear();
             app.push_user("请检查 provider 路由");
             app.stream_text("I found the route and its tests.");
             app.flush_text();
@@ -3521,7 +3517,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             };
             let marker = row[at..at + "historical row 000".len()].to_string();
             let expected = app
-                .transcript
+                .history.blocks()
                 .iter()
                 .position(|candidate| candidate.to_text().contains(&marker))
                 .expect("the rendered notice is still in the transcript");
@@ -4211,7 +4207,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         .public_summary();
         let mut app = end_failed_run(record_error);
         assert!(app.retryable_task.is_none());
-        let rendered = app.transcript.last().expect("failure block").to_text();
+        let rendered = app.history.blocks().last().expect("failure block").to_text();
         assert!(rendered.contains("[storage_full]"), "{rendered}");
         assert!(!rendered.contains("ctrl+r"), "{rendered}");
         assert!(!rendered.contains("sk-test-secret"), "{rendered}");
@@ -4224,7 +4220,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert_eq!(ordinary.retryable_task.as_deref(), Some("retry this turn"));
         assert!(
             ordinary
-                .transcript
+                .history.blocks()
                 .last()
                 .expect("failure block")
                 .to_text()
@@ -4297,7 +4293,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
         assert_eq!(app.status, "idle · last: budget_exhausted");
         let notice = app
-            .transcript
+            .history.blocks()
             .last()
             .expect("the budget stop leaves a notice")
             .to_text();
@@ -4311,7 +4307,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     #[test]
     fn welcome_is_a_responsive_plantcore_icon_in_the_transcript() {
         let app = App::new();
-        let wide: String = app.transcript[0]
+        let wide: String = app.history.blocks()[0]
             .render(80, &app.theme, 0)
             .iter()
             .flat_map(|l| l.spans.iter())
@@ -4322,7 +4318,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             wide.contains("Build, explain, and verify"),
             "tagline present: {wide:?}"
         );
-        let rows = app.transcript[0].render(20, &app.theme, 0);
+        let rows = app.history.blocks()[0].render(20, &app.theme, 0);
         for r in &rows {
             assert!(
                 crate::render::line_width(r) <= 20,
@@ -4341,7 +4337,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     fn welcome_icon_is_one_startup_block_and_scrolls_away() {
         let mut app = App::new();
         assert_eq!(
-            app.transcript
+            app.history.blocks()
                 .iter()
                 .filter(|block| matches!(block.kind, block::BlockKind::Welcome { .. }))
                 .count(),
@@ -4357,7 +4353,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         let tail = render_text(&mut app, 40, 12);
         assert!(!tail.contains("▄██"), "the brand is entrance, not chrome");
         assert_eq!(
-            app.transcript
+            app.history.blocks()
                 .iter()
                 .filter(|block| matches!(block.kind, block::BlockKind::Welcome { .. }))
                 .count(),
@@ -4552,7 +4548,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     #[test]
     fn apply_event_updates_state() {
         let mut app = App::new();
-        let before_start = app.transcript.len();
+        let before_start = app.history.blocks().len();
         apply_event(
             &mut app,
             UiEvent::ToolStart {
@@ -4562,22 +4558,22 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             },
         );
         // Activity is immediate, but the transcript waits out the anti-flash reveal delay.
-        assert!(!app.tool_index.contains_key("t1"));
-        assert_eq!(app.pending_tools.len(), 1);
-        assert_eq!(app.transcript.len(), before_start);
-        assert!(app.active_tools.iter().any(|(id, _)| id == "t1"));
-        let reveal_at = app.pending_tools.front().unwrap().reveal_deadline;
+        assert!(!app.tools.revealed_block("t1").is_some());
+        assert_eq!(app.tools.pending_len(), 1);
+        assert_eq!(app.history.blocks().len(), before_start);
+        assert!(app.tools.has_active("t1"));
+        let reveal_at = app.tools.next_reveal().unwrap();
         assert!(app.advance_tool_presentations(reveal_at));
-        assert!(app.tool_index.contains_key("t1"));
+        assert!(app.tools.revealed_block("t1").is_some());
         assert!(
-            app.transcript
+            app.history.blocks()
                 .last()
                 .unwrap()
                 .to_text()
                 .contains("read_file")
         );
         // ToolEnd mutates the SAME card (by id, R2), not a new sibling
-        let before = app.transcript.len();
+        let before = app.history.blocks().len();
         apply_event(
             &mut app,
             UiEvent::ToolEnd {
@@ -4589,13 +4585,13 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             },
         );
         assert_eq!(
-            app.transcript.len(),
+            app.history.blocks().len(),
             before,
             "ToolEnd mutates the originating card, not a new block"
         );
         let theme = theme::Theme::dark();
         let rendered: String = app
-            .transcript
+            .history.blocks()
             .last()
             .unwrap()
             .render(80, &theme, 0)
@@ -4649,7 +4645,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     #[test]
     fn tool_projection_is_hidden_for_300ms_then_reveals_deterministically() {
         let mut app = App::new();
-        let base = app.transcript.len();
+        let base = app.history.blocks().len();
         let started = Instant::now();
         app.tool_start_at(
             "slow-read".into(),
@@ -4658,17 +4654,17 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             started,
         );
 
-        assert_eq!(app.transcript.len(), base);
-        assert!(app.active_tools.iter().any(|(id, _)| id == "slow-read"));
+        assert_eq!(app.history.blocks().len(), base);
+        assert!(app.tools.has_active("slow-read"));
         assert!(
             !app.advance_tool_presentations(started + TOOL_REVEAL_DELAY - Duration::from_millis(1))
         );
-        assert_eq!(app.transcript.len(), base);
+        assert_eq!(app.history.blocks().len(), base);
         assert!(app.advance_tool_presentations(started + TOOL_REVEAL_DELAY));
-        assert_eq!(app.transcript.len(), base + 1);
-        assert!(app.tool_index.contains_key("slow-read"));
+        assert_eq!(app.history.blocks().len(), base + 1);
+        assert!(app.tools.revealed_block("slow-read").is_some());
         assert!(matches!(
-            app.transcript.last().map(|block| &block.kind),
+            app.history.blocks().last().map(|block| &block.kind),
             Some(block::BlockKind::Tool(block::ToolCard {
                 status: block::ToolStatus::Running,
                 ..
@@ -4679,7 +4675,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     #[test]
     fn fast_tool_completion_inserts_one_settled_audit_card_without_running_flash() {
         let mut app = App::new();
-        let base = app.transcript.len();
+        let base = app.history.blocks().len();
         let started = Instant::now();
         app.tool_start_at(
             "fast-read".into(),
@@ -4696,11 +4692,11 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             started + Duration::from_millis(42),
         );
 
-        assert_eq!(app.transcript.len(), base + 1);
-        assert!(app.pending_tools.is_empty());
-        assert!(app.active_tools.is_empty());
-        assert!(!app.tool_index.contains_key("fast-read"));
-        let block::BlockKind::Tool(card) = &app.transcript.last().unwrap().kind else {
+        assert_eq!(app.history.blocks().len(), base + 1);
+        assert!(app.tools.pending_len() == 0);
+        assert!(app.tools.active_len() == 0);
+        assert!(!app.tools.revealed_block("fast-read").is_some());
+        let block::BlockKind::Tool(card) = app.history.blocks().last().unwrap().kind else {
             panic!("expected a settled tool card");
         };
         assert_eq!(card.status, block::ToolStatus::Ok);
@@ -4728,11 +4724,11 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
         app.settle_unfinished_tools();
 
-        assert!(app.pending_tools.is_empty());
-        assert!(app.tool_index.is_empty());
-        assert!(app.active_tools.is_empty());
+        assert!(app.tools.pending_len() == 0);
+        assert!(app.tools.revealed_len() == 0);
+        assert!(app.tools.active_len() == 0);
         let cards: Vec<_> = app
-            .transcript
+            .history.blocks()
             .iter()
             .filter_map(|block| match &block.kind {
                 block::BlockKind::Tool(card) => Some(card),
@@ -4790,7 +4786,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         );
 
         let cards = app
-            .transcript
+            .history.blocks()
             .iter()
             .filter_map(|block| match &block.kind {
                 block::BlockKind::Tool(card) => Some(card),
@@ -4814,7 +4810,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             started,
         );
         app.advance_tool_presentations(started + TOOL_REVEAL_DELAY);
-        let count = app.transcript.len();
+        let count = app.history.blocks().len();
         app.tool_end_at(
             "visible",
             true,
@@ -4827,9 +4823,9 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         // Codex's hook cell lingers a quiet success for 600 ms. Core model-tool events are
         // audit-bearing and have no Ephemeral flag, so the stronger policy is to persist them.
         app.advance_tool_presentations(started + TOOL_REVEAL_DELAY + Duration::from_millis(601));
-        assert_eq!(app.transcript.len(), count);
+        assert_eq!(app.history.blocks().len(), count);
         assert!(matches!(
-            app.transcript.last().map(|block| &block.kind),
+            app.history.blocks().last().map(|block| &block.kind),
             Some(block::BlockKind::Tool(block::ToolCard {
                 status: block::ToolStatus::Ok,
                 ..
@@ -4847,7 +4843,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         });
 
         assert!(matches!(
-            app.transcript.last().map(|block| &block.kind),
+            app.history.blocks().last().map(|block| &block.kind),
             Some(block::BlockKind::WorkflowRun(card)) if card.run_id == "wf_reachable"
         ));
     }
@@ -4858,7 +4854,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         app.assistant.fixture_text("visible answer".into());
         app.assistant.fixture_thinking("visible reasoning".into());
         app.awaiting_first_token_since = Some(Instant::now());
-        let transcript_len = app.transcript.len();
+        let transcript_len = app.history.blocks().len();
 
         app.workflow_run_ui_event(crate::workflow::WorkflowRunUiEvent::KernelActivity {
             kind: crate::workflow::KernelActivityKind::Planning,
@@ -4870,7 +4866,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert!(app.awaiting_first_token_since.is_none());
         assert_eq!(app.assistant.text(), "visible answer");
         assert_eq!(app.assistant.thinking(), "visible reasoning");
-        assert_eq!(app.transcript.len(), transcript_len);
+        assert_eq!(app.history.blocks().len(), transcript_len);
     }
 
     #[test]
@@ -4931,14 +4927,14 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
         // Exactly one WorkflowRun block, still keyed by run id, mutated in place.
         let run_blocks = app
-            .transcript
+            .history.blocks()
             .iter()
             .filter(|b| matches!(b.kind, block::BlockKind::WorkflowRun(_)))
             .count();
         assert_eq!(run_blocks, 1, "one live tree, not a line-per-event log");
         assert_eq!(app.workflow_monitor.block_id(run_id).unwrap(), block_id);
         let card = match &app
-            .transcript
+            .history.blocks()
             .iter()
             .find(|b| b.id == block_id)
             .unwrap()
@@ -4966,7 +4962,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         app.workflow_run_finished(run_id);
         assert!(!app.workflow_monitor.is_live(run_id));
         let finished = match &app
-            .transcript
+            .history.blocks()
             .iter()
             .find(|b| b.id == block_id)
             .unwrap()
@@ -4996,11 +4992,11 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             },
         );
         let index = app
-            .transcript
+            .history.blocks()
             .iter()
             .position(|block| matches!(block.kind, block::BlockKind::WorkflowRun(_)))
             .expect("the run minted its card");
-        let verbose = |app: &App| match &app.transcript[index].kind {
+        let verbose = |app: &App| match app.history.blocks()[index].kind {
             block::BlockKind::WorkflowRun(card) => card.verbose,
             _ => unreachable!(),
         };
@@ -5091,7 +5087,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         }
 
         let card = match &app
-            .transcript
+            .history.blocks()
             .iter()
             .find(|block| block.id == block_id)
             .expect("the run keeps its one block")
@@ -5135,7 +5131,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         });
         assert!(!app.workflow_monitor.is_live(run_id));
         let settled = match &app
-            .transcript
+            .history.blocks()
             .iter()
             .find(|block| block.id == block_id)
             .unwrap()
@@ -5237,7 +5233,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             "the same tree, at the point in the conversation where the run began: {settled}"
         );
         assert!(
-            app.transcript.iter().any(|block| block.id == block_id),
+            app.history.blocks().iter().any(|block| block.id == block_id),
             "one card, moved between surfaces rather than copied"
         );
     }
@@ -5302,11 +5298,11 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         clear_conversation(&mut app);
 
         assert!(
-            app.transcript.iter().any(|block| block.id == live_block),
+            app.history.blocks().iter().any(|block| block.id == live_block),
             "the running workflow keeps the card the region draws"
         );
         assert!(
-            !app.transcript
+            !app.history.blocks()
                 .iter()
                 .any(|block| block.id == finished_block),
             "the finished run's record leaves with the conversation it belonged to"
@@ -5360,7 +5356,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             .block_id(run_id)
             .expect("the run minted its card");
         let verbose = |app: &App| {
-            app.transcript
+            app.history.blocks()
                 .iter()
                 .find(|block| block.id == block_id)
                 .map(|block| match &block.kind {
@@ -5606,8 +5602,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 class: "multi-file".into(),
             }),
         );
-        let block_count = app.transcript.len();
-        let block_id = *app.workflow_index.get(run_id).expect("indexed workflow");
+        let block_count = app.history.blocks().len();
+        let block_id = app.history.workflow_binding(run_id).expect("indexed workflow");
         apply_event(
             &mut app,
             UiEvent::Workflow(WorkflowUiEvent::PlanReady {
@@ -5671,12 +5667,12 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             }),
         );
         assert_eq!(
-            app.transcript.len(),
+            app.history.blocks().len(),
             block_count,
             "lifecycle updates must not append sibling log lines"
         );
         let card = app
-            .transcript
+            .history.blocks()
             .iter()
             .find(|block| block.id == block_id)
             .and_then(|block| match &block.kind {
@@ -5714,9 +5710,9 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 skipped_tasks: 0,
             }),
         );
-        assert!(!app.workflow_index.contains_key(run_id));
+        assert!(app.history.workflow_binding(run_id).is_none());
         let card = app
-            .transcript
+            .history.blocks()
             .iter()
             .find(|block| block.id == block_id)
             .and_then(|block| match &block.kind {
@@ -5780,7 +5776,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             skipped_tasks: 1,
         });
         let card = app
-            .transcript
+            .history.blocks()
             .iter()
             .find_map(|block| match &block.kind {
                 block::BlockKind::Workflow(card) if card.run_id == run_id => Some(card),
@@ -5805,7 +5801,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         app.stream_text("写代码 ");
         app.stream_text("测试😀");
         app.flush_text();
-        assert!(app.transcript.iter().any(|b| b.to_text().contains("测试")));
+        assert!(app.history.blocks().iter().any(|b| b.to_text().contains("测试")));
     }
 
     #[test]
@@ -5909,7 +5905,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert_eq!(busy_notifier.run_completed(), None);
         assert!(
             busy_app
-                .transcript
+                .history.blocks()
                 .iter()
                 .any(|block| block.to_text().contains("submission was not accepted"))
         );
@@ -5934,7 +5930,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert_eq!(*returned, item);
         assert!(!app.running);
         assert!(
-            app.transcript
+            app.history.blocks()
                 .iter()
                 .all(|block| !matches!(&block.kind, block::BlockKind::User(_))),
             "a refused prompt must not appear as admitted conversation"
@@ -5954,7 +5950,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             Op::UserInput { text } if text == "preserve me exactly"
         ));
         assert_eq!(
-            app.transcript
+            app.history.blocks()
                 .iter()
                 .filter(|block| matches!(&block.kind, block::BlockKind::User(_)))
                 .count(),
@@ -6116,7 +6112,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             None,
         );
         assert_eq!(
-            app.transcript
+            app.history.blocks()
                 .iter()
                 .filter(|block| block.to_text().contains("describe this"))
                 .count(),
@@ -6244,7 +6240,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         );
         assert!(app.input_lanes.queued().is_empty(), "nothing was queued");
         assert!(
-            app.transcript
+            app.history.blocks()
                 .iter()
                 .any(|block| block.to_text().contains("cannot carry attachments")),
             "the operator is told why"
@@ -6528,7 +6524,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             app.editor.text()
         );
         assert!(
-            app.transcript
+            app.history.blocks()
                 .iter()
                 .any(|block| block.to_text().contains("image attachment refused")),
             "a drop that did not attach is never silent"
@@ -6551,7 +6547,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             "the words are still the operator's"
         );
         let refusals = app
-            .transcript
+            .history.blocks()
             .iter()
             .filter(|block| block.to_text().contains("image attachment refused"))
             .count();
@@ -6573,7 +6569,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             "renamed report.png to summary.png in the release notes"
         );
         assert!(
-            !app.transcript
+            !app.history.blocks()
                 .iter()
                 .any(|block| block.to_text().contains("image attachment refused")),
             "prose that names a file is not a failed drop"
@@ -7061,7 +7057,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         );
 
         app.flush_text();
-        for block in &app.transcript {
+        for block in app.history.blocks() {
             let retained = block.to_text();
             assert!(!retained.contains('\x1b'));
             assert!(!retained.contains('\x07'));
@@ -7472,7 +7468,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     fn approval_event_preempts_an_open_transcript_viewer_immediately() {
         let mut app = App::new();
         app.transcript_viewer
-            .open("", &app.transcript, app.transcript_revision);
+            .open("", app.history.blocks(), app.history.revision());
         assert!(app.transcript_viewer.is_open());
         apply_event(
             &mut app,
@@ -7537,7 +7533,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     async fn pending_transcript_effect_never_blocks_an_approval_transition() {
         let mut app = App::new();
         app.transcript_viewer
-            .open("", &app.transcript, app.transcript_revision);
+            .open("", app.history.blocks(), app.history.revision());
         let mut effects = transcript_effect::Supervisor::default();
         effects
             .start(transcript_effect::Request::Delay {

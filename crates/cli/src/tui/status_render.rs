@@ -84,7 +84,7 @@ pub(super) fn canonical_statusline_with_tokens(app: &App, tokens: Option<u64>) -
         .filter(|value| value.is_finite() && *value >= 0.0)
         .map(|value| (value * 1_000.0).round() as u64);
     let snapshot = StatusSnapshot::new(
-        app.transcript_revision,
+        app.history.revision(),
         [
             (
                 Field::Model,
@@ -389,14 +389,11 @@ pub(super) fn render_status(f: &mut Frame, area: Rect, density: surface::Density
             ),
             Span::styled(phase.to_string(), accent),
         ];
-        if let Some((_, activity)) = app.active_tools.back() {
+        if let Some((activity, count)) = app.tools.active_summary() {
             let activity = clip_text(activity, (area.width / 3).max(12));
             spans.push(Span::styled(format!(" · {activity}"), muted));
-            if app.active_tools.len() > 1 {
-                spans.push(Span::styled(
-                    format!(" +{}", app.active_tools.len() - 1),
-                    muted,
-                ));
+            if count > 1 {
+                spans.push(Span::styled(format!(" +{}", count - 1), muted));
             }
         }
         if let Some(product_turn) = &app.product_turn_status {

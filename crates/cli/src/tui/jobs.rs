@@ -311,7 +311,8 @@ mod tests {
                 "stderr_cursor":0
             }]),
         );
-        let block::BlockKind::Panel { title, rows } = &app.transcript.last().unwrap().kind else {
+        let block::BlockKind::Panel { title, rows } = app.history.blocks().last().unwrap().kind
+        else {
             panic!("inventory must render a semantic panel");
         };
         assert_eq!(title, "background jobs");

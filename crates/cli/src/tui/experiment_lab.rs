@@ -540,7 +540,8 @@ mod tests {
         );
         let mut app = App::new();
         render_request(&mut app, &first);
-        let block::BlockKind::Panel { title, rows } = &app.transcript.last().unwrap().kind else {
+        let block::BlockKind::Panel { title, rows } = app.history.blocks().last().unwrap().kind
+        else {
             panic!("request must render as a semantic panel");
         };
         assert_eq!(title, "experiment request");
@@ -577,7 +578,8 @@ mod tests {
         .unwrap();
         let mut app = App::new();
         render_comparison(&mut app, "evidence-bundle-v1", &verified);
-        let block::BlockKind::Panel { title, rows } = &app.transcript.last().unwrap().kind else {
+        let block::BlockKind::Panel { title, rows } = app.history.blocks().last().unwrap().kind
+        else {
             panic!("verified fixture must render as a semantic panel");
         };
         assert_eq!(title, "experiment evidence");

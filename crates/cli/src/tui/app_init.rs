@@ -6,7 +6,6 @@ use ratatui::style::{Color, Style};
 #[cfg(test)]
 use std::collections::HashSet;
 use std::collections::VecDeque;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 impl App {
@@ -29,14 +28,9 @@ impl App {
         );
         App {
             session_name: "New session".into(),
-            transcript: vec![Arc::new(welcome)],
+            history: super::transcript_history::TranscriptHistory::with_landing(welcome.kind),
             transcript_viewer: transcript_viewer::Viewer::default(),
-            transcript_revision: 0,
-            transcript_dirty_from: Some(0),
-            next_id: 1,
-            tool_index: std::collections::HashMap::new(),
-            pending_tools: VecDeque::new(),
-            workflow_index: std::collections::HashMap::new(),
+            tools: super::tool_presentations::ToolPresentations::default(),
             workflow_monitor: workflow_region::WorkflowMonitor::default(),
             workflows_panel: workflows_panel::View::default(),
             workflows_dir: None,
@@ -92,7 +86,6 @@ impl App {
             retryable_task: None,
             awaiting_first_token_since: None,
             provider_accepted: false,
-            active_tools: VecDeque::new(),
             spin: 0,
             row_map: Vec::new(),
             view_top: 0,

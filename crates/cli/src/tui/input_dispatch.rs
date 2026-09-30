@@ -77,8 +77,11 @@ pub(super) async fn dispatch<B: ratatui::backend::Backend>(
             mcp_input::handle_paste(app, &pasted);
         }
         CEvent::Paste(pasted) if app.transcript_viewer.is_open() => {
-            app.transcript_viewer
-                .handle_paste(&pasted, &app.transcript, app.transcript_revision);
+            app.transcript_viewer.handle_paste(
+                &pasted,
+                app.history.blocks(),
+                app.history.revision(),
+            );
         }
         CEvent::Paste(_) if app.workflows_panel.is_open() => {
             app.workflows_panel
@@ -196,8 +199,8 @@ pub(super) async fn dispatch<B: ratatui::backend::Backend>(
                 if let Some(effect) = app.transcript_viewer.key(
                     k.code,
                     k.modifiers,
-                    &app.transcript,
-                    app.transcript_revision,
+                    app.history.blocks(),
+                    app.history.revision(),
                 ) {
                     schedule_transcript_viewer_effect(
                         app,

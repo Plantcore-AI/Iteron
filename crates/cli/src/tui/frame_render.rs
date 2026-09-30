@@ -293,9 +293,9 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
         .min(workflow_region_cap(f.area().height));
     let fresh_landing = !app.running
         && app.pending.is_none()
-        && app.transcript.len() == 1
+        && app.history.blocks().len() == 1
         && matches!(
-            app.transcript.first().map(|block| &block.kind),
+            app.history.blocks().first().map(|block| &block.kind),
             Some(block::BlockKind::Welcome { .. })
         );
     let surface = if fresh_landing {
@@ -360,8 +360,8 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
         });
     }
     let geometry_changed = app.geometry.prepare(
-        &app.transcript,
-        app.transcript_dirty_from,
+        app.history.blocks(),
+        app.history.dirty_from(),
         super::transcript_geometry::GeometryContext {
             width: inner_w,
             theme_epoch: app.theme_epoch,
@@ -371,7 +371,7 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
             region_block,
         },
     );
-    app.transcript_dirty_from = None;
+    app.history.geometry_prepared();
 
     // The two in-flight projections are not retained transcript blocks. Their plan is bounded to
     // four entries (gap + thinking + gap + answer) and is appended after the indexed geometry.
@@ -468,7 +468,7 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
                 }
             }
             transcript_layout::Source::LiveBlock(block_index) => {
-                if let Some(block) = app.transcript.get(block_index) {
+                if let Some(block) = app.history.blocks().get(block_index) {
                     let rendered = block.render_with_hyperlinks(
                         inner_w,
                         &app.theme,

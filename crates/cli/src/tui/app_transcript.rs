@@ -1,33 +1,20 @@
+use super::tool_presentations::ToolReveal;
 use super::{
-    App, Arc, Duration, FIRST_TOKEN_SLOW_AFTER, FIRST_TOKEN_STALL_AFTER, FirstTokenStall,
-    FirstTokenState, Instant, MAX_PENDING_TOOL_PROJECTIONS, PendingToolProjection,
-    TOOL_REVEAL_DELAY, block, ui_safe_text,
+    App, Duration, FIRST_TOKEN_SLOW_AFTER, FIRST_TOKEN_STALL_AFTER, FirstTokenStall,
+    FirstTokenState, Instant, block, ui_safe_text,
 };
 
 impl App {
     /// Push a structured block, assigning a monotonic id; returns the id.
     pub(super) fn push_block(&mut self, kind: block::BlockKind) -> u64 {
-        let id = self.next_id;
-        self.next_id += 1;
-        let changed_from = self.transcript.len();
-        self.transcript.push(Arc::new(block::Block::new(id, kind)));
-        self.mark_transcript_changed_from(changed_from);
+        let id = self.history.append(kind);
         self.autoscroll();
         id
     }
 
     pub(super) fn mark_transcript_changed(&mut self) {
-        self.mark_transcript_changed_from(0);
+        self.history.mark_changed_from(0);
     }
-
-    pub(super) fn mark_transcript_changed_from(&mut self, block_index: usize) {
-        self.transcript_revision = self.transcript_revision.wrapping_add(1);
-        self.transcript_dirty_from = Some(
-            self.transcript_dirty_from
-                .map_or(block_index, |current| current.min(block_index)),
-        );
-    }
-
     /// Echo the operator's submitted prompt as a User block.
     pub(super) fn push_user(&mut self, text: impl Into<String>) {
         self.flush_text();
@@ -110,23 +97,10 @@ impl App {
         let ids = block_ids
             .into_iter()
             .collect::<std::collections::HashSet<_>>();
-        let insertion = self
-            .transcript
-            .iter()
-            .position(|block| ids.contains(&block.id))
-            .unwrap_or(self.transcript.len());
-        self.transcript.retain(|block| !ids.contains(&block.id));
         self.geometry.forget(&ids);
-        if let Some(document) = document {
-            let id = self.next_id;
-            self.next_id = self.next_id.wrapping_add(1);
-            self.transcript.insert(
-                insertion.min(self.transcript.len()),
-                Arc::new(block::Block::new(id, block::BlockKind::Assistant(document))),
-            );
+        if let Some(id) = self.history.replace_answer(&ids, document) {
             self.assistant.track_block(id);
         }
-        self.mark_transcript_changed_from(insertion.min(self.transcript.len()));
         self.autoscroll();
         true
     }
@@ -147,77 +121,30 @@ impl App {
         now: Instant,
     ) {
         self.flush_text();
-        let name = ui_safe_text(&name);
-        let args = ui_safe_json(&args);
-        let activity = block::activity_label(&name, &args);
-        self.active_tools.retain(|(active_id, _)| active_id != &id);
-        self.active_tools.push_back((id.clone(), activity));
-        while self.active_tools.len() > 16 {
-            self.active_tools.pop_front();
+        for revealed in self.tools.start(id, name, args, now) {
+            self.reveal_tool(revealed);
         }
-
-        // Duplicate starts refresh one projection instead of leaking an orphan running card. A
-        // start arriving after reveal keeps the existing id-correlated card; protocol ids are
-        // expected to be unique within a run, but a repeated transport notification must be safe.
-        if self.tool_index.contains_key(&id) {
-            self.autoscroll();
-            return;
-        }
-        self.pending_tools.retain(|pending| pending.id != id);
-        while self.pending_tools.len()
-            >= iteron_tunables::param_integer(
-                "cli.tui.driver_support.max_pending_tool_projections",
-                MAX_PENDING_TOOL_PROJECTIONS,
-            )
-        {
-            let oldest = self
-                .pending_tools
-                .pop_front()
-                .expect("the pending projection cap was reached");
-            self.reveal_tool(oldest);
-        }
-        self.pending_tools.push_back(PendingToolProjection {
-            id,
-            name,
-            args,
-            started: now,
-            reveal_deadline: now
-                + iteron_tunables::param_duration(
-                    "cli.tui.driver_support.tool_reveal_delay",
-                    TOOL_REVEAL_DELAY,
-                ),
-        });
         self.autoscroll();
     }
 
     /// When the next queued tool card stops being suppressed, so the render loop can sleep exactly
     /// that long instead of polling for it.
     pub(super) fn next_tool_reveal(&self) -> Option<Instant> {
-        self.pending_tools
-            .front()
-            .map(|pending| pending.reveal_deadline)
+        self.tools.next_reveal()
     }
 
     /// Advance the anti-flash timer. Passing `now` makes the state machine deterministic in tests;
     /// production calls it once per render-loop wakeup, scheduled by `next_tool_reveal`.
     pub(super) fn advance_tool_presentations(&mut self, now: Instant) -> bool {
         let mut changed = false;
-        while self
-            .pending_tools
-            .front()
-            .is_some_and(|pending| now >= pending.reveal_deadline)
-        {
-            let pending = self
-                .pending_tools
-                .pop_front()
-                .expect("front was checked above");
+        while let Some(pending) = self.tools.take_due(now) {
             self.reveal_tool(pending);
             changed = true;
         }
         changed
     }
 
-    pub(super) fn reveal_tool(&mut self, pending: PendingToolProjection) {
+    pub(super) fn reveal_tool(&mut self, pending: ToolReveal) {
         let id = pending.id;
         let card = block::ToolCard {
             name: pending.name,
@@ -231,7 +158,7 @@ impl App {
             open: false,
         };
         let bid = self.push_block(block::BlockKind::Tool(card));
-        self.tool_index.insert(id, bid);
+        self.tools.bind_revealed(id, bid);
     }
 
     /// A tool finished: mutate its originating card by id (R2), or append one if the start was missed.
@@ -256,7 +183,7 @@ impl App {
         now: Instant,
     ) {
         let output = ui_safe_text(&output);
-        self.active_tools.retain(|(active_id, _)| active_id != id);
+        self.tools.finish_activity(id);
         let status = if ok {
             block::ToolStatus::Ok
         } else {
@@ -266,15 +193,7 @@ impl App {
         // A fast completion becomes one already-settled card: no running-row flash, no deletion.
         // Failures, diffs, mutations, and ordinary read/search/list results therefore all retain
         // their transcript evidence until the protocol grows an explicit Ephemeral disposition.
-        if let Some(index) = self
-            .pending_tools
-            .iter()
-            .position(|pending| pending.id == id)
-        {
-            let pending = self
-                .pending_tools
-                .remove(index)
-                .expect("position came from this deque");
+        if let Some(pending) = self.tools.take_pending(id) {
             let card = block::ToolCard {
                 name: pending.name,
                 args: pending.args,
@@ -290,18 +209,12 @@ impl App {
             return;
         }
 
-        if let Some(&bid) = self.tool_index.get(id)
-            && let Some(b) = self.transcript.iter_mut().find(|b| b.id == bid)
-            && let block::BlockKind::Tool(card) = &mut Arc::make_mut(b).kind
+        if let Some(bid) = self.tools.revealed_block(id)
+            && self.history.is_tool(bid)
         {
-            card.status = status;
-            card.output = output;
-            card.diff = diff;
-            card.exit_code = exit_code;
-            card.elapsed = Some(now.saturating_duration_since(card.started));
-            Arc::make_mut(b).touch();
-            self.tool_index.remove(id);
-            self.mark_transcript_changed();
+            self.history
+                .settle_tool(bid, status, output, diff, exit_code, now);
+            self.tools.finish(id);
             self.autoscroll();
             return;
         }
@@ -320,14 +233,7 @@ impl App {
     }
 
     pub(super) fn settle_unfinished_tools(&mut self) {
-        let mut ids: Vec<String> = self
-            .pending_tools
-            .iter()
-            .map(|pending| pending.id.clone())
-            .chain(self.tool_index.keys().cloned())
-            .collect();
-        ids.sort();
-        ids.dedup();
+        let ids = self.tools.unfinished_ids();
         for id in ids {
             self.tool_end(
                 &id,
@@ -337,19 +243,7 @@ impl App {
                 None,
             );
         }
-        self.active_tools.clear();
-    }
-
-    pub(super) fn workflow_card_mut(&mut self, run_id: &str) -> Option<&mut block::WorkflowCard> {
-        let block_id = *self.workflow_index.get(run_id)?;
-        self.transcript
-            .iter_mut()
-            .find(|block| block.id == block_id)
-            .map(Arc::make_mut)
-            .and_then(|block| match &mut block.kind {
-                block::BlockKind::Workflow(card) => Some(card),
-                _ => None,
-            })
+        self.tools.clear();
     }
 }
 
@@ -358,7 +252,8 @@ mod terminal_reconcile_tests {
     use super::*;
 
     fn visible_current_answer(app: &App) -> String {
-        app.transcript
+        app.history
+            .blocks()
             .iter()
             .filter(|block| app.assistant.block_ids().contains(&block.id))
             .filter_map(|block| match &block.kind {
@@ -403,9 +298,14 @@ mod terminal_reconcile_tests {
         assert!(app.reconcile_terminal_assistant("abc"));
         assert_eq!(visible_current_answer(&app), "abc");
         assert_eq!(app.assistant.authority(), "abc");
-        assert!(app.transcript.iter().any(|block| block.id == prior));
-        assert!(app.transcript.iter().any(|block| block.id == tool));
-        assert!(!app.transcript.iter().any(|block| block.id == duplicated));
+        assert!(app.history.blocks().iter().any(|block| block.id == prior));
+        assert!(app.history.blocks().iter().any(|block| block.id == tool));
+        assert!(
+            !app.history
+                .blocks()
+                .iter()
+                .any(|block| block.id == duplicated)
+        );
     }
 
     #[test]

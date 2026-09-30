@@ -238,7 +238,7 @@ mod tests {
                 "event_subscriptions":{"total":1,"items":["sample__events"]}
             }}),
         );
-        let text = app.transcript.last().unwrap().to_text();
+        let text = app.history.blocks().last().unwrap().to_text();
         assert!(text.contains("no_token_ceiling_configured"));
         assert!(text.contains("Per-extension monetary cost is unavailable"));
         let screen = crate::tui::tests::render_text(&mut app, 120, 30);
@@ -250,7 +250,7 @@ mod tests {
                 "events":[],"scanned":0,"delivery":"lossy_content_free_lifecycle_bus_not_durable_replay"
             }}),
         );
-        let text = app.transcript.last().unwrap().to_text();
+        let text = app.history.blocks().last().unwrap().to_text();
         assert!(text.contains("does not prove completion"));
         assert!(!app.running);
     }

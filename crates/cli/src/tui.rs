@@ -100,9 +100,11 @@ mod status_line;
 mod submission;
 mod terminal_input;
 mod terminal_lifecycle;
+mod tool_presentations;
 pub(crate) mod transcript_effect;
 mod transcript_export;
 mod transcript_geometry;
+mod transcript_history;
 mod transcript_layout;
 mod transcript_viewer;
 mod tunables_view;
@@ -123,9 +125,9 @@ use crate::image_input::{self, ImageAttachments};
 use crate::paste_input;
 use crate::providers::{ModelSelection, ProviderDirectory};
 use crate::route::RouteView;
-use crate::runtime::{
-    UiEvent, WorkflowAgentOutcomeUi, WorkflowPhaseUi, WorkflowRunOutcomeUi, WorkflowUiEvent,
-};
+use crate::runtime::{UiEvent, WorkflowUiEvent};
+#[cfg(test)]
+use crate::runtime::{WorkflowAgentOutcomeUi, WorkflowPhaseUi, WorkflowRunOutcomeUi};
 use crate::semantic_text::{is_unsafe_display_char, ui_safe_json, ui_safe_text};
 use crate::{block, keymap, prompt_history, startup, surface, theme};
 #[cfg(test)]
@@ -158,13 +160,14 @@ use control_submission::{
 use crossterm::event::{
     Event as CEvent, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
 };
+#[cfg(test)]
+use driver_support::TOOL_REVEAL_DELAY;
 use driver_support::{
     CatchUp, FIRST_TOKEN_SPINNER_TICK, FRAME_COALESCE, InputThreadControl, MAX_BLOCKS,
-    MAX_EQ_EVENTS_PER_TICK, MAX_PENDING_SUBMISSIONS, MAX_PENDING_TOOL_PROJECTIONS,
-    MAX_SUBMISSION_BYTES, RESIZE_DEBOUNCE, SPINNER_TICK, TERMINAL_READ_SLICE, TOOL_REVEAL_DELAY,
-    apply_vim_action, bold, byte_index, complete_path, dim, display_col, eq_tick_slots,
-    external_edit_round_trip, fg, grapheme_width, item, kv, next_wake, parse_cap,
-    reload_operator_keymap, service_input_control, update_keymap_status, wake_until,
+    MAX_EQ_EVENTS_PER_TICK, MAX_PENDING_SUBMISSIONS, MAX_SUBMISSION_BYTES, RESIZE_DEBOUNCE,
+    SPINNER_TICK, TERMINAL_READ_SLICE, apply_vim_action, bold, byte_index, complete_path, dim,
+    display_col, eq_tick_slots, external_edit_round_trip, fg, grapheme_width, item, kv, next_wake,
+    parse_cap, reload_operator_keymap, service_input_control, update_keymap_status, wake_until,
 };
 pub(crate) use driver_support::{char_width, text_width};
 use event_actions::{
@@ -524,19 +527,6 @@ struct PendingTurnReceipt {
     display_text: String,
 }
 
-/// A model tool which is active in the activity shelf but has not yet earned a transcript row.
-///
-/// This is deliberately a presentation projection: the kernel/rollout already owns the durable
-/// lifecycle. Holding the card here prevents a sub-300 ms tool from flashing a `running` row and
-/// immediately replacing it with a settled one; it never suppresses the eventual completed card.
-struct PendingToolProjection {
-    id: String,
-    name: String,
-    args: serde_json::Value,
-    started: Instant,
-    reveal_deadline: Instant,
-}
-
 /// How long a model request may go without a first token before the interface stops calling it
 /// ordinary, and before it stops calling it merely slow. Both sit well inside the 45s provider
 /// inactivity deadline, which is the point: the operator learns
@@ -638,28 +628,9 @@ struct App {
     /// Stable operator-facing identity of the current rollout. This follows session adoption and
     /// rename, and is reused by footer, fullscreen panels, and the physical terminal tab title.
     session_name: String,
-    /// The structured semantic transcript (ADR-015): typed self-rendering blocks, not a flat log.
-    transcript: Vec<Arc<block::Block>>,
-    /// Fullscreen, presentation-only inspection state. Its bounded index reconciles against the
-    /// authoritative transcript's stable ids and revisions only when this authority revision
-    /// changes; ordinary redraws never rescan or refold transcript bytes.
+    history: transcript_history::TranscriptHistory,
     transcript_viewer: transcript_viewer::Viewer,
-    /// Monotonic notification for semantic transcript insertions, mutations, clears, and eviction.
-    /// This is the O(1) stable-frame seam for the fullscreen viewer.
-    transcript_revision: u64,
-    /// Lowest transcript block whose retained geometry may have changed. `None` means the height
-    /// index is current; appends and card updates splice only this suffix on the next paint.
-    transcript_dirty_from: Option<usize>,
-    /// Monotonic block-id source; a `ToolEnd` mutates its card by id, never by Vec position (R2).
-    next_id: u64,
-    /// Revealed tool_use id -> the block id of its card, so a late `ToolEnd` finds its originating
-    /// card. Starts live in `pending_tools` during the anti-flash reveal delay.
-    tool_index: std::collections::HashMap<String, u64>,
-    /// Start-ordered tool projections waiting for the reveal deadline. The activity shelf is
-    /// updated immediately, independently of this transcript delay.
-    pending_tools: VecDeque<PendingToolProjection>,
-    /// workflow run id -> its one live card. Lifecycle events mutate this block in place.
-    workflow_index: std::collections::HashMap<String, u64>,
+    tools: tool_presentations::ToolPresentations,
     /// The workflow region's store: the QuickJS `iteron-workflow` runs this TUI is watching, each
     /// bound to the one live phase→agent tree card that renders it (design §3.2 store), plus the
     /// region's focus and collapse state. The interactive-REPL seam, driven by
@@ -778,7 +749,6 @@ struct App {
     provider_accepted: bool,
     /// Currently-running tool calls, ordered by start time. This feeds the one-line activity shelf;
     /// full details remain in correlated transcript cards.
-    active_tools: VecDeque<(String, String)>,
     spin: usize,
     /// Hit-test map built each frame: the transcript block index for each rendered transcript row
     /// (usize::MAX for spacers / the streaming tail), so a mouse click can fold the right card (R9).

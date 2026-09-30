@@ -6,43 +6,17 @@ use super::{
 impl App {
     pub(super) fn autoscroll(&mut self) {
         self.viewport.observe_output();
-        // Bounded: evict the oldest settled blocks past the cap. A nonterminal workflow is a live
-        // projection of durable state, so pin its one card until RunFinished arrives; otherwise a
-        // long foreground transcript can silently discard the only place the terminal update can
-        // land. With the current one-foreground-run TUI there is always an evictable settled block.
-        //
-        // A live script run's card is pinned for a second reason as well: it is the tree the
-        // workflow region draws, and the region renders that card rather than a copy of it (see
-        // `workflow_region`). Evicting it would blank the region mid-run — the failure this pin
-        // already existed to prevent, on the surface the operator is actually watching.
-        if self.transcript.len()
-            > iteron_tunables::param_integer("cli.tui.driver_support.max_blocks", MAX_BLOCKS)
-        {
-            let mut drop = self.transcript.len()
-                - iteron_tunables::param_integer("cli.tui.driver_support.max_blocks", MAX_BLOCKS);
-            let pinned = self
-                .workflow_index
-                .values()
-                .copied()
-                .chain(self.workflow_monitor.live_blocks())
-                .collect::<std::collections::HashSet<_>>();
-            let mut evicted = std::collections::HashSet::new();
-            self.transcript.retain(|block| {
-                if drop > 0 && !pinned.contains(&block.id) {
-                    drop -= 1;
-                    evicted.insert(block.id);
-                    false
-                } else {
-                    true
-                }
-            });
-            self.geometry.forget(&evicted);
-            self.tool_index.retain(|_, bid| !evicted.contains(bid));
-            self.workflow_index.retain(|_, bid| !evicted.contains(bid));
-            if !evicted.is_empty() {
-                self.mark_transcript_changed_from(0);
-            }
-        }
+        let pinned = self
+            .history
+            .live_workflow_blocks()
+            .chain(self.workflow_monitor.live_blocks())
+            .collect::<std::collections::HashSet<_>>();
+        let evicted = self.history.evict_settled(
+            iteron_tunables::param_integer("cli.tui.driver_support.max_blocks", MAX_BLOCKS),
+            &pinned,
+        );
+        self.geometry.forget(&evicted);
+        self.tools.forget_blocks(&evicted);
     }
 
     pub(super) fn follow_latest(&mut self) {

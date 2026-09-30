@@ -1,10 +1,10 @@
 //! Frontend event driver, terminal ownership, bounded workers and teardown.
 
 use super::{
-    App, Arc, CEvent, CatchUp, Duration, FIRST_TOKEN_SPINNER_TICK, FRAME_COALESCE,
-    InputThreadControl, Instant, PromptHistoryMode, ProviderDirectory, RouteView, SPINNER_TICK,
-    Session, TERMINAL_READ_SLICE, TermGuard, Terminal, TerminalOptions, VecDeque, Viewport,
-    app_server, apply_server_event, apply_transcript_effect_event, block, cached_workspace_dirty,
+    App, CEvent, CatchUp, Duration, FIRST_TOKEN_SPINNER_TICK, FRAME_COALESCE, InputThreadControl,
+    Instant, PromptHistoryMode, ProviderDirectory, RouteView, SPINNER_TICK, Session,
+    TERMINAL_READ_SLICE, TermGuard, Terminal, TerminalOptions, VecDeque, Viewport, app_server,
+    apply_server_event, apply_transcript_effect_event, block, cached_workspace_dirty,
     dispatch_slash_command, draw, finish_attachment_effect, hyperlink, input_dispatch, keymap,
     local_job_wake, next_wake, notification, product_projection, prompt_history,
     report_stopped_workflows, restore_terminal, schedule_transcript_viewer_effect,
@@ -200,14 +200,11 @@ pub async fn run(
         // raster logo and colour-only distinctions from the initial surface. Later blocks already
         // carry role/status words in addition to glyphs, so monochrome preserves their semantics.
         app.set_theme(theme::Theme::mono());
-        app.transcript.clear();
-        app.transcript.push(Arc::new(block::Block::new(
-            0,
-            block::BlockKind::Notice {
-                level: block::NoticeLevel::Info,
-                text: "Iteron. Ready. Screen-reader semantic presentation is active.".into(),
-            },
-        )));
+        app.history.clear();
+        app.history.append(block::BlockKind::Notice {
+            level: block::NoticeLevel::Info,
+            text: "Iteron. Ready. Screen-reader semantic presentation is active.".into(),
+        });
         app.mark_transcript_changed();
     } else if !terminal_capabilities.may_use_color() {
         app.set_theme(theme::Theme::mono());
@@ -514,7 +511,7 @@ pub async fn run(
         if app.transcript_viewer.is_open()
             && app
                 .transcript_viewer
-                .sync_if_changed(&app.transcript, app.transcript_revision)
+                .sync_if_changed(app.history.blocks(), app.history.revision())
         {
             redraw = true;
         }

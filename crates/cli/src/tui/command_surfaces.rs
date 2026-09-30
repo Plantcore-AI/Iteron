@@ -280,8 +280,8 @@ pub(super) fn schedule_transcript_viewer_effect(
 ) {
     let snapshot_revision = effect.snapshot_revision();
     app.transcript_viewer
-        .reconcile_if_changed(&app.transcript, app.transcript_revision);
-    if snapshot_revision != app.transcript_revision {
+        .reconcile_if_changed(app.history.blocks(), app.history.revision());
+    if snapshot_revision != app.history.revision() {
         app.transcript_viewer
             .set_notice("transcript changed before the effect snapshot was captured");
         return;
@@ -320,7 +320,7 @@ pub(super) fn schedule_transcript_viewer_effect(
             transcript_effect::Request::Export {
                 workspace: workspace.to_path_buf(),
                 rollout_path: rollout_path.to_path_buf(),
-                blocks: app.transcript.clone(),
+                blocks: app.history.snapshot(),
                 selected_ids: ids,
                 requested: requested.into(),
                 collision: transcript_export::CollisionPolicy::Versioned,
@@ -343,7 +343,7 @@ pub(super) fn open_transcript_viewer(
     query: &str,
 ) {
     app.transcript_viewer
-        .open(query, &app.transcript, app.transcript_revision);
+        .open(query, app.history.blocks(), app.history.revision());
     if let Some(label) = supervisor.label() {
         app.transcript_viewer.begin_effect(label);
     }
@@ -367,7 +367,7 @@ pub(super) fn schedule_slash_export(
     let request = transcript_effect::Request::Export {
         workspace: workspace.to_path_buf(),
         rollout_path: rollout_path.to_path_buf(),
-        blocks: app.transcript.clone(),
+        blocks: app.history.snapshot(),
         selected_ids: None,
         requested: requested.into(),
         collision,
@@ -748,12 +748,12 @@ pub(super) fn show_agent_catalog(app: &mut App, session: &Session) {
 /// pointing at blocks that no longer exist.
 pub(super) fn clear_conversation(app: &mut App) {
     let live_workflow_blocks = app.workflow_monitor.live_blocks();
-    app.transcript
-        .retain(|block| live_workflow_blocks.contains(&block.id));
+    app.history
+        .retain_ids(&live_workflow_blocks.into_iter().collect());
     app.workflow_monitor.clear_finished();
     app.mark_transcript_changed();
-    app.tool_index.clear();
-    app.workflow_index.clear();
+    app.tools.clear_revealed();
+    app.history.clear_workflow_bindings();
     app.assistant.reset();
     app.geometry.clear();
     app.push(dim(), "transcript cleared");

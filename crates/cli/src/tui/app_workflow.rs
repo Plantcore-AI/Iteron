@@ -1,4 +1,4 @@
-use super::*;
+use super::{App, Line, block, fmt_token_count, ui_safe_text, workflow_region};
 
 impl App {
     /// Project one script-engine lifecycle message onto the live phase→agent tree (ADR-0001 step 1,
@@ -61,7 +61,12 @@ impl App {
     /// `meta.phases` so the whole shape of the run is on the first frame. Idempotent: a repeated
     /// `Started` for a live run re-declares nothing (`declare_phases` skips titles it already has).
     pub(super) fn workflow_run_started(&mut self, run_id: &str, name: &str, phases: &[String]) {
-        if self.workflow_run_card_mut(run_id).is_none() {
+        if self
+            .workflow_monitor
+            .block_id(run_id)
+            .and_then(|id| self.history.script_workflow_card(id))
+            .is_none()
+        {
             self.flush_text();
             let card = block::WorkflowRunCard::new(
                 ui_safe_text(run_id),
@@ -73,20 +78,9 @@ impl App {
                 workflow_region::WorkflowRunSignal::Live { block_id },
             );
         }
-        let block_id = self.workflow_monitor.block_id(run_id);
-        if let Some(card) = self.workflow_run_card_mut(run_id) {
-            card.declare_phases(
-                phases
-                    .iter()
-                    .map(|title| crate::workflow::ui_safe_label(title)),
-            );
+        if let Some(id) = self.workflow_monitor.block_id(run_id) {
+            self.history.declare_workflow_phases(id, phases);
         }
-        let changed_index =
-            block_id.and_then(|id| self.transcript.iter().position(|block| block.id == id));
-        if let Some(block) = changed_index.and_then(|index| self.transcript.get_mut(index)) {
-            Arc::make_mut(block).touch();
-        }
-        self.mark_transcript_changed_from(changed_index.unwrap_or(0));
         self.autoscroll();
     }
 
@@ -101,7 +95,8 @@ impl App {
         let Some(block_id) = self.workflow_monitor.region_block() else {
             return Vec::new();
         };
-        self.transcript
+        self.history
+            .blocks()
             .iter()
             .find(|block| block.id == block_id)
             .and_then(|block| match &block.kind {
@@ -112,35 +107,18 @@ impl App {
             .unwrap_or_default()
     }
 
-    // REPL seam (see `workflow_monitor`). Live since ADR-0001 step 1: `app_server::ServerEvent`
-    // carries the engine's progress off the kernel thread and `workflow_run_ui_event` lands it here.
-    pub(super) fn workflow_run_card_mut(
-        &mut self,
-        run_id: &str,
-    ) -> Option<&mut block::WorkflowRunCard> {
-        let block_id = self.workflow_monitor.block_id(run_id)?;
-        self.transcript
-            .iter_mut()
-            .find(|block| block.id == block_id)
-            .map(Arc::make_mut)
-            .and_then(|block| match &mut block.kind {
-                block::BlockKind::WorkflowRun(card) => Some(card),
-                _ => None,
-            })
-    }
-
-    /// Upsert one QuickJS `iteron-workflow` progress event into its one live phase→agent tree card
-    /// (design §3.2), creating the card on first sight of a run id. This is the interactive-TUI seam
-    /// for a workflow launched from the REPL; the one-shot `iteron workflow run` command drives an
-    /// equivalent card through its own live loop (`workflow::run_live`). Wired up by ADR-0001
-    /// step 1 (docs/project/decisions/0001-workflow-renderer-convergence.md).
     pub(super) fn workflow_run_event(
         &mut self,
         run_id: &str,
         name: &str,
         event: iteron_workflow::events::ProgressEvent,
     ) {
-        if self.workflow_run_card_mut(run_id).is_none() {
+        if self
+            .workflow_monitor
+            .block_id(run_id)
+            .and_then(|id| self.history.script_workflow_card(id))
+            .is_none()
+        {
             self.flush_text();
             let card = block::WorkflowRunCard::new(ui_safe_text(run_id), ui_safe_text(name));
             let block_id = self.push_block(block::BlockKind::WorkflowRun(card));
@@ -149,20 +127,8 @@ impl App {
                 workflow_region::WorkflowRunSignal::Live { block_id },
             );
         }
-        let changed = if let Some(card) = self.workflow_run_card_mut(run_id) {
-            card.ingest(event);
-            true
-        } else {
-            false
-        };
-        if changed {
-            let block_id = self.workflow_monitor.block_id(run_id);
-            let changed_index =
-                block_id.and_then(|id| self.transcript.iter().position(|block| block.id == id));
-            if let Some(block) = changed_index.and_then(|index| self.transcript.get_mut(index)) {
-                Arc::make_mut(block).touch();
-            }
-            self.mark_transcript_changed_from(changed_index.unwrap_or(0));
+        if let Some(id) = self.workflow_monitor.block_id(run_id) {
+            self.history.ingest_workflow_progress(id, event);
         }
         self.autoscroll();
     }
@@ -170,20 +136,8 @@ impl App {
     /// Mark a QuickJS workflow run terminal (its engine future resolved). The card collapses finished
     /// agents but stays in the transcript.
     pub(super) fn workflow_run_finished(&mut self, run_id: &str) {
-        let block_id = self.workflow_monitor.block_id(run_id);
-        let changed = if let Some(card) = self.workflow_run_card_mut(run_id) {
-            card.finished = true;
-            true
-        } else {
-            false
-        };
-        if changed {
-            let changed_index =
-                block_id.and_then(|id| self.transcript.iter().position(|block| block.id == id));
-            if let Some(block) = changed_index.and_then(|index| self.transcript.get_mut(index)) {
-                Arc::make_mut(block).touch();
-            }
-            self.mark_transcript_changed_from(changed_index.unwrap_or(0));
+        if let Some(id) = self.workflow_monitor.block_id(run_id) {
+            self.history.finish_workflow_run(id);
         }
         // Settling ends the live binding: the card stays in the transcript, but events for this run
         // no longer land on it.
@@ -199,43 +153,14 @@ impl App {
         // the card from that answer keeps one writer for one bit; a block the store does not know
         // answers `None` and its card falls back to flipping itself.
         let workflow_run_verbose = self
-            .transcript
+            .history
+            .blocks()
             .get(i)
             .filter(|b| matches!(b.kind, block::BlockKind::WorkflowRun(_)))
             .map(|b| b.id)
             .and_then(|block_id| self.workflow_monitor.toggle_collapsed_for_block(block_id))
             .map(|collapsed| !collapsed);
-        if let Some(b) = self.transcript.get_mut(i) {
-            let b = Arc::make_mut(b);
-            let changed = match &mut b.kind {
-                block::BlockKind::Tool(c) => {
-                    c.open = !c.open;
-                    true
-                }
-                block::BlockKind::Workflow(c) => {
-                    c.open = !c.open;
-                    true
-                }
-                block::BlockKind::WorkflowRun(c) => {
-                    // Open the full phase/agent tree, or return to the one-line run summary.
-                    c.verbose = workflow_run_verbose.unwrap_or(!c.verbose);
-                    true
-                }
-                block::BlockKind::Thinking { open, .. } => {
-                    *open = !*open;
-                    true
-                }
-                block::BlockKind::Error { open, .. } => {
-                    *open = !*open;
-                    true
-                }
-                _ => false,
-            };
-            if changed {
-                b.touch();
-                self.mark_transcript_changed_from(i);
-            }
-        }
+        self.history.toggle_fold(i, workflow_run_verbose);
     }
 
     /// Ctrl-O: toggle the fold of the most recent collapsible block (Claude Code's `ctrl+o` expand
@@ -248,14 +173,15 @@ impl App {
         // runs an operator wants to expand.
         if let Some(block_id) = self.workflow_monitor.region_block()
             && let Some(i) = self
-                .transcript
+                .history
+                .blocks()
                 .iter()
                 .position(|block| block.id == block_id)
         {
             self.toggle_fold(i);
             return;
         }
-        if let Some(i) = self.transcript.iter().rposition(|b| {
+        if let Some(i) = self.history.blocks().iter().rposition(|b| {
             matches!(
                 b.kind,
                 block::BlockKind::Tool(_)
