@@ -1139,6 +1139,11 @@ pub enum EventKind {
         mode: crate::PermissionMode,
         rules: crate::PermissionRules,
     },
+    /// Host-resolved low-trust reference admission intent, written before its Message.
+    /// This is not request consumption and never replaces the stable context snapshot.
+    MemoryReferenceAdmittedV1 {
+        admission: crate::memory_reference::MemoryReferenceAdmissionV1,
+    },
     /// The exact context (environment + instructions + memory/skills) injected into the stable
     /// prefix this run
     /// (REC-INJECT, R5-review item 1). Replay re-materializes context FROM this record, never from

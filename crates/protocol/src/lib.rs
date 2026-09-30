@@ -34,6 +34,7 @@ pub mod extension_dispatch;
 pub mod ids;
 pub mod intent;
 pub mod lifecycle;
+pub mod memory_reference;
 pub mod message;
 pub mod permission;
 pub mod plantcore;

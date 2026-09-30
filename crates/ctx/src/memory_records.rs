@@ -291,6 +291,54 @@ impl MemoryRecordOwner {
         }
         Ok(record)
     }
+    pub fn capture_deletion_receipt(
+        store_root: &Path,
+        workspace: &Path,
+        id: &str,
+    ) -> io::Result<MemoryRecordReceipt> {
+        let record = Self::read(store_root)?
+            .into_iter()
+            .find(|record| record.id == id)
+            .ok_or_else(missing)?;
+        if !record.deleted {
+            return Err(conflict());
+        }
+        record.metadata.validate()?;
+        if let MemoryRecordScope::Workspace { workspace_sha256 } = &record.metadata.scope
+            && workspace_digest(workspace)? != *workspace_sha256
+        {
+            return Err(invalid());
+        }
+        Ok(MemoryRecordReceipt {
+            id: id.into(),
+            revision: record.revision,
+            record_sha256: digest(&serde_json::to_vec(&record).map_err(|_| invalid())?),
+            store_sha256: workspace_digest(store_root)?,
+            workspace_sha256: workspace_digest(workspace)?,
+        })
+    }
+    pub fn resolve_deletion_receipt(
+        store_root: &Path,
+        workspace: &Path,
+        receipt: &MemoryRecordReceipt,
+    ) -> io::Result<MemoryRecord> {
+        if workspace_digest(store_root)? != receipt.store_sha256
+            || workspace_digest(workspace)? != receipt.workspace_sha256
+        {
+            return Err(invalid());
+        }
+        let record = Self::read(store_root)?
+            .into_iter()
+            .find(|record| record.id == receipt.id)
+            .ok_or_else(missing)?;
+        if !record.deleted
+            || record.revision != receipt.revision
+            || digest(&serde_json::to_vec(&record).map_err(|_| invalid())?) != receipt.record_sha256
+        {
+            return Err(conflict());
+        }
+        Ok(record)
+    }
     pub fn revision(&self) -> u64 {
         self.snapshot.revision
     }
