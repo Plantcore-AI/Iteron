@@ -1339,6 +1339,7 @@ dependencies = [
  "iteron-ctx",
  "iteron-protocol",
  "iteron-tunables",
+ "libc",
  "serde",
  "serde_json",
  "sha2",

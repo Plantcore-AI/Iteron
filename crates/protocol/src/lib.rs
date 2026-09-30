@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 pub use iteron_tunables::param_integer;
 
 pub mod activity;
+pub mod agent_control;
 pub mod artifact;
 pub mod bundle;
 pub mod capability_set;

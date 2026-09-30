@@ -13,8 +13,12 @@
 //! may compose these utilities or use the generic bounded workflow engine directly.
 
 mod catalog;
+mod controller;
+mod controller_error;
+mod controller_file;
 mod decompose;
 mod def;
+mod mailbox;
 mod planner;
 mod policy;
 mod reduce;
@@ -22,6 +26,12 @@ mod snapshot;
 mod stage;
 
 pub use catalog::{AgentCatalog, AgentCatalogRuntimeIdentity, LoadError};
+pub use controller::{
+    AgentActor, AgentController, AgentControllerConfig, AgentControllerJournal,
+    AgentControllerSnapshot,
+};
+pub use controller_error::{ControllerError, ControllerStoreError};
+pub use controller_file::AgentFileJournal;
 pub use decompose::{
     Decomposer, FAN_CAP, LEAF_MAX_CHARS, MAX_ROUTER_TASK_BYTES, NormalizedLeaves,
     ROUTER_SLOT_VERSION, RepoSignals, RouterProposal, RouterRoute, RouterSlotDecision,
@@ -31,6 +41,7 @@ pub use def::{
     AgentDef, DecompositionProfile, ISOLATED_WRITER_NAME, ISOLATED_WRITER_TOOLS,
     MIN_SUBAGENT_TURNS, READ_ONLY_TOOLS, ToolFilter, subagent_budget, subagent_budget_ceiling,
 };
+pub use mailbox::AgentMailboxMessage;
 pub use planner::{
     PLANNER_SLOT_VERSION, PlannerDecision, PlannerError, PlannerObservation, PlannerPlan,
     PlannerProposal, PlannerStrategy,
