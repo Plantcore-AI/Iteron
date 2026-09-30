@@ -6,6 +6,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, VecDeque};
 
 type TerminalKey = (String, String, u32, u64, String);
+type WitnessKey = (String, String, u64, String, [u8; 32]);
 const MAX_WITNESSES: usize = 256;
 
 fn key(image: &ToolImageObservationV1, turn: u32) -> TerminalKey {
@@ -45,7 +46,7 @@ fn commitment(image: &ToolImageObservationV1) -> [u8; 32] {
 
 pub(super) fn verified_image_events(rows: Vec<ScopedEvent>) -> Vec<Event> {
     let mut terminals = VecDeque::<TerminalKey>::new();
-    let mut witnesses = BTreeMap::<(String, String, u64, String), [u8; 32]>::new();
+    let mut witnesses = BTreeMap::<WitnessKey, ()>::new();
     let mut witness_order = VecDeque::new();
     let mut events = Vec::with_capacity(rows.len());
     for row in rows {
@@ -81,11 +82,9 @@ pub(super) fn verified_image_events(rows: Vec<ScopedEvent>) -> Vec<Event> {
                     observation.owner_run.0.clone(),
                     observation.terminal_seq.0,
                     observation.tool_use_id.clone(),
+                    commitment(observation),
                 );
-                if witnesses
-                    .insert(witness_key.clone(), commitment(observation))
-                    .is_none()
-                {
+                if witnesses.insert(witness_key.clone(), ()).is_none() {
                     witness_order.push_back(witness_key);
                 }
                 if witness_order.len() > MAX_WITNESSES {
@@ -106,10 +105,7 @@ pub(super) fn verified_image_events(rows: Vec<ScopedEvent>) -> Vec<Event> {
     }
     events
 }
-fn retain_witnessed(
-    message: &mut Message,
-    witnesses: &BTreeMap<(String, String, u64, String), [u8; 32]>,
-) {
+fn retain_witnessed(message: &mut Message, witnesses: &BTreeMap<WitnessKey, ()>) {
     if !message
         .content
         .iter()
@@ -132,9 +128,10 @@ fn retain_witnessed(
                 image.owner_run.0.clone(),
                 image.terminal_seq.0,
                 image.tool_use_id.clone(),
+                commitment(image),
             );
             image.validate().is_ok()
-                && witnesses.get(&key) == Some(&commitment(image))
+                && witnesses.contains_key(&key)
                 && result_ids.contains(&image.tool_use_id)
         }
         _ => true,
@@ -277,5 +274,91 @@ mod tests {
                 .iter()
                 .any(|block| matches!(block, Block::ToolImage(_)))
         );
+    }
+}
+
+#[cfg(test)]
+mod multi_image_tests {
+    use super::verified_image_events;
+    use iteron_protocol::{
+        Block, Event, EventKind, ImageContent, ImageMediaType, Message, Role, RunId, Seq, TenantId,
+        ToolResult, Trust, TurnId,
+        tool_image::{ToolImageObservationV1, ToolImageScopeV1},
+    };
+    use iteron_record::ScopedEvent;
+    #[test]
+    fn one_actual_terminal_retains_multiple_exact_observation_witnesses_and_refuses_forged_member()
+    {
+        let tenant = TenantId::default();
+        let run = RunId("multi-pixels".into());
+        let first=ToolImageObservationV1{version:1,owner_tenant:tenant.clone(),owner_run:run.clone(),tool_use_id:"pixels".into(),terminal_seq:Seq(7),observed_unix_ms:42,source_url_display:"https://example.com/".into(),scope:ToolImageScopeV1::IsolatedBrowserViewport,artifact_id:"a38a4ff7320a3d8764ac959b264f15e335360d7c1e23a0627dee7f366c95c58f".into(),width:1,height:1,image:ImageContent::new(ImageMediaType::Png,"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII=").unwrap()};
+        let mut second = first.clone();
+        second.observed_unix_ms = 43;
+        let mut forged = second.clone();
+        forged.observed_unix_ms = 44;
+        let result = ToolResult {
+            tool_use_id: "pixels".into(),
+            content: "actual frames".into(),
+            is_error: false,
+            trust: Trust::Untrusted,
+            latency_ms: 1,
+        };
+        let row = |seq, kind| ScopedEvent {
+            tenant: tenant.clone(),
+            run_id: run.clone(),
+            event: Event {
+                seq: Seq(seq),
+                turn: TurnId(0),
+                kind,
+            },
+        };
+        let events = verified_image_events(vec![
+            row(
+                7,
+                EventKind::ToolDone {
+                    tool: Some("computer".into()),
+                    effect_id: Some(iteron_protocol::EffectId("multi-frame-effect".into())),
+                    result: result.clone(),
+                },
+            ),
+            row(
+                8,
+                EventKind::ToolImageObservedV1 {
+                    observation: first.clone(),
+                },
+            ),
+            row(
+                9,
+                EventKind::ToolImageObservedV1 {
+                    observation: second.clone(),
+                },
+            ),
+            row(
+                10,
+                EventKind::Message {
+                    message: Message {
+                        role: Role::User,
+                        content: vec![
+                            Block::ToolResult(result),
+                            Block::ToolImage(first.clone()),
+                            Block::ToolImage(second.clone()),
+                            Block::ToolImage(forged),
+                        ],
+                    },
+                },
+            ),
+        ]);
+        let EventKind::Message { message } = &events[3].kind else {
+            panic!()
+        };
+        let images = message
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                Block::ToolImage(image) => Some(image),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(images, vec![&first, &second]);
     }
 }
