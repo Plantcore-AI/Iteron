@@ -173,6 +173,7 @@ impl Agent {
     ) -> Result<VerificationGateDisposition, KernelError> {
         match convergence.guard_verification_candidate(candidate_state) {
             investigation_convergence::VerificationCandidateGuard::Verify => {}
+            #[cfg(any(feature = "ticket-investigation", test))]
             investigation_convergence::VerificationCandidateGuard::RequireTransition(guidance) => {
                 let notice =
                     "verify gate: unchanged rejected candidate; requesting a real transition";
@@ -185,6 +186,7 @@ impl Agent {
                 self.ui(UiEvent::Notice(notice.into()));
                 return Ok(VerificationGateDisposition::Retry(guidance.into()));
             }
+            #[cfg(any(feature = "ticket-investigation", test))]
             investigation_convergence::VerificationCandidateGuard::Stop(guidance) => {
                 let notice =
                     "verify gate: unchanged rejected candidate repeated; stopping without rerun";

@@ -186,11 +186,16 @@ mod stream_tools_tests;
 pub(crate) mod turn_activity;
 mod turn_maintenance;
 pub(crate) use failed_action_cache::FailedActionPolicy;
+mod candidate_workspace;
 mod file_submission;
 pub(crate) mod force_cancel;
 mod frontend;
 pub mod hooks;
 mod inbound_control;
+#[cfg(any(feature = "ticket-investigation", test))]
+mod investigation_convergence;
+#[cfg(not(any(feature = "ticket-investigation", test)))]
+#[path = "runtime/general_turn_policy.rs"]
 mod investigation_convergence;
 mod kernel_error;
 pub(crate) mod lifecycle_hooks;

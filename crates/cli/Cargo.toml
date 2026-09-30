@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+default = []
+ticket-investigation = []
+
 [[bin]]
 name = "iteron"
 path = "src/main.rs"
