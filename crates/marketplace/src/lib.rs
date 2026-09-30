@@ -97,7 +97,8 @@ pub use implementation_runtime::{
     RuntimeStateOperation,
 };
 pub use package::{
-    ActivePlugin, ArtifactRef, InstalledPackage, PackageError, PluginStore, RuntimePackages,
+    ActivePlugin, ArtifactRef, InstalledPackage, PackageError, PluginStore, PluginStoreSnapshot,
+    PreparedPluginInstall, RuntimePackages,
 };
 
 /// Longest plugin identifier accepted. Names appear in paths and in the operator's UI.

@@ -15,6 +15,9 @@ use iteron_marketplace::{
 
 pub(crate) use candidate::CandidateFile;
 pub(crate) use implementation::VerifiedImplementationActivation;
+pub(crate) mod dispatch;
+mod management;
+pub(crate) use management::PluginManagementOwner;
 mod inventory;
 pub(crate) use inventory::RuntimePluginIdentity;
 
@@ -68,6 +71,12 @@ pub(crate) struct LspRoute {
 #[derive(Default)]
 pub(crate) struct RuntimePlugins {
     inventory: inventory::PluginInventory,
+    dispatch_mask: std::sync::Arc<dispatch::DispatchMask>,
+    store_root: Option<PathBuf>,
+    composition: serde_json::Value,
+    captured_configuration: serde_json::Value,
+    prepared_installs: BTreeMap<String, iteron_marketplace::PreparedPluginInstall>,
+    management: Option<std::sync::Arc<PluginManagementOwner>>,
     pub mcp_servers: Vec<McpServerConfig>,
     pub hooks: BTreeMap<String, Vec<String>>,
     pub agents: Vec<AgentArtifact>,
@@ -127,13 +136,38 @@ impl RuntimePlugins {
             .map(|plugin| plugin.manifest.clone())
             .collect::<Vec<_>>();
         let composition = compose_governed(&manifests, RuntimeScope::Workspace, host_ceiling);
+        let binding_count = composition.wiring.slots().len().saturating_add(
+            composition
+                .wiring
+                .events()
+                .iter()
+                .map(|event| composition.wiring.hooks(event).len())
+                .sum::<usize>(),
+        );
+        if binding_count > 1024 {
+            anyhow::bail!("verified plugin dispatch binding capacity exceeded");
+        }
         let roots = packages
             .active
             .iter()
             .map(|plugin| (plugin.manifest.plugin.as_str(), plugin))
             .collect::<BTreeMap<_, _>>();
-        let mut runtime = Self::default();
+        let mut runtime = Self {
+            store_root: Some(root.to_path_buf()),
+            ..Self::default()
+        };
+        runtime.captured_configuration = serde_json::to_value(&packages.captured_configuration)
+            .map_err(|_| anyhow::anyhow!("captured plugin registry unavailable"))?;
+        runtime.composition = serde_json::json!({
+            "source":"actual_verified_bootstrap_composition",
+            "conflicts":composition.report.contests().iter().take(256).map(|contest|serde_json::json!({"surface":contest.slot.surface,"key":contest.slot.key,"winner":contest.winner,"shadowed":contest.shadowed,"arbitration":format!("{:?}",contest.arbitration)})).collect::<Vec<_>>(),
+            "refusals":composition.report.refusals().iter().take(256).map(|refusal|iteron_record::redact::scrub(&refusal.to_string())).collect::<Vec<_>>()
+        });
         for plugin in roots.values() {
+            std::sync::Arc::get_mut(&mut runtime.dispatch_mask)
+                .expect("bootstrap mask is private")
+                .register_plugin(&plugin.manifest.plugin)
+                .map_err(anyhow::Error::msg)?;
             runtime
                 .inventory
                 .register(plugin)
@@ -168,13 +202,78 @@ impl RuntimePlugins {
                 .filter(|slot| slot.surface == Surface::Implementation)
             {
                 if let Some(binding) = binding_for(&composition.wiring, &slot) {
-                    runtime
-                        .inventory
-                        .bound(&binding.plugin, slot.surface, &slot.key);
+                    runtime.record_binding(&binding.plugin, slot.surface, &slot.key);
                 }
             }
         }
         Ok(runtime)
+    }
+
+    fn record_binding(&mut self, plugin: &str, surface: Surface, key: &str) {
+        self.inventory.bound(plugin, surface, key);
+        if surface != Surface::Hook {
+            std::sync::Arc::get_mut(&mut self.dispatch_mask)
+                .expect("bootstrap mask is private")
+                .bind(plugin, dispatch::surface(surface), key)
+                .expect("bounded verified materialized binding");
+        }
+    }
+    pub(crate) fn dispatch_policy(
+        &self,
+    ) -> Option<std::sync::Arc<dyn iteron_protocol::extension_dispatch::ExtensionDispatchPolicy>>
+    {
+        self.store_root.as_ref().map(|_| {
+            self.dispatch_mask.clone()
+                as std::sync::Arc<dyn iteron_protocol::extension_dispatch::ExtensionDispatchPolicy>
+        })
+    }
+    pub(crate) fn prepare_package_install(
+        &mut self,
+        operator_path: &Path,
+    ) -> Result<String, &'static str> {
+        if self.management.is_some() {
+            return Err("plugin_bootstrap_already_captured");
+        }
+        if self.prepared_installs.len() >= 16 {
+            return Err("prepared_install_capacity");
+        }
+        let root = self.store_root.as_ref().ok_or("plugin_store_unavailable")?;
+        let receipt = PluginStore::new(root)
+            .prepare_install(operator_path)
+            .map_err(|_| "plugin_candidate_verification_refused")?;
+        let digest = &receipt.artifact().digest;
+        if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err("plugin_candidate_identity_refused");
+        }
+        let id = format!(
+            "prepared-{}-{}-{}-{}",
+            &digest[..16],
+            &digest[16..32],
+            &digest[32..48],
+            &digest[48..]
+        );
+        self.prepared_installs.insert(id.clone(), receipt);
+        Ok(id)
+    }
+    pub(crate) fn management_port(
+        &mut self,
+    ) -> Result<Option<std::sync::Arc<PluginManagementOwner>>, &'static str> {
+        if let Some(owner) = &self.management {
+            return Ok(Some(owner.clone()));
+        }
+        let Some(root) = &self.store_root else {
+            return Ok(None);
+        };
+        let owner = PluginManagementOwner::new(
+            root,
+            self.dispatch_mask.clone(),
+            self.inventory_snapshot(),
+            self.composition.clone(),
+            self.captured_configuration.clone(),
+            std::mem::take(&mut self.prepared_installs),
+        )?;
+        self.management = Some(owner.clone());
+        Ok(Some(owner))
     }
 
     fn materialize_non_implementations(
@@ -215,7 +314,15 @@ impl RuntimePlugins {
                     .entry(event.to_owned())
                     .or_default()
                     .push(binding.detail.clone());
-                self.inventory.bound(&binding.plugin, Surface::Hook, event);
+                self.record_binding(&binding.plugin, Surface::Hook, event);
+                std::sync::Arc::get_mut(&mut self.dispatch_mask)
+                    .expect("bootstrap mask is private")
+                    .bind(
+                        &binding.plugin,
+                        iteron_protocol::extension_dispatch::ExtensionSurfaceV1::Hook,
+                        &dispatch::hook_key(event, &binding.detail),
+                    )
+                    .expect("bounded verified hook binding");
             }
         }
     }
@@ -235,8 +342,7 @@ impl RuntimePlugins {
                 root: plugin.artifact_root.clone(),
                 directory,
             });
-            self.inventory
-                .bound(&binding.plugin, Surface::Skill, &slot.key);
+            self.record_binding(&binding.plugin, Surface::Skill, &slot.key);
         } else {
             self.note(format!(
                 "plugin {} skill {:?} refused: skills/{}/SKILL.md is missing",
@@ -263,8 +369,7 @@ impl RuntimePlugins {
                 root: plugin.artifact_root.clone(),
                 path,
             });
-            self.inventory
-                .bound(&binding.plugin, Surface::Agent, &slot.key);
+            self.record_binding(&binding.plugin, Surface::Agent, &slot.key);
         } else {
             self.note(format!(
                 "plugin {} agent {:?} refused: agents/{}.md is missing",
@@ -289,8 +394,7 @@ impl RuntimePlugins {
                         VerifiedMcpPluginOrigin::new(plugin),
                     );
                     self.mcp_servers.push(server);
-                    self.inventory
-                        .bound(&binding.plugin, Surface::McpServer, &slot.key);
+                    self.record_binding(&binding.plugin, Surface::McpServer, &slot.key);
                 } else {
                     self.note(format!(
                         "plugin {} MCP {:?} refused: {} capability not admitted",
@@ -335,8 +439,7 @@ impl RuntimePlugins {
                     language: slot.key.clone(),
                     command,
                 });
-                self.inventory
-                    .bound(&binding.plugin, Surface::LanguageServer, &slot.key);
+                self.record_binding(&binding.plugin, Surface::LanguageServer, &slot.key);
             }
             _ => self.note(format!(
                 "plugin {} LSP {:?} refused: command must be a bounded JSON argv array",
@@ -439,6 +542,10 @@ mod tests {
         let roots = BTreeMap::from([("complete", &plugin)]);
         let mut runtime = RuntimePlugins::default();
         runtime.inventory.register(&plugin).unwrap();
+        std::sync::Arc::get_mut(&mut runtime.dispatch_mask)
+            .unwrap()
+            .register_plugin(&plugin.manifest.plugin)
+            .unwrap();
         runtime.materialize_non_implementations(&compose(&[manifest]).wiring, &roots);
         assert_eq!(runtime.skills.len(), 1);
         assert_eq!(runtime.agents.len(), 1);

@@ -15,6 +15,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Manifest, Version, valid_name};
 
+mod prepared;
+pub use prepared::PreparedPluginInstall;
 mod verification;
 use verification::*;
 
@@ -97,6 +99,12 @@ pub struct InstalledPackage {
     pub previous: Option<ArtifactRef>,
 }
 
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct PluginStoreSnapshot {
+    pub generation: u64,
+    pub plugins: Vec<(String, InstalledPackage)>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct RegistryState {
     schema: u32,
@@ -122,6 +130,7 @@ pub struct ActivePlugin {
 
 #[derive(Debug, Clone, Default)]
 pub struct RuntimePackages {
+    pub captured_configuration: PluginStoreSnapshot,
     pub active: Vec<ActivePlugin>,
     pub quarantined: Vec<String>,
 }
@@ -178,6 +187,14 @@ impl PluginStore {
         Ok(keys)
     }
 
+    pub fn snapshot(&self) -> Result<PluginStoreSnapshot, PackageError> {
+        let state = self.load_state()?;
+        Ok(PluginStoreSnapshot {
+            generation: state.generation,
+            plugins: state.plugins.into_iter().collect(),
+        })
+    }
+
     pub fn list(&self) -> Result<Vec<(String, InstalledPackage)>, PackageError> {
         Ok(self.load_state()?.plugins.into_iter().collect())
     }
@@ -194,6 +211,30 @@ impl PluginStore {
         precedence: Option<u32>,
     ) -> Result<ArtifactRef, PackageError> {
         let verified = self.verify_source(package)?;
+        self.install_verified(package, verified, precedence)
+    }
+
+    fn install_verified_prepared(
+        &self,
+        package: &Path,
+        verified: VerifiedPackage,
+        expected: &ArtifactRef,
+    ) -> Result<ArtifactRef, PackageError> {
+        if verified.digest != expected.digest
+            || verified.key_id != expected.key_id
+            || verified.manifest.version != expected.version
+        {
+            return Err(PackageError::MalformedRegistry);
+        }
+        self.install_verified(package, verified, None)
+    }
+
+    fn install_verified(
+        &self,
+        package: &Path,
+        verified: VerifiedPackage,
+        precedence: Option<u32>,
+    ) -> Result<ArtifactRef, PackageError> {
         let mut state = self.load_state()?;
         for requirement in &verified.manifest.requires {
             let available = state
@@ -307,7 +348,17 @@ impl PluginStore {
     /// fully reverified before they can enter composition.
     pub fn runtime_packages(&self) -> Result<RuntimePackages, PackageError> {
         let state = self.load_state()?;
-        let mut runtime = RuntimePackages::default();
+        let mut runtime = RuntimePackages {
+            captured_configuration: PluginStoreSnapshot {
+                generation: state.generation,
+                plugins: state
+                    .plugins
+                    .iter()
+                    .map(|(name, entry)| (name.clone(), entry.clone()))
+                    .collect(),
+            },
+            ..RuntimePackages::default()
+        };
         for (name, installed) in state.plugins {
             if !installed.enabled {
                 continue;
