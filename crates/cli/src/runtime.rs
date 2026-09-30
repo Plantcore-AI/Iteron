@@ -19,6 +19,8 @@ mod tool_turn;
 use tool_turn::{EarlyHookEffectTickets, EarlyToolInFlight as PureToolInFlight};
 
 mod early_tool_executor;
+mod effect_descriptor;
+mod effect_journal_owner;
 use early_tool_executor::EarlyToolOutcome as EarlyPureToolOutcome;
 
 mod kernel_effect_bridge;
@@ -26,10 +28,11 @@ mod provider_stream_observer;
 mod provider_turn_evidence;
 mod submitted_turn_state;
 mod terminal_record;
-use kernel_effect_bridge::{
-    KernelEffect, broker_kernel_effect, effect_class_label, effect_done_terminal,
-    effect_failed_terminal, effect_workspace,
+use effect_descriptor::{
+    KernelEffect, effect_class_label, effect_done_terminal, effect_failed_terminal,
+    effect_workspace,
 };
+use kernel_effect_bridge::broker_kernel_effect;
 mod early_tool_gate;
 use early_tool_gate::EarlyHookSummary;
 mod deferred_batch_executor;
@@ -1182,14 +1185,6 @@ pub struct Agent {
     verification_quarantine_restored: bool,
     latest_workspace_checkpoint: Option<iteron_record::Snapshot>,
     last_workspace_checkpoint_turn: Option<u32>,
-    /// Did anything in THIS operator turn actually write to the workspace?
-    ///
-    /// Cleared when a submission is admitted, latched by every tool effect this turn admitted that
-    /// is not provably read-only (see [`Agent::note_tool_effect_capability`]). Only the
-    /// BEST-EFFORT end-of-turn checkpoint consults it, so a pure question-and-answer turn performs
-    /// no Git work at all. Every `required` checkpoint — the drain recovery point, verification
-    /// recovery — remains unconditional: those promise a resumable workspace, not a diff.
-    turn_mutated_workspace: bool,
     /// Did the operator ASK for orchestration in the words of this submission?
     ///
     /// Set from the operator-typed text only — never from rendered file attachments, whose bytes
@@ -1255,17 +1250,8 @@ pub struct Agent {
     /// Internal release-recording seam. The CLI can arm it only for PlantCore recording, and the
     /// first admitted logical turn consumes it before any Provider dispatch.
     recording_harness_error_armed: bool,
-    /// Live at-most-once ledger for effect identities (#16). Consulted by the boundary BEFORE the
-    /// write-ahead append, so a repeated identity never reaches an executor. Seeded from the
-    /// replayed journal on recovery so a resumed process cannot re-mint what the previous one
-    /// already put on disk.
-    effect_admissions: effect_admission::EffectAdmissions,
-    /// Blocking unknown registry effects already observed by this live process. Ordinary
-    /// follow-ups consult this O(1) gate; only a fresh/recovered process replays the full WAL.
-    live_unresolved_effects: usize,
-    /// True until the journal has been folded for a newly opened or explicitly adopted rollout.
-    /// In-process follow-ups clear it because their live effect gate is already authoritative.
-    recovery_effect_replay_required: bool,
+    /// Single live effect identity, unknown-outcome, recovery and workspace mutation owner.
+    effect_journal: effect_journal_owner::EffectJournalOwner,
     /// Cooperative interrupt (operability): when set (e.g. by a Ctrl-C handler), an in-flight
     /// provider turn is cancelled MID-STREAM (D1-16) and the loop then stops. No effect is ever
     /// left half-committed and the run stays resumable, but the turn itself is NOT atomic with
@@ -1926,7 +1912,7 @@ impl Agent {
         // Per-OPERATOR-turn, not per model round: the tools run in one iteration of the loop below
         // and the terminal checkpoint happens in a later one, so clearing this inside the loop
         // would discard exactly the writes the checkpoint exists to capture.
-        self.turn_mutated_workspace = false;
+        self.effect_journal.begin_operator_turn();
         // A component-budget overflow may bridge into transcript compaction. Each successful
         // recovery rearms only for a later projection; a denied, failed, or ineffective attempt
         // closes the bridge so the same overflow cannot recursively buy summaries.
@@ -2595,7 +2581,7 @@ impl Agent {
             // pure read. Mark the turn before provider decode starts; the hook may now run in the
             // early-dispatch task below and must never let checkpoint policy call the turn pure.
             if hook_gates_reads {
-                self.turn_mutated_workspace = true;
+                self.effect_journal.note_workspace_mutation();
             }
             let early_hooks = self.hooks.clone();
             let early_hook_journal = self.hook_effect_journal.clone();
@@ -4869,10 +4855,10 @@ impl Agent {
                 let opened = {
                     let Agent {
                         rollout,
-                        effect_admissions,
+                        effect_journal,
                         ..
                     } = self;
-                    effects::open_effect(rollout, effect_admissions, effect)
+                    effect_journal.open(rollout, effect)
                 };
                 let ticket = opened.map_err(|error| self.effect_boundary_failed(error))?;
                 queued_activity.complete();
@@ -5577,7 +5563,7 @@ impl Agent {
         // A hook command is repo-controlled code, so it can write even around a read-only tool.
         // This line is only reachable from a turn that already made tool calls, so counting it
         // never costs a pure question-and-answer turn its zero-Git-work property.
-        self.turn_mutated_workspace = true;
+        self.effect_journal.note_workspace_mutation();
         let class = effect_class::EffectClass::Hook;
         let hook_activity = self
             .activity
@@ -5782,7 +5768,7 @@ impl Agent {
         })?;
         // Same reasoning as the pre-tool gate: a PostToolUse hook (a formatter, a codegen step) is
         // repo-controlled code that can write behind a read-only tool.
-        self.turn_mutated_workspace = true;
+        self.effect_journal.note_workspace_mutation();
         let class = effect_class::EffectClass::Hook;
         let mut tickets = Vec::with_capacity(completed.len());
         for (index, _) in completed.iter().enumerate() {
@@ -5932,10 +5918,10 @@ impl Agent {
             let opened = {
                 let Agent {
                     rollout,
-                    effect_admissions,
+                    effect_journal,
                     ..
                 } = self;
-                effects::open_effect(rollout, effect_admissions, effect)
+                effect_journal.open(rollout, effect)
             };
             match opened {
                 Ok(ticket) => {
@@ -6143,6 +6129,12 @@ impl Agent {
         Ok(())
     }
 
+    /// Host-only physical-effect observation; owned-tool shutdown/reap proof is an additional
+    /// caller requirement. Unknown operator cancellation never becomes a known parent terminal.
+    pub(crate) fn parent_effects_known(&self) -> bool {
+        !self.record_failed && self.effect_journal.parent_settlement_known()
+    }
+
     /// Commit the terminal for a call that was **refused before dispatch** — a policy or gate
     /// denial, an ADR-003 dedup, an operator drain/interrupt, an exhausted deadline, a broken
     /// record — before projecting it into the live ledger. A failed durable append therefore
@@ -6231,7 +6223,7 @@ impl Agent {
     /// crossed the boundary and then died mid-write — the case that most wants a recovery point —
     /// still earns the end-of-turn checkpoint.
     fn note_tool_effect_capability(&mut self, capability: Capability) {
-        self.turn_mutated_workspace |= capability != Capability::ReadOnly;
+        self.effect_journal.note_tool_capability(capability);
     }
 
     fn open_tool_call_effect(
@@ -6259,24 +6251,14 @@ impl Agent {
                 ..LifecyclePayload::default()
             },
         );
-        let effect = effects::BrokeredEffect {
+        let opened = self.effect_journal.open_tool(
+            &mut self.rollout,
+            &self.workspace,
             turn,
-            effect_id: effect_id.clone(),
-            tool_use_id: call.id.clone(),
-            kind: call.name.clone(),
+            ordinal,
+            call,
             capability,
-            audit_arguments: ui_approval_arguments(&call.input),
-            workspace: effect_workspace(&self.workspace),
-            provider_route_attempt: None,
-        };
-        let opened = {
-            let Agent {
-                rollout,
-                effect_admissions,
-                ..
-            } = self;
-            effects::open_effect(rollout, effect_admissions, effect)
-        };
+        );
         match opened {
             Ok(ticket) => {
                 self.tool_lifecycle_event(
@@ -6319,14 +6301,9 @@ impl Agent {
             )));
         }
         let effect_id = ticket.effect_id().clone();
-        self.settle_kernel_effect(
-            ticket,
-            effects::Settlement::Definite(EventKind::ToolDone {
-                result: result.clone(),
-                effect_id: Some(effect_id.clone()),
-                tool: Some(tool.to_string()),
-            }),
-        )?;
+        self.effect_journal
+            .settle_tool(&mut self.rollout, ticket, tool, result)
+            .map_err(|error| self.effect_boundary_failed(error))?;
         self.tool_lifecycle_event(
             if result.is_error {
                 "tool.call_failed"
@@ -6668,7 +6645,7 @@ impl Agent {
             // An interrupt is exempt: it can land mid-effect, so "this process observed no
             // completed write" does not prove the tree is unchanged, and an interrupted turn's
             // recoverability is a stated boundary guarantee, not a best-effort convenience.
-            && (self.turn_mutated_workspace || outcome == Outcome::Interrupted)
+            && (self.effect_journal.workspace_mutated() || outcome == Outcome::Interrupted)
             && self.verification_checkpoint_interval_elapsed(turn)
         {
             // Ordinary turns already have an authoritative append-only conversation record. A
