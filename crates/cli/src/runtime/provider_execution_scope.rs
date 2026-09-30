@@ -251,7 +251,7 @@ impl ProviderExecutionScope {
                     fault: journal.fault,
                 },
             }
-            .observe(route.route_id(), &completed.result, completed.quota.clone())?;
+            .observe(route.route_id(), &completed.result, completed.quota)?;
         }
         round.release_attempt(route)?;
         Ok(completed)
