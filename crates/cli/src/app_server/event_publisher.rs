@@ -1,6 +1,11 @@
 //! Bounded EQ publisher, lifecycle projection and authoritative backpressure owner.
 
-use super::*;
+use super::{
+    AppServerQueuePolicy, Arc, AssistantTextSpill, AuthoritativeOverflow, CosmeticOverflow,
+    EventEnvelope, LifecycleHookRoute, LifecyclePayload, PROTOCOL_VERSION, RunId, Semaphore,
+    ServerEvent, SessionId, SubmissionId, SubmissionLifecycleState, TurnId, UiEvent,
+    dispatch_lifecycle_hook, event_heap_bytes, mpsc, product_contract,
+};
 
 /// The EQ publisher, held by the server side.
 ///
@@ -24,14 +29,6 @@ pub(crate) struct EventPublisher {
 
 const MAX_TRACKED_WORKFLOW_PHASES: usize = 256;
 const EQ_BYTE_CAPACITY: usize = 64 * 1024 * 1024;
-/// Content-free activity snapshots are independently bounded before they reach the EQ. A stalled
-/// frontend may delay a status tick, but can never let runtime activity telemetry grow without a
-/// ceiling or block the runtime's work path.
-const ACTIVITY_CHANNEL_CAPACITY: usize = 256;
-const KERNEL_INBOUND_CAPACITY: usize = 64;
-const RUNTIME_UI_CAPACITY: usize = 256;
-const WORKFLOW_PROGRESS_CAPACITY: usize = 256;
-const WORKFLOW_SETTLED_CAPACITY: usize = 64;
 /// Memory held beside the bounded EQ while the frontend catches up. Reaching the ceiling applies
 /// backpressure and flushes; it never turns assistant/reasoning bytes into a last-write-wins slot.
 const MAX_PENDING_COSMETIC_BYTES: usize = 1024 * 1024;

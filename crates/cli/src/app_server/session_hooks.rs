@@ -1,6 +1,6 @@
 //! Durable session hook journal, bounded Stop observer and canonical dispatcher composition.
 
-use super::*;
+use super::{Agent, LifecyclePayload, ServerEnds};
 
 pub(super) struct SessionHooks {
     pub(super) hook_journal: Option<crate::runtime::hooks::journal::HookEffectJournal>,

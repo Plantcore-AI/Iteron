@@ -14,21 +14,35 @@
 mod driver;
 pub(crate) use driver::{RunConfig, run};
 mod frame_render;
-use frame_render::*;
+use frame_render::{draw, ensure_stream_doc, route_label, workflow_region_cap};
 
 mod session_client;
 pub(crate) use session_client::Session;
 mod picker;
-use picker::*;
+use picker::{PickAction, PickItem, Picker, PickerEvent};
 mod clipboard_image;
-use clipboard_image::*;
+use clipboard_image::clipboard_image_bytes;
+#[cfg(test)]
+use clipboard_image::{
+    clipboard_child_environment_with, windows_clipboard_environment_with,
+    windows_clipboard_powershell_program,
+};
 mod popup_render;
 pub(crate) use popup_render::clip_text;
-use popup_render::*;
+use popup_render::{
+    PopupRow, clip_spans, one_line_preview, popup_detail_lines, render_list_popup, spans_width,
+};
 mod status_render;
-use status_render::*;
+use status_render::{
+    activity_label, canonical_statusline_with_tokens, render_lr_line, render_status,
+};
+#[cfg(test)]
+use status_render::{canonical_statusline, status_right_bits, visible_activity};
 mod composer_render;
-use composer_render::*;
+use composer_render::{format_attachment_size, render_composer, render_pending_lanes};
+
+#[cfg(test)]
+use composer_render::approval_action_line;
 
 mod app_init;
 mod app_input_state;
@@ -100,16 +114,44 @@ use crate::semantic_text::{is_unsafe_display_char, ui_safe_json, ui_safe_text};
 use crate::{block, keymap, prompt_history, startup, surface, theme};
 use app_init::build_completion;
 use block::spinner;
-use command_surfaces::*;
-use composer_images::*;
-use control_submission::*;
+use command_surfaces::{
+    apply_transcript_effect_event, clear_conversation, ensure_real_workspace_dir,
+    expand_selection_ancestors, export_transcript, initial_picker_selection, open_picker,
+    open_transcript_viewer, open_tunables_picker, schedule_slash_export,
+    schedule_transcript_viewer_effect, show_agent_catalog, transcript_export_body,
+    write_new_synced,
+};
+use composer_images::{
+    AttachmentEffectResult, AttachmentFollowup, AttachmentOrigin, AttachmentWorkerOutput,
+    attach_bare_image_paths, dropped_image_reference, finish_attachment_effect,
+    handle_composer_paste, queue_bare_image_path, queue_clipboard_image_effect,
+    queue_context_diff_effect, queue_draft_with_chips, queue_file_path_effect,
+    queue_image_path_effect,
+};
+use control_submission::{
+    cancel_local_effect_then_turn, dispatch_slash_command, force_cancel_turn,
+    report_stopped_workflows, request_drain, request_interrupt, show_side_answer, show_side_status,
+    side_request_for, submit_operation, submit_queued_model_input, submit_turn,
+    wait_for_forced_server_shutdown, wait_for_server_shutdown,
+};
 use crossterm::event::{
     Event as CEvent, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
 };
-use driver_support::*;
+use driver_support::{
+    CatchUp, FIRST_TOKEN_SPINNER_TICK, FRAME_COALESCE, InputThreadControl, MAX_BLOCKS,
+    MAX_EQ_EVENTS_PER_TICK, MAX_PENDING_SUBMISSIONS, MAX_PENDING_TOOL_PROJECTIONS,
+    MAX_SUBMISSION_BYTES, RESIZE_DEBOUNCE, SPINNER_TICK, TERMINAL_READ_SLICE, TOOL_REVEAL_DELAY,
+    apply_vim_action, bold, byte_index, complete_path, dim, display_col, eq_tick_slots,
+    external_edit_round_trip, fg, grapheme_width, item, kv, next_wake, parse_cap,
+    reload_operator_keymap, service_input_control, update_keymap_status, wake_until,
+};
 pub(crate) use driver_support::{char_width, text_width};
-use event_actions::*;
-use event_projection::*;
+use event_actions::{
+    apply_server_event, apply_theme_selection, clear_last_turn_telemetry_from,
+    model_retry_selection, queue_effort, queue_model_selection, queue_permission_capability,
+    queue_permission_mode, queue_workflows_panel_action, show_tunable_detail,
+};
+use event_projection::{apply_event, apply_live_event};
 use iteron_ctx::ContextEstimate;
 use iteron_obs::CostState;
 use iteron_protocol::{
@@ -117,7 +159,9 @@ use iteron_protocol::{
     Verdict,
 };
 use iteron_provider::EffortApplication;
-use picker_catalog::*;
+use picker_catalog::{
+    mode_picker_items, model_picker_items, permission_mode_row_value, permission_picker_items,
+};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -125,8 +169,16 @@ use ratatui::widgets::{
     Block, BorderType, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
 };
 use ratatui::{Frame, Terminal, TerminalOptions, Viewport};
-use session_adoption::*;
-use session_picker::*;
+use session_adoption::{
+    MAX_ADOPTED_BLOCKS, PreparedAdoption, PreparedAdoptionResult, adopted_transcript_blocks,
+    format_resume_command, project_recorded_transcript, recorded_route, start_adopt_session,
+    start_fresh_session,
+};
+use session_picker::{
+    SessionPageResult, SessionPickerBacking, SessionPreviewResult, apply_session_page_result,
+    handle_sessions_command, load_session_page, maybe_prefetch_session_page, open_session_picker,
+    session_display_name, session_picker_items, spawn_session_page_load,
+};
 #[cfg(test)]
 use std::collections::HashSet;
 use std::collections::VecDeque;
@@ -139,14 +191,14 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
-use submission::*;
+use submission::{submit_composer, submit_prepared_composer, submit_staged_input};
 use terminal_lifecycle::{TermGuard, restore_terminal};
 #[cfg(test)]
 use terminal_lifecycle::{
     replace_terminal_title_to, restore_terminal_after_panic_to, restore_terminal_title_to,
     set_terminal_title_to,
 };
-use workflow_panel_projection::*;
+use workflow_panel_projection::workflow_panel_runs;
 
 /// A pending capability approval the operator must answer (mode produced an `Ask` verdict).
 struct Pending {

@@ -1,6 +1,10 @@
 //! Bounded queue construction and the server-facing endpoint owner.
 
-use super::*;
+use super::{
+    ACTIVITY_CHANNEL_CAPACITY, AppServerClient, AppServerHandle, AppServerQueuePolicy, Arc,
+    ControlRequest, EventEnvelope, EventPublisher, PROTOCOL_VERSION, PlantcoreAdmission,
+    ProtocolVersionError, QueuedSubmission, Semaphore, mcp_input, mpsc,
+};
 
 /// Build the wire and hand back both ends.
 ///

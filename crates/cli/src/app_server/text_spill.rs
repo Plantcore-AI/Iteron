@@ -1,6 +1,6 @@
 //! Bounded terminal assistant-text spill owner and exact cleanup.
 
-use super::*;
+use super::{AtomicU64, Ordering};
 use std::io::{Read as _, Seek as _, Write as _};
 
 static NEXT_EQ_TERMINAL_TEXT_SPILL: AtomicU64 = AtomicU64::new(0);

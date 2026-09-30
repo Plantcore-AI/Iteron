@@ -51,19 +51,34 @@
 //!   reaching the side-buffer ceiling applies backpressure rather than losing bytes. Everything
 //!   else, and `Done` above all, is delivered even if that means waiting for the reader.
 
+/// Content-free activity snapshots are independently bounded before they reach the EQ. A stalled
+/// frontend may delay a status tick, but can never let runtime activity telemetry grow without a
+/// ceiling or block the runtime's work path.
+const ACTIVITY_CHANNEL_CAPACITY: usize = 256;
+const KERNEL_INBOUND_CAPACITY: usize = 64;
+const RUNTIME_UI_CAPACITY: usize = 256;
+const WORKFLOW_PROGRESS_CAPACITY: usize = 256;
+const WORKFLOW_SETTLED_CAPACITY: usize = 64;
+
 mod session_host;
 pub(crate) use session_host::AppServer;
-use session_host::*;
 
 mod submission_settlement;
-use submission_settlement::*;
+use submission_settlement::{
+    discard_expired_product_steers, expire_pending_turns, expire_queued_after_drain,
+    forward_runtime_notifications, product_turn_accepts, publish_submission, queue_population,
+    receive_next_submission, reject_replayed_submission, settle_kernel_submission_events,
+    settle_kernel_submissions_at_turn_end,
+};
 mod lifecycle_control;
-use lifecycle_control::*;
+use lifecycle_control::{
+    HookExecution, legacy_user_prompt_context, run_legacy_hook, run_lifecycle_gate,
+};
 mod workflow_projection;
-use workflow_projection::*;
+use workflow_projection::{publish_settled, publish_workflow_progress};
 
 mod messages;
-use messages::*;
+use messages::event_heap_bytes;
 pub(crate) use messages::{
     AdoptRun, Control, ControlReply, ControlRequest, EventEnvelope, EventEnvelopeError, JobControl,
     McpControl, McpControlReply, MemoryControl, MemoryControlReply, ModelSelection, ServerEvent,
@@ -72,10 +87,15 @@ pub(crate) use messages::{
 };
 mod text_spill;
 mod turn_pump;
-use text_spill::*;
+use text_spill::AssistantTextSpill;
 mod queue_client;
-use queue_client::*;
 pub(crate) use queue_client::{AppServerClient, QueuedSubmission, SubmitError};
+use queue_client::{
+    KernelSubmissionKind, PendingKernelSubmission, SubmissionDeduplicator,
+    SubmissionIdentityAdmission, kernel_submission_kind,
+};
+#[cfg(test)]
+use queue_client::{SubmissionSender, submission_weight};
 mod session_attachment;
 mod session_hooks;
 mod session_services;
@@ -84,11 +104,11 @@ pub(crate) use session_attachment::{
 };
 mod event_publisher;
 pub(crate) use event_publisher::EventPublisher;
-use event_publisher::*;
+
 mod queue_wiring;
 #[cfg(test)]
 pub(crate) use queue_wiring::wire;
-use queue_wiring::*;
+use queue_wiring::wire_with_queue_policy;
 pub(crate) use queue_wiring::{ServerEnds, advertised_version};
 
 mod agent_control;

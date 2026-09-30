@@ -1,6 +1,10 @@
 //! Bounded platform clipboard process and sanitized helper environment owner.
 
-use super::*;
+use super::{CLIPBOARD_CAPTURE_TIMEOUT, OsString, Stdio};
+#[cfg(windows)]
+use std::path::Component;
+#[cfg(any(windows, test))]
+use std::path::Path;
 use tokio::io::AsyncReadExt as _;
 
 #[derive(Clone)]

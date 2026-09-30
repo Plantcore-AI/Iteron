@@ -1,6 +1,6 @@
 //! Public client session, immutable attach facts and runtime state mirrors.
 
-use super::*;
+use super::{Arc, Effort, Op, PermissionMode, PermissionRules, SubmissionId, app_server};
 
 pub(crate) struct Session {
     /// The versioned SQ client. Every `Op` the frontend sends goes through this and nothing else.

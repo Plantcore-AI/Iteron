@@ -1,6 +1,6 @@
 //! Workflow progress and actual terminal notification projection.
 
-use super::*;
+use super::{EventPublisher, LifecyclePayload, ServerEvent};
 
 /// Project workflow-engine milestones into the same canonical lifecycle stream before they reach
 /// the frontend. The engine event is authoritative; this observer is bounded and cannot delay it.

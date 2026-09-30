@@ -1,6 +1,9 @@
 //! Bounded popup rows, retained layout and terminal-safe preview rendering.
 
-use super::*;
+use super::{
+    Block, BorderType, Borders, Frame, Line, MIN_LIST_ROWS_ON_OVERFLOW, Modifier, Paragraph, Rect,
+    Span, Style, grapheme_width, surface, text_width, theme,
+};
 
 /// Pad a run of spans with a trailing filler so the row fills `width` cells; when `bg` is Some the
 /// filler carries that background, extending a selection bar edge-to-edge (TUI v3 §9 — the selection

@@ -1,6 +1,12 @@
 //! Full-frame retained conversation, hint and workflow chrome rendering.
 
-use super::*;
+use super::{
+    App, Frame, InputDestination, Line, Modifier, Paragraph, PopupRow, Rect, Scrollbar,
+    ScrollbarOrientation, ScrollbarState, Span, Style, block, cached_input_destination,
+    capability_can_be_remembered, clip_text, hyperlink, live_markdown, render_composer,
+    render_list_popup, render_lr_line, render_pending_lanes, render_status, surface, theme,
+    transcript_layout, transcript_viewer, ui_safe_text, workflow_panel_runs, workflows_panel,
+};
 
 pub(super) fn route_label(app: &App) -> String {
     // The statusline used to build `provider/model` out of two loose `App` fields. It reads the

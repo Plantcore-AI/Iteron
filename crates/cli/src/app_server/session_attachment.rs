@@ -1,6 +1,10 @@
 //! Runtime-to-client composition: immutable facts and actual queue attachment.
 
-use super::*;
+use super::{
+    Agent, AppServer, AppServerClient, Arc, AtomicBool, ControlRequest, EventEnvelope,
+    McpInputResponse, PlantcoreAdmission, ProtocolVersionError, SessionId, SessionSnapshot, mpsc,
+    snapshot_of, wire_with_queue_policy,
+};
 
 /// The frontend's end of the wire: a client to submit through and a queue to read.
 /// A registered tool, reduced to the three fields a client renders. `iteron_tools::ToolSpec` is not

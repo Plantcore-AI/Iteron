@@ -1,6 +1,10 @@
 //! Typed session observations, terminal authority and operator control contracts.
 
-use super::*;
+use super::{
+    AssistantTextSpill, McpInputPrompt, OperatorStatusSnapshot, Outcome, OwnedSemaphorePermit,
+    PROTOCOL_VERSION, ProtocolVersionError, SubmissionId, SubmissionLifecycleState, UiEvent,
+    plantcore,
+};
 
 /// The authoritative terminal facts needed by every non-interactive client.
 ///

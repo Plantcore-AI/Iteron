@@ -1,6 +1,17 @@
 //! In-flight turn pump: bounded presentation/control ports and exact cancellation receipts.
 
-use super::*;
+use super::{
+    Arc, AtomicBool, ControlRequest, EventPublisher, HookExecution, KernelSubmissionKind,
+    LifecyclePayload, McpInputResponse, Op, OperatorStatusSources, Ordering, Outcome,
+    PROTOCOL_VERSION, PendingKernelSubmission, PlantcoreAdmission, QueuedSubmission, Routed,
+    ServerEvent, SubmissionDeduplicator, SubmissionId, SubmissionLifecycleState, TurnId,
+    TurnSubmission, apply_immediate_control, expire_pending_turns, is_immediate_control,
+    is_plantcore_admitted_control, kernel_submission_kind, legacy_user_prompt_context, mcp_input,
+    mpsc, product_turn_accepts, publish_settled, publish_stop_hook_observation, publish_submission,
+    publish_workflow_progress, queue_population, receive_next_submission,
+    receive_stop_hook_observation, reject_replayed_submission, route, run_legacy_hook,
+    run_lifecycle_gate, settle_kernel_submission_events,
+};
 
 pub(super) struct RunningTurnPump<'a> {
     pub(super) runtime_ui_rx: &'a mut mpsc::Receiver<crate::runtime::RuntimeFrontendEvent>,

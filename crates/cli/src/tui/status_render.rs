@@ -1,6 +1,10 @@
 //! Runtime observation status-line and activity projection rendering.
 
-use super::*;
+use super::{
+    App, Duration, Effort, EffortApplication, FirstTokenState, Frame, Line, Modifier, Paragraph,
+    PermissionMode, PresentedActivity, Rect, Span, Style, clip_spans, clip_text,
+    effort_status_label, fmt_mmss, route_label, spans_width, spinner, status_line, surface,
+};
 
 pub(super) fn render_lr_line(
     f: &mut Frame,

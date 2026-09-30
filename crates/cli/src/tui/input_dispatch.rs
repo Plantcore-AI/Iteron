@@ -1,6 +1,20 @@
 //! Physical terminal-event dispatch owns keyboard/modal routing and bounded command admission.
 
-use super::*;
+use super::{
+    App, ApprovalInput, Arc, AtomicBool, AttachmentFollowup, CEvent, CTRL_C_QUIT_WINDOW, Color,
+    Effort, InputDestination, InputThreadControl, Instant, KeyCode, KeyEventKind, KeyModifiers,
+    MouseButton, MouseEventKind, Op, Path, PickAction, PickerEvent, ProviderDirectory,
+    RESIZE_DEBOUNCE, RunningCtrlCAction, Session, SubmissionAdmission, TermGuard, Terminal,
+    VecDeque, apply_theme_selection, apply_vim_action, block, bold, cancel_local_effect_then_turn,
+    command_dispatch, external_edit_round_trip, force_cancel_turn, handle_composer_paste,
+    input_destination, keymap, maybe_prefetch_session_page, mcp_input, notification,
+    open_transcript_viewer, queue_bare_image_path, queue_clipboard_image_effect,
+    queue_draft_with_chips, queue_effort, queue_model_selection, queue_permission_capability,
+    queue_permission_mode, queue_workflows_panel_action, reload_operator_keymap, request_drain,
+    request_interrupt, running_ctrl_c_action, schedule_transcript_viewer_effect,
+    show_tunable_detail, slash_command_body, start_adopt_session, submit_composer, submit_turn,
+    transcript_effect, update_keymap_status, workflow_panel_runs,
+};
 
 pub(super) struct InputContext<'a, B: ratatui::backend::Backend> {
     pub(super) app: &'a mut App,

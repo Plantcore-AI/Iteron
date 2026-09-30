@@ -1,6 +1,19 @@
 //! Resident Agent ownership, idle admission, turn barriers and ordered session teardown.
 
-use super::*;
+use super::{
+    Agent, ControlRequest, EventPublisher, HookExecution, KERNEL_INBOUND_CAPACITY,
+    LifecyclePayload, McpInputResponse, Op, Outcome, PendingKernelSubmission, PlantcoreAdmission,
+    QueuedSubmission, Routed, RunInput, RunLifecycleState, ServerEnds, ServerEvent, SessionId,
+    SessionLifecycleState, SubmissionDeduplicator, SubmissionLifecycleState, TerminalAuthority,
+    TerminalSummary, TurnLifecycleState, TurnSubmission, apply_control, clean_session_owned_tools,
+    discard_expired_product_steers, expire_pending_turns, expire_queued_after_drain,
+    first_prompt_title, forward_runtime_notifications, input_ready_activity,
+    legacy_user_prompt_context, mcp_input, mpsc, outcome_name, publish_settled,
+    publish_stop_hook_observation, publish_submission, publish_workflow_progress, queue_population,
+    receive_stop_hook_observation, reject_replayed_submission, route, run_legacy_hook,
+    run_lifecycle_gate, session_hooks, session_services, settle_kernel_submission_events,
+    settle_kernel_submissions_at_turn_end, snapshot_of, turn_pump,
+};
 
 /// Owns the actual resident Agent and its bounded admission/presentation ports.
 pub(crate) struct AppServer {

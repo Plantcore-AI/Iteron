@@ -1,6 +1,6 @@
 //! Session lifecycle hook gate and advisory hook execution owner.
 
-use super::*;
+use super::{AtomicBool, EventPublisher, LifecyclePayload, Op, SubmissionId, TurnId};
 
 #[derive(Clone, Copy)]
 pub(super) struct HookExecution<'a> {

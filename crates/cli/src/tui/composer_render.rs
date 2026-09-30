@@ -1,6 +1,11 @@
 //! Approval and composer rendering, pending input lanes and attachment presentation.
 
-use super::*;
+use super::{
+    App, ApprovalChoice, Block, BorderType, Borders, Color, Frame, Line, Modifier, Paragraph,
+    Pending, Rect, Span, Style, approval_operation_text, block, cap_label,
+    capability_can_be_remembered, clip_spans, clip_text, command_token, display_col, mcp_input,
+    one_line_preview, popup_detail_lines, text_width, ui_safe_text,
+};
 
 pub(super) fn render_pending_lanes(f: &mut Frame, area: Rect, app: &App) {
     if area.width == 0 || area.height == 0 {
