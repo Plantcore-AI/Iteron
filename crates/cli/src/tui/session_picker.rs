@@ -1,4 +1,10 @@
-use super::*;
+use super::{
+    App, PickAction, PickItem, ProviderDirectory, Session, app_server, block, command_dispatch,
+    session_management, start_adopt_session, start_fresh_session, transcript_effect, ui_safe_text,
+};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, atomic::AtomicBool};
+use std::time::Duration;
 
 /// Characters kept from a session title in the picker row. A title longer than this wraps on a
 /// conventional terminal and pushes the sessions below it off the list.
@@ -68,11 +74,6 @@ pub(super) struct SessionPageResult {
 
 pub(super) struct SessionPreview {
     pub(super) inspection: serde_json::Value,
-}
-
-pub(super) struct SessionPreviewResult {
-    pub(super) generation: u64,
-    pub(super) result: Result<SessionPreview, String>,
 }
 
 pub(super) fn session_picker_items(
@@ -197,9 +198,7 @@ pub(super) fn open_session_picker(app: &mut App, session: &Session) {
         .file_stem()
         .and_then(|stem| stem.to_str())
         .unwrap_or_default();
-    if let Some(previous) = app.session_preview_job.take() {
-        previous.abort();
-    }
+    app.navigation.cancel_preview();
     app.pickers.open_sessions(runs, current_run.to_owned());
 }
 
@@ -412,16 +411,12 @@ pub(super) fn maybe_prefetch_session_page(app: &mut App) {
 }
 
 pub(super) fn start_session_preview(app: &mut App, session: &Session, run: String) {
-    if let Some(previous) = app.session_preview_job.take() {
-        previous.abort();
-    }
-    app.session_preview_generation = app.session_preview_generation.wrapping_add(1);
-    let generation = app.session_preview_generation;
-    let sender = session.control_sender();
-    app.session_preview_job = Some(tokio::spawn(async move {
-        let result = super::session_inspection::request(sender, run).await;
-        SessionPreviewResult { generation, result }
-    }));
+    let Some(scope) = session.client.thread_snapshot_v1() else {
+        app.note(block::NoticeLevel::Warn, "public session scope unavailable");
+        return;
+    };
+    app.navigation
+        .queue_preview(&scope, session.control_sender(), run);
 }
 
 pub(super) fn handle_sessions_command(

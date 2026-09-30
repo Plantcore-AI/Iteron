@@ -50,3 +50,7 @@ actual screenshot correlation; it is not native ChromeDriver or OS desktop evide
 ### Attachment preparation owner
 
 `crates/cli/src/tui/attachment_owner.rs` owns the single physical preparation task, generation, original request, progress receiver and presentation state. Typed ports start actual image/file/clipboard/diff/submission preparation with immutable paths and existing native preparers. Cancellation invalidates observations and returns the original dropped path while the physical task remains admitted until completion. The driver polls only finished tasks; `composer_images` admits fully prepared values into the editor and never owns a background task. Successful session adoption invalidates the old generation before a prepared value can enter the new session. Presentation Ready is an editor preparation result, not a runtime effect terminal.
+
+### Session navigation owner
+
+`session_navigation.rs` holds private preview/preparation task slots, captured thread/run, generation and cancellation. Cancellation keeps physical preparation admission until the worker ends, then discards its result. Polling checks the original thread/run before returning an adoption action; preview consumes the existing public inspection handler. `session_navigation/preparation.rs` currently owns native constructors and verified aggregate replay admission. These constructors and writer leases are still frontend bootstrap: moving this native boundary into a trusted host factory remains required and is not implied by the private task extraction.

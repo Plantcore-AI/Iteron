@@ -89,6 +89,7 @@ mod product_projection;
 mod session_adoption;
 mod session_inspection;
 mod session_management;
+mod session_navigation;
 mod session_picker;
 mod status_command;
 mod status_line;
@@ -195,8 +196,8 @@ use session_picker::{
     spawn_session_page_load,
 };
 use session_picker::{
-    SessionPreviewResult, handle_sessions_command, maybe_prefetch_session_page,
-    open_session_picker, session_display_name,
+    SessionPreview, handle_sessions_command, maybe_prefetch_session_page, open_session_picker,
+    session_display_name,
 };
 #[cfg(test)]
 use std::collections::HashSet;
@@ -776,9 +777,7 @@ struct App {
     approval_choice: ApprovalChoice,
     completions: completion_owner::CompletionOwner,
     pickers: picker_owner::PickerOwner,
-    session_preview_job: Option<tokio::task::JoinHandle<SessionPreviewResult>>,
-    session_preview_generation: u64,
-    session_adoption_job: Option<tokio::task::JoinHandle<PreparedAdoptionResult>>,
+    navigation: session_navigation::SessionNavigationOwner,
     /// At most one disk/process-heavy slash command. Completion carries bounded semantic actions;
     /// the key/render loop never awaits Git, record traversal, or workspace mutation.
     workspace_command_job: Option<tokio::task::JoinHandle<Vec<workspace_command::Action>>>,

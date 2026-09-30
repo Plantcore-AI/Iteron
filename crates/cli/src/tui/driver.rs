@@ -2,17 +2,16 @@
 
 use super::{
     App, Arc, CEvent, CatchUp, Duration, FIRST_TOKEN_SPINNER_TICK, FRAME_COALESCE,
-    InputThreadControl, Instant, PreparedAdoption, PreparedAdoptionResult, PromptHistoryMode,
-    ProviderDirectory, RouteView, SPINNER_TICK, Session, TERMINAL_READ_SLICE, TermGuard, Terminal,
-    TerminalOptions, VecDeque, Viewport, app_server, apply_server_event,
-    apply_transcript_effect_event, block, cached_workspace_dirty, dispatch_slash_command, draw,
-    finish_attachment_effect, hyperlink, input_dispatch, keymap, local_job_wake, next_wake,
-    notification, product_projection, project_recorded_transcript, prompt_history,
-    report_stopped_workflows, restore_terminal, schedule_transcript_viewer_effect,
-    service_input_control, session_display_name, slash_command_body, startup,
-    submit_queued_model_input, submit_turn, terminal_input, theme, transcript_effect,
-    update_keymap_status, wait_for_forced_server_shutdown, wait_for_server_shutdown, wake_until,
-    workflow_region, workspace_command,
+    InputThreadControl, Instant, PreparedAdoption, PromptHistoryMode, ProviderDirectory, RouteView,
+    SPINNER_TICK, Session, TERMINAL_READ_SLICE, TermGuard, Terminal, TerminalOptions, VecDeque,
+    Viewport, app_server, apply_server_event, apply_transcript_effect_event, block,
+    cached_workspace_dirty, dispatch_slash_command, draw, finish_attachment_effect, hyperlink,
+    input_dispatch, keymap, local_job_wake, next_wake, notification, product_projection,
+    project_recorded_transcript, prompt_history, report_stopped_workflows, restore_terminal,
+    schedule_transcript_viewer_effect, service_input_control, session_display_name,
+    slash_command_body, startup, submit_queued_model_input, submit_turn, terminal_input, theme,
+    transcript_effect, update_keymap_status, wait_for_forced_server_shutdown,
+    wait_for_server_shutdown, wake_until, workflow_region, workspace_command,
 };
 
 pub(crate) struct RunConfig {
@@ -463,42 +462,17 @@ pub async fn run(
             for warning in update.warnings { app.note(block::NoticeLevel::Info, warning); }
             redraw |= update.changed;
         }
-        if app
-            .session_preview_job
-            .as_ref()
-            .is_some_and(|job| job.is_finished())
-        {
-            let job = app
-                .session_preview_job
-                .take()
-                .expect("finished session preview job was present");
-            if let Ok(preview) = job.await
-                && preview.generation == app.session_preview_generation
-            {
-                match preview.result {
-                    Ok(preview) => {
-                        super::session_inspection::render(&mut app, &preview.inspection);
-                        app.status = "idle · session preview ready".into();
-                    }
-                    Err(error) => {
-                        app.note(block::NoticeLevel::Err, error);
-                        app.status = "idle · session preview failed".into();
-                    }
-                }
-                redraw = true;
+        let navigation_scope = if app.navigation.has_work() {session.client.thread_snapshot_v1()} else {None};
+        if let Some(preview) = app.navigation.poll_preview(navigation_scope.as_ref()).await {
+            match preview {
+                Ok(preview) => {super::session_inspection::render(&mut app, &preview.inspection); app.status = "idle · session preview ready".into();}
+                Err(error) => {app.note(block::NoticeLevel::Err, error); app.status = "idle · session preview failed".into();}
             }
+            redraw = true;
         }
-        if app
-            .session_adoption_job
-            .as_ref()
-            .is_some_and(|job| job.is_finished())
-        {
-            let job = app
-                .session_adoption_job
-                .take()
-                .expect("finished session adoption job was present");
-            match job.await {
-                Ok(PreparedAdoptionResult::Ready(prepared)) => {
+        if let Some(update) = app.navigation.poll_adoption(navigation_scope.as_ref()).await {
+            match update {
+                super::session_navigation::AdoptionUpdate::Ready(prepared) => {
                     let PreparedAdoption {
                         fresh,
                         control,
@@ -529,26 +503,12 @@ pub async fn run(
                         app.status = "idle · session not resumed".into();
                     }
                 }
-                Ok(PreparedAdoptionResult::Failed {
-                    message,
-                    handoff_run,
-                }) => {
+                super::session_navigation::AdoptionUpdate::Failed {message, handoff_run} => {
                     app.note(block::NoticeLevel::Err, message);
-                    if let Some(run_id) = handoff_run {
-                        app.prepare_resume_handoff(&run_id);
-                    }
+                    if let Some(run_id) = handoff_run {app.prepare_resume_handoff(&run_id);}
                     app.status = "idle · session not resumed".into();
                 }
-                Err(error) if error.is_cancelled() => {
-                    app.status = "idle · session loading cancelled".into();
-                }
-                Err(error) => {
-                    app.note(
-                        block::NoticeLevel::Err,
-                        format!("session adoption worker failed: {error}"),
-                    );
-                    app.status = "idle · session not resumed".into();
-                }
+                super::session_navigation::AdoptionUpdate::Cancelled => {app.status = "idle · session loading cancelled".into();}
             }
             redraw = true;
         }
@@ -773,8 +733,7 @@ pub async fn run(
             wake = Some(wake.map_or(due, |scheduled| scheduled.min(due)));
         }
         let local_job_active = app.pickers.has_worker()
-            || app.session_preview_job.is_some()
-            || app.session_adoption_job.is_some()
+            || app.navigation.has_work()
             || app.completions.has_worker()
             || app.workspace_command_job.is_some()
             || app.attachments.is_busy();
@@ -937,12 +896,7 @@ pub async fn run(
         }
     }
     let _ = app.pickers.close();
-    if let Some(job) = app.session_preview_job.take() {
-        job.abort();
-    }
-    if let Some(job) = app.session_adoption_job.take() {
-        job.abort();
-    }
+    app.navigation.invalidate();
     if let Some(job) = app.workspace_command_job.take() {
         job.abort();
     }

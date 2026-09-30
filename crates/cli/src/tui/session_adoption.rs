@@ -1,4 +1,6 @@
-use super::*;
+use super::{App, ModelSelection, ProviderDirectory, Session, app_server, block, ui_safe_text};
+use std::path::Path;
+use std::time::{Duration, Instant};
 
 pub(super) fn format_resume_command(run_id: &str) -> String {
     let argument = if !run_id.is_empty()
@@ -69,237 +71,101 @@ pub(super) enum PreparedAdoptionResult {
     },
 }
 
-/// Begin the record read, route construction and writer-lock acquisition without touching the TUI
-/// thread. The visible picker closes immediately and the completion is generation-free because at
-/// most one adoption job exists; starting another aborts the stale one first.
+/// Queue one native preparation request without giving the compositor ownership of its task.
 pub(super) fn start_adopt_session(
     app: &mut App,
     session: &Session,
     directory: &ProviderDirectory,
     run_id: String,
 ) {
-    if app.running || app.pending.is_some() {
-        app.note(
-            block::NoticeLevel::Warn,
-            "finish the current turn before resuming another session",
-        );
+    if !adoption_draft_ready(app) {
         return;
     }
-    if !app.input_lanes.queued().is_empty() || !app.input_lanes.steers().is_empty() {
+    let Some(scope) = session.client.thread_snapshot_v1() else {
         app.note(
             block::NoticeLevel::Warn,
-            format!(
-                "{} still pending for this session; send or clear them before resuming another one",
-                block::plural(
-                    app.input_lanes
-                        .queued()
-                        .len()
-                        .saturating_add(app.input_lanes.steers().len()),
-                    "submission"
-                )
-            ),
+            "public session scope unavailable; resume was not started",
         );
         return;
-    }
-    let rollout_path = session.rollout_path().to_path_buf();
-    let runs = rollout_path
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_default();
-    let current_run = rollout_path
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .unwrap_or_default();
-    if run_id == current_run {
+    };
+    if run_id == scope.run_id.0 {
         app.note(
             block::NoticeLevel::Info,
             "that session is already the live one",
         );
         return;
     }
-    if let Some(previous) = app.session_adoption_job.take() {
-        previous.abort();
-    }
-    let current_selection = ModelSelection {
-        provider_id: app.route.provider_id.clone(),
-        model_id: session.model().to_owned(),
+    let source = super::session_navigation::PreparationSource {
+        runs: session
+            .rollout_path()
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_default(),
+        directory: directory.clone(),
+        selection: ModelSelection {
+            provider_id: app.route.provider_id.clone(),
+            model_id: session.model().to_owned(),
+        },
+        kind: super::session_navigation::PreparationKind::Existing(run_id.clone()),
     };
-    let directory = directory.clone();
-    let worker_run_id = run_id.clone();
-    app.status = format!("opening session {run_id}…");
-    app.session_adoption_job = Some(tokio::task::spawn_blocking(move || {
-        let run = iteron_protocol::RunId(worker_run_id.clone());
-        let events = match iteron_record::load_forked(&runs, &run) {
-            Ok(events) => events,
-            Err(error) => {
-                return PreparedAdoptionResult::Failed {
-                    message: format!(
-                        "cannot read session {}: {error}",
-                        ui_safe_text(&worker_run_id)
-                    ),
-                    handoff_run: None,
-                };
-            }
-        };
-        let recorded = recorded_route(&events);
-        let (selection, built, substituted) = match &recorded {
-            Some((Some(provider_id), model_id)) => {
-                let candidate = ModelSelection {
-                    provider_id: provider_id.clone(),
-                    model_id: model_id.clone(),
-                };
-                match directory.build(&candidate) {
-                    Ok(provider) => (candidate, Some(provider), None),
-                    Err(error) => (
-                        current_selection,
-                        None,
-                        Some(format!(
-                            "the recorded route {provider_id}:{model_id} is not usable here ({error})"
-                        )),
-                    ),
-                }
-            }
-            Some((None, model_id)) => (
-                current_selection,
-                None,
-                Some(format!(
-                    "this session predates provider identity and records only model `{model_id}`"
-                )),
-            ),
-            None => (
-                current_selection,
-                None,
-                Some("this session records no route".into()),
-            ),
-        };
-        let provider = match built {
-            Some(provider) => provider,
-            None => match directory.build(&selection) {
-                Ok(provider) => provider,
-                Err(error) => {
-                    return PreparedAdoptionResult::Failed {
-                        message: format!("cannot resume that session here: {error}"),
-                        handoff_run: None,
-                    };
-                }
-            },
-        };
-        let rollout = match iteron_record::Rollout::open_existing(
-            &runs,
-            &run,
-            iteron_protocol::TenantId::default(),
-        ) {
-            Ok(rollout) => rollout,
-            Err(error) => {
-                return PreparedAdoptionResult::Failed {
-                    message: format!(
-                        "cannot take over session {}: {error}. Another iteron process may still be running it.",
-                        ui_safe_text(&worker_run_id)
-                    ),
-                    handoff_run: Some(worker_run_id),
-                };
-            }
-        };
-        let (catalog_digest, capability_digest) = directory.selection_digests(&selection);
-        let capabilities = directory.selection_capabilities(&selection);
-        PreparedAdoptionResult::Ready(PreparedAdoption {
-            fresh: false,
-            control: app_server::Control::AdoptRun(Box::new(app_server::AdoptRun {
-                rollout,
-                fresh: false,
-                route: Box::new(app_server::ModelSelection {
-                    provider,
-                    provider_id: selection.provider_id.clone(),
-                    model_id: selection.model_id.clone(),
-                    catalog_digest,
-                    capability_digest,
-                    context_window_tokens: capabilities.context_window_tokens,
-                    max_output_tokens: capabilities.max_output_tokens,
-                }),
-            })),
-            run_id: worker_run_id,
-            events,
-            selection,
-            substituted,
-            context_window_tokens: capabilities.context_window_tokens,
-        })
-    }));
+    if app.navigation.queue_adoption(&scope, source) {
+        app.status = format!("opening session {}…", ui_safe_text(&run_id));
+    } else {
+        app.note(
+            block::NoticeLevel::Warn,
+            "session preparation is still running; wait for its physical worker to finish",
+        );
+    }
 }
-
-/// Prepare a fresh rollout, provider instance, and writer lease on the same bounded adoption actor.
-/// `/sessions new` therefore acknowledges immediately and never opens/fsyncs a record on the TUI
-/// thread.
 pub(super) fn start_fresh_session(app: &mut App, session: &Session, directory: &ProviderDirectory) {
+    if !adoption_draft_ready(app) {
+        return;
+    }
+    let Some(scope) = session.client.thread_snapshot_v1() else {
+        app.note(
+            block::NoticeLevel::Warn,
+            "public session scope unavailable; session creation was not started",
+        );
+        return;
+    };
+    let source = super::session_navigation::PreparationSource {
+        runs: session
+            .rollout_path()
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_default(),
+        directory: directory.clone(),
+        selection: ModelSelection {
+            provider_id: app.route.provider_id.clone(),
+            model_id: session.model().to_owned(),
+        },
+        kind: super::session_navigation::PreparationKind::Fresh,
+    };
+    if app.navigation.queue_adoption(&scope, source) {
+        app.status = "creating session…".into();
+    } else {
+        app.note(
+            block::NoticeLevel::Warn,
+            "session preparation is still running; wait for its physical worker to finish",
+        );
+    }
+}
+fn adoption_draft_ready(app: &mut App) -> bool {
+    if app.running || app.pending.is_some() {
+        app.note(
+            block::NoticeLevel::Warn,
+            "finish the current turn before switching sessions",
+        );
+        return false;
+    }
     if !app.input_lanes.queued().is_empty() || !app.input_lanes.steers().is_empty() {
         app.note(
             block::NoticeLevel::Warn,
-            "send or clear pending submissions before creating another session",
+            "send or clear pending submissions before switching sessions",
         );
-        return;
+        return false;
     }
-    if let Some(previous) = app.session_adoption_job.take() {
-        previous.abort();
-    }
-    let selection = ModelSelection {
-        provider_id: app.route.provider_id.clone(),
-        model_id: session.model().to_owned(),
-    };
-    let runs = session
-        .rollout_path()
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_default();
-    let directory = directory.clone();
-    app.status = "creating session…".into();
-    app.session_adoption_job = Some(tokio::task::spawn_blocking(move || {
-        let provider = match directory.build(&selection) {
-            Ok(provider) => provider,
-            Err(error) => {
-                return PreparedAdoptionResult::Failed {
-                    message: format!("cannot create a session on the current route: {error}"),
-                    handoff_run: None,
-                };
-            }
-        };
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or_default();
-        let run = iteron_protocol::RunId(format!("run-{}-{nanos}", std::process::id()));
-        let rollout =
-            match iteron_record::Rollout::open(&runs, &run, iteron_protocol::TenantId::default()) {
-                Ok(rollout) => rollout,
-                Err(error) => {
-                    return PreparedAdoptionResult::Failed {
-                        message: format!("cannot create session: {error}"),
-                        handoff_run: None,
-                    };
-                }
-            };
-        let (catalog_digest, capability_digest) = directory.selection_digests(&selection);
-        let capabilities = directory.selection_capabilities(&selection);
-        PreparedAdoptionResult::Ready(PreparedAdoption {
-            fresh: true,
-            control: app_server::Control::AdoptRun(Box::new(app_server::AdoptRun {
-                rollout,
-                fresh: true,
-                route: Box::new(app_server::ModelSelection {
-                    provider,
-                    provider_id: selection.provider_id.clone(),
-                    model_id: selection.model_id.clone(),
-                    catalog_digest,
-                    capability_digest,
-                    context_window_tokens: capabilities.context_window_tokens,
-                    max_output_tokens: capabilities.max_output_tokens,
-                }),
-            })),
-            run_id: run.0,
-            events: Vec::new(),
-            selection,
-            substituted: None,
-            context_window_tokens: capabilities.context_window_tokens,
-        })
-    }));
+    true
 }
 
 /// One recorded tool call, rebuilt from the durable transcript.

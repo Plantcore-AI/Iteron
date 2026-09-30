@@ -632,10 +632,8 @@ pub(super) async fn dispatch<B: ratatui::backend::Backend>(
                     let _ = transcript_effects.cancel();
                     app.note(block::NoticeLevel::Warn, "cancelling local effect…");
                 }
-                KeyCode::Esc if !app.running && app.session_adoption_job.is_some() => {
-                    if let Some(job) = app.session_adoption_job.take() {
-                        job.abort();
-                    }
+                KeyCode::Esc if !app.running && app.navigation.adoption_busy() => {
+                    app.navigation.cancel_adoption();
                     app.status = "idle · session loading cancelled".into();
                 }
                 KeyCode::Esc if !app.running && app.editor.has_submission() => {
