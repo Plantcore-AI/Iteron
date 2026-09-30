@@ -81,13 +81,14 @@ use lifecycle_control::{
 mod workflow_projection;
 use workflow_projection::{publish_settled, publish_workflow_progress};
 
+pub(crate) use crate::model_route::HostModelSelection as ModelSelection;
 mod messages;
 use messages::event_heap_bytes;
 pub(crate) use messages::{
     AdoptRun, Control, ControlReply, ControlRequest, EventEnvelope, EventEnvelopeError, JobControl,
-    McpControl, McpControlReply, MemoryControl, MemoryControlReply, ModelSelection,
-    NavigatedSession, ServerEvent, SessionSnapshot, SideRequest, TerminalAuthority,
-    TerminalSummary, WorkflowControl, WorkflowControlReply,
+    McpControl, McpControlReply, MemoryControl, MemoryControlReply, NavigatedSession, ServerEvent,
+    SessionSnapshot, SideRequest, TerminalAuthority, TerminalSummary, WorkflowControl,
+    WorkflowControlReply,
 };
 mod text_spill;
 mod turn_pump;

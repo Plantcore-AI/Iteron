@@ -1,6 +1,5 @@
 //! Trusted native session factory. Provider constructors, verified replay and writer leases never
 //! cross into presentation. Existing SQ slot permits exclude submissions through the journal swap.
-mod projection;
 #[cfg(test)]
 mod tests;
 use crate::app_server::{AppServerClient, ModelSelection};
@@ -288,7 +287,7 @@ impl SessionFactory {
                 .build_route(&selection)
                 .map_err(|reason| format!("{reason}; retained run {}", rollout.run_id().0))?,
         };
-        let projection = projection::project(&scoped);
+        let projection = crate::session_transcript::project(&scoped);
         Ok(PreparedSession {
             origin,
             rollout,
@@ -301,21 +300,8 @@ impl SessionFactory {
         })
     }
     fn build_route(&self, selection: &RouteSelection) -> Result<ModelSelection, String> {
-        let provider = self
-            .directory
-            .build(selection)
-            .map_err(|_| "captured host route cannot construct a provider".to_owned())?;
-        let caps = self.directory.selection_capabilities(selection);
-        let (catalog_digest, capability_digest) = self.directory.selection_digests(selection);
-        Ok(ModelSelection {
-            provider,
-            provider_id: selection.provider_id.clone(),
-            model_id: selection.model_id.clone(),
-            catalog_digest,
-            capability_digest,
-            context_window_tokens: caps.context_window_tokens,
-            max_output_tokens: caps.max_output_tokens,
-        })
+        crate::model_route::HostModelSelection::capture(&self.directory, selection)
+            .map_err(|_| "captured host route cannot construct a provider".to_owned())
     }
     fn verified(&self, run: &RunId) -> Result<Vec<ScopedEvent>, String> {
         let scoped = load_forked_scoped_bounded(

@@ -185,11 +185,11 @@ use ratatui::widgets::{
     Block, BorderType, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
 };
 use ratatui::{Frame, Terminal, TerminalOptions, Viewport};
+#[cfg(test)]
 use session_adoption::{
-    MAX_ADOPTED_BLOCKS, adopted_transcript_blocks,
-    format_resume_command, project_recorded_transcript, recorded_route, start_adopt_session,
-    start_fresh_session,
+    MAX_ADOPTED_BLOCKS, adopted_transcript_blocks, project_recorded_transcript, recorded_route,
 };
+use session_adoption::{format_resume_command, start_adopt_session, start_fresh_session};
 #[cfg(test)]
 use session_picker::{
     SessionPickerBacking, apply_session_page_result, load_session_page, session_picker_items,

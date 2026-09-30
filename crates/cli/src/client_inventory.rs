@@ -128,7 +128,7 @@ impl ClientInventoryOwner {
     pub(crate) fn resolve(
         &self,
         request: &ClientModelSelectionV1,
-    ) -> Result<crate::app_server::ModelSelection, String> {
+    ) -> Result<crate::model_route::HostModelSelection, String> {
         request.validate()?;
         if request.inventory_digest_sha256 != self.digest {
             return Err("bootstrap inventory identity changed; read the current inventory".into());
@@ -155,17 +155,7 @@ impl ClientInventoryOwner {
             provider_id: request.provider_id.clone(),
             model_id: request.model_id.clone(),
         };
-        let provider = self.directory.build(&selection)?;
-        let capabilities = self.directory.selection_capabilities(&selection);
-        Ok(crate::app_server::ModelSelection {
-            provider,
-            provider_id: request.provider_id.clone(),
-            model_id: request.model_id.clone(),
-            catalog_digest: request.catalog_digest_sha256.clone(),
-            capability_digest: request.capability_digest_sha256.clone(),
-            context_window_tokens: capabilities.context_window_tokens,
-            max_output_tokens: capabilities.max_output_tokens,
-        })
+        crate::model_route::HostModelSelection::capture(&self.directory, &selection)
     }
 }
 

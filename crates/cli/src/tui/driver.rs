@@ -6,8 +6,8 @@ use super::{
     Session, TERMINAL_READ_SLICE, TermGuard, Terminal, TerminalOptions, VecDeque, Viewport,
     app_server, apply_server_event, apply_transcript_effect_event, block, cached_workspace_dirty,
     dispatch_slash_command, draw, finish_attachment_effect, hyperlink, input_dispatch, keymap,
-    local_job_wake, next_wake, notification, product_projection, project_recorded_transcript,
-    prompt_history, report_stopped_workflows, restore_terminal, schedule_transcript_viewer_effect,
+    local_job_wake, next_wake, notification, product_projection, prompt_history,
+    report_stopped_workflows, restore_terminal, schedule_transcript_viewer_effect,
     service_input_control, session_display_name, slash_command_body, startup,
     submit_queued_model_input, submit_turn, terminal_input, theme, transcript_effect,
     update_keymap_status, wait_for_forced_server_shutdown, wait_for_server_shutdown, wake_until,
@@ -28,9 +28,9 @@ pub(crate) struct RunConfig {
     /// alternate screen hides the primary transcript, so replay them after first paint as well.
     pub(crate) initial_notices: Vec<String>,
     /// Durable transcript authority for a startup `--resume`/`--continue` invocation. The runtime
-    /// already resumes the full model history; this copy exists only so the first TUI frame shows
-    /// the same conversation instead of a fresh-session welcome surface.
-    pub(crate) initial_transcript_events: Option<Vec<iteron_protocol::Event>>,
+    /// already resumes full history. This bounded host projection retains physical origins and
+    /// omitted counts, so rendering never hydrates or guesses a source from flattened history.
+    pub(crate) initial_transcript: Option<iteron_protocol::session_navigation::SessionTranscriptV1>,
 }
 
 /// Run the TUI. The agent runs in a background task streaming `UiEvent`s; the render loop drains
@@ -61,7 +61,7 @@ pub async fn run(
         sensitive_env_names,
         initial_diagnostics,
         initial_notices,
-        initial_transcript_events,
+        initial_transcript,
     } = config;
     let app_server::Attached {
         handle,
@@ -212,8 +212,8 @@ pub async fn run(
     } else if !terminal_capabilities.may_use_color() {
         app.set_theme(theme::Theme::mono());
     }
-    if let Some(events) = initial_transcript_events.as_deref() {
-        project_recorded_transcript(&mut app, events);
+    if let Some(transcript) = initial_transcript.as_ref() {
+        super::session_adoption::project_host_transcript(&mut app, transcript);
     }
     if let Some(warning) = initial_keymap_warning {
         app.note(block::NoticeLevel::Warn, warning);

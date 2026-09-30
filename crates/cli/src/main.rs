@@ -26,6 +26,7 @@ mod machine_projection;
 mod maintenance;
 mod markdown;
 mod mcp;
+mod model_route;
 mod output;
 mod paste_input;
 mod plugin;
@@ -36,6 +37,7 @@ mod providers;
 mod queue_policy;
 mod recording_provider;
 mod render;
+mod session_transcript;
 // The published client-event vocabulary. Nothing in this binary consumes it yet: it is the
 // payload contract #44 will put on a socket, landed first so the transport does not get to
 // decide which of the four documented losses stands. Its round trips are covered by tests.

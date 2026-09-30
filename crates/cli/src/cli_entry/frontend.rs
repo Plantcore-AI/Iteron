@@ -32,7 +32,8 @@ pub(crate) struct FrontendLaunch {
     pub(crate) completion_notifications: config::CompletionNotificationResolution,
     pub(crate) user_file: crate::config::FileConfig,
     pub(crate) credential_env_names: Vec<String>,
-    pub(crate) resumed_transcript_events: Option<Vec<iteron_protocol::Event>>,
+    pub(crate) resumed_transcript_events:
+        Option<iteron_protocol::session_navigation::SessionTranscriptV1>,
     pub(crate) startup: startup::StartupTiming,
     pub(crate) run: RunId,
     pub(crate) output_format: OutputFormat,
@@ -174,7 +175,7 @@ pub(crate) async fn drive(launch: FrontendLaunch) -> anyhow::Result<u8> {
                 sensitive_env_names: credential_env_names,
                 initial_diagnostics: diagnostic_drain.take(),
                 initial_notices,
-                initial_transcript_events: resumed_transcript_events,
+                initial_transcript: resumed_transcript_events,
             },
             startup,
         )

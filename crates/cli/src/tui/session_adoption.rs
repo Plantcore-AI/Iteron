@@ -21,9 +21,11 @@ pub(super) fn format_resume_command(run_id: &str) -> String {
 /// bound only, so a thousand-turn session cannot push the live transcript past its own eviction cap
 /// on the way in. The notice above the projection says how much was left out, because a history
 /// silently rendered short reads as a shorter conversation than the one the model will see.
+#[cfg(test)]
 pub(super) const MAX_ADOPTED_BLOCKS: usize = 120;
 
 /// Bound on one recorded tool result rendered back into a card.
+#[cfg(test)]
 pub(super) const MAX_ADOPTED_TOOL_OUTPUT_BYTES: usize = 4 * 1024;
 
 /// The `(provider_id, model_id)` an existing record says its last turn dispatched on.
@@ -31,6 +33,7 @@ pub(super) const MAX_ADOPTED_TOOL_OUTPUT_BYTES: usize = 4 * 1024;
 /// Same rule the `--resume` startup path applies: the last durable `ModelSelected` is authoritative;
 /// a legacy journal that predates provider identity offers only `RunStart.model`, and its model is
 /// never used to guess a provider.
+#[cfg(test)]
 pub(super) fn recorded_route(
     events: &[iteron_protocol::Event],
 ) -> Option<(Option<String>, String)> {
@@ -201,7 +204,7 @@ pub(super) fn apply_navigated_session(
         app.status = "idle · selected session requires restart".into();
     }
 }
-fn project_host_transcript(
+pub(super) fn project_host_transcript(
     app: &mut App,
     transcript: &iteron_protocol::session_navigation::SessionTranscriptV1,
 ) {
@@ -287,6 +290,7 @@ fn adoption_draft_ready(app: &mut App) -> bool {
 }
 
 /// One recorded tool call, rebuilt from the durable transcript.
+#[cfg(test)]
 pub(super) struct AdoptedTool {
     is_error: bool,
     content: String,
@@ -298,6 +302,7 @@ pub(super) struct AdoptedTool {
 /// This renders the RECORD, not a replay of the run: no tool is re-executed, no card is live, and
 /// nothing here can start a turn. Returns `(rendered, total)` so the caller can state the bound it
 /// applied instead of quietly showing a shorter conversation.
+#[cfg(test)]
 pub(super) fn adopted_transcript_blocks(
     events: &[iteron_protocol::Event],
 ) -> (Vec<block::BlockKind>, usize) {
@@ -411,6 +416,7 @@ pub(super) fn adopted_transcript_blocks(
 }
 
 /// Truncate on a char boundary, never mid-UTF-8.
+#[cfg(test)]
 pub(super) fn bounded_prefix(text: &str, max_bytes: usize) -> String {
     if text.len() <= max_bytes {
         return text.to_owned();
@@ -452,6 +458,7 @@ pub(super) fn clear_transcript_for_adoption(app: &mut App) {
 /// Both startup `--resume` and in-process `/resume` use this seam so the operator sees the same
 /// history regardless of how the runtime acquired the rollout. The model still receives the full
 /// reconstructed transcript; only this display projection is bounded.
+#[cfg(test)]
 pub(super) fn project_recorded_transcript(app: &mut App, events: &[iteron_protocol::Event]) {
     clear_transcript_for_adoption(app);
     let (blocks, total) = adopted_transcript_blocks(events);

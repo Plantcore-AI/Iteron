@@ -64,7 +64,7 @@ fn scrub(value: &Value) -> Value {
         other => other.clone(),
     }
 }
-pub(super) fn project(events: &[ScopedEvent]) -> SessionTranscriptV1 {
+pub(crate) fn project(events: &[ScopedEvent]) -> SessionTranscriptV1 {
     let mut selected = VecDeque::new();
     let mut total = 0_usize;
     for scoped in events {

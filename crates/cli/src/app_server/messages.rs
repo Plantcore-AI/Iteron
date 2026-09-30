@@ -1,9 +1,9 @@
 //! Typed session observations, terminal authority and operator control contracts.
 
 use super::{
-    AssistantTextSpill, McpInputPrompt, OperatorStatusSnapshot, Outcome, OwnedSemaphorePermit,
-    PROTOCOL_VERSION, ProtocolVersionError, SubmissionId, SubmissionLifecycleState, UiEvent,
-    plantcore,
+    AssistantTextSpill, McpInputPrompt, ModelSelection, OperatorStatusSnapshot, Outcome,
+    OwnedSemaphorePermit, PROTOCOL_VERSION, ProtocolVersionError, SubmissionId,
+    SubmissionLifecycleState, UiEvent, plantcore,
 };
 
 /// The authoritative terminal facts needed by every non-interactive client.
@@ -499,20 +499,6 @@ pub(crate) enum SideRequest {
     Status,
     /// End it. The next `Ask` starts a new conversation with a new record.
     Close,
-}
-
-/// The `/model` transaction's inputs, kept together because the kernel applies them as one.
-///
-/// No `Debug`: `Arc<dyn Provider>` has none, and a hand-written one that printed the identifiers
-/// while eliding the handle would put a provider id and a catalog digest into whatever logged it.
-pub(crate) struct ModelSelection {
-    pub(crate) provider: std::sync::Arc<dyn iteron_provider::Provider>,
-    pub(crate) provider_id: String,
-    pub(crate) model_id: String,
-    pub(crate) catalog_digest: String,
-    pub(crate) capability_digest: String,
-    pub(crate) context_window_tokens: Option<u64>,
-    pub(crate) max_output_tokens: Option<u32>,
 }
 
 /// What a control request answers with.

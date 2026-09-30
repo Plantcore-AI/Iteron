@@ -16,7 +16,8 @@ pub(crate) struct Continuation {
     pub(crate) last_success_route_path: Option<PathBuf>,
     pub(crate) route_source: &'static str,
     pub(crate) route_fallback_reason: Option<String>,
-    pub(crate) resumed_transcript_events: Option<Vec<iteron_protocol::Event>>,
+    pub(crate) resumed_transcript_events:
+        Option<iteron_protocol::session_navigation::SessionTranscriptV1>,
 }
 pub(crate) struct ResumeAdmission {
     pub(crate) initial: InitialRoute,
@@ -82,7 +83,20 @@ pub(crate) fn admit(
     let mut route_fallback_reason: Option<String> = None;
     let mut resumed_transcript_events = None;
     if let Some(resume) = &resume_id {
-        let recorded = iteron_record::load_forked(&runs_dir, &RunId(resume.clone()))?;
+        let scoped = iteron_record::bounded_replay::load_forked_scoped_bounded(
+            &runs_dir,
+            &RunId(resume.clone()),
+            iteron_record::bounded_replay::ReplayReadLimits {
+                physical_bytes: 64 * 1024 * 1024,
+                hydrated_bytes: 64 * 1024 * 1024,
+                events: 100_000,
+            },
+        )?;
+        let projection = crate::session_transcript::project(&scoped);
+        let recorded = scoped
+            .into_iter()
+            .map(|scoped| scoped.event)
+            .collect::<Vec<_>>();
         resumed_tunables_checkpoint = Some(
             iteron_record::tunables_checkpoint_from_events(&recorded)?.ok_or_else(|| {
                 anyhow::anyhow!(
@@ -162,7 +176,7 @@ pub(crate) fn admit(
             requested_model = Some(legacy_model);
             model_origin = Some(config::ConfigOrigin::UserConfig);
         }
-        resumed_transcript_events = Some(recorded);
+        resumed_transcript_events = Some(projection);
     }
 
     // With no operator or resume authority, prefer the last route that completed a real provider
