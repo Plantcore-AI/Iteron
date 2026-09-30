@@ -718,13 +718,13 @@ pub(super) async fn apply_control(
             agent.settle_standalone_control_interrupt();
             reply
         }
-        Control::AdoptRun(request) => {
+        Control::AdoptRun(native_request) => {
             let AdoptRun {
                 rollout,
                 route,
                 fresh,
                 created_at,
-            } = *request;
+            } = *native_request;
             let adoption = if fresh {
                 let Some(created_at) = created_at else {
                     let _ = request.reply.send(ControlReply::Refused(
