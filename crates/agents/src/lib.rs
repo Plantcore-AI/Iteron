@@ -14,6 +14,8 @@
 
 mod catalog;
 mod controller;
+#[cfg(unix)]
+mod controller_directory;
 mod controller_error;
 mod controller_file;
 #[cfg(windows)]

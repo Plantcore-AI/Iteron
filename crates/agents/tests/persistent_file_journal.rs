@@ -218,3 +218,63 @@ fn kill_test_helper() {
     std::thread::park_timeout(Duration::from_secs(30));
     panic!("kill helper exceeded its bounded lifetime");
 }
+
+#[test]
+fn fresh_leaf_namespace_and_ancestor_pins_are_the_actual_journal_writer() {
+    let parent = Directory::new();
+    let state = parent.0.join("fresh-private-state");
+    let mut owner =
+        AgentController::open(AgentFileJournal::provision(&state).unwrap(), config()).unwrap();
+    assert_eq!(
+        fs::metadata(&state).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    let child = owner
+        .execute(AgentActor::Operator, "fresh-child", spawn())
+        .unwrap()
+        .agent_id;
+    let revision = owner.revision();
+    drop(owner);
+    let reopened =
+        AgentController::open(AgentFileJournal::open(&state).unwrap(), config()).unwrap();
+    assert_eq!(reopened.revision(), revision);
+    assert_eq!(
+        reopened.inspect(AgentActor::Operator, child).unwrap().label,
+        "child"
+    );
+    drop(reopened);
+    let outside = Directory::new();
+    let link = parent.0.join("linked-parent");
+    symlink(&outside.0, &link).unwrap();
+    assert!(AgentFileJournal::provision(&link.join("state")).is_err());
+    assert!(!outside.0.join("state").exists());
+}
+
+#[test]
+fn replacing_an_ancestor_does_not_redirect_a_live_pinned_controller() {
+    let parent = Directory::new();
+    let state = parent.0.join("private-state");
+    let displaced = parent.0.with_extension("ancestor-displaced");
+    let mut owner =
+        AgentController::open(AgentFileJournal::provision(&state).unwrap(), config()).unwrap();
+    fs::rename(&parent.0, &displaced).unwrap();
+    fs::DirBuilder::new().mode(0o700).create(&parent.0).unwrap();
+    fs::DirBuilder::new().mode(0o700).create(&state).unwrap();
+    owner
+        .execute(AgentActor::Operator, "after-retarget", spawn())
+        .unwrap();
+    assert!(!state.join("agents.json").exists());
+    drop(owner);
+    let old_state = displaced.join("private-state");
+    let reopened =
+        AgentController::open(AgentFileJournal::open(&old_state).unwrap(), config()).unwrap();
+    assert_eq!(
+        reopened
+            .inspect(AgentActor::Operator, AgentIdV1(2))
+            .unwrap()
+            .label,
+        "child"
+    );
+    drop(reopened);
+    fs::remove_dir_all(displaced).unwrap();
+}

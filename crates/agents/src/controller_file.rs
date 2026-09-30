@@ -1,7 +1,7 @@
 //! Filesystem adapter for the controller's compare-and-commit journal.
 //!
-//! The composition root supplies an already durable, private application-state directory.
-//! All namespace operations are relative to its pinned directory handle. A uncertain post-rename
+//! Existing-only open and fresh provisioning validate and sync a bounded private state ancestry.
+//! All namespace operations use the same retained directory pins. An uncertain post-rename
 //! sync poisons the controller; it must reopen and reconcile before any execution resumes.
 
 use crate::{AgentControllerJournal, AgentControllerSnapshot, ControllerStoreError};
@@ -35,37 +35,51 @@ pub struct AgentFileJournal {
     #[cfg(unix)]
     directory: File,
     #[cfg(unix)]
+    _ancestors: Vec<File>,
+    #[cfg(unix)]
     _lease: File,
 }
 
 impl AgentFileJournal {
+    /// Fresh host installation creates only the final private directory and publishes its real
+    /// namespace barriers before acquiring the writer. Cold recovery uses `open` existing-only.
+    pub fn provision(directory: &Path) -> Result<Self, ControllerStoreError> {
+        #[cfg(unix)]
+        {
+            Self::from_pin(crate::controller_directory::pin(directory, true)?)
+        }
+        #[cfg(windows)]
+        {
+            iteron_support::durable_windows_state::provision_private_directory(directory)
+                .map_err(|_| ControllerStoreError::OutcomeUnknown)?;
+            Self::open(directory)
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = directory;
+            Err(ControllerStoreError::Unavailable)
+        }
+    }
+    #[cfg(unix)]
+    fn from_pin(
+        pin: crate::controller_directory::DirectoryPin,
+    ) -> Result<Self, ControllerStoreError> {
+        let lease = open_at(&pin.directory, c"agents.lock", libc::O_RDWR | libc::O_CREAT)
+            .map_err(|_| ControllerStoreError::Unavailable)?;
+        lease
+            .try_lock()
+            .map_err(|_| ControllerStoreError::Conflict)?;
+        Ok(Self {
+            directory: pin.directory,
+            _ancestors: pin.ancestors,
+            _lease: lease,
+        })
+    }
     /// Platform adapters must supply private, durable atomic publication before exposing state.
     pub fn open(directory: &Path) -> Result<Self, ControllerStoreError> {
         #[cfg(unix)]
         {
-            use std::fs::OpenOptions;
-            use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-            let directory = OpenOptions::new()
-                .read(true)
-                .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_DIRECTORY)
-                .open(directory)
-                .map_err(|_| ControllerStoreError::Unavailable)?;
-            let metadata = directory
-                .metadata()
-                .map_err(|_| ControllerStoreError::Unavailable)?;
-            // SAFETY: geteuid has no parameters or memory preconditions.
-            if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o077 != 0 {
-                return Err(ControllerStoreError::Unavailable);
-            }
-            let lease = open_at(&directory, c"agents.lock", libc::O_RDWR | libc::O_CREAT)
-                .map_err(|_| ControllerStoreError::Unavailable)?;
-            lease
-                .try_lock()
-                .map_err(|_| ControllerStoreError::Conflict)?;
-            Ok(Self {
-                directory,
-                _lease: lease,
-            })
+            Self::from_pin(crate::controller_directory::pin(directory, false)?)
         }
         #[cfg(windows)]
         {
