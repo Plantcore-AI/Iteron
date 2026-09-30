@@ -3,7 +3,9 @@
 //! order through concrete domain ports. Host inclusion observation is between these two phases.
 use super::KernelError;
 use super::plantcore::PlantcoreRuntime;
-use super::provider_attempt_journal::{ProviderAttemptJournal, ProviderObservedAttempt};
+use super::provider_attempt_journal::{
+    ProviderAttemptJournal, ProviderLogicalUsageEvidence, ProviderObservedAttempt,
+};
 use super::provider_hedge::HedgedProviderDispatch;
 use super::provider_route_events::ProviderRouteEvents;
 use super::provider_route_turn::ProviderRouteTurn;
@@ -35,6 +37,7 @@ pub(super) struct ProviderAttemptCompletion {
     pub(super) hedged: bool,
     pub(super) monetary_followup_safe: bool,
     pub(super) single_dispatched: bool,
+    pub(super) usage_evidence: ProviderLogicalUsageEvidence,
 }
 
 impl ProviderAttemptPump {
@@ -90,7 +93,6 @@ impl ProviderAttemptPump {
         mut journal: ProviderAttemptJournal<'_>,
         events: &ProviderRouteEvents,
         plantcore: &mut PlantcoreRuntime,
-        projected_at_unix_secs: u64,
     ) -> Result<ProviderAttemptCompletion, KernelError> {
         let turn = events.turn;
         let single_dispatched = route.ticket().is_some();
@@ -98,14 +100,18 @@ impl ProviderAttemptPump {
             events.physical_stream_terminal(self.observed_items);
         }
         let mut monetary_followup_safe = self.monetary_followup_safe;
+        let mut usage_evidence = if self.hedged {
+            ProviderLogicalUsageEvidence::HedgedAggregate
+        } else {
+            ProviderLogicalUsageEvidence::Unproven
+        };
         if let Some(ticket) = route.take_ticket() {
             let started = Instant::now();
-            let (accounting, safe) = journal.settle_observed(
+            let (accounting, safe, receipt) = journal.settle_observed(
                 ticket,
                 ProviderObservedAttempt {
                     route_id: route.route_id(),
                     result: &self.result,
-                    projected_at_unix_secs,
                 },
             )?;
             monetary_followup_safe = safe;
@@ -114,6 +120,7 @@ impl ProviderAttemptPump {
                 .map_err(|reason| KernelError::ContextResolution(reason.into()))?;
             journal.commit_usd(turn, &accounting)?;
             journal.measure_broker(started);
+            usage_evidence = ProviderLogicalUsageEvidence::Single(receipt);
         }
         Ok(ProviderAttemptCompletion {
             result: self.result,
@@ -121,6 +128,7 @@ impl ProviderAttemptPump {
             hedged: self.hedged,
             monetary_followup_safe,
             single_dispatched,
+            usage_evidence,
         })
     }
 }

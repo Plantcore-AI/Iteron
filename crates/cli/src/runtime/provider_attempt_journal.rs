@@ -13,7 +13,7 @@ use super::tool_presentation::strict_utf8_head;
 use iteron_kernel::diagnostics::{DiagnosticEmitter, KernelDiagnostic};
 use iteron_kernel::{effect_class, effects};
 use iteron_obs::Ledger;
-use iteron_protocol::{Capability, EventKind, ProviderRouteAttemptAccounting, TurnId};
+use iteron_protocol::{Capability, EventKind, ProviderRouteAttemptAccounting, Seq, TurnId};
 use iteron_record::Rollout;
 use std::{path::Path, time::Instant};
 
@@ -39,7 +39,43 @@ pub(super) struct ProviderIntent {
 pub(super) struct ProviderObservedAttempt<'a> {
     pub(super) route_id: &'a str,
     pub(super) result: &'a Result<iteron_provider::TurnResult, KernelError>,
-    pub(super) projected_at_unix_secs: u64,
+}
+
+/// The physical journal alone mints this after its actual terminal barrier succeeds. Logical
+/// usage projection may read the receipt, but cannot substitute a counter, card time or winner.
+pub(super) struct ProviderPhysicalUsageReceipt {
+    turn: TurnId,
+    intent_sequence: Seq,
+    pricing_at_unix_secs: Option<u64>,
+    accounting: ProviderRouteAttemptAccounting,
+}
+
+impl ProviderPhysicalUsageReceipt {
+    pub(super) fn turn(&self) -> TurnId {
+        self.turn
+    }
+    pub(super) fn intent_sequence(&self) -> Seq {
+        self.intent_sequence
+    }
+    pub(super) fn pricing_at_unix_secs(&self) -> Option<u64> {
+        self.pricing_at_unix_secs
+    }
+    pub(super) fn accounting(&self) -> &ProviderRouteAttemptAccounting {
+        &self.accounting
+    }
+}
+
+#[derive(Default)]
+pub(super) enum ProviderLogicalUsageEvidence {
+    Single(ProviderPhysicalUsageReceipt),
+    HedgedAggregate,
+    #[default]
+    Unproven,
+}
+
+pub(super) struct ProviderPhysicalResponse {
+    pub(super) result: iteron_provider::TurnResult,
+    pub(super) usage_evidence: ProviderLogicalUsageEvidence,
 }
 
 impl ProviderAttemptJournal<'_> {
@@ -69,6 +105,8 @@ impl ProviderAttemptJournal<'_> {
                 field: "provider_route_attempt.physical_attempt",
                 reason: "provider effect audit projection omitted a bounded physical ordinal",
             })?;
+        self.financial
+            .validate_pricing_admission(route_id, self.pricing_now)?;
         let bounds = self.financial.cohort_bounds(
             route_id,
             audit
@@ -89,6 +127,12 @@ impl ProviderAttemptJournal<'_> {
         if let Some(arguments) = audit.as_object_mut() {
             arguments.remove("route_id");
             arguments.remove("model");
+            // The caller's audit cannot supply pricing authority. Freeze the actual barrier
+            // time checked above; the opaque durable ticket carries it to physical settlement.
+            arguments.insert(
+                "provider_pricing_at_unix_secs".into(),
+                self.pricing_now.into(),
+            );
         }
         #[cfg(test)]
         self.inject_intent_failure()?;
@@ -145,7 +189,14 @@ impl ProviderAttemptJournal<'_> {
         &mut self,
         ticket: effects::EffectTicket,
         observed: ProviderObservedAttempt<'_>,
-    ) -> Result<(ProviderRouteAttemptAccounting, bool), KernelError> {
+    ) -> Result<
+        (
+            ProviderRouteAttemptAccounting,
+            bool,
+            ProviderPhysicalUsageReceipt,
+        ),
+        KernelError,
+    > {
         let Some(identity) = ticket.provider_route_attempt() else {
             self.settle(
                 ticket,
@@ -159,13 +210,27 @@ impl ProviderAttemptJournal<'_> {
                 reason: "physical provider ticket has no admitted route identity",
             });
         };
-        let accounting = self.financial.accounting_from_admission(
+        let turn = ticket.turn();
+        let intent_sequence = ticket.intent_sequence();
+        let pricing_at_unix_secs = ticket.provider_pricing_at_unix_secs();
+        let mut accounting = self.financial.accounting_from_admission(
             ticket.turn(),
             observed.route_id,
             identity,
             observed.result,
-            observed.projected_at_unix_secs,
+            pricing_at_unix_secs.unwrap_or(0),
         );
+        if pricing_at_unix_secs.is_none()
+            && !matches!(
+                accounting.cost,
+                iteron_protocol::ProviderRouteCostTruth::NotDispatched
+            )
+        {
+            // Missing evidence is not a reason to suppress known physical usage or its terminal.
+            accounting.cost = iteron_protocol::ProviderRouteCostTruth::Unknown {
+                reason: iteron_protocol::ProviderRouteCostUnknownReason::ProjectionRejected,
+            };
+        }
         let safe = monetary_followup_safe(&accounting);
         let id = ticket.effect_id().clone();
         let settlement = match observed.result {
@@ -195,7 +260,13 @@ impl ProviderAttemptJournal<'_> {
             }),
         };
         self.settle(ticket, settlement, UnknownCause::Unobserved)?;
-        Ok((accounting, safe))
+        let receipt = ProviderPhysicalUsageReceipt {
+            turn,
+            intent_sequence,
+            pricing_at_unix_secs,
+            accounting: accounting.clone(),
+        };
+        Ok((accounting, safe, receipt))
     }
 
     /// Even unavailable financial evidence cannot prevent the actual physical terminal append.

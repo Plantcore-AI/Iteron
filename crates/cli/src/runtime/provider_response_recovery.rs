@@ -5,6 +5,7 @@ use super::DurableAppendFault;
 use super::early_tool_collection::{EarlyToolCollection, EarlyToolCollectionScope};
 use super::plantcore::PlantcoreTerminal;
 use super::pricing::SharedUsdBudget;
+use super::provider_attempt_journal::ProviderLogicalUsageEvidence;
 use super::provider_round::ProviderRoundOwner;
 use super::provider_route;
 use super::provider_route_turn::ProviderRouteTurn;
@@ -46,6 +47,7 @@ pub(super) struct AcceptedProviderResponse {
     pub(super) result: TurnResult,
     pub(super) recovered: bool,
     pub(super) tools: Vec<ToolUse>,
+    pub(super) usage_evidence: ProviderLogicalUsageEvidence,
 }
 pub(super) struct FailedProviderResponse {
     pub(super) error: KernelError,
@@ -77,6 +79,7 @@ impl ProviderResponseRecoveryOwner {
             mut round,
             execution,
             result,
+            usage_evidence,
         } = self.completed;
         let turn = scope.early.turn;
         let mut recovered = false;
@@ -194,6 +197,11 @@ impl ProviderResponseRecoveryOwner {
                 result,
                 recovered,
                 tools,
+                usage_evidence: if recovered {
+                    ProviderLogicalUsageEvidence::Unproven
+                } else {
+                    usage_evidence
+                },
             },
         ))
     }

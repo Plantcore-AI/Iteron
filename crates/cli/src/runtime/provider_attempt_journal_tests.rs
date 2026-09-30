@@ -191,6 +191,7 @@ async fn controller_query_fault_after_actual_provider_call_preserves_sealed_term
     .open(&workspace, intent())
     .unwrap();
     let sealed = ticket.provider_route_attempt().unwrap().clone();
+    assert_eq!(ticket.provider_pricing_at_unix_secs(), Some(10));
     let id = ticket.effect_id().clone();
     let calls = Arc::new(AtomicUsize::new(0));
     let result = execute_admitted_provider_turn_observed(
@@ -237,7 +238,9 @@ async fn controller_query_fault_after_actual_provider_call_preserves_sealed_term
         record_failed: &mut failed,
         diagnostics: &diagnostics,
         financial: make_financial(),
-        pricing_now: 10,
+        // The actual stream completed after the signed card expired. Settlement must retain
+        // the authoritative admission time rather than consult the later terminal clock.
+        pricing_now: 1_000,
         fault: &mut fault,
     }
     .settle_observed(
@@ -245,7 +248,6 @@ async fn controller_query_fault_after_actual_provider_call_preserves_sealed_term
         ProviderObservedAttempt {
             route_id: "provider:model",
             result: &result,
-            projected_at_unix_secs: 10,
         },
     );
     assert!(matches!(
@@ -259,7 +261,8 @@ async fn controller_query_fault_after_actual_provider_call_preserves_sealed_term
     let mut restarted = Rollout::open_existing(&workspace, &run, TenantId::default()).unwrap();
     let rows = iteron_record::replay(restarted.path()).unwrap();
     assert!(rows.iter().any(|row| matches!(&row.kind, EventKind::EffectDone { id: actual, provider_route_attempt: Some(accounting), .. }
-        if *actual == id && accounting.identity() == sealed && matches!(accounting.usage, ProviderRouteUsageTruth::Known { usage } if usage.input == 2 && usage.output == 3))));
+        if *actual == id && accounting.identity() == sealed && matches!(accounting.usage, ProviderRouteUsageTruth::Known { usage } if usage.input == 2 && usage.output == 3)
+        && matches!(&accounting.cost, iteron_protocol::ProviderRouteCostTruth::Known { projection: Some(projection), .. } if projection.projected_at_unix_secs == 10))));
     let mut recovered = EffectJournalOwner::default();
     recovered
         .guard_recovery(&mut restarted, &mut Ledger::default())
@@ -312,7 +315,7 @@ fn intent() -> ProviderIntent {
         turn: TurnId(1),
         ordinal: 0,
         capability: Capability::IrreversibleExternal,
-        audit: serde_json::json!({"route_id":"provider:model","model":"model","physical_attempt":1,"max_tokens":128}),
+        audit: serde_json::json!({"route_id":"provider:model","model":"model","physical_attempt":1,"max_tokens":128,"provider_pricing_at_unix_secs":1}),
     }
 }
 

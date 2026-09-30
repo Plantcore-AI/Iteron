@@ -94,14 +94,13 @@ impl ProviderRoundOwner {
         journal: ProviderAttemptJournal<'_>,
         events: &ProviderRouteEvents,
         plantcore: &mut PlantcoreRuntime,
-        projected_at: u64,
     ) -> Result<ProviderAttemptCompletion, KernelError> {
         self.require(RoundPhase::PendingTerminal)?;
         let attempt = self.pending.take().expect("owned pending physical pump");
         // Failure remains terminally closed. This owner cannot dispatch a replacement for an
         // unavailable WAL/controller settlement or reconstruct the consumed ticket.
         self.phase = RoundPhase::Failed;
-        let observed = attempt.settle(route, journal, events, plantcore, projected_at)?;
+        let observed = attempt.settle(route, journal, events, plantcore)?;
         self.phase = RoundPhase::TerminalObserved;
         Ok(observed)
     }

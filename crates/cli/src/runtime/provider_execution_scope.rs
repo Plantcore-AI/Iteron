@@ -210,7 +210,6 @@ impl ProviderExecutionScope {
         pricing_now: u64,
         events: &ProviderRouteEvents,
         plantcore: &mut PlantcoreRuntime,
-        projected_at: u64,
         governor: Option<ProviderGovernor>,
         control: &SessionControlState,
     ) -> Result<ProviderAttemptCompletion, KernelError> {
@@ -229,7 +228,6 @@ impl ProviderExecutionScope {
             },
             events,
             plantcore,
-            projected_at,
         )?;
         if completed.single_dispatched && !completed.hedged {
             ProviderRouteAdmission {

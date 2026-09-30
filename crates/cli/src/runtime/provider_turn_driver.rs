@@ -8,7 +8,7 @@ use super::effect_journal_owner::EffectJournalOwner;
 use super::memory_request_exposure::MemoryRequestExposure;
 use super::plantcore::PlantcoreRuntime;
 use super::policy_evidence_recorder::PolicyEvidenceRecorder;
-use super::provider_attempt_journal::ProviderAttemptJournal;
+use super::provider_attempt_journal::{ProviderAttemptJournal, ProviderLogicalUsageEvidence};
 use super::provider_dispatch::{
     ProviderAdmissionJournal, ProviderDispatchOwner, ProviderDispatchScope,
     ProviderObjectiveEvidence,
@@ -123,6 +123,7 @@ pub(super) struct CompletedProviderTurn {
     pub(super) round: ProviderRoundOwner,
     pub(super) execution: ProviderExecutionScope,
     pub(super) result: Result<TurnResult, KernelError>,
+    pub(super) usage_evidence: ProviderLogicalUsageEvidence,
 }
 
 pub(super) enum ProviderPumpProgress {
@@ -139,6 +140,7 @@ pub(super) struct ProviderTurnDriver {
     financial: ProviderFinancialSource,
     refusal: Option<KernelError>,
     hedged: bool,
+    usage_evidence: ProviderLogicalUsageEvidence,
 }
 
 impl ProviderTurnDriver {
@@ -154,7 +156,6 @@ impl ProviderTurnDriver {
         evidence: ProviderExecutionEvidence<'_>,
         mut memory: MemoryRequestExposure<'_>,
         mut hedge: Option<(HedgedProviderDispatch, Instant)>,
-        projected_at: u64,
     ) -> Result<ProviderPumpProgress, KernelError> {
         loop {
             if self.hedged && self.refusal.is_none() && hedge.is_none() {
@@ -179,7 +180,6 @@ impl ProviderTurnDriver {
                     resident.reborrow(),
                     plantcore,
                     environment.current_pricing_now(),
-                    projected_at,
                 )
                 .await?
             {
@@ -276,6 +276,7 @@ impl ProviderTurnDriver {
             financial: start.financial,
             refusal,
             hedged: start.hedged,
+            usage_evidence: ProviderLogicalUsageEvidence::Unproven,
         })
     }
 
@@ -343,7 +344,6 @@ impl ProviderTurnDriver {
         resident: ProviderTurnResident<'_>,
         plantcore: &mut PlantcoreRuntime,
         pricing_now: u64,
-        projected_at: u64,
     ) -> Result<Option<Result<TurnResult, KernelError>>, KernelError> {
         let financial = self.financial.selected(
             resident.selection,
@@ -358,10 +358,10 @@ impl ProviderTurnDriver {
             pricing_now,
             &self.events,
             plantcore,
-            projected_at,
             environment.governor.cloned(),
             environment.control,
         )?;
+        self.usage_evidence = completed.usage_evidence;
         if let Some(error) = self.round.take_record_error() {
             return Ok(Some(Err(error)));
         }
@@ -487,6 +487,7 @@ impl ProviderTurnDriver {
             round: self.round,
             execution: self.execution,
             result,
+            usage_evidence: self.usage_evidence,
         })
     }
 }
