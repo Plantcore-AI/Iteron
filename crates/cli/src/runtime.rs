@@ -2902,7 +2902,7 @@ impl Agent {
                                         ) {
                                             Ok(sequence) => sequence,
                                             Err(error) => {
-                                                tool_policy_record_error = Some(error);
+                                                tool_turn.latch_record_error(error);
                                                 return;
                                             }
                                         },
@@ -4183,7 +4183,7 @@ impl Agent {
                                 artifact_publication::PUBLICATION_UNAVAILABLE.into(),
                             ));
                         }
-                        completed_tool_turn.retain_early((idx, tu, managed, spill_store));
+                        completed_pure.push((idx, tu, managed, spill_store));
                     }
                     Some(Ok(EarlyPureToolOutcome::Refused { reason, hook })) => {
                         self.observe_early_pure_hook(turn_id, hook, true);

@@ -30,6 +30,23 @@ pub(crate) trait ToolOutputPublicationPort: Send + Sync {
     ) -> Result<(), String>;
 }
 
+pub(crate) trait ToolOutputPublicationFactory: Send + Sync {
+    fn for_call(&self, call: &ToolUse, source: Seq) -> Arc<dyn ToolOutputPublicationPort>;
+}
+
+struct CapturedOutputPublicationFactory {
+    scope: CapturedOutputPublisher,
+}
+
+impl ToolOutputPublicationFactory for CapturedOutputPublicationFactory {
+    fn for_call(&self, call: &ToolUse, source: Seq) -> Arc<dyn ToolOutputPublicationPort> {
+        let mut publisher = self.scope.clone();
+        publisher.sources = BTreeMap::from([(call.id.clone(), source.0)]);
+        Arc::new(publisher)
+    }
+}
+
+#[derive(Clone)]
 struct CapturedOutputPublisher {
     runs: PathBuf,
     tenant: TenantId,
@@ -79,39 +96,12 @@ impl CapturedOutputPublisher {
         sequence: u64,
         receipt: &iteron_tools::NativeMutationReceipt,
     ) -> Result<(), String> {
-        let mut files = Vec::with_capacity(receipt.files().len());
-        for file in receipt.files() {
-            let relative = file
-                .path()
-                .strip_prefix(&self.workspace)
-                .ok()
-                .and_then(std::path::Path::to_str)
-                .ok_or(PUBLICATION_UNAVAILABLE)?;
-            let before = file
-                .before()
-                .map(|bytes| {
-                    std::str::from_utf8(bytes)
-                        .map_err(|_| PUBLICATION_UNAVAILABLE.to_owned())
-                        .and_then(|text| {
-                            self.retain_text(sequence, ArtifactTextSchema::FileSnapshot, text)
-                        })
-                })
-                .transpose()?;
-            let after = std::str::from_utf8(file.after()).map_err(|_| PUBLICATION_UNAVAILABLE)?;
-            let after = self.retain_text(sequence, ArtifactTextSchema::FileSnapshot, after)?;
-            files.push(serde_json::json!({
-                "path":relative,"before":before,"after":after
-            }));
-        }
         // Each complete served snapshot has its own real artifact identity. The manifest records
         // the actual native receipt; it neither fabricates prior bytes nor calls a preview a diff.
-        let manifest = serde_json::to_string(&serde_json::json!({
-            "type":"native_file_diff_v1","tool_use_id":receipt.tool_use_id(),
-            "tool":receipt.tool_name(),"basis":"guarded_native_commit",
-            "encoding":"utf8","redaction":"served_content","files":files
-        }))
-        .map_err(|_| PUBLICATION_UNAVAILABLE)?;
-        self.publish_text(sequence, ArtifactTextSchema::FileDiff, &manifest)
+        self.store()?
+            .publish_native_diff(sequence, receipt)
+            .map(|_| ())
+            .map_err(|_| PUBLICATION_UNAVAILABLE.into())
     }
 }
 
@@ -210,6 +200,12 @@ impl super::Agent {
             workspace: self.workspace.clone(),
             sources,
         }
+    }
+
+    pub(super) fn tool_output_publication_factory(&self) -> Arc<dyn ToolOutputPublicationFactory> {
+        Arc::new(CapturedOutputPublicationFactory {
+            scope: self.output_publisher(BTreeMap::new()),
+        })
     }
 
     pub(super) fn tool_output_publication(

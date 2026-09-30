@@ -4,6 +4,7 @@
 //! record owner's erasure and source-revocation graph. No client-supplied file locator is admitted.
 
 mod storage;
+mod structural;
 #[cfg(test)]
 mod tests;
 
@@ -128,6 +129,7 @@ pub(crate) struct DurableArtifactStore {
     runs: PathBuf,
     tenant: TenantId,
     run: RunId,
+    workspace: PathBuf,
     workspace_digest: String,
 }
 
@@ -152,6 +154,8 @@ struct Manifest {
 struct Entry {
     descriptor: ClientArtifactDescriptorV1,
     content: ContentRef,
+    #[serde(default)]
+    dependencies: Vec<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -187,6 +191,7 @@ impl DurableArtifactStore {
             tenant,
             run,
             workspace_digest: hex::encode(Sha256::digest(canonical.to_string_lossy().as_bytes())),
+            workspace: canonical,
         })
     }
 
@@ -254,6 +259,23 @@ impl DurableArtifactStore {
         for reference in manifest.pending.iter().chain(&manifest.releasing) {
             validate_reference(reference, manifest.next_sequence)?;
         }
+        for entry in &manifest.entries {
+            let unique = entry
+                .dependencies
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>();
+            if unique.len() != entry.dependencies.len() || unique.len() > MAX_SOURCES {
+                return Err(ArtifactStoreError::Corrupt);
+            }
+            for dependency in &entry.dependencies {
+                if manifest.entries.iter().all(|source| {
+                    source.descriptor.artifact_id != *dependency
+                        || source.content.sequence >= entry.content.sequence
+                }) {
+                    return Err(ArtifactStoreError::Corrupt);
+                }
+            }
+        }
         Ok(())
     }
 
@@ -287,14 +309,27 @@ impl DurableArtifactStore {
         text: &str,
         sources: &[PrivateContentSource],
     ) -> Result<ClientArtifactDescriptorV1, ArtifactStoreError> {
-        if source_event_seq == 0 {
-            return Err(ArtifactStoreError::InvalidRequest);
-        }
         if text.len() > MAX_PRIVATE_CONTENT_BYTES || sources.len() > MAX_SOURCES {
             return Err(ArtifactStoreError::Capacity);
         }
         let served = iteron_record::redact::scrub(text);
-        if served.len() > MAX_PRIVATE_CONTENT_BYTES {
+        self.publish_served(source_event_seq, schema, &served, sources, &[])
+    }
+
+    fn publish_served(
+        &self,
+        source_event_seq: u64,
+        schema: ArtifactTextSchema,
+        served: &str,
+        sources: &[PrivateContentSource],
+        dependencies: &[ClientArtifactDescriptorV1],
+    ) -> Result<ClientArtifactDescriptorV1, ArtifactStoreError> {
+        if source_event_seq == 0 {
+            return Err(ArtifactStoreError::InvalidRequest);
+        }
+        if served.len() > MAX_PRIVATE_CONTENT_BYTES
+            || sources.len().saturating_add(dependencies.len()) > MAX_SOURCES
+        {
             return Err(ArtifactStoreError::Capacity);
         }
         let artifact_id = hex::encode(Sha256::digest(served.as_bytes()));
@@ -303,6 +338,22 @@ impl DurableArtifactStore {
         let mut manifest = file.read()?.unwrap_or_else(|| self.empty_manifest());
         self.validate_manifest(&manifest)?;
         self.recover(&mut manifest, &file)?;
+        let mut private_sources = sources.to_vec();
+        let mut dependency_ids = std::collections::BTreeSet::new();
+        for descriptor in dependencies {
+            let entry = manifest
+                .entries
+                .iter()
+                .find(|entry| entry.descriptor == *descriptor)
+                .ok_or(ArtifactStoreError::Unavailable)?;
+            self.bytes(entry)?;
+            if dependency_ids.insert(descriptor.artifact_id.clone()) {
+                private_sources.push(PrivateContentSource {
+                    owner: self.run.clone(),
+                    digest: entry.content.handle.digest.clone(),
+                });
+            }
+        }
         if let Some(entry) = manifest
             .entries
             .iter()
@@ -318,9 +369,22 @@ impl DurableArtifactStore {
             || catalog_bytes(&manifest.entries)?.saturating_add(served.len() as u64)
                 > MAX_CATALOG_BYTES
         {
-            let entry = manifest.entries.remove(0);
-            manifest.releasing.push(entry.content);
-            manifest.evicted = manifest.evicted.saturating_add(1);
+            let evicted = manifest
+                .entries
+                .iter()
+                .map(|entry| eviction_set(&manifest.entries, &entry.descriptor.artifact_id))
+                .find(|ids| ids.is_disjoint(&dependency_ids))
+                .ok_or(ArtifactStoreError::Capacity)?;
+            let mut kept = Vec::with_capacity(manifest.entries.len());
+            for entry in manifest.entries.drain(..) {
+                if evicted.contains(&entry.descriptor.artifact_id) {
+                    manifest.releasing.push(entry.content);
+                    manifest.evicted = manifest.evicted.saturating_add(1);
+                } else {
+                    kept.push(entry);
+                }
+            }
+            manifest.entries = kept;
         }
         if !manifest.releasing.is_empty() {
             file.write(&manifest)?;
@@ -346,7 +410,7 @@ impl DurableArtifactStore {
         file.write(&manifest)?;
         let private = self.private(schema)?;
         let handle = private
-            .put_derived(Seq(sequence), served.as_bytes(), sources)
+            .put_derived(Seq(sequence), served.as_bytes(), &private_sources)
             .map_err(|_| ArtifactStoreError::Unavailable)?;
         if handle != reference.handle
             || private
@@ -368,6 +432,7 @@ impl DurableArtifactStore {
         manifest.entries.push(Entry {
             descriptor: descriptor.clone(),
             content: reference,
+            dependencies: dependency_ids.into_iter().collect(),
         });
         manifest.pending = None;
         file.write(&manifest)?;
@@ -443,6 +508,22 @@ impl DurableArtifactStore {
             }
         }
     }
+}
+
+fn eviction_set(entries: &[Entry], first: &str) -> std::collections::BTreeSet<String> {
+    let mut removed = std::collections::BTreeSet::from([first.to_owned()]);
+    for _ in 0..MAX_ARTIFACTS {
+        let before = removed.len();
+        for entry in entries {
+            if entry.dependencies.iter().any(|id| removed.contains(id)) {
+                removed.insert(entry.descriptor.artifact_id.clone());
+            }
+        }
+        if removed.len() == before {
+            break;
+        }
+    }
+    removed
 }
 
 fn catalog_bytes(entries: &[Entry]) -> Result<u64, ArtifactStoreError> {

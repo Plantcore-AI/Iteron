@@ -473,6 +473,7 @@ fn identical_bytes_keep_first_schema_source_and_retained_identity() {
     let duplicate = Entry {
         descriptor: first,
         content: manifest.entries[0].content.clone(),
+        dependencies: vec![],
     };
     manifest.entries.push(duplicate);
     file.write(&manifest).unwrap();

@@ -1638,6 +1638,14 @@
       "paths": [
         {
           "kind": "file",
+          "path": "crates/cli/src/artifacts.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/cli/src/artifacts"
+        },
+        {
+          "kind": "file",
           "path": "crates/cli/Cargo.toml"
         },
         {
@@ -2392,6 +2400,14 @@
       "paths": [
         {
           "kind": "file",
+          "path": "crates/cli/src/artifacts.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/cli/src/artifacts"
+        },
+        {
+          "kind": "file",
           "path": "crates/protocol/src/permission.rs"
         },
         {
@@ -2550,6 +2566,14 @@
       "paths": [
         {
           "kind": "file",
+          "path": "crates/cli/src/artifacts.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/cli/src/artifacts"
+        },
+        {
+          "kind": "file",
           "path": "crates/tools/src/captured_execution.rs"
         },
         {
@@ -2666,6 +2690,14 @@
       "reviewers": [],
       "requires_independent_review": true,
       "paths": [
+        {
+          "kind": "file",
+          "path": "crates/cli/src/artifacts.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/cli/src/artifacts"
+        },
         {
           "kind": "tree",
           "path": "crates/protocol"
@@ -2796,6 +2828,14 @@
       "reviewers": [],
       "requires_independent_review": true,
       "paths": [
+        {
+          "kind": "file",
+          "path": "crates/cli/src/artifacts.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/cli/src/artifacts"
+        },
         {
           "kind": "tree",
           "path": "crates/kernel"
@@ -3064,6 +3104,14 @@
       "reviewers": [],
       "requires_independent_review": true,
       "paths": [
+        {
+          "kind": "file",
+          "path": "crates/cli/src/artifacts.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/cli/src/artifacts"
+        },
         {
           "kind": "tree",
           "path": "crates/protocol"
@@ -3522,6 +3570,14 @@
       "reviewers": [],
       "requires_independent_review": true,
       "paths": [
+        {
+          "kind": "file",
+          "path": "crates/cli/src/artifacts.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/cli/src/artifacts"
+        },
         {
           "kind": "file",
           "path": "CHANGELOG.md"
