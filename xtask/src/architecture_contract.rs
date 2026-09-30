@@ -31,6 +31,9 @@ pub(crate) fn validate(root: &Path) -> Result<()> {
     if root.join("crates/cli/src/queue_policy.rs").is_file() {
         validate_runtime_direction(root)?;
     }
+    if root.join("crates/cli/src/machine_projection.rs").is_file() {
+        validate_frontend_projection_direction(root)?;
+    }
     // The direct public module declaration activates this new contract for historical trusted
     // base comparisons too; old bases remain readable without pretending they contain it.
     let workflow = read(root, "crates/workflow/src/lib.rs", MAX_SOURCE_BYTES)?;
@@ -317,6 +320,12 @@ fn validate_extracted_owners(root: &Path) -> Result<()> {
         "crates/cli/src/runtime/deferred_tool_batch.rs",
         "crates/cli/src/runtime/ordered_tool_call.rs",
         "crates/cli/src/runtime/optional_tool_round.rs",
+        "crates/cli/src/runtime/request_preparation.rs",
+        "crates/cli/src/runtime/request_accounting.rs",
+        "crates/cli/src/providers/discovery.rs",
+        "crates/cli/src/machine_projection.rs",
+        "crates/cli/src/tui/input_lanes.rs",
+        "crates/cli/src/tui/completion_owner.rs",
         "crates/cli/src/queue_policy.rs",
         "crates/cli/src/tui/headless/commands.rs",
         "crates/cli/src/tui/headless/connection.rs",
@@ -412,7 +421,17 @@ fn validate_runtime_direction(root: &Path) -> Result<()> {
 
 fn validate_runtime_source_direction(relative: &str, source: &str) -> Result<()> {
     let parsed = syn::parse_file(source)?;
-    let mut guard = FrontendDependencyGuard { violation: false };
+    let mut guard = FrontendDependencyGuard {
+        violation: false,
+        forbidden: &[
+            "app_server",
+            "tui",
+            "headless",
+            "ratatui",
+            "crossterm",
+            "output",
+        ],
+    };
     guard.visit_file(&parsed);
     if guard.violation {
         bail!("{relative}: runtime cannot depend on App Server, TUI or headless adapters");
@@ -420,16 +439,70 @@ fn validate_runtime_source_direction(relative: &str, source: &str) -> Result<()>
     Ok(())
 }
 
-struct FrontendDependencyGuard {
+/// Server and frontend adapters consume the same pure machine owner. Production imports must
+/// not route through another frontend's physical emitter, options or mutable presentation state.
+fn validate_frontend_projection_direction(root: &Path) -> Result<()> {
+    for (parent, tree, forbidden) in [
+        (
+            "crates/cli/src/app_server.rs",
+            "crates/cli/src/app_server",
+            &["output", "options", "tui"][..],
+        ),
+        (
+            "crates/cli/src/machine_projection.rs",
+            "crates/cli/src/machine_projection",
+            &["app_server", "tui", "cli_entry", "output", "options"][..],
+        ),
+    ] {
+        let mut paths = vec![parent.to_owned()];
+        let mut directories = vec![tree.to_owned()];
+        while let Some(directory) = directories.pop() {
+            for entry in std::fs::read_dir(root.join(&directory))? {
+                let entry = entry?;
+                let kind = entry.file_type()?;
+                let relative = format!("{directory}/{}", entry.file_name().to_string_lossy());
+                if kind.is_dir() && !relative.ends_with("/tests") {
+                    directories.push(relative);
+                } else if kind.is_file()
+                    && relative.ends_with(".rs")
+                    && !relative.ends_with("/tests.rs")
+                    && !relative.ends_with("_tests.rs")
+                {
+                    paths.push(relative);
+                }
+                if paths.len() + directories.len() > 4_096 {
+                    bail!("frontend source inventory exceeds its bounded direction review");
+                }
+            }
+        }
+        for path in paths {
+            validate_frontend_source(&path, &read(root, &path, MAX_SOURCE_BYTES)?, forbidden)?;
+        }
+    }
+    Ok(())
+}
+fn validate_frontend_source(relative: &str, source: &str, forbidden: &[&str]) -> Result<()> {
+    let parsed = syn::parse_file(source)?;
+    let mut guard = FrontendDependencyGuard {
+        violation: false,
+        forbidden,
+    };
+    guard.visit_file(&parsed);
+    if guard.violation {
+        bail!("{relative}: frontend contract imports a forbidden physical adapter");
+    }
+    Ok(())
+}
+struct FrontendDependencyGuard<'a> {
     violation: bool,
+    forbidden: &'a [&'a str],
 }
-fn frontend_module(name: &syn::Ident) -> bool {
-    matches!(
-        name.to_string().as_str(),
-        "app_server" | "tui" | "headless" | "ratatui" | "crossterm"
-    )
+impl FrontendDependencyGuard<'_> {
+    fn forbids(&self, name: &syn::Ident) -> bool {
+        self.forbidden.contains(&name.to_string().as_str())
+    }
 }
-impl<'ast> Visit<'ast> for FrontendDependencyGuard {
+impl<'ast> Visit<'ast> for FrontendDependencyGuard<'_> {
     fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
         if node.attrs.iter().any(|attribute| {
             attribute.path().is_ident("cfg")
@@ -445,14 +518,14 @@ impl<'ast> Visit<'ast> for FrontendDependencyGuard {
         self.violation |= path
             .segments
             .iter()
-            .any(|segment| frontend_module(&segment.ident));
+            .any(|segment| self.forbids(&segment.ident));
         syn::visit::visit_path(self, path);
     }
     fn visit_use_tree(&mut self, tree: &'ast syn::UseTree) {
         self.violation |= match tree {
-            syn::UseTree::Path(path) => frontend_module(&path.ident),
-            syn::UseTree::Name(name) => frontend_module(&name.ident),
-            syn::UseTree::Rename(rename) => frontend_module(&rename.ident),
+            syn::UseTree::Path(path) => self.forbids(&path.ident),
+            syn::UseTree::Name(name) => self.forbids(&name.ident),
+            syn::UseTree::Rename(rename) => self.forbids(&rename.ident),
             _ => false,
         };
         syn::visit::visit_use_tree(self, tree);
@@ -761,6 +834,36 @@ mod tests {
             );
         }
         assert!(validate_runtime_source_direction("runtime.rs", "use crate::queue_policy::FrontendQueuePolicy; #[cfg(test)] mod tests { use crate::app_server::AppServer; }").is_ok());
+    }
+
+    #[test]
+    fn server_and_common_projection_cannot_alias_cli_or_tui_adapters() {
+        for source in [
+            "use crate::output::event_json;",
+            "use crate::{tui as view};",
+            "fn f() { crate::options::parse(); }",
+        ] {
+            assert!(
+                validate_frontend_source("server.rs", source, &["output", "options", "tui"])
+                    .is_err()
+            );
+        }
+        assert!(
+            validate_frontend_source(
+                "server.rs",
+                "use crate::machine_projection::event_json;",
+                &["output", "options", "tui"]
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_frontend_source(
+                "common.rs",
+                "use crate::{app_server as adapter};",
+                &["app_server", "tui", "cli_entry", "output"]
+            )
+            .is_err()
+        );
     }
 
     #[test]

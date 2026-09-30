@@ -94,3 +94,7 @@ raw-artifact, frontend and restart journeys.
 ### Optional task plans
 
 `TaskPlanOwner` owns a bounded model-maintained plan, its exact durable publication sequence, the latest admitted user-message sequence, and whether new input requires review. `update_plan` is a writer-only native tool: ordinary permission, hook and control admission precedes its local journal. `inspect` creates no plan; `replace` requires the current revision and submission sequence. A prepared replacement becomes visible only after its `TaskPlanUpdatedV1` fsync receipt. Resume and staged adoption fold verified current-run events once. An active plan and unresolved obligations enter the actual request before input-budget estimation; finished plans with no obligations add no context. Plan statuses describe model intent and do not grant capabilities or prove verification. Whole-loop/native frontend acceptance remains pending.
+
+### Provider discovery admission
+
+`providers/discovery.rs` owns dormant network work, the unique refresh task, first-paint admission, its activity phase and immutable settled entries. `ProviderDirectory` receives a typed settlement and delegates selected-provider construction; it cannot change the task phase or dispatch another refresh. The admitted native provider forwards physical output-cap and exact request-observation ports to its original adapter. Cache and catalog responsibilities remain separate pending breakdown.

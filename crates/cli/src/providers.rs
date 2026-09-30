@@ -4,8 +4,10 @@
 //! `iteron-provider`; this layer supplies built-in instance definitions, merges trusted user config,
 //! performs bounded discovery concurrently, and resolves an explicit `(provider, model)` pair.
 
+mod discovery;
 #[path = "providers/setup_effect.rs"]
 mod setup_effect;
+use discovery::{DiscoverySettlement, ProviderDiscoveryOwner, ProviderRefreshActivity};
 
 use crate::config::{ProviderConfig, ProviderCredential};
 use futures_util::future::join_all;
@@ -13,10 +15,10 @@ use iteron_provider::catalog::glm_standard_schema_catalog;
 use iteron_provider::{
     AccountAvailability, AccountProbe, AccountProbeResult, AdapterKind, ApiRoot,
     BalanceAvailability, CatalogSnapshot, CatalogStrategy, Compatibility, CredentialSource,
-    EffortApplication, ErrorProfile, HealthReportingProvider, ModelDescriptor, ModelFamily,
-    Provider, ProviderAttemptSemantics, ProviderControlCapabilities, ProviderError, ProviderHealth,
-    ProviderHealthStore, ProviderInstance, ProviderNotice, RawModel, Selectability,
-    StaticProviderMetadata, StreamItem, TurnRequest, TurnResult, discover_catalog, probe_account,
+    ErrorProfile, HealthReportingProvider, ModelDescriptor, ModelFamily, Provider,
+    ProviderAttemptSemantics, ProviderControlCapabilities, ProviderError, ProviderHealth,
+    ProviderHealthStore, ProviderInstance, RawModel, Selectability, StaticProviderMetadata,
+    StreamItem, TurnRequest, TurnResult, discover_catalog, probe_account,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -24,7 +26,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -2012,155 +2014,8 @@ pub(crate) struct ProviderDirectory {
     health: ProviderHealthStore,
     /// Instances whose network discovery was deliberately NOT awaited before the first frame.
     /// `None` once every instance is resolved, which is also the shape every legacy caller gets.
-    deferred: Option<Arc<DeferredDiscovery>>,
+    deferred: Option<Arc<ProviderDiscoveryOwner>>,
     refresh_activity: ProviderRefreshActivity,
-}
-
-#[derive(Clone, Default)]
-struct ProviderRefreshActivity {
-    inner: Arc<Mutex<ProviderRefreshActivityState>>,
-}
-
-#[derive(Default)]
-struct ProviderRefreshActivityState {
-    tx: Option<tokio::sync::mpsc::Sender<iteron_protocol::ActivityEvent>>,
-    started_at_unix_ms: u64,
-    state: Option<iteron_protocol::ActivityState>,
-    saturated: u64,
-}
-
-impl ProviderRefreshActivity {
-    fn pending() -> Self {
-        Self::default()
-    }
-
-    fn start(&self) {
-        let mut state = self
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.state.is_some() {
-            return;
-        }
-        state.started_at_unix_ms = current_unix_ms();
-        state.state = Some(iteron_protocol::ActivityState::Running);
-        Self::publish_locked(&mut state);
-    }
-
-    fn install(&self, tx: tokio::sync::mpsc::Sender<iteron_protocol::ActivityEvent>) {
-        let mut state = self
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.tx = Some(tx);
-        Self::publish_locked(&mut state);
-    }
-
-    fn complete(&self, result: iteron_protocol::ActivityState) {
-        debug_assert!(result.is_terminal());
-        let mut state = self
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.state = Some(result);
-        Self::publish_locked(&mut state);
-    }
-
-    fn publish_locked(state: &mut ProviderRefreshActivityState) {
-        let (Some(tx), Some(activity_state)) = (&state.tx, state.state) else {
-            return;
-        };
-        let started_at_unix_ms = state.started_at_unix_ms;
-        let event = iteron_protocol::ActivityEvent {
-            schema_version: iteron_protocol::ACTIVITY_SCHEMA_VERSION,
-            id: "startup:provider_refresh".into(),
-            parent_id: None,
-            kind: iteron_protocol::ActivityKind::Startup,
-            state: activity_state,
-            owner: iteron_protocol::ActivityOwner::Provider,
-            started_at_unix_ms,
-            updated_at_unix_ms: current_unix_ms().max(started_at_unix_ms),
-            attempt: 1,
-            limit: 1,
-            next_retry_at_unix_ms: None,
-            deadline_unix_ms: None,
-            cancelability: iteron_protocol::ActivityCancelability::Cooperative,
-            detail_code: Some(iteron_protocol::ActivityDetailCode::ProviderRefresh),
-            progress: None,
-        };
-        if tx.try_send(event).is_err() {
-            state.saturated = state.saturated.saturating_add(1);
-        }
-    }
-}
-
-/// The post-paint half of a split discovery. Merely constructing this object is network-inert;
-/// exactly one caller starts the task from [`ProviderDirectory::settle`], after the TUI has drawn
-/// its first frame. Every other clone joins that task or reads the settled vector it published.
-struct DeferredDiscovery {
-    /// Ids whose network resolution is still outstanding. A caller that is about to ROUTE through
-    /// one of them has to settle first, and only the id set can say so: a deferred instance may
-    /// already carry a cache-primed catalog and still be missing its account probe.
-    pending: BTreeSet<String>,
-    state: tokio::sync::Mutex<DeferredState>,
-    post_paint_started: AtomicBool,
-    post_paint_notify: tokio::sync::Notify,
-}
-
-enum DeferredState {
-    Dormant(Box<DeferredWork>),
-    Pending(tokio::task::JoinHandle<Vec<ProviderEntry>>),
-    Settled(Arc<Vec<ProviderEntry>>),
-    /// The task was cancelled or panicked. The eagerly resolved view stands; never retry silently,
-    /// because a retry would re-run exactly the requests that just failed to complete.
-    Abandoned,
-}
-
-/// Network work retained without polling until a post-paint caller explicitly starts discovery.
-struct DeferredWork {
-    pending: Vec<(usize, ProviderEntry, bool)>,
-    resolved: Vec<(usize, ProviderEntry)>,
-    context: ResolveContext,
-    persistence: DiscoveryPersistence,
-}
-
-impl DeferredDiscovery {
-    fn signal_post_paint_start(&self) {
-        self.post_paint_started.store(true, AtomicOrdering::Release);
-        self.post_paint_notify.notify_waiters();
-    }
-
-    async fn await_selected_route_admission(&self) -> Result<(), ProviderError> {
-        while !self.post_paint_started.load(AtomicOrdering::Acquire) {
-            let notified = self.post_paint_notify.notified();
-            if self.post_paint_started.load(AtomicOrdering::Acquire) {
-                break;
-            }
-            tokio::time::timeout(SELECTED_PROVIDER_REFRESH_WAIT, notified)
-                .await
-                .map_err(|_| {
-                    ProviderError::Configuration(
-                        "selected provider refresh was not started after first paint; refusing inference before route admission"
-                            .into(),
-                    )
-                })?;
-        }
-
-        // The post-paint settler owns this mutex through its bounded refresh attempt. Waiting for
-        // it means inference cannot race ahead of route admission. `Pending` after that bound is
-        // usable only because `build` already validated the cached/static/operator-explicit route;
-        // a route with no such evidence never constructs this wrapper.
-        let state = self.state.lock().await;
-        match &*state {
-            DeferredState::Settled(_) | DeferredState::Pending(_) => Ok(()),
-            DeferredState::Dormant(_) => Err(ProviderError::Configuration(
-                "selected provider refresh remained dormant; refusing unproved route".into(),
-            )),
-            DeferredState::Abandoned => Err(ProviderError::Configuration(
-                "selected provider refresh failed before route admission".into(),
-            )),
-        }
-    }
 }
 
 /// Everything the write-back of a completed discovery needs. Bundled so it can be moved wholesale
@@ -2212,60 +2067,11 @@ impl ProviderDirectory {
         self.refresh_activity.install(tx);
     }
 
-    /// Cross the no-network-before-paint boundary without depending on a spawned task being polled.
-    ///
-    /// This method performs only an in-memory state transition plus `tokio::spawn`: the retained
-    /// discovery future is moved from `Dormant` to `Pending`, then the selected-route admission
-    /// signal is published. The network work may run afterward, but a model request can no longer
-    /// race a merely scheduled settler and incorrectly conclude that refresh never started.
+    /// Cross the first-paint boundary through the sole physical discovery owner.
     pub(crate) fn begin_settle_after_paint(&self) -> bool {
-        let Some(deferred) = self.deferred.as_ref() else {
-            return true;
-        };
-        let Ok(mut state) = deferred.state.try_lock() else {
-            // Another clone is already starting or joining the one shared task. It owns the state
-            // transition; publishing the monotone post-paint boundary lets route admission wait
-            // for that owner rather than fail because this caller lost a scheduler race.
-            deferred.signal_post_paint_start();
-            return true;
-        };
-        let work = match std::mem::replace(&mut *state, DeferredState::Abandoned) {
-            DeferredState::Dormant(work) => work,
-            DeferredState::Pending(handle) => {
-                *state = DeferredState::Pending(handle);
-                deferred.signal_post_paint_start();
-                return true;
-            }
-            DeferredState::Settled(entries) => {
-                *state = DeferredState::Settled(entries);
-                deferred.signal_post_paint_start();
-                return true;
-            }
-            DeferredState::Abandoned => return false,
-        };
-
-        self.refresh_activity.start();
-        let background_activity = self.refresh_activity.clone();
-        let DeferredWork {
-            pending,
-            resolved,
-            context,
-            persistence,
-        } = *work;
-        let handle = tokio::spawn(async move {
-            let settled = join_all(pending.into_iter().map(|(index, entry, served)| {
-                let context = context.clone();
-                async move { (index, resolve_entry(entry, served, &context).await) }
-            }))
-            .await;
-            let discovered = ordered_entries(resolved.into_iter().chain(settled).collect());
-            persistence.commit(&discovered);
-            background_activity.complete(iteron_protocol::ActivityState::Succeeded);
-            discovered
-        });
-        *state = DeferredState::Pending(handle);
-        deferred.signal_post_paint_start();
-        true
+        self.deferred
+            .as_ref()
+            .is_none_or(|owner| owner.begin_after_paint())
     }
 
     /// Environment variable names whose values back configured providers. Names are safe control
@@ -2539,17 +2345,14 @@ impl ProviderDirectory {
         Ok(Self {
             entries: Arc::new(immediate),
             health,
-            deferred: Some(Arc::new(DeferredDiscovery {
-                pending: deferred_ids,
-                state: tokio::sync::Mutex::new(DeferredState::Dormant(Box::new(DeferredWork {
-                    pending,
-                    resolved,
-                    context,
-                    persistence,
-                }))),
-                post_paint_started: AtomicBool::new(false),
-                post_paint_notify: tokio::sync::Notify::new(),
-            })),
+            deferred: Some(Arc::new(ProviderDiscoveryOwner::new(
+                deferred_ids,
+                pending,
+                resolved,
+                context,
+                persistence,
+                refresh_activity.clone(),
+            ))),
             refresh_activity,
         })
     }
@@ -2558,62 +2361,21 @@ impl ProviderDirectory {
     /// model resolution) sees every instance. Interactive callers invoke this only after first
     /// paint; construction alone never polls a provider. Idempotent, and cheap once landed.
     pub(crate) async fn settle(&mut self) -> bool {
-        if !self.begin_settle_after_paint() {
-            self.refresh_activity
-                .complete(iteron_protocol::ActivityState::Failed);
-            return false;
-        }
-        let Some(deferred) = self.deferred.take() else {
+        let Some(owner) = self.deferred.clone() else {
             return true;
         };
-        let mut state = deferred.state.lock().await;
-        let mut handle = match std::mem::replace(&mut *state, DeferredState::Abandoned) {
-            DeferredState::Dormant(_) => unreachable!(
-                "begin_settle_after_paint transitions dormant discovery before joining it"
-            ),
-            DeferredState::Pending(handle) => handle,
-            DeferredState::Settled(entries) => {
-                *state = DeferredState::Settled(entries.clone());
+        match owner.settle().await {
+            DiscoverySettlement::Settled(entries) => {
                 self.entries = entries;
-                return true;
+                self.deferred = None;
+                true
             }
-            DeferredState::Abandoned => {
-                self.refresh_activity
-                    .complete(iteron_protocol::ActivityState::Failed);
-                return false;
+            DiscoverySettlement::Pending => false,
+            DiscoverySettlement::Abandoned => {
+                self.deferred = None;
+                false
             }
-        };
-        let entries = match tokio::time::timeout(
-            iteron_tunables::param_duration(
-                "cli.providers.selected_provider_refresh_wait",
-                SELECTED_PROVIDER_REFRESH_WAIT,
-            ),
-            &mut handle,
-        )
-        .await
-        {
-            Ok(Ok(entries)) => Arc::new(entries),
-            // A cancelled or panicked task leaves the eager view standing. Never retry: the
-            // retry is exactly the request that just failed to finish.
-            Ok(Err(_)) => {
-                self.refresh_activity
-                    .complete(iteron_protocol::ActivityState::Failed);
-                return false;
-            }
-            Err(_) => {
-                // Keep the same in-flight refresh joinable by the picker or a later turn; a
-                // timeout is not cancellation and never launches duplicate discovery.
-                *state = DeferredState::Pending(handle);
-                drop(state);
-                self.deferred = Some(deferred);
-                return false;
-            }
-        };
-        *state = DeferredState::Settled(entries.clone());
-        self.entries = entries;
-        self.refresh_activity
-            .complete(iteron_protocol::ActivityState::Succeeded);
-        true
+        }
     }
 
     /// True when this launch is about to read routing evidence that deferred discovery has not
@@ -2629,7 +2391,7 @@ impl ProviderDirectory {
         // a deferred instance can already carry a cache-primed catalog and still owe its account
         // probe. Routing on half-resolved evidence is how a launch reports "no selectable model"
         // for a provider that is perfectly healthy.
-        if deferred.pending.contains(provider_id) {
+        if deferred.is_pending(provider_id) {
             return true;
         }
         let Some(model_id) = model_id else {
@@ -2639,7 +2401,7 @@ impl ProviderDirectory {
         if let Some((qualifier, _)) = model_id.split_once(':')
             && self.entry(qualifier).is_some()
         {
-            return deferred.pending.contains(qualifier);
+            return deferred.is_pending(qualifier);
         }
         !self.entry(provider_id).is_some_and(|entry| {
             entry
@@ -3136,12 +2898,9 @@ impl ProviderDirectory {
         if let Some(deferred) = self
             .deferred
             .as_ref()
-            .filter(|deferred| deferred.pending.contains(&selection.provider_id))
+            .filter(|deferred| deferred.is_pending(&selection.provider_id))
         {
-            Ok(Arc::new(PostPaintAdmittedProvider {
-                inner: provider,
-                deferred: Arc::clone(deferred),
-            }))
+            Ok(deferred.admit_provider(provider))
         } else {
             Ok(provider)
         }
@@ -3452,54 +3211,6 @@ pub(crate) fn stable_digest(label: &str, parts: &[String]) -> String {
 struct UnavailableProvider {
     provider_id: String,
     reason: String,
-}
-
-/// A provider selected from local evidence while its network catalog/account refresh is dormant.
-/// Pure capability queries remain immediate, but the first paid turn cannot overtake the TUI's
-/// post-paint refresh signal and bounded route-admission attempt.
-struct PostPaintAdmittedProvider {
-    inner: Arc<dyn Provider>,
-    deferred: Arc<DeferredDiscovery>,
-}
-
-#[async_trait::async_trait]
-impl Provider for PostPaintAdmittedProvider {
-    fn provider_instance_id(&self) -> Option<&str> {
-        self.inner.provider_instance_id()
-    }
-
-    fn attempt_semantics(&self) -> ProviderAttemptSemantics {
-        self.inner.attempt_semantics()
-    }
-
-    fn supports_image_input(&self) -> bool {
-        self.inner.supports_image_input()
-    }
-
-    fn control_capabilities(&self) -> ProviderControlCapabilities {
-        self.inner.control_capabilities()
-    }
-
-    fn effort_application(&self, req: &TurnRequest) -> EffortApplication {
-        self.inner.effort_application(req)
-    }
-
-    fn run_notice(&self, req: &TurnRequest) -> Option<ProviderNotice> {
-        self.inner.run_notice(req)
-    }
-
-    fn preflight_notice(&self, req: &TurnRequest) -> Option<ProviderNotice> {
-        self.inner.preflight_notice(req)
-    }
-
-    async fn turn(
-        &self,
-        req: &TurnRequest,
-        on_item: &mut (dyn FnMut(StreamItem) + Send),
-    ) -> Result<TurnResult, ProviderError> {
-        self.deferred.await_selected_route_admission().await?;
-        self.inner.turn(req, on_item).await
-    }
 }
 
 #[async_trait::async_trait]

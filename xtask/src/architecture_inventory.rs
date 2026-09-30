@@ -22,6 +22,55 @@ struct Surface {
 
 const SURFACES: &[Surface] = &[
     Surface {
+        path: "crates/cli/src/providers/discovery.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "dormant network work and the unique physical discovery task",
+            "post-paint admission and typed immutable catalog settlement",
+        ],
+        next_seams: &[
+            "directory cache and route catalog adapters remain distinct responsibilities",
+        ],
+    },
+    Surface {
+        path: "crates/cli/src/machine_projection.rs",
+        boundary: "cli-output",
+        responsibilities: &[
+            "pure shared result/event schema and canonical v7 projection",
+            "bounded secret scrubber state over immutable protocol facts",
+        ],
+        next_seams: &["physical CLI emitter and server/TUI adapters consume this owner directly"],
+    },
+    Surface {
+        path: "crates/cli/src/runtime/request_preparation.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "actual undispatched request and bounded compaction candidate",
+            "candidate installs only after matching committed transcript receipt",
+        ],
+        next_seams: &["host retains physical summary IO, real hook gates and control safe points"],
+    },
+    Surface {
+        path: "crates/cli/src/runtime/request_accounting.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "source-separated context accounting over immutable admitted evidence",
+            "calibration and component budget projection",
+        ],
+        next_seams: &["physical provider usage remains owned by the calibration journal"],
+    },
+    Surface {
+        path: "crates/cli/src/tui/completion_owner.rs",
+        boundary: "cli-tui",
+        responsibilities: &[
+            "unique physical completion worker, generation and debounce",
+            "private completion menu with immutable render view",
+        ],
+        next_seams: &[
+            "stale completion cannot reopen a dismissed menu or discard editor attachments",
+        ],
+    },
+    Surface {
         path: "crates/cli/src/queue_policy.rs",
         boundary: "cli-host",
         responsibilities: &[
@@ -62,7 +111,7 @@ const SURFACES: &[Surface] = &[
             "captured dispatch-gate and SQ control signal adapter",
         ],
         next_seams: &[
-            "aggregate retained-command byte budget is being completed before final source freeze",
+            "count and actual retained-string capacities bound admission before SQ dispatch; final TCP evidence pending",
         ],
     },
     Surface {
