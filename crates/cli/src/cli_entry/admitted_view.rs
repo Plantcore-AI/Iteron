@@ -7,6 +7,8 @@ pub(crate) struct AdmittedView {
     pub(crate) base_system: String,
     pub(crate) instruction_bytes: String,
     pub(crate) instruction_trust: iteron_protocol::Trust,
+    pub(crate) instruction_materials: Vec<iteron_ctx::context_provenance::CapturedContextMaterial>,
+    pub(crate) instruction_materials_dropped: u32,
     pub(crate) model: String,
     pub(crate) budget: iteron_protocol::Budget,
     pub(crate) route: route::RouteView,
@@ -49,12 +51,16 @@ pub(crate) fn assemble(input: ViewAdmissionInput<'_>) -> anyhow::Result<Admitted
         base_system,
         instruction_bytes,
         instruction_trust,
+        instruction_materials,
+        instruction_materials_dropped,
         bundle: instruction_bundle,
     } = if plantcore_serve {
         SystemPromptAssembly {
             base_system: String::new(),
             instruction_bytes: String::new(),
             instruction_trust: iteron_protocol::Trust::Trusted,
+            instruction_materials: Vec::new(),
+            instruction_materials_dropped: 0,
             bundle: iteron_ctx::InstructionBundle::default(),
         }
     } else {
@@ -137,6 +143,8 @@ pub(crate) fn assemble(input: ViewAdmissionInput<'_>) -> anyhow::Result<Admitted
         base_system,
         instruction_bytes,
         instruction_trust,
+        instruction_materials,
+        instruction_materials_dropped,
         model,
         budget,
         route,

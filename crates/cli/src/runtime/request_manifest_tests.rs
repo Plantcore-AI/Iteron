@@ -307,3 +307,6 @@ async fn memory_used_requires_actual_serialized_inclusion_and_successful_retaine
         std::fs::remove_dir_all(workspace).unwrap();
     }
 }
+
+#[path = "request_manifest_tests/material_journeys.rs"]
+mod material_journeys;

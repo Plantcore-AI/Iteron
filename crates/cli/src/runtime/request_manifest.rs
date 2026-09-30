@@ -2,6 +2,9 @@
 //! neither the runtime nor Rollout; streaming tool admission keeps its own exclusive journal.
 use crate::artifacts::{DurableArtifactStore, request_manifest::RequestManifestScope};
 use iteron_ctx::ContextSegmentEvidence;
+use iteron_ctx::context_provenance::{
+    CapturedContextMaterial, MAX_CONTEXT_MATERIALS, MAX_CONTEXT_PROVENANCE_BYTES,
+};
 use iteron_kernel::effects::EffectTicket;
 use iteron_protocol::Budget;
 use iteron_protocol::client_artifact::ClientArtifactDescriptorV1;
@@ -19,6 +22,8 @@ pub(super) struct RequestManifestFactory {
     store: Option<DurableArtifactStore>,
     budget: Budget,
     sources: Vec<ContextSegmentEvidence>,
+    materials: Vec<CapturedContextMaterial>,
+    materials_dropped: u32,
     inclusion: Arc<AtomicBool>,
 }
 
@@ -28,13 +33,26 @@ impl RequestManifestFactory {
         workspace: &std::path::Path,
         budget: &Budget,
         sources: &[ContextSegmentEvidence],
+        materials: &[CapturedContextMaterial],
+        materials_dropped: u32,
     ) -> Self {
-        let admitted = sources.len() <= iteron_ctx::MAX_CONTEXT_LEDGER_SEGMENTS;
+        let admitted = sources.len() <= iteron_ctx::MAX_CONTEXT_LEDGER_SEGMENTS
+            && materials.len() <= MAX_CONTEXT_MATERIALS
+            && materials
+                .iter()
+                .try_fold(0usize, |sum, item| sum.checked_add(item.captured_bytes()))
+                .is_some_and(|bytes| bytes <= MAX_CONTEXT_PROVENANCE_BYTES);
         Self {
             store: admitted
                 .then(|| DurableArtifactStore::from_rollout_writer(rollout, workspace).ok())
                 .flatten(),
             budget: budget.clone(),
+            materials: if admitted {
+                materials.to_vec()
+            } else {
+                Vec::new()
+            },
+            materials_dropped,
             inclusion: Arc::new(AtomicBool::new(false)),
             sources: if admitted {
                 sources.to_vec()
@@ -54,6 +72,8 @@ impl RequestManifestFactory {
                 ticket,
                 &self.budget,
                 &self.sources,
+                &self.materials,
+                self.materials_dropped,
                 admitted_output_tokens,
             )
             .ok(),

@@ -66,6 +66,38 @@ impl TaskPlanOwner {
             "observed_submission_seq":self.latest_submission, "needs_review":self.needs_review,
             "authority":"model_maintained_reference"})
     }
+    pub(super) fn captured_reference(
+        &self,
+        tenant: &iteron_protocol::TenantId,
+        run: &iteron_protocol::RunId,
+    ) -> Option<iteron_ctx::context_provenance::CapturedContextMaterial> {
+        use sha2::{Digest, Sha256};
+        if !self.is_active() || self.publication == Seq::ZERO {
+            return None;
+        }
+        let snapshot = self.snapshot.as_ref()?;
+        // Recovery supplies only verified events for this writer's current physical run. This
+        // snapshot is the frozen admitted event, not current disk state or a guessed file version.
+        let record = serde_json::to_string(&EventKind::TaskPlanUpdatedV1 {
+            plan: snapshot.clone(),
+        })
+        .ok()?;
+        let scope = hex::encode(Sha256::digest(serde_json::to_vec(&(tenant, run)).ok()?));
+        let mut rendered = String::new();
+        self.append_context(&mut rendered);
+        Some(
+            iteron_ctx::context_provenance::CapturedContextMaterial::journal_record(
+                iteron_ctx::ContextSourceClass::TaskPlanReference,
+                &scope,
+                self.publication.0,
+                snapshot.revision,
+                &record,
+                &rendered,
+                iteron_protocol::Trust::Untrusted,
+            )
+            .with_journal_observation(self.latest_submission.0),
+        )
+    }
     pub(super) fn prepare(&self, input: TaskPlanInput) -> Result<PreparedTaskPlan, &'static str> {
         let TaskPlanInput::Replace {
             expected_revision,

@@ -5,6 +5,7 @@
 //! record owner's erasure and source-revocation graph. No client-supplied file locator is admitted.
 
 mod captured_image;
+mod material_provenance;
 pub(crate) mod request_manifest;
 mod storage;
 mod structural;
@@ -77,6 +78,7 @@ pub(crate) enum ArtifactSchema {
     CapturedReplacement,
     ProviderRequestBody,
     ProviderRequestManifest,
+    ContextMaterialArchive,
     ViewportImage,
     ViewportImageObservation,
     BrowserObservation,
@@ -93,6 +95,7 @@ impl ArtifactSchema {
             Self::CapturedReplacement => "iteron.captured-replacement.v1",
             Self::ProviderRequestBody => "iteron.provider-request-body.v1",
             Self::ProviderRequestManifest => "iteron.provider-request-manifest.v1",
+            Self::ContextMaterialArchive => "iteron.context-material-archive.v1",
             Self::ViewportImage => "iteron.viewport-image.v1",
             Self::ViewportImageObservation => "iteron.viewport-image-observation.v1",
             Self::BrowserObservation => "iteron.browser-observation.v1",
@@ -124,7 +127,8 @@ impl ArtifactSchema {
             | Self::FileSnapshot
             | Self::CapturedReplacement
             | Self::ProviderRequestBody
-            | Self::ProviderRequestManifest => {
+            | Self::ProviderRequestManifest
+            | Self::ContextMaterialArchive => {
                 (PrivateContentNamespace::Export, PrivateContentClass::Export)
             }
         }

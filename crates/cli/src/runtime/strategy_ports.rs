@@ -382,6 +382,37 @@ impl Agent {
         Ok(())
     }
 
+    /// Trusted frontend capture from the same actual instruction discovery and renderer.
+    /// This installs reference provenance only and grants no tool or execution authority.
+    pub fn set_instruction_context_with_provenance(
+        &mut self,
+        text: String,
+        trust: Trust,
+        materials: Vec<iteron_ctx::context_provenance::CapturedContextMaterial>,
+        dropped: u32,
+    ) -> Result<(), KernelError> {
+        if materials.len() > iteron_ctx::context_provenance::MAX_CONTEXT_MATERIALS
+            || materials
+                .iter()
+                .try_fold(0usize, |sum, item| sum.checked_add(item.captured_bytes()))
+                .is_none_or(|bytes| {
+                    bytes > iteron_ctx::context_provenance::MAX_CONTEXT_PROVENANCE_BYTES
+                })
+        {
+            return Err(KernelError::ContextResolution(
+                "frontend provenance exceeds source bounds".into(),
+            ));
+        }
+        self.set_instruction_context(text, trust)?;
+        let installed = self
+            .composition_instruction_context
+            .as_ref()
+            .map_or("", |(text, _)| text.as_str());
+        self.context_source_evidence
+            .install_frontend_materials(installed, &materials, dropped)
+            .map_err(|reason| KernelError::ContextResolution(reason.into()))
+    }
+
     /// Install a frontend-observed, already-framed fresh-start environment snapshot. The kernel
     /// never reads the wall clock or spawns Git: it only bounds, scrubs, durably records, and later
     /// replays the proposal. Resume frontends must omit this call; recorded context is authoritative

@@ -3,6 +3,9 @@
 //! Source classifications may overlap; admission's actual request estimate owns aggregate tokens.
 use super::context_runtime::InputImageEvidence;
 use super::file_submission::InputFileEvidence;
+use iteron_ctx::context_provenance::{
+    CapturedContextMaterial, MAX_CONTEXT_MATERIALS, MAX_CONTEXT_PROVENANCE_BYTES,
+};
 use iteron_ctx::{
     CacheClass, ContextDecision, ContextDecisionReason, ContextLedger, ContextMaterializationAudit,
     ContextSegmentEvidence, ContextSegmentId, ContextSourceClass, ContextTransformEvidence,
@@ -42,12 +45,125 @@ pub(super) struct RequestContextReport {
 pub(super) struct RequestContextEvidenceOwner {
     sources: Vec<ContextSegmentEvidence>,
     dropped: u32,
+    materials: Vec<CapturedContextMaterial>,
+    materials_dropped: u32,
+    retained_material_bytes: usize,
+    frontend_template: Vec<CapturedContextMaterial>,
+    frontend_template_sha256: Option<[u8; 32]>,
+    frontend_template_dropped: u32,
+    frontend_bound_scope_sha256: Option<[u8; 32]>,
 }
 
 impl RequestContextEvidenceOwner {
     pub(super) fn clear(&mut self) {
         self.sources.clear();
         self.dropped = 0;
+        self.materials.clear();
+        self.materials_dropped = 0;
+        self.retained_material_bytes = 0;
+        // Preserve the admitted immutable template. The exact scope gate below prevents an
+        // adopted or cold-resumed run from attributing current file versions to historical bytes.
+    }
+    pub(super) fn request_material_snapshot(
+        &self,
+        reference: Option<CapturedContextMaterial>,
+    ) -> (Vec<CapturedContextMaterial>, u32) {
+        let mut materials = self.materials.clone();
+        let mut dropped = self.materials_dropped;
+        if let Some(mut reference) = reference {
+            if reference.captured_bytes() > MAX_CONTEXT_PROVENANCE_BYTES {
+                reference = reference.without_retained_source();
+            }
+            let mut bytes = materials
+                .iter()
+                .map(CapturedContextMaterial::captured_bytes)
+                .sum::<usize>();
+            while materials.len() == MAX_CONTEXT_MATERIALS
+                || reference.captured_bytes() > MAX_CONTEXT_PROVENANCE_BYTES.saturating_sub(bytes)
+            {
+                let Some(removed) = materials.pop() else {
+                    break;
+                };
+                bytes = bytes.saturating_sub(removed.captured_bytes());
+                dropped = dropped.saturating_add(1);
+            }
+            if reference.captured_bytes() <= MAX_CONTEXT_PROVENANCE_BYTES.saturating_sub(bytes) {
+                materials.push(reference);
+            } else {
+                dropped = dropped.saturating_add(1);
+            }
+        }
+        (materials, dropped)
+    }
+    pub(super) fn install_frontend_materials(
+        &mut self,
+        text: &str,
+        materials: &[CapturedContextMaterial],
+        dropped: u32,
+    ) -> Result<(), &'static str> {
+        if materials.len() > MAX_CONTEXT_MATERIALS
+            || materials
+                .iter()
+                .try_fold(0usize, |sum, item| sum.checked_add(item.captured_bytes()))
+                .is_none_or(|bytes| bytes > MAX_CONTEXT_PROVENANCE_BYTES)
+        {
+            return Err("frontend provenance exceeds the bounded source owner");
+        }
+        self.frontend_template = materials.to_vec();
+        self.frontend_template_sha256 = Some(digest(text.as_bytes()));
+        self.frontend_template_dropped = dropped;
+        self.frontend_bound_scope_sha256 = None;
+        Ok(())
+    }
+    pub(super) fn bind_frontend_materials(
+        &mut self,
+        text: &str,
+        trust: Trust,
+        scope: [u8; 32],
+        historical: bool,
+    ) {
+        if text.is_empty() {
+            return;
+        }
+        let known_scope = !historical || self.frontend_bound_scope_sha256 == Some(scope);
+        if known_scope
+            && self.frontend_template_sha256 == Some(digest(text.as_bytes()))
+            && !self.frontend_template.is_empty()
+        {
+            self.frontend_bound_scope_sha256 = Some(scope);
+            let materials = self.frontend_template.clone();
+            self.materials_dropped = self
+                .materials_dropped
+                .saturating_add(self.frontend_template_dropped);
+            for material in materials {
+                self.append_material(material);
+            }
+        } else {
+            self.append_material(CapturedContextMaterial::historical_source(
+                ContextSourceClass::ProjectInstructions,
+                text,
+                trust,
+            ));
+        }
+    }
+    pub(super) fn append_material(&mut self, mut material: CapturedContextMaterial) {
+        if self.materials.len() == MAX_CONTEXT_MATERIALS {
+            self.materials_dropped = self.materials_dropped.saturating_add(1);
+            return;
+        }
+        if material.captured_bytes()
+            > MAX_CONTEXT_PROVENANCE_BYTES.saturating_sub(self.retained_material_bytes)
+        {
+            material = material.without_retained_source();
+        }
+        if material.captured_bytes()
+            > MAX_CONTEXT_PROVENANCE_BYTES.saturating_sub(self.retained_material_bytes)
+        {
+            self.materials_dropped = self.materials_dropped.saturating_add(1);
+            return;
+        }
+        self.retained_material_bytes += material.captured_bytes();
+        self.materials.push(material);
     }
     pub(super) fn segments(&self) -> &[ContextSegmentEvidence] {
         &self.sources
@@ -58,6 +174,10 @@ impl RequestContextEvidenceOwner {
         elapsed_us: u64,
     ) -> u64 {
         self.clear();
+        self.materials_dropped = materialization.dropped_materials;
+        for material in &materialization.materials {
+            self.append_material(material.clone());
+        }
         self.dropped = materialization.dropped.saturating_add(
             u32::try_from(
                 materialization
@@ -97,6 +217,7 @@ impl RequestContextEvidenceOwner {
         estimator: &RequestEstimator,
     ) -> u64 {
         self.clear();
+        self.append_material(CapturedContextMaterial::historical(text, trust));
         let tokens = u64::try_from(estimator.estimate_text(text)).unwrap_or(u64::MAX);
         self.sources = vec![ContextSegmentEvidence {
             segment_id: ContextSegmentId(0),

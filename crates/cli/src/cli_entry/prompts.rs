@@ -49,6 +49,8 @@ pub(crate) struct SystemPromptAssembly {
     pub(crate) base_system: String,
     pub(crate) instruction_bytes: String,
     pub(crate) instruction_trust: iteron_protocol::Trust,
+    pub(crate) instruction_materials: Vec<iteron_ctx::context_provenance::CapturedContextMaterial>,
+    pub(crate) instruction_materials_dropped: u32,
     pub(crate) bundle: iteron_ctx::InstructionBundle,
 }
 
@@ -105,7 +107,8 @@ pub(crate) fn assemble_system_prompt(
 ) -> SystemPromptAssembly {
     let bundle =
         iteron_ctx::discover_hierarchy_with_policy(home_core, repository_root, active_dir, policy);
-    let instruction_bytes = bundle.render_with_policy(policy);
+    let (instruction_bytes, instruction_materials, instruction_materials_dropped) =
+        bundle.render_with_provenance(policy);
     let instruction_trust = if instruction_bytes.is_empty() {
         iteron_protocol::Trust::Trusted
     } else {
@@ -115,6 +118,8 @@ pub(crate) fn assemble_system_prompt(
         base_system: base_system_prompt(tunables_profile),
         instruction_bytes,
         instruction_trust,
+        instruction_materials,
+        instruction_materials_dropped,
         bundle,
     }
 }

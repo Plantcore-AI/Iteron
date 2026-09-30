@@ -1,6 +1,10 @@
 //! Sealed, content-free physical request manifests. Only this constructor computes commitments;
 //! free text and the retained body are scrubbed. Raw endpoints and authentication are absent.
+use super::material_provenance::MaterialResolutionV1;
 use super::{ArtifactSchema, ArtifactStoreError, DurableArtifactStore};
+use iteron_ctx::context_provenance::{
+    CapturedContextMaterial, MAX_CONTEXT_MATERIALS, MAX_CONTEXT_PROVENANCE_BYTES,
+};
 use iteron_ctx::{ContextSegmentEvidence, MAX_CONTEXT_LEDGER_SEGMENTS};
 use iteron_kernel::effects::EffectTicket;
 use iteron_protocol::client_artifact::ClientArtifactDescriptorV1;
@@ -18,6 +22,9 @@ pub(crate) struct RequestManifestScope {
     route: ScopedRoute,
     budget: Budget,
     context_sources: Vec<ContextSegmentEvidence>,
+    #[serde(skip_serializing)]
+    context_materials: Vec<CapturedContextMaterial>,
+    context_materials_dropped: u32,
     admitted_output_tokens: u32,
 }
 
@@ -33,6 +40,8 @@ impl RequestManifestScope {
         ticket: &EffectTicket,
         budget: &Budget,
         sources: &[ContextSegmentEvidence],
+        materials: &[CapturedContextMaterial],
+        materials_dropped: u32,
         admitted_output_tokens: u32,
     ) -> Result<Self, ArtifactStoreError> {
         let route: &ProviderRouteAttemptIdentity = ticket
@@ -43,6 +52,11 @@ impl RequestManifestScope {
             || route.route_id.len() > 512
             || ticket.effect_id().0.len() > 512
             || sources.len() > MAX_CONTEXT_LEDGER_SEGMENTS
+            || materials.len() > MAX_CONTEXT_MATERIALS
+            || materials
+                .iter()
+                .try_fold(0usize, |sum, item| sum.checked_add(item.captured_bytes()))
+                .is_none_or(|bytes| bytes > MAX_CONTEXT_PROVENANCE_BYTES)
             || admitted_output_tokens == 0
             || budget.validate().is_err()
         {
@@ -60,6 +74,8 @@ impl RequestManifestScope {
             },
             budget: budget.clone(),
             context_sources: sources.to_vec(),
+            context_materials: materials.to_vec(),
+            context_materials_dropped: materials_dropped,
             admitted_output_tokens,
         })
     }
@@ -88,7 +104,10 @@ struct PreparedRequestManifest<'a> {
     served_body_chunks: Vec<ClientArtifactDescriptorV1>,
     retention: &'static str,
     reconstruction: &'static str,
-    per_material_resolution: &'static str,
+    per_material_resolution: Vec<MaterialResolutionV1>,
+    per_material_archive: Option<ClientArtifactDescriptorV1>,
+    per_material_resolution_dropped: u32,
+    per_material_origin_availability: &'static str,
 }
 
 #[derive(Serialize)]
@@ -143,6 +162,11 @@ impl DurableArtifactStore {
         }
         let original =
             std::str::from_utf8(wire.body).map_err(|_| ArtifactStoreError::InvalidRequest)?;
+        let material_provenance = self.publish_material_provenance(
+            scope.source_event_seq.0,
+            &scope.context_materials,
+            &wire,
+        )?;
         // Scrub the complete body before splitting, so a credential crossing a chunk edge cannot
         // escape redaction. Chunk identities always refer to the actual scrubbed served bytes.
         let served = iteron_record::redact::scrub(original);
@@ -208,11 +232,23 @@ impl DurableArtifactStore {
             served_body_chunks: chunks.clone(),
             retention: "scrubbed_complete_body",
             reconstruction: "original_wire_commitment_plus_scrubbed_body",
-            per_material_resolution: "source_digests_and_decisions_only_locators_not_yet_available",
+            per_material_resolution: material_provenance.resolutions,
+            per_material_archive: material_provenance.archive.clone(),
+            per_material_resolution_dropped: scope.context_materials_dropped,
+            per_material_origin_availability: if scope.context_materials.is_empty()
+                && !scope.context_sources.is_empty()
+            {
+                "source_owner_did_not_capture_materials"
+            } else {
+                "bounded_actual_owner_captures"
+            },
         };
         let text = serde_json::to_string(&manifest).map_err(|_| ArtifactStoreError::Corrupt)?;
         // This sealed vocabulary contains only computed commitments, actual retained references,
         // closed enums/numbers, and already scrubbed route text. Generic JSON receives no bypass.
+        if let Some(archive) = material_provenance.archive {
+            chunks.push(archive);
+        }
         self.publish_served(
             scope.source_event_seq.0,
             ArtifactSchema::ProviderRequestManifest,

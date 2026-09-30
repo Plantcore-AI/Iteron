@@ -669,6 +669,8 @@ async fn run_cli() -> anyhow::Result<u8> {
         base_system,
         instruction_bytes,
         instruction_trust,
+        instruction_materials,
+        instruction_materials_dropped,
         model,
         budget,
         route,
@@ -886,7 +888,12 @@ async fn run_cli() -> anyhow::Result<u8> {
             .map(|skill| (skill.root.clone(), skill.directory.clone()))
             .collect(),
     )?;
-    agent.set_instruction_context(instruction_bytes, instruction_trust)?;
+    agent.set_instruction_context_with_provenance(
+        instruction_bytes,
+        instruction_trust,
+        instruction_materials,
+        instruction_materials_dropped,
+    )?;
     if let Some(environment_context) = environment_context {
         agent.set_environment_context(environment_context, iteron_protocol::Trust::Workspace)?;
     }

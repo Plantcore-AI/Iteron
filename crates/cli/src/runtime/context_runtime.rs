@@ -1023,6 +1023,17 @@ impl Agent {
         // only memory/skills in `text`; combine it with the live proposal once, append an upgraded
         // event before provider admission, and use that event on every later resume.
         let recorded = self.recorded_context_history()?;
+        // Refresh dynamic context without discarding the previously admitted instruction and
+        // environment prefix. A cold snapshot never acquires today's file-version provenance.
+        let frozen_frontend = if self.context_refresh_requested {
+            recorded
+                .injection
+                .as_ref()
+                .and_then(|(_, _, instructions)| instructions.clone())
+        } else {
+            None
+        };
+        let frontend_historical = frozen_frontend.is_some();
         if !self.context_refresh_requested
             && let Some((context_text, context_trust, durable_instructions)) = recorded.injection
         {
@@ -1067,11 +1078,9 @@ impl Agent {
             return Ok(());
         }
 
-        let durable_instructions = self.proposed_durable_frontend_context(
-            (!self.context_refresh_requested)
-                .then_some(recorded.genesis_environment.as_ref())
-                .flatten(),
-        );
+        let durable_instructions = frozen_frontend.or_else(|| {
+            self.proposed_durable_frontend_context(recorded.genesis_environment.as_ref())
+        });
         let mut context_text = String::new();
         let mut context_sources = Vec::with_capacity(2);
 
@@ -1192,6 +1201,31 @@ impl Agent {
                 // Non-empty bytes without provenance are a bug, never Trusted by default.
                 Trust::Untrusted
             });
+        if let Some(instructions) = &durable_instructions {
+            let scope: [u8; 32] = sha2::Sha256::digest(
+                serde_json::to_vec(&(self.rollout.tenant(), self.rollout.run_id())).map_err(
+                    |_| KernelError::ContextResolution("context journal scope unavailable".into()),
+                )?,
+            )
+            .into();
+            self.context_source_evidence.bind_frontend_materials(
+                &instructions.text,
+                instructions.trust,
+                scope,
+                frontend_historical,
+            );
+            if let Some(environment) = &instructions.environment
+                && !environment.text.is_empty()
+            {
+                self.context_source_evidence.append_material(
+                    iteron_ctx::context_provenance::CapturedContextMaterial::historical_source(
+                        iteron_ctx::ContextSourceClass::Environment,
+                        &environment.text,
+                        environment.trust,
+                    ),
+                );
+            }
+        }
         let should_record = self.context_refresh_requested
             || durable_instructions.is_some()
             || !context_text.is_empty();
