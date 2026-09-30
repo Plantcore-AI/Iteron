@@ -203,10 +203,22 @@ impl ProviderStreamObserver {
         }
     }
     fn present(&self, event: UiEvent) {
+        let before = self.scope.frontend.ui_saturation_count();
         let _ = self.scope.frontend.try_send_frontend(
             self.scope.resident_ui.as_ref(),
             self.scope.ui.as_ref(),
             event,
         );
+        let after = self.scope.frontend.ui_saturation_count();
+        if after != before && after.is_power_of_two() {
+            self.emit(
+                "queue.overflow",
+                LifecyclePayload {
+                    count: Some(after),
+                    reason_code: Some("runtime_ui".into()),
+                    ..LifecyclePayload::default()
+                },
+            );
+        }
     }
 }

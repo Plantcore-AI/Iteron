@@ -245,7 +245,7 @@ impl FrontendChannelHealth {
         Self::observe(&self.workflow_saturated)
     }
 
-    fn ui_saturation_count(&self) -> u64 {
+    pub(super) fn ui_saturation_count(&self) -> u64 {
         self.ui_saturated.load(std::sync::atomic::Ordering::Relaxed)
     }
 
