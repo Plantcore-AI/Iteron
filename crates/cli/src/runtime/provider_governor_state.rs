@@ -758,4 +758,77 @@ mod objective_rank_tests {
             "ranking must not invent an output-token ceiling"
         );
     }
+
+    struct RaisedPhysicalCap;
+    #[async_trait::async_trait]
+    impl Provider for RaisedPhysicalCap {
+        async fn turn(
+            &self,
+            _: &TurnRequest,
+            _: &mut (dyn FnMut(StreamItem) + Send),
+        ) -> Result<iteron_provider::TurnResult, iteron_provider::ProviderError> {
+            unreachable!("fallback admission must not dispatch")
+        }
+        fn physical_output_token_ceiling(
+            &self,
+            _: iteron_provider::output_ceiling::ProviderOutputBudget<'_>,
+        ) -> Result<Option<u32>, iteron_provider::ProviderError> {
+            Ok(Some(4096))
+        }
+    }
+
+    #[test]
+    fn normalized_fallback_rechecks_actual_output_and_context_before_selection() {
+        let candidate = rank_provider_routes(
+            vec![route("candidate", Some(QUALITY), Some(true), Some(3072))],
+            iteron_provider::ObjectiveWeights::default(),
+        )
+        .unwrap()
+        .remove(0);
+        let policy_request = request(false);
+        assert!(candidate.admits_request(&policy_request));
+        let physical = super::super::provider_output_request::normalize(
+            &RaisedPhysicalCap,
+            policy_request,
+            true,
+        )
+        .unwrap();
+        assert_eq!(physical.requested_max_tokens, 1024);
+        assert_eq!(physical.request.max_tokens, 4096);
+        assert!(matches!(
+            super::super::provider_route_turn::validate_fallback_request(
+                &candidate,
+                &physical.request,
+                1
+            ),
+            Err(KernelError::InvalidRouteMetadata {
+                field: "fallback_request",
+                ..
+            }),
+        ));
+        let mut candidate = rank_provider_routes(
+            vec![route(
+                "bounded-context",
+                Some(QUALITY),
+                Some(true),
+                Some(8192),
+            )],
+            iteron_provider::ObjectiveWeights::default(),
+        )
+        .unwrap()
+        .remove(0);
+        candidate.context_window_tokens = Some(4096);
+        assert!(candidate.admits_request(&physical.request));
+        assert!(matches!(
+            super::super::provider_route_turn::validate_fallback_request(
+                &candidate,
+                &physical.request,
+                1
+            ),
+            Err(KernelError::ContextWindowExceeded {
+                reserved_output_tokens: 4096,
+                ..
+            }),
+        ));
+    }
 }

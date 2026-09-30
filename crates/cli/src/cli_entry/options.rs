@@ -422,6 +422,11 @@ pub(crate) struct Cli {
     )]
     pub(crate) implementation_candidate_digest: Option<String>,
 
+    /// Prepare a signed local plugin package for installation from the plugin management panel.
+    /// Requires a configured plugin store; at most 16 operator-selected packages are retained.
+    #[arg(long, value_name = "PACKAGE_PATH")]
+    pub(crate) plugin_candidate: Vec<PathBuf>,
+
     /// Print the whole machine-readable optimization surface as JSON and exit: every family,
     /// every exposed parameter, the module axis and the addressable prompt artifacts. This is
     /// what an external optimizer reads to construct a legal profile.

@@ -194,7 +194,7 @@ async fn run_cli() -> anyhow::Result<u8> {
     let cli_entry::tool_bootstrap::ToolBootstrap {
         user_file,
         mut registry,
-        runtime_plugins,
+        mut runtime_plugins,
         completion_notifications,
         retry_resolution,
         pricing_key_env_names,
@@ -203,6 +203,14 @@ async fn run_cli() -> anyhow::Result<u8> {
         config_warnings: user_config_warnings,
     } = cli_entry::tool_bootstrap::assemble(&cli, &repo, &file, plantcore_serve, &mut startup)?;
     config_warnings.extend(user_config_warnings);
+    if cli.plugin_candidate.len() > 16 {
+        anyhow::bail!("at most 16 plugin installation candidates are supported");
+    }
+    for candidate in &cli.plugin_candidate {
+        runtime_plugins
+            .prepare_package_install(candidate)
+            .map_err(anyhow::Error::msg)?;
+    }
 
     let initial_route = cli_entry::provider_bootstrap::assemble(
         &cli,
@@ -999,6 +1007,12 @@ async fn run_cli() -> anyhow::Result<u8> {
     }
     agent.set_sensitive_env_names(credential_env_names.clone());
     agent.install_hooks(std::mem::take(&mut configured_hooks))?;
+    if let Some(owner) = runtime_plugins
+        .management_port()
+        .map_err(anyhow::Error::msg)?
+    {
+        agent.install_plugin_management(owner)?;
+    }
     agent.model_context_window = effective_settings.model_context_window;
     agent.model_max_output_tokens = effective_settings.request_output_cap;
     // Build a coherent fresh-session policy before genesis. A resumed session restores its last

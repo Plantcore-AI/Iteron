@@ -13,6 +13,7 @@ use iteron_marketplace::{
 use iteron_protocol::Capability;
 use iteron_protocol::RunGenesisPolicyBundleSnapshot;
 use iteron_protocol::capability_set::CapabilitySet;
+use iteron_protocol::extension_dispatch::{ExtensionDispatchPolicy, ExtensionSurfaceV1};
 use iteron_protocol::slot::{SlotId, SlotObservation, SlotOutcome, StrategySlot};
 use iteron_tunables::ModuleId;
 use serde::{Deserialize, Serialize};
@@ -94,6 +95,7 @@ pub(super) fn apply_external_activation(
             module,
             plan,
             port: module_port_for(module),
+            dispatch_policy: verified.dispatch_policy(),
         };
         if let Some((_, modules)) = chains.iter_mut().find(|(candidate, _)| *candidate == slot) {
             modules.push(entry);
@@ -271,6 +273,19 @@ struct ExternalModule {
     module: ModuleId,
     plan: ProcessLaunchPlan,
     port: ModulePort,
+    dispatch_policy: Option<Arc<dyn ExtensionDispatchPolicy>>,
+}
+
+impl ExternalModule {
+    fn require_dispatch(&self) -> Result<(), ()> {
+        self.dispatch_policy
+            .as_ref()
+            .is_none_or(|policy| {
+                policy.admits(ExtensionSurfaceV1::Implementation, self.module.as_str())
+            })
+            .then_some(())
+            .ok_or(())
+    }
 }
 
 impl ExternalStrategySlot {
@@ -303,6 +318,7 @@ impl ExternalStrategySlot {
         let mut prior = None;
         let mut ceiling = observation.ceiling;
         for entry in &self.chain {
+            entry.require_dispatch()?;
             self.ledger.record(entry.module, Stage::Begin)?;
             *locked = Some(ImplementationRuntime::launch(entry.plan.clone()).map_err(|_| ())?);
             let run_id = format!(
@@ -345,6 +361,7 @@ impl ExternalStrategySlot {
         ceiling: CapabilitySet,
         run_id: &str,
     ) -> Result<SlotOutcome, ()> {
+        entry.require_dispatch()?;
         runtime.load().map_err(|_| ())?;
         self.ledger.record(entry.module, Stage::Loaded)?;
         let input = serde_json::to_value(ModuleObservation {
@@ -365,12 +382,14 @@ impl ExternalStrategySlot {
             .runtime_deadline_ms()
             .saturating_sub(entry.plan.cancellation_deadline_ms())
             .max(1);
+        entry.require_dispatch()?;
         runtime
             .start(run_id, self.candidate_sha256.clone(), input, deadline_ms)
             .map_err(|_| ())?;
         self.ledger.record(entry.module, Stage::Started)?;
 
         let terminal = loop {
+            entry.require_dispatch()?;
             let envelope = runtime
                 .next_observation(Duration::from_millis(deadline_ms))
                 .map_err(|_| ())?;
