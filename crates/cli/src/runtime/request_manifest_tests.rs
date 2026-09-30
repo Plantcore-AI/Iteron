@@ -20,9 +20,16 @@ const ENDPOINT: &str = "https://fixture.invalid/v1?credential=private_endpoint_c
 #[derive(Default)]
 struct ExactRequest {
     requests: Mutex<Vec<Vec<u8>>>,
+    exceeds_admission: bool,
 }
 #[async_trait::async_trait]
 impl Provider for ExactRequest {
+    fn physical_output_token_ceiling(
+        &self,
+        budget: iteron_provider::output_ceiling::ProviderOutputBudget<'_>,
+    ) -> Result<Option<u32>, ProviderError> {
+        Ok(Some(budget.requested_max_tokens))
+    }
     fn provider_instance_id(&self) -> Option<&str> {
         Some("manifest-fixture")
     }
@@ -39,7 +46,8 @@ impl Provider for ExactRequest {
         _: &mut (dyn FnMut(StreamItem) + Send),
         observer: &dyn ProviderRequestObserver,
     ) -> Result<TurnResult, ProviderError> {
-        let bytes=serde_json::to_vec(&serde_json::json!({"model":request.model,"system":request.system,"messages":request.messages})).unwrap();
+        let serialized_output_tokens = request.max_tokens + u32::from(self.exceeds_admission);
+        let bytes=serde_json::to_vec(&serde_json::json!({"model":request.model,"system":request.system,"messages":request.messages,"max_tokens":serialized_output_tokens})).unwrap();
         observer
             .prepared(ProviderWireRequest {
                 adapter: AdapterKind::OpenAiCompatibleChat,
@@ -47,6 +55,7 @@ impl Provider for ExactRequest {
                 endpoint: ENDPOINT,
                 content_type: "application/json",
                 body: &bytes,
+                serialized_output_tokens,
                 request,
             })
             .map_err(|_| ProviderError::RequestCaptureRefusedBeforeDispatch)?;
@@ -170,6 +179,10 @@ async fn physical_manifest_sources_and_scrubbed_bytes_survive_actual_writer_reop
         if manifest["type"] != "provider_request_prepared_v1" {
             continue;
         }
+        assert_eq!(
+            manifest["serialized_output_tokens"],
+            manifest["scope"]["admitted_output_tokens"]
+        );
         let mut served = Vec::new();
         for chunk in manifest["served_body_chunks"].as_array().unwrap() {
             let chunk: ClientArtifactDescriptorV1 = serde_json::from_value(chunk.clone()).unwrap();
@@ -203,5 +216,35 @@ async fn physical_manifest_sources_and_scrubbed_bytes_survive_actual_writer_reop
     );
     drop(actual);
     drop(store);
+    let _ = std::fs::remove_dir_all(workspace);
+}
+
+#[tokio::test]
+async fn actual_manifest_refuses_serialized_output_above_the_physical_admission_before_dispatch() {
+    let workspace = std::env::temp_dir().join(format!(
+        "iteron-manifest-output-bound-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&workspace);
+    std::fs::create_dir_all(&workspace).unwrap();
+    let run = RunId("manifest-output-bound".into());
+    let provider = Arc::new(ExactRequest {
+        exceeds_admission: true,
+        ..Default::default()
+    });
+    let mut owner = agent(&workspace, &run, provider.clone());
+    assert!(matches!(
+        owner.run("bounded request").await,
+        Err(crate::runtime::KernelError::Provider(
+            ProviderError::RequestCaptureRefusedBeforeDispatch
+        ))
+    ));
+    assert!(provider.requests.lock().unwrap().is_empty());
+    let record = owner.rollout.path().to_owned();
+    drop(owner);
+    let events = iteron_record::replay(&record).unwrap();
+    assert!(events.iter().any(|event| matches!(&event.kind, EventKind::EffectFailed {tool, provider_route_attempt: Some(accounting), ..}
+        if tool == "provider" && matches!(accounting.usage, iteron_protocol::ProviderRouteUsageTruth::NotDispatched)
+        && matches!(accounting.cost, iteron_protocol::ProviderRouteCostTruth::NotDispatched))));
     let _ = std::fs::remove_dir_all(workspace);
 }

@@ -81,6 +81,8 @@ pub(super) struct HedgedProviderDispatch {
     pub result: Result<iteron_provider::TurnResult, KernelError>,
     pub items: Vec<StreamItem>,
     pub scheduled_attempts: u32,
+    /// Highest actual admitted Provider EffectIntent identity, never a local billing counter.
+    pub last_physical_attempt: Option<u32>,
     /// True only when every scheduled attempt has known cost or proved it never dispatched.
     pub monetary_followup_safe: bool,
     /// Text/reasoning deltas were forwarded at winner selection, before loser cleanup. The caller
@@ -174,7 +176,6 @@ impl Agent {
         deadline: Instant,
         route_transition: Option<&str>,
         route_retry_index: u32,
-        physical_attempt_base: u32,
         primary_admission_preacquired: bool,
         mut primary_permit: Option<AttemptPermit>,
     ) -> Result<HedgedProviderDispatch, KernelError> {
@@ -211,14 +212,31 @@ impl Agent {
                 result: Err(refusal),
                 items: Vec::new(),
                 scheduled_attempts: 0,
+                last_physical_attempt: None,
                 monetary_followup_safe: true,
                 ui_deltas_forwarded: false,
             });
         }
 
+        let physical = match super::provider_output_request::normalize(
+            provider.as_ref(),
+            request.clone(),
+            self.provider_output_proof_required(),
+        ) {
+            Ok(physical) => physical,
+            Err(error) => {
+                if let Some(budget) = &self.usd_budget {
+                    budget.settle_not_dispatched();
+                }
+                return Err(error);
+            }
+        };
+        let requested_max_tokens = physical.requested_max_tokens;
+        let request = &physical.request;
         let total = hedge.max_duplicates.saturating_add(1);
         let mut prepared = Vec::with_capacity(usize::from(total));
         let mut cancellation = Vec::with_capacity(usize::from(total));
+        let mut last_physical_attempt = None;
         for index in 0..total {
             let permit = if index == 0 && primary_admission_preacquired {
                 primary_permit.take()
@@ -249,14 +267,26 @@ impl Agent {
                     }
                 };
                 let Some(permit) = admitted else {
-                    let ordinal =
-                        self.next_effect_ordinal(turn, effect_class::EffectClass::Provider);
-                    let physical_attempt = physical_attempt_base
-                        .saturating_add(u32::from(index))
-                        .saturating_add(1);
+                    let (ordinal, physical_attempt) = match self.next_provider_effect_identity(turn)
+                    {
+                        Ok(identity) => identity,
+                        Err(error) => {
+                            let cleanup = self.close_prepared_hedges_without_dispatch(
+                                turn,
+                                route_id,
+                                prepared,
+                                "provider identity refused before dispatch",
+                            );
+                            if let Some(budget) = &self.usd_budget {
+                                budget.settle_not_dispatched();
+                            }
+                            cleanup?;
+                            return Err(error);
+                        }
+                    };
                     let (objective_score, objective_evidence) =
                         self.objective_rank_evidence(route_id);
-                    let ticket = self.open_kernel_effect(
+                    let ticket = match self.open_kernel_effect(
                         turn,
                         effect_class::EffectClass::Provider,
                         ordinal,
@@ -268,6 +298,7 @@ impl Agent {
                             "messages": request.messages.len(),
                             "tools": request.tools.len(),
                             "max_tokens": request.max_tokens,
+                            "incoming_max_tokens": requested_max_tokens,
                             "physical_attempt": physical_attempt,
                             "route_retry_index": route_retry_index,
                             "hedge_attempt": index,
@@ -275,7 +306,18 @@ impl Agent {
                             "route_objective_score_millionths": objective_score,
                             "route_objective_evidence": objective_evidence,
                         }),
-                    )?;
+                    ) {
+                        Ok(ticket) => ticket,
+                        Err(error) => {
+                            let cleanup = self.close_prepared_hedges_without_dispatch(
+                                turn, route_id, prepared, "suppressed hedge intent refused before dispatch",
+                            );
+                            if let Some(budget) = &self.usd_budget { budget.settle_not_dispatched(); }
+                            cleanup?;
+                            return Err(error);
+                        }
+                    };
+                    last_physical_attempt = Some(physical_attempt);
                     self.settle_not_dispatched_hedge(
                         turn,
                         route_id,
@@ -289,10 +331,23 @@ impl Agent {
                 Some(permit)
             };
             let attempt_cancel = Arc::new(AtomicBool::new(false));
-            let ordinal = self.next_effect_ordinal(turn, effect_class::EffectClass::Provider);
-            let physical_attempt = physical_attempt_base
-                .saturating_add(u32::from(index))
-                .saturating_add(1);
+            let (ordinal, physical_attempt) = match self.next_provider_effect_identity(turn) {
+                Ok(identity) => identity,
+                Err(error) => {
+                    drop(permit);
+                    let cleanup = self.close_prepared_hedges_without_dispatch(
+                        turn,
+                        route_id,
+                        prepared,
+                        "provider identity refused before dispatch",
+                    );
+                    if let Some(budget) = &self.usd_budget {
+                        budget.settle_not_dispatched();
+                    }
+                    cleanup?;
+                    return Err(error);
+                }
+            };
             let delay = hedge
                 .delay
                 .checked_mul(u32::from(index))
@@ -310,6 +365,7 @@ impl Agent {
                     "messages": request.messages.len(),
                     "tools": request.tools.len(),
                     "max_tokens": request.max_tokens,
+                    "incoming_max_tokens": requested_max_tokens,
                     "physical_attempt": physical_attempt,
                     "route_retry_index": route_retry_index,
                     "hedge_attempt": index,
@@ -330,9 +386,12 @@ impl Agent {
                     return Err(error);
                 }
             };
+            last_physical_attempt = Some(physical_attempt);
             cancellation.push((index, attempt_cancel.clone()));
             prepared.push(PreparedAttempt {
-                request_observer: self.request_manifest_factory().for_ticket(&ticket),
+                request_observer: self
+                    .request_manifest_factory()
+                    .for_ticket(&ticket, request.max_tokens),
                 index,
                 ordinal,
                 physical_attempt,
@@ -604,6 +663,7 @@ impl Agent {
             result,
             items,
             scheduled_attempts,
+            last_physical_attempt,
             monetary_followup_safe,
             ui_deltas_forwarded,
         })

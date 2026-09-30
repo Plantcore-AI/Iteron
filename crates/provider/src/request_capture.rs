@@ -18,6 +18,8 @@ pub struct ProviderWireRequest<'a> {
     pub endpoint: &'a str,
     pub content_type: &'static str,
     pub body: &'a [u8],
+    /// Limit read from the same immutable JSON value serialized into `body`.
+    pub serialized_output_tokens: u32,
     /// The actual immutable request after per-route transport/control adaptation.
     pub request: &'a crate::TurnRequest,
 }
@@ -85,6 +87,21 @@ pub(crate) fn prepare_json(
     serde_json::to_writer(&mut bytes, body)
         .map_err(|_| ProviderError::RequestCaptureRefusedBeforeDispatch)?;
     if observer.enabled() {
+        let limit = match adapter {
+            AdapterKind::AnthropicMessages => body.get("max_tokens"),
+            AdapterKind::OpenAiResponses => body.get("max_output_tokens"),
+            AdapterKind::OpenAiCompatibleChat => {
+                match (body.get("max_tokens"), body.get("max_completion_tokens")) {
+                    (Some(limit), None) | (None, Some(limit)) => Some(limit),
+                    _ => None,
+                }
+            }
+        };
+        let serialized_output_tokens = limit
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .filter(|value| *value > 0)
+            .ok_or(ProviderError::RequestCaptureRefusedBeforeDispatch)?;
         observer
             .prepared(ProviderWireRequest {
                 adapter,
@@ -92,6 +109,7 @@ pub(crate) fn prepare_json(
                 endpoint,
                 content_type: "application/json",
                 body: &bytes.0,
+                serialized_output_tokens,
                 request,
             })
             .map_err(|_| ProviderError::RequestCaptureRefusedBeforeDispatch)?;

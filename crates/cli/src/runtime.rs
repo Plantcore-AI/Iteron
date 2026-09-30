@@ -127,6 +127,7 @@ mod private_attachments;
 mod provider_accounting;
 mod provider_governor_state;
 mod provider_hedge;
+mod provider_output_request;
 mod provider_route;
 mod resume;
 mod route_attempt_accounting;
@@ -1984,9 +1985,18 @@ impl Agent {
             // This is the checkpointed coding-request reservation. The provider's documented
             // maximum is an external ceiling applied during composition, not the amount every
             // ordinary tool turn should reserve by default.
-            let request_max_tokens = self
+            let requested_max_tokens = self
                 .model_max_output_tokens
                 .unwrap_or(crate::runtime_tunables::core_facts::DEFAULT_REQUEST_OUTPUT_TOKENS);
+            let request_max_tokens = provider_output_request::ceiling(
+                self.provider.as_ref(),
+                iteron_provider::output_ceiling::ProviderOutputBudget {
+                    model: &self.model,
+                    requested_max_tokens,
+                    thinking_budget: self.effort_thinking_budget(self.effort),
+                },
+                self.provider_output_proof_required(),
+            )?;
             // One context accounting pass per turn, shared by the kernel token ledger and the
             // context-window admission check below (I-60). Recomputed only when compaction
             // actually rewrote the transcript underneath it.
@@ -2470,6 +2480,7 @@ impl Agent {
                             "messages": req.messages.len(),
                             "tools": req.tools.len(),
                             "max_tokens": req.max_tokens,
+                            "requested_max_tokens": requested_max_tokens,
                             "physical_attempt": physical_attempt,
                             "route_retry_index": 0,
                             "route_objective_score_millionths": objective_score,
@@ -2679,7 +2690,6 @@ impl Agent {
                             provider_deadline,
                             route_transition_reason,
                             retry_index,
-                            physical_attempt,
                             physical_attempt == 0,
                             provider_route_permit.take(),
                         )
@@ -2688,17 +2698,20 @@ impl Agent {
                 } else {
                     None
                 };
-                if let Some(dispatch) = &hedged_dispatch {
-                    physical_attempt = physical_attempt.saturating_add(dispatch.scheduled_attempts);
+                if let Some(dispatch) = &hedged_dispatch
+                    && let Some(identity) = dispatch.last_physical_attempt
+                {
+                    physical_attempt = identity;
                 }
                 let mut monetary_followup_safe = hedged_dispatch
                     .as_ref()
                     .is_none_or(|dispatch| dispatch.monetary_followup_safe);
                 let hedged_this_attempt = hedged_dispatch.is_some();
                 let attempt_receipt = {
-                    let request_observer = provider_ticket
-                        .as_ref()
-                        .map(|ticket| self.request_manifest_factory().for_ticket(ticket));
+                    let request_observer = provider_ticket.as_ref().map(|ticket| {
+                        self.request_manifest_factory()
+                            .for_ticket(ticket, req.max_tokens)
+                    });
                     let authority = self.operator_authority();
                     let correlation = self.lifecycle_correlation(Some(turn_id));
                     let requested = self.requested_control() != InboundControl::None;
@@ -2944,12 +2957,21 @@ impl Agent {
                     let failover_activity = self
                         .activity
                         .span(turn_activity::ActivityStage::Failover, Some(turn_id));
+                    let candidate = &self.fallback_provider_routes[index];
+                    let mut candidate_request = req.clone();
+                    candidate_request.model = candidate.route.model_id.clone();
+                    candidate_request.max_tokens = requested_max_tokens;
+                    let physical = provider_output_request::normalize(
+                        candidate.provider.as_ref(),
+                        candidate_request,
+                        self.provider_output_proof_required(),
+                    )?;
                     let next =
                         self.activate_fallback_provider_route(turn_id, index, failover_class)?;
                     failover_activity.complete();
                     provider_for_stream = next.provider.clone();
                     active_provider_route = next.id();
-                    req.model = next.route.model_id;
+                    req = physical.request;
                     if let Err(error) = self.admit_followup_after_route_attempt_set(true) {
                         break Err(error);
                     }
@@ -3009,6 +3031,7 @@ impl Agent {
                             "messages": req.messages.len(),
                             "tools": req.tools.len(),
                             "max_tokens": req.max_tokens,
+                            "requested_max_tokens": requested_max_tokens,
                             "physical_attempt": physical_attempt,
                             "route_retry_index": retry_index,
                             "route_objective_score_millionths": objective_score,

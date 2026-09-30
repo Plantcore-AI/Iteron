@@ -18,6 +18,7 @@ pub(crate) struct RequestManifestScope {
     route: ScopedRoute,
     budget: Budget,
     context_sources: Vec<ContextSegmentEvidence>,
+    admitted_output_tokens: u32,
 }
 
 #[derive(Clone, Serialize)]
@@ -32,6 +33,7 @@ impl RequestManifestScope {
         ticket: &EffectTicket,
         budget: &Budget,
         sources: &[ContextSegmentEvidence],
+        admitted_output_tokens: u32,
     ) -> Result<Self, ArtifactStoreError> {
         let route: &ProviderRouteAttemptIdentity = ticket
             .provider_route_attempt()
@@ -41,6 +43,7 @@ impl RequestManifestScope {
             || route.route_id.len() > 512
             || ticket.effect_id().0.len() > 512
             || sources.len() > MAX_CONTEXT_LEDGER_SEGMENTS
+            || admitted_output_tokens == 0
             || budget.validate().is_err()
         {
             return Err(ArtifactStoreError::InvalidRequest);
@@ -57,6 +60,7 @@ impl RequestManifestScope {
             },
             budget: budget.clone(),
             context_sources: sources.to_vec(),
+            admitted_output_tokens,
         })
     }
 }
@@ -75,6 +79,7 @@ struct PreparedRequestManifest<'a> {
     system_sha256: String,
     tool_schemas_sha256: String,
     max_output_tokens: u32,
+    serialized_output_tokens: u32,
     reasoning_effort: ReasoningEffort,
     thinking_budget_tokens: u32,
     controls: PreparedControls,
@@ -131,6 +136,8 @@ impl DurableArtifactStore {
             || wire.content_type != "application/json"
             || wire.body.len() > 32 * 1024 * 1024
             || wire.endpoint.len() > 16 * 1024
+            || wire.serialized_output_tokens == 0
+            || wire.serialized_output_tokens > scope.admitted_output_tokens
         {
             return Err(ArtifactStoreError::InvalidRequest);
         }
@@ -181,6 +188,7 @@ impl DurableArtifactStore {
             system_sha256: commitment(wire.request.system.as_bytes()),
             tool_schemas_sha256: commitment(wire.request.tools.canonical_json().as_bytes()),
             max_output_tokens: wire.request.max_tokens,
+            serialized_output_tokens: wire.serialized_output_tokens,
             reasoning_effort: wire.request.reasoning_effort,
             thinking_budget_tokens: wire.request.thinking_budget,
             controls: PreparedControls {

@@ -7,6 +7,14 @@ pub(super) struct ProviderDispatchAdmission {
 }
 
 impl Agent {
+    pub(super) fn provider_output_proof_required(&self) -> bool {
+        self.usd_budget
+            .as_ref()
+            .is_some_and(|budget| budget.requires_pricing())
+            || self.persistent_mailbox.is_some()
+            || self.persistent_agents.is_some()
+    }
+
     /// Unified provider-effect admission. Every model path, including operator compaction and
     /// orchestration helpers, must cross this check before a durable intent or transport call.
     pub(super) fn validate_provider_request_route(
@@ -302,9 +310,23 @@ impl Agent {
         governed_request.controls = self.provider_controls_for(self.provider.as_ref());
         governed_request.cache_system = governed_request.controls.prompt_cache.breakpoint
             != iteron_provider::CacheBreakpoint::None;
+        let physical = match super::provider_output_request::normalize(
+            self.provider.as_ref(),
+            governed_request,
+            self.provider_output_proof_required(),
+        ) {
+            Ok(physical) => physical,
+            Err(error) => {
+                if let Some(budget) = &self.usd_budget {
+                    budget.settle_not_dispatched();
+                }
+                return Err(error);
+            }
+        };
+        let mut requested_max_tokens = physical.requested_max_tokens;
+        let mut governed_request = physical.request;
         let class = effect_class::EffectClass::Provider;
         let mut retry_index = 0u32;
-        let mut physical_attempt = 0u32;
         let mut provider = self.provider.clone();
         let mut route_id = self.governed_route_id();
         let mut fallback_index = self
@@ -345,12 +367,10 @@ impl Agent {
                         }),
                         transition_reason,
                         retry_index,
-                        physical_attempt,
                         first_attempt,
                         primary_route_permit.take(),
                     )
                     .await?;
-                physical_attempt = physical_attempt.saturating_add(dispatch.scheduled_attempts);
                 let monetary_followup_safe = dispatch.monetary_followup_safe;
                 for item in dispatch.items {
                     guarded(item);
@@ -383,8 +403,17 @@ impl Agent {
                 if !first_attempt {
                     self.reserve_provider_followup_if_needed(&governed_request)?;
                 }
-                physical_attempt = physical_attempt.saturating_add(1);
-                let ordinal = self.next_effect_ordinal(turn, class);
+                let (ordinal, physical_attempt) = match self.next_provider_effect_identity(turn) {
+                    Ok(identity) => identity,
+                    Err(error) => {
+                        drop(dispatch_permit);
+                        drop(route_permit);
+                        if let Some(budget) = &self.usd_budget {
+                            budget.settle_not_dispatched();
+                        }
+                        return Err(error);
+                    }
+                };
                 let (objective_score, objective_evidence) = self.objective_rank_evidence(&route_id);
                 let broker_started = Instant::now();
                 let ticket = match self.open_kernel_effect(
@@ -399,6 +428,7 @@ impl Agent {
                         "messages": governed_request.messages.len(),
                         "tools": governed_request.tools.len(),
                         "max_tokens": governed_request.max_tokens,
+                        "requested_max_tokens": requested_max_tokens,
                         "physical_attempt": physical_attempt,
                         "route_retry_index": retry_index,
                         "route_objective_score_millionths": objective_score,
@@ -456,7 +486,9 @@ impl Agent {
                     settlement?;
                     return Err(KernelError::AgentControl(error));
                 }
-                let request_observer = self.request_manifest_factory().for_ticket(&ticket);
+                let request_observer = self
+                    .request_manifest_factory()
+                    .for_ticket(&ticket, governed_request.max_tokens);
                 let result = execute_admitted_provider_turn_observed(
                     provider.clone(),
                     self.run_deadline.unwrap_or_else(|| {
@@ -603,7 +635,18 @@ impl Agent {
             let failover_activity = self
                 .activity
                 .span(super::turn_activity::ActivityStage::Failover, Some(turn));
+            let candidate = &self.fallback_provider_routes[index];
+            let mut candidate_request = governed_request.clone();
+            candidate_request.model = candidate.route.model_id.clone();
+            candidate_request.max_tokens = requested_max_tokens;
+            let physical = super::provider_output_request::normalize(
+                candidate.provider.as_ref(),
+                candidate_request,
+                self.provider_output_proof_required(),
+            )?;
             let next = self.activate_fallback_provider_route(turn, index, failover_class)?;
+            requested_max_tokens = physical.requested_max_tokens;
+            governed_request = physical.request;
             failover_activity.complete();
             provider = next.provider.clone();
             route_id = next.id();

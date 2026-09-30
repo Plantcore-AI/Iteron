@@ -40,10 +40,20 @@ impl RequestManifestFactory {
             },
         }
     }
-    pub(super) fn for_ticket(&self, ticket: &EffectTicket) -> Arc<dyn ProviderRequestObserver> {
+    pub(super) fn for_ticket(
+        &self,
+        ticket: &EffectTicket,
+        admitted_output_tokens: u32,
+    ) -> Arc<dyn ProviderRequestObserver> {
         Arc::new(RequestManifestObserver {
             store: self.store.clone(),
-            scope: RequestManifestScope::capture(ticket, &self.budget, &self.sources).ok(),
+            scope: RequestManifestScope::capture(
+                ticket,
+                &self.budget,
+                &self.sources,
+                admitted_output_tokens,
+            )
+            .ok(),
             state: Mutex::new(PublicationState::Initial),
         })
     }
