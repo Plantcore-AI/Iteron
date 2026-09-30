@@ -61,6 +61,7 @@ const WORKFLOW_PROGRESS_CAPACITY: usize = 256;
 const WORKFLOW_SETTLED_CAPACITY: usize = 64;
 
 mod activity_control;
+mod plugin_control;
 mod session_host;
 pub(crate) use session_host::AppServer;
 

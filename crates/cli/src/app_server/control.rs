@@ -8,7 +8,8 @@ pub(super) fn is_immediate_control(control: &Control) -> bool {
     }
     matches!(
         control,
-        Control::ActivityCenter(_)
+        Control::PluginManagement(_)
+            | Control::ActivityCenter(_)
             | Control::OperatorStatus
             | Control::Inventory(_)
             | Control::LiveWorkflow(_)
@@ -298,6 +299,14 @@ pub(super) async fn apply_immediate_control(
     request: ControlRequest,
 ) {
     match request.control {
+        Control::PluginManagement(command) => {
+            operator_status.plugins.dispatch(
+                &operator_status.activity,
+                events.contract.clone(),
+                command,
+                request.reply,
+            );
+        }
         Control::ActivityCenter(command) => {
             operator_status
                 .activity
@@ -486,6 +495,15 @@ pub(super) async fn apply_control(
         return;
     }
     let reply = match request.control {
+        Control::PluginManagement(command) => {
+            operator_status.plugins.dispatch(
+                &operator_status.activity,
+                events.contract.clone(),
+                command,
+                request.reply,
+            );
+            return;
+        }
         Control::ActivityCenter(command) => {
             operator_status
                 .activity

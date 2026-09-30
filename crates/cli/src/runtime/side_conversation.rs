@@ -140,6 +140,10 @@ impl Agent {
         side.sensitive_env_names = self.sensitive_env_names.clone();
         side.install_hooks(self.hooks.clone())
             .map_err(|error| error.public_summary())?;
+        if let Some(owner) = self.plugin_management_port() {
+            side.install_plugin_management(owner)
+                .map_err(|error| error.public_summary())?;
+        }
         side.hook_effect_journal = self.hook_effect_journal.clone();
         side.composition_environment_context = self.composition_environment_context.clone();
         side.environment_context = self.composition_environment_context.clone();

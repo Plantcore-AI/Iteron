@@ -48,6 +48,9 @@ impl PlantcoreCommand {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum WireControl {
+    PluginManagementV1 {
+        command: iteron_protocol::plugin_control::PluginControlV1,
+    },
     ActivityCenterV1 {
         command: iteron_protocol::activity_control::ActivityControlV1,
     },
@@ -263,6 +266,9 @@ where
 
 impl WireControl {
     pub(super) fn is_read_only(&self) -> bool {
+        if let Self::PluginManagementV1 { command } = self {
+            return command.is_read_only();
+        }
         if let Self::ActivityCenterV1 { command } = self {
             return command.is_read_only();
         }
@@ -299,6 +305,7 @@ impl WireControl {
 
     pub(super) fn into_app_server(self) -> Control {
         match self {
+            Self::PluginManagementV1 { command } => Control::PluginManagement(command),
             Self::ActivityCenterV1 { command } => Control::ActivityCenter(command),
             Self::MaintenanceV1 { .. } => {
                 unreachable!("maintenance reads address the actual readonly owner port")
@@ -543,6 +550,7 @@ pub(super) fn reply_value(reply: ControlReply) -> Value {
         }),
         ControlReply::ThreadLifecycle(value) => value,
         ControlReply::PersistentAgents(value) => value,
+        ControlReply::PluginManagement(value) => value,
         ControlReply::ActivityCenter(value) => value,
         ControlReply::Inventory(value) => value,
         ControlReply::LiveWorkflow(value) => json!({
@@ -1060,6 +1068,31 @@ mod tests {
         assert_eq!(reply["type"], "product_events_error_v1");
         assert_eq!(reply["error"]["type"], "cursor_ahead");
         assert_eq!(reply["error"]["latest_cursor"], 0);
+    }
+
+    #[test]
+    fn plugin_observers_can_read_captured_sources_but_cannot_change_install_or_current_authority() {
+        for command in [
+            json!({"action":"list","thread_id":"thread","run_id":"run"}),
+            json!({"action":"inspect","thread_id":"thread","run_id":"run","plugin_id":"verified"}),
+        ] {
+            let wire: WireControl =
+                serde_json::from_value(json!({"type":"plugin_management_v1","command":command}))
+                    .unwrap();
+            assert!(wire.is_read_only());
+        }
+        for command in [
+            json!({"action":"set_enabled","thread_id":"thread","run_id":"run","plugin_id":"verified","enabled":false}),
+            json!({"action":"set_precedence","thread_id":"thread","run_id":"run","plugin_id":"verified","precedence":1}),
+            json!({"action":"rollback","thread_id":"thread","run_id":"run","plugin_id":"verified"}),
+            json!({"action":"install","thread_id":"thread","run_id":"run","receipt_id":"prepared-1"}),
+        ] {
+            let wire: WireControl =
+                serde_json::from_value(json!({"type":"plugin_management_v1","command":command}))
+                    .unwrap();
+            assert!(!wire.is_read_only());
+        }
+        assert!(serde_json::from_value::<WireControl>(json!({"type":"plugin_management_v1","command":{"action":"install","thread_id":"thread","run_id":"run","receipt_id":"prepared-1","path":"/tmp/package"}})).is_err());
     }
 
     #[test]

@@ -206,6 +206,10 @@ impl Agent {
         // Children inherit that exact value; they never re-read ambient or repository config.
         sub.install_hooks(self.hooks.clone())
             .map_err(|error| error.public_summary())?;
+        if let Some(owner) = self.plugin_management_port() {
+            sub.install_plugin_management(owner)
+                .map_err(|error| error.public_summary())?;
+        }
         sub.hook_effect_journal = self.hook_effect_journal.clone();
         sub.composition_environment_context = self.composition_environment_context.clone();
         sub.environment_context = self.composition_environment_context.clone();

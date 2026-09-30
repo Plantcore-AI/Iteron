@@ -2879,3 +2879,80 @@ async fn activity_owner_generation_blocks_adoption_and_rejects_stale_effects_bef
     drop(agent);
     let _ = std::fs::remove_dir_all(&workspace);
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn plugin_public_control_binds_actual_signed_owner_and_refuses_stale_disable_before_effects()
+{
+    use iteron_protocol::plugin_control::PluginControlV1;
+    let (package_root, mut plugins) = crate::plugin_runtime::installed_fixture();
+    let workspace = temp_workspace("plugin-public-owner");
+    let mut agent = agent_in(&workspace);
+    agent
+        .install_hooks(crate::runtime::hooks::Hooks::from_user_config(Some(
+            &plugins.hooks,
+        )))
+        .unwrap();
+    let owner = plugins.management_port().unwrap().unwrap();
+    agent.install_plugin_management(owner.clone()).unwrap();
+    let (_handle, mut ends) = wire().unwrap();
+    let thread = SessionId("session-control-plane".into());
+    let run = agent.rollout.run_id().clone();
+    ends.events
+        .bind_lifecycle_identity(thread.clone(), run.clone());
+    let (settled, _) = mpsc::channel(1);
+    let activity = super::activity_control::ActivitySurface::capture(
+        &agent,
+        None,
+        None,
+        crate::workflow::WorkflowSupervisor::new(settled),
+    );
+    let surface = super::plugin_control::PluginControlSurface::capture(&agent);
+    let (reply, receive) = tokio::sync::oneshot::channel();
+    surface.dispatch(
+        &activity,
+        ends.events.contract.clone(),
+        PluginControlV1::List {
+            thread_id: thread.clone(),
+            run_id: run.clone(),
+            offset: 0,
+            limit: 16,
+        },
+        reply,
+    );
+    let ControlReply::PluginManagement(actual) = receive.await.unwrap() else {
+        panic!("actual plugin reply")
+    };
+    assert_eq!(actual["data"], owner.snapshot());
+    // Commit the same scope barrier as the real adoption path, then present the stale old request.
+    let barrier = activity.adoption_barrier().await.unwrap();
+    assert!(ends.events.contract.rebind_run(RunId("new-run".into())));
+    drop(barrier);
+    let (reply, receive) = tokio::sync::oneshot::channel();
+    surface.dispatch(
+        &activity,
+        ends.events.contract.clone(),
+        PluginControlV1::SetEnabled {
+            thread_id: thread,
+            run_id: run,
+            plugin_id: "verified".into(),
+            enabled: false,
+        },
+        reply,
+    );
+    assert!(matches!(receive.await.unwrap(), ControlReply::Refused(_)));
+    assert_eq!(
+        owner.snapshot()["current_generation"]["items"][0]["future_dispatch_revoked"],
+        false
+    );
+    assert!(
+        iteron_marketplace::PluginStore::new(package_root.join("store"))
+            .list()
+            .unwrap()[0]
+            .1
+            .enabled
+    );
+    drop(agent);
+    let _ = std::fs::remove_dir_all(workspace);
+    let _ = std::fs::remove_dir_all(package_root);
+}

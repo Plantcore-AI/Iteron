@@ -17,7 +17,11 @@ pub(crate) use candidate::CandidateFile;
 pub(crate) use implementation::VerifiedImplementationActivation;
 pub(crate) mod dispatch;
 mod management;
+#[cfg(all(test, unix))]
+mod management_tests;
 pub(crate) use management::PluginManagementOwner;
+#[cfg(all(test, unix))]
+pub(crate) use management_tests::installed_fixture;
 mod inventory;
 pub(crate) use inventory::RuntimePluginIdentity;
 
@@ -164,7 +168,7 @@ impl RuntimePlugins {
         runtime.composition = serde_json::json!({
             "source":"actual_verified_bootstrap_composition",
             "conflicts":composition.report.contests().iter().take(256).map(|contest|serde_json::json!({"surface":contest.slot.surface,"key":contest.slot.key,"winner":contest.winner,"shadowed":contest.shadowed,"arbitration":format!("{:?}",contest.arbitration)})).collect::<Vec<_>>(),
-            "refusals":composition.report.refusals().iter().take(256).map(|refusal|iteron_record::redact::scrub(&refusal.to_string())).collect::<Vec<_>>()
+            "refusals":composition.report.refusals().iter().take(256).map(|refusal|bounded_refusal_display(&refusal.to_string())).collect::<Vec<_>>()
         });
         for plugin in roots.values() {
             std::sync::Arc::get_mut(
@@ -649,4 +653,17 @@ mod tests {
             metadata
         );
     }
+}
+
+fn bounded_refusal_display(raw: &str) -> String {
+    let scrubbed = iteron_record::redact::scrub(raw);
+    let mut take = scrubbed.len().min(512);
+    while !scrubbed.is_char_boundary(take) {
+        take -= 1;
+    }
+    let mut text = scrubbed[..take].to_owned();
+    if take < scrubbed.len() {
+        text.push_str(" [display shortened]");
+    }
+    text
 }

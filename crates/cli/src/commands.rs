@@ -35,6 +35,7 @@ pub enum SlashCommand {
     Artifacts,
     Finalization,
     ActivityCenter,
+    Plugins,
     Fork,
     Rewind,
     Resume,
@@ -99,6 +100,7 @@ impl SlashCommand {
             | Self::Artifacts
             | Self::Finalization
             | Self::ActivityCenter
+            | Self::Plugins
             | Self::Fork
             | Self::Rewind
             | Self::Resume
@@ -250,6 +252,12 @@ pub const COMMANDS: &[Cmd] = &[
         name: "artifacts",
         args: "[HASH_PREFIX]",
         help: "list or open bounded artifacts published by this thread",
+    },
+    Cmd {
+        command: SlashCommand::Plugins,
+        name: "plugins",
+        args: "[list|inspect|disable|enable|priority|rollback|install]",
+        help: "inspect signed plugin sources, conflicts, current dispatch and durable selection",
     },
     Cmd {
         command: SlashCommand::ActivityCenter,

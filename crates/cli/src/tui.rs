@@ -79,6 +79,7 @@ mod mouse_capture;
 mod notification;
 mod persistent_agents;
 mod picker_catalog;
+mod plugins;
 mod product_projection;
 mod session_adoption;
 mod session_inspection;

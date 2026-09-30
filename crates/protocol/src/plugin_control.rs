@@ -7,6 +7,19 @@ pub enum PluginControlV1 {
     List {
         thread_id: SessionId,
         run_id: RunId,
+        #[serde(default)]
+        offset: u16,
+        #[serde(default = "default_limit")]
+        limit: u16,
+    },
+    Inspect {
+        thread_id: SessionId,
+        run_id: RunId,
+        plugin_id: String,
+        #[serde(default)]
+        binding_offset: u16,
+        #[serde(default = "default_limit")]
+        limit: u16,
     },
     SetEnabled {
         thread_id: SessionId,
@@ -31,10 +44,18 @@ pub enum PluginControlV1 {
         receipt_id: String,
     },
 }
+fn default_limit() -> u16 {
+    16
+}
 impl PluginControlV1 {
     pub fn scope(&self) -> (&SessionId, &RunId) {
         match self {
-            Self::List { thread_id, run_id }
+            Self::List {
+                thread_id, run_id, ..
+            }
+            | Self::Inspect {
+                thread_id, run_id, ..
+            }
             | Self::SetEnabled {
                 thread_id, run_id, ..
             }
@@ -50,7 +71,7 @@ impl PluginControlV1 {
         }
     }
     pub fn is_read_only(&self) -> bool {
-        matches!(self, Self::List { .. })
+        matches!(self, Self::List { .. } | Self::Inspect { .. })
     }
     pub fn validate(&self) -> Result<(), &'static str> {
         let (thread, run) = self.scope();
@@ -63,7 +84,23 @@ impl PluginControlV1 {
             return Err("plugin_scope_bounds");
         }
         let name = match self {
-            Self::List { .. } => return Ok(()),
+            Self::List { offset, limit, .. } => {
+                if *offset > 4096 || !(1..=32).contains(limit) {
+                    return Err("plugin_page_bounds");
+                }
+                return Ok(());
+            }
+            Self::Inspect {
+                plugin_id,
+                binding_offset,
+                limit,
+                ..
+            } => {
+                if *binding_offset > 4096 || !(1..=32).contains(limit) {
+                    return Err("plugin_page_bounds");
+                }
+                plugin_id
+            }
             Self::SetEnabled { plugin_id, .. }
             | Self::SetPrecedence { plugin_id, .. }
             | Self::Rollback { plugin_id, .. } => plugin_id,
