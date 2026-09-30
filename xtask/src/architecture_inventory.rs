@@ -579,6 +579,16 @@ const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
+        path: "crates/cli/src/runtime/ordered_tool_call.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "actual ordered registry intent, captured execution future, physical terminal, spill and post observer lifetime owner",
+        ],
+        next_seams: &[
+            "disjoint journal plus frozen registry/cancel/publication/hook/event ports; no permission or provider authority; Unknown settles before control return",
+        ],
+    },
+    Surface {
         path: "crates/cli/src/runtime/deferred_tool_batch.rs",
         boundary: "cli-host",
         responsibilities: &[
