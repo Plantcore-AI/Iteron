@@ -210,7 +210,24 @@ fn actual_native_commits_publish_resolvable_scrubbed_whole_snapshots_after_resta
     ]);
     let mut seen = BTreeSet::new();
     for (descriptor, manifest) in captured {
-        let id = manifest["tool_use_id"].as_str().unwrap();
+        // The public correlation field is scrubbed display text. Bind source evidence through
+        // this fixture's known operation/path, never by treating display text as an exact ID.
+        let files = manifest["files"].as_array().unwrap();
+        let id = match (
+            manifest["tool"].as_str().unwrap(),
+            files[0]["path"].as_str().unwrap(),
+        ) {
+            ("write_file", "whole.txt") => "diff-write",
+            ("write_file", "created.txt") => "diff-create",
+            ("edit", "edit.txt") => "diff-edit",
+            ("apply_patch", "a.txt") => "diff-patch",
+            other => panic!("unexpected actual native receipt {other:?}"),
+        };
+        assert_eq!(
+            manifest["tool_use_id_display"],
+            iteron_record::redact::scrub(id)
+        );
+        assert!(manifest.get("tool_use_id").is_none());
         let intent = events
             .iter()
             .find(|event| {

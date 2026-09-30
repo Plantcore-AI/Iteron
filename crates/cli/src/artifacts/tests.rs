@@ -1,6 +1,9 @@
 use super::*;
 use iteron_protocol::{Effort, Event, EventKind, TurnId};
 
+#[path = "structural_tests.rs"]
+mod structural_tests;
+
 struct Fixture(PathBuf);
 
 impl Fixture {
