@@ -131,6 +131,7 @@ struct Projection {
     assistant_scrubber: ProductStreamScrubber,
     reasoning_scrubber: ProductStreamScrubber,
     artifacts: super::client_artifacts::ArtifactCatalog,
+    artifact_scope: Option<crate::artifacts::ArtifactReadScope>,
 }
 
 impl std::fmt::Debug for Projection {
@@ -174,6 +175,18 @@ fn scrub_json(value: &serde_json::Value) -> serde_json::Value {
 }
 
 impl ContractReader {
+    pub(super) fn bind_artifact_owner(&self, agent: &crate::runtime::Agent) {
+        let scope = agent.rollout.path().parent().map(|runs| {
+            crate::artifacts::ArtifactReadScope::capture(
+                runs.to_owned(),
+                agent.rollout.tenant().clone(),
+                agent.rollout.run_id().clone(),
+                agent.workspace.clone(),
+            )
+        });
+        self.with_mut(|projection| projection.artifact_scope = scope);
+    }
+
     fn with_mut<R>(&self, action: impl FnOnce(&mut Projection) -> R) -> R {
         let mut guard = self
             .0
@@ -306,7 +319,59 @@ impl ContractReader {
         &self,
         command: iteron_protocol::client_artifact::ClientArtifactCommandV1,
     ) -> serde_json::Value {
-        self.with_mut(|projection| projection.artifacts.read(command))
+        // Never hold the event projection lock across disk hydration or content-graph validation.
+        let (resident, scope, thread) = self.with_mut(|projection| {
+            (
+                projection.artifacts.read(command.clone()),
+                projection.artifact_scope.clone(),
+                projection
+                    .snapshot
+                    .as_ref()
+                    .map(|snapshot| snapshot.thread_id.clone()),
+            )
+        });
+        let Some(thread) = thread else {
+            return resident;
+        };
+        if command.thread_id() != &thread {
+            return resident;
+        }
+        let durable = scope.and_then(|scope| scope.read(&thread, command.clone()).ok());
+        match command {
+            iteron_protocol::client_artifact::ClientArtifactCommandV1::Read { .. } => durable
+                .unwrap_or_else(|| {
+                    let mut reply = resident;
+                    reply["provenance"] = serde_json::json!("resident_public_event");
+                    reply
+                }),
+            iteron_protocol::client_artifact::ClientArtifactCommandV1::List { .. } => {
+                let mut reply = durable.unwrap_or_else(|| serde_json::json!({
+                    "type":"artifacts_v1", "contract_version":iteron_protocol::client_artifact::CLIENT_ARTIFACT_VERSION,
+                    "artifacts":[], "evicted_artifacts":0,
+                }));
+                let mut resident_ids = Vec::new();
+                if let (Some(entries), Some(legacy)) = (
+                    reply["artifacts"].as_array_mut(),
+                    resident["artifacts"].as_array(),
+                ) {
+                    for entry in legacy {
+                        if !entries
+                            .iter()
+                            .any(|known| known["artifact_id"] == entry["artifact_id"])
+                        {
+                            entries.push(entry.clone());
+                            resident_ids.push(entry["artifact_id"].clone());
+                        }
+                    }
+                }
+                reply["resident_artifact_ids"] = serde_json::json!(resident_ids);
+                reply["retention"] = serde_json::json!("per_artifact_provenance");
+                reply["provenance"] =
+                    serde_json::json!("retained_owner_manifest_or_resident_public_event");
+                reply["resident_evicted_artifacts"] = resident["evicted_artifacts"].clone();
+                reply
+            }
+        }
     }
 
     pub(crate) fn snapshot(&self) -> Option<ThreadSnapshotV1> {

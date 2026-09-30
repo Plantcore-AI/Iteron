@@ -67,15 +67,32 @@ Send `{"type":"artifacts_v1","command":{"type":"list","thread_id":"..."}}` or a
 are base64 encoded and bounded to 64 KiB. `next_offset` and `eof` support paged download. A client
 cannot supply a filesystem path or follow an artifact locator.
 
-The resident catalog publishes scrubbed finalized answers, tool logs and structured file diffs from the public
+Trusted runtime producers can publish complete text to the retained owner manifest before preview
+truncation. Publication scrubs the full text, hashes the bytes actually served, and registers real
+private-content source lineage. The index is scoped to the recorded tenant/run and canonical
+workspace. Downloads reopen and verify the content graph, so source revocation and session
+erasure revoke these artifacts as well. Each item is at most 8 MiB; one owner retains at most
+256 entries and 64 MiB. Eviction first durably removes the catalog entry, then releases the exact
+content reference. Prepared publications and release intents recover on the next trusted producer
+call; incomplete publications are never listed. Publication errors can report an unknown outcome.
+The same ID and byte offsets support downloads after a server restart when that recorded owner
+is adopted again. Windows manifest publication uses the private local NTFS adapter; unsupported
+filesystems are refused.
+
+The compatibility resident catalog publishes scrubbed finalized answers, tool logs and structured file diffs from the public
 event boundary. IDs are SHA-256 hashes of the retained bytes. Each descriptor declares the schema,
 MIME type, retained byte count, ReadOnly requirement, source event and `complete` status. A
 descriptor with `complete: false` is an explicitly truncated product; it is not a full log spill.
 The catalog retains at most 128 entries and 4 MiB, with 256 KiB per entry. Eviction is counted,
 missing handles are refused, and adoption clears the previous thread's handles. Retention is
-resident-thread lifetime; this version does not promise restart recovery for these bytes.
+resident-thread lifetime. These fallback bytes do not survive server restart.
+
+The shared public list merges both owners and returns `resident_artifact_ids` for fallback entries.
+Read replies identify `retained_owner_manifest` or `resident_public_event` provenance. Retained
+complete bytes take priority over a resident preview with the same ID. Session erasure returns
+any pending presentation/index cleanup separately from its verified content-erasure receipt.
 
 The TUI's `/artifacts` lists this catalog with stable 12-character hash prefixes; `/artifacts HASH_PREFIX` opens the first 32 KiB with
-terminal-safe text rendering. The same API supports the remaining download pages. Durable spill
-downloads, external locator-backed screenshots/documents and general binary preview require
-their respective private-content owners and remain separate work.
+terminal-safe text rendering. The same API supports the remaining download pages. General
+binary publication and external screenshots/documents require typed safe producer ownership;
+clients cannot turn an external locator into a retained public artifact.

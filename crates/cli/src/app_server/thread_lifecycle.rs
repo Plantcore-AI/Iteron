@@ -277,9 +277,12 @@ impl HistoryScope {
         if receipt.state() != iteron_protocol::ErasureState::Verified {
             return Err(format!("thread erasure refused: {:?}", receipt.failure()));
         }
-        thread_presentation::remove(&self.runs, &run.0)?;
+        let presentation_clean = thread_presentation::remove(&self.runs, &run.0).is_ok();
+        let artifacts_clean = crate::artifacts::remove_erased_catalog(&self.runs, &receipt).is_ok();
         Ok(
-            json!({"type":"thread_deleted_v1", "contract_version":THREAD_LIFECYCLE_VERSION, "run_id":run, "receipt":receipt}),
+            json!({"type":"thread_deleted_v1", "contract_version":THREAD_LIFECYCLE_VERSION, "run_id":run,
+                "receipt":receipt, "presentation_cleanup_pending":!presentation_clean,
+                "artifact_index_cleanup_pending":!artifacts_clean}),
         )
     }
 }

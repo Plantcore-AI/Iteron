@@ -2374,6 +2374,7 @@ impl AppServer {
         let run_id = agent.rollout.run_id().clone();
         ends.events
             .bind_lifecycle_identity(SessionId(format!("session-{}", run_id.0)), run_id);
+        ends.events.contract.bind_artifact_owner(&agent);
         let (to_kernel, kernel_rx) = mpsc::channel::<TurnSubmission>(
             iteron_tunables::param_integer(
                 "cli.app_server.kernel_inbound_capacity",

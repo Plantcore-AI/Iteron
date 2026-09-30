@@ -604,6 +604,7 @@ pub(super) async fn apply_control(
                         events.rebind_contract_run(iteron_protocol::RunId(adopted.run_id.clone())),
                         "adoption preflight keeps the public Thread projection rebindable"
                     );
+                    events.contract.bind_artifact_owner(agent);
                     events.record_lifecycle(
                         "session.resumed",
                         None,
