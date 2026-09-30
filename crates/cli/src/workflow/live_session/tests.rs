@@ -82,6 +82,7 @@ impl PersistentAgentRuntime for Runtime {
             self.release.acquire().await.unwrap().forget();
         }
         AgentSettlement {
+            turns: 1,
             summary: task.clone(),
             tokens: 1,
             cost_microusd: 0,
