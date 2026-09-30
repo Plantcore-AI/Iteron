@@ -507,11 +507,49 @@ impl KernelSpawner {
         self.build_child_in(call, ordinal, None)
     }
 
+    /// Host-only persistent identity. The ordinal and resume selection come from the controller,
+    /// never a workflow script/model path. Existing workflow construction stays fresh-only.
+    pub(super) fn build_persistent_child(
+        &mut self,
+        call: &AgentCall,
+        view: &iteron_protocol::agent_control::AgentViewV1,
+    ) -> Result<Agent, String> {
+        let previous = self.cx.budget.clone();
+        self.cx.budget.max_turns = self.cx.budget.max_turns.min(view.budget.turns);
+        self.cx.budget.max_tokens = Some(
+            self.cx
+                .budget
+                .max_tokens
+                .unwrap_or(view.budget.tokens)
+                .min(view.budget.tokens),
+        );
+        self.cx.budget.max_wall_secs = self
+            .cx
+            .budget
+            .max_wall_secs
+            .min(view.budget.wall_ms.div_ceil(1_000));
+        let ceiling = view.budget.cost_microusd as f64 / 1_000_000.0;
+        self.cx.budget.max_usd = Some(self.cx.budget.max_usd.unwrap_or(ceiling).min(ceiling));
+        let built = self.build_child_in_mode(call, view.agent_id.0, None, true);
+        self.cx.budget = previous;
+        built
+    }
+
     fn build_child_in(
         &self,
         call: &AgentCall,
         ordinal: u64,
         writer_workspace: Option<&Path>,
+    ) -> Result<Agent, String> {
+        self.build_child_in_mode(call, ordinal, writer_workspace, false)
+    }
+
+    fn build_child_in_mode(
+        &self,
+        call: &AgentCall,
+        ordinal: u64,
+        writer_workspace: Option<&Path>,
+        resume_existing: bool,
     ) -> Result<Agent, String> {
         let cx = &self.cx;
 
@@ -791,16 +829,23 @@ impl KernelSpawner {
                 CLOCK_BEFORE_EPOCH_SECS,
             ));
         let parent_run = iteron_protocol::RunId(cx.parent_run_id.clone());
-        sub.record_child_genesis_with_tunables(
-            &parent_run,
-            child_workspace.display().to_string(),
-            created_at,
-            tunables_config_digest,
-            Some(agent_def.execution_tag()),
-        )
-        .map_err(|error| {
-            safe_agent_refusal(&format!("child genesis failed: {}", error.public_summary()))
-        })?;
+        if resume_existing && sub.rollout.next_sequence().0 > 0 {
+            let messages = Agent::messages_from_rollout(sub.rollout.path())
+                .map_err(|error| safe_agent_refusal(&error.public_summary()))?;
+            sub.set_resume(messages)
+                .map_err(|error| safe_agent_refusal(&error.public_summary()))?;
+        } else {
+            sub.record_child_genesis_with_tunables(
+                &parent_run,
+                child_workspace.display().to_string(),
+                created_at,
+                tunables_config_digest,
+                Some(agent_def.execution_tag()),
+            )
+            .map_err(|error| {
+                safe_agent_refusal(&format!("child genesis failed: {}", error.public_summary()))
+            })?;
+        }
 
         let model_router_opportunity = sub
             .begin_policy_decision(super::policy_evidence::MODEL_ROUTER_SLOT, None)
@@ -1830,7 +1875,7 @@ pub(super) mod tests {
             .expect("workflow test fixture must bind every effective fixed authority")
     }
 
-    pub(super) fn pin_context(root: &Path, context: &mut KernelSpawnerContext) {
+    pub(in crate::runtime) fn pin_context(root: &Path, context: &mut KernelSpawnerContext) {
         let resolved = production_compatible_resolved_fixture(
             root,
             context.agent_catalog.as_ref(),

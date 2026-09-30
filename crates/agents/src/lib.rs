@@ -16,6 +16,8 @@ mod catalog;
 mod controller;
 mod controller_error;
 mod controller_file;
+#[cfg(windows)]
+mod controller_file_windows;
 mod decompose;
 mod def;
 mod mailbox;
@@ -28,7 +30,7 @@ mod stage;
 pub use catalog::{AgentCatalog, AgentCatalogRuntimeIdentity, LoadError};
 pub use controller::{
     AgentActor, AgentController, AgentControllerConfig, AgentControllerJournal,
-    AgentControllerSnapshot,
+    AgentControllerSnapshot, AgentWorkflowClaim, AgentWorkflowCompletion, AgentWorkflowLease,
 };
 pub use controller_error::{ControllerError, ControllerStoreError};
 pub use controller_file::AgentFileJournal;

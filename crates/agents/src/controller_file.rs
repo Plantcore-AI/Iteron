@@ -5,15 +5,22 @@
 //! sync poisons the controller; it must reopen and reconcile before any execution resumes.
 
 use crate::{AgentControllerJournal, AgentControllerSnapshot, ControllerStoreError};
+#[cfg(unix)]
 use serde::{Deserialize, Serialize};
+#[cfg(unix)]
 use sha2::{Digest, Sha256};
+#[cfg(unix)]
 use std::fs::File;
+#[cfg(unix)]
 use std::io::{Read, Write};
 use std::path::Path;
 
+#[cfg(unix)]
 const MAX_FILE_BYTES: usize = 32 * 1024 * 1024 + 1_024;
+#[cfg(unix)]
 const FILE_VERSION: u32 = 1;
 
+#[cfg(unix)]
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Envelope {
@@ -23,6 +30,8 @@ struct Envelope {
 }
 
 pub struct AgentFileJournal {
+    #[cfg(windows)]
+    windows: crate::controller_file_windows::WindowsAgentFileJournal,
     #[cfg(unix)]
     directory: File,
     #[cfg(unix)]
@@ -30,8 +39,7 @@ pub struct AgentFileJournal {
 }
 
 impl AgentFileJournal {
-    /// Unix currently supplies the required atomic namespace + directory fsync contract.
-    /// Other platforms return a typed refusal before opening state, never a weaker journal.
+    /// Platform adapters must supply private, durable atomic publication before exposing state.
     pub fn open(directory: &Path) -> Result<Self, ControllerStoreError> {
         #[cfg(unix)]
         {
@@ -59,7 +67,13 @@ impl AgentFileJournal {
                 _lease: lease,
             })
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            Ok(Self {
+                windows: crate::controller_file_windows::WindowsAgentFileJournal::open(directory)?,
+            })
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = directory;
             Err(ControllerStoreError::Unavailable)
@@ -114,7 +128,11 @@ impl AgentControllerJournal for AgentFileJournal {
             }
             Ok(Some(envelope.snapshot))
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            self.windows.load()
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             Err(ControllerStoreError::Unavailable)
         }
@@ -191,7 +209,11 @@ impl AgentControllerJournal for AgentFileJournal {
                 .sync_all()
                 .map_err(|_| ControllerStoreError::OutcomeUnknown)
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            self.windows.commit(expected, next)
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = (expected, next);
             Err(ControllerStoreError::Unavailable)

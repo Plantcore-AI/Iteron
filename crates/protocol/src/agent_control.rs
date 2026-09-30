@@ -240,6 +240,17 @@ pub struct AgentViewV1 {
     pub write_paths: Vec<String>,
     pub queued_messages: usize,
     pub last_summary: Option<String>,
+    #[serde(default)]
+    pub usage: AgentUsageV1,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentUsageV1 {
+    pub turns: u32,
+    pub tokens: u64,
+    pub cost_microusd: u64,
+    pub wall_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

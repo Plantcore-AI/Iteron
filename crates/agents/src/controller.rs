@@ -8,13 +8,18 @@ use crate::controller_error::{ControllerError, ControllerStoreError};
 use crate::mailbox::{AgentMailbox, AgentMailboxMessage};
 use iteron_protocol::agent_control::{
     AGENT_CONTROL_VERSION, AgentBudgetV1, AgentCommandV1, AgentControlReplyV1, AgentEpochV1,
-    AgentIdV1, AgentMessageIdV1, AgentMessageKindV1, AgentStateV1, AgentViewV1,
-    MAX_AGENT_REQUEST_ID_BYTES, MAX_AGENT_TEXT_BYTES, validate_label, validate_write_paths,
+    AgentIdV1, AgentMessageIdV1, AgentMessageKindV1, AgentStateV1, AgentUsageV1, AgentViewV1,
+    MAX_AGENT_REQUEST_ID_BYTES, MAX_AGENT_TEXT_BYTES,
 };
 use iteron_protocol::{Capability, capability_set::CapabilitySet};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+
+mod snapshot_validation;
+mod workflow_claim;
+use snapshot_validation::validate_snapshot;
+pub use workflow_claim::{AgentWorkflowClaim, AgentWorkflowCompletion, AgentWorkflowLease};
 
 const MAX_AGENTS: usize = 64;
 const MAX_RECEIPTS: usize = 8_192;
@@ -70,6 +75,10 @@ struct AgentRecord {
     turns_used: u32,
     tokens_used: u64,
     cost_used: u64,
+    #[serde(default)]
+    wall_used_ms: u64,
+    #[serde(default)]
+    runtime_started_at_unix_ms: Option<u64>,
     reserved_turns: u32,
     reserved_tokens: u64,
     reserved_cost: u64,
@@ -93,6 +102,8 @@ pub struct AgentControllerSnapshot {
     agents: BTreeMap<AgentIdV1, AgentRecord>,
     mailbox: AgentMailbox,
     receipts: BTreeMap<String, RequestReceipt>,
+    #[serde(default)]
+    workflow_claims: BTreeMap<String, workflow_claim::WorkflowReceipt>,
 }
 
 impl AgentControllerSnapshot {
@@ -155,6 +166,7 @@ impl<J: AgentControllerJournal> AgentController<J> {
                     agents: BTreeMap::from([(AgentIdV1(1), root)]),
                     mailbox,
                     receipts: BTreeMap::new(),
+                    workflow_claims: BTreeMap::new(),
                 };
                 journal
                     .commit(None, &snapshot)
@@ -492,6 +504,27 @@ impl<J: AgentControllerJournal> AgentController<J> {
 
     /// Host dispatch claim. Plain messages in an idle mailbox never produce a model request.
     pub fn begin_turn(&mut self, id: AgentIdV1) -> Result<Option<AgentEpochV1>, ControllerError> {
+        self.begin_turn_inner(id, None)
+    }
+
+    /// Real runtime admission persists a clock anchor before execution. After a crash it cannot
+    /// use the legacy zero-usage reconciliation path or silently restart its wall budget.
+    pub fn begin_runtime_turn(
+        &mut self,
+        id: AgentIdV1,
+        started_at_unix_ms: u64,
+    ) -> Result<Option<AgentEpochV1>, ControllerError> {
+        if started_at_unix_ms == 0 {
+            return Err(ControllerError::Invalid("runtime clock anchor is missing"));
+        }
+        self.begin_turn_inner(id, Some(started_at_unix_ms))
+    }
+
+    fn begin_turn_inner(
+        &mut self,
+        id: AgentIdV1,
+        started_at_unix_ms: Option<u64>,
+    ) -> Result<Option<AgentEpochV1>, ControllerError> {
         self.check_live()?;
         self.check_open(id)?;
         let record = self
@@ -518,6 +551,7 @@ impl<J: AgentControllerJournal> AgentController<J> {
                 .cost_used
                 .checked_add(record.reserved_cost)
                 .is_none_or(|used| used > record.view.budget.cost_microusd)
+            || record.wall_used_ms >= record.view.budget.wall_ms
         {
             return Err(ControllerError::Budget);
         }
@@ -536,6 +570,7 @@ impl<J: AgentControllerJournal> AgentController<J> {
             .ok_or(ControllerError::Capacity)?;
         record.turns_used += 1;
         record.active_task = Some(task);
+        record.runtime_started_at_unix_ms = started_at_unix_ms;
         record.view.state = AgentStateV1::Running { epoch };
         next.revision = next_revision(next.revision)?;
         self.commit(next)?;
@@ -597,6 +632,30 @@ impl<J: AgentControllerJournal> AgentController<J> {
         cost_microusd: u64,
         effects_known: bool,
     ) -> Result<(), ControllerError> {
+        self.finish_turn_with_usage(
+            id,
+            epoch,
+            summary,
+            AgentUsageV1 {
+                turns: 0,
+                tokens,
+                cost_microusd,
+                wall_ms: 0,
+            },
+            effects_known,
+        )
+    }
+
+    /// Host supplies elapsed execution time after real settlement. Wall time is cumulative across
+    /// follow-ups and survives restart; creating another turn cannot reset the lifetime ceiling.
+    pub fn finish_turn_with_usage(
+        &mut self,
+        id: AgentIdV1,
+        epoch: AgentEpochV1,
+        summary: &str,
+        usage: AgentUsageV1,
+        effects_known: bool,
+    ) -> Result<(), ControllerError> {
         self.check_live()?;
         if summary.len() > MAX_AGENT_TEXT_BYTES || summary.contains('\0') {
             return Err(ControllerError::Capacity);
@@ -611,6 +670,8 @@ impl<J: AgentControllerJournal> AgentController<J> {
         {
             return Err(ControllerError::StaleEpoch);
         }
+        let workflow_budget_fits =
+            workflow_claim::settlement_fits(&self.snapshot, id, epoch, usage);
         let mut next = self.snapshot.clone();
         let record = next
             .agents
@@ -618,20 +679,26 @@ impl<J: AgentControllerJournal> AgentController<J> {
             .ok_or(ControllerError::UnknownAgent)?;
         record.tokens_used = record
             .tokens_used
-            .checked_add(tokens)
+            .checked_add(usage.tokens)
             .ok_or(ControllerError::Budget)?;
         record.cost_used = record
             .cost_used
-            .checked_add(cost_microusd)
+            .checked_add(usage.cost_microusd)
             .ok_or(ControllerError::Budget)?;
-        let within_budget = record
-            .tokens_used
-            .checked_add(record.reserved_tokens)
-            .is_some_and(|used| used <= record.view.budget.tokens)
+        record.wall_used_ms = record
+            .wall_used_ms
+            .checked_add(usage.wall_ms)
+            .ok_or(ControllerError::Budget)?;
+        let within_budget = workflow_budget_fits
+            && record
+                .tokens_used
+                .checked_add(record.reserved_tokens)
+                .is_some_and(|used| used <= record.view.budget.tokens)
             && record
                 .cost_used
                 .checked_add(record.reserved_cost)
-                .is_some_and(|used| used <= record.view.budget.cost_microusd);
+                .is_some_and(|used| used <= record.view.budget.cost_microusd)
+            && record.wall_used_ms <= record.view.budget.wall_ms;
         record.view.last_summary = Some(summary.to_owned());
         record.view.state = if !effects_known || !within_budget {
             AgentStateV1::RecoveryRequired { epoch }
@@ -643,9 +710,18 @@ impl<J: AgentControllerJournal> AgentController<J> {
         let active_task = record.active_task;
         if !matches!(record.view.state, AgentStateV1::RecoveryRequired { .. }) {
             record.active_task = None;
+            record.runtime_started_at_unix_ms = None;
         }
         // Unconsumed inputs at a settled epoch have an explicit rejected outcome. They are not
         // mislabeled as consumed and are never delivered into a later turn.
+        workflow_claim::record_completion(
+            &mut next,
+            id,
+            epoch,
+            summary,
+            usage,
+            effects_known && within_budget,
+        );
         next.mailbox.settle_epoch(id, epoch, active_task);
         next.revision = next_revision(next.revision)?;
         self.commit(next)
@@ -660,6 +736,28 @@ impl<J: AgentControllerJournal> AgentController<J> {
         effects_known: bool,
         close: bool,
     ) -> Result<(), ControllerError> {
+        if self
+            .snapshot
+            .agents
+            .get(&id)
+            .is_some_and(|record| record.runtime_started_at_unix_ms.is_some())
+        {
+            return Err(ControllerError::RecoveryRequired);
+        }
+        self.reconcile_stopped_with_usage(id, epoch, effects_known, close, AgentUsageV1::default())
+    }
+
+    /// Recovered usage is additional unsettled usage beyond the already persisted counters.
+    /// The authenticated host must derive it from the physical journal/effect receipts. A control
+    /// client or model cannot invoke this port by asserting an effects_known JSON field.
+    pub fn reconcile_stopped_with_usage(
+        &mut self,
+        id: AgentIdV1,
+        epoch: AgentEpochV1,
+        effects_known: bool,
+        close: bool,
+        recovered_usage: AgentUsageV1,
+    ) -> Result<(), ControllerError> {
         self.check_live()?;
         if !effects_known {
             return Err(ControllerError::RecoveryRequired);
@@ -672,22 +770,56 @@ impl<J: AgentControllerJournal> AgentController<J> {
         if current.view.state != (AgentStateV1::RecoveryRequired { epoch }) {
             return Err(ControllerError::StaleEpoch);
         }
+        if recovered_usage.turns != 0
+            || (current.runtime_started_at_unix_ms.is_some() && recovered_usage.wall_ms == 0)
+        {
+            return Err(ControllerError::Invalid(
+                "recovery needs measured elapsed usage without double-counting its turn",
+            ));
+        }
         let mut next = self.snapshot.clone();
         let record = next
             .agents
             .get_mut(&id)
             .ok_or(ControllerError::UnknownAgent)?;
+        record.tokens_used = record
+            .tokens_used
+            .checked_add(recovered_usage.tokens)
+            .ok_or(ControllerError::Budget)?;
+        record.cost_used = record
+            .cost_used
+            .checked_add(recovered_usage.cost_microusd)
+            .ok_or(ControllerError::Budget)?;
+        record.wall_used_ms = record
+            .wall_used_ms
+            .checked_add(recovered_usage.wall_ms)
+            .ok_or(ControllerError::Budget)?;
+        if !close
+            && (record
+                .tokens_used
+                .checked_add(record.reserved_tokens)
+                .is_none_or(|used| used > record.view.budget.tokens)
+                || record
+                    .cost_used
+                    .checked_add(record.reserved_cost)
+                    .is_none_or(|used| used > record.view.budget.cost_microusd)
+                || record.wall_used_ms > record.view.budget.wall_ms)
+        {
+            return Err(ControllerError::Budget);
+        }
         record.view.incarnation = record
             .view
             .incarnation
             .checked_add(1)
             .ok_or(ControllerError::Capacity)?;
         let active_task = record.active_task.take();
+        record.runtime_started_at_unix_ms = None;
         record.view.state = if close {
             AgentStateV1::Closed
         } else {
             AgentStateV1::Idle
         };
+        workflow_claim::recover_completion(&mut next, id, epoch, recovered_usage)?;
         next.mailbox.reconcile(id, active_task, close);
         next.revision = next_revision(next.revision)?;
         self.commit(next)
@@ -827,6 +959,12 @@ impl<J: AgentControllerJournal> AgentController<J> {
     fn project(&self, record: &AgentRecord) -> AgentViewV1 {
         let mut view = record.view.clone();
         view.queued_messages = self.snapshot.mailbox.pending_count(view.agent_id);
+        view.usage = AgentUsageV1 {
+            turns: record.turns_used,
+            tokens: record.tokens_used,
+            cost_microusd: record.cost_used,
+            wall_ms: record.wall_used_ms,
+        };
         view
     }
 }
@@ -853,12 +991,15 @@ fn record(
             write_paths,
             queued_messages: 0,
             last_summary: None,
+            usage: AgentUsageV1::default(),
         },
         next_turn: 1,
         active_task: None,
         turns_used: 0,
         tokens_used: 0,
         cost_used: 0,
+        wall_used_ms: 0,
+        runtime_started_at_unix_ms: None,
         reserved_turns: 0,
         reserved_tokens: 0,
         reserved_cost: 0,
@@ -931,223 +1072,4 @@ fn path_within(path: &str, parent: &str) -> bool {
         || path
             .strip_prefix(&parent)
             .is_some_and(|tail| tail.starts_with('/'))
-}
-
-fn validate_snapshot(snapshot: &AgentControllerSnapshot) -> Result<(), ControllerError> {
-    snapshot.config.validate()?;
-    if snapshot.version != AGENT_CONTROL_VERSION
-        || snapshot.revision > MAX_REVISION
-        || snapshot.agents.len() > snapshot.config.max_agents
-        || snapshot.receipts.len() > MAX_RECEIPTS
-        || !snapshot.agents.contains_key(&AgentIdV1(1))
-        || snapshot.next_agent <= snapshot.agents.keys().map(|id| id.0).max().unwrap_or(0)
-    {
-        return Err(ControllerError::Invalid(
-            "invalid controller snapshot envelope",
-        ));
-    }
-    for (id, record) in &snapshot.agents {
-        if id.0 == 0
-            || *id != record.view.agent_id
-            || record.view.incarnation == 0
-            || record.next_turn == 0
-            || record.next_turn != u64::from(record.turns_used) + 1
-            || !record.view.capabilities.contains(Capability::ReadOnly)
-            || record.view.queued_messages != 0
-            || record.view.workspace_scope != snapshot.config.workspace_scope
-            || !record
-                .view
-                .capabilities
-                .is_subset_of(snapshot.config.root_capabilities)
-            || !record.view.budget.fits_within(snapshot.config.root_budget)
-            || record
-                .view
-                .last_summary
-                .as_ref()
-                .is_some_and(|text| text.len() > MAX_AGENT_TEXT_BYTES || text.contains('\0'))
-        {
-            return Err(ControllerError::Invalid(
-                "invalid durable agent identity or authority",
-            ));
-        }
-        record
-            .view
-            .budget
-            .validate()
-            .map_err(ControllerError::Invalid)?;
-        validate_label(&record.view.label).map_err(ControllerError::Invalid)?;
-        validate_write_paths(&record.view.write_paths).map_err(ControllerError::Invalid)?;
-        if !record.view.write_paths.is_empty()
-            && !record
-                .view
-                .capabilities
-                .contains(Capability::ReversibleLocal)
-        {
-            return Err(ControllerError::Invalid(
-                "durable writer has no write authority",
-            ));
-        }
-        let reserved_fits = record.reserved_turns <= record.view.budget.turns
-            && record.reserved_tokens <= record.view.budget.tokens
-            && record.reserved_cost <= record.view.budget.cost_microusd;
-        let usage_fits = record
-            .turns_used
-            .checked_add(record.reserved_turns)
-            .is_some_and(|used| used <= record.view.budget.turns)
-            && record
-                .tokens_used
-                .checked_add(record.reserved_tokens)
-                .is_some_and(|used| used <= record.view.budget.tokens)
-            && record
-                .cost_used
-                .checked_add(record.reserved_cost)
-                .is_some_and(|used| used <= record.view.budget.cost_microusd);
-        if !reserved_fits
-            || (!usage_fits
-                && !matches!(
-                    record.view.state,
-                    AgentStateV1::RecoveryRequired { .. } | AgentStateV1::Closed
-                ))
-        {
-            return Err(ControllerError::Invalid(
-                "durable budget exceeds reservation envelope",
-            ));
-        }
-        let children = snapshot
-            .agents
-            .values()
-            .filter(|child| child.view.parent_id == Some(*id));
-        let mut reservation = (0_u32, 0_u64, 0_u64);
-        for child in children {
-            reservation.0 = reservation
-                .0
-                .checked_add(child.view.budget.turns)
-                .ok_or(ControllerError::Budget)?;
-            reservation.1 = reservation
-                .1
-                .checked_add(child.view.budget.tokens)
-                .ok_or(ControllerError::Budget)?;
-            reservation.2 = reservation
-                .2
-                .checked_add(child.view.budget.cost_microusd)
-                .ok_or(ControllerError::Budget)?;
-        }
-        if reservation
-            != (
-                record.reserved_turns,
-                record.reserved_tokens,
-                record.reserved_cost,
-            )
-        {
-            return Err(ControllerError::Invalid(
-                "durable budget reservations disagree with child ownership",
-            ));
-        }
-        if (*id == AgentIdV1(1)) != record.view.parent_id.is_none() {
-            return Err(ControllerError::Invalid("invalid durable root identity"));
-        }
-        if *id == AgentIdV1(1)
-            && (record.view.capabilities != snapshot.config.root_capabilities
-                || record.view.budget != snapshot.config.root_budget
-                || !record.view.write_paths.is_empty())
-        {
-            return Err(ControllerError::Invalid(
-                "durable root differs from genesis authority",
-            ));
-        }
-        let mut ancestor = *id;
-        let mut root_found = false;
-        for _ in 0..=MAX_HIERARCHY_DEPTH {
-            let current = snapshot
-                .agents
-                .get(&ancestor)
-                .ok_or(ControllerError::Invalid("missing durable parent"))?;
-            match current.view.parent_id {
-                None => {
-                    root_found = true;
-                    break;
-                }
-                Some(parent) => {
-                    let parent_record = snapshot
-                        .agents
-                        .get(&parent)
-                        .ok_or(ControllerError::Invalid("missing durable parent"))?;
-                    if !current
-                        .view
-                        .capabilities
-                        .is_subset_of(parent_record.view.capabilities)
-                        || !current.view.budget.fits_within(parent_record.view.budget)
-                        || (parent != AgentIdV1(1)
-                            && current.view.write_paths.iter().any(|path| {
-                                !parent_record
-                                    .view
-                                    .write_paths
-                                    .iter()
-                                    .any(|allowed| path_within(path, allowed))
-                            }))
-                    {
-                        return Err(ControllerError::Invalid(
-                            "durable child exceeds parent authority",
-                        ));
-                    }
-                    ancestor = parent;
-                }
-            }
-        }
-        if !root_found {
-            return Err(ControllerError::Invalid(
-                "cyclic or too deep durable hierarchy",
-            ));
-        }
-        if let Some(epoch) = record.view.state.epoch() {
-            if epoch.incarnation != record.view.incarnation
-                || epoch.turn == 0
-                || epoch.turn >= record.next_turn
-            {
-                return Err(ControllerError::Invalid("invalid durable active epoch"));
-            }
-            let active_task = record
-                .active_task
-                .and_then(|id| snapshot.mailbox.message(id))
-                .ok_or(ControllerError::Invalid("durable active task is missing"))?;
-            if active_task.receiver != *id || active_task.kind != AgentMessageKindV1::Task {
-                return Err(ControllerError::Invalid(
-                    "durable active task has the wrong owner",
-                ));
-            }
-        } else if record.active_task.is_some() {
-            return Err(ControllerError::Invalid(
-                "idle agent retains an active task",
-            ));
-        }
-    }
-    snapshot.mailbox.validate(
-        &snapshot.agents.keys().copied().collect(),
-        snapshot.config.max_pending_per_agent,
-    )?;
-    for receipt in snapshot.receipts.values() {
-        if !valid_digest(&receipt.digest)
-            || receipt.reply.version != AGENT_CONTROL_VERSION
-            || receipt.reply.revision == 0
-            || receipt.reply.revision > snapshot.revision
-            || receipt.reply.replayed
-            || !snapshot.agents.contains_key(&receipt.reply.agent_id)
-            || receipt.reply.message_id.is_some_and(|id| {
-                snapshot
-                    .mailbox
-                    .message(id)
-                    .is_none_or(|message| message.receiver != receipt.reply.agent_id)
-            })
-        {
-            return Err(ControllerError::Invalid("invalid durable request receipt"));
-        }
-    }
-    Ok(())
-}
-
-fn valid_digest(digest: &str) -> bool {
-    digest.len() == 64
-        && digest
-            .bytes()
-            .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
 }
