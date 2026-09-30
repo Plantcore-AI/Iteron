@@ -183,6 +183,93 @@ async fn auto_commands_execute_concurrently_before_stream_terminal_with_durable_
 }
 
 #[tokio::test]
+async fn explicit_read_deny_cannot_bypass_operation_gate_through_pure_overlap() {
+    let workspace = super::gate_integration_tests::temp_ws("stream-pure-explicit-deny");
+    let called = Arc::new(AtomicUsize::new(0));
+    let mut registry = iteron_tools::Registry::coding_agent(&workspace).unwrap();
+    let seen = called.clone();
+    registry
+        .register_external(
+            iteron_protocol::ToolSpec {
+                name: "denied_read_probe".into(),
+                description: "actual pure executor counter".into(),
+                input_schema: serde_json::json!({"type":"object"}),
+                purity: Purity::Pure,
+                capability: Capability::ReadOnly,
+            },
+            move |call, _| {
+                seen.fetch_add(1, Ordering::SeqCst);
+                iteron_tools::boxfut::box_it(async move {
+                    ToolResult {
+                        tool_use_id: call.id,
+                        content: "executed".into(),
+                        is_error: false,
+                        trust: Trust::Workspace,
+                        latency_ms: 0,
+                    }
+                })
+            },
+        )
+        .unwrap();
+    let provider = Arc::new(TailWaitProvider {
+        calls: vec![ToolUse {
+            id: "denied-pure".into(),
+            name: "denied_read_probe".into(),
+            input: serde_json::json!({}),
+        }],
+        calls_completed: called.clone(),
+        completed: Arc::new(tokio::sync::Notify::new()),
+        turn: AtomicUsize::new(0),
+        wait_for_tools: false,
+    });
+    let rollout = Rollout::open(
+        &workspace.join(".iteron/runs"),
+        &iteron_protocol::RunId("denied-read".into()),
+        iteron_protocol::TenantId::default(),
+    )
+    .unwrap();
+    let mut agent = Agent::new(
+        provider,
+        registry,
+        rollout,
+        "model-a".into(),
+        "sys".into(),
+        Budget {
+            max_turns: 3,
+            max_usd: None,
+            max_tokens: None,
+            max_wall_secs: 10,
+            max_consecutive_tool_errors: 8,
+        },
+    );
+    super::gate_integration_tests::pin_test_tunables_with_edits(&mut agent, []);
+    agent.workspace = workspace.clone();
+    agent.context_budget_policy.tool_schema_tokens = 20_000;
+    agent
+        .permission_rules
+        .set_tool("denied_read_probe", iteron_protocol::Verdict::Deny);
+    assert_eq!(agent.run("probe denied read").await.unwrap(), Outcome::Done);
+    assert_eq!(
+        called.load(Ordering::SeqCst),
+        0,
+        "real pure handler must never be entered"
+    );
+    let events = iteron_record::replay(agent.rollout.path()).unwrap();
+    assert!(events.iter().any(
+        |event| matches!(&event.kind, EventKind::ToolDone { result, .. }
+        if result.tool_use_id == "denied-pure" && result.is_error)
+    ));
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(&event.kind, EventKind::ToolReady {tool,..}
+        if tool.id == "denied-pure"))
+    );
+    drop(agent);
+    std::fs::remove_dir_all(workspace).unwrap();
+}
+
+#[tokio::test]
 async fn plan_mode_never_starts_streaming_commands() {
     streaming_command_fixture(false).await;
 }

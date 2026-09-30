@@ -30,7 +30,6 @@ pub(super) struct ProviderStreamScope {
 pub(super) enum ObservedStreamItem {
     Tool(ToolUse),
     Quota(RateLimitSnapshot),
-    CompatibilityNotice,
     Presented,
 }
 
@@ -65,7 +64,14 @@ impl ProviderStreamObserver {
             }
             StreamItem::CompatibilityNotice(message) => {
                 self.present(UiEvent::Notice(message.to_string()));
-                return ObservedStreamItem::CompatibilityNotice;
+                self.emit(
+                    "model.compatibility_notice",
+                    LifecyclePayload {
+                        reason_code: Some("provider_stop_normalized".into()),
+                        ..LifecyclePayload::default()
+                    },
+                );
+                return ObservedStreamItem::Presented;
             }
             StreamItem::RateLimit(snapshot) => {
                 if self.evidence.mark_first_byte() {

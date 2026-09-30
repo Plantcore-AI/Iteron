@@ -14,6 +14,7 @@ use iteron_record::Rollout;
 use iteron_tools::OperationEffects;
 
 /// Narrow input to the host's permission decision. No runtime state or executor is exposed.
+#[derive(Clone, Copy)]
 pub(super) struct OperationPolicy<'a> {
     pub mode: PermissionMode,
     pub rules: &'a PermissionRules,

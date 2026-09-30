@@ -365,6 +365,35 @@ const SURFACES: &[Surface] = &[
         responsibilities: &["pure typed effect identity/audit/terminal projections"],
         next_seams: &["no mutable state or execution/writer port"],
     },
+    Surface {
+        path: "crates/cli/src/runtime/stream_tool_admission.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "actual structural/policy/operation/hook/tool streamed admission coordinator",
+            "durable source receipt before captured executor/task retention",
+        ],
+        next_seams: &["disjoint actual owners and immutable trusted scopes; no mutable Agent"],
+    },
+    Surface {
+        path: "crates/cli/src/runtime/stream_tool_journal.rs",
+        boundary: "cli-host",
+        responsibilities: &["physical policy decision/hook/tool/ToolReady durable admission ports"],
+        next_seams: &["concrete borrowed recorder/journal/ledger owners; no execution authority"],
+    },
+    Surface {
+        path: "crates/cli/src/runtime/stream_tool_events.rs",
+        boundary: "cli-host",
+        responsibilities: &["immutable streamed frontend/lifecycle/process-request projection"],
+        next_seams: &["observations neither execute processes nor grant operation authority"],
+    },
+    Surface {
+        path: "crates/cli/src/runtime/stream_tools.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "pure operation-specific overlap eligibility and actual cancellation snapshot",
+        ],
+        next_seams: &["pure reads cannot bypass explicit deny/request or admitted ceilings"],
+    },
 ];
 
 #[derive(Serialize)]

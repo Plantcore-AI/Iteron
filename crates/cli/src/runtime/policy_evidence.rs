@@ -128,7 +128,7 @@ impl PolicyDecisionDraft {
         })
     }
 
-    fn into_input(self) -> policy_evidence_recorder::PolicyDecisionInput {
+    pub(super) fn into_input(self) -> policy_evidence_recorder::PolicyDecisionInput {
         policy_evidence_recorder::PolicyDecisionInput {
             eligible_actions: self.eligible_actions,
             selected_action: self.selected_action,
