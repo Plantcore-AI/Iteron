@@ -129,11 +129,14 @@ impl Agent {
         let force_cancel_seam = registry
             .process_control()
             .and_then(super::force_cancel::ForceCancelSeam::for_process_control);
+        let turn_publications =
+            super::turn_publication::TurnPublicationOwner::for_rollout(&rollout);
         Agent {
             persistent_agents: None,
             persistent_mailbox: None,
             client_inventory: None,
             last_assistant_source: None,
+            turn_publications,
             provider,
             registry,
             tool_output_spill: None,

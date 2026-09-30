@@ -9,6 +9,7 @@ use iteron_protocol::turn_publication::{
 use iteron_protocol::{
     Block, Event, EventKind, Message, Outcome, Role, RunId, Seq, TenantId, TurnId,
 };
+use iteron_record::Rollout;
 use iteron_record::ScopedEvent;
 use std::collections::VecDeque;
 
@@ -28,6 +29,53 @@ struct PublicationRecovery {
     run: RunId,
     witness: Option<AnswerWitness>,
     recent: VecDeque<TurnPublicationEventV1>,
+}
+
+/// Single retained publication projection. Recovery reads the bounded canonical record once on
+/// construction/adoption. The hot path consumes actual committed receipts, never the whole WAL.
+pub(super) struct TurnPublicationOwner {
+    verified: Option<PublicationRecovery>,
+}
+
+impl TurnPublicationOwner {
+    pub(super) fn for_rollout(rollout: &Rollout) -> Self {
+        if rollout.next_sequence() == Seq::ZERO {
+            return Self {
+                verified: Some(PublicationRecovery::new(rollout.run_id().clone())),
+            };
+        }
+        match replay_scoped_rollout(rollout.path()) {
+            Ok(events) => Self::from_verified_scoped(&events, rollout.tenant(), rollout.run_id()),
+            Err(_) => Self { verified: None },
+        }
+    }
+
+    pub(super) fn from_verified_scoped(
+        events: &[ScopedEvent],
+        tenant: &TenantId,
+        run: &RunId,
+    ) -> Self {
+        Self {
+            verified: recover_state(events, tenant, run).ok(),
+        }
+    }
+
+    pub(super) fn observe_committed(&mut self, event: &Event) {
+        if self
+            .verified
+            .as_mut()
+            .is_some_and(|owner| owner.observe(event).is_err())
+        {
+            // A presentation projection error cannot reverse a journal receipt. Recovery status
+            // becomes unavailable rather than retaining a false verified prefix.
+            self.verified = None;
+        }
+    }
+
+    fn observations(&self) -> Result<Vec<TurnPublicationEventV1>, KernelError> {
+        let owner = self.verified.as_ref().ok_or_else(invalid_recovery)?;
+        Ok(owner.recent.iter().cloned().collect())
+    }
 }
 
 impl PublicationRecovery {
@@ -132,28 +180,39 @@ fn invalid_recovery() -> KernelError {
     KernelError::ContextResolution("turn publication record provenance is unavailable".into())
 }
 
-fn recover(
+fn recover_state(
     events: &[ScopedEvent],
     tenant: &TenantId,
     run: &RunId,
-) -> Result<Vec<TurnPublicationEventV1>, KernelError> {
+) -> Result<PublicationRecovery, KernelError> {
     let mut recovery = PublicationRecovery::new(run.clone());
     for scoped in events {
         if &scoped.tenant == tenant && &scoped.run_id == run {
             recovery.observe(&scoped.event)?;
         }
     }
-    Ok(recovery.recent.into_iter().collect())
+    Ok(recovery)
+}
+
+#[cfg(test)]
+fn recover(
+    events: &[ScopedEvent],
+    tenant: &TenantId,
+    run: &RunId,
+) -> Result<Vec<TurnPublicationEventV1>, KernelError> {
+    Ok(recover_state(events, tenant, run)?
+        .recent
+        .into_iter()
+        .collect())
 }
 
 impl Agent {
-    /// Recent facts from the record owner's bounded, verified canonical replay. Ancestor scopes
-    /// stay distinct, and a partial/interrupted Message without an answer tag is never available.
+    /// Recent facts from the retained record projection. No IO or unbounded historical fold is
+    /// performed on completion/read; constructor/adoption recovery preserves physical scope.
     pub(crate) fn recovered_turn_publications_v1(
         &self,
     ) -> Result<Vec<TurnPublicationEventV1>, KernelError> {
-        let events = replay_scoped_rollout(self.rollout.path())?;
-        recover(&events, self.rollout.tenant(), self.rollout.run_id())
+        self.turn_publications.observations()
     }
 
     /// Called only by the actual non-tool EndTurn branch after steering/verification decisions.

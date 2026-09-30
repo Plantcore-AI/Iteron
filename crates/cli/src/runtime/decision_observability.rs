@@ -12,9 +12,6 @@ use iteron_ctx::{
 /// Recalled fact count reported for a turn whose memory trace carries no injection.
 const NO_RECALLED_FACTS: u64 = 0;
 
-/// Tool output byte count reported when the result carries no textual stream to measure.
-const NO_TOOL_OUTPUT_BYTES: u64 = 0;
-
 /// Query-rewrite count reported when the turn ran without a recall audit.
 const NO_QUERY_REWRITES: u16 = 0;
 
@@ -412,6 +409,17 @@ impl Agent {
         }
     }
 
+    pub(super) fn tool_events(&self, turn: TurnId) -> super::stream_tool_events::StreamToolEvents {
+        super::stream_tool_events::StreamToolEvents {
+            frontend: self.frontend_saturation.clone(),
+            ui: self.ui_tx.clone(),
+            resident_ui: self.resident_ui_tx.clone(),
+            lifecycle: self.lifecycle_emitter.clone(),
+            lifecycle_hooks: self.lifecycle_hooks.clone(),
+            correlation: self.lifecycle_correlation(Some(turn)),
+        }
+    }
+
     pub(super) fn tool_lifecycle_event(
         &self,
         event_id: &str,
@@ -419,16 +427,7 @@ impl Agent {
         effect_id: Option<iteron_protocol::EffectId>,
         payload: LifecyclePayload,
     ) {
-        let Some(emitter) = &self.lifecycle_emitter else {
-            return;
-        };
-        let mut correlation = self.lifecycle_correlation(Some(turn_id));
-        correlation.effect_id = effect_id;
-        if let Ok(event) = emitter.emit(event_id, correlation, payload)
-            && let Some(dispatcher) = &self.lifecycle_hooks
-        {
-            dispatcher.dispatch(event);
-        }
+        self.tool_events(turn_id).emit(event_id, effect_id, payload);
     }
 
     pub(super) fn observe_process_tool_started(
@@ -437,16 +436,13 @@ impl Agent {
         effect_id: iteron_protocol::EffectId,
         call: &iteron_protocol::ToolUse,
     ) {
-        let event_id = match call.name.as_str() {
-            "bash" | "process_start" => "process.spawn_requested",
-            _ => return,
-        };
-        self.tool_lifecycle_event(
-            event_id,
-            turn_id,
-            Some(effect_id),
-            LifecyclePayload::default(),
-        );
+        if matches!(call.name.as_str(), "bash" | "process_start") {
+            self.tool_events(turn_id).emit(
+                "process.spawn_requested",
+                Some(effect_id),
+                LifecyclePayload::default(),
+            );
+        }
     }
 
     pub(super) fn observe_process_tool_terminal(
@@ -457,120 +453,8 @@ impl Agent {
         result: &ToolResult,
         definite: bool,
     ) {
-        let value = (!result.is_error)
-            .then(|| serde_json::from_str::<serde_json::Value>(&result.content).ok())
-            .flatten();
-        let job_id = value
-            .as_ref()
-            .and_then(|value| value.get("job_id"))
-            .and_then(serde_json::Value::as_str);
-        match tool {
-            "bash" => {
-                if definite
-                    && (result.content.starts_with("[exit ")
-                        || result.content.contains("[timed out after"))
-                {
-                    self.tool_lifecycle_event(
-                        "process.spawned",
-                        turn_id,
-                        Some(effect_id.clone()),
-                        LifecyclePayload::default(),
-                    );
-                    self.tool_lifecycle_event(
-                        "process.reaped",
-                        turn_id,
-                        Some(effect_id),
-                        LifecyclePayload {
-                            duration_us: Some(result.latency_ms.saturating_mul(1_000)),
-                            ..LifecyclePayload::default()
-                        },
-                    );
-                } else if !definite {
-                    if result.content.contains("interrupted") {
-                        self.tool_lifecycle_event(
-                            "process.kill_sent",
-                            turn_id,
-                            Some(effect_id.clone()),
-                            LifecyclePayload::default(),
-                        );
-                    }
-                    self.tool_lifecycle_event(
-                        "process.reap_failed",
-                        turn_id,
-                        Some(effect_id),
-                        LifecyclePayload::default(),
-                    );
-                }
-            }
-            "process_start" if definite && !result.is_error => {}
-            "process_poll" if definite && !result.is_error => {
-                let output_bytes = value
-                    .as_ref()
-                    .map(|value| {
-                        ["stdout", "stderr"]
-                            .into_iter()
-                            .fold(0u64, |total, stream| {
-                                total.saturating_add(
-                                    value
-                                        .get(stream)
-                                        .and_then(|stream| stream.get("text"))
-                                        .and_then(serde_json::Value::as_str)
-                                        .map(|text| u64::try_from(text.len()).unwrap_or(u64::MAX))
-                                        .unwrap_or(iteron_tunables::param_integer("cli.runtime.decision_observability.no_tool_output_bytes", NO_TOOL_OUTPUT_BYTES)),
-                                )
-                            })
-                    })
-                    .unwrap_or(iteron_tunables::param_integer("cli.runtime.decision_observability.no_tool_output_bytes", NO_TOOL_OUTPUT_BYTES));
-                if output_bytes > 0 {
-                    self.process_lifecycle_event(
-                        "tool.output_chunk",
-                        turn_id,
-                        effect_id.clone(),
-                        job_id,
-                        LifecyclePayload {
-                            magnitude: Some(output_bytes),
-                            ..LifecyclePayload::default()
-                        },
-                    );
-                }
-                self.process_lifecycle_event(
-                    "background.attached",
-                    turn_id,
-                    effect_id,
-                    job_id,
-                    LifecyclePayload::default(),
-                );
-            }
-            "process_write" if definite && !result.is_error => self.process_lifecycle_event(
-                "background.input_written",
-                turn_id,
-                effect_id,
-                job_id,
-                LifecyclePayload {
-                    magnitude: value
-                        .as_ref()
-                        .and_then(|value| value.get("accepted_bytes"))
-                        .and_then(serde_json::Value::as_u64),
-                    ..LifecyclePayload::default()
-                },
-            ),
-            "process_stop" if definite && !result.is_error => {}
-            _ => {}
-        }
-    }
-
-    fn process_lifecycle_event(
-        &self,
-        event_id: &str,
-        turn_id: TurnId,
-        effect_id: iteron_protocol::EffectId,
-        job_id: Option<&str>,
-        payload: LifecyclePayload,
-    ) {
-        let mut correlation = self.lifecycle_correlation(Some(turn_id));
-        correlation.effect_id = Some(effect_id);
-        correlation.job_id = job_id.map(|id| iteron_protocol::JobId(id.to_owned()));
-        self.lifecycle_event_with_correlation(event_id, correlation, payload);
+        self.tool_events(turn_id)
+            .process_terminal(effect_id, tool, result, definite);
     }
 
     /// Capture live context source decisions as digests and magnitudes before their bytes are

@@ -175,17 +175,28 @@ impl Agent {
                 std::io::Error::other("injected durable run-terminal append refusal"),
             )));
         }
+        let outcome_observation = outcome.clone();
         let result = self.terminal_record.append_visible_terminal(
             &mut self.rollout,
             &mut self.ledger,
             turn,
             outcome,
         );
-        result.map_err(|error| {
-            self.record_failed = true;
-            self.diagnostic_record_append_failed();
-            KernelError::Record(error)
-        })
+        result
+            .map_err(|error| {
+                self.record_failed = true;
+                self.diagnostic_record_append_failed();
+                KernelError::Record(error)
+            })
+            .inspect(|source| {
+                self.turn_publications.observe_committed(&Event {
+                    seq: *source,
+                    turn,
+                    kind: EventKind::Done {
+                        outcome: outcome_observation,
+                    },
+                });
+            })
     }
 
     /// Append and return the authoritative record sequence for cross-event correlation (workflow
@@ -233,7 +244,7 @@ impl Agent {
         }
         let turn_started_at_us =
             matches!(&kind, EventKind::TurnStart).then(|| self.rollout.segment_elapsed_us());
-        let event = Event {
+        let mut event = Event {
             seq: Seq::ZERO,
             turn,
             kind,
@@ -244,6 +255,8 @@ impl Agent {
             .record_fsync_latency_us(elapsed_us(fsync_started));
         match appended {
             Ok(seq) => {
+                event.seq = seq;
+                self.turn_publications.observe_committed(&event);
                 if let Some(started_at_us) = turn_started_at_us {
                     self.observe_policy_turn_start(turn, started_at_us);
                 }

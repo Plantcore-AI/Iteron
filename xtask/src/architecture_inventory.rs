@@ -330,7 +330,7 @@ const SURFACES: &[Surface] = &[
         boundary: "cli-host",
         responsibilities: &[
             "actual non-tool EndTurn answer Message join and confirmed Done sequence projection",
-            "bounded verified current-run publication recovery with explicit provenance refusal",
+            "single retained verified publication projection with incremental receipts and no IO on read",
         ],
         next_seams: &["readonly frontend facts; no terminal or ancestor scope inference"],
     },

@@ -77,6 +77,13 @@ async fn actual_end_turn_joins_message_and_existing_done_receipts_then_reopens()
     );
     let path = agent.rollout.path().to_path_buf();
     let facts = agent.recovered_turn_publications_v1().unwrap();
+    // A completion/read snapshot consumes the retained owner, never another WAL scan. The
+    // committed record remains intact under this temporary name and is restored before reopen.
+    let held_path = path.with_extension("publication-read-check");
+    std::fs::rename(&path, &held_path).unwrap();
+    let retained = agent.recovered_turn_publications_v1();
+    std::fs::rename(&held_path, &path).unwrap();
+    assert_eq!(retained.unwrap(), facts);
     let record = iteron_record::replay(&path).unwrap();
     let answer = facts
         .iter()

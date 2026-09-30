@@ -239,20 +239,6 @@ impl super::Agent {
         Arc::new(self.output_publisher(BTreeMap::from([(call.id.clone(), source.0)])))
     }
 
-    pub(super) fn batch_output_publication(
-        &self,
-        pending: &[(usize, ToolUse, String, super::effects::EffectTicket)],
-    ) -> Arc<dyn ToolOutputPublicationPort> {
-        Arc::new(
-            self.output_publisher(
-                pending
-                    .iter()
-                    .map(|(_, call, _, ticket)| (call.id.clone(), ticket.intent_sequence().0))
-                    .collect(),
-            ),
-        )
-    }
-
     pub(super) fn publish_captured_result(
         &self,
         call: &ToolUse,

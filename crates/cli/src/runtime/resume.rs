@@ -26,6 +26,7 @@ struct StagedAdoptedResume {
     selected_route: Option<SelectedRoute>,
     ledger: Ledger,
     observed_trust: Trust,
+    turn_publications: turn_publication::TurnPublicationOwner,
 }
 
 impl Agent {
@@ -96,6 +97,12 @@ impl Agent {
         // unexpectedly fails, do not widen authority on the resume path.
         match replay_scoped_rollout(self.rollout.path()) {
             Ok(scoped_events) => {
+                self.turn_publications =
+                    turn_publication::TurnPublicationOwner::from_verified_scoped(
+                        &scoped_events,
+                        self.rollout.tenant(),
+                        self.rollout.run_id(),
+                    );
                 let mut committed_provider_run_notices = std::collections::BTreeSet::new();
                 for scoped in &scoped_events {
                     if &scoped.run_id != self.rollout.run_id() {
@@ -622,6 +629,11 @@ impl Agent {
             selected_route,
             ledger: restored,
             observed_trust,
+            turn_publications: turn_publication::TurnPublicationOwner::from_verified_scoped(
+                &scoped_events,
+                rollout.tenant(),
+                rollout.run_id(),
+            ),
         })
     }
 
@@ -875,6 +887,7 @@ impl Agent {
         // Dropping the previous rollout releases its exclusive writer lock, so the run this session
         // is leaving becomes resumable by another process the moment this returns.
         let previous = std::mem::replace(&mut self.rollout, rollout);
+        self.turn_publications = staged.turn_publications;
 
         // Per-run state `set_resume` does not own. Every one of these describes the run being left.
         self.working_set = None;

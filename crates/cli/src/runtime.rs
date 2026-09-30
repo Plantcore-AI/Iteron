@@ -40,6 +40,7 @@ use kernel_effect_bridge::broker_kernel_effect;
 mod early_tool_gate;
 use early_tool_gate::EarlyHookSummary;
 mod deferred_batch_executor;
+mod deferred_tool_batch;
 mod frontend_events;
 mod stream_progress;
 mod stream_tool_admission;
@@ -1030,6 +1031,7 @@ pub struct Agent {
     persistent_mailbox: Option<persistent_agents::LiveAgentMailbox>,
     client_inventory: Option<std::sync::Arc<crate::client_inventory::ClientInventoryOwner>>,
     last_assistant_source: Option<Seq>,
+    turn_publications: turn_publication::TurnPublicationOwner,
     /// Shared so read-only subagents can use the same provider (ADR-001 fan-out).
     pub provider: std::sync::Arc<dyn Provider>,
     pub registry: Registry,
@@ -5266,7 +5268,6 @@ impl Agent {
             claimed.extend(declared);
             batch.push(AutoApprovedCall {
                 index: *index,
-                audit_arguments: ui_approval_arguments(&call.input),
                 intent: {
                     let admitted = proposal.eligible;
                     proposal.admit(admitted)
@@ -5464,233 +5465,47 @@ impl Agent {
             return Ok(());
         }
 
-        // Phase one: the durable intents, in tool order, before a single executor runs.
-        let mut pending: Vec<(usize, ToolUse, String, effects::EffectTicket)> =
-            Vec::with_capacity(batch.len());
-        let mut intents: Vec<iteron_protocol::intent::ToolIntent> = Vec::with_capacity(batch.len());
-        for admitted in batch {
-            let AutoApprovedCall {
-                index,
-                call,
-                intent,
-                capability,
-                action_signature,
-                audit_arguments,
-            } = admitted;
-            let effect_id =
-                effect_class::effect_id(turn_id, effect_class::EffectClass::RegistryTool, index);
-            self.tool_lifecycle_event(
-                "tool.call_proposed",
-                turn_id,
-                Some(effect_id.clone()),
-                LifecyclePayload::default(),
-            );
-            self.tool_lifecycle_event(
-                "tool.policy_evaluated",
-                turn_id,
-                Some(effect_id.clone()),
-                LifecyclePayload {
-                    outcome_code: Some("admitted".into()),
-                    ..LifecyclePayload::default()
-                },
-            );
-            self.note_tool_effect_capability(capability);
-            let effect = effects::BrokeredEffect {
+        let events = self.tool_events(turn_id);
+        let publication = self.tool_output_publication_factory();
+        let hooks = hook_execution::HookExecutionScope {
+            turn: turn_id,
+            workspace: self.workspace.as_path(),
+            hooks: &self.hooks,
+            command_journal: self.hook_effect_journal.clone(),
+            interrupt: self.interrupt.clone(),
+            drain: self.drain.clone(),
+            activity: self.activity.clone(),
+            emitter: self.lifecycle_emitter.clone(),
+            dispatcher: self.lifecycle_hooks.clone(),
+            correlation: self.lifecycle_correlation(Some(turn_id)),
+        };
+        deferred_tool_batch::DeferredToolBatch {
+            journal: deferred_tool_batch::DeferredToolJournal {
+                rollout: &mut self.rollout,
+                effects: &mut self.effect_journal,
+                ledger: &mut self.ledger,
+                failed_actions: &mut self.failed_actions,
+                record_failed: &mut self.record_failed,
+                diagnostics: &self.diagnostics,
+                #[cfg(test)]
+                fault: &mut self.fail_next_durable_append,
+            },
+            scope: deferred_tool_batch::DeferredToolScope {
                 turn: turn_id,
-                effect_id: effect_id.clone(),
-                tool_use_id: call.id.clone(),
-                kind: call.name.clone(),
-                capability,
-                audit_arguments,
-                workspace: effect_workspace(&self.workspace),
-                provider_route_attempt: None,
-            };
-            let opened = {
-                let Agent {
-                    rollout,
-                    effect_journal,
-                    ..
-                } = self;
-                effect_journal.open(rollout, effect)
-            };
-            match opened {
-                Ok(ticket) => {
-                    self.tool_lifecycle_event(
-                        "tool.call_admitted",
-                        turn_id,
-                        Some(effect_id.clone()),
-                        LifecyclePayload::default(),
-                    );
-                    self.tool_lifecycle_event(
-                        "tool.call_started",
-                        turn_id,
-                        Some(effect_id.clone()),
-                        LifecyclePayload::default(),
-                    );
-                    self.observe_process_tool_started(turn_id, effect_id.clone(), &call);
-                    pending.push((index, call, action_signature, ticket));
-                    intents.push(intent);
-                }
-                // A failed append means the executor was never entered for THIS call. Any ticket
-                // already opened is dropped unsettled, which is exactly the pending-intent state
-                // recovery understands and reports — never a silently lost effect.
-                Err(error) => return Err(self.effect_boundary_failed(error)),
-            }
+                registry: &self.registry,
+                governor,
+                spill_owner: self.tool_output_spill.clone(),
+                interrupt: self.interrupt.clone(),
+                force_cancel: self.force_cancel.clone(),
+                drain: self.drain.clone(),
+                projection: result_projection_budget,
+                publication,
+                hooks,
+                events,
+            },
         }
-
-        // Physical batch ownership follows durable admission. The executor keeps actual result
-        // order/correlation, cancellation and spill/projection independent from the journal owner.
-        let publication = self.batch_output_publication(&pending);
-        let executions = deferred_batch_executor::DeferredBatchExecutor::new(
-            &self.registry,
-            governor,
-            self.tool_output_spill.clone(),
-            self.interrupt.clone(),
-            self.force_cancel.clone(),
-            self.drain.clone(),
-            result_projection_budget,
-            publication,
-        )
-        .execute(intents)
-        .await;
-
-        // Phase three: exactly one terminal per opened intent, in tool order.
-        let mut unknown: usize = 0;
-        let mut completed = Vec::new();
-        for ((index, call, action_signature, ticket), receipt) in
-            pending.into_iter().zip(executions)
-        {
-            let deferred_batch_executor::DeferredToolReceipt {
-                execution,
-                spill_store,
-                projected_visible,
-                operator_interrupted,
-                publication_error,
-            } = receipt;
-            if let Some(visible) = projected_visible {
-                self.observe_tool_result_projection(turn_id, visible);
-            }
-            let effect_id = ticket.effect_id().clone();
-            let (settlement, mut managed, definite) = match execution {
-                tool_output_spill::ManagedToolExecution::Definite(managed) => (
-                    effects::Settlement::Definite(EventKind::ToolDone {
-                        result: managed.result.clone(),
-                        effect_id: Some(effect_id.clone()),
-                        // The concurrent batch names its tool for the same reason the serial path
-                        // does: a completion whose payload is only {effect_id, kind, result} does
-                        // not say which tool ran, and 39% of recorded completions had no admission
-                        // event to recover it from either.
-                        tool: Some(call.name.clone()),
-                    }),
-                    managed,
-                    true,
-                ),
-                tool_output_spill::ManagedToolExecution::Unknown(managed) => (
-                    effects::Settlement::Unknown(
-                        "executor dispatched the operation but did not observe an authoritative terminal outcome; automatic retry is forbidden".into(),
-                    ),
-                    managed,
-                    false,
-                ),
-            };
-            let cause = if !definite && operator_interrupted {
-                durability::UnknownCause::OperatorCancelled
-            } else {
-                durability::UnknownCause::Unobserved
-            };
-            if let Err(error) = self.settle_kernel_effect_with_cause(ticket, settlement, cause) {
-                let _ =
-                    tool_output_spill::cleanup_managed_result(spill_store.as_deref(), &mut managed);
-                return Err(error);
-            }
-            if publication_error.is_some() {
-                self.ui(UiEvent::Notice(
-                    "tool output artifact could not be retained".into(),
-                ));
-            }
-            let result = &managed.result;
-            self.observe_process_tool_terminal(
-                turn_id,
-                effect_id.clone(),
-                &call.name,
-                result,
-                definite,
-            );
-            if !definite {
-                if operator_interrupted {
-                    self.tool_lifecycle_event(
-                        "tool.call_cancelled",
-                        turn_id,
-                        Some(effect_id.clone()),
-                        LifecyclePayload::default(),
-                    );
-                }
-                self.tool_lifecycle_event(
-                    "tool.call_unknown",
-                    turn_id,
-                    Some(effect_id),
-                    LifecyclePayload {
-                        duration_us: Some(result.latency_ms.saturating_mul(1_000)),
-                        ..LifecyclePayload::default()
-                    },
-                );
-                unknown = unknown.saturating_add(1);
-                self.ledger.tool(result.latency_ms, 0, true);
-                let terminal_ui = tool_end_ui(&call, result);
-                tool_output_spill::cleanup_managed_result(spill_store.as_deref(), &mut managed)?;
-                self.ui(terminal_ui);
-                continue;
-            }
-            self.tool_lifecycle_event(
-                if result.is_error {
-                    "tool.call_failed"
-                } else {
-                    "tool.call_completed"
-                },
-                turn_id,
-                Some(effect_id),
-                LifecyclePayload {
-                    duration_us: Some(result.latency_ms.saturating_mul(1_000)),
-                    ..LifecyclePayload::default()
-                },
-            );
-            // No overlap credit: `overlapped_ms` names time a tool ran while the PROVIDER stream was
-            // still decoding, which is a different saving from this one. Claiming it here would make
-            // the two indistinguishable in the ledger.
-            self.ledger.tool(result.latency_ms, 0, result.is_error);
-            *any_error |= result.is_error;
-            if result.is_error {
-                self.failed_actions
-                    .insert(action_signature, result.content.clone());
-            }
-            completed.push((index, call, managed, spill_store));
-        }
-
-        // Post observers are independent per call and bounded by the same global hook semaphore.
-        // Keep the managed results alive until they settle so ToolEnd cannot overtake PostToolUse.
-        let post_inputs = completed
-            .iter()
-            .map(|(_, call, managed, _)| (call.clone(), managed.result.clone()))
-            .collect::<Vec<_>>();
-        let post_activity = self.activity.span(
-            turn_activity::ActivityStage::ToolPostProcessing,
-            Some(turn_id),
-        );
-        let post_result = self
-            .observe_concurrent_post_tool_hooks(turn_id, &post_inputs)
-            .await;
-        for (index, call, mut managed, spill_store) in completed {
-            let terminal_ui = tool_end_ui(&call, &managed.result);
-            tool_output_spill::cleanup_managed_result(spill_store.as_deref(), &mut managed)?;
-            self.ui(terminal_ui);
-            results[index] = Some(managed.result);
-        }
-        post_activity.complete();
-        post_result?;
-        if unknown > 0 {
-            return Err(KernelError::UnknownEffects { count: unknown });
-        }
-        Ok(())
+        .execute(batch, results, any_error)
+        .await
     }
 
     async fn advance_turn(&mut self) -> Result<(), KernelError> {
