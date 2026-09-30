@@ -404,6 +404,27 @@ const SURFACES: &[Surface] = &[
         next_seams: &["pure reads cannot bypass explicit deny/request or admitted ceilings"],
     },
     Surface {
+        path: "crates/cli/src/runtime/tool_execution_journal.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "physical registry intent/known terminal/refused terminal append and ledger ports",
+        ],
+        next_seams: &[
+            "single EffectJournalOwner remains authoritative; no provider or execution access",
+        ],
+    },
+    Surface {
+        path: "crates/cli/src/runtime/early_tool_collection.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "actual streamed task join/abort/reap and hook/tool ordered settlement",
+            "managed result/spill lifetime until actual post observers settle",
+        ],
+        next_seams: &[
+            "frozen deadline/projection observations and concrete tool journal/hook ports",
+        ],
+    },
+    Surface {
         path: "crates/cli/src/runtime/deferred_tool_batch.rs",
         boundary: "cli-host",
         responsibilities: &[

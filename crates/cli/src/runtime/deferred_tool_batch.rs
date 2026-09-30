@@ -1,42 +1,24 @@
 //! Actual admitted deferred-tool batch coordinator. It owns pending intent tickets and managed
 //! result lifetimes through physical execution, ordered settlement and post observers. Journal,
 //! execution, hook and immutable projection owners are independent concrete ports.
-#[cfg(test)]
-use super::DurableAppendFault;
 use super::KernelError;
 use super::artifact_publication::{PUBLICATION_UNAVAILABLE, ToolOutputPublicationFactory};
 use super::context_runtime::TurnResultProjectionBudget;
 use super::deferred_batch_executor::{DeferredBatchExecutor, DeferredToolReceipt};
 use super::deferred_tools::AutoApprovedCall;
-use super::effect_journal_owner::{EffectJournalOwner, UnknownCause};
-use super::failed_action_cache::FailedActionCache;
+use super::effect_journal_owner::UnknownCause;
 use super::frontend_events::UiEvent;
 use super::hook_execution::{HookExecution, HookExecutionScope};
 use super::stream_tool_events::StreamToolEvents;
-use super::stream_tool_journal::StreamToolJournal;
+use super::tool_execution_journal::ToolExecutionJournal;
 use super::tool_output_spill::{self, ManagedToolExecution, ToolOutputSpillStore};
 use super::tool_presentation::tool_end_ui;
 use super::turn_activity::ActivityStage;
-use iteron_kernel::diagnostics::{DiagnosticEmitter, KernelDiagnostic};
 use iteron_kernel::effects::{self, EffectTicket};
-use iteron_obs::Ledger;
-use iteron_protocol::{EventKind, LifecyclePayload, ToolResult, ToolUse, TurnId};
-use iteron_record::Rollout;
+use iteron_protocol::{LifecyclePayload, ToolResult, ToolUse, TurnId};
 use iteron_sched::Governor;
 use iteron_tools::Registry;
 use std::sync::{Arc, atomic::AtomicBool};
-use std::time::Instant;
-
-pub(super) struct DeferredToolJournal<'a> {
-    pub(super) rollout: &'a mut Rollout,
-    pub(super) effects: &'a mut EffectJournalOwner,
-    pub(super) ledger: &'a mut Ledger,
-    pub(super) failed_actions: &'a mut FailedActionCache,
-    pub(super) record_failed: &'a mut bool,
-    pub(super) diagnostics: &'a DiagnosticEmitter,
-    #[cfg(test)]
-    pub(super) fault: &'a mut Option<DurableAppendFault>,
-}
 
 pub(super) struct DeferredToolScope<'a> {
     pub(super) turn: TurnId,
@@ -53,7 +35,7 @@ pub(super) struct DeferredToolScope<'a> {
 }
 
 pub(super) struct DeferredToolBatch<'a> {
-    pub(super) journal: DeferredToolJournal<'a>,
+    pub(super) journal: ToolExecutionJournal<'a>,
     pub(super) scope: DeferredToolScope<'a>,
 }
 struct PendingTool {
@@ -89,10 +71,14 @@ impl DeferredToolBatch<'_> {
                 capability,
                 action_signature,
             } = admitted;
-            let ticket = self.open_tool(index, &call, capability)?;
-            self.scope
-                .events
-                .tool_start(&call, ticket.effect_id().clone());
+            let ticket = self.journal.open_tool(
+                self.scope.hooks.workspace,
+                self.scope.turn,
+                index,
+                &call,
+                capability,
+                &self.scope.events,
+            )?;
             pending.push(PendingTool {
                 index,
                 call,
@@ -139,27 +125,31 @@ impl DeferredToolBatch<'_> {
                 self.scope.events.projected(visible);
             }
             let effect_id = entry.ticket.effect_id().clone();
-            let (settlement, mut managed, definite) = match execution {
-                ManagedToolExecution::Definite(managed) => (
-                    effects::Settlement::Definite(EventKind::ToolDone {
-                        result: managed.result.clone(), effect_id: Some(effect_id.clone()),
-                        tool: Some(entry.call.name.clone()),
-                    }), managed, true,
-                ),
-                ManagedToolExecution::Unknown(managed) => (
-                    effects::Settlement::Unknown(
-                        "executor dispatched the operation but did not observe an authoritative terminal outcome; automatic retry is forbidden".into(),
-                    ), managed, false,
-                ),
+            let (mut managed, definite) = match execution {
+                ManagedToolExecution::Definite(managed) => (managed, true),
+                ManagedToolExecution::Unknown(managed) => (managed, false),
             };
-            let cause = if !definite && operator_interrupted {
-                UnknownCause::OperatorCancelled
+            let committed = if definite {
+                self.journal.known_result(
+                    entry.ticket,
+                    &entry.call.name,
+                    &managed.result,
+                    0,
+                    &self.scope.events,
+                )
             } else {
-                UnknownCause::Unobserved
+                let cause = if operator_interrupted {
+                    UnknownCause::OperatorCancelled
+                } else {
+                    UnknownCause::Unobserved
+                };
+                self.journal.settle(entry.ticket,effects::Settlement::Unknown(
+                    "executor dispatched the operation but did not observe an authoritative terminal outcome; automatic retry is forbidden".into(),
+                ),cause)
             };
             // Physical truth settles before unavailable publication is presented. A retention
             // error must not manufacture Unknown, free a retry or repeat a successful operation.
-            if let Err(error) = self.settle(entry.ticket, settlement, cause) {
+            if let Err(error) = committed {
                 let _ =
                     tool_output_spill::cleanup_managed_result(spill_store.as_deref(), &mut managed);
                 return Err(error);
@@ -170,13 +160,13 @@ impl DeferredToolBatch<'_> {
                     .present(UiEvent::Notice(PUBLICATION_UNAVAILABLE.into()));
             }
             let result = &managed.result;
-            self.scope.events.process_terminal(
-                effect_id.clone(),
-                &entry.call.name,
-                result,
-                definite,
-            );
             if !definite {
+                self.scope.events.process_terminal(
+                    effect_id.clone(),
+                    &entry.call.name,
+                    result,
+                    false,
+                );
                 if operator_interrupted {
                     self.scope.events.emit(
                         "tool.call_cancelled",
@@ -199,22 +189,8 @@ impl DeferredToolBatch<'_> {
                 self.scope.events.present(terminal_ui);
                 continue;
             }
-            self.scope.events.emit(
-                if result.is_error {
-                    "tool.call_failed"
-                } else {
-                    "tool.call_completed"
-                },
-                Some(effect_id),
-                LifecyclePayload {
-                    duration_us: Some(result.latency_ms.saturating_mul(1_000)),
-                    ..LifecyclePayload::default()
-                },
-            );
-            // Deferred concurrency earns no provider-overlap credit.
-            self.journal
-                .ledger
-                .tool(result.latency_ms, 0, result.is_error);
+            // The shared journal already emitted known terminal/process evidence and accounted
+            // zero provider-overlap credit after the confirmed terminal barrier.
             *any_error |= result.is_error;
             if result.is_error {
                 self.journal
@@ -247,73 +223,6 @@ impl DeferredToolBatch<'_> {
             return Err(KernelError::UnknownEffects { count: unknown });
         }
         Ok(())
-    }
-    fn open_tool(
-        &mut self,
-        index: usize,
-        call: &ToolUse,
-        capability: iteron_protocol::Capability,
-    ) -> Result<EffectTicket, KernelError> {
-        let effect_id = iteron_kernel::effect_class::effect_id(
-            self.scope.turn,
-            iteron_kernel::effect_class::EffectClass::RegistryTool,
-            index,
-        );
-        self.scope.events.emit(
-            "tool.call_proposed",
-            Some(effect_id.clone()),
-            LifecyclePayload::default(),
-        );
-        self.scope.events.emit(
-            "tool.policy_evaluated",
-            Some(effect_id),
-            LifecyclePayload {
-                outcome_code: Some("admitted".into()),
-                ..LifecyclePayload::default()
-            },
-        );
-        StreamToolJournal {
-            rollout: self.journal.rollout,
-            effects: self.journal.effects,
-            policy: None,
-            ledger: self.journal.ledger,
-            record_failed: self.journal.record_failed,
-            diagnostics: self.journal.diagnostics,
-            #[cfg(test)]
-            fault: self.journal.fault,
-        }
-        .open_tool(
-            self.scope.hooks.workspace,
-            self.scope.turn,
-            index,
-            call,
-            capability,
-        )
-    }
-    fn settle(
-        &mut self,
-        ticket: EffectTicket,
-        settlement: effects::Settlement,
-        cause: UnknownCause,
-    ) -> Result<(), KernelError> {
-        let started = Instant::now();
-        let result = self
-            .journal
-            .effects
-            .settle(self.journal.rollout, ticket, settlement, cause);
-        self.journal.ledger.record_fsync_latency_us(
-            u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX),
-        );
-        result.map_err(|error| match error {
-            effects::BrokerError::Record(error) => {
-                *self.journal.record_failed = true;
-                self.journal
-                    .diagnostics
-                    .emit(KernelDiagnostic::RecordAppendFailed {});
-                KernelError::Record(error)
-            }
-            other => KernelError::EffectBoundary(other.to_string()),
-        })
     }
     async fn post_tools(&mut self, completed: &[(ToolUse, ToolResult)]) -> Result<(), KernelError> {
         HookExecution {

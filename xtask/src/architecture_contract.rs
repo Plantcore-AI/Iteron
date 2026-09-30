@@ -314,6 +314,8 @@ fn validate_extracted_owners(root: &Path) -> Result<()> {
         "crates/cli/src/runtime/deferred_tool_batch.rs",
         "crates/cli/src/runtime/early_tool_gate.rs",
         "crates/cli/src/runtime/early_tool_executor.rs",
+        "crates/cli/src/runtime/early_tool_collection.rs",
+        "crates/cli/src/runtime/tool_execution_journal.rs",
         "crates/cli/src/runtime/terminal_record.rs",
         "crates/cli/src/runtime/turn_publication.rs",
         "crates/cli/src/runtime/provider_stream_observer.rs",
