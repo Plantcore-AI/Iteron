@@ -130,6 +130,8 @@ impl Agent {
             .process_control()
             .and_then(super::force_cancel::ForceCancelSeam::for_process_control);
         Agent {
+            persistent_agents: None,
+            persistent_mailbox: None,
             provider,
             registry,
             tool_output_spill: None,

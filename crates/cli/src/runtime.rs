@@ -206,6 +206,8 @@ mod operation_admission_tests;
 mod operator_status;
 mod orchestration_route;
 mod permission_policy;
+mod persistent_agent_kernel;
+pub(crate) mod persistent_agents;
 mod plantcore;
 pub(crate) use plantcore::{DispatchGate, ResumeActivation};
 mod policy_evidence;
@@ -2313,6 +2315,8 @@ pub struct AdoptedRun {
 
 /// The agent: a controller wired to its five collaborators.
 pub struct Agent {
+    persistent_agents: Option<std::sync::Arc<dyn persistent_agents::AgentControlPort>>,
+    persistent_mailbox: Option<persistent_agents::LiveAgentMailbox>,
     /// Shared so read-only subagents can use the same provider (ADR-001 fan-out).
     pub provider: std::sync::Arc<dyn Provider>,
     pub registry: Registry,
@@ -3963,6 +3967,13 @@ impl Agent {
             let mut retry_index = 0u32;
             let mut retry_jitter = iteron_sched::backoff::Jitter::new();
             let mut provider_active = Duration::ZERO;
+            if provider_refusal.is_none()
+                && let Some(mailbox) = &self.persistent_mailbox
+            {
+                mailbox
+                    .confirm_request(&req.messages)
+                    .map_err(KernelError::AgentControl)?;
+            }
             let provider_result = loop {
                 let provider_attempt_started = Instant::now();
                 let attempt_stream_item_base = stream_items;

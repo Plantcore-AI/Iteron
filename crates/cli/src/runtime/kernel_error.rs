@@ -108,6 +108,8 @@ impl PublicRecordFailure {
 
 #[derive(Debug, thiserror::Error)]
 pub enum KernelError {
+    #[error("persistent agent control failed")]
+    AgentControl(#[source] iteron_agents::ControllerError),
     #[error("provider: {0}")]
     Provider(#[from] iteron_provider::ProviderError),
     #[error("record: {0}")]
@@ -202,6 +204,9 @@ impl KernelError {
     /// payload fragments, or implementation details and therefore never cross a frontend seam.
     pub fn public_summary(&self) -> String {
         match self {
+            Self::AgentControl(_) => {
+                "persistent agent control or its durable mailbox failed; execution stopped".into()
+            }
             Self::Provider(error) => format!("provider: {}", error.public_summary()),
             Self::Record(error) => PublicRecordFailure::from_error(error).summary().into(),
             Self::InvalidRouteMetadata { field, reason } => {

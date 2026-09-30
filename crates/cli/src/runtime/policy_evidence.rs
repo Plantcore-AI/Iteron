@@ -365,6 +365,7 @@ fn digest_json<T: Serialize>(domain: &str, value: &T) -> Result<String, KernelEr
 
 pub(super) fn policy_harness_error_code(error: &KernelError) -> PolicyHarnessErrorCode {
     match error {
+        KernelError::AgentControl(_) => PolicyHarnessErrorCode::DelegationError,
         KernelError::Provider(_) => PolicyHarnessErrorCode::ProviderError,
         KernelError::Record(_) => PolicyHarnessErrorCode::RecordError,
         KernelError::InvalidRouteMetadata { .. } | KernelError::InvalidRoute(_) => {
