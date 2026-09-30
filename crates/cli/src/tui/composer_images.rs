@@ -793,7 +793,11 @@ pub(super) fn queue_draft_with_chips(app: &mut App) -> bool {
         );
         return false;
     }
-    let pending = app.queued.len().saturating_add(app.steer_previews.len());
+    let pending = app
+        .input_lanes
+        .queued()
+        .len()
+        .saturating_add(app.input_lanes.steers().len());
     if matches!(
         app.submission_admission(&preview, pending, "pending input"),
         SubmissionAdmission::Reject
@@ -802,12 +806,10 @@ pub(super) fn queue_draft_with_chips(app: &mut App) -> bool {
     }
     let images = app.editor.attachments().clone();
     let files = app.editor.files().clone();
-    let text = app.editor.take_submit();
-    if let Err(text) = app.queue_after_turn_with(text, images, files) {
-        // Unreachable in practice: the same admission just accepted this text. Preserve the words
-        // rather than assume it.
-        app.editor.insert_str(&text);
+    if app.queue_after_turn_with(preview, images, files).is_err() {
+        // The actual owner refused before composer mutation: words, pastes and chips remain exact.
         return false;
     }
+    let _ = app.editor.take_submit();
     true
 }

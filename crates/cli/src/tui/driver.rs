@@ -686,12 +686,12 @@ pub async fn run(
         // finishes. `apply_server_event` handles `RunEnded`; the only thing left here is the
         // follow-up queue, which is now gated on the run state the server reports rather than on
         // whether an `Option<Agent>` happens to be full.
-        if !app.running && !app.queued.is_empty() {
+        if !app.running && !app.input_lanes.queued().is_empty() {
             // a joined blob mis-classified `/compact`+task). Commands execute inline; the first
             // PROSE item starts a run and we stop — the remaining items dispatch on the next
             // reclaim (a run is single-writer; we cannot start two at once).
-            while !app.queued.is_empty() && !app.running {
-                let item = app.queued.pop_front().expect("queue checked non-empty");
+            while !app.input_lanes.queued().is_empty() && !app.running {
+                let item = app.input_lanes.pop_next().expect("queue checked non-empty");
                 // An item composed with chips is a submission, not a line of text: it goes out
                 // through the same staging the composer uses, so the images and files it was queued
                 // with are on the wire and the `[Image #N]` anchors it names still decide their
@@ -701,7 +701,7 @@ pub async fn run(
                     if let Err(item) =
                         submit_queued_model_input(&mut app, &session, &mut notifier, item)
                     {
-                        app.queued.push_front(*item);
+                        app.input_lanes.restore_next(*item);
                     }
                     break; // a run started; remaining items dispatch after it finishes
                 }
@@ -712,7 +712,7 @@ pub async fn run(
                     if pending_slash_commands.len() < 8 {
                         pending_slash_commands.push_back((cmd.to_owned(), None));
                     } else {
-                        app.queued.push_front(item);
+                        app.input_lanes.restore_next(item);
                     }
                     break;
                 } else if let Some(bash) = q.strip_prefix('!') {
@@ -737,14 +737,14 @@ pub async fn run(
                             "shell running · Ctrl-C or Esc cancels it",
                         );
                     } else {
-                        app.queued.push_front(item);
+                        app.input_lanes.restore_next(item);
                         break;
                     }
                 } else {
                     if let Err(item) =
                         submit_queued_model_input(&mut app, &session, &mut notifier, item)
                     {
-                        app.queued.push_front(*item);
+                        app.input_lanes.restore_next(*item);
                     }
                     break; // a run started; remaining items dispatch after it finishes
                 }

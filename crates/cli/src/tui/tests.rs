@@ -1895,15 +1895,15 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             app.requeue_unadmitted(vec!["late steer".into()], &[Some(SubmissionId(1))]);
         assert_eq!((moved, unmatched), (1, 0));
         assert_eq!(
-            app.queued
+            app.input_lanes.queued()
                 .iter()
                 .map(|input| input.text.as_str())
                 .collect::<Vec<_>>(),
             vec!["queued first", "late steer", "queued last"]
         );
 
-        while app.queued.len() < MAX_PENDING_SUBMISSIONS {
-            app.queue_after_turn(format!("item {}", app.queued.len()))
+        while app.input_lanes.queued().len() < MAX_PENDING_SUBMISSIONS {
+            app.queue_after_turn(format!("item {}", app.input_lanes.queued().len()))
                 .unwrap();
         }
         let rejected = "must remain editable".to_string();
@@ -1928,9 +1928,9 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             app.requeue_unadmitted(vec!["returned by kernel".into()], &[Some(SubmissionId(1))]);
 
         assert_eq!((reported, preserved), (1, 1));
-        assert!(app.steer_previews.is_empty());
+        assert!(app.input_lanes.steers().is_empty());
         assert_eq!(
-            app.queued
+            app.input_lanes.queued()
                 .iter()
                 .map(|input| input.text.as_str())
                 .collect::<Vec<_>>(),
@@ -1941,6 +1941,53 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             ],
             "count mismatch must preserve at-least-once operator intent in submission order"
         );
+    }
+
+    #[test]
+    fn run_wide_foreign_steers_do_not_resubmit_or_overflow_owned_input_and_chips() {
+        let mut app = App::new();
+        app.running = true;
+        app.editor.insert_str("owned image draft");
+        app.editor.attach_image_bytes("owned.png", &png_1x1()).unwrap();
+        assert!(queue_draft_with_chips(&mut app));
+        let owned_image = app.input_lanes.queued().front().cloned().unwrap();
+        for index in 0..MAX_PENDING_SUBMISSIONS - 2 {
+            app.queue_after_turn(format!("owned next {index}")).unwrap();
+        }
+        app.track_steer("original owned steering".into(), SubmissionId(500));
+        let mut words = (0..64).map(|index| format!("foreign steering {index}")).collect::<Vec<_>>();
+        let mut ids = (0..64).map(|index| Some(SubmissionId(index))).collect::<Vec<_>>();
+        words.push("returned text cannot replace original words".into());
+        ids.push(Some(SubmissionId(500)));
+        assert_eq!(app.requeue_unadmitted(words, &ids), (1, 0));
+        assert_eq!(app.input_lanes.pending_count(), MAX_PENDING_SUBMISSIONS);
+        assert!(app.input_lanes.steers().is_empty());
+        assert_eq!(app.input_lanes.queued().front(), Some(&owned_image));
+        assert_eq!(app.input_lanes.queued().front().unwrap().images.as_slice(), owned_image.images.as_slice());
+        assert_eq!(app.input_lanes.queued().back().unwrap().text, "original owned steering");
+        assert!(app.input_lanes.queued().iter().all(|input| !input.text.starts_with("foreign")));
+        assert!(app.transcript.iter().any(|block| block.to_text().contains("64 unadmitted steering submission(s) belong to another client")));
+        let next = app.input_lanes.pop_next().unwrap();
+        app.input_lanes.restore_next(next);
+        assert_eq!(app.input_lanes.queued().front(), Some(&owned_image));
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(120, 2)).unwrap();
+        terminal.draw(|frame| render_pending_lanes(frame, frame.area(), &app)).unwrap();
+        let screen = buffer_text(&terminal);
+        assert!(screen.contains("owned image draft"), "{screen}");
+        assert!(!screen.contains("foreign steering"));
+    }
+
+    #[test]
+    fn no_id_legacy_restore_reserves_every_tracked_owned_preview() {
+        let mut app = App::new();
+        for index in 0..MAX_PENDING_SUBMISSIONS - 1 {
+            app.track_steer(format!("own {index}"), SubmissionId(index as u64));
+        }
+        assert_eq!(app.requeue_unadmitted((0..64).map(|index| format!("legacy {index}")).collect(), &[]), (1, MAX_PENDING_SUBMISSIONS - 1));
+        assert_eq!(app.input_lanes.pending_count(), MAX_PENDING_SUBMISSIONS);
+        assert_eq!(app.input_lanes.queued().front().unwrap().text, "own 0");
+        assert_eq!(app.input_lanes.queued().back().unwrap().text, "legacy 0");
+        assert!(app.transcript.iter().any(|block| block.to_text().contains("63 legacy steering submission(s)")));
     }
 
     #[test]
@@ -2952,9 +2999,9 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert!(app.running, "only RunEnded may declare the old turn idle");
         assert!(app.interrupting);
         assert!(app.editor.is_empty(), "the focused composer accepted Enter");
-        assert_eq!(app.queued.len(), 1);
+        assert_eq!(app.input_lanes.queued().len(), 1);
         assert_eq!(
-            app.queued.front().unwrap().text,
+            app.input_lanes.queued().front().unwrap().text,
             "start the next task immediately"
         );
     }
@@ -3829,7 +3876,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         app.draining = true;
         app.queue_after_turn("continue with the next task".into())
             .unwrap();
-        let queued = app.queued.front().cloned().unwrap();
+        let queued = app.input_lanes.queued().front().cloned().unwrap();
         let (sq, _rx) = tokio::sync::mpsc::channel(1);
         let mut session = Session::for_test(sq);
         let event = app_server::ServerEvent::RunEnded {
@@ -3888,7 +3935,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert!(!app.draining);
         assert!(!interrupt.load(Ordering::Relaxed));
         assert!(!drain.load(Ordering::Relaxed));
-        assert_eq!(app.queued.front(), Some(&queued));
+        assert_eq!(app.input_lanes.queued().front(), Some(&queued));
         assert_eq!(app.status, "idle · last: interrupted");
     }
 
@@ -4349,15 +4396,15 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         app.track_steer("first".into(), SubmissionId(1));
         app.track_steer("second".into(), SubmissionId(2));
         apply_event(&mut app, UiEvent::SteerApplied { count: 1 });
-        assert_eq!(app.steer_previews.len(), 2);
+        assert_eq!(app.input_lanes.steers().len(), 2);
         apply_event(
             &mut app,
             UiEvent::SteerSubmissionApplied {
                 id: SubmissionId(2),
             },
         );
-        assert_eq!(app.steer_previews.len(), 1);
-        assert_eq!(app.steer_previews.front().unwrap().text, "first");
+        assert_eq!(app.input_lanes.steers().len(), 1);
+        assert_eq!(app.input_lanes.steers().front().unwrap().text, "first");
     }
 
     #[test]
@@ -5631,7 +5678,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     fn a_refused_queue_dispatch_returns_the_exact_prompt_and_never_draws_a_ghost_user_row() {
         let mut app = App::new();
         app.queue_after_turn("preserve me exactly".into()).unwrap();
-        let item = app.queued.pop_front().unwrap();
+        let item = app.input_lanes.pop_next().unwrap();
 
         let (busy_tx, _busy_rx) = tokio::sync::mpsc::channel(1);
         busy_tx
@@ -5914,7 +5961,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             "the chips leave the composer with the text, not after it"
         );
         assert!(app.editor.is_empty(), "the draft was consumed");
-        let queued = app.queued.front().expect("one queued submission");
+        let queued = app.input_lanes.queued().front().expect("one queued submission");
         assert_eq!(
             queued.images.len(),
             1,
@@ -5950,7 +5997,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             "the command is still in the composer: {}",
             app.editor.text()
         );
-        assert!(app.queued.is_empty(), "nothing was queued");
+        assert!(app.input_lanes.queued().is_empty(), "nothing was queued");
         assert!(
             app.transcript
                 .iter()
@@ -6296,7 +6343,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             .attach_image_bytes("shot.png", gif)
             .expect("a canonical GIF");
         assert!(queue_draft_with_chips(&mut app));
-        let item = app.queued.pop_front().expect("one queued submission");
+        let item = app.input_lanes.pop_next().expect("one queued submission");
 
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         let session = Session::for_test(tx);
@@ -7034,7 +7081,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         app.interrupting = true;
         app.cancel_requested_at = Some(Instant::now() - Duration::from_secs(30));
         app.queue_after_turn("the next prompt".into()).unwrap();
-        let queued = app.queued.front().cloned().unwrap();
+        let queued = app.input_lanes.queued().front().cloned().unwrap();
         let (tx, mut rx) = tokio::sync::mpsc::channel(4);
         let session = Session::for_test(tx);
         force_cancel_turn(&mut app, &session);
@@ -7044,7 +7091,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert!(app.interrupting);
         assert!(app.force_cancelling);
         assert!(!app.draining);
-        assert_eq!(app.queued.front(), Some(&queued));
+        assert_eq!(app.input_lanes.queued().front(), Some(&queued));
         assert!(matches!(
             rx.try_recv()
                 .expect("the escalation submits one force-cancel")

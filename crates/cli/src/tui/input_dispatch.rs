@@ -627,7 +627,7 @@ pub(super) async fn dispatch<B: ratatui::backend::Backend>(
                 }
                 // A queued (not yet delivered) follow-up is safe to take back for editing.
                 KeyCode::Up if alt && app.running && app.editor.is_empty() => {
-                    if let Some(input) = app.queued.pop_back() {
+                    if let Some(input) = app.input_lanes.take_latest() {
                         app.editor.insert_str(&input.text);
                         refresh = true;
                     }
@@ -855,7 +855,11 @@ pub(super) async fn dispatch<B: ratatui::backend::Backend>(
                     } else if app.interrupting {
                         force_cancel_turn(app, session);
                     } else {
-                        let pending = app.steer_previews.len().saturating_add(app.queued.len());
+                        let pending = app
+                            .input_lanes
+                            .steers()
+                            .len()
+                            .saturating_add(app.input_lanes.queued().len());
                         request_interrupt(app, session, interrupt);
                         app.push(bold(Color::Yellow), if pending == 0 {
                                     "interrupting now… (Esc again for stronger cancellation)".into()

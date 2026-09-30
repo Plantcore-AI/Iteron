@@ -13,14 +13,15 @@ pub(super) fn render_pending_lanes(f: &mut Frame, area: Rect, app: &App) {
     }
     let mut lines = Vec::new();
     let label_w = if area.width >= 72 { 19 } else { 9 };
-    if let Some(input) = app.steer_previews.front() {
+    if let Some(input) = app.input_lanes.steers().front() {
         let label = if area.width >= 72 {
             "  next safe point  "
         } else {
             "  steer  "
         };
         let suffix = app
-            .steer_previews
+            .input_lanes
+            .steers()
             .len()
             .checked_sub(1)
             .filter(|count| *count > 0)
@@ -39,14 +40,15 @@ pub(super) fn render_pending_lanes(f: &mut Frame, area: Rect, app: &App) {
             Span::styled(suffix, Style::default().fg(app.theme.muted)),
         ]));
     }
-    if let Some(input) = app.queued.front() {
+    if let Some(input) = app.input_lanes.queued().front() {
         let label = if area.width >= 72 {
             "  after this turn  "
         } else {
             "  queued "
         };
         let suffix = app
-            .queued
+            .input_lanes
+            .queued()
             .len()
             .checked_sub(1)
             .filter(|count| *count > 0)

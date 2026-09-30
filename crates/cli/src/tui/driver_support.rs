@@ -215,12 +215,7 @@ pub(super) const TOOL_REVEAL_DELAY: Duration = Duration::from_millis(300);
 /// Bound anti-flash bookkeeping independently from transcript retention. Reaching the cap reveals
 /// the oldest running tool early; it never drops lifecycle evidence.
 pub(super) const MAX_PENDING_TOOL_PROJECTIONS: usize = 64;
-/// Bound both visible pending lanes and the number of outstanding operations this frontend can put
-/// into the legacy runtime's channel before acknowledgement.
-pub(super) const MAX_PENDING_SUBMISSIONS: usize = 32;
-/// A single interactive follow-up is deliberately smaller than tool/model context limits. Oversize
-/// drafts stay in the editor so the operator can trim or save them instead of losing text.
-pub(super) const MAX_SUBMISSION_BYTES: usize = 64 * 1024;
+pub(super) use super::input_lanes::{MAX_PENDING_SUBMISSIONS, MAX_SUBMISSION_BYTES};
 /// A burst of streamed deltas costs ONE frame: the loop wakes on the first delta of the burst and
 /// then holds the next draw for this long so the rest of the burst folds into it. Visible token
 /// latency is bounded by this interval instead of by a fixed input-poll period.

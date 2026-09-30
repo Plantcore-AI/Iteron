@@ -85,13 +85,16 @@ pub(super) fn start_adopt_session(
         );
         return;
     }
-    if !app.queued.is_empty() || !app.steer_previews.is_empty() {
+    if !app.input_lanes.queued().is_empty() || !app.input_lanes.steers().is_empty() {
         app.note(
             block::NoticeLevel::Warn,
             format!(
                 "{} still pending for this session; send or clear them before resuming another one",
                 block::plural(
-                    app.queued.len().saturating_add(app.steer_previews.len()),
+                    app.input_lanes
+                        .queued()
+                        .len()
+                        .saturating_add(app.input_lanes.steers().len()),
                     "submission"
                 )
             ),
@@ -227,7 +230,7 @@ pub(super) fn start_adopt_session(
 /// `/sessions new` therefore acknowledges immediately and never opens/fsyncs a record on the TUI
 /// thread.
 pub(super) fn start_fresh_session(app: &mut App, session: &Session, directory: &ProviderDirectory) {
-    if !app.queued.is_empty() || !app.steer_previews.is_empty() {
+    if !app.input_lanes.queued().is_empty() || !app.input_lanes.steers().is_empty() {
         app.note(
             block::NoticeLevel::Warn,
             "send or clear pending submissions before creating another session",

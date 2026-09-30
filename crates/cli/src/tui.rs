@@ -68,6 +68,8 @@ mod experiment_lab;
 pub(crate) mod hyperlink;
 mod inline_shell;
 mod input_dispatch;
+mod input_lanes;
+use input_lanes::{PendingInput, SubmissionAdmission};
 mod inventory;
 mod jobs;
 mod keyboard_enhancement;
@@ -428,15 +430,6 @@ struct PresentedActivity {
     observed_at: Instant,
 }
 
-/// What applying a picked item does. An enum (not a boxed closure) because the TUI is single-threaded
-/// and the action is applied to the idle agent directly (ADR-015 R7.a / C2 — no model→effort child).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SubmissionAdmission {
-    Accept,
-    IgnoreEmpty,
-    Reject,
-}
-
 /// The semantic destination of Enter for the current draft. Dispatch, composer title and footer
 /// all consult this one reducer so the UI cannot promise “steer” while routing the same bytes to a
 /// post-turn command lane (or vice versa).
@@ -528,62 +521,11 @@ fn cached_input_destination(
     }
 }
 
-#[derive(Clone)]
-struct PendingInput {
-    seq: u64,
-    text: String,
-    /// Set only while an identified steer awaits an exact runtime admission signal.
-    submission_id: Option<SubmissionId>,
-    /// The chips this submission was composed with, moved out of the composer when it was queued.
-    ///
-    /// They travel WITH the text because `Editor::take_submit` clears the attachment stores: an
-    /// image dropped during a run and queued behind it would otherwise be discarded on the way to
-    /// the queue, or — worse — still be sitting in the composer when the operator writes an
-    /// unrelated message next, and would be sent with that one instead. Neither is a thing anyone
-    /// asked for. A steer cannot carry them at all (`Op::Steer` is text, and the protocol is
-    /// frozen), which is why a draft with chips is always routed to this queue.
-    images: image_input::ImageAttachments,
-    files: file_input::FileAttachments,
-}
-
 struct PendingTurnReceipt {
     id: SubmissionId,
     editor_revision: u64,
     clear_composer: bool,
     display_text: String,
-}
-
-/// Identity of a queued submission is what it will send: its order, its words, and how many chips
-/// ride with it. The attachment stores hold decoded bytes and are deliberately not compared —
-/// equality is used by the queue-ordering assertions, not to decide whether two images are alike.
-impl PartialEq for PendingInput {
-    fn eq(&self, other: &Self) -> bool {
-        self.seq == other.seq
-            && self.text == other.text
-            && self.submission_id == other.submission_id
-            && self.images.len() == other.images.len()
-            && self.files.len() == other.files.len()
-    }
-}
-
-impl Eq for PendingInput {}
-
-impl std::fmt::Debug for PendingInput {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PendingInput")
-            .field("seq", &self.seq)
-            .field("text", &self.text)
-            .field("submission_id", &self.submission_id)
-            .field("images", &self.images.len())
-            .field("files", &self.files.len())
-            .finish()
-    }
-}
-
-impl PendingInput {
-    fn has_attachments(&self) -> bool {
-        !self.images.is_empty() || !self.files.is_empty()
-    }
 }
 
 /// A model tool which is active in the activity shelf but has not yet earned a transcript row.
@@ -905,15 +847,8 @@ struct App {
     mouse_capture: mouse_capture::State,
     /// Text-cell projection from the last rendered composer frame. A click is resolved against this
     /// snapshot; every coordinate is re-clamped by the editor so a simultaneous resize is benign.
-    /// Follow-ups composed WHILE the agent was running, each dispatched (in order) when the run
-    /// finishes. A Vec (not a joined blob) so each item is classified separately — a queued
-    /// `/compact` then a task run as two distinct actions (round-3 review).
-    queued: VecDeque<PendingInput>,
-    /// FIFO previews of steering submissions accepted by the frontend but not yet acknowledged at a
-    /// kernel safe point. Kernel acknowledgement is count-based today, so FIFO is the honest interim
-    /// projection until the App Server protocol supplies stable submission ids.
-    steer_previews: VecDeque<PendingInput>,
-    next_submission_seq: u64,
+    /// Bounded frontend input ownership, separate from editor and transcript presentation.
+    input_lanes: input_lanes::InputLanes,
     pending_turn_receipt: Option<PendingTurnReceipt>,
     pending_approval_response: Option<SubmissionId>,
     /// Ordinary TUI content follows the same bounded Product V1 cursor as headless clients.

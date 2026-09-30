@@ -178,7 +178,11 @@ pub(super) fn status_right_groups(app: &App, density: surface::Density) -> Vec<s
     if app.mode != PermissionMode::Default {
         groups.push(Group::single(app.mode.label(), Accent::Mode));
     }
-    let pending = app.steer_previews.len().saturating_add(app.queued.len());
+    let pending = app
+        .input_lanes
+        .steers()
+        .len()
+        .saturating_add(app.input_lanes.queued().len());
     if pending > 0 {
         groups.push(Group::single(
             format!("{pending} pending"),

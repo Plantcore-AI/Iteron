@@ -117,7 +117,7 @@ pub(super) fn render_hint(f: &mut Frame, area: Rect, density: surface::Density, 
             }
             InputDestination::StartTurn => unreachable!("the app is running"),
         }
-    } else if app.running && !app.queued.is_empty() {
+    } else if app.running && !app.input_lanes.queued().is_empty() {
         if density == surface::Density::Compact {
             "type · esc stop · alt+↑ queued"
         } else {
@@ -295,7 +295,8 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
     let lane_rows = if blocking_input {
         0
     } else {
-        u16::from(!app.steer_previews.is_empty()) + u16::from(!app.queued.is_empty())
+        u16::from(!app.input_lanes.steers().is_empty())
+            + u16::from(!app.input_lanes.queued().is_empty())
     };
     // The status line is stable chrome below the composer, including on the fresh landing. Surface
     // geometry drops it only when a physically tiny frame cannot spare the row.

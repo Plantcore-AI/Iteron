@@ -13,6 +13,7 @@ remain required.
 | `app_server/presentation.rs` and product/publication readers | Shared bounded immutable projection | Actual source events/receipts → snapshots; views do not grant permissions |
 | `tui/session_client.rs` | Client handle, negotiated version and immutable current session facts | Public typed controls and queue submissions; no runtime ownership |
 | `tui/driver.rs` | Terminal/input/event loop and bounded worker coordination | Client events + terminal input → view changes or typed client commands |
+| `tui/input_lanes.rs` | Single private after-turn/steer queue and exact local submission ownership | Owned inputs preserve words/chips; read-only lane views; exact receipt reconciliation never resubmits another identified client |
 | `tui/input_dispatch.rs` | Borrowed editor/view/key routing context | Input events → explicit local effects or shared client controls |
 | `tui/terminal_lifecycle.rs` and `terminal_input.rs` | Physical terminal mode restoration and bounded input producer | Native terminal IO → input events; restoration on actual shutdown |
 | `tui/transcript_effect.rs` | Independent local shell/clipboard/export effect lifetime | Explicit request → bounded state/result; never model admission or parent terminal truth |
@@ -30,8 +31,7 @@ publications and maintenance cannot create holes in the frozen legacy replay cur
 
 ## Remaining TUI architecture work
 
-The `App` aggregate still owns transcript geometry, live assistant reduction, editor state, input
-lanes, modal/worker state and activity views. Existing `impl App` child files are implementation
+The `App` aggregate still owns transcript geometry, live assistant reduction, editor state, modal/worker state and activity views. Existing `impl App` child files are implementation
 fragments and are not evidence of independent domain ownership. The event/input driver coordinates
 these frontend-only domains and never holds the runtime Agent, but narrowing their private state and
 mutation ports remains part of the architecture work. Production wildcard imports in older TUI
