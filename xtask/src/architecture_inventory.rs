@@ -344,6 +344,24 @@ const SURFACES: &[Surface] = &[
         next_seams: &["immutable provider proof port only; no budget or route selection mutation"],
     },
     Surface {
+        path: "crates/cli/src/runtime/provider_charge_evidence.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "single exact physical charge ledger and signed receipt/replay evidence",
+        ],
+        next_seams: &["read-only proof validation; mutation remains in the shared monetary owner"],
+    },
+    Surface {
+        path: "crates/cli/src/runtime/provider_financial_context.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "immutable authenticated route pricing/scope and actual USD/cohort admission/settlement ports",
+        ],
+        next_seams: &[
+            "physical WAL must settle before controller finance; no Agent/session proxy or new budget state",
+        ],
+    },
+    Surface {
         path: "crates/cli/src/runtime/provider_route_turn.rs",
         boundary: "cli-host",
         responsibilities: &[
