@@ -1,6 +1,12 @@
 //! Data and conflict detection for auto-approved deferred tool batches.
 
-use iteron_protocol::{Capability, ToolUse};
+use super::KernelError;
+use super::failed_action_cache::FailedActionCache;
+use super::permission_policy::{OperationPolicy, evaluate_operation};
+use super::tool_turn::DeferredToolCall;
+use iteron_protocol::{Capability, ToolUse, Verdict};
+use iteron_tools::Registry;
+use std::collections::BTreeSet;
 
 const MAX_DECLARED_WRITE_PATHS: usize = 64;
 const MAX_DECLARED_WRITE_PATH_BYTES: usize = 4_096;
@@ -55,6 +61,99 @@ pub(super) struct AutoApprovedCall {
     pub(super) intent: iteron_protocol::intent::ToolIntent,
     pub(super) capability: Capability,
     pub(super) action_signature: String,
+}
+
+/// Frozen trusted views for the leading non-conflicting deferred batch. This scanner has no
+/// approval, journal, process or capability mutation port.
+pub(super) struct DeferredBatchPolicy<'a> {
+    pub(super) registry: &'a Registry,
+    pub(super) operation: OperationPolicy<'a>,
+    pub(super) failed_actions: &'a FailedActionCache,
+    pub(super) declared_set_required: bool,
+    pub(super) external_dispatch_gate: bool,
+    pub(super) plantcore_gateway_enabled: bool,
+}
+
+impl DeferredBatchPolicy<'_> {
+    pub(super) fn select(
+        &self,
+        deferred: &[DeferredToolCall],
+        excluded: &BTreeSet<usize>,
+    ) -> Result<Vec<AutoApprovedCall>, KernelError> {
+        if deferred.len() > iteron_kernel::effects::MAX_TOOL_CALLS_PER_TURN {
+            return Err(KernelError::ContextResolution(
+                "deferred declarations exceed the admitted envelope".into(),
+            ));
+        }
+        let mut batch = Vec::with_capacity(deferred.len());
+        let mut claimed: BTreeSet<String> = BTreeSet::new();
+        let mut signatures = BTreeSet::new();
+        for (index, call, proposal) in deferred {
+            if excluded.contains(index)
+                || matches!(
+                    call.name.as_str(),
+                    iteron_tools::DISPATCH_AGENT | iteron_tools::WORKFLOW_TOOL
+                )
+                || self.external_dispatch_gate
+                    && (self.registry.is_mcp_effect(&call.name)
+                        || self.plantcore_gateway_enabled
+                            && call.name == "plantcore-run-gateway__tool_search")
+            {
+                break;
+            }
+            let signature = format!("{}::{}", call.name, call.input);
+            // Stop before repeat declarations so the ordered owner can answer an actual failed
+            // operation from its receipt. No duplicate world effect is hidden by concurrency.
+            if self.failed_actions.contains_key(&signature) || !signatures.insert(signature.clone())
+            {
+                break;
+            }
+            let proposal = match proposal {
+                Ok(proposal) => proposal.clone(),
+                Err(_) => break,
+            };
+            if proposal.eligible.iter().next().is_none() {
+                break;
+            }
+            let Some(effects) = self.registry.operation_effects(call) else {
+                break;
+            };
+            let admission = evaluate_operation(&call.name, &effects, self.operation);
+            if admission.verdict != Verdict::Auto
+                || admission.ceiling_blocks
+                || admission.taint_blocks
+            {
+                break;
+            }
+            let declared = match scheduling_write_paths(&call.name, &call.input) {
+                Ok(paths) => paths,
+                Err(_) => break,
+            };
+            if self.declared_set_required
+                && declared.is_empty()
+                && admission.capability != Capability::ReadOnly
+            {
+                break;
+            }
+            if declared.iter().any(|path| {
+                claimed
+                    .iter()
+                    .any(|known| write_paths_conflict(path, known))
+            }) {
+                break;
+            }
+            claimed.extend(declared);
+            let eligible = proposal.eligible;
+            batch.push(AutoApprovedCall {
+                index: *index,
+                call: call.clone(),
+                intent: proposal.admit(eligible),
+                capability: admission.capability,
+                action_signature: signature,
+            });
+        }
+        Ok(batch)
+    }
 }
 
 /// Workspace paths a tool call explicitly names in its structured arguments.

@@ -413,6 +413,12 @@ const SURFACES: &[Surface] = &[
         next_seams: &["pure reads cannot bypass explicit deny/request or admitted ceilings"],
     },
     Surface {
+        path: "crates/cli/src/runtime/deferred_tools.rs",
+        boundary: "cli-host",
+        responsibilities: &["pure auto/authority/repeat/conflict leading-batch selection"],
+        next_seams: &["frozen actual registry/operator ceilings; no approval or effect writer"],
+    },
+    Surface {
         path: "crates/cli/src/runtime/tool_execution_journal.rs",
         boundary: "cli-host",
         responsibilities: &[
