@@ -18,6 +18,8 @@ mod cli_exact;
 mod cli_main;
 #[path = "schema_compat_rust_cli_entry.rs"]
 mod cli_entry;
+#[path = "schema_compat_rust_frontend_owner.rs"]
+mod frontend_owner;
 #[path = "schema_compat_rust_cli_parse.rs"]
 mod cli_parse;
 #[path = "schema_compat_rust_cli_parse_scan.rs"]

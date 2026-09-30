@@ -181,8 +181,17 @@ pub(super) fn compare_critical_functions(
         if loaded.contains_key(path) {
             continue;
         }
-        let base = base_view.parse_file(path)?;
-        let current = candidate_view.parse_file(path)?;
+        let (base, current) = if path == "crates/cli/src/runtime.rs" {
+            (
+                super::super::frontend_owner::runtime_scope(base_view)?,
+                super::super::frontend_owner::runtime_scope(candidate_view)?,
+            )
+        } else {
+            (
+                base_view.parse_file(path)?,
+                candidate_view.parse_file(path)?,
+            )
+        };
         loaded.insert(path, (base, current));
     }
 

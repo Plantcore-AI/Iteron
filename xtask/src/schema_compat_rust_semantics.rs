@@ -1,7 +1,7 @@
 #[path = "schema_compat_rust_semantics_functions.rs"]
 mod functions;
 #[path = "schema_compat_rust_semantics_graph.rs"]
-mod graph;
+pub(super) mod graph;
 #[path = "schema_compat_rust_semantics_serde.rs"]
 mod serde_attrs;
 #[path = "schema_compat_rust_semantics_surface.rs"]
