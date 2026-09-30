@@ -394,6 +394,17 @@ const SURFACES: &[Surface] = &[
         ],
         next_seams: &["pure reads cannot bypass explicit deny/request or admitted ceilings"],
     },
+    Surface {
+        path: "crates/cli/src/runtime/hook_execution.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "actual configured hook dispatch, universal ticket retention and settlement",
+            "bounded concurrent pre-tool decisions and post-tool observer reports",
+        ],
+        next_seams: &[
+            "concrete hook/journal/ledger ports; denied calls return to the tool result owner",
+        ],
+    },
 ];
 
 #[derive(Serialize)]

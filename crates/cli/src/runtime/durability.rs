@@ -510,105 +510,35 @@ impl Agent {
         event: HookEvent,
         context_json: &str,
     ) -> Result<hooks::HookDecision, KernelError> {
-        // Per EVENT, not per hook map: a run with only a `Stop` hook configured has nothing to say
-        // about `PreToolUse`, so brokering it would append an intent and a terminal (and pay their
-        // barriers) to call zero commands. The boundary still covers every dispatch that can
-        // actually start a process, which is the only thing it was ever protecting.
-        if self.hooks.is_empty_for(event) {
-            return Ok(hooks::HookDecision::Allow);
-        }
-        let hook_journal = self.hook_effect_journal.clone().ok_or_else(|| {
-            KernelError::ContextResolution(
-                "hook command journal is unavailable; command was not started".into(),
-            )
-        })?;
-        let matched = u64::try_from(self.hooks.commands(event).len()).unwrap_or(u64::MAX);
-        self.lifecycle_event(
-            "hook.matched",
-            Some(turn),
-            LifecyclePayload {
-                count: Some(matched),
-                ..LifecyclePayload::default()
-            },
-        );
-        self.lifecycle_event(
-            "hook.started",
-            Some(turn),
-            LifecyclePayload {
-                count: Some(matched),
-                ..LifecyclePayload::default()
-            },
-        );
-        let hook_activity = self
-            .activity
-            .span(turn_activity::ActivityStage::Hook, Some(turn));
-        let class = effect_class::EffectClass::Hook;
-        let ordinal = self.next_effect_ordinal(turn, class);
-        let effect = KernelEffect {
+        self.hook_execution(turn)
+            .compatibility(event, context_json)
+            .await
+    }
+
+    /// Assemble concrete independent hook, journal, measurement and projection owners. No
+    /// executor receives mutable Agent state or provider/permission authority.
+    pub(super) fn hook_execution(&mut self, turn: TurnId) -> hook_execution::HookExecution<'_> {
+        let scope = hook_execution::HookExecutionScope {
             turn,
-            class,
-            ordinal,
-            capability: Capability::CodeExecuting,
-            audit_arguments: serde_json::json!({ "event": event.key() }),
             workspace: self.workspace.as_path(),
+            hooks: &self.hooks,
+            command_journal: self.hook_effect_journal.clone(),
+            interrupt: self.interrupt.clone(),
+            drain: self.drain.clone(),
+            activity: self.activity.clone(),
+            emitter: self.lifecycle_emitter.clone(),
+            dispatcher: self.lifecycle_hooks.clone(),
+            correlation: self.lifecycle_correlation(Some(turn)),
         };
-        let hook_cancel = self.interrupt.clone();
-        let hook_drain = self.drain.clone();
-        let Agent {
-            rollout,
-            effect_journal,
-            hooks,
-            ..
-        } = self;
-        let outcome = broker_kernel_effect(rollout, effect_journal, effect, || {
-            Box::pin(async move {
-                effects::EffectDisposition::Definite {
-                    terminal: effect_done_terminal(turn, class, ordinal),
-                    value: hooks
-                        .run_cancellable_journaled_report(
-                            event,
-                            context_json,
-                            hook_cancel.as_deref(),
-                            Some(hook_drain.as_ref()),
-                            &hook_journal,
-                        )
-                        .await,
-                }
-            })
-        })
-        .await;
-        match outcome {
-            Ok(outcome) => {
-                let report = outcome.into_value();
-                let terminal = if matches!(report.decision, hooks::HookDecision::Deny(_)) {
-                    "hook.blocked"
-                } else if report.timed_out > 0 {
-                    "hook.timed_out"
-                } else if report.failed > 0 {
-                    "hook.failed"
-                } else {
-                    "hook.completed"
-                };
-                self.lifecycle_event(
-                    terminal,
-                    Some(turn),
-                    LifecyclePayload {
-                        count: Some(u64::from(report.completed)),
-                        magnitude: Some(u64::from(report.timed_out)),
-                        ..LifecyclePayload::default()
-                    },
-                );
-                if report.failed > 0 || report.timed_out > 0 {
-                    hook_activity.fail(iteron_protocol::ActivityDetailCode::HookGate);
-                } else {
-                    hook_activity.complete();
-                }
-                Ok(report.decision)
-            }
-            Err(error) => {
-                hook_activity.fail(iteron_protocol::ActivityDetailCode::HookGate);
-                Err(self.effect_boundary_failed(error))
-            }
+        hook_execution::HookExecution {
+            rollout: &mut self.rollout,
+            effects: &mut self.effect_journal,
+            record_failed: &mut self.record_failed,
+            ledger: &mut self.ledger,
+            diagnostics: &self.diagnostics,
+            #[cfg(test)]
+            fault: &mut self.fail_next_durable_append,
+            scope,
         }
     }
 
@@ -682,113 +612,10 @@ impl Agent {
         payload: LifecyclePayload,
         project_source: bool,
     ) -> Result<hooks::LifecycleHookReport, KernelError> {
-        debug_assert_eq!(
-            iteron_protocol::lifecycle::event_spec(event_id).map(|spec| spec.hook_capability),
-            Some(iteron_protocol::HookCapability::Gate)
-        );
         if project_source {
             self.lifecycle_event_with_correlation(event_id, correlation, payload);
         }
-        if self.hooks.is_empty_for_lifecycle(event_id) {
-            return Ok(hooks::LifecycleHookReport {
-                decision: hooks::HookDecision::Allow,
-                matched: 0,
-                completed: 0,
-                failed: 0,
-                timed_out: 0,
-                augmentations: Vec::new(),
-            });
-        }
-        let hook_journal = self.hook_effect_journal.clone().ok_or_else(|| {
-            KernelError::ContextResolution(
-                "hook command journal is unavailable; gate command was not started".into(),
-            )
-        })?;
-        let class = effect_class::EffectClass::Hook;
-        let ordinal = self.next_effect_ordinal(turn, class);
-        let effect = KernelEffect {
-            turn,
-            class,
-            ordinal,
-            capability: Capability::CodeExecuting,
-            audit_arguments: serde_json::json!({ "event": event_id }),
-            workspace: self.workspace.as_path(),
-        };
-        self.lifecycle_event("hook.matched", Some(turn), LifecyclePayload::default());
-        self.lifecycle_event("hook.started", Some(turn), LifecyclePayload::default());
-        let hook_activity = self
-            .activity
-            .span(turn_activity::ActivityStage::Hook, Some(turn));
-        let context = serde_json::json!({
-            "catalog_version": iteron_protocol::lifecycle::LIFECYCLE_CATALOG_VERSION.0,
-            "event_id": event_id,
-            "turn_id": turn.0,
-        })
-        .to_string();
-        let hook_cancel = self.interrupt.clone();
-        let hook_drain = self.drain.clone();
-        let Agent {
-            rollout,
-            effect_journal,
-            hooks,
-            ..
-        } = self;
-        let result = broker_kernel_effect(rollout, effect_journal, effect, || {
-            Box::pin(async move {
-                match hooks
-                    .run_lifecycle_cancellable_journaled(
-                        event_id,
-                        &context,
-                        hook_cancel.as_deref(),
-                        Some(hook_drain.as_ref()),
-                        &hook_journal,
-                    )
-                    .await
-                {
-                    Ok(report) => effects::EffectDisposition::Definite {
-                        terminal: effect_done_terminal(turn, class, ordinal),
-                        value: Ok(report),
-                    },
-                    Err(reason) => effects::EffectDisposition::Definite {
-                        terminal: effect_failed_terminal(turn, class, ordinal, reason),
-                        value: Err(reason),
-                    },
-                }
-            })
-        })
-        .await;
-        let report = match result {
-            Ok(result) => result
-                .into_value()
-                .map_err(|reason| KernelError::ContextResolution(reason.to_owned()))?,
-            Err(error) => {
-                hook_activity.fail(iteron_protocol::ActivityDetailCode::HookGate);
-                return Err(self.effect_boundary_failed(error));
-            }
-        };
-        let terminal = if matches!(report.decision, hooks::HookDecision::Deny(_)) {
-            "hook.blocked"
-        } else if report.timed_out > 0 {
-            "hook.timed_out"
-        } else if report.failed > 0 {
-            "hook.failed"
-        } else {
-            "hook.completed"
-        };
-        self.lifecycle_event(
-            terminal,
-            Some(turn),
-            LifecyclePayload {
-                count: Some(u64::from(report.completed)),
-                ..LifecyclePayload::default()
-            },
-        );
-        if report.failed > 0 || report.timed_out > 0 {
-            hook_activity.fail(iteron_protocol::ActivityDetailCode::HookGate);
-        } else {
-            hook_activity.complete();
-        }
-        Ok(report)
+        self.hook_execution(turn).lifecycle(event_id).await
     }
 
     /// Export the run's telemetry projection across the effect boundary (#105).

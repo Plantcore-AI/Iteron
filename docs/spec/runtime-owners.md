@@ -17,6 +17,7 @@ observation; it does not grant permission or acquire mutable ownership of anothe
 | `runtime/tool_output_spill.rs` | Private raw overflow leases and bounded model-visible projection | Managed results retain explicit spill ownership; cleanup follows actual settlement |
 | `runtime/tool_presentation.rs` | Pure bounded/redacted UI and approval-evidence projection | Immutable `ToolUse`/`ToolResult` → frontend values; no journal/process state |
 | `runtime/stream_progress.rs` | Sole output/thinking counters and emission cadence | Observes stream deltas, emits bounded latest progress through `try_send` |
+| `runtime/hook_execution.rs` | Actual configured hook dispatch and ticket settlement coordinator | Concrete Hooks/command journal/cancellation/activity plus EffectJournalOwner/Rollout/Ledger ports; pretool denials return typed calls for durable ToolDone, actual tools are terminal before post observers start |
 | `runtime/early_tool_gate.rs` | Bounded operator-configured hook predispatch coordinator | Immutable gate context → typed complete-allow summary or refusal; no provider/Agent borrow |
 | `runtime/kernel_effect_bridge.rs` | Single non-registry kernel broker adapter | Typed descriptor plus disjoint journal/admission ports → observed/unknown outcome; executor never gets mutable Agent |
 | `runtime/effect_descriptor.rs` | Pure effect identity, audit and terminal vocabulary | Immutable typed descriptor → bounded scrubbed audit values; no owner/writer/executor dependency |
