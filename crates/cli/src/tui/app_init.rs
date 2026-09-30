@@ -1,7 +1,7 @@
 use super::{
-    App, ApprovalChoice, AttachmentEffectState, CostState, Editor, Effort, PermissionMode,
-    RouteView, block, hyperlink, mouse_capture, theme, transcript_layout, transcript_viewer,
-    ui_safe_text, workflow_region, workflows_panel,
+    App, ApprovalChoice, CostState, Editor, Effort, PermissionMode, RouteView, block, hyperlink,
+    mouse_capture, theme, transcript_layout, transcript_viewer, ui_safe_text, workflow_region,
+    workflows_panel,
 };
 use ratatui::style::{Color, Style};
 #[cfg(test)]
@@ -102,10 +102,7 @@ impl App {
             session_preview_generation: 0,
             session_adoption_job: None,
             workspace_command_job: None,
-            attachment_job: None,
-            attachment_generation: 0,
-            attachment_progress: None,
-            attachment_effect_state: AttachmentEffectState::Idle,
+            attachments: super::attachment_owner::AttachmentOwner::default(),
             activities: std::collections::BTreeMap::new(),
             retired_activity_ids: VecDeque::new(),
             resume_handoff: None,

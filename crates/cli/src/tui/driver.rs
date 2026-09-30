@@ -1,10 +1,10 @@
 //! Frontend event driver, terminal ownership, bounded workers and teardown.
 
 use super::{
-    App, Arc, AttachmentEffectState, CEvent, CatchUp, Duration, FIRST_TOKEN_SPINNER_TICK,
-    FRAME_COALESCE, InputThreadControl, Instant, PreparedAdoption, PreparedAdoptionResult,
-    PromptHistoryMode, ProviderDirectory, RouteView, SPINNER_TICK, Session, TERMINAL_READ_SLICE,
-    TermGuard, Terminal, TerminalOptions, VecDeque, Viewport, app_server, apply_server_event,
+    App, Arc, CEvent, CatchUp, Duration, FIRST_TOKEN_SPINNER_TICK, FRAME_COALESCE,
+    InputThreadControl, Instant, PreparedAdoption, PreparedAdoptionResult, PromptHistoryMode,
+    ProviderDirectory, RouteView, SPINNER_TICK, Session, TERMINAL_READ_SLICE, TermGuard, Terminal,
+    TerminalOptions, VecDeque, Viewport, app_server, apply_server_event,
     apply_transcript_effect_event, block, cached_workspace_dirty, dispatch_slash_command, draw,
     finish_attachment_effect, hyperlink, input_dispatch, keymap, local_job_wake, next_wake,
     notification, product_projection, project_recorded_transcript, prompt_history,
@@ -573,40 +573,15 @@ pub async fn run(
             redraw = true;
         }
         app.completions.start_due(&app.editor, &repo, Instant::now());
-        if app.attachment_job.is_some()
-            && app.attachment_effect_state == AttachmentEffectState::Queued
-        {
-            app.attachment_effect_state = AttachmentEffectState::Reading;
-            redraw = true;
-        }
-        if let Some(progress) = app.attachment_progress.as_mut() {
-            while let Ok(state) = progress.try_recv() {
-                app.attachment_effect_state = state;
-                redraw = true;
-            }
-        }
-        if app
-            .attachment_job
-            .as_ref()
-            .is_some_and(|job| job.is_finished())
-        {
-            let job = app
-                .attachment_job
-                .take()
-                .expect("finished attachment job was present");
-            app.attachment_progress = None;
-            match job.await {
-                Ok(effect) => finish_attachment_effect(&mut app, &session, &mut notifier, effect),
-                Err(error) if error.is_cancelled() => {
-                    app.attachment_effect_state = AttachmentEffectState::Cancelled;
+        redraw |= app.attachments.poll_progress();
+        if let Some(update) = app.attachments.poll_ready().await {
+            match update {
+                super::attachment_owner::AttachmentUpdate::Prepared(effect) => finish_attachment_effect(&mut app, &session, &mut notifier, effect),
+                super::attachment_owner::AttachmentUpdate::Failed { error, origin } => {
+                    super::composer_images::restore_unprepared_origin(&mut app, origin);
+                    app.note(block::NoticeLevel::Warn, error);
                 }
-                Err(error) => {
-                    app.attachment_effect_state = AttachmentEffectState::Failed;
-                    app.note(
-                        block::NoticeLevel::Warn,
-                        format!("attachment worker failed: {error}"),
-                    );
-                }
+                super::attachment_owner::AttachmentUpdate::Cancelled => {}
             }
             redraw = true;
         }
@@ -802,7 +777,7 @@ pub async fn run(
             || app.session_adoption_job.is_some()
             || app.completions.has_worker()
             || app.workspace_command_job.is_some()
-            || app.attachment_job.is_some();
+            || app.attachments.is_busy();
         wake = local_job_wake(wake, now, local_job_active);
         let mut next_input = None;
         let effect_active = transcript_effects.is_active();
@@ -974,6 +949,8 @@ pub async fn run(
     Ok(())
     }
     .await;
+    let origin = app.attachments.invalidate();
+    super::composer_images::restore_unprepared_origin(&mut app, origin);
     startup.flush();
 
     // A repeated Ctrl-C is an emergency operator boundary. Restore the physical terminal before

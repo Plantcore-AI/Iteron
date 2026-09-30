@@ -86,11 +86,12 @@ fn add(app: &mut App, session: &Session, input: &str) {
             usage_error(app);
             return;
         }
-        queue_context_diff_effect(app, session.workspace().to_path_buf(), scope.to_owned());
-        app.note(
-            block::NoticeLevel::Info,
-            "diff context queued · collecting in background",
-        );
+        if queue_context_diff_effect(app, session.workspace().to_path_buf(), scope.to_owned()) {
+            app.note(
+                block::NoticeLevel::Info,
+                "diff context queued · collecting in background",
+            );
+        }
         return;
     }
     usage_error(app);
@@ -103,17 +104,19 @@ fn add_path(app: &mut App, session: &Session, kind: ContextKind, raw_path: &str)
         return;
     }
     let path = PathBuf::from(raw_path);
-    queue_file_path_effect(
+    let queued = queue_file_path_effect(
         app,
         kind,
         session.workspace().to_path_buf(),
         path,
         AttachmentOrigin::ContextFile,
     );
-    app.note(
-        block::NoticeLevel::Info,
-        format!("{} context queued · reading in background", kind.label()),
-    );
+    if queued {
+        app.note(
+            block::NoticeLevel::Info,
+            format!("{} context queued · reading in background", kind.label()),
+        );
+    }
 }
 
 pub(super) async fn diff_document(

@@ -21,7 +21,6 @@ pub(crate) use session_client::Session;
 mod picker;
 use picker::{PickAction, PickItem, Picker, PickerEvent};
 mod clipboard_image;
-use clipboard_image::clipboard_image_bytes;
 #[cfg(test)]
 use clipboard_image::{
     clipboard_child_environment_with, windows_clipboard_environment_with,
@@ -53,6 +52,7 @@ mod app_transcript;
 mod app_workflow;
 mod app_workflow_legacy;
 mod artifacts;
+mod attachment_owner;
 #[cfg(target_os = "linux")]
 mod capability_fs;
 mod clipboard;
@@ -122,6 +122,11 @@ use crate::runtime::{
 };
 use crate::semantic_text::{is_unsafe_display_char, ui_safe_json, ui_safe_text};
 use crate::{block, keymap, prompt_history, startup, surface, theme};
+#[cfg(test)]
+use attachment_owner::AttachmentEffectState;
+use attachment_owner::{
+    AttachmentEffectResult, AttachmentFollowup, AttachmentOrigin, AttachmentWorkerOutput,
+};
 use block::spinner;
 use command_surfaces::{
     apply_transcript_effect_event, clear_conversation, ensure_real_workspace_dir,
@@ -133,7 +138,6 @@ use command_surfaces::{
 #[cfg(test)]
 use completion_owner::Completion;
 use composer_images::{
-    AttachmentEffectResult, AttachmentFollowup, AttachmentOrigin, AttachmentWorkerOutput,
     attach_bare_image_paths, dropped_image_reference, finish_attachment_effect,
     handle_composer_paste, queue_bare_image_path, queue_clipboard_image_effect,
     queue_context_diff_effect, queue_draft_with_chips, queue_file_path_effect,
@@ -409,17 +413,6 @@ fn command_token(line: &str, theme: &theme::Theme) -> Option<(String, String, Co
     };
     let end = line.find(char::is_whitespace).unwrap_or(line.len());
     Some((line[..end].to_string(), line[end..].to_string(), color))
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AttachmentEffectState {
-    Idle,
-    Queued,
-    Reading,
-    Decoding,
-    Ready,
-    Failed,
-    Cancelled,
 }
 
 struct PresentedActivity {
@@ -789,10 +782,7 @@ struct App {
     /// At most one disk/process-heavy slash command. Completion carries bounded semantic actions;
     /// the key/render loop never awaits Git, record traversal, or workspace mutation.
     workspace_command_job: Option<tokio::task::JoinHandle<Vec<workspace_command::Action>>>,
-    attachment_job: Option<tokio::task::JoinHandle<AttachmentEffectResult>>,
-    attachment_generation: u64,
-    attachment_progress: Option<tokio::sync::mpsc::Receiver<AttachmentEffectState>>,
-    attachment_effect_state: AttachmentEffectState,
+    attachments: attachment_owner::AttachmentOwner,
     activities: std::collections::BTreeMap<String, PresentedActivity>,
     /// Recently terminalized activity ids. A late cosmetic event cannot resurrect an old-turn
     /// spinner after the authoritative RunEnded boundary, even if a new turn has already started.

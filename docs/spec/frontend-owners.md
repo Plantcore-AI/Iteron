@@ -46,3 +46,7 @@ The final candidate must execute ordinary input/steer/queue/approval, actual ser
 reconciliation, session adoption, rendering, native terminal cleanup and independent-client
 reconnect/backpressure journeys. A physical scripted W3C fixture verifies browser protocol IO and
 actual screenshot correlation; it is not native ChromeDriver or OS desktop evidence.
+
+### Attachment preparation owner
+
+`crates/cli/src/tui/attachment_owner.rs` owns the single physical preparation task, generation, original request, progress receiver and presentation state. Typed ports start actual image/file/clipboard/diff/submission preparation with immutable paths and existing native preparers. Cancellation invalidates observations and returns the original dropped path while the physical task remains admitted until completion. The driver polls only finished tasks; `composer_images` admits fully prepared values into the editor and never owns a background task. Successful session adoption invalidates the old generation before a prepared value can enter the new session. Presentation Ready is an editor preparation result, not a runtime effect terminal.

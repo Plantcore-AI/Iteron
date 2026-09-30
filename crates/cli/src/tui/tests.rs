@@ -6300,13 +6300,17 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 original: "shot.gif".into(),
             },
         );
-        assert_eq!(app.attachment_effect_state, AttachmentEffectState::Queued);
+        assert_eq!(app.attachments.state(), AttachmentEffectState::Queued);
         assert_eq!(
             app.editor.chip_count(),
             0,
             "the TUI did no decode/admit work"
         );
-        let effect = app.attachment_job.take().unwrap().await.unwrap();
+        let attachment_owner::AttachmentUpdate::Prepared(effect) =
+            app.attachments.wait_ready().await
+        else {
+            panic!("actual worker should return prepared value")
+        };
         let Ok(AttachmentWorkerOutput::Prepared(prepared)) = effect.result else {
             panic!("worker must return a prepared image")
         };

@@ -1,4 +1,10 @@
-use super::*;
+use super::attachment_owner::{
+    SubmissionPreparation, prepare_submission_attachments, resolved_image_paths,
+};
+use super::{
+    App, AttachmentFollowup, Op, PendingTurnReceipt, Session, block, file_input, image_input,
+    notification, paste_input, queue_bare_image_path, submit_operation,
+};
 
 pub(super) fn submit_composer(
     app: &mut App,
@@ -8,7 +14,7 @@ pub(super) fn submit_composer(
     // A drop that arrived as keystrokes rather than as a bracketed paste is still a drop. Convert
     // it before anything reads the draft, so the rest of this function sees the chips and anchors
     // the paste lane would have produced.
-    if app.attachment_job.is_some() {
+    if app.attachments.is_busy() {
         app.note(
             block::NoticeLevel::Info,
             "attachment still preparing · submission will remain in the composer",
@@ -97,92 +103,27 @@ fn queue_composer_submission_preparation(
     image_mentions: Vec<image_input::ImageMention>,
     file_mentions: Vec<file_input::FileMention>,
 ) {
-    app.attachment_generation = app.attachment_generation.wrapping_add(1);
-    let generation = app.attachment_generation;
-    let draft_revision = app.editor.persistence_revision();
-    let image_preparer = app.editor.attachments().preparer();
-    let file_preparer = app.editor.files().preparer();
-    let workspace = session.workspace().to_path_buf();
-    let image_paths = resolved_image_paths(&workspace, &image_mentions);
-    let file_paths = file_mentions
-        .iter()
-        .map(|mention| mention.path().to_path_buf())
-        .collect::<Vec<_>>();
-    let origin = AttachmentOrigin::ComposerSubmission {
+    let queued = app.attachments.queue_submission(SubmissionPreparation {
+        image_preparer: app.editor.attachments().preparer(),
+        file_preparer: app.editor.files().preparer(),
+        workspace: session.workspace().to_path_buf(),
         raw,
-        draft_revision,
+        draft_revision: app.editor.persistence_revision(),
         image_mentions,
         file_mentions,
-    };
-    app.attachment_effect_state = AttachmentEffectState::Queued;
+    });
     app.note(
-        block::NoticeLevel::Info,
-        "submission attachments queued · reading and decoding in background",
+        if queued {
+            block::NoticeLevel::Info
+        } else {
+            block::NoticeLevel::Warn
+        },
+        if queued {
+            "submission attachments queued · reading and decoding in background"
+        } else {
+            "attachment preparation is still running; submission kept in the composer"
+        },
     );
-    app.attachment_job = Some(tokio::task::spawn_blocking(move || {
-        let result = prepare_submission_attachments(
-            image_preparer,
-            file_preparer,
-            workspace,
-            image_paths,
-            file_paths,
-        )
-        .map(|(images, files)| AttachmentWorkerOutput::PreparedSubmission { images, files });
-        AttachmentEffectResult {
-            generation,
-            origin,
-            result,
-        }
-    }));
-}
-
-fn resolved_image_paths(
-    workspace: &std::path::Path,
-    mentions: &[image_input::ImageMention],
-) -> Vec<std::path::PathBuf> {
-    mentions
-        .iter()
-        .map(|mention| {
-            let path = mention.reference().path();
-            if path.is_absolute() {
-                path.to_path_buf()
-            } else {
-                workspace.join(path)
-            }
-        })
-        .collect()
-}
-
-fn prepare_submission_attachments(
-    image_preparer: image_input::ImagePreparer,
-    file_preparer: file_input::FilePreparer,
-    workspace: std::path::PathBuf,
-    image_paths: Vec<std::path::PathBuf>,
-    file_paths: Vec<std::path::PathBuf>,
-) -> Result<
-    (
-        Vec<image_input::PreparedImage>,
-        Vec<file_input::PreparedFile>,
-    ),
-    String,
-> {
-    let mut images = Vec::with_capacity(image_paths.len());
-    for path in image_paths {
-        images.push(
-            image_preparer
-                .prepare_path(&path)
-                .map_err(|error| format!("image attachment refused: {error}"))?,
-        );
-    }
-    let mut files = Vec::with_capacity(file_paths.len());
-    for path in file_paths {
-        files.push(
-            file_preparer
-                .prepare_path(&workspace, &path)
-                .map_err(|error| format!("file attachment refused: {error}"))?,
-        );
-    }
-    Ok((images, files))
 }
 
 #[allow(clippy::too_many_arguments)]

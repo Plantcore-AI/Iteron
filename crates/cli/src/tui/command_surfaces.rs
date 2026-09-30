@@ -527,6 +527,9 @@ pub(super) fn apply_transcript_effect_event(
                     blocked,
                 }),
             ) => {
+                let origin = app.attachments.invalidate();
+                super::composer_images::restore_unprepared_origin(app, origin);
+                app.completions.dismiss();
                 project_recorded_transcript(app, &events);
                 session.adopt_run(
                     adopted.rollout_path.clone(),

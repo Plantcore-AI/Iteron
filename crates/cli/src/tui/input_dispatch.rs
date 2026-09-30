@@ -231,11 +231,12 @@ pub(super) async fn dispatch<B: ratatui::backend::Backend>(
             // capture lands as a chip on the draft, and a draft with chips is queued behind
             // the turn rather than steered into it.
             if k.code == KeyCode::Char('v') && ctrl {
-                app.note(
-                    block::NoticeLevel::Info,
-                    "clipboard image queued · you can keep typing",
-                );
-                queue_clipboard_image_effect(app);
+                if queue_clipboard_image_effect(app) {
+                    app.note(
+                        block::NoticeLevel::Info,
+                        "clipboard image queued · you can keep typing",
+                    );
+                }
                 return Ok(true);
             }
 
