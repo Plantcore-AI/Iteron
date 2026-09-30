@@ -167,8 +167,28 @@ fn provision(path: &Path) -> Result<(), WorkflowStoreError> {
     }
     #[cfg(windows)]
     {
-        iteron_support::durable_windows_state::provision_private_directory(path)
-            .map_err(windows_error)
+        // The trusted host supplies a nested namespace (.live-workflows/session). Provision only
+        // absent components, each with a protected current-user DACL; never rewrite existing ACLs.
+        let mut absent = Vec::new();
+        let mut current = path;
+        loop {
+            match std::fs::symlink_metadata(current) {
+                Ok(_) => break,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    if absent.len() >= 32 {
+                        return Err(WorkflowStoreError::Unavailable);
+                    }
+                    absent.push(current);
+                    current = current.parent().ok_or(WorkflowStoreError::Unavailable)?;
+                }
+                Err(_) => return Err(WorkflowStoreError::Unavailable),
+            }
+        }
+        for component in absent.into_iter().rev() {
+            iteron_support::durable_windows_state::provision_private_directory(component)
+                .map_err(windows_error)?;
+        }
+        Ok(())
     }
     #[cfg(not(any(unix, windows)))]
     {
