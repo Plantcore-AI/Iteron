@@ -1,6 +1,8 @@
 //! Sealed evidence of native guarded commits. Model/external JSON cannot mint these receipts.
 
+#[cfg(any(target_os = "linux", test))]
 use base64::Engine;
+#[cfg(any(target_os = "linux", test))]
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -100,6 +102,7 @@ impl NativeMutationReceipt {
     pub(crate) fn matches(&self, id: &str, name: &str) -> bool {
         self.tool_use_id == id && self.tool_name == name
     }
+    #[cfg(any(target_os = "linux", test))]
     pub(crate) fn wire(&self) -> NativeReceiptWire {
         NativeReceiptWire {
             tool_use_id: self.tool_use_id.clone(),
@@ -122,6 +125,7 @@ impl NativeMutationReceipt {
 
 // Only the owned private helper response admits this wire type. The public receipt deliberately
 // has no Deserialize implementation; neither ToolResult nor model arguments contain this field.
+#[cfg(any(target_os = "linux", test))]
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct NativeReceiptWire {
@@ -129,6 +133,7 @@ pub(crate) struct NativeReceiptWire {
     tool_name: String,
     files: Vec<NativeFileWire>,
 }
+#[cfg(any(target_os = "linux", test))]
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct NativeFileWire {
@@ -136,10 +141,21 @@ struct NativeFileWire {
     before: Option<String>,
     after: String,
 }
+#[cfg(any(target_os = "linux", test))]
 impl NativeReceiptWire {
     pub(crate) fn seal(self, id: &str, name: &str) -> Result<NativeMutationReceipt, &'static str> {
         if self.tool_use_id != id || self.tool_name != name || self.files.len() > MAX_FILES {
             return Err("native helper capture identity mismatch");
+        }
+        // Reject the aggregate encoded envelope before allocating decoded file buffers.
+        let max_encoded = MAX_TOTAL_BYTES.div_ceil(3) * 4 + MAX_FILES * 8;
+        let encoded_total = self.files.iter().try_fold(0usize, |total, file| {
+            total
+                .checked_add(file.after.len())?
+                .checked_add(file.before.as_ref().map_or(0, String::len))
+        });
+        if encoded_total.is_none_or(|total| total > max_encoded) {
+            return Err("native helper capture exceeds its aggregate envelope");
         }
         let decode = |value: String| {
             if value.len() > MAX_NATIVE_CAPTURE_FILE_BYTES.div_ceil(3) * 4 {
@@ -163,3 +179,7 @@ impl NativeReceiptWire {
         NativeMutationReceipt::committed(self.tool_use_id, self.tool_name, files)
     }
 }
+
+#[cfg(test)]
+#[path = "native_mutation_tests.rs"]
+mod tests;

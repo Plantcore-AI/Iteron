@@ -3,7 +3,7 @@
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::ok_result;
-use crate::{ToolExecution, err_result};
+use crate::{CapturedToolExecution, ToolExecution, err_result};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use iteron_protocol::ToolResult;
 use iteron_protocol::ToolUse;
@@ -38,21 +38,75 @@ struct Request {
 
 #[cfg(target_os = "linux")]
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Response {
     result: ToolResult,
     outcome_unknown: bool,
+    #[serde(default)]
+    native_mutation: Option<crate::native_mutation::NativeReceiptWire>,
+    #[serde(default)]
+    capture_error: Option<String>,
 }
 
+#[cfg(target_os = "linux")]
+impl Response {
+    fn from_captured(captured: CapturedToolExecution, outcome_unknown: bool) -> Self {
+        let outcome_unknown =
+            outcome_unknown || matches!(&captured.execution, ToolExecution::Unknown(_));
+        Self {
+            result: captured.execution.into_result(),
+            outcome_unknown,
+            native_mutation: if outcome_unknown {
+                None
+            } else {
+                captured.native_mutation.map(|receipt| receipt.wire())
+            },
+            capture_error: captured.capture_error,
+        }
+    }
+    fn into_captured(self, id: &str, name: &str) -> CapturedToolExecution {
+        if self.result.tool_use_id != id {
+            return unknown(id.into(), "confined helper identity mismatch").into();
+        }
+        let success = !self.outcome_unknown && !self.result.is_error;
+        let mut captured = CapturedToolExecution::from(if self.outcome_unknown {
+            ToolExecution::Unknown(self.result)
+        } else {
+            ToolExecution::Definite(self.result)
+        });
+        captured.capture_error = self.capture_error;
+        if success && let Some(wire) = self.native_mutation {
+            match wire.seal(id, name) {
+                Ok(receipt) => captured.native_mutation = Some(receipt),
+                Err(reason) => captured.capture_error = Some(reason.into()),
+            }
+        }
+        captured
+    }
+}
+
+#[cfg(test)]
 pub(crate) async fn execute(
     root: &Path,
     call: ToolUse,
     test_helper_thread: bool,
     scope: Option<crate::inherited_write_scope::InheritedWriteScope>,
 ) -> ToolExecution {
+    execute_captured(root, call, test_helper_thread, scope)
+        .await
+        .execution
+}
+
+pub(crate) async fn execute_captured(
+    root: &Path,
+    call: ToolUse,
+    test_helper_thread: bool,
+    scope: Option<crate::inherited_write_scope::InheritedWriteScope>,
+) -> CapturedToolExecution {
     if let Some(scope) = &scope
         && let Err(reason) = scope.validate_call(root, &call)
     {
-        return ToolExecution::Definite(err_result(call.id, reason));
+        return ToolExecution::Definite(err_result(call.id, reason)).into();
     }
     #[cfg(target_os = "macos")]
     {
@@ -67,7 +121,8 @@ pub(crate) async fn execute(
         return ToolExecution::Definite(err_result(
             call.id,
             "confined native writes require the Linux Landlock helper".into(),
-        ));
+        ))
+        .into();
     }
     #[cfg(all(test, target_os = "linux"))]
     {
@@ -84,6 +139,7 @@ pub(crate) async fn execute(
         let _ = test_helper_thread;
         use std::os::unix::fs::MetadataExt;
         let id = call.id.clone();
+        let name = call.name.clone();
         let root = match root.canonicalize().and_then(|path| {
             let metadata = path.metadata()?;
             Ok((path, metadata.dev(), metadata.ino()))
@@ -93,7 +149,8 @@ pub(crate) async fn execute(
                 return ToolExecution::Definite(err_result(
                     id,
                     format!("workspace root unavailable: {error}"),
-                ));
+                ))
+                .into();
             }
         };
         let request = Request {
@@ -109,7 +166,8 @@ pub(crate) async fn execute(
                 return ToolExecution::Definite(err_result(
                     id,
                     "confined helper request exceeds its fixed byte limit".into(),
-                ));
+                ))
+                .into();
             }
         };
         let executable = match std::env::current_exe() {
@@ -118,7 +176,8 @@ pub(crate) async fn execute(
                 return ToolExecution::Definite(err_result(
                     id,
                     format!("confined helper executable unavailable: {error}"),
-                ));
+                ))
+                .into();
             }
         };
         let mut command = tokio::process::Command::new(executable);
@@ -143,7 +202,8 @@ pub(crate) async fn execute(
                 return ToolExecution::Definite(err_result(
                     id,
                     format!("confined helper launch refused: {error}"),
-                ));
+                ))
+                .into();
             }
         };
         let mut guard = ChildGuard::new(child);
@@ -155,21 +215,17 @@ pub(crate) async fn execute(
         match attempt {
             Ok(Ok(response)) => {
                 if response.result.tool_use_id != id {
-                    return unknown(id, "confined helper identity mismatch");
+                    return unknown(id, "confined helper identity mismatch").into();
                 }
-                if response.outcome_unknown {
-                    ToolExecution::Unknown(response.result)
-                } else {
-                    ToolExecution::Definite(response.result)
-                }
+                response.into_captured(&id, &name)
             }
             Ok(Err(reason)) => {
                 guard.kill_and_reap().await;
-                unknown(id, &format!("confined helper outcome unknown: {reason}"))
+                unknown(id, &format!("confined helper outcome unknown: {reason}")).into()
             }
             Err(_) => {
                 guard.kill_and_reap().await;
-                unknown(id, "confined helper timed out; write outcome unknown")
+                unknown(id, "confined helper timed out; write outcome unknown").into()
             }
         }
     }
@@ -274,14 +330,16 @@ pub const fn native_write_confinement_notice() -> Option<&'static str> {
 
 #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
 async fn execute_descriptor_relative(root: &Path, call: ToolUse) -> ToolExecution {
-    execute_descriptor_relative_scoped(root, call, None).await
+    execute_descriptor_relative_scoped(root, call, None)
+        .await
+        .execution
 }
 #[cfg(any(target_os = "macos", all(test, target_os = "linux")))]
 async fn execute_descriptor_relative_scoped(
     root: &Path,
     call: ToolUse,
     scope: Option<crate::inherited_write_scope::InheritedWriteScope>,
-) -> ToolExecution {
+) -> CapturedToolExecution {
     // Keep this check at the executor seam as well as registry admission. No fallback may turn
     // an escaping path or Git administration mutation into ordinary host-authority execution.
     let root = match root.canonicalize() {
@@ -290,19 +348,21 @@ async fn execute_descriptor_relative_scoped(
             return ToolExecution::Definite(err_result(
                 call.id,
                 format!("workspace root unavailable: {error}"),
-            ));
+            ))
+            .into();
         }
     };
     if let Err(reason) = crate::workspace_boundary::validate_coding_write_call(&root, &call) {
-        return ToolExecution::Definite(err_result(call.id, reason));
+        return ToolExecution::Definite(err_result(call.id, reason)).into();
     }
     let before = effect_snapshot(&root, &call).await;
-    let result = run_request(&root, call, scope.as_ref()).await;
-    if result.is_error && error_effect_unknown(before, &result).await {
-        ToolExecution::Unknown(result)
-    } else {
-        ToolExecution::Definite(result)
+    let mut captured = run_request(&root, call, scope.as_ref()).await;
+    let result = captured.result_mut();
+    if result.is_error && error_effect_unknown(before, result).await {
+        captured.execution = ToolExecution::Unknown(captured.execution.into_result());
+        captured.native_mutation = None;
     }
+    captured
 }
 
 #[cfg(all(any(test, feature = "test-helper"), target_os = "linux"))]
@@ -310,8 +370,9 @@ async fn execute_in_test_landlock_thread(
     root: PathBuf,
     call: ToolUse,
     scope: Option<crate::inherited_write_scope::InheritedWriteScope>,
-) -> ToolExecution {
+) -> CapturedToolExecution {
     let id = call.id.clone();
+    let name = call.name.clone();
     let (sender, receiver) = tokio::sync::oneshot::channel();
     std::thread::spawn(move || {
         let result = (|| -> io::Result<Response> {
@@ -324,25 +385,22 @@ async fn execute_in_test_landlock_thread(
                 .build()?;
             Ok(runtime.block_on(async {
                 let before = effect_snapshot(&root, &call).await;
-                let result = run_request(&root, call, scope.as_ref()).await;
-                let outcome_unknown =
-                    result.is_error && error_effect_unknown(before, &result).await;
-                Response {
-                    result,
-                    outcome_unknown,
-                }
+                let mut captured = run_request(&root, call, scope.as_ref()).await;
+                let result = captured.result_mut();
+                let outcome_unknown = result.is_error && error_effect_unknown(before, result).await;
+                Response::from_captured(captured, outcome_unknown)
             }))
         })();
         let _ = sender.send(result);
     });
     match receiver.await {
-        Ok(Ok(response)) if response.outcome_unknown => ToolExecution::Unknown(response.result),
-        Ok(Ok(response)) => ToolExecution::Definite(response.result),
+        Ok(Ok(response)) => response.into_captured(&id, &name),
         Ok(Err(error)) => ToolExecution::Definite(err_result(
             id,
             format!("confined test helper refused: {error}"),
-        )),
-        Err(_) => unknown(id, "confined test helper exited without a result"),
+        ))
+        .into(),
+        Err(_) => unknown(id, "confined test helper exited without a result").into(),
     }
 }
 
@@ -366,10 +424,10 @@ async fn transact(child: &mut tokio::process::Child, request: &[u8]) -> io::Resu
         .ok_or_else(|| io::Error::other("helper stdout missing"))?;
     let mut response = Vec::new();
     stdout
-        .take(1024 * 1024 + 1)
+        .take(64 * 1024 * 1024 + 1)
         .read_to_end(&mut response)
         .await?;
-    if response.len() > 1024 * 1024 {
+    if response.len() > 64 * 1024 * 1024 {
         return Err(io::Error::other("helper response exceeds fixed byte limit"));
     }
     let status = child.wait().await?;
@@ -427,19 +485,17 @@ fn helper_entry_inner() -> io::Result<()> {
         .build()?;
     let response = runtime.block_on(async {
         let before = effect_snapshot(&root, &request.call).await;
-        let result = run_request(&root, request.call, request.scope.as_ref()).await;
-        let outcome_unknown = result.is_error && error_effect_unknown(before, &result).await;
-        Response {
-            result,
-            outcome_unknown,
-        }
+        let mut captured = run_request(&root, request.call, request.scope.as_ref()).await;
+        let result = captured.result_mut();
+        let outcome_unknown = result.is_error && error_effect_unknown(before, result).await;
+        Response::from_captured(captured, outcome_unknown)
     });
     #[cfg(debug_assertions)]
     if std::env::var_os("ITERON_HELPER_EXIT_AFTER_EFFECT").is_some() {
         std::process::exit(91);
     }
     let bytes = serde_json::to_vec(&response).map_err(io::Error::other)?;
-    if bytes.len() > 1024 * 1024 {
+    if bytes.len() > 64 * 1024 * 1024 {
         return Err(io::Error::other("helper response exceeds fixed byte limit"));
     }
     io::stdout().write_all(&bytes)?;
@@ -555,22 +611,22 @@ async fn run_request(
     root: &Path,
     call: ToolUse,
     scope: Option<&crate::inherited_write_scope::InheritedWriteScope>,
-) -> ToolResult {
+) -> CapturedToolExecution {
     if let Some(scope) = scope
         && let Err(reason) = scope.validate_call(root, &call)
     {
-        return err_result(call.id, reason);
+        return err_result(call.id, reason).into();
     }
-    let id = call.id;
+    let id = call.id.clone();
     match call.name.as_str() {
         "write_file" => {
             let Some(path) = call.input.get("path").and_then(|value| value.as_str()) else {
-                return err_result(id, "write_file: missing string field `path`".into());
+                return err_result(id, "write_file: missing string field `path`".into()).into();
             };
             let Some(content) = call.input.get("content").and_then(|value| value.as_str()) else {
-                return err_result(id, "write_file: missing string field `content`".into());
+                return err_result(id, "write_file: missing string field `content`".into()).into();
             };
-            match crate::write_file::write_workspace_file_with_scope(
+            match crate::write_file::write_workspace_file_captured_with_scope(
                 root,
                 path,
                 content,
@@ -580,8 +636,12 @@ async fn run_request(
             )
             .await
             {
-                Ok(()) => ok_result(id, format!("wrote {path} ({} bytes)", content.len())),
-                Err(error) => err_result(id, error),
+                Ok(file) => CapturedToolExecution::native_success(
+                    &call,
+                    ok_result(id, format!("wrote {path} ({} bytes)", content.len())),
+                    vec![file],
+                ),
+                Err(error) => ToolExecution::Definite(err_result(id, error)).into(),
             }
         }
         "edit" => {
@@ -600,7 +660,7 @@ async fn run_request(
                 .get("new")
                 .and_then(|value| value.as_str())
                 .unwrap_or("");
-            match crate::edit::edit_workspace_file_with_scope(
+            match crate::edit::edit_workspace_file_captured_with_scope(
                 root,
                 path,
                 old,
@@ -611,17 +671,25 @@ async fn run_request(
             )
             .await
             {
-                Ok(()) => ok_result(id, format!("edited {path} (1 replacement)")),
-                Err(error) => err_result(id, error),
+                Ok(file) => CapturedToolExecution::native_success(
+                    &call,
+                    ok_result(id, format!("edited {path} (1 replacement)")),
+                    vec![file],
+                ),
+                Err(error) => ToolExecution::Definite(err_result(id, error)).into(),
             }
         }
         "apply_patch" => {
-            match crate::multi_file_patch::apply_patch_scoped(root, &call.input, scope).await {
-                Ok(message) => ok_result(id, message),
-                Err(error) => err_result(id, error),
+            match crate::multi_file_patch::apply_patch_captured_scoped(root, &call.input, scope)
+                .await
+            {
+                Ok((message, files)) => {
+                    CapturedToolExecution::native_success(&call, ok_result(id, message), files)
+                }
+                Err(error) => ToolExecution::Definite(err_result(id, error)).into(),
             }
         }
-        _ => err_result(id, "unsupported helper operation".into()),
+        _ => ToolExecution::Definite(err_result(id, "unsupported helper operation".into())).into(),
     }
 }
 

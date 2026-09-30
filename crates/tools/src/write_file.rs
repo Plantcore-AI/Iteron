@@ -547,7 +547,7 @@ pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
     let confined = registry.confine_execution_handle();
     let inherited_scope = registry.inherited_write_scope_handle();
     let test_helper_thread = registry.test_helper_thread_handle();
-    registry.push_candidate_change_effect_tool(
+    registry.push_native_change_captured_tool(
         ToolSpec {
             name: "write_file".into(),
             description: "Create or replace one UTF-8 text file in the workspace by default. Missing \
@@ -577,9 +577,9 @@ pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
             let confined = confined.clone();
             let inherited_scope=inherited_scope.clone();
             let test_helper_thread = test_helper_thread.clone();
-            crate::effectfut::box_it(async move {
+            crate::capturedfut::box_it(async move {
                 if inherited_scope.get().is_some() || confined.load(Ordering::Relaxed) {
-                    return crate::confined_helper::execute(
+                    return crate::confined_helper::execute_captured(
                         &root,
                         call,
                         test_helper_thread.load(Ordering::Relaxed),
@@ -589,28 +589,19 @@ pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
                 }
                 let id = call.id.clone();
                 let Some(path) = call.input.get("path").and_then(|value| value.as_str()) else {
-                    return crate::ToolExecution::Definite(err_result(id, "write_file: missing string field `path`".into()));
+                    return crate::ToolExecution::Definite(err_result(id, "write_file: missing string field `path`".into())).into();
                 };
                 let Some(content) = call.input.get("content").and_then(|value| value.as_str())
                 else {
-                    return crate::ToolExecution::Definite(err_result(id, "write_file: missing string field `content`".into()));
+                    return crate::ToolExecution::Definite(err_result(id, "write_file: missing string field `content`".into())).into();
                 };
-                crate::ToolExecution::Definite(match write_workspace_file(&root, path, content, false).await {
-                    Ok(()) => ok_result(id, format!("wrote {path} ({} bytes)", content.len())),
-                    Err(error) => err_result(id, error),
-                })
+                match write_workspace_file_captured_with_scope(&root, path, content, false, None, |_| {}).await {
+                    Ok(file) => crate::CapturedToolExecution::native_success(&call, ok_result(id, format!("wrote {path} ({} bytes)", content.len())), vec![file]),
+                    Err(error) => crate::ToolExecution::Definite(err_result(id, error)).into(),
+                }
             })
         },
     )
-}
-
-pub(crate) async fn write_workspace_file(
-    root: &Path,
-    path: &str,
-    content: &str,
-    confined: bool,
-) -> Result<(), String> {
-    write_workspace_file_with_hook_and_boundary(root, path, content, confined, |_| {}).await
 }
 
 #[cfg(test)]
@@ -626,6 +617,7 @@ where
     write_workspace_file_with_hook_and_boundary(root, path, content, false, before_commit).await
 }
 
+#[cfg(test)]
 pub(crate) async fn write_workspace_file_with_hook_and_boundary<F>(
     root: &Path,
     path: &str,
@@ -639,6 +631,7 @@ where
     write_workspace_file_with_scope(root, path, content, confined, None, before_commit).await
 }
 
+#[cfg(test)]
 pub(crate) async fn write_workspace_file_with_scope<F>(
     root: &Path,
     path: &str,
@@ -647,6 +640,22 @@ pub(crate) async fn write_workspace_file_with_scope<F>(
     scope: Option<&crate::inherited_write_scope::InheritedWriteScope>,
     before_commit: F,
 ) -> Result<(), String>
+where
+    F: FnOnce(&Path),
+{
+    write_workspace_file_captured_with_scope(root, path, content, confined, scope, before_commit)
+        .await
+        .map(|_| ())
+}
+
+pub(crate) async fn write_workspace_file_captured_with_scope<F>(
+    root: &Path,
+    path: &str,
+    content: &str,
+    confined: bool,
+    scope: Option<&crate::inherited_write_scope::InheritedWriteScope>,
+    before_commit: F,
+) -> Result<crate::NativeFileChange, String>
 where
     F: FnOnce(&Path),
 {
@@ -676,9 +685,15 @@ where
             let staged = StagedWrite::prepare_confined(&initial_target, content.as_bytes(), target)
                 .await
                 .map_err(|error| format!("stage {path}: {error}"))?;
+            let before =
+                matches!(captured.state, TargetSnapshot::Existing(_)).then_some(captured.bytes);
             before_commit(&initial_target);
             return match staged.commit_if_unchanged(&captured.state).await {
-                Ok(()) => Ok(()),
+                Ok(()) => Ok(crate::NativeFileChange::committed(
+                    initial_target,
+                    before,
+                    content.as_bytes().to_vec(),
+                )),
                 Err(GuardedCommitFailure::Changed) => Err(file_changed_json("write_file", path)),
                 Err(GuardedCommitFailure::Inspect(error)) => {
                     Err(format!("inspect {path} before commit: {error}"))
@@ -719,6 +734,7 @@ where
             "write_file refused: content would not change target bytes: {path}"
         ));
     }
+    let before = matches!(captured.state, TargetSnapshot::Existing(_)).then_some(captured.bytes);
     let expected = captured.state;
     let staged =
         StagedWrite::prepare_with_boundary(&target, content.as_bytes(), confined.then_some(root))
@@ -726,7 +742,11 @@ where
             .map_err(|error| format!("stage {path}: {error}"))?;
     before_commit(&target);
     match staged.commit_if_unchanged(&expected).await {
-        Ok(()) => Ok(()),
+        Ok(()) => Ok(crate::NativeFileChange::committed(
+            target,
+            before,
+            content.as_bytes().to_vec(),
+        )),
         Err(GuardedCommitFailure::Changed) => Err(file_changed_json("write_file", path)),
         Err(GuardedCommitFailure::Inspect(error)) => {
             Err(format!("inspect {path} before commit: {error}"))

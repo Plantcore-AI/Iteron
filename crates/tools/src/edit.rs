@@ -390,16 +390,6 @@ pub(crate) fn suspicious_unicode(s: &str) -> Option<u32> {
     })
 }
 
-pub(crate) async fn edit_workspace_file(
-    root: &std::path::Path,
-    path: &str,
-    old: &str,
-    new: &str,
-    confined: bool,
-) -> Result<(), String> {
-    edit_workspace_file_with_hook_and_boundary(root, path, old, new, confined, |_| {}).await
-}
-
 #[cfg(test)]
 pub(crate) async fn edit_workspace_file_with_hook<F>(
     root: &std::path::Path,
@@ -414,6 +404,7 @@ where
     edit_workspace_file_with_hook_and_boundary(root, path, old, new, false, before_commit).await
 }
 
+#[cfg(test)]
 pub(crate) async fn edit_workspace_file_with_hook_and_boundary<F>(
     root: &std::path::Path,
     path: &str,
@@ -428,6 +419,7 @@ where
     edit_workspace_file_with_scope(root, path, old, new, confined, None, before_commit).await
 }
 
+#[cfg(test)]
 pub(crate) async fn edit_workspace_file_with_scope<F>(
     root: &std::path::Path,
     path: &str,
@@ -437,6 +429,23 @@ pub(crate) async fn edit_workspace_file_with_scope<F>(
     scope: Option<&crate::inherited_write_scope::InheritedWriteScope>,
     before_commit: F,
 ) -> Result<(), String>
+where
+    F: FnOnce(&std::path::Path),
+{
+    edit_workspace_file_captured_with_scope(root, path, old, new, confined, scope, before_commit)
+        .await
+        .map(|_| ())
+}
+
+pub(crate) async fn edit_workspace_file_captured_with_scope<F>(
+    root: &std::path::Path,
+    path: &str,
+    old: &str,
+    new: &str,
+    confined: bool,
+    scope: Option<&crate::inherited_write_scope::InheritedWriteScope>,
+    before_commit: F,
+) -> Result<crate::NativeFileChange, String>
 where
     F: FnOnce(&std::path::Path),
 {
@@ -512,7 +521,11 @@ where
         .map_err(|error| format!("stage {path}: {error}"))?;
     before_commit(&target);
     match staged.commit_if_unchanged(&snapshot.target).await {
-        Ok(()) => Ok(()),
+        Ok(()) => Ok(crate::NativeFileChange::committed(
+            target,
+            Some(snapshot.bytes),
+            encoded,
+        )),
         Err(GuardedCommitFailure::Changed) => Err(file_changed_json("edit", path)),
         Err(GuardedCommitFailure::Inspect(error)) => {
             Err(format!("inspect {path} before commit: {error}"))
@@ -527,7 +540,7 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
     let confined = r.confine_execution_handle();
     let inherited_scope = r.inherited_write_scope_handle();
     let test_helper_thread = r.test_helper_thread_handle();
-    r.push_candidate_change_effect_tool(
+    r.push_native_change_captured_tool(
         ToolSpec {
             name: "edit".into(),
             description: "Replace one UNIQUE snippet in a file with new text. Exact matching is \
@@ -554,9 +567,9 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
             let confined = confined.clone();
             let inherited_scope=inherited_scope.clone();
             let test_helper_thread = test_helper_thread.clone();
-            crate::effectfut::box_it(async move {
+            crate::capturedfut::box_it(async move {
                 if inherited_scope.get().is_some() || confined.load(std::sync::atomic::Ordering::Relaxed) {
-                    return crate::confined_helper::execute(
+                    return crate::confined_helper::execute_captured(
                         &root,
                         call,
                         test_helper_thread.load(std::sync::atomic::Ordering::Relaxed),
@@ -572,10 +585,10 @@ pub(crate) fn register(r: &mut Registry) -> Result<(), ToolError> {
                     .unwrap_or("");
                 let old = call.input.get("old").and_then(|x| x.as_str()).unwrap_or("");
                 let new = call.input.get("new").and_then(|x| x.as_str()).unwrap_or("");
-                crate::ToolExecution::Definite(match edit_workspace_file(&root, path, old, new, false).await {
-                    Ok(()) => ok_result(id, format!("edited {path} (1 replacement)")),
-                    Err(error) => err_result(id, error),
-                })
+                match edit_workspace_file_captured_with_scope(&root, path, old, new, false, None, |_| {}).await {
+                    Ok(file) => crate::CapturedToolExecution::native_success(&call, ok_result(id, format!("edited {path} (1 replacement)")), vec![file]),
+                    Err(error) => crate::ToolExecution::Definite(err_result(id, error)).into(),
+                }
             })
         },
     )

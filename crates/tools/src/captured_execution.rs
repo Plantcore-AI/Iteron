@@ -40,6 +40,11 @@ impl From<ToolExecution> for CapturedToolExecution {
         }
     }
 }
+impl From<ToolResult> for CapturedToolExecution {
+    fn from(result: ToolResult) -> Self {
+        Self::from(ToolExecution::Definite(result))
+    }
+}
 impl CapturedToolExecution {
     pub fn into_result(self) -> ToolResult {
         self.execution.into_result()

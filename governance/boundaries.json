@@ -1285,6 +1285,18 @@
       "paths": [
         {
           "kind": "file",
+          "path": "crates/tools/src/captured_execution.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/tools/src/native_mutation.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/tools/src/native_mutation_tests.rs"
+        },
+        {
+          "kind": "file",
           "path": "crates/tools/Cargo.toml"
         },
         {
@@ -2536,6 +2548,22 @@
       "reviewers": [],
       "requires_independent_review": true,
       "paths": [
+        {
+          "kind": "file",
+          "path": "crates/tools/src/captured_execution.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/tools/src/native_mutation.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/tools/src/native_mutation_tests.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/tools/src/confined_helper.rs"
+        },
         {
           "kind": "file",
           "path": "crates/protocol/src/event.rs"

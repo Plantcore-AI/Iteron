@@ -1492,33 +1492,6 @@ impl Registry {
         self.push_tool_with_origin_and_purpose(spec, run, ToolOrigin::BuiltIn, ToolPurpose::General)
     }
 
-    /// Native candidate changes may have an unknown outcome if their isolated helper exits
-    /// after receiving the request but before returning its authoritative result.
-    pub(crate) fn push_candidate_change_effect_tool(
-        &mut self,
-        spec: ToolSpec,
-        run: impl Fn(ToolUse, PathBuf) -> effectfut::BoxFut + Send + Sync + 'static,
-    ) -> Result<(), ToolError> {
-        let adapted = move |call, root| {
-            let future = run(call, root);
-            registeredfut::box_it(async move {
-                RegisteredExecution {
-                    outcome: future.await.into(),
-                    dispatch_to_terminal_ms: None,
-                }
-            })
-        };
-        self.register_with_origin(
-            Tool {
-                spec,
-                run: Arc::new(adapted),
-                output_owner: ToolOutputOwner::Runtime,
-                purpose: ToolPurpose::CandidateChange,
-            },
-            ToolOrigin::BuiltIn,
-        )
-    }
-
     pub(crate) fn push_native_change_captured_tool(
         &mut self,
         spec: ToolSpec,

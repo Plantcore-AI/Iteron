@@ -72,7 +72,7 @@ pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
     let confined = registry.confine_execution_handle();
     let inherited_scope = registry.inherited_write_scope_handle();
     let test_helper_thread = registry.test_helper_thread_handle();
-    registry.push_candidate_change_effect_tool(
+    registry.push_native_change_captured_tool(
         ToolSpec {
             name: "apply_patch".into(),
             description: format!(
@@ -126,9 +126,9 @@ pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
             let confined = confined.clone();
             let inherited_scope=inherited_scope.clone();
             let test_helper_thread = test_helper_thread.clone();
-            crate::effectfut::box_it(async move {
+            crate::capturedfut::box_it(async move {
                 if inherited_scope.get().is_some() || confined.load(std::sync::atomic::Ordering::Relaxed) {
-                    return crate::confined_helper::execute(
+                    return crate::confined_helper::execute_captured(
                         &root,
                         call,
                         test_helper_thread.load(std::sync::atomic::Ordering::Relaxed),
@@ -138,18 +138,19 @@ pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
                 }
                 let id = call.id.clone();
                 let mut stats = PatchIoStats::default();
-                let result = execute_patch(&root, &call.input, &mut stats, false).await;
-                crate::ToolExecution::Definite(match result {
-                    Ok((files, hunks)) => {
-                        ok_result(id, format!("patched {files} files ({hunks} hunks)"))
+                let result = execute_patch_captured_scoped(&root, &call.input, &mut stats, false, None).await;
+                match result {
+                    Ok((files, hunks, captured)) => {
+                        crate::CapturedToolExecution::native_success(&call, ok_result(id, format!("patched {files} files ({hunks} hunks)")), captured)
                     }
-                    Err(error) => err_result(id, error.model_json()),
-                })
+                    Err(error) => crate::ToolExecution::Definite(err_result(id, error.model_json())).into(),
+                }
             })
         },
     )
 }
 
+#[cfg(test)]
 async fn execute_patch(
     root: &Path,
     input: &Value,
@@ -158,6 +159,7 @@ async fn execute_patch(
 ) -> Result<(usize, usize), PatchFailure> {
     execute_patch_scoped(root, input, stats, confined, None).await
 }
+#[cfg(test)]
 async fn execute_patch_scoped(
     root: &Path,
     input: &Value,
@@ -165,11 +167,30 @@ async fn execute_patch_scoped(
     confined: bool,
     scope: Option<&crate::inherited_write_scope::InheritedWriteScope>,
 ) -> Result<(usize, usize), PatchFailure> {
+    execute_patch_captured_scoped(root, input, stats, confined, scope)
+        .await
+        .map(|(files, hunks, _)| (files, hunks))
+}
+
+async fn execute_patch_captured_scoped(
+    root: &Path,
+    input: &Value,
+    stats: &mut PatchIoStats,
+    confined: bool,
+    scope: Option<&crate::inherited_write_scope::InheritedWriteScope>,
+) -> Result<(usize, usize, Vec<crate::NativeFileChange>), PatchFailure> {
     let requests = parse_requests(input)?;
     let total_hunks = requests.iter().map(|file| file.hunks.len()).sum::<usize>();
     let plans = plan_patch_scoped(root, requests, stats, confined, scope).await?;
     commit_patch(root, &plans, stats, confined).await?;
-    Ok((plans.len(), total_hunks))
+    let files = plans.len();
+    let captured = plans
+        .into_iter()
+        .map(|plan| {
+            crate::NativeFileChange::committed(plan.target, Some(plan.original), plan.updated)
+        })
+        .collect();
+    Ok((files, total_hunks, captured))
 }
 
 #[cfg(test)]
@@ -181,6 +202,7 @@ async fn plan_patch(
 ) -> Result<Vec<PlannedFile>, PatchFailure> {
     plan_patch_scoped(root, requests, stats, confined, None).await
 }
+#[cfg(test)]
 pub(crate) async fn apply_patch_scoped(
     root: &Path,
     input: &Value,
@@ -189,6 +211,19 @@ pub(crate) async fn apply_patch_scoped(
     execute_patch_scoped(root, input, &mut PatchIoStats::default(), true, scope)
         .await
         .map(|(files, hunks)| format!("patched {files} files ({hunks} hunks)"))
+        .map_err(|failure| failure.model_json())
+}
+
+pub(crate) async fn apply_patch_captured_scoped(
+    root: &Path,
+    input: &Value,
+    scope: Option<&crate::inherited_write_scope::InheritedWriteScope>,
+) -> Result<(String, Vec<crate::NativeFileChange>), String> {
+    execute_patch_captured_scoped(root, input, &mut PatchIoStats::default(), true, scope)
+        .await
+        .map(|(files, hunks, captured)| {
+            (format!("patched {files} files ({hunks} hunks)"), captured)
+        })
         .map_err(|failure| failure.model_json())
 }
 
