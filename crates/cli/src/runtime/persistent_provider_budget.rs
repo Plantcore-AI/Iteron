@@ -1,9 +1,12 @@
 //! Exact physical provider admission into the optional persistent cohort owner. Ordinary
 //! sessions retain the existing path. A finite zero monetary cap still requires signed pricing.
-use super::*;
+use super::{
+    Agent, KernelError, persistent_agents, replay_scoped_rollout, route_attempt_accounting,
+};
 use iteron_agents::{AgentProviderBudgetTerminal, ControllerError};
 use iteron_protocol::{
-    ProviderRouteAttemptAccounting, ProviderRouteAttemptIdentity, ProviderRouteUsageTruth,
+    EventKind, ProviderRouteAttemptAccounting, ProviderRouteAttemptIdentity,
+    ProviderRouteUsageTruth, TurnId,
 };
 use persistent_agents::{RuntimeProviderBudgetAdmission, RuntimeProviderBudgetPort};
 use sha2::{Digest, Sha256};
@@ -332,6 +335,8 @@ impl Agent {
                             ));
                         }
                     }
+                    // Count admission slots, including proved local route refusals. Dispatch
+                    // metrics remain separate and cannot be inferred from this conservative cap.
                     total.turns = total
                         .turns
                         .checked_add(1)

@@ -1,6 +1,12 @@
 //! One durable owner for physical provider admission across root and retained children. Token
 //! and cost reservations share the same record/CAS as descendant lifetime reservations.
-use super::*;
+use super::{
+    AgentController, AgentControllerJournal, AgentControllerSnapshot, AgentEpochV1, AgentIdV1,
+    AgentStateV1, AgentUsageV1, ControllerError, next_revision, workflow_claim,
+};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 
 const MAX_PROVIDER_RECEIPTS: usize = 8192;
 
@@ -101,9 +107,7 @@ impl AgentProviderBudgetRequest {
             ));
         }
         self.route.validate().map_err(ControllerError::Invalid)?;
-        if self.route.max_cost_reservation_microusd != Some(self.max_cost_microusd)
-            && !(self.route.max_cost_reservation_microusd.is_none() && self.max_cost_microusd == 0)
-        {
+        if self.route.max_cost_reservation_microusd != Some(self.max_cost_microusd) {
             return Err(ControllerError::Invalid(
                 "physical cost reservation is not bound to provider identity",
             ));
@@ -532,6 +536,8 @@ pub(super) fn epoch_usage(
     id: AgentIdV1,
     epoch: AgentEpochV1,
 ) -> Result<Option<AgentUsageV1>, ControllerError> {
+    // `turns` measures conservatively consumed admission slots: a proved NotDispatched route
+    // still used its reserved slot. This is not a claim about transport calls or remote processing.
     let receipts: Vec<_> = snapshot
         .provider_budget
         .receipts

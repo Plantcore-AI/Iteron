@@ -331,3 +331,20 @@ fn snapshot_cannot_erase_provider_reservation_or_reassign_run() {
         Err(ControllerError::Invalid(_))
     ));
 }
+
+#[test]
+fn finite_zero_reservation_requires_exact_some_zero_identity() {
+    let mut controller = AgentController::open(Store::default(), config()).unwrap();
+    let root = controller.root_id();
+    let scope = sha('b');
+    controller.bind_provider_budget(root, &scope).unwrap();
+    let mut unsigned = request(root, None, &scope, 1, 0);
+    unsigned.route.max_cost_reservation_microusd = None;
+    assert!(matches!(
+        controller.reserve_provider_budget(unsigned),
+        Err(ControllerError::Invalid(_))
+    ));
+    controller
+        .reserve_provider_budget(request(root, None, &scope, 1, 0))
+        .unwrap();
+}
