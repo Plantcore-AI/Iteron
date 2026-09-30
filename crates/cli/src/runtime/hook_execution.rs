@@ -28,6 +28,7 @@ use std::{
     time::Instant,
 };
 
+#[derive(Clone)]
 pub(super) struct HookExecutionScope<'a> {
     pub(super) turn: TurnId,
     pub(super) workspace: &'a Path,
@@ -96,6 +97,7 @@ impl HookExecution<'_> {
                 return Err(error);
             }
         };
+        self.effects.note_workspace_mutation();
         let report = self
             .scope
             .hooks
@@ -142,6 +144,7 @@ impl HookExecution<'_> {
         }
         let journal = self.command_journal()?;
         let (ordinal, ticket) = self.open(event, None)?;
+        self.effects.note_workspace_mutation();
         self.emit("hook.matched", LifecyclePayload::default());
         self.emit("hook.started", LifecyclePayload::default());
         let activity = self

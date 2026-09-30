@@ -102,7 +102,9 @@ impl ToolTurnOwner {
         std::mem::take(&mut self.early)
     }
     pub(super) fn call_count(&self) -> usize {
-        self.early.len() + self.deferred.len()
+        // Durable recovery receipts retain their original declaration indices. They own result
+        // slots even though they deliberately enter neither physical executor queue.
+        self.next_index
     }
     pub(super) fn into_work(self) -> ToolTurnWork {
         ToolTurnWork {

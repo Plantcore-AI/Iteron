@@ -55,7 +55,6 @@ pub(super) struct AutoApprovedCall {
     pub(super) intent: iteron_protocol::intent::ToolIntent,
     pub(super) capability: Capability,
     pub(super) action_signature: String,
-    pub(super) audit_arguments: serde_json::Value,
 }
 
 /// Workspace paths a tool call explicitly names in its structured arguments.

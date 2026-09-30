@@ -402,7 +402,7 @@ async fn stream_write_then_read_observes_completed_mutation() {
 }
 
 #[tokio::test]
-async fn recovered_write_repeated_with_same_call_id_executes_once() {
+async fn recovered_write_plus_new_read_keeps_exact_order_and_executes_write_once() {
     struct RepeatWrite(AtomicUsize);
     #[async_trait::async_trait]
     impl iteron_provider::Provider for RepeatWrite {
@@ -424,14 +424,40 @@ async fn recovered_write_repeated_with_same_call_id_executes_once() {
                         "connection reset by peer".into(),
                     ));
                 }
+                let read = ToolUse {
+                    id: "new-read-id".into(),
+                    name: "counted_read".into(),
+                    input: serde_json::json!({}),
+                };
+                on_item(iteron_provider::StreamItem::ToolUseComplete(read.clone()));
                 return Ok(iteron_provider::TurnResult {
-                    blocks: vec![Block::ToolUse(call)],
+                    blocks: vec![Block::ToolUse(call), Block::ToolUse(read)],
                     stop_reason: StopReason::ToolUse,
                     usage: iteron_provider::UsageReport::complete(iteron_protocol::Usage::default()),
                 });
             }
-            assert!(request.messages.last().unwrap().content.iter().any(|block| matches!(block,
-                Block::ToolResult(result) if result.tool_use_id == "recovered-write-id" && !result.is_error)));
+            let results = request
+                .messages
+                .last()
+                .unwrap()
+                .content
+                .iter()
+                .filter_map(|block| {
+                    if let Block::ToolResult(result) = block {
+                        Some(result)
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                results.len(),
+                2,
+                "replayed calls must retain their original result slots"
+            );
+            assert_eq!(results[0].tool_use_id, "recovered-write-id");
+            assert_eq!(results[1].tool_use_id, "new-read-id");
+            assert!(results.iter().all(|result| !result.is_error));
             Ok(iteron_provider::TurnResult {
                 blocks: vec![Block::Text {
                     text: "done".into(),
@@ -444,6 +470,7 @@ async fn recovered_write_repeated_with_same_call_id_executes_once() {
     let workspace = super::gate_integration_tests::temp_ws("recovery-write-dedup");
     let run = iteron_protocol::RunId("recovery-write-dedup".into());
     let executions = Arc::new(AtomicUsize::new(0));
+    let reads = Arc::new(AtomicUsize::new(0));
     let counter = executions.clone();
     let mut registry = iteron_tools::Registry::coding_agent(&workspace).unwrap();
     registry
@@ -461,6 +488,30 @@ async fn recovered_write_repeated_with_same_call_id_executes_once() {
                     ToolResult {
                         tool_use_id: call.id,
                         content: "one mutation".into(),
+                        is_error: false,
+                        trust: Trust::Workspace,
+                        latency_ms: 0,
+                    }
+                })
+            },
+        )
+        .unwrap();
+    let read_counter = reads.clone();
+    registry
+        .register_external(
+            iteron_protocol::ToolSpec {
+                name: "counted_read".into(),
+                description: "test-only newly admitted read".into(),
+                input_schema: serde_json::json!({"type":"object"}),
+                purity: Purity::Pure,
+                capability: Capability::ReadOnly,
+            },
+            move |call, _root| {
+                read_counter.fetch_add(1, Ordering::SeqCst);
+                iteron_tools::boxfut::box_it(async move {
+                    ToolResult {
+                        tool_use_id: call.id,
+                        content: "new read".into(),
                         is_error: false,
                         trust: Trust::Workspace,
                         latency_ms: 0,
@@ -503,6 +554,7 @@ async fn recovered_write_repeated_with_same_call_id_executes_once() {
         Outcome::Done
     );
     assert_eq!(executions.load(Ordering::SeqCst), 1);
+    assert_eq!(reads.load(Ordering::SeqCst), 1);
     let events = iteron_record::replay(
         &workspace
             .join(".iteron/runs")

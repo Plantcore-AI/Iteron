@@ -392,7 +392,7 @@ const SURFACES: &[Surface] = &[
     Surface {
         path: "crates/cli/src/runtime/stream_tool_events.rs",
         boundary: "cli-host",
-        responsibilities: &["immutable streamed frontend/lifecycle/process-request projection"],
+        responsibilities: &["immutable shared tool frontend/lifecycle/process/projection evidence"],
         next_seams: &["observations neither execute processes nor grant operation authority"],
     },
     Surface {
@@ -402,6 +402,17 @@ const SURFACES: &[Surface] = &[
             "pure operation-specific overlap eligibility and actual cancellation snapshot",
         ],
         next_seams: &["pure reads cannot bypass explicit deny/request or admitted ceilings"],
+    },
+    Surface {
+        path: "crates/cli/src/runtime/deferred_tool_batch.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "actual admitted batch intent/executor/ordered terminal/post-hook coordinator",
+            "single ownership of physical pending tickets and managed result lifetimes",
+        ],
+        next_seams: &[
+            "disjoint journal/cache/executor/hook and frozen publication/projection ports",
+        ],
     },
     Surface {
         path: "crates/cli/src/runtime/hook_execution.rs",
