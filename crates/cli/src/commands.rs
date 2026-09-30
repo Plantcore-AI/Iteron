@@ -232,8 +232,8 @@ pub const COMMANDS: &[Cmd] = &[
     Cmd {
         command: SlashCommand::Workflows,
         name: "workflows",
-        args: "",
-        help: "show workflow and agent progress",
+        args: "[live open|read|replan|pump|interrupt|reconcile ...]",
+        help: "observe workflow progress or control the durable live graph",
     },
     Cmd {
         command: SlashCommand::Jobs,

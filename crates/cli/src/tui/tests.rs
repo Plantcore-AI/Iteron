@@ -3,6 +3,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn live_workflow_view_renders_real_revision_recovery_and_driver_failure() {
+        use iteron_workflow::live_scheduler::{WorkflowConfigV1, WorkflowNodeV1, WorkflowNodeRecordV1, WorkflowNodeStateV1};
+        use iteron_workflow::task_dag::{TaskBudget, BudgetUsage};
+        use crate::workflow::live_session::{LiveWorkflowReplyV1, LiveWorkflowViewV1};
+        let budget = TaskBudget { max_turns: 1, max_tokens: 1000, max_cost_microusd: 1000, max_wall_ms: 1000 };
+        let reply = LiveWorkflowReplyV1 { receipt: None, view: LiveWorkflowViewV1 {
+            version: 1,
+            config: WorkflowConfigV1 { workflow_id: "graph-render".into(), budget, max_nodes: 4, max_edges: 4, max_concurrency: 2, started_at_unix_ms: 1000, deadline_unix_ms: 2000 },
+            revision: 7, sequence: 11,
+            nodes: vec![WorkflowNodeRecordV1 { node: WorkflowNodeV1 { id: 3, label: "inspect delivery".into(), task: "task".into(), dependencies: vec![], assigned_agent: 2, input_digest: "a".repeat(64), budget }, state: WorkflowNodeStateV1::RecoveryRequired { attempt: 1, lease: None, reason: "host proof pending".into() }, next_attempt: 2, usage: BudgetUsage::default(), attempt_usage: BudgetUsage::default(), reserved_budget: BudgetUsage::default() }],
+            reserved: BudgetUsage::default(), ready: vec![], observed_at_unix_ms: 1500, driver_error: Some("controller unavailable".into()),
+        }};
+        let mut app = App::new();
+        live_workflows::render(&mut app, &reply);
+        let text = app.transcript.last().unwrap().to_text();
+        for expected in ["7 / 11", "recovery required", "host proof pending", "controller unavailable"] { assert!(text.contains(expected), "{expected}"); }
+        assert!(render_text(&mut app, 120, 30).contains("graph-render"));
+    }
+
+    #[test]
     fn live_agent_views_render_exact_state_and_preserve_observed_epoch_for_controls() {
         use iteron_protocol::agent_control::{AgentBudgetV1, AgentEpochV1, AgentIdV1, AgentStateV1, AgentViewV1};
         let view = AgentViewV1 {

@@ -56,6 +56,7 @@ mod agent_control;
 mod backpressure;
 mod client_artifacts;
 mod control;
+mod live_workflow_control;
 mod mcp_control;
 mod mcp_input;
 mod operator_status;
@@ -513,6 +514,7 @@ pub(crate) enum Control {
     OperatorStatus,
     ThreadLifecycle(iteron_protocol::thread_lifecycle::ThreadLifecycleCommandV1),
     PersistentAgents(iteron_protocol::client_agent_control::ClientAgentControlV1),
+    LiveWorkflow(crate::workflow::live_session::LiveWorkflowCommandV1),
     /// `/effort`
     SetEffort(iteron_protocol::Effort),
     /// `/mode`
@@ -670,6 +672,7 @@ pub(crate) enum ControlReply {
     State(Box<SessionSnapshot>),
     ThreadLifecycle(serde_json::Value),
     PersistentAgents(serde_json::Value),
+    LiveWorkflow(Box<crate::workflow::live_session::LiveWorkflowReplyV1>),
     /// `/status` — runtime policy identity plus live bounded owner health.
     OperatorStatus(Box<OperatorStatusSnapshot>),
     /// The runtime refused, with the operator-facing reason.

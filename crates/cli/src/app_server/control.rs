@@ -9,6 +9,7 @@ pub(super) fn is_immediate_control(control: &Control) -> bool {
     matches!(
         control,
         Control::OperatorStatus
+            | Control::LiveWorkflow(_)
             | Control::Workflow(WorkflowControl::Inventory | WorkflowControl::Cancel { .. })
             | Control::Job(_)
             | Control::Mcp(_)
@@ -286,6 +287,11 @@ pub(super) async fn apply_immediate_control(
     request: ControlRequest,
 ) {
     match request.control {
+        Control::LiveWorkflow(command) => {
+            operator_status
+                .live_workflows
+                .dispatch(command, request.reply);
+        }
         Control::PersistentAgents(command) => {
             operator_status.agents.dispatch(command, request.reply);
         }
@@ -448,6 +454,12 @@ pub(super) async fn apply_control(
         return;
     }
     let reply = match request.control {
+        Control::LiveWorkflow(command) => {
+            operator_status
+                .live_workflows
+                .dispatch(command, request.reply);
+            return;
+        }
         Control::PersistentAgents(command) => super::agent_control::enable(agent, command),
         Control::ThreadLifecycle(command) => super::thread_lifecycle::apply(agent, command),
         Control::PlantcoreRunBootstrapV1(payload) => {

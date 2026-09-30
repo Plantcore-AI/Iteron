@@ -88,6 +88,26 @@ and `wait [REVISION] [MS]`. Spawn defaults to one read-only investigator turn in
 parent envelope; the host may refuse exhausted reservations. Inspect shows actual state and the
 latest bounded summary. Steering and interruption use the latest epoch observed in that view.
 
+## Live workflow V1
+
+The `live_workflow_v1` control carries a strict `command` tagged request: `open`, `read`,
+`replan`, `pump`, `interrupt` or `reconcile`. Each request names a bounded `workflow_id`;
+replan also carries `request_id` and the typed `WorkflowReplanV1` plan. Interrupt and reconcile
+name the actual node ID. Only read is available to observation-only connections. Requests cannot
+carry host paths, budgets, actors, terminal claims or completion/recovery evidence.
+
+The real session owner mints graph ceilings from verified persistent-agent host limits and uses
+a private rollout scope, retained scheduler journal, actual controller leases and host completion
+proofs. Enable persistent agents first. After restart an operator must open the graph before
+observers read it; a read cannot create state, repair a journal or start the driver. Responses
+carry an immutable view with graph revision, sequence, nodes, ready IDs, reservations, deadline,
+driver error and an optional durable plan receipt. Eight public dispatch permits bound concurrent
+requests. Admitted owner operations finish if a transport connection stops waiting.
+
+Use `/workflows live open|read|pump ID`, `interrupt|reconcile ID NODE`, or
+`replan ID REQUEST_ID JSON`. The TUI renders actual typed graph state and driver failure without
+changing the snapshot. `/workflows` retains the existing supervised-workflow inventory.
+
 ## Client artifacts V1
 
 Send `{"type":"artifacts_v1","command":{"type":"list","thread_id":"..."}}` or a

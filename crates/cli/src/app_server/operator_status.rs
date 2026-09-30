@@ -6,6 +6,7 @@ const LSP_STATUS_DEADLINE: std::time::Duration = std::time::Duration::from_milli
 
 pub(super) struct OperatorStatusSources {
     pub(super) agents: super::agent_control::AgentControlSurface,
+    pub(super) live_workflows: super::live_workflow_control::LiveWorkflowSurface,
     runtime: crate::runtime::RuntimeOperatorStatusSources,
     processes: Option<iteron_tools::ProcessControl>,
     language_servers: Option<iteron_tools::LspControl>,
@@ -49,6 +50,7 @@ impl OperatorStatusSources {
     ) -> Self {
         Self {
             agents: super::agent_control::AgentControlSurface::capture(agent),
+            live_workflows: super::live_workflow_control::LiveWorkflowSurface::capture(agent),
             runtime: agent.operator_status_sources(),
             processes,
             language_servers,
@@ -61,6 +63,7 @@ impl OperatorStatusSources {
     /// The live owner handles remain the same Arcs and are intentionally retained.
     pub(super) fn refresh_runtime(&mut self, agent: &Agent) {
         self.agents.refresh(agent);
+        self.live_workflows.refresh(agent);
         self.runtime = agent.operator_status_sources();
     }
 

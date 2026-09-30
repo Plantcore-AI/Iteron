@@ -733,14 +733,20 @@ pub(super) fn handle_registered_command(
             handle_sessions_command(app, session, directory, transcript_effects, interrupt, arg);
         }
         SlashCommand::Workflows => {
-            queue_command_control(
-                app,
-                session,
-                transcript_effects,
-                interrupt,
-                app_server::Control::Workflow(app_server::WorkflowControl::Inventory),
-                transcript_effect::ControlKind::WorkflowsInventory,
-            );
+            if let Some(argument) = arg.strip_prefix("live ") {
+                super::live_workflows::queue(app, session, transcript_effects, interrupt, argument);
+            } else if arg.trim() == "live" {
+                app.note(block::NoticeLevel::Info, "/workflows live open|read|pump ID | interrupt|reconcile ID NODE | replan ID REQUEST_ID JSON");
+            } else {
+                queue_command_control(
+                    app,
+                    session,
+                    transcript_effects,
+                    interrupt,
+                    app_server::Control::Workflow(app_server::WorkflowControl::Inventory),
+                    transcript_effect::ControlKind::WorkflowsInventory,
+                );
+            }
         }
         SlashCommand::Artifacts => super::artifacts::render(app, session, arg),
         SlashCommand::Jobs => jobs::queue(app, session, transcript_effects, interrupt, arg),

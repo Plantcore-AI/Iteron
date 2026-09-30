@@ -48,6 +48,9 @@ impl PlantcoreCommand {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum WireControl {
+    LiveWorkflowV1 {
+        command: crate::workflow::live_session::LiveWorkflowCommandV1,
+    },
     AgentsV1 {
         command: iteron_protocol::client_agent_control::ClientAgentControlV1,
     },
@@ -245,6 +248,9 @@ where
 
 impl WireControl {
     pub(super) fn is_read_only(&self) -> bool {
+        if let Self::LiveWorkflowV1 { command } = self {
+            return command.is_read_only();
+        }
         if let Self::AgentsV1 { command } = self {
             return command.is_read_only();
         }
@@ -271,6 +277,7 @@ impl WireControl {
 
     pub(super) fn into_app_server(self) -> Control {
         match self {
+            Self::LiveWorkflowV1 { command } => Control::LiveWorkflow(command),
             Self::AgentsV1 { command } => Control::PersistentAgents(command),
             Self::ArtifactsV1 { .. } => {
                 unreachable!("artifact reads address the public resident projection")
@@ -505,6 +512,12 @@ pub(super) fn reply_value(reply: ControlReply) -> Value {
         }),
         ControlReply::ThreadLifecycle(value) => value,
         ControlReply::PersistentAgents(value) => value,
+        ControlReply::LiveWorkflow(value) => json!({
+            "type": "live_workflow_v1",
+            "contract_version": crate::workflow::live_session::LIVE_WORKFLOW_CONTRACT_VERSION,
+            "view": value.view,
+            "receipt": value.receipt,
+        }),
         ControlReply::State(snapshot) => json!({
             "type": "state",
             "state": snapshot_value(&snapshot),
@@ -1014,6 +1027,33 @@ mod tests {
         assert_eq!(reply["type"], "product_events_error_v1");
         assert_eq!(reply["error"]["type"], "cursor_ahead");
         assert_eq!(reply["error"]["latest_cursor"], 0);
+    }
+
+    #[test]
+    fn live_workflow_observers_only_read_and_cannot_claim_host_authority() {
+        let read: WireControl = serde_json::from_value(json!({"type":"live_workflow_v1", "command":{"command":"read", "workflow_id":"graph-1"}})).unwrap();
+        assert!(read.is_read_only());
+        for command in [
+            json!({"command":"open", "workflow_id":"graph-1"}),
+            json!({"command":"pump", "workflow_id":"graph-1"}),
+            json!({"command":"interrupt", "workflow_id":"graph-1", "node_id":1}),
+            json!({"command":"reconcile", "workflow_id":"graph-1", "node_id":1}),
+        ] {
+            let wire: WireControl =
+                serde_json::from_value(json!({"type":"live_workflow_v1", "command":command}))
+                    .unwrap();
+            assert!(!wire.is_read_only());
+        }
+        for field in ["actor", "budget", "root", "effects_known", "completion"] {
+            let mut command = json!({"command":"open", "workflow_id":"graph-1"});
+            command[field] = json!(true);
+            assert!(
+                serde_json::from_value::<WireControl>(
+                    json!({"type":"live_workflow_v1", "command":command})
+                )
+                .is_err()
+            );
+        }
     }
 
     #[test]

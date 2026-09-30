@@ -35,6 +35,7 @@ mod inline_shell;
 mod jobs;
 mod keyboard_enhancement;
 mod live_markdown;
+mod live_workflows;
 mod mcp_command;
 mod mcp_input;
 mod mouse_capture;
