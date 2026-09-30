@@ -410,23 +410,23 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
             total_rows += count;
         }
     }
-    let total = u16::try_from(total_rows).unwrap_or(u16::MAX); // saturating (review LOW: >65535 rows)
     let view_h = surface.transcript.height;
     let anchored_row = geometry_changed
         .then(|| reading_anchor.and_then(|anchor| app.geometry.resolve_anchor(anchor)))
         .flatten();
     let scroll = if let Some(row) = anchored_row {
-        app.viewport.observe_anchored_layout(total, view_h, row)
+        app.viewport
+            .observe_anchored_layout(total_rows, view_h, row)
     } else {
         if geometry_changed && reading_anchor.is_some() {
             app.viewport.anchor_unavailable();
         }
-        app.viewport.observe_layout(total, view_h)
+        app.viewport.observe_layout(total_rows, view_h)
     };
     // Pass three: materialise the window only. `hyperlink_regions` keeps ABSOLUTE transcript rows —
     // that is the coordinate `apply_to_buffer` subtracts the scroll from — while `row_map` is now
     // viewport-relative, because the hit-test already knows which row the viewport starts at.
-    let first_row = usize::from(scroll);
+    let first_row = scroll;
     let last_row = first_row
         .saturating_add(usize::from(view_h))
         .min(total_rows);
@@ -548,9 +548,9 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
 
     // Scrollbar in the reserved right column — a position indicator (polish backlog P0). Only when
     // the content overflows the viewport, so a short session stays clean.
-    if total > view_h {
-        let mut sb_state = ScrollbarState::new(total as usize)
-            .position(scroll as usize)
+    if total_rows > usize::from(view_h) {
+        let mut sb_state = ScrollbarState::new(total_rows)
+            .position(scroll)
             .viewport_content_length(view_h as usize);
         let sb = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .thumb_symbol("█")

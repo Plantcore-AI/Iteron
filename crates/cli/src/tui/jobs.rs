@@ -311,7 +311,7 @@ mod tests {
                 "stderr_cursor":0
             }]),
         );
-        let block::BlockKind::Panel { title, rows } = app.history.blocks().last().unwrap().kind
+        let block::BlockKind::Panel { title, rows } = &app.history.blocks().last().unwrap().kind
         else {
             panic!("inventory must render a semantic panel");
         };

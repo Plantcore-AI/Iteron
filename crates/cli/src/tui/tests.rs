@@ -931,14 +931,15 @@ mod tests {
 
         assert_eq!(app.history.blocks().len(), 2);
         assert!(
-            matches!(app.history.blocks()[0].kind, block::BlockKind::User(text) if text == "previous question")
+            matches!(&app.history.blocks()[0].kind, block::BlockKind::User(text) if text == "previous question")
         );
         assert!(matches!(
-            app.history.blocks()[1].kind,
+            &app.history.blocks()[1].kind,
             block::BlockKind::Assistant(_)
         ));
         assert!(
-            app.history.blocks()
+            app.history
+                .blocks()
                 .iter()
                 .all(|block| !matches!(block.kind, block::BlockKind::Welcome { .. }))
         );
@@ -1025,7 +1026,8 @@ mod tests {
         let screen = render_text(&mut app, 100, 18);
         assert!(screen.contains("iteron --resume run-42"));
         assert!(
-            app.history.blocks()
+            app.history
+                .blocks()
                 .iter()
                 .any(|block| block.to_text().contains("not resumed here"))
         );
@@ -1793,7 +1795,8 @@ mod tests {
         app.flush_text();
         assert_eq!(app.history.blocks().len(), base + 1);
         assert!(
-            app.history.blocks()
+            app.history
+                .blocks()
                 .last()
                 .unwrap()
                 .to_text()
@@ -1893,7 +1896,7 @@ mod tests {
         app.flush_text();
         assert_eq!(app.assistant.parsed_source_bytes(), exact.len());
         let block::BlockKind::Assistant(actual) =
-            app.history.blocks().last().expect("assistant block").kind
+            &app.history.blocks().last().expect("assistant block").kind
         else {
             panic!("stream must finalize as one assistant block");
         };
@@ -1914,7 +1917,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert!(app.assistant.text().contains("[REDACTED"));
         app.flush_text();
         assert!(
-            !app.history.blocks()
+            !app.history
+                .blocks()
                 .last()
                 .expect("assistant block")
                 .to_text()
@@ -2097,7 +2101,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert_eq!(app.input_lanes.queued().front().unwrap().text, "own 0");
         assert_eq!(app.input_lanes.queued().back().unwrap().text, "legacy 0");
         assert!(
-            app.history.blocks()
+            app.history
+                .blocks()
                 .iter()
                 .any(|block| block.to_text().contains("63 legacy steering submission(s)"))
         );
@@ -2249,7 +2254,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             app.history.blocks().len()
         );
         assert!(
-            app.history.blocks()
+            app.history
+                .blocks()
                 .last()
                 .unwrap()
                 .to_text()
@@ -2266,14 +2272,22 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             name: "ultracode".into(),
             class: "repository-wide".into(),
         });
-        let block_id = app.history.workflow_binding(run_id).expect("active workflow is indexed");
+        let block_id = app
+            .history
+            .workflow_binding(run_id)
+            .expect("active workflow is indexed");
 
         for i in 0..(MAX_BLOCKS + 300) {
             app.push(dim(), format!("pressure line {i}"));
         }
         assert!(app.history.blocks().len() <= MAX_BLOCKS);
         assert_eq!(app.history.workflow_binding(run_id), Some(block_id));
-        assert!(app.history.blocks().iter().any(|block| block.id == block_id));
+        assert!(
+            app.history
+                .blocks()
+                .iter()
+                .any(|block| block.id == block_id)
+        );
 
         app.workflow_event(WorkflowUiEvent::RunFinished {
             run_id: run_id.into(),
@@ -2289,7 +2303,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         });
         assert!(app.history.workflow_binding(run_id).is_none());
         let card = app
-            .history.blocks()
+            .history
+            .blocks()
             .iter()
             .find(|block| block.id == block_id)
             .and_then(|block| match &block.kind {
@@ -2870,7 +2885,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             app.running = true;
             app.status = "verifying".into();
             app.run_started = Some(Instant::now());
-            app.tools.fixture_active("tool-1".into(), "Bash(cargo test -p iteron-cli)".into());
+            app.tools
+                .fixture_active("tool-1".into(), "Bash(cargo test -p iteron-cli)".into());
             app.track_steer("also cover narrow terminals".into(), SubmissionId(1));
             app.queue_after_turn("then update the design record".into())
                 .unwrap();
@@ -3470,7 +3486,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         tall.draw(|frame| draw(frame, &mut app)).unwrap();
         assert_eq!(app.view_scroll, 0, "the reference frame shows every row");
         let reference = transcript_rows(&tall, app.view_top, app.view_h);
-        let total = usize::from(app.viewport.total_rows());
+        let total = app.viewport.total_rows();
         assert!(total > 0 && total <= reference.len());
 
         let mut short = Terminal::new(TestBackend::new(60, 14)).unwrap();
@@ -3481,7 +3497,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             "the transcript has to overflow to be a test"
         );
         assert_eq!(
-            usize::from(app.viewport.total_rows()),
+            app.viewport.total_rows(),
             total,
             "windowing changes what is built, never how tall the transcript is"
         );
@@ -3498,7 +3514,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
         app.scroll_up(9);
         short.draw(|frame| draw(frame, &mut app)).unwrap();
-        let scroll = usize::from(app.view_scroll);
+        let scroll = app.view_scroll;
         assert!(scroll > 0 && scroll + view_h <= total);
         let rows = transcript_rows(&short, app.view_top, app.view_h);
         assert_eq!(
@@ -3517,7 +3533,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             };
             let marker = row[at..at + "historical row 000".len()].to_string();
             let expected = app
-                .history.blocks()
+                .history
+                .blocks()
                 .iter()
                 .position(|candidate| candidate.to_text().contains(&marker))
                 .expect("the rendered notice is still in the transcript");
@@ -3538,7 +3555,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             );
         }
         short.draw(|frame| draw(frame, &mut app)).unwrap();
-        assert!(usize::from(app.viewport.total_rows()) > total * 5);
+        assert!(app.viewport.total_rows() > total * 5);
         assert_eq!(app.row_map.len(), view_h);
     }
 
@@ -3558,7 +3575,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         assert!(
-            app.viewport.total_rows() > app.view_h,
+            app.viewport.total_rows() > usize::from(app.view_h),
             "the scrollbar must be visible"
         );
 
@@ -4207,7 +4224,12 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         .public_summary();
         let mut app = end_failed_run(record_error);
         assert!(app.retryable_task.is_none());
-        let rendered = app.history.blocks().last().expect("failure block").to_text();
+        let rendered = app
+            .history
+            .blocks()
+            .last()
+            .expect("failure block")
+            .to_text();
         assert!(rendered.contains("[storage_full]"), "{rendered}");
         assert!(!rendered.contains("ctrl+r"), "{rendered}");
         assert!(!rendered.contains("sk-test-secret"), "{rendered}");
@@ -4220,7 +4242,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert_eq!(ordinary.retryable_task.as_deref(), Some("retry this turn"));
         assert!(
             ordinary
-                .history.blocks()
+                .history
+                .blocks()
                 .last()
                 .expect("failure block")
                 .to_text()
@@ -4293,7 +4316,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
         assert_eq!(app.status, "idle · last: budget_exhausted");
         let notice = app
-            .history.blocks()
+            .history
+            .blocks()
             .last()
             .expect("the budget stop leaves a notice")
             .to_text();
@@ -4337,7 +4361,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     fn welcome_icon_is_one_startup_block_and_scrolls_away() {
         let mut app = App::new();
         assert_eq!(
-            app.history.blocks()
+            app.history
+                .blocks()
                 .iter()
                 .filter(|block| matches!(block.kind, block::BlockKind::Welcome { .. }))
                 .count(),
@@ -4353,7 +4378,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         let tail = render_text(&mut app, 40, 12);
         assert!(!tail.contains("▄██"), "the brand is entrance, not chrome");
         assert_eq!(
-            app.history.blocks()
+            app.history
+                .blocks()
                 .iter()
                 .filter(|block| matches!(block.kind, block::BlockKind::Welcome { .. }))
                 .count(),
@@ -4566,7 +4592,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert!(app.advance_tool_presentations(reveal_at));
         assert!(app.tools.revealed_block("t1").is_some());
         assert!(
-            app.history.blocks()
+            app.history
+                .blocks()
                 .last()
                 .unwrap()
                 .to_text()
@@ -4591,7 +4618,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         );
         let theme = theme::Theme::dark();
         let rendered: String = app
-            .history.blocks()
+            .history
+            .blocks()
             .last()
             .unwrap()
             .render(80, &theme, 0)
@@ -4696,7 +4724,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert!(app.tools.pending_len() == 0);
         assert!(app.tools.active_len() == 0);
         assert!(!app.tools.revealed_block("fast-read").is_some());
-        let block::BlockKind::Tool(card) = app.history.blocks().last().unwrap().kind else {
+        let block::BlockKind::Tool(card) = &app.history.blocks().last().unwrap().kind else {
             panic!("expected a settled tool card");
         };
         assert_eq!(card.status, block::ToolStatus::Ok);
@@ -4728,7 +4756,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert!(app.tools.revealed_len() == 0);
         assert!(app.tools.active_len() == 0);
         let cards: Vec<_> = app
-            .history.blocks()
+            .history
+            .blocks()
             .iter()
             .filter_map(|block| match &block.kind {
                 block::BlockKind::Tool(card) => Some(card),
@@ -4786,7 +4815,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         );
 
         let cards = app
-            .history.blocks()
+            .history
+            .blocks()
             .iter()
             .filter_map(|block| match &block.kind {
                 block::BlockKind::Tool(card) => Some(card),
@@ -4927,14 +4957,16 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
         // Exactly one WorkflowRun block, still keyed by run id, mutated in place.
         let run_blocks = app
-            .history.blocks()
+            .history
+            .blocks()
             .iter()
             .filter(|b| matches!(b.kind, block::BlockKind::WorkflowRun(_)))
             .count();
         assert_eq!(run_blocks, 1, "one live tree, not a line-per-event log");
         assert_eq!(app.workflow_monitor.block_id(run_id).unwrap(), block_id);
         let card = match &app
-            .history.blocks()
+            .history
+            .blocks()
             .iter()
             .find(|b| b.id == block_id)
             .unwrap()
@@ -4962,7 +4994,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         app.workflow_run_finished(run_id);
         assert!(!app.workflow_monitor.is_live(run_id));
         let finished = match &app
-            .history.blocks()
+            .history
+            .blocks()
             .iter()
             .find(|b| b.id == block_id)
             .unwrap()
@@ -4992,11 +5025,12 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             },
         );
         let index = app
-            .history.blocks()
+            .history
+            .blocks()
             .iter()
             .position(|block| matches!(block.kind, block::BlockKind::WorkflowRun(_)))
             .expect("the run minted its card");
-        let verbose = |app: &App| match app.history.blocks()[index].kind {
+        let verbose = |app: &App| match &app.history.blocks()[index].kind {
             block::BlockKind::WorkflowRun(card) => card.verbose,
             _ => unreachable!(),
         };
@@ -5087,7 +5121,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         }
 
         let card = match &app
-            .history.blocks()
+            .history
+            .blocks()
             .iter()
             .find(|block| block.id == block_id)
             .expect("the run keeps its one block")
@@ -5131,7 +5166,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         });
         assert!(!app.workflow_monitor.is_live(run_id));
         let settled = match &app
-            .history.blocks()
+            .history
+            .blocks()
             .iter()
             .find(|block| block.id == block_id)
             .unwrap()
@@ -5233,7 +5269,10 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             "the same tree, at the point in the conversation where the run began: {settled}"
         );
         assert!(
-            app.history.blocks().iter().any(|block| block.id == block_id),
+            app.history
+                .blocks()
+                .iter()
+                .any(|block| block.id == block_id),
             "one card, moved between surfaces rather than copied"
         );
     }
@@ -5298,11 +5337,15 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         clear_conversation(&mut app);
 
         assert!(
-            app.history.blocks().iter().any(|block| block.id == live_block),
+            app.history
+                .blocks()
+                .iter()
+                .any(|block| block.id == live_block),
             "the running workflow keeps the card the region draws"
         );
         assert!(
-            !app.history.blocks()
+            !app.history
+                .blocks()
                 .iter()
                 .any(|block| block.id == finished_block),
             "the finished run's record leaves with the conversation it belonged to"
@@ -5356,7 +5399,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             .block_id(run_id)
             .expect("the run minted its card");
         let verbose = |app: &App| {
-            app.history.blocks()
+            app.history
+                .blocks()
                 .iter()
                 .find(|block| block.id == block_id)
                 .map(|block| match &block.kind {
@@ -5603,7 +5647,10 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             }),
         );
         let block_count = app.history.blocks().len();
-        let block_id = app.history.workflow_binding(run_id).expect("indexed workflow");
+        let block_id = app
+            .history
+            .workflow_binding(run_id)
+            .expect("indexed workflow");
         apply_event(
             &mut app,
             UiEvent::Workflow(WorkflowUiEvent::PlanReady {
@@ -5672,7 +5719,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             "lifecycle updates must not append sibling log lines"
         );
         let card = app
-            .history.blocks()
+            .history
+            .blocks()
             .iter()
             .find(|block| block.id == block_id)
             .and_then(|block| match &block.kind {
@@ -5712,7 +5760,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         );
         assert!(app.history.workflow_binding(run_id).is_none());
         let card = app
-            .history.blocks()
+            .history
+            .blocks()
             .iter()
             .find(|block| block.id == block_id)
             .and_then(|block| match &block.kind {
@@ -5776,7 +5825,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             skipped_tasks: 1,
         });
         let card = app
-            .history.blocks()
+            .history
+            .blocks()
             .iter()
             .find_map(|block| match &block.kind {
                 block::BlockKind::Workflow(card) if card.run_id == run_id => Some(card),
@@ -5801,7 +5851,12 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         app.stream_text("写代码 ");
         app.stream_text("测试😀");
         app.flush_text();
-        assert!(app.history.blocks().iter().any(|b| b.to_text().contains("测试")));
+        assert!(
+            app.history
+                .blocks()
+                .iter()
+                .any(|b| b.to_text().contains("测试"))
+        );
     }
 
     #[test]
@@ -5905,7 +5960,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert_eq!(busy_notifier.run_completed(), None);
         assert!(
             busy_app
-                .history.blocks()
+                .history
+                .blocks()
                 .iter()
                 .any(|block| block.to_text().contains("submission was not accepted"))
         );
@@ -5930,7 +5986,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert_eq!(*returned, item);
         assert!(!app.running);
         assert!(
-            app.history.blocks()
+            app.history
+                .blocks()
                 .iter()
                 .all(|block| !matches!(&block.kind, block::BlockKind::User(_))),
             "a refused prompt must not appear as admitted conversation"
@@ -5950,7 +6007,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             Op::UserInput { text } if text == "preserve me exactly"
         ));
         assert_eq!(
-            app.history.blocks()
+            app.history
+                .blocks()
                 .iter()
                 .filter(|block| matches!(&block.kind, block::BlockKind::User(_)))
                 .count(),
@@ -6112,7 +6170,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             None,
         );
         assert_eq!(
-            app.history.blocks()
+            app.history
+                .blocks()
                 .iter()
                 .filter(|block| block.to_text().contains("describe this"))
                 .count(),
@@ -6240,7 +6299,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         );
         assert!(app.input_lanes.queued().is_empty(), "nothing was queued");
         assert!(
-            app.history.blocks()
+            app.history
+                .blocks()
                 .iter()
                 .any(|block| block.to_text().contains("cannot carry attachments")),
             "the operator is told why"
@@ -6524,7 +6584,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             app.editor.text()
         );
         assert!(
-            app.history.blocks()
+            app.history
+                .blocks()
                 .iter()
                 .any(|block| block.to_text().contains("image attachment refused")),
             "a drop that did not attach is never silent"
@@ -6547,7 +6608,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             "the words are still the operator's"
         );
         let refusals = app
-            .history.blocks()
+            .history
+            .blocks()
             .iter()
             .filter(|block| block.to_text().contains("image attachment refused"))
             .count();
@@ -6569,7 +6631,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             "renamed report.png to summary.png in the release notes"
         );
         assert!(
-            !app.history.blocks()
+            !app.history
+                .blocks()
                 .iter()
                 .any(|block| block.to_text().contains("image attachment refused")),
             "prose that names a file is not a failed drop"
@@ -8207,4 +8270,38 @@ fn product_run_rebind_skips_retained_old_run_content_and_terminal() {
     new_app.finish_text_boundary();
     assert_eq!(new_app.assistant.authority(), "fresh content ");
     assert!(!tests::render_text(&mut new_app, 100, 24).contains("old replay"));
+}
+
+#[cfg(test)]
+mod large_logical_viewport_tests {
+    use super::tests::render_text;
+    use super::*;
+
+    #[test]
+    fn actual_over_u16_history_keeps_newest_pixels_and_high_row_reading_anchor_visible() {
+        let mut app = App::new();
+        app.history.clear();
+        app.push_block(block::BlockKind::Thinking {
+            text: "retained history row\n".repeat(70_000),
+            open: true,
+        });
+        app.stream_text("newest answer remains visible");
+        let screen = render_text(&mut app, 80, 22);
+        assert!(app.viewport.total_rows() > usize::from(u16::MAX));
+        assert!(app.view_scroll > usize::from(u16::MAX));
+        assert!(screen.contains("newest answer remains visible"), "{screen}");
+        app.scroll_up(6);
+        let _ = render_text(&mut app, 80, 22);
+        let anchored = app
+            .geometry
+            .reading_anchor(app.view_scroll)
+            .expect("retained high-row block");
+        assert!(app.view_scroll > usize::from(u16::MAX));
+        let _ = render_text(&mut app, 42, 20);
+        assert!(app.view_scroll > usize::from(u16::MAX));
+        assert_eq!(app.geometry.reading_anchor(app.view_scroll), Some(anchored));
+        app.follow_latest();
+        let screen = render_text(&mut app, 80, 22);
+        assert!(screen.contains("newest answer remains visible"), "{screen}");
+    }
 }

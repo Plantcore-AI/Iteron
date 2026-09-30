@@ -755,7 +755,7 @@ struct App {
     row_map: Vec<usize>,
     /// The transcript viewport's top row and current scroll (in rendered rows), for click math.
     view_top: u16,
-    view_scroll: u16,
+    view_scroll: usize,
     view_h: u16,
     /// Core owns mouse input by default so the wheel scrolls this session, not terminal history.
     /// Ctrl-T releases ownership for native drag selection without leaving the full-screen TUI.

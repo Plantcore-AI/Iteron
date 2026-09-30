@@ -2,11 +2,11 @@
 //! observed geometry. Output never moves a reader back to the tail until they reach it or request it.
 
 pub(super) struct ConversationViewport {
-    offset: u16,
+    offset: usize,
     following: bool,
     unread: bool,
-    total_rows: u16,
-    height: u16,
+    total_rows: usize,
+    height: usize,
     anchor_missing: bool,
 }
 impl Default for ConversationViewport {
@@ -43,10 +43,10 @@ impl ConversationViewport {
     }
     pub(super) fn scroll_up(&mut self, rows: u16) {
         self.following = false;
-        self.offset = self.offset.saturating_add(rows);
+        self.offset = self.offset.saturating_add(usize::from(rows));
     }
     pub(super) fn scroll_down(&mut self, rows: u16) {
-        self.offset = self.offset.saturating_sub(rows);
+        self.offset = self.offset.saturating_sub(usize::from(rows));
         if self.offset == 0 {
             self.follow_latest();
         }
@@ -54,7 +54,8 @@ impl ConversationViewport {
     /// Preserve the currently requested rendered row through appended content and shelf-height
     /// changes. This arithmetic does not provide semantic block/source-row reflow anchoring
     /// or exact source-character stability after reflow.
-    pub(super) fn observe_layout(&mut self, total_rows: u16, height: u16) -> u16 {
+    pub(super) fn observe_layout(&mut self, total_rows: usize, height: u16) -> usize {
+        let height = usize::from(height);
         let extent = total_rows.saturating_sub(height);
         if !self.following && self.height > 0 {
             let previous = self.total_rows.saturating_sub(self.height);
@@ -74,21 +75,20 @@ impl ConversationViewport {
     }
     pub(super) fn requested_first_row(&self) -> Option<usize> {
         (!self.following && self.height > 0).then(|| {
-            usize::from(
-                self.total_rows
-                    .saturating_sub(self.height)
-                    .saturating_sub(self.offset),
-            )
+            self.total_rows
+                .saturating_sub(self.height)
+                .saturating_sub(self.offset)
         })
     }
     pub(super) fn observe_anchored_layout(
         &mut self,
-        total_rows: u16,
+        total_rows: usize,
         height: u16,
         row: usize,
-    ) -> u16 {
+    ) -> usize {
+        let height = usize::from(height);
         let extent = total_rows.saturating_sub(height);
-        let row = u16::try_from(row).unwrap_or(u16::MAX).min(extent);
+        let row = row.min(extent);
         self.total_rows = total_rows;
         self.height = height;
         self.offset = extent - row;
@@ -105,15 +105,15 @@ impl ConversationViewport {
         self.anchor_missing
     }
     #[cfg(test)]
-    pub(super) fn offset(&self) -> u16 {
+    pub(super) fn offset(&self) -> usize {
         self.offset
     }
     #[cfg(test)]
-    pub(super) fn total_rows(&self) -> u16 {
+    pub(super) fn total_rows(&self) -> usize {
         self.total_rows
     }
     #[cfg(test)]
-    pub(super) fn fixture_offset(&mut self, offset: u16) {
+    pub(super) fn fixture_offset(&mut self, offset: usize) {
         self.offset = offset;
     }
 }
@@ -133,7 +133,7 @@ mod tests {
         viewport.scroll_up(u16::MAX);
         assert_eq!(viewport.observe_layout(220, 15), 0);
         viewport.follow_latest();
-        assert_eq!(viewport.observe_layout(u16::MAX, 15), u16::MAX - 15);
+        assert_eq!(viewport.observe_layout(usize::MAX, 15), usize::MAX - 15);
         assert!(!viewport.has_unread());
     }
     #[test]
