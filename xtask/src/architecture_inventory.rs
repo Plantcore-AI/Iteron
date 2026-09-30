@@ -299,6 +299,20 @@ const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
+        path: "crates/cli/src/runtime/provider_stream_attempt.rs",
+        boundary: "cli-host",
+        responsibilities: &["actual physical provider stream pump and quota receipt"],
+        next_seams: &[
+            "concrete observation/tool admission ports; no mutable Agent or financial authority",
+        ],
+    },
+    Surface {
+        path: "crates/cli/src/runtime/provider_transport_attempt.rs",
+        boundary: "cli-host",
+        responsibilities: &["actual admitted transport controls, cancellation and deadline"],
+        next_seams: &["retries, durable intent and financial accounting remain separate owners"],
+    },
+    Surface {
         path: "crates/cli/src/runtime/provider_turn_evidence.rs",
         boundary: "cli-host",
         responsibilities: &[
