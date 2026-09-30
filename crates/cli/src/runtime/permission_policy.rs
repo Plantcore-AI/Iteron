@@ -57,7 +57,10 @@ pub(super) fn evaluate_operation(
     for capability in effects.required.iter() {
         // A blanket interpreter/file-writer grant does not authorize extra trust/external
         // effects. Their exact named class remains separately configurable and deniable.
-        let interpreter = matches!(tool, "bash" | "process_start" | "process_write");
+        let interpreter = matches!(
+            tool,
+            "bash" | "process_start" | "process_write" | "browser" | "computer"
+        );
         let operation_name = if interpreter && capability == Capability::IrreversibleExternal {
             format!("{tool}:external")
         } else if capability == Capability::TrustMutating
@@ -255,6 +258,66 @@ mod tests {
             operation("python unknown.py", &rules, all(), false).verdict,
             Verdict::Ask
         );
+    }
+
+    #[test]
+    fn browser_and_computer_need_separate_external_grants_and_keep_all_ceilings() {
+        for name in ["browser", "computer"] {
+            let effects = OperationEffects::classify(
+                &ToolUse {
+                    id: "call".into(),
+                    name: name.into(),
+                    input: json!({"action":"screenshot","approved":true,"pure":true}),
+                },
+                Capability::CodeExecuting,
+            );
+            let mut rules = PermissionRules::new();
+            rules.allow_cap(Capability::CodeExecuting);
+            rules.set_tool(name, Verdict::Auto);
+            let evaluate = |rules: &PermissionRules, mode, ceiling, bypass| {
+                evaluate_operation(
+                    name,
+                    &effects,
+                    OperationPolicy {
+                        mode,
+                        rules,
+                        bypass,
+                        task_ceiling: ceiling,
+                        policy_capabilities: all(),
+                        governing_trust: Trust::Trusted,
+                        authority: OperatorAuthority::Constrained,
+                    },
+                )
+            };
+            assert_eq!(
+                evaluate(&rules, PermissionMode::Yolo, all(), false).verdict,
+                Verdict::Ask
+            );
+            rules.set_tool(&format!("{name}:external"), Verdict::Auto);
+            assert_eq!(
+                evaluate(&rules, PermissionMode::Yolo, all(), false).verdict,
+                Verdict::Auto
+            );
+            assert_eq!(
+                evaluate(
+                    &rules,
+                    PermissionMode::Yolo,
+                    CapabilitySet::only(Capability::CodeExecuting),
+                    true
+                )
+                .verdict,
+                Verdict::Deny
+            );
+            assert_eq!(
+                evaluate(&rules, PermissionMode::Plan, all(), true).verdict,
+                Verdict::Deny
+            );
+            rules.set_cap(Capability::IrreversibleExternal, Verdict::Deny);
+            assert_eq!(
+                evaluate(&rules, PermissionMode::Yolo, all(), true).verdict,
+                Verdict::Deny
+            );
+        }
     }
 
     #[test]

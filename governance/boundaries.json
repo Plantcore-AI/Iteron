@@ -1301,6 +1301,10 @@
         },
         {
           "kind": "file",
+          "path": "crates/tools/src/captured_image.rs"
+        },
+        {
+          "kind": "file",
           "path": "crates/tools/src/native_mutation.rs"
         },
         {
@@ -1493,6 +1497,10 @@
         {
           "kind": "file",
           "path": "crates/tools/src/workflow_tool.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/tools/src/browser"
         }
       ],
       "contracts": [
@@ -2585,6 +2593,10 @@
         {
           "kind": "file",
           "path": "crates/protocol/src/turn_publication.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/tools/src/browser"
         }
       ]
     },
@@ -2723,6 +2735,10 @@
         {
           "kind": "file",
           "path": "crates/protocol/src/turn_publication.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/tools/src/browser"
         }
       ]
     },
@@ -3055,6 +3071,14 @@
         {
           "kind": "file",
           "path": "crates/protocol/src/turn_publication.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/tools/src/browser"
+        },
+        {
+          "kind": "file",
+          "path": "crates/tools/src/captured_image.rs"
         }
       ]
     },

@@ -1,7 +1,7 @@
 //! Host-only data captured before preview caps, kept separate from certainty and authority.
 
 use crate::{
-    ToolExecution,
+    CapturedToolImage, ToolExecution,
     native_mutation::{NativeFileChange, NativeMutationReceipt},
 };
 use iteron_protocol::{ToolResult, ToolUse};
@@ -27,6 +27,7 @@ impl std::fmt::Debug for CapturedToolOutput {
 pub struct CapturedToolExecution {
     pub execution: ToolExecution,
     pub captured_outputs: Vec<CapturedToolOutput>,
+    pub captured_images: Vec<CapturedToolImage>,
     pub native_mutation: Option<NativeMutationReceipt>,
     pub capture_error: Option<String>,
 }
@@ -35,6 +36,7 @@ impl From<ToolExecution> for CapturedToolExecution {
         Self {
             execution,
             captured_outputs: vec![],
+            captured_images: vec![],
             native_mutation: None,
             capture_error: None,
         }
@@ -79,8 +81,24 @@ impl CapturedToolExecution {
             self.captured_outputs.clear();
             self.capture_error = Some("captured output exceeds its host envelope".into());
         }
+        if self.captured_images.len() > 4
+            || self
+                .captured_images
+                .iter()
+                .map(|image| image.bytes().len())
+                .sum::<usize>()
+                > MAX_TOTAL_BYTES
+        {
+            self.captured_images.clear();
+            self.capture_error = Some("captured images exceed host envelope".into());
+        }
         let definite_success =
             matches!(&self.execution,ToolExecution::Definite(result) if !result.is_error);
+        if !definite_success && !self.captured_images.is_empty() {
+            self.captured_images.clear();
+            self.capture_error =
+                Some("captured images lack a definite successful observation".into());
+        }
         if self
             .native_mutation
             .as_ref()

@@ -83,7 +83,7 @@ impl Agent {
         };
         let permissions = vec![
             json!({"mode":self.permission_mode(),"rules":self.permission_rules(),"authority_ceiling":self.authority_ceiling,"policy_capabilities":self.policy_capabilities,
-            "operation_rule_aliases":["bash:external","bash:trust_mutating","write_file:trust_mutating","edit:trust_mutating","apply_patch:trust_mutating"],
+            "operation_rule_aliases":["bash:external","browser:external","computer:external","bash:trust_mutating","write_file:trust_mutating","edit:trust_mutating","apply_patch:trust_mutating"],
             "semantics":"declared tool gate is informative; dispatch also intersects the task envelope and actual operation requirements"}),
         ];
         let overview = vec![

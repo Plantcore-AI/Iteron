@@ -38,6 +38,25 @@ impl OperationEffects {
     /// The registered capability is always retained, including code execution for literal
     /// observation commands. Classification is an additional constraint, never a replacement.
     pub fn classify(call: &ToolUse, registered: Capability) -> Self {
+        if matches!(call.name.as_str(), "browser" | "computer")
+            && registered == Capability::CodeExecuting
+        {
+            return Self {
+                required: CapabilitySet::from_iter_capabilities([
+                    Capability::CodeExecuting,
+                    Capability::IrreversibleExternal,
+                ]),
+                knowledge: EffectKnowledge::Classified,
+                targets: call
+                    .input
+                    .get("url")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|url| url.len() <= MAX_TARGET_BYTES)
+                    .map(|url| vec![url.into()])
+                    .unwrap_or_default(),
+                reason: "browser commands may navigate, authenticate or publish; every action requires explicit external authority",
+            };
+        }
         if matches!(call.name.as_str(), "bash" | "process_start")
             && registered == Capability::CodeExecuting
         {

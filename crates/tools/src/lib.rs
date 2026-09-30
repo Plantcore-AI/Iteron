@@ -11,6 +11,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 mod captured_execution;
+mod captured_image;
+pub use captured_image::{CapturedImageObservation, CapturedToolImage};
+pub mod browser;
 #[cfg(unix)]
 mod confined_fs;
 mod confined_helper;
@@ -1595,6 +1598,35 @@ impl Registry {
             registeredfut::box_it(async move {
                 RegisteredExecution {
                     outcome: future.await.into(),
+                    dispatch_to_terminal_ms: None,
+                }
+            })
+        };
+        self.register(Tool {
+            spec,
+            run: Arc::new(adapted),
+            output_owner: ToolOutputOwner::Runtime,
+            purpose: ToolPurpose::General,
+        })
+    }
+
+    /// Bounded captured data from an ordinary host effect executor; no MCP provenance or clock
+    /// can be imported through this adapter. Registry admission still seals the actual operation.
+    pub fn register_external_effect_captured(
+        &mut self,
+        spec: ToolSpec,
+        run: impl Fn(ToolUse, PathBuf) -> capturedfut::BoxFut + Send + Sync + 'static,
+    ) -> Result<(), ToolError> {
+        if spec.purity != Purity::Effecting {
+            return Err(ToolError::Registration(
+                "captured external executor requires Effecting".into(),
+            ));
+        }
+        let adapted = move |call, root| {
+            let future = run(call, root);
+            registeredfut::box_it(async move {
+                RegisteredExecution {
+                    outcome: future.await,
                     dispatch_to_terminal_ms: None,
                 }
             })
