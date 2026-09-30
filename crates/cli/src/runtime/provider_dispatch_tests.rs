@@ -130,6 +130,7 @@ impl Harness {
                 port: None,
                 card: None,
                 context_window: None,
+                usage_bounds: iteron_provider::ProviderUsageBoundSemantics::IndependentClasses,
             },
             ProviderFinancialOwners {
                 usd: None,

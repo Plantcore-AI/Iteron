@@ -30,6 +30,7 @@ pub mod sse;
 mod static_metadata;
 mod tool_image;
 mod usage;
+mod usage_bounds;
 
 pub use anthropic::Anthropic;
 pub use catalog::{
@@ -62,6 +63,7 @@ pub use responses::OpenAiResponses;
 pub use sse::{StreamItem, parse_sse_stream};
 pub use static_metadata::{StaticModelCapabilities, StaticProviderMetadata};
 pub use usage::{UsageIncompleteReason, UsageReport};
+pub use usage_bounds::ProviderUsageBoundSemantics;
 
 /// Maximum bytes retained from any non-success provider response. The response is dropped as
 /// soon as the cap is crossed; provider-controlled error pages can therefore never create an
@@ -1548,6 +1550,20 @@ pub trait Provider: Send + Sync {
         ProviderControlCapabilities::default()
     }
 
+    /// Input ceiling of the selected physical model from the adapter's immutable capability
+    /// evidence. A prompt planning/profile window is not this proof. Wrappers must preserve
+    /// exact model and endpoint binding; unknown capability returns None without IO.
+    fn physical_input_token_ceiling(&self, _model: &str) -> Option<u64> {
+        None
+    }
+
+    /// Physical usage normalization for this exact configured adapter. Native partitioned
+    /// evidence must bind an authenticated vendor profile and endpoint; compatibility alone
+    /// cannot reduce the independent conservative reservation. No transport is performed.
+    fn usage_bound_semantics(&self) -> ProviderUsageBoundSemantics {
+        ProviderUsageBoundSemantics::IndependentClasses
+    }
+
     /// Prove the finite output cap actually serialized by this adapter after effort adaptation.
     /// This method is pure; None means the adapter cannot attest its wire limit. Hard monetary
     /// callers must retain an independent verified bound or refuse before dispatch. Wrappers
@@ -1790,6 +1806,31 @@ impl Provider for HealthReportingProvider {
 
     fn attempt_semantics(&self) -> ProviderAttemptSemantics {
         self.inner.attempt_semantics()
+    }
+
+    fn physical_input_token_ceiling(&self, model: &str) -> Option<u64> {
+        let inner = self.inner.physical_input_token_ceiling(model);
+        let captured = self
+            .static_metadata_notice
+            .as_ref()
+            .filter(|route| route.model == model)
+            .and_then(|route| {
+                route
+                    .metadata
+                    .route_model_capabilities(&route.api_root, model)
+            })
+            .and_then(|caps| caps.context_window_tokens)
+            .filter(|window| *window > 0);
+        // A host metadata refresh may increase the accepted physical window; it cannot use a
+        // smaller planning value to reduce the adapter's already attested ceiling.
+        match (inner, captured) {
+            (Some(inner), Some(captured)) => Some(inner.max(captured)),
+            (inner, captured) => inner.or(captured),
+        }
+    }
+
+    fn usage_bound_semantics(&self) -> ProviderUsageBoundSemantics {
+        self.inner.usage_bound_semantics()
     }
 
     fn physical_output_token_ceiling(

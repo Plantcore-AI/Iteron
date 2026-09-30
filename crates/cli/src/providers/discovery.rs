@@ -310,6 +310,14 @@ struct PostPaintAdmittedProvider {
 
 #[async_trait::async_trait]
 impl Provider for PostPaintAdmittedProvider {
+    fn physical_input_token_ceiling(&self, model: &str) -> Option<u64> {
+        self.inner.physical_input_token_ceiling(model)
+    }
+
+    fn usage_bound_semantics(&self) -> iteron_provider::ProviderUsageBoundSemantics {
+        self.inner.usage_bound_semantics()
+    }
+
     fn provider_instance_id(&self) -> Option<&str> {
         self.inner.provider_instance_id()
     }

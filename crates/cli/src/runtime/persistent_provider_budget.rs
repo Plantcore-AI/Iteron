@@ -64,7 +64,8 @@ impl Agent {
             ProviderPricingEvidence {
                 port: self.provider_selection.pricing_port().cloned(),
                 card: self.provider_selection.card().cloned(),
-                context_window: self.execution_context_window(),
+                context_window: self.provider.physical_input_token_ceiling(&self.model),
+                usage_bounds: self.provider.usage_bound_semantics(),
             },
             ProviderFinancialOwners {
                 usd: self.usd_budget.clone(),

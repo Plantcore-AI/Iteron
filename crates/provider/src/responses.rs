@@ -5,6 +5,9 @@
 //! state. Function calls become Responses input items and are only considered executable once
 //! `response.function_call_arguments.done` supplies the final argument JSON.
 
+mod usage;
+use usage::parse_usage;
+
 use crate::sse::StreamItem;
 use crate::{
     AdapterKind, ApiRoot, EffortApplication, ErrorProfile, Provider, ProviderControlCapabilities,
@@ -1472,39 +1475,6 @@ fn parse_arguments(_name: &str, arguments: &str) -> Result<serde_json::Value, Pr
     })
 }
 
-fn parse_usage(response: &serde_json::Value) -> Result<UsageReport, ProviderError> {
-    let Some(usage) = response.get("usage").filter(|usage| !usage.is_null()) else {
-        return Ok(UsageReport::provider_omitted());
-    };
-    let total_input = required_u64(usage, "input_tokens")?;
-    let cache_read = optional_nested_u64(usage, "/input_tokens_details/cached_tokens")?;
-    let input = total_input.checked_sub(cache_read).ok_or_else(|| {
-        ProviderError::Decode("Responses cached tokens exceeded total input tokens".into())
-    })?;
-    // The Responses usage schema has no cache-creation member at all: `input_tokens_details`
-    // carries `cached_tokens` and nothing about what wrote them. A `cache_creation: 0` here is
-    // therefore the struct default, not a measurement, and the report says so rather than letting
-    // pricing charge a cache-write rate against a constant zero (I-52).
-    Ok(UsageReport::cache_creation_unreported(Usage {
-        input,
-        output: required_u64(usage, "output_tokens")?,
-        cache_creation: 0,
-        cache_read,
-        thinking: optional_nested_u64(usage, "/output_tokens_details/reasoning_tokens")?,
-    }))
-}
-
-fn optional_nested_u64(value: &serde_json::Value, pointer: &str) -> Result<u64, ProviderError> {
-    let Some(token) = value.pointer(pointer) else {
-        return Ok(0);
-    };
-    token.as_u64().ok_or_else(|| {
-        ProviderError::Decode(format!(
-            "Responses usage field {pointer} was not an unsigned integer"
-        ))
-    })
-}
-
 fn stream_failure(
     error_profile: ErrorProfile,
     value: &serde_json::Value,
@@ -1554,6 +1524,21 @@ fn incomplete_failure(
 
 #[async_trait::async_trait]
 impl Provider for OpenAiResponses {
+    fn physical_input_token_ceiling(&self, model: &str) -> Option<u64> {
+        crate::StaticProviderMetadata::embedded()
+            .route_model_capabilities(self.root.as_str(), model)
+            .and_then(|caps| caps.context_window_tokens)
+            .filter(|window| *window > 0)
+    }
+
+    fn usage_bound_semantics(&self) -> crate::ProviderUsageBoundSemantics {
+        if self.error_profile == ErrorProfile::OpenAi && self.root.as_str() == DEFAULT_ROOT {
+            crate::ProviderUsageBoundSemantics::PartitionedInput
+        } else {
+            crate::ProviderUsageBoundSemantics::IndependentClasses
+        }
+    }
+
     fn physical_output_token_ceiling(
         &self,
         budget: crate::output_ceiling::ProviderOutputBudget<'_>,

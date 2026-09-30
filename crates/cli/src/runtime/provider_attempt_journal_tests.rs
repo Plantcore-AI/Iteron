@@ -164,6 +164,7 @@ async fn controller_query_fault_after_actual_provider_call_preserves_sealed_term
                 port: Some(pricing.clone()),
                 card: Some(signed.clone()),
                 context_window: Some(16),
+                usage_bounds: iteron_provider::ProviderUsageBoundSemantics::IndependentClasses,
             },
             ProviderFinancialOwners {
                 usd: None,
@@ -293,6 +294,7 @@ fn financial(unavailable: bool) -> ProviderFinancialContext {
             port: None,
             card: None,
             context_window: None,
+            usage_bounds: iteron_provider::ProviderUsageBoundSemantics::IndependentClasses,
         },
         ProviderFinancialOwners {
             usd: None,

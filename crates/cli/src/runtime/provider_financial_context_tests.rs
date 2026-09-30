@@ -46,6 +46,7 @@ fn context(tenant: &str, budget: Arc<SharedUsdBudget>) -> ProviderFinancialConte
             port: Some(Arc::new(port)),
             card: Some(signed),
             context_window: Some(16),
+            usage_bounds: iteron_provider::ProviderUsageBoundSemantics::IndependentClasses,
         },
         ProviderFinancialOwners {
             usd: Some(budget),
@@ -151,4 +152,37 @@ fn exact_capture_refusal_releases_zero_while_unknown_keeps_the_real_reservation(
             assert!(budget.remaining_microusd().is_err());
         }
     }
+}
+
+#[test]
+fn actual_agent_prompt_window_cannot_shrink_the_physical_financial_input_bound() {
+    use crate::runtime::{Agent, gate_integration_tests};
+    use iteron_provider::{OpenAiResponses, Provider};
+    let root = gate_integration_tests::temp_ws("physical-input-vs-prompt-profile");
+    let native = Arc::new(OpenAiResponses::new("unused-fixture".into(), None).unwrap());
+    let physical = native.physical_input_token_ceiling("gpt-5.6").unwrap();
+    let rollout = iteron_record::Rollout::open(
+        &root.join(".iteron/runs"),
+        &RunId("physical-input-profile".into()),
+        TenantId::default(),
+    )
+    .unwrap();
+    let mut agent = Agent::new(
+        native,
+        iteron_tools::Registry::read_only(&root).unwrap(),
+        rollout,
+        "gpt-5.6".into(),
+        "fixture".into(),
+        iteron_protocol::Budget::default(),
+    );
+    agent.model_context_window = Some(32);
+    assert_eq!(agent.execution_context_window(), Some(32));
+    assert_eq!(
+        agent.provider_financial_context().context_window,
+        Some(physical)
+    );
+    agent.model = "unknown-fixture-model".into();
+    assert_eq!(agent.provider_financial_context().context_window, None);
+    drop(agent);
+    std::fs::remove_dir_all(root).unwrap();
 }

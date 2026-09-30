@@ -32,6 +32,7 @@ pub(super) struct ProviderPricingEvidence {
     pub(super) port: Option<Arc<dyn PricingPort>>,
     pub(super) card: Option<SignedRateCard>,
     pub(super) context_window: Option<u64>,
+    pub(super) usage_bounds: iteron_provider::ProviderUsageBoundSemantics,
 }
 
 pub(super) struct ProviderFinancialOwners {
@@ -47,6 +48,7 @@ pub(super) struct ProviderFinancialContext {
     pricing_port: Option<Arc<dyn PricingPort>>,
     pricing: Option<SignedRateCard>,
     context_window: Option<u64>,
+    usage_bounds: iteron_provider::ProviderUsageBoundSemantics,
     usd_budget: Option<Arc<SharedUsdBudget>>,
     cohort: Result<Option<Arc<dyn RuntimeProviderBudgetPort>>, ControllerError>,
 }
@@ -64,6 +66,7 @@ impl ProviderFinancialContext {
             pricing_port: pricing.port,
             pricing: pricing.card,
             context_window: pricing.context_window,
+            usage_bounds: pricing.usage_bounds,
             usd_budget: owners.usd,
             cohort: owners.cohort,
         }
@@ -315,7 +318,7 @@ impl ProviderFinancialContext {
         let input_bound = self.context_window.filter(|bound| *bound > 0).ok_or(
             KernelError::InvalidRouteMetadata {
                 field: "model_context_window",
-                reason: "positive USD admission requires a bounded model context window",
+                reason: "positive USD admission requires an adapter-attested physical input ceiling",
             },
         )?;
         let output_bound = u64::from(
@@ -327,22 +330,13 @@ impl ProviderFinancialContext {
                     reason: "positive USD admission needs an adapter-attested physical output ceiling",
                 })?,
         );
-        let rates = signed.rate_card.rates;
-        let thinking = if rates.thinking_microusd_per_million > rates.output_microusd_per_million {
-            output_bound
-        } else {
-            0
-        };
-        let usage = iteron_protocol::Usage {
-            input: input_bound,
-            output: output_bound,
-            cache_creation: input_bound,
-            cache_read: input_bound,
-            thinking,
-        };
-        iteron_obs::pricing::projected_amount_microusd(rates, usage)
-            .map(Some)
-            .map_err(KernelError::from)
+        super::provider_usage_reservation::reservation(
+            self.usage_bounds,
+            signed.rate_card.rates,
+            input_bound,
+            output_bound,
+        )
+        .map(|bounds| Some(bounds.cost_microusd))
     }
 
     pub(super) fn commit_provider_route_charge(
@@ -407,36 +401,19 @@ impl ProviderFinancialContext {
         let input = self.context_window.filter(|value| *value > 0).ok_or(
             KernelError::InvalidRouteMetadata {
                 field: "model_context_window",
-                reason: "persistent provider admission needs a proven finite context window",
+                reason: "persistent provider admission needs an adapter-attested physical input ceiling",
             },
         )?;
         if max_output == 0 || max_output > u64::from(u32::MAX) {
             return Err(KernelError::AgentControl(ControllerError::Budget));
         }
-        // Usage schemas report input/cache classes independently; output and thinking can also
-        // overlap. Reserve each full class rather than relying on an approximate tokenizer.
-        let tokens = input
-            .checked_mul(3)
-            .and_then(|value| {
-                max_output
-                    .checked_mul(2)
-                    .and_then(|output| value.checked_add(output))
-            })
-            .ok_or(KernelError::AgentControl(ControllerError::Budget))?;
-        let rates = card.rate_card.rates;
-        let usage = iteron_protocol::Usage {
+        let bounds = super::provider_usage_reservation::reservation(
+            self.usage_bounds,
+            card.rate_card.rates,
             input,
-            output: max_output,
-            cache_creation: input,
-            cache_read: input,
-            thinking: if rates.thinking_microusd_per_million > rates.output_microusd_per_million {
-                max_output
-            } else {
-                0
-            },
-        };
-        let cost = iteron_obs::pricing::projected_amount_microusd(rates, usage)?;
-        Ok(Some((tokens, cost)))
+            max_output,
+        )?;
+        Ok(Some((bounds.tokens, bounds.cost_microusd)))
     }
 
     pub(super) fn reserve_cohort(

@@ -151,6 +151,7 @@ mod provider_attempt_journal;
 mod provider_attempt_pump;
 mod provider_charge_evidence;
 mod provider_financial_context;
+mod provider_usage_reservation;
 mod provider_governor_state;
 mod provider_hedge;
 mod provider_output_request;
