@@ -269,6 +269,15 @@ const SURFACES: &[Surface] = &[
         ],
         next_seams: &["hook journal and kernel effect admission remain independent owners"],
     },
+    Surface {
+        path: "crates/cli/src/runtime/kernel_effect_bridge.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "typed non-registry effect descriptor and single kernel broker adapter",
+            "bounded terminal/workspace evidence projection",
+        ],
+        next_seams: &["disjoint journal/admission ports; no executor receives mutable Agent"],
+    },
 ];
 
 #[derive(Serialize)]
