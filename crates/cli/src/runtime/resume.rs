@@ -952,9 +952,7 @@ impl Agent {
         // At-most-once identities are per-journal. `guard_unresolved_effects` reseeds this from the
         // adopted record before the next turn dispatches anything; clearing it now means the window
         // in between cannot admit an effect against the previous run's ledger.
-        self.effect_admissions = effect_admission::EffectAdmissions::default();
-        self.live_unresolved_effects = 0;
-        self.recovery_effect_replay_required = true;
+        self.effect_journal.adopt_journal();
         // The estimator caches a per-message token estimate for a transcript that is being replaced.
         self.context_estimator.invalidate_transcript();
         self.token_estimate_baselines.clear();

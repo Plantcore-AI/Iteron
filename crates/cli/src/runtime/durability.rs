@@ -18,16 +18,7 @@ pub(super) fn append_interrupted_stream_head(buffer: &mut String, delta: &str, m
 /// snapshot at all, so the audit argument stays present and content-free.
 const ABSENT_LIFECYCLE_COUNT: usize = 0;
 
-/// Why an effect settled `Unknown`. Only `Unobserved` gates future submissions; see
-/// [`Agent::settle_kernel_effect_with_cause`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum UnknownCause {
-    /// Nobody observed a terminal — the crash window the at-most-once gate exists for.
-    Unobserved,
-    /// The operator cancelled it. Recorded, never auto-retried, but not a reason to refuse
-    /// everything they type next.
-    OperatorCancelled,
-}
+pub(super) use super::effect_journal_owner::UnknownCause;
 
 impl Agent {
     /// Admit the compatibility Stop hook to the session-owned observer without putting arbitrary
@@ -289,7 +280,7 @@ impl Agent {
         turn: TurnId,
         class: effect_class::EffectClass,
     ) -> usize {
-        self.effect_admissions.next_ordinal(turn, class)
+        self.effect_journal.next_ordinal(turn, class)
     }
 
     /// Open a non-registry effect: admit the identity and fsync its write-ahead intent.
@@ -372,10 +363,10 @@ impl Agent {
         }
         let Agent {
             rollout,
-            effect_admissions,
+            effect_journal,
             ..
         } = self;
-        match effects::open_effect(rollout, effect_admissions, effect) {
+        match effect_journal.open(rollout, effect) {
             Ok(ticket) => {
                 if let (Some((max_tokens, _)), Some(identity)) =
                     (persistent_bounds, provider_route_attempt.as_ref())
@@ -463,13 +454,11 @@ impl Agent {
                 identity.clone(),
             ),
         });
-        let became_unknown = matches!(&settlement, effects::Settlement::Unknown(..))
-            && matches!(cause, UnknownCause::Unobserved);
-        match effects::settle_effect(&mut self.rollout, ticket, settlement) {
+        match self
+            .effect_journal
+            .settle(&mut self.rollout, ticket, settlement, cause)
+        {
             Ok(()) => {
-                if became_unknown {
-                    self.live_unresolved_effects = self.live_unresolved_effects.saturating_add(1);
-                }
                 if let Some(accounting) = provider_accounting {
                     self.settle_persistent_provider(turn, &id, &accounting)?;
                 }
@@ -567,11 +556,11 @@ impl Agent {
         let hook_drain = self.drain.clone();
         let Agent {
             rollout,
-            effect_admissions,
+            effect_journal,
             hooks,
             ..
         } = self;
-        let outcome = broker_kernel_effect(rollout, effect_admissions, effect, || {
+        let outcome = broker_kernel_effect(rollout, effect_journal, effect, || {
             Box::pin(async move {
                 effects::EffectDisposition::Definite {
                     terminal: effect_done_terminal(turn, class, ordinal),
@@ -740,11 +729,11 @@ impl Agent {
         let hook_drain = self.drain.clone();
         let Agent {
             rollout,
-            effect_admissions,
+            effect_journal,
             hooks,
             ..
         } = self;
-        let result = broker_kernel_effect(rollout, effect_admissions, effect, || {
+        let result = broker_kernel_effect(rollout, effect_journal, effect, || {
             Box::pin(async move {
                 match hooks
                     .run_lifecycle_cancellable_journaled(
@@ -909,10 +898,10 @@ impl Agent {
         };
         let Agent {
             rollout,
-            effect_admissions,
+            effect_journal,
             ..
         } = self;
-        let outcome = broker_kernel_effect(rollout, effect_admissions, effect, || async move {
+        let outcome = broker_kernel_effect(rollout, effect_journal, effect, || async move {
             match sink.send(&payload).await {
                 telemetry::TelemetrySendOutcome::Accepted => effects::EffectDisposition::Definite {
                     terminal: effect_done_terminal(turn, class, ordinal),
@@ -988,66 +977,14 @@ impl Agent {
     /// correlated ToolDone is conservatively materialized as EffectUnknown; an existing Unknown
     /// remains blocking until a future broker/reconciler appends authoritative completion.
     pub(super) fn guard_unresolved_effects(&mut self) -> Result<(), KernelError> {
-        // An in-process follow-up retains both the authoritative working transcript and every
-        // unknown registry effect observed since this Agent was constructed. Re-hashing the full
-        // append-only rollout here made normal interactive turns linear in session age. A fresh
-        // process, explicit resume, or missing working set still performs the complete recovery
-        // fold below; that is the only time memory is not an adequate gate.
-        if !self.recovery_effect_replay_required {
-            return if self.live_unresolved_effects == 0 {
-                Ok(())
-            } else {
-                Err(KernelError::UnknownEffects {
-                    count: self.live_unresolved_effects,
-                })
-            };
+        let result = self
+            .effect_journal
+            .guard_recovery(&mut self.rollout, &mut self.ledger);
+        if matches!(&result, Err(KernelError::Record(_))) {
+            self.record_failed = true;
+            self.diagnostic_record_append_failed();
         }
-        let events = replay_logical_rollout(self.rollout.path())?;
-        let journal = effects::EffectJournal::replay(&events)?;
-        // At-most-once has to survive the process boundary, not just the turn loop: a resumed run
-        // must not be able to re-mint an identity the previous process already admitted.
-        self.effect_admissions = effect_admission::EffectAdmissions::from_journal(&journal);
-        let newly_unknown = journal.pending();
-        // A historical provider intent without the pre-dispatch route identity cannot be repaired
-        // honestly: inventing a route digest would turn "unknown identity" into false accounting.
-        // Decode remains compatible, but production recovery fails closed before appending any
-        // terminal or admitting new work.
-        if newly_unknown.iter().any(|pending| {
-            pending.tool == effect_class_label(effect_class::EffectClass::Provider)
-                && pending.provider_route_attempt.is_none()
-        }) {
-            return Err(KernelError::InvalidRouteMetadata {
-                field: "provider_route_attempt",
-                reason: "pending legacy provider intent has no pre-dispatch route identity",
-            });
-        }
-        for pending in &newly_unknown {
-            let provider_route_attempt = pending
-                .provider_route_attempt
-                .clone()
-                .map(route_attempt_accounting::crash_recovery_accounting);
-            self.emit_durable(
-                pending.turn,
-                EventKind::EffectUnknown {
-                    id: pending.id.clone(),
-                    tool: pending.tool.clone(),
-                    reason: "recovery found a durable intent without a durable tool result; automatic retry is forbidden".into(),
-                    provider_route_attempt,
-                },
-            )?;
-        }
-        let count = journal.unknown_requiring_reconciliation().saturating_add(
-            newly_unknown
-                .iter()
-                .filter(|pending| effect_journal::kind_blocks_resume(&pending.tool))
-                .count(),
-        );
-        self.live_unresolved_effects = count;
-        self.recovery_effect_replay_required = false;
-        if count > 0 {
-            return Err(KernelError::UnknownEffects { count });
-        }
-        Ok(())
+        result
     }
 
     /// Record a transcript message AND push it onto the working set — the two must stay in

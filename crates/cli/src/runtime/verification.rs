@@ -203,7 +203,7 @@ impl Agent {
                 });
             }
         }
-        self.turn_mutated_workspace = true;
+        self.effect_journal.note_workspace_mutation();
         let max_verify_attempts = self.verification_policy.retry.max_attempts;
         if self.verify_attempts >= max_verify_attempts {
             self.verification_repair_exhausted(turn);

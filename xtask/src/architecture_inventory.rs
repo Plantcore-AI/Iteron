@@ -336,6 +336,24 @@ const SURFACES: &[Surface] = &[
             "policy draft is not admission; actual WAL and settlement stay concrete directional ports",
         ],
     },
+    Surface {
+        path: "crates/cli/src/runtime/effect_journal_owner.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "single mutable admission/unknown/recovery/workspace-effect owner",
+            "actual open/settle/broker and once-per-adoption canonical WAL recovery",
+            "bounded pending/unknown/barrier observation distinct from admission-blocking policy",
+        ],
+        next_seams: &[
+            "disjoint physical Rollout/Ledger ports; provider monetary admission stays independent",
+        ],
+    },
+    Surface {
+        path: "crates/cli/src/runtime/effect_descriptor.rs",
+        boundary: "cli-host",
+        responsibilities: &["pure typed effect identity/audit/terminal projections"],
+        next_seams: &["no mutable state or execution/writer port"],
+    },
 ];
 
 #[derive(Serialize)]

@@ -19848,7 +19848,7 @@ ant-api03-SuperSecretModelToken12345"
                 .as_slice(),
             b"changed"
         );
-        assert_eq!(live.live_unresolved_effects, 1);
+        assert_eq!(live.effect_journal.unresolved_count(), 1);
         let turns_before_retry = live.ledger.turns;
         assert!(matches!(
             live.run("do not continue after an unobserved native effect")

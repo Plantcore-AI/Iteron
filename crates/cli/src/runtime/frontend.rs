@@ -794,7 +794,7 @@ impl Agent {
         // This transcript and its effect gate never crossed a process boundary. The next run must
         // not replay and re-hash the complete rollout merely because `resumed` is also the common
         // input slot used by explicit recovery.
-        self.recovery_effect_replay_required = false;
+        self.effect_journal.retain_live_followup();
         Ok(())
     }
 }
