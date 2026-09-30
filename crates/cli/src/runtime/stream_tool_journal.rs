@@ -75,14 +75,8 @@ impl StreamToolJournal<'_> {
         let class = effect_class::EffectClass::Hook;
         let ordinal = self.effects.next_ordinal(turn, class);
         #[cfg(test)]
-        if *self.fault == Some(DurableAppendFault::EffectIntent) {
-            *self.fault = None;
-            return Err(
-                self.record_error(iteron_record::RecordError::Io(std::io::Error::other(
-                    "injected durable effect-intent append failure",
-                ))),
-            );
-        }
+        self.inject_intent_failure()?;
+        let started = Instant::now();
         let opened = self.effects.open(
             self.rollout,
             effects::BrokeredEffect {
@@ -96,6 +90,7 @@ impl StreamToolJournal<'_> {
                 provider_route_attempt: None,
             },
         );
+        self.measure(started);
         opened
             .map(|ticket| (ordinal, ticket))
             .map_err(|error| self.boundary_error(error))
@@ -109,10 +104,27 @@ impl StreamToolJournal<'_> {
         call: &ToolUse,
         capability: Capability,
     ) -> Result<effects::EffectTicket, KernelError> {
+        #[cfg(test)]
+        self.inject_intent_failure()?;
+        let started = Instant::now();
         let opened = self
             .effects
             .open_tool(self.rollout, workspace, turn, index, call, capability);
+        self.measure(started);
         opened.map_err(|error| self.boundary_error(error))
+    }
+
+    #[cfg(test)]
+    fn inject_intent_failure(&mut self) -> Result<(), KernelError> {
+        if *self.fault == Some(DurableAppendFault::EffectIntent) {
+            *self.fault = None;
+            return Err(
+                self.record_error(iteron_record::RecordError::Io(std::io::Error::other(
+                    "injected durable effect-intent append failure",
+                ))),
+            );
+        }
+        Ok(())
     }
 
     pub(super) fn append_ready(
@@ -148,10 +160,7 @@ impl StreamToolJournal<'_> {
     }
     fn boundary_error(&mut self, error: effects::BrokerError) -> KernelError {
         match error {
-            effects::BrokerError::Record(error) => {
-                *self.record_failed = true;
-                KernelError::Record(error)
-            }
+            effects::BrokerError::Record(error) => self.record_error(error),
             other => KernelError::EffectBoundary(other.to_string()),
         }
     }

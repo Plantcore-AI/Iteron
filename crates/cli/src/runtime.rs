@@ -39,6 +39,9 @@ use early_tool_gate::EarlyHookSummary;
 mod deferred_batch_executor;
 mod frontend_events;
 mod stream_progress;
+mod stream_tool_admission;
+mod stream_tool_events;
+mod stream_tool_journal;
 mod tool_presentation;
 pub use frontend_events::{
     ApprovalResolution, ControlSubmissionKind, UiEvent, WorkflowAgentOutcomeUi,
@@ -2393,6 +2396,10 @@ impl Agent {
             let admission_activity = self
                 .activity
                 .span(turn_activity::ActivityStage::AdmissionWait, Some(turn_id));
+            // Restore the concrete policy recorder before reserving monetary/provider effects.
+            // The streamed admission port then borrows it without a fallible lazy restore after
+            // a provider ticket has already acquired its predispatch financial bound.
+            self.ensure_policy_evidence()?;
             let admission = self.admit_provider_dispatch(turn_id, &req).await?;
             admission_activity.complete();
             let usd_attempt = admission.attempt_guard;
@@ -2695,256 +2702,77 @@ impl Agent {
                     .as_ref()
                     .is_some_and(|dispatch| dispatch.ui_deltas_forwarded);
                 let result = {
-                    let mut on_item = |item: StreamItem| {
-                        match provider_evidence.observe(item, hedge_ui_pre_forwarded) {
-                            provider_stream_observer::ObservedStreamItem::CompatibilityNotice => {
-                                self.lifecycle_event(
-                                    "model.compatibility_notice",
-                                    Some(turn_id),
-                                    LifecyclePayload {
-                                        reason_code: Some("provider_stop_normalized".into()),
-                                        ..LifecyclePayload::default()
-                                    },
-                                );
-                            }
-                            provider_stream_observer::ObservedStreamItem::Quota(snapshot) => {
-                                attempt_rate_limit = Some(snapshot);
-                            }
-                            provider_stream_observer::ObservedStreamItem::Tool(tu) => {
-                                let Some(idx) = tool_turn.admit(&tu) else {
-                                    return;
-                                };
-                                {
-                                    // Scrub secret-shaped values out of the args BEFORE they cross the UI seam
-                                    // (ADR-015 R1: the UI/ /export / scrollback are new exfiltration surfaces the
-                                    // record's redaction does not cover).
-                                    let _ = frontend_saturation.try_send_frontend(
-                                        resident_ui_tx.as_ref(),
-                                        ui_tx.as_ref(),
-                                        UiEvent::ToolStart {
-                                            id: tu.id.clone(),
-                                            name: tu.name.clone(),
-                                            args: scrub_value(&tu.input),
-                                        },
-                                    );
-                                }
-                                let proposal = strategy_runtime::propose_tool(
-                                    &self.registry,
-                                    tool_policy.as_ref(),
-                                    tu.clone(),
-                                    argument_trust,
-                                );
-                                let evidence = tool_turn::ToolTurnOwner::decision_draft(
-                                    &tu,
-                                    &proposal,
-                                    argument_trust,
-                                );
-                                let recorded = evidence.and_then(|draft| {
-                                    self.record_completed_policy_decision(
-                                        policy_evidence::TOOL_POLICY_SLOT,
-                                        Some(turn_id),
-                                        draft,
-                                    )
-                                });
-                                if let Err(error) = recorded {
-                                    tool_turn.latch_record_error(error);
-                                    return;
-                                }
-                                if let Some((previous_call, previous_result)) =
-                                    submitted_turn.recovered_tool(&tu.id)
-                                {
-                                    if previous_call != &tu {
-                                        tool_turn.latch_record_error(iteron_provider::ProviderError::Decode(
-                                            "recovery reused a completed tool call ID with different arguments".into(),
-                                        ).into());
-                                        return;
-                                    }
-                                    tool_turn.retain_replay(idx, previous_result.clone());
-                                    tool_turn.defer((idx, tu, proposal));
-                                    return;
-                                }
-                                let is_pure = proposal
-                                    .as_ref()
-                                    .is_ok_and(|proposal| proposal.intent.purity == Purity::Pure);
-                                let early_capability =
-                                    proposal.as_ref().ok().and_then(|proposal| {
-                                        self.early_local_tool_capability(proposal, argument_trust)
-                                    });
-                                let action_signature = format!("{}::{}", tu.name, tu.input);
-                                let early_effect = early_local_effects
-                                    && !is_pure
-                                    && early_capability.is_some()
-                                    && !self.failed_actions.contains_key(&action_signature)
-                                    && !tool_turn.effect_reserved(&action_signature);
-                                // A call awaiting approval/other ordered admission is an exclusive
-                                // barrier. Later reads may not overtake that mutation.
-                                if !tool_turn.has_deferred()
-                                    && pure_overlap_enabled
-                                    && (is_pure || early_effect)
-                                {
-                                    let proposal =
-                                        proposal.expect("checked stream tool-policy proposal");
-                                    let capability = if is_pure {
-                                        Capability::ReadOnly
-                                    } else {
-                                        tool_turn.reserve_effect(action_signature);
-                                        early_capability.expect("checked Auto capability")
-                                    };
-                                    let supports_parallel =
-                                        is_pure || capability == Capability::CodeExecuting;
-                                    let tu_ui = proposal.intent.call.clone();
-                                    if hook_gates_reads {
-                                        self.lifecycle_event(
-                                            "hook.started",
-                                            Some(turn_id),
-                                            LifecyclePayload {
-                                                count: Some(1),
-                                                ..LifecyclePayload::default()
-                                            },
-                                        );
-                                    }
-                                    let admitted = proposal.eligible;
-                                    let intent = proposal.admit(admitted);
-                                    let compatibility_context = serde_json::json!({
-                                        "event": "PreToolUse",
-                                        "tool": tu_ui.name,
-                                        "input": tu_ui.input,
-                                    })
-                                    .to_string();
-                                    let lifecycle_context = serde_json::json!({
-                                        "catalog_version": iteron_protocol::lifecycle::LIFECYCLE_CATALOG_VERSION.0,
-                                        "event_id": "tool.call_proposed",
-                                        "turn_id": turn_id.0,
-                                    })
-                                    .to_string();
-                                    // Hook commands are effects even when the protected operation is
-                                    // a pure read. Open their universal-boundary intents synchronously
-                                    // before the spawned future can poll either journaled command.
-                                    let mut hook_effect_tickets = EarlyHookEffectTickets::default();
-                                    if early_hook_journal.is_some() {
-                                        let class = effect_class::EffectClass::Hook;
-                                        if compatibility_pre_tool_hook {
-                                            let ordinal = self.next_effect_ordinal(turn_id, class);
-                                            match self.open_kernel_effect(
-                                                turn_id,
-                                                class,
-                                                ordinal,
-                                                Capability::CodeExecuting,
-                                                serde_json::json!({
-                                                    "event": HookEvent::PreToolUse.key(),
-                                                    "tool_index": idx,
-                                                }),
-                                            ) {
-                                                Ok(ticket) => {
-                                                    hook_effect_tickets.compatibility =
-                                                        Some((ordinal, ticket));
-                                                }
-                                                Err(error) => {
-                                                    tool_turn.latch_record_error(error);
-                                                    return;
-                                                }
-                                            }
-                                        }
-                                        if lifecycle_pre_tool_hook {
-                                            let ordinal = self.next_effect_ordinal(turn_id, class);
-                                            match self.open_kernel_effect(
-                                                turn_id,
-                                                class,
-                                                ordinal,
-                                                Capability::CodeExecuting,
-                                                serde_json::json!({
-                                                    "event": "tool.call_proposed",
-                                                    "tool_index": idx,
-                                                }),
-                                            ) {
-                                                Ok(ticket) => {
-                                                    hook_effect_tickets.lifecycle =
-                                                        Some((ordinal, ticket));
-                                                }
-                                                Err(error) => {
-                                                    tool_turn.latch_record_error(error);
-                                                    return;
-                                                }
-                                            }
-                                        }
-                                    }
-                                    if !is_pure {
-                                        match self
-                                            .open_tool_call_effect(turn_id, idx, &tu_ui, capability)
-                                        {
-                                            Ok(ticket) => hook_effect_tickets.tool = Some(ticket),
-                                            Err(error) => {
-                                                tool_turn.latch_record_error(error);
-                                                return;
-                                            }
-                                        }
-                                    }
-                                    // Spawn now — I/O overlaps the remaining decode. The permit is held for
-                                    // the task's lifetime and released on completion (bounded). At the cap
-                                    // the task still spawns and awaits a permit inside itself: the future
-                                    // is created but not polled until a slot frees, so inflight work stays
-                                    // capped while the WAITING work stays concurrent. The alternative this
-                                    // replaces — an overflow list drained inline during collection — made
-                                    // every call past the cap serial with nothing in the record saying so.
-                                    let publication_source = match &hook_effect_tickets.tool {
-                                        Some(ticket) => ticket.intent_sequence(),
-                                        None => match self.emit_durable_seq(
-                                            turn_id,
-                                            EventKind::ToolReady {
-                                                tool: tu_ui.clone(),
-                                                purity_pure: is_pure,
-                                            },
-                                        ) {
-                                            Ok(sequence) => sequence,
-                                            Err(error) => {
-                                                tool_turn.latch_record_error(error);
-                                                return;
-                                            }
-                                        },
-                                    };
-                                    let publication =
-                                        self.tool_output_publication(&tu_ui, publication_source);
-                                    let fut = self.registry.dispatch_stream_intent_captured(intent);
-                                    let executor = early_tool_executor::EarlyToolExecutor::new(
-                                        early_tool_executor::EarlyToolExecutionScope {
-                                            governor: gov.clone(),
-                                            queued: queued_pure.clone(),
-                                            execution_gate: stream_execution_gate.clone(),
-                                            hooks: early_hooks.clone(),
-                                            hook_journal: early_hook_journal.clone(),
-                                            interrupt: tool_interrupt.clone(),
-                                            force_cancel: tool_force_cancel.clone(),
-                                            drain: tool_drain.clone(),
-                                            publication,
-                                        },
-                                    );
-                                    let handle = executor.spawn(
-                                        early_tool_executor::AdmittedEarlyTool {
-                                            call: tu_ui.clone(),
-                                            is_pure,
-                                            supports_parallel,
-                                            compatibility_pre_hook: compatibility_pre_tool_hook,
-                                            lifecycle_pre_hook: lifecycle_pre_tool_hook,
-                                            compatibility_context,
-                                            lifecycle_context,
-                                            spill_store: self
-                                                .ordinary_tool_spill_store(&tu_ui.name),
-                                        },
-                                        fut,
-                                    );
-                                    tool_turn.retain_early((
-                                        idx,
-                                        tu_ui,
-                                        handle,
-                                        Instant::now(),
-                                        hook_effect_tickets,
-                                    ));
-                                } else {
-                                    tool_turn.defer((idx, tu, proposal));
-                                }
-                            }
-                            provider_stream_observer::ObservedStreamItem::Presented => {}
+                    let authority = self.operator_authority();
+                    let correlation = self.lifecycle_correlation(Some(turn_id));
+                    let requested = self.requested_control() != InboundControl::None;
+                    let publication = self.tool_output_publication_factory();
+                    let mut tool_admission = stream_tool_admission::StreamToolAdmission::new(
+                        &mut tool_turn,
+                        stream_tool_journal::StreamToolJournal {
+                            rollout: &mut self.rollout,
+                            effects: &mut self.effect_journal,
+                            policy: self.policy_evidence.as_mut(),
+                            ledger: &mut self.ledger,
+                            record_failed: &mut self.record_failed,
+                            diagnostics: &self.diagnostics,
+                            #[cfg(test)]
+                            fault: &mut self.fail_next_durable_append,
+                        },
+                        stream_tool_admission::StreamToolScope {
+                            turn: turn_id,
+                            workspace: &self.workspace,
+                            registry: &self.registry,
+                            strategy: tool_policy.as_ref(),
+                            operation: permission_policy::OperationPolicy {
+                                mode: self.permission_mode,
+                                rules: &self.permission_rules,
+                                bypass: self.bypass_permissions,
+                                task_ceiling: self.authority_ceiling,
+                                policy_capabilities: self.policy_capabilities,
+                                governing_trust: argument_trust,
+                                authority,
+                            },
+                            trust: argument_trust,
+                            failed_actions: &self.failed_actions,
+                            recovered: &submitted_turn,
+                            overlap: pure_overlap_enabled,
+                            early_effects: early_local_effects,
+                            compatibility_hook: compatibility_pre_tool_hook,
+                            lifecycle_hook: lifecycle_pre_tool_hook,
+                            hooks: early_hooks.clone(),
+                            hook_journal: early_hook_journal.clone(),
+                            governor: gov.clone(),
+                            queued: queued_pure.clone(),
+                            execution_gate: stream_execution_gate.clone(),
+                            control: stream_tool_admission::StreamToolControl {
+                                deadline: self.run_deadline,
+                                requested,
+                                interrupt: tool_interrupt.clone(),
+                                force_cancel: tool_force_cancel.clone(),
+                                drain: tool_drain.clone(),
+                            },
+                            publication,
+                            spill: self.tool_output_spill.clone(),
+                            events: stream_tool_events::StreamToolEvents {
+                                frontend: frontend_saturation.clone(),
+                                ui: ui_tx.clone(),
+                                resident_ui: resident_ui_tx.clone(),
+                                lifecycle: self.lifecycle_emitter.clone(),
+                                lifecycle_hooks: self.lifecycle_hooks.clone(),
+                                correlation,
+                            },
+                        },
+                    );
+                    let mut on_item = |item: StreamItem| match provider_evidence
+                        .observe(item, hedge_ui_pre_forwarded)
+                    {
+                        provider_stream_observer::ObservedStreamItem::Quota(snapshot) => {
+                            attempt_rate_limit = Some(snapshot);
                         }
+                        provider_stream_observer::ObservedStreamItem::Tool(call) => {
+                            tool_admission.declare(call);
+                        }
+                        provider_stream_observer::ObservedStreamItem::Presented => {}
                     };
 
                     // `attempt` means a provider request crossed the dispatch boundary. Local
