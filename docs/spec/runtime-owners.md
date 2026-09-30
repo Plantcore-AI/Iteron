@@ -116,6 +116,7 @@ are unfinished architecture work; these extractions alone do not close the giant
 acceptance needs the integrated default/optional profiles and actual concurrent tool, cancellation,
 raw-artifact, frontend and restart journeys.
 
+<<<<<<< HEAD
 
 ### Optional task plans
 
@@ -124,3 +125,8 @@ raw-artifact, frontend and restart journeys.
 ### Provider discovery admission
 
 `providers/discovery.rs` owns dormant network work, the unique refresh task, first-paint admission, its activity phase and immutable settled entries. `ProviderDirectory` receives a typed settlement and delegates selected-provider construction; it cannot change the task phase or dispatch another refresh. The admitted native provider forwards physical output-cap and exact request-observation ports to its original adapter. Cache and catalog responsibilities remain separate pending breakdown.
+=======
+| `provider_funding_assembly.rs` | Quote a new auxiliary request from actual signed current/candidate financial evidence, then transfer that same physical request through existing admission; never re-quote an active reservation | FinancialSource/FinancialContext → native cap normalizer → original dispatch guard |
+
+| `memory_request_exposure.rs` | Private bounded scheduled/activated/used/unused memory transitions, exact native prepared-factory proof and existing trace/lifecycle fold | Authentic request factory → private visibility owner → trace observer |
+>>>>>>> 7d127dd (refactor(runtime): own actual provider pump and memory exposure)

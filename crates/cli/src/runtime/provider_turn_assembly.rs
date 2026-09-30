@@ -14,17 +14,32 @@ use super::{Agent, KernelError};
 use iteron_protocol::{Trust, TurnId};
 
 impl Agent {
-    pub(super) fn provider_turn_ports(
-        &mut self,
+    pub(super) fn provider_turn_ports<'a>(
+        &'a mut self,
         context_tokens: u64,
+        trust: Trust,
+        submitted: &'a SubmittedTurnState,
     ) -> (
-        ProviderTurnJournal<'_>,
-        ProviderTurnEnvironment<'_>,
-        ProviderTurnResident<'_>,
-        &mut super::plantcore::PlantcoreRuntime,
+        ProviderTurnJournal<'a>,
+        ProviderTurnEnvironment<'a>,
+        ProviderTurnResident<'a>,
+        &'a mut super::plantcore::PlantcoreRuntime,
+        ProviderExecutionEvidence<'a>,
+        super::memory_request_exposure::MemoryRequestExposure<'a>,
     ) {
         let strict_controls = self.plantcore_runtime_enabled();
         let output_proof_required = self.provider_output_proof_required();
+        let authority = self.operator_authority();
+        let requested_control = self.requested_control() != super::InboundControl::None;
+        let publication = self.tool_output_publication_factory();
+        let turn = TurnId(self.seq_turn);
+        let memory_events = super::provider_route_events::ProviderRouteEvents {
+            turn,
+            lifecycle: self.lifecycle_emitter.clone(),
+            hooks: self.lifecycle_hooks.clone(),
+            correlation: self.lifecycle_correlation(Some(turn)),
+            activity: self.activity.clone(),
+        };
         (
             ProviderTurnJournal {
                 rollout: &mut self.rollout,
@@ -62,30 +77,6 @@ impl Agent {
                 max_output: &mut self.model_max_output_tokens,
             },
             &mut self.plantcore,
-        )
-    }
-
-    pub(super) fn provider_turn_execution_ports<'a>(
-        &'a mut self,
-        trust: Trust,
-        submitted: &'a SubmittedTurnState,
-    ) -> (ProviderTurnJournal<'a>, ProviderExecutionEvidence<'a>) {
-        let authority = self.operator_authority();
-        let requested_control = self.requested_control() != super::InboundControl::None;
-        let publication = self.tool_output_publication_factory();
-        (
-            ProviderTurnJournal {
-                rollout: &mut self.rollout,
-                effects: &mut self.effect_journal,
-                ledger: &mut self.ledger,
-                record_failed: &mut self.record_failed,
-                diagnostics: &self.diagnostics,
-                policy: self.policy_evidence.as_mut(),
-                terminal: &mut self.terminal_record,
-                publications: &mut self.turn_publications,
-                #[cfg(test)]
-                fault: &mut self.fail_next_durable_append,
-            },
             ProviderExecutionEvidence {
                 workspace: &self.workspace,
                 registry: &self.registry,
@@ -104,7 +95,30 @@ impl Agent {
                 publication,
                 spill: self.tool_output_spill.clone(),
             },
+            super::memory_request_exposure::MemoryRequestExposure {
+                visibility: &mut self.session_memory_visibility,
+                memory_traces: &self.memory_traces,
+                events: memory_events,
+            },
         )
+    }
+
+    pub(super) fn memory_request_exposure(
+        &mut self,
+        turn: TurnId,
+    ) -> super::memory_request_exposure::MemoryRequestExposure<'_> {
+        let events = super::provider_route_events::ProviderRouteEvents {
+            turn,
+            lifecycle: self.lifecycle_emitter.clone(),
+            hooks: self.lifecycle_hooks.clone(),
+            correlation: self.lifecycle_correlation(Some(turn)),
+            activity: self.activity.clone(),
+        };
+        super::memory_request_exposure::MemoryRequestExposure {
+            visibility: &mut self.session_memory_visibility,
+            memory_traces: &self.memory_traces,
+            events,
+        }
     }
 
     pub(super) fn provider_route_binding(

@@ -5,6 +5,7 @@
 use super::DurableAppendFault;
 use super::KernelError;
 use super::effect_journal_owner::EffectJournalOwner;
+use super::memory_request_exposure::MemoryRequestExposure;
 use super::plantcore::PlantcoreRuntime;
 use super::policy_evidence_recorder::PolicyEvidenceRecorder;
 use super::provider_attempt_journal::ProviderAttemptJournal;
@@ -75,6 +76,7 @@ pub(super) struct ProviderTurnResident<'a> {
 }
 
 /// Fixed admission policy, plus live control/governor ports. No mutable session proxy is present.
+#[derive(Clone)]
 pub(super) struct ProviderTurnEnvironment<'a> {
     pub(super) workspace: &'a Path,
     pub(super) routes: &'a [GovernedProviderRoute],
@@ -123,6 +125,11 @@ pub(super) struct CompletedProviderTurn {
     pub(super) result: Result<TurnResult, KernelError>,
 }
 
+pub(super) enum ProviderPumpProgress {
+    AwaitHedge,
+    Completed(Result<TurnResult, KernelError>),
+}
+
 pub(super) struct ProviderTurnDriver {
     route: ProviderRouteTurn,
     round: ProviderRoundOwner,
@@ -135,6 +142,55 @@ pub(super) struct ProviderTurnDriver {
 }
 
 impl ProviderTurnDriver {
+    /// Own the actual physical execution/settlement/followup loop. Only the optional independent
+    /// hedge executor returns to composition; ordinary retry/fallback never exits this owner.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn pump(
+        &mut self,
+        mut journal: ProviderTurnJournal<'_>,
+        environment: ProviderTurnEnvironment<'_>,
+        mut resident: ProviderTurnResident<'_>,
+        plantcore: &mut PlantcoreRuntime,
+        evidence: ProviderExecutionEvidence<'_>,
+        mut memory: MemoryRequestExposure<'_>,
+        mut hedge: Option<(HedgedProviderDispatch, Instant)>,
+        projected_at: u64,
+    ) -> Result<ProviderPumpProgress, KernelError> {
+        loop {
+            if self.hedged && self.refusal.is_none() && hedge.is_none() {
+                return Ok(ProviderPumpProgress::AwaitHedge);
+            }
+            let (hedged, started) = hedge
+                .take()
+                .map(|(dispatch, started)| (Some(dispatch), started))
+                .unwrap_or_else(|| (None, Instant::now()));
+            let mut evidence = evidence.clone();
+            evidence.requested_control =
+                environment.control.requested() != super::session_control::InboundControl::None;
+            self.execute(journal.reborrow(), evidence, hedged, started)
+                .await?;
+            // The genuine native prepared archive proof is folded before physical terminal;
+            // no semantic TurnRequest, route selection or fabricated result grants Used.
+            memory.prepared(&self.manifests);
+            if let Some(result) = self
+                .advance(
+                    journal.reborrow(),
+                    environment.clone(),
+                    resident.reborrow(),
+                    plantcore,
+                    environment.current_pricing_now(),
+                    projected_at,
+                )
+                .await?
+            {
+                if !self.inclusion_confirmed() {
+                    memory.unconfirmed();
+                }
+                return Ok(ProviderPumpProgress::Completed(result));
+            }
+        }
+    }
+
     pub(super) async fn begin(
         mut start: ProviderTurnStart,
         mut journal: ProviderTurnJournal<'_>,
@@ -445,6 +501,18 @@ impl ProviderTurnEnvironment<'_> {
     }
 }
 
+impl ProviderTurnResident<'_> {
+    fn reborrow(&mut self) -> ProviderTurnResident<'_> {
+        ProviderTurnResident {
+            selection: &mut *self.selection,
+            provider: &mut *self.provider,
+            model: &mut *self.model,
+            context_window: &mut *self.context_window,
+            max_output: &mut *self.max_output,
+        }
+    }
+}
+
 fn followup_budget(
     plantcore: &PlantcoreRuntime,
     usd: Option<&Arc<super::pricing::SharedUsdBudget>>,
@@ -471,6 +539,20 @@ fn objective(routes: &[GovernedProviderRoute], id: &str) -> ProviderObjectiveEvi
 }
 
 impl ProviderTurnJournal<'_> {
+    fn reborrow(&mut self) -> ProviderTurnJournal<'_> {
+        ProviderTurnJournal {
+            rollout: &mut *self.rollout,
+            effects: &mut *self.effects,
+            ledger: &mut *self.ledger,
+            record_failed: &mut *self.record_failed,
+            diagnostics: self.diagnostics,
+            policy: self.policy.as_deref_mut(),
+            terminal: &mut *self.terminal,
+            publications: &mut *self.publications,
+            #[cfg(test)]
+            fault: &mut *self.fault,
+        }
+    }
     fn execution(&mut self) -> ProviderExecutionJournal<'_> {
         ProviderExecutionJournal {
             rollout: &mut *self.rollout,

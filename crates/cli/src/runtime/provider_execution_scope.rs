@@ -59,6 +59,7 @@ pub(super) struct ProviderExecutionConfiguration {
     pub(super) events: StreamToolEvents,
 }
 
+#[derive(Clone)]
 pub(super) struct ProviderExecutionEvidence<'a> {
     pub(super) workspace: &'a Path,
     pub(super) registry: &'a Registry,
