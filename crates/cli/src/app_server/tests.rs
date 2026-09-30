@@ -1,0 +1,2662 @@
+use super::*;
+
+#[test]
+fn product_turn_ids_are_minted_by_the_app_server_and_shared_with_clients() {
+    let (handle, mut ends) = wire().unwrap();
+    let thread_id = SessionId("session-r".into());
+    let run_id = RunId("r".into());
+    ends.events
+        .bind_lifecycle_identity(thread_id.clone(), run_id.clone());
+    ends.events
+        .begin_contract_turn(run_id.clone(), Some(SubmissionId(1)));
+    let first = handle.client.thread_snapshot_v1().unwrap();
+    assert_eq!(first.thread_id, thread_id);
+    assert_eq!(first.turn.as_ref().unwrap().turn_id.0, 1);
+    assert_eq!(
+        first.turn.as_ref().unwrap().submission_id,
+        Some(SubmissionId(1))
+    );
+    ends.events.begin_contract_turn(run_id, None);
+    let second = handle.client.thread_snapshot_v1().unwrap();
+    assert_eq!(second.turn.unwrap().turn_id.0, 2);
+}
+
+fn envelope(op: Op) -> TurnSubmission {
+    TurnSubmission::with_version(PROTOCOL_VERSION, op)
+}
+
+#[test]
+fn immutable_queue_policy_changes_the_actual_wire_capacities() {
+    let policy = AppServerQueuePolicy::new(
+        SQ_PRIORITY_CAPACITY + 3,
+        1_000_000,
+        7,
+        CosmeticOverflow::Drop,
+        AuthoritativeOverflow::Reject,
+    )
+    .unwrap();
+    let (handle, ends) = wire_with_queue_policy(false, policy).expect("wire");
+
+    assert_eq!(ends.submissions.max_capacity(), 3);
+    assert_eq!(
+        ends.priority_submissions.max_capacity(),
+        SQ_PRIORITY_CAPACITY
+    );
+    assert_eq!(handle.events.max_capacity(), 7);
+    assert_eq!(ends.events.queue_policy, policy);
+    match &handle.client.submissions {
+        SubmissionSender::Weighted { budget, .. } => {
+            assert_eq!(budget.available_permits(), 1_000_000)
+        }
+        SubmissionSender::Bare(_) => unreachable!(),
+    }
+}
+
+#[tokio::test]
+async fn immutable_overflow_policy_coalesces_cosmetic_and_rejects_authoritative() {
+    let policy = AppServerQueuePolicy::new(
+        SQ_PRIORITY_CAPACITY + 1,
+        1_000_000,
+        1,
+        CosmeticOverflow::Coalesce,
+        AuthoritativeOverflow::Wait,
+    )
+    .unwrap();
+    let (tx, mut rx) = mpsc::channel(1);
+    let mut publisher = EventPublisher::new_with_policy(
+        tx,
+        false,
+        iteron_obs::lifecycle::LifecycleEmitter::new(iteron_obs::lifecycle::LifecycleBus::default()),
+        policy,
+    );
+    publisher
+        .publish(ServerEvent::Ui(UiEvent::Text("first".into())))
+        .await
+        .unwrap();
+    publisher
+        .publish(ServerEvent::Ui(UiEvent::Text("second".into())))
+        .await
+        .unwrap();
+    publisher
+        .publish(ServerEvent::Ui(UiEvent::Text("third".into())))
+        .await
+        .unwrap();
+    let flush = tokio::spawn(async move {
+        publisher
+            .publish(ServerEvent::Notice("authoritative".into()))
+            .await
+    });
+    assert!(
+        matches!(rx.recv().await.unwrap().event, ServerEvent::Ui(UiEvent::Text(text)) if text == "first")
+    );
+    assert!(
+        matches!(rx.recv().await.unwrap().event, ServerEvent::Ui(UiEvent::Text(text)) if text == "secondthird")
+    );
+    assert!(
+        matches!(rx.recv().await.unwrap().event, ServerEvent::Notice(text) if text == "authoritative")
+    );
+    flush.await.unwrap().unwrap();
+
+    let reject = AppServerQueuePolicy::new(
+        SQ_PRIORITY_CAPACITY + 1,
+        1_000_000,
+        1,
+        CosmeticOverflow::Drop,
+        AuthoritativeOverflow::Reject,
+    )
+    .unwrap();
+    let (tx, _rx) = mpsc::channel(1);
+    let mut publisher = EventPublisher::new_with_policy(
+        tx,
+        false,
+        iteron_obs::lifecycle::LifecycleEmitter::new(iteron_obs::lifecycle::LifecycleBus::default()),
+        reject,
+    );
+    publisher
+        .publish(ServerEvent::Notice("first".into()))
+        .await
+        .unwrap();
+    assert!(
+        publisher
+            .publish(ServerEvent::Notice("refused".into()))
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn saturated_eq_preserves_arbitrary_interleaved_stream_bytes() {
+    let policy = AppServerQueuePolicy::new(
+        SQ_PRIORITY_CAPACITY + 1,
+        1_000_000,
+        1,
+        CosmeticOverflow::Coalesce,
+        AuthoritativeOverflow::Wait,
+    )
+    .unwrap();
+    let (tx, mut rx) = mpsc::channel(1);
+    let mut publisher = EventPublisher::new_with_policy(
+        tx,
+        false,
+        iteron_obs::lifecycle::LifecycleEmitter::new(iteron_obs::lifecycle::LifecycleBus::default()),
+        policy,
+    );
+
+    let text_chunks = ["α", "b", "🙂", "\n", "tail"];
+    let thinking_chunks = ["r", "理", "\n", "x"];
+    publisher
+        .publish(ServerEvent::Ui(UiEvent::Text(text_chunks[0].into())))
+        .await
+        .unwrap();
+    for index in 0..64 {
+        publisher
+            .publish(ServerEvent::Ui(UiEvent::Thinking(
+                thinking_chunks[index % thinking_chunks.len()].into(),
+            )))
+            .await
+            .unwrap();
+        publisher
+            .publish(ServerEvent::Ui(UiEvent::Text(
+                text_chunks[(index + 1) % text_chunks.len()].into(),
+            )))
+            .await
+            .unwrap();
+    }
+    let flush = tokio::spawn(async move {
+        publisher
+            .publish(ServerEvent::Notice("terminal".into()))
+            .await
+    });
+
+    let mut text = String::new();
+    let mut thinking = String::new();
+    loop {
+        match rx.recv().await.unwrap().event {
+            ServerEvent::Ui(UiEvent::Text(delta)) => text.push_str(&delta),
+            ServerEvent::Ui(UiEvent::Thinking(delta)) => thinking.push_str(&delta),
+            ServerEvent::Notice(value) if value == "terminal" => break,
+            ServerEvent::Lagged { dropped } => panic!("semantic bytes were dropped: {dropped}"),
+            _ => {}
+        }
+    }
+    flush.await.unwrap().unwrap();
+
+    let expected_text = std::iter::once(text_chunks[0])
+        .chain((0..64).map(|index| text_chunks[(index + 1) % text_chunks.len()]))
+        .collect::<String>();
+    let expected_thinking = (0..64)
+        .map(|index| thinking_chunks[index % thinking_chunks.len()])
+        .collect::<String>();
+    assert_eq!(text, expected_text);
+    assert_eq!(thinking, expected_thinking);
+}
+
+#[tokio::test]
+async fn a_settled_background_run_returns_one_task_notification_without_polling() {
+    let (eq_tx, mut eq_rx) = mpsc::channel(4);
+    let mut events = EventPublisher::new(
+        eq_tx,
+        true,
+        iteron_obs::lifecycle::LifecycleEmitter::new(iteron_obs::lifecycle::LifecycleBus::default()),
+    );
+    let notification = publish_settled(
+        &mut events,
+        crate::workflow::RunSettled {
+            run_id: "wf_done".into(),
+            terminal: crate::workflow::WorkflowRunTerminal::Completed,
+            notice: "workflow `wf_done` finished".into(),
+            notification: "<task-notification>done</task-notification>".into(),
+        },
+    )
+    .await;
+
+    assert!(notification.starts_with(crate::runtime::RUNTIME_NOTIFICATION_PREFIX));
+    assert!(notification.contains("<task-notification>done</task-notification>"));
+
+    assert!(matches!(
+        eq_rx.recv().await.unwrap().into_current().unwrap(),
+        ServerEvent::WorkflowRun(crate::workflow::WorkflowRunUiEvent::Finished { run_id, .. })
+            if run_id == "wf_done"
+    ));
+    assert!(matches!(
+        eq_rx.recv().await.unwrap().into_current().unwrap(),
+        ServerEvent::Notice(notice) if notice.contains("finished")
+    ));
+}
+
+#[test]
+fn only_a_workflow_activity_tick_is_droppable_under_backpressure() {
+    use iteron_workflow::events::{ProgressEvent, WorkflowState};
+    let progress = |event| {
+        ServerEvent::WorkflowRun(crate::workflow::WorkflowRunUiEvent::Progress {
+            run_id: "wf_1".into(),
+            event,
+        })
+    };
+
+    // A tick only restates a running row's climbing counters: missing one shows a stale line.
+    assert!(
+        !progress(ProgressEvent::AgentActivity {
+            index: 0,
+            tokens: 10,
+            tool_calls: 1,
+            last_tool_summary: None,
+        })
+        .is_authoritative()
+    );
+
+    // Everything else changes what the operator believes happened. A dropped `AgentFinished`
+    // in particular would leave the row spinning as `Running` for the rest of the session.
+    for authoritative in [
+        progress(ProgressEvent::AgentFinished {
+            index: 0,
+            label: "row".into(),
+            state: WorkflowState::Done,
+            tokens: 10,
+            tool_calls: 1,
+            duration_ms: 5,
+            result_preview: None,
+            last_tool_summary: None,
+            error: None,
+        }),
+        progress(ProgressEvent::Log {
+            message: "narrating".into(),
+        }),
+        progress(ProgressEvent::Phase {
+            index: 1,
+            title: "Explore".into(),
+        }),
+        progress(ProgressEvent::AgentQueued {
+            index: 1,
+            label: "queued".into(),
+            phase: None,
+            model: None,
+        }),
+        progress(ProgressEvent::AgentStarted {
+            index: 1,
+            label: "queued".into(),
+            phase: None,
+            model: None,
+            queued_ms: 0,
+            available_permits: 0,
+        }),
+        ServerEvent::WorkflowRun(crate::workflow::WorkflowRunUiEvent::Started {
+            run_id: "wf_1".into(),
+            name: "audit".into(),
+            phases: Vec::new(),
+        }),
+        ServerEvent::WorkflowRun(crate::workflow::WorkflowRunUiEvent::Finished {
+            run_id: "wf_1".into(),
+            terminal: crate::workflow::WorkflowRunTerminal::Completed,
+        }),
+    ] {
+        assert!(
+            authoritative.is_authoritative(),
+            "{authoritative:?} must wait for room rather than vanish"
+        );
+    }
+}
+
+fn snapshot() -> Box<SessionSnapshot> {
+    Box::new(SessionSnapshot {
+        mode: iteron_protocol::PermissionMode::default(),
+        effort: iteron_protocol::Effort::default(),
+        model: "test-model".into(),
+        provider_id: "test-provider".into(),
+        cost: iteron_obs::CostState::default(),
+        last_turn_usage: None,
+        unadmitted_steers: Vec::new(),
+        unadmitted_internal_notifications: Vec::new(),
+        unadmitted_client_steers: 0,
+        unadmitted_steer_submission_ids: Vec::new(),
+        permission_rules: iteron_protocol::PermissionRules::new(),
+        runtime_policy: None,
+        ledger_summary: String::new(),
+        rate_limit: None,
+        mcp_health: Vec::new(),
+    })
+}
+
+fn terminal_summary() -> Box<TerminalSummary> {
+    Box::new(TerminalSummary {
+        terminal: TerminalAuthority::Plantcore(
+            iteron_protocol::PlantcoreTerminalOutcome::HarnessError,
+        ),
+        assistant_text: String::new(),
+        v7_assistant_text: None,
+        run_id: "test-run".into(),
+        cost: iteron_obs::CostState::Zero,
+        turns: 0,
+        kernel_tax: iteron_obs::KernelTax::default(),
+        error: Some("done".into()),
+        memo_hits: 0,
+        memo_misses: 0,
+        terminal_evidence: None,
+    })
+}
+
+#[tokio::test]
+async fn mixed_internal_notification_does_not_consume_user_steer_requeue_count() {
+    let (mut handle, mut ends) = wire().unwrap();
+    let mut pending = std::collections::VecDeque::from([
+        PendingKernelSubmission {
+            id: SubmissionId(11),
+            kind: KernelSubmissionKind::Steer,
+            expected_product_turn_id: None,
+        },
+        PendingKernelSubmission {
+            id: SubmissionId(12),
+            kind: KernelSubmissionKind::Steer,
+            expected_product_turn_id: None,
+        },
+    ]);
+    let mut snapshot = snapshot();
+    let notification = format!("{}internal", crate::runtime::RUNTIME_NOTIFICATION_PREFIX);
+    let user_steer = format!(
+        "{}user-authored text",
+        crate::runtime::RUNTIME_NOTIFICATION_PREFIX
+    );
+    snapshot.unadmitted_steers = vec![user_steer.clone()];
+    snapshot.unadmitted_internal_notifications = vec![notification.clone()];
+    snapshot.unadmitted_client_steers = 1;
+    snapshot.unadmitted_steer_submission_ids = vec![Some(SubmissionId(12))];
+    settle_kernel_submissions_at_turn_end(
+        &mut ends.events,
+        &mut pending,
+        &snapshot.unadmitted_steer_submission_ids,
+    )
+    .await;
+    let mut runtime_queue = std::collections::VecDeque::new();
+    forward_runtime_notifications(&mut snapshot, &mut runtime_queue);
+    assert_eq!(snapshot.unadmitted_steers, vec![user_steer]);
+    assert_eq!(runtime_queue.pop_front(), Some(notification));
+    let first = handle.events.recv().await.unwrap().into_current().unwrap();
+    let second = handle.events.recv().await.unwrap().into_current().unwrap();
+    assert!(matches!(
+        first,
+        ServerEvent::Submission {
+            id: SubmissionId(11),
+            state: SubmissionLifecycleState::Rejected,
+            reason_code: Some("application_unconfirmed")
+        }
+    ));
+    assert!(matches!(
+        second,
+        ServerEvent::Submission {
+            id: SubmissionId(12),
+            state: SubmissionLifecycleState::Requeued,
+            reason_code: Some("safe_point_missed")
+        }
+    ));
+}
+
+#[tokio::test]
+async fn identified_steer_receipts_ignore_legacy_count_and_requeue_exact_tail() {
+    let (mut handle, mut ends) = wire().unwrap();
+    let mut pending = std::collections::VecDeque::from([
+        PendingKernelSubmission {
+            id: SubmissionId(11),
+            kind: KernelSubmissionKind::Steer,
+            expected_product_turn_id: None,
+        },
+        PendingKernelSubmission {
+            id: SubmissionId(13),
+            kind: KernelSubmissionKind::Steer,
+            expected_product_turn_id: None,
+        },
+        PendingKernelSubmission {
+            id: SubmissionId(14),
+            kind: KernelSubmissionKind::Steer,
+            expected_product_turn_id: None,
+        },
+        PendingKernelSubmission {
+            id: SubmissionId(15),
+            kind: KernelSubmissionKind::Steer,
+            expected_product_turn_id: None,
+        },
+    ]);
+    // ID 12 was a blank client steer rejected before the kernel queue; an internal runtime
+    // notification has no client ID and therefore has no place in this pending FIFO.
+    publish_submission(
+        &mut ends.events,
+        SubmissionId(12),
+        SubmissionLifecycleState::Rejected,
+        Some("empty_steer"),
+    )
+    .await;
+    settle_kernel_submission_events(
+        &mut ends.events,
+        &mut pending,
+        &UiEvent::SteerApplied { count: 2 },
+    )
+    .await;
+    assert_eq!(
+        pending.len(),
+        4,
+        "legacy count has no identified receipt authority"
+    );
+    settle_kernel_submission_events(
+        &mut ends.events,
+        &mut pending,
+        &UiEvent::SteerSubmissionApplied {
+            id: SubmissionId(13),
+        },
+    )
+    .await;
+    settle_kernel_submission_events(
+        &mut ends.events,
+        &mut pending,
+        &UiEvent::SteerSubmissionApplied {
+            id: SubmissionId(11),
+        },
+    )
+    .await;
+    settle_kernel_submission_events(
+        &mut ends.events,
+        &mut pending,
+        &UiEvent::SteerSubmissionApplied {
+            id: SubmissionId(13),
+        },
+    )
+    .await;
+    settle_kernel_submission_events(
+        &mut ends.events,
+        &mut pending,
+        &UiEvent::SteerSubmissionApplied {
+            id: SubmissionId(99),
+        },
+    )
+    .await;
+    assert_eq!(
+        pending.iter().map(|entry| entry.id.0).collect::<Vec<_>>(),
+        vec![14, 15]
+    );
+    let mut tail = snapshot();
+    tail.unadmitted_internal_notifications = vec![format!(
+        "{}internal",
+        crate::runtime::RUNTIME_NOTIFICATION_PREFIX
+    )];
+    tail.unadmitted_steers = vec!["user tail".into()];
+    tail.unadmitted_client_steers = 1;
+    tail.unadmitted_steer_submission_ids = vec![Some(SubmissionId(14))];
+    settle_kernel_submissions_at_turn_end(
+        &mut ends.events,
+        &mut pending,
+        &tail.unadmitted_steer_submission_ids,
+    )
+    .await;
+    let mut seen = Vec::new();
+    for _ in 0..5 {
+        if let ServerEvent::Submission { id, state, .. } =
+            handle.events.recv().await.unwrap().into_current().unwrap()
+        {
+            seen.push((id.0, state));
+        }
+    }
+    assert_eq!(
+        seen,
+        [
+            (12, SubmissionLifecycleState::Rejected),
+            (13, SubmissionLifecycleState::Applied),
+            (11, SubmissionLifecycleState::Applied),
+            (14, SubmissionLifecycleState::Requeued),
+            (15, SubmissionLifecycleState::Rejected),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn approval_receipt_requires_matching_runtime_resolution_submission_id() {
+    let (mut handle, mut ends) = wire().unwrap();
+    let mut pending = std::collections::VecDeque::from([
+        PendingKernelSubmission {
+            id: SubmissionId(41),
+            kind: KernelSubmissionKind::Approval,
+            expected_product_turn_id: None,
+        },
+        PendingKernelSubmission {
+            id: SubmissionId(42),
+            kind: KernelSubmissionKind::Approval,
+            expected_product_turn_id: None,
+        },
+    ]);
+    for response_submission_id in [None, Some(SubmissionId(99)), Some(SubmissionId(42))] {
+        settle_kernel_submission_events(
+            &mut ends.events,
+            &mut pending,
+            &UiEvent::ApprovalResolved {
+                id: SubmissionId(7),
+                resolution: crate::runtime::ApprovalResolution::Denied,
+                reason_code: "operator_denied",
+                response_submission_id,
+            },
+        )
+        .await;
+    }
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending.front().unwrap().id, SubmissionId(41));
+    settle_kernel_submissions_at_turn_end(&mut ends.events, &mut pending, &[]).await;
+    let first = handle.events.recv().await.unwrap().into_current().unwrap();
+    let second = handle.events.recv().await.unwrap().into_current().unwrap();
+    assert!(matches!(
+        first,
+        ServerEvent::Submission {
+            id: SubmissionId(42),
+            state: SubmissionLifecycleState::Applied,
+            ..
+        }
+    ));
+    assert!(matches!(
+        second,
+        ServerEvent::Submission {
+            id: SubmissionId(41),
+            state: SubmissionLifecycleState::Rejected,
+            reason_code: Some("application_unconfirmed")
+        }
+    ));
+    assert!(
+        handle.events.try_recv().is_err(),
+        "a decision receipt is not tool execution success"
+    );
+}
+
+#[tokio::test]
+async fn expired_product_steer_is_not_requeued_into_the_next_turn() {
+    use iteron_protocol::product_contract::ProductTurnId;
+
+    let (mut handle, mut ends) = wire().unwrap();
+    let mut pending = std::collections::VecDeque::from([PendingKernelSubmission {
+        id: SubmissionId(31),
+        kind: KernelSubmissionKind::Steer,
+        expected_product_turn_id: Some(ProductTurnId(1)),
+    }]);
+    let mut tail = snapshot();
+    tail.unadmitted_steers = vec!["old product steer".into(), "legacy follow-up".into()];
+    tail.unadmitted_steer_submission_ids = vec![Some(SubmissionId(31)), None];
+    tail.unadmitted_client_steers = 2;
+    discard_expired_product_steers(&mut tail, &pending);
+    assert_eq!(tail.unadmitted_steers, ["legacy follow-up"]);
+    assert_eq!(tail.unadmitted_steer_submission_ids, [None]);
+    settle_kernel_submissions_at_turn_end(
+        &mut ends.events,
+        &mut pending,
+        &tail.unadmitted_steer_submission_ids,
+    )
+    .await;
+    assert!(matches!(
+        handle.events.recv().await.unwrap().into_current().unwrap(),
+        ServerEvent::Submission {
+            id: SubmissionId(31),
+            state: SubmissionLifecycleState::Expired,
+            reason_code: Some("turn_expired")
+        }
+    ));
+}
+
+#[tokio::test]
+async fn interrupt_and_drain_receipts_require_exact_kernel_signals() {
+    let (mut handle, mut ends) = wire().unwrap();
+    let mut pending = std::collections::VecDeque::from([
+        PendingKernelSubmission {
+            id: SubmissionId(51),
+            kind: KernelSubmissionKind::Interrupt,
+            expected_product_turn_id: None,
+        },
+        PendingKernelSubmission {
+            id: SubmissionId(52),
+            kind: KernelSubmissionKind::Drain,
+            expected_product_turn_id: None,
+        },
+        PendingKernelSubmission {
+            id: SubmissionId(53),
+            kind: KernelSubmissionKind::Interrupt,
+            expected_product_turn_id: None,
+        },
+    ]);
+    settle_kernel_submission_events(
+        &mut ends.events,
+        &mut pending,
+        &UiEvent::ControlSubmissionApplied {
+            id: SubmissionId(52),
+            kind: crate::runtime::ControlSubmissionKind::Drain,
+        },
+    )
+    .await;
+    settle_kernel_submission_events(
+        &mut ends.events,
+        &mut pending,
+        &UiEvent::SubmissionRejected {
+            id: SubmissionId(51),
+            reason_code: "turn_mismatch_or_terminal",
+        },
+    )
+    .await;
+    settle_kernel_submissions_at_turn_end(&mut ends.events, &mut pending, &[]).await;
+    let states = std::iter::from_fn(|| handle.events.try_recv().ok())
+        .filter_map(|envelope| match envelope.into_current().unwrap() {
+            ServerEvent::Submission { id, state, .. } => Some((id, state)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        states,
+        [
+            (SubmissionId(52), SubmissionLifecycleState::Applied),
+            (SubmissionId(51), SubmissionLifecycleState::Rejected),
+            (SubmissionId(53), SubmissionLifecycleState::Rejected),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn product_steer_and_interrupt_keep_turn_epoch_across_queue_race() {
+    use iteron_protocol::product_contract::ProductTurnId;
+
+    let (data_tx, _data_rx) = mpsc::channel(4);
+    let (priority_tx, mut priority_rx) = mpsc::channel(4);
+    let client =
+        AppServerClient::connect_weighted(
+            PROTOCOL_VERSION,
+            data_tx,
+            priority_tx,
+            Arc::new(Semaphore::new(1_000_000)),
+            iteron_obs::lifecycle::LifecycleEmitter::new(
+                iteron_obs::lifecycle::LifecycleBus::default(),
+            ),
+        )
+        .unwrap();
+    let old = ProductTurnId(1);
+    client
+        .submit_identified_for_turn(
+            Op::Steer {
+                text: "old turn".into(),
+            },
+            old,
+        )
+        .unwrap();
+    client
+        .submit_identified_for_turn(Op::Interrupt, old)
+        .unwrap();
+    let steer = priority_rx.recv().await.unwrap();
+    let interrupt = priority_rx.recv().await.unwrap();
+    assert_eq!(steer.envelope.expected_product_turn_id, Some(old));
+    assert_eq!(interrupt.envelope.expected_product_turn_id, Some(old));
+
+    let contract = product_contract::ContractReader::default();
+    contract.bind_identity(SessionId("session-r".into()), RunId("r".into()));
+    contract.begin_turn(RunId("r".into()), old, None);
+    assert!(product_turn_accepts(
+        steer.envelope.expected_product_turn_id,
+        &contract
+    ));
+    contract.observe(
+        1,
+        &ServerEvent::RunEnded {
+            snapshot: snapshot(),
+            summary: terminal_summary(),
+        },
+    );
+    assert!(!product_turn_accepts(
+        steer.envelope.expected_product_turn_id,
+        &contract
+    ));
+    contract.begin_turn(RunId("r".into()), ProductTurnId(2), None);
+    assert!(!product_turn_accepts(
+        steer.envelope.expected_product_turn_id,
+        &contract
+    ));
+    assert!(!product_turn_accepts(
+        interrupt.envelope.expected_product_turn_id,
+        &contract
+    ));
+    assert!(
+        product_turn_accepts(None, &contract),
+        "legacy transport stays compatible"
+    );
+}
+
+#[tokio::test]
+async fn terminal_snapshot_settles_late_old_epoch_rejections_by_exact_id() {
+    use iteron_protocol::product_contract::ProductTurnId;
+
+    let workspace = temp_workspace("old-epoch-kernel-tail");
+    let mut agent = agent_in(&workspace);
+    let (mut handle, mut ends) = wire().unwrap();
+    let mut pending = std::collections::VecDeque::from([
+        PendingKernelSubmission {
+            id: SubmissionId(61),
+            kind: KernelSubmissionKind::Steer,
+            expected_product_turn_id: Some(ProductTurnId(1)),
+        },
+        PendingKernelSubmission {
+            id: SubmissionId(62),
+            kind: KernelSubmissionKind::Interrupt,
+            expected_product_turn_id: Some(ProductTurnId(1)),
+        },
+        PendingKernelSubmission {
+            id: SubmissionId(63),
+            kind: KernelSubmissionKind::Drain,
+            expected_product_turn_id: Some(ProductTurnId(1)),
+        },
+    ]);
+    let (kernel_tx, kernel_rx) = mpsc::channel(KERNEL_INBOUND_CAPACITY);
+    let (ui_tx, mut ui_rx) = mpsc::channel(8);
+    agent.set_inbound_control(kernel_rx);
+    agent.set_ui(ui_tx);
+    agent.set_active_product_turn_id(Some(ProductTurnId(1)));
+    for (id, op) in [
+        (
+            SubmissionId(61),
+            Op::Steer {
+                text: "old steer".into(),
+            },
+        ),
+        (SubmissionId(62), Op::Interrupt),
+        (SubmissionId(63), Op::Drain),
+    ] {
+        let mut envelope = TurnSubmission::identified(id, op);
+        envelope.expected_product_turn_id = Some(ProductTurnId(1));
+        kernel_tx.try_send(envelope).unwrap();
+    }
+    assert!(
+        ui_rx.try_recv().is_err(),
+        "the first UI tail is already empty"
+    );
+    agent.set_active_product_turn_id(None);
+    let snapshot = control::snapshot_of(&mut agent);
+    assert!(snapshot.unadmitted_steers.is_empty());
+    assert_eq!(kernel_tx.capacity(), KERNEL_INBOUND_CAPACITY);
+    let mut rejected = Vec::new();
+    while let Ok(ui) = ui_rx.try_recv() {
+        if let UiEvent::SubmissionRejected { id, reason_code } = &ui {
+            assert_eq!(*reason_code, "turn_mismatch_or_terminal");
+            rejected.push(*id);
+        }
+        settle_kernel_submission_events(&mut ends.events, &mut pending, &ui).await;
+        let _ = ends.events.publish(ServerEvent::Ui(ui)).await;
+    }
+    assert_eq!(
+        rejected,
+        [SubmissionId(61), SubmissionId(62), SubmissionId(63)]
+    );
+    // The post-snapshot UI drain must precede this fallback. Otherwise all three
+    // exact kernel rejections degrade to turn_expired/application_unconfirmed.
+    settle_kernel_submissions_at_turn_end(
+        &mut ends.events,
+        &mut pending,
+        &snapshot.unadmitted_steer_submission_ids,
+    )
+    .await;
+    assert!(pending.is_empty());
+    let mut receipts = Vec::new();
+    for _ in 0..6 {
+        if let ServerEvent::Submission {
+            id,
+            state,
+            reason_code,
+        } = handle.events.recv().await.unwrap().into_current().unwrap()
+        {
+            receipts.push((id, state, reason_code));
+        }
+    }
+    assert_eq!(
+        receipts,
+        [
+            (
+                SubmissionId(61),
+                SubmissionLifecycleState::Rejected,
+                Some("turn_mismatch_or_terminal"),
+            ),
+            (
+                SubmissionId(62),
+                SubmissionLifecycleState::Rejected,
+                Some("turn_mismatch_or_terminal"),
+            ),
+            (
+                SubmissionId(63),
+                SubmissionLifecycleState::Rejected,
+                Some("turn_mismatch_or_terminal"),
+            ),
+        ]
+    );
+    let _ = std::fs::remove_dir_all(workspace);
+}
+
+#[tokio::test]
+async fn rejected_eq_terminal_does_not_advance_the_public_projection() {
+    let policy = AppServerQueuePolicy::new(
+        SQ_PRIORITY_CAPACITY + 3,
+        1_000_000,
+        1,
+        CosmeticOverflow::Drop,
+        AuthoritativeOverflow::Reject,
+    )
+    .unwrap();
+    let (handle, mut ends) = wire_with_queue_policy(false, policy).unwrap();
+    ends.events
+        .bind_lifecycle_identity(SessionId("session-r".into()), RunId("r".into()));
+    ends.events.begin_contract_turn(RunId("r".into()), None);
+    ends.events
+        .publish(ServerEvent::Notice("occupy bounded EQ".into()))
+        .await
+        .unwrap();
+    assert!(
+        ends.events
+            .publish(ServerEvent::RunEnded {
+                snapshot: snapshot(),
+                summary: terminal_summary(),
+            })
+            .await
+            .is_err()
+    );
+    let public = handle.client.thread_snapshot_v1().unwrap();
+    assert_eq!(public.source_event_seq, 1);
+    assert_eq!(
+        public.turn.unwrap().state,
+        iteron_protocol::product_contract::TurnStateV1::Running
+    );
+}
+
+#[test]
+fn matching_version_connects_and_stamps_every_submission() {
+    let (tx, mut rx) = mpsc::channel::<TurnSubmission>(4);
+    let client = AppServerClient::connect(PROTOCOL_VERSION, tx)
+        .expect("the current server version accepts the handshake");
+    assert_eq!(client.negotiated_version(), PROTOCOL_VERSION);
+
+    client
+        .submit(Op::Interrupt)
+        .expect("submit reaches the queue");
+    let envelope = rx.try_recv().expect("submission is queued");
+    assert_eq!(envelope.protocol_version, PROTOCOL_VERSION);
+    assert!(matches!(envelope.into_current(), Ok(Op::Interrupt)));
+}
+
+#[test]
+fn version_skew_is_refused_up_front() {
+    let (tx, mut rx) = mpsc::channel::<TurnSubmission>(4);
+    let err = AppServerClient::connect(PROTOCOL_VERSION + 1, tx.clone())
+        .expect_err("a peer on a different version must be refused");
+    assert_eq!(err.expected, PROTOCOL_VERSION);
+    assert_eq!(err.actual, PROTOCOL_VERSION + 1);
+    assert!(rx.try_recv().is_err(), "a refused handshake queues nothing");
+    assert!(AppServerClient::connect(PROTOCOL_VERSION - 1, tx).is_err());
+}
+
+#[test]
+fn parity_transcript_done_capture_matches_terminal_summary_projection() {
+    let summary = TerminalSummary {
+        terminal: TerminalAuthority::Plantcore(iteron_protocol::PlantcoreTerminalOutcome::Done(
+            iteron_protocol::ProductResult::Completed {
+                assistant_text: "parity reply".into(),
+                artifacts: Vec::new(),
+            },
+        )),
+        assistant_text: "parity reply".into(),
+        v7_assistant_text: None,
+        run_id: "run-client-parity".into(),
+        cost: iteron_obs::CostState::default(),
+        turns: 1,
+        kernel_tax: iteron_obs::KernelTax::default(),
+        error: None,
+        memo_hits: 0,
+        memo_misses: 0,
+        terminal_evidence: None,
+    };
+    let authoritative = summary.current_result();
+    for (schema_version, fixture) in [
+        (
+            6,
+            include_str!("../../../governance/client-conformance/client-parity-v6.json"),
+        ),
+        (
+            crate::output::SCHEMA_VERSION,
+            include_str!("../../../governance/client-conformance/client-parity-v8.json"),
+        ),
+    ] {
+        let transcript: serde_json::Value = serde_json::from_str(fixture).unwrap();
+        let captures = transcript["clients"].as_array().unwrap();
+        assert_eq!(captures.len(), 3);
+        let expected = crate::output::project_schema(authoritative.clone(), schema_version)
+            .expect("published schema projection is valid");
+        for capture in captures {
+            assert_eq!(
+                capture["result"], expected,
+                "{} changed terminal authority rather than presentation in schema v{schema_version}",
+                capture["client"]
+            );
+        }
+    }
+    assert_eq!(authoritative["outcome"], "done");
+    assert_eq!(authoritative["exit_code"], 0);
+    assert_eq!(authoritative["type"], "result");
+    assert_eq!(
+        authoritative["schema_version"],
+        crate::output::SCHEMA_VERSION
+    );
+}
+
+#[test]
+fn a_closed_queue_and_a_full_queue_are_different_answers() {
+    // The frontend must be able to tell "the runtime is gone" from "try again": one is fatal,
+    // the other is a keystroke that did not land.
+    let (tx, rx) = mpsc::channel::<TurnSubmission>(1);
+    let client = AppServerClient::connect(PROTOCOL_VERSION, tx).expect("handshake");
+    client.submit(Op::Interrupt).expect("first fits");
+    assert_eq!(client.submit(Op::Drain), Err(SubmitError::Busy));
+    drop(rx);
+    assert_eq!(client.submit(Op::Drain), Err(SubmitError::Disconnected));
+}
+
+#[test]
+fn a_saturated_sq_applies_backpressure_within_a_fixed_bound() {
+    // The bound is the point: an unbounded queue answers every submission and grows until the
+    // process dies. This one refuses, and the refusal is what the operator sees.
+    let (tx, _rx) = mpsc::channel::<QueuedSubmission>(SQ_DATA_CAPACITY);
+    let (priority_tx, _priority_rx) = mpsc::channel::<QueuedSubmission>(SQ_PRIORITY_CAPACITY);
+    let client =
+        AppServerClient::connect_weighted(
+            PROTOCOL_VERSION,
+            tx,
+            priority_tx,
+            Arc::new(Semaphore::new(SQ_BYTE_CAPACITY)),
+            iteron_obs::lifecycle::LifecycleEmitter::new(
+                iteron_obs::lifecycle::LifecycleBus::default(),
+            ),
+        )
+        .expect("handshake");
+    let mut accepted = 0usize;
+    for _ in 0..(SQ_CAPACITY * 4) {
+        match client.submit(Op::UserInput {
+            text: "next".into(),
+        }) {
+            Ok(()) => accepted += 1,
+            Err(SubmitError::Busy) => break,
+            Err(other) => panic!("unexpected {other:?}"),
+        }
+    }
+    assert_eq!(
+        accepted, SQ_DATA_CAPACITY,
+        "the data lane accepted past its bound"
+    );
+    assert!(
+        client.submit(Op::Interrupt).is_ok(),
+        "control retains reserved capacity"
+    );
+}
+
+#[test]
+fn sq_weight_counts_actual_text_and_encoded_image_bytes() {
+    let segments = iteron_protocol::ContentSegments::new(vec![
+        iteron_protocol::ContentSegment::Text {
+            text: "describe".into(),
+        },
+        iteron_protocol::ContentSegment::Image {
+            image: iteron_protocol::ImageContent::new(
+                iteron_protocol::ImageMediaType::Png,
+                "iVBORw0KGgo=",
+            )
+            .unwrap(),
+        },
+    ])
+    .unwrap();
+    let op = Op::UserInputV2 { segments };
+    assert_eq!(
+        submission_weight(&op),
+        SQ_ENTRY_OVERHEAD_BYTES + "describe".len() + "iVBORw0KGgo=".len()
+    );
+    assert_eq!(
+        SQ_BYTE_CAPACITY,
+        SQ_ENTRY_OVERHEAD_BYTES
+            + iteron_protocol::task::MAX_TASK_TEXT_BYTES
+            + iteron_protocol::input::MAX_TOTAL_IMAGE_BASE64_BYTES
+            + SQ_CONTROL_RESERVE_BYTES
+    );
+    assert!(
+        SQ_BYTE_CAPACITY <= u32::MAX as usize,
+        "tokio's weighted semaphore acquisition accepts a u32 permit count"
+    );
+
+    // File chips are charged the same way, path included, so a queue full of them is bounded
+    // in bytes and not merely in entries.
+    let file = iteron_protocol::FileContent::new("src/main.rs", "fn main() {}").unwrap();
+    let with_files = Op::UserInputV3 {
+        text: "review".into(),
+        images: vec![
+            iteron_protocol::ImageContent::new(
+                iteron_protocol::ImageMediaType::Png,
+                "iVBORw0KGgo=",
+            )
+            .unwrap(),
+        ],
+        files: vec![file.clone()],
+    };
+    assert_eq!(
+        submission_weight(&with_files),
+        SQ_ENTRY_OVERHEAD_BYTES
+            + "review".len()
+            + "iVBORw0KGgo=".len()
+            + file.path.len()
+            + file.text.len()
+    );
+}
+
+#[test]
+fn sq_byte_budget_refuses_a_second_large_item_and_releases_on_dequeue() {
+    let op = Op::UserInput {
+        text: "x".repeat(4096),
+    };
+    let weight = submission_weight(&op);
+    let budget = Arc::new(Semaphore::new(weight));
+    let (tx, mut rx) = mpsc::channel::<QueuedSubmission>(4);
+    let (priority_tx, _priority_rx) = mpsc::channel::<QueuedSubmission>(1);
+    let client =
+        AppServerClient::connect_weighted(
+            PROTOCOL_VERSION,
+            tx,
+            priority_tx,
+            budget.clone(),
+            iteron_obs::lifecycle::LifecycleEmitter::new(
+                iteron_obs::lifecycle::LifecycleBus::default(),
+            ),
+        )
+        .unwrap();
+
+    client
+        .submit(op.clone())
+        .expect("first item consumes budget");
+    assert_eq!(budget.available_permits(), 0);
+    assert_eq!(
+        client.submit(op.clone()),
+        Err(SubmitError::Busy),
+        "the byte bound, not the four-item channel bound, refuses the second item"
+    );
+
+    let queued = rx.try_recv().expect("first item is queued");
+    let envelope = queued.into_envelope();
+    assert_eq!(
+        budget.available_permits(),
+        weight,
+        "dequeue releases the queue's memory charge"
+    );
+    assert!(matches!(envelope.op, Op::UserInput { .. }));
+
+    client
+        .submit(op)
+        .expect("released byte permits admit a later item");
+}
+
+#[tokio::test]
+async fn a_saturated_eq_coalesces_every_delta_and_never_loses_the_terminal_event() {
+    // The acceptance criterion: 0 authoritative drops. A reader that never reads must still be
+    // able to learn how the run ended once it starts reading.
+    let (tx, mut rx) = mpsc::channel::<EventEnvelope>(8);
+    let mut publisher = EventPublisher::new(
+        tx,
+        false,
+        iteron_obs::lifecycle::LifecycleEmitter::new(iteron_obs::lifecycle::LifecycleBus::default()),
+    );
+    let chunks = (0..64)
+        .map(|i| format!("{i:02}:{}", "x".repeat(4 * 1024)))
+        .collect::<Vec<_>>();
+    for chunk in &chunks {
+        publisher
+            .publish(ServerEvent::Ui(UiEvent::Text(chunk.clone())))
+            .await
+            .expect("cosmetic deltas never fail");
+    }
+    // Terminal event, with the queue already saturated: it waits rather than being dropped.
+    let publish = tokio::spawn(async move {
+        publisher
+            .publish(ServerEvent::RunEnded {
+                snapshot: snapshot(),
+                summary: terminal_summary(),
+            })
+            .await
+    });
+    let mut saw_terminal = false;
+    let mut text = String::new();
+    while let Some(envelope) = rx.recv().await {
+        assert_eq!(envelope.protocol_version, PROTOCOL_VERSION);
+        match envelope.event {
+            ServerEvent::RunEnded { .. } => {
+                saw_terminal = true;
+                break;
+            }
+            ServerEvent::Lagged { dropped } => panic!("coalesced bytes were lost: {dropped}"),
+            ServerEvent::Ui(UiEvent::Text(delta)) => {
+                crate::output::stream_event_for_schema(
+                    UiEvent::Text(delta.clone()),
+                    &mut 0,
+                    crate::output::V7_SCHEMA_VERSION,
+                )
+                .expect("every coalesced stream segment fits one canonical v7 event");
+                text.push_str(&delta);
+            }
+            ServerEvent::Ui(_)
+            | ServerEvent::Plantcore(_)
+            | ServerEvent::Notice(_)
+            | ServerEvent::Submission { .. }
+            | ServerEvent::WorkflowRun(_)
+            | ServerEvent::Activity(_)
+            | ServerEvent::McpInputRequested(_) => {}
+        }
+    }
+    publish.await.expect("publisher task").expect("delivered");
+    assert!(saw_terminal, "the terminal event was dropped");
+    assert_eq!(text, chunks.concat());
+}
+
+#[tokio::test]
+async fn a_flooded_eq_delivers_every_authoritative_event_and_only_drops_deltas() {
+    // The criterion is "0 authoritative drops", not "the last one arrives". A slow reader and a
+    // long flood is where a drop-oldest policy loses events in the middle, so the oracle counts
+    // every authoritative event and checks their order, not just the terminal one.
+    const CAPACITY: usize = 8;
+    const ROUNDS: usize = 256;
+    const AUTHORITATIVE_EVERY: usize = 4;
+    let (tx, mut rx) = mpsc::channel::<EventEnvelope>(CAPACITY);
+    let mut publisher = EventPublisher::new(
+        tx,
+        false,
+        iteron_obs::lifecycle::LifecycleEmitter::new(iteron_obs::lifecycle::LifecycleBus::default()),
+    );
+
+    let flood = tokio::spawn(async move {
+        for i in 0..ROUNDS {
+            publisher
+                .publish(ServerEvent::Ui(UiEvent::Text(format!("delta {i}"))))
+                .await
+                .expect("cosmetic deltas are never a transport failure");
+            if i % AUTHORITATIVE_EVERY == 0 {
+                publisher
+                    .publish(ServerEvent::Notice(format!("authoritative {i}")))
+                    .await
+                    .expect("authoritative events wait for room, they do not fail");
+            }
+        }
+        publisher
+            .publish(ServerEvent::RunEnded {
+                snapshot: snapshot(),
+                summary: terminal_summary(),
+            })
+            .await
+            .expect("the terminal event is delivered")
+    });
+
+    let expected: Vec<String> = (0..ROUNDS)
+        .filter(|i| i % AUTHORITATIVE_EVERY == 0)
+        .map(|i| format!("authoritative {i}"))
+        .collect();
+    let mut seen: Vec<String> = Vec::new();
+    let mut deltas = 0usize;
+    let mut text = String::new();
+    let mut dropped = 0usize;
+    let mut saw_terminal = false;
+    let mut last_seq = 0;
+    while let Some(envelope) = rx.recv().await {
+        // A reader slow enough that the queue stays saturated for the whole flood.
+        tokio::task::yield_now().await;
+        assert_eq!(envelope.protocol_version, PROTOCOL_VERSION);
+        assert_eq!(
+            envelope.seq,
+            last_seq + 1,
+            "live EQ cursors must be contiguous and never duplicate"
+        );
+        last_seq = envelope.seq;
+        match envelope.event {
+            ServerEvent::Notice(text) => seen.push(text),
+            ServerEvent::Ui(UiEvent::Text(delta)) => {
+                deltas += 1;
+                text.push_str(&delta);
+            }
+            ServerEvent::Ui(_)
+            | ServerEvent::Plantcore(_)
+            | ServerEvent::Submission { .. }
+            | ServerEvent::WorkflowRun(_)
+            | ServerEvent::Activity(_)
+            | ServerEvent::McpInputRequested(_) => deltas += 1,
+            ServerEvent::Lagged { dropped: count } => dropped += count,
+            ServerEvent::RunEnded { .. } => {
+                saw_terminal = true;
+                break;
+            }
+        }
+    }
+    flood.await.expect("publisher task");
+
+    assert!(saw_terminal, "the terminal event was dropped");
+    assert_eq!(
+        seen, expected,
+        "every authoritative event must arrive, in order and exactly once"
+    );
+    assert_eq!(dropped, 0, "semantic stream bytes are never dropped");
+    assert!(deltas < ROUNDS, "saturation must coalesce queue entries");
+    assert_eq!(
+        text,
+        (0..ROUNDS)
+            .map(|i| format!("delta {i}"))
+            .collect::<String>()
+    );
+}
+
+#[test]
+fn ordinary_done_summary_derives_v7_product_data_only_at_the_projection_boundary() {
+    let summary = TerminalSummary {
+        terminal: TerminalAuthority::Runtime(Outcome::Done),
+        assistant_text: "ordinary reply".into(),
+        v7_assistant_text: Some("tool preamble; ordinary reply".into()),
+        run_id: "ordinary-run".into(),
+        cost: iteron_obs::CostState::default(),
+        turns: 1,
+        kernel_tax: iteron_obs::KernelTax::default(),
+        error: None,
+        memo_hits: 0,
+        memo_misses: 0,
+        terminal_evidence: None,
+    };
+
+    assert_eq!(summary.current_result()["outcome"], "done");
+    assert_eq!(
+        summary.v7_result().unwrap()["product_result_candidate"]["assistant_text_utf8"],
+        "tool preamble; ordinary reply"
+    );
+}
+
+#[test]
+fn ordinary_verify_attempt_exhaustion_has_a_closed_v7_terminal() {
+    let summary = TerminalSummary {
+        terminal: TerminalAuthority::Runtime(Outcome::BudgetExhausted("verify_attempts")),
+        assistant_text: String::new(),
+        v7_assistant_text: None,
+        run_id: "ordinary-verify-run".into(),
+        cost: iteron_obs::CostState::default(),
+        turns: 1,
+        kernel_tax: iteron_obs::KernelTax::default(),
+        error: None,
+        memo_hits: 0,
+        memo_misses: 0,
+        terminal_evidence: None,
+    };
+
+    let value = summary.v7_result().unwrap();
+    assert_eq!(value["outcome"], "stuck");
+    assert!(value.get("budget_limit").is_none());
+}
+
+#[tokio::test]
+async fn a_lossless_client_backpressures_instead_of_dropping_cosmetic_events() {
+    let (tx, mut rx) = mpsc::channel::<EventEnvelope>(1);
+    let mut publisher = EventPublisher::new(
+        tx,
+        true,
+        iteron_obs::lifecycle::LifecycleEmitter::new(iteron_obs::lifecycle::LifecycleBus::default()),
+    );
+    let publish = tokio::spawn(async move {
+        publisher
+            .publish(ServerEvent::Ui(UiEvent::Text("first".into())))
+            .await
+            .unwrap();
+        publisher
+            .publish(ServerEvent::Ui(UiEvent::Text("second".into())))
+            .await
+            .unwrap();
+    });
+
+    let first = rx.recv().await.unwrap();
+    let second = rx.recv().await.unwrap();
+    publish.await.unwrap();
+    assert_eq!((first.seq, second.seq), (1, 2));
+    assert!(matches!(
+        first.event,
+        ServerEvent::Ui(UiEvent::Text(ref text)) if text == "first"
+    ));
+    assert!(matches!(
+        second.event,
+        ServerEvent::Ui(UiEvent::Text(ref text)) if text == "second"
+    ));
+    assert!(
+        rx.try_recv().is_err(),
+        "lossless delivery must not synthesize a lag notice"
+    );
+}
+
+#[test]
+fn an_event_from_a_newer_server_is_refused_at_the_point_of_use() {
+    // The connect-time handshake covers the session's start. The version travels with each
+    // event so a server that begins emitting a newer shape mid-session is caught too, rather
+    // than being rendered as if it were the shape this build knows.
+    let envelope = EventEnvelope {
+        seq: 1,
+        protocol_version: PROTOCOL_VERSION + 1,
+        event: ServerEvent::Notice("from the future".into()),
+        assistant_text_spill: None,
+        _byte_permit: None,
+    };
+    assert_eq!(
+        envelope.into_current().unwrap_err(),
+        ProtocolVersionError {
+            expected: PROTOCOL_VERSION,
+            actual: PROTOCOL_VERSION + 1,
+        }
+    );
+    let current = EventEnvelope {
+        seq: 1,
+        protocol_version: PROTOCOL_VERSION,
+        event: ServerEvent::Notice("now".into()),
+        assistant_text_spill: None,
+        _byte_permit: None,
+    };
+    assert!(matches!(current.into_current(), Ok(ServerEvent::Notice(_))));
+}
+
+#[test]
+fn bounded_terminal_text_spill_round_trips_and_unlinks() {
+    let expected = "terminal authority survives the EQ heap ceiling".repeat(32);
+    let spill = AssistantTextSpill::create("run-spill".into(), expected.clone()).unwrap();
+    let path = spill.path.clone();
+    #[cfg(unix)]
+    assert!(
+        path.is_none(),
+        "Unix removes the name immediately after open"
+    );
+    #[cfg(not(unix))]
+    assert!(path.as_ref().is_some_and(|path| path.exists()));
+    assert_eq!(spill.read_to_string("run-spill").unwrap(), expected);
+    assert!(path.as_ref().is_none_or(|path| !path.exists()));
+}
+
+#[test]
+fn terminal_text_spill_refuses_a_different_run_identity() {
+    let spill = AssistantTextSpill::create("run-a".into(), "answer".into()).unwrap();
+    assert_eq!(
+        spill.read_to_string("run-b").unwrap_err().kind(),
+        std::io::ErrorKind::InvalidData
+    );
+}
+
+#[test]
+fn every_op_is_classified_and_an_unknown_one_is_refused() {
+    assert_eq!(
+        route(&Op::UserInput { text: "hi".into() }),
+        Routed::StartTurn(RunInput::Text("hi".into()))
+    );
+    let multimodal = iteron_protocol::ContentSegments::new(vec![
+        iteron_protocol::ContentSegment::Text {
+            text: "describe".into(),
+        },
+        iteron_protocol::ContentSegment::Image {
+            image: iteron_protocol::ImageContent::new(
+                iteron_protocol::ImageMediaType::Png,
+                "iVBORw0KGgo=",
+            )
+            .unwrap(),
+        },
+    ])
+    .unwrap();
+    assert_eq!(
+        route(&Op::UserInputV2 {
+            segments: multimodal.clone(),
+        }),
+        Routed::StartTurn(RunInput::Content(multimodal))
+    );
+    let files = vec![iteron_protocol::FileContent::new("src/main.rs", "fn main() {}").unwrap()];
+    assert_eq!(
+        route(&Op::UserInputV3 {
+            text: "review".into(),
+            images: Vec::new(),
+            files: files.clone(),
+        }),
+        Routed::StartTurn(RunInput::Files {
+            text: "review".into(),
+            images: Vec::new(),
+            files,
+        }),
+        "a file submission starts a turn; it is not steering and not a control op"
+    );
+    for op in [
+        Op::Steer { text: "x".into() },
+        Op::Interrupt,
+        Op::Drain,
+        Op::ApprovalResponse {
+            id: iteron_protocol::SubmissionId(1),
+            approved: true,
+            remember: false,
+        },
+    ] {
+        assert_eq!(route(&op), Routed::ToKernel, "{op:?}");
+    }
+    // The degradation path: an `Op` this build does not know is refused with a notice, never
+    // replayed and never auto-acted.
+    assert!(matches!(route(&Op::Unknown), Routed::Refuse(_)));
+}
+
+#[test]
+fn an_unknown_op_arriving_on_the_wire_degrades_rather_than_failing_the_decode() {
+    // `#[serde(other)]` on `Op::Unknown` is what makes a newer client's submission readable at
+    // all; the routing above is what stops it being acted on.
+    let decoded: Op = serde_json::from_value(serde_json::json!({
+        "op": "some_future_op",
+        "payload": {"secret": "must not be replayed"}
+    }))
+    .expect("an unknown tag degrades instead of failing the decode");
+    assert!(matches!(decoded, Op::Unknown));
+    assert!(matches!(route(&decoded), Routed::Refuse(_)));
+}
+
+#[test]
+fn the_wire_hands_back_both_ends_at_one_capacity() {
+    let (handle, ends) = wire().expect("the in-process handshake succeeds");
+    assert_eq!(handle.client.negotiated_version(), PROTOCOL_VERSION);
+    assert_eq!(ends.submissions.capacity(), SQ_DATA_CAPACITY);
+    assert_eq!(ends.priority_submissions.capacity(), SQ_PRIORITY_CAPACITY);
+    assert_eq!(
+        ends.submissions.capacity() + ends.priority_submissions.capacity(),
+        SQ_CAPACITY
+    );
+    // The control plane exists and is separate from the SQ. It is separate because `Op` cannot
+    // express `/model`, `/effort`, `/mode` or `/compact` and this lane may not widen it.
+    assert!(!handle.control.is_closed());
+    let _ = envelope(Op::Interrupt);
+}
+
+/// A minimal provider so the control-plane test can own a real `Agent` without a network.
+#[derive(Default)]
+struct StubProvider;
+
+#[async_trait::async_trait]
+impl iteron_provider::Provider for StubProvider {
+    async fn turn(
+        &self,
+        _request: &iteron_provider::TurnRequest,
+        _on_item: &mut (dyn FnMut(iteron_provider::StreamItem) + Send),
+    ) -> Result<iteron_provider::TurnResult, iteron_provider::ProviderError> {
+        Ok(iteron_provider::TurnResult {
+            blocks: vec![iteron_protocol::Block::Text {
+                text: "side reply".into(),
+            }],
+            stop_reason: iteron_protocol::StopReason::EndTurn,
+            usage: iteron_provider::UsageReport::complete(iteron_protocol::Usage::default()),
+        })
+    }
+}
+
+#[derive(Default)]
+struct BlockingSteerProvider {
+    calls: std::sync::atomic::AtomicUsize,
+    started: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+
+#[async_trait::async_trait]
+impl iteron_provider::Provider for BlockingSteerProvider {
+    async fn turn(
+        &self,
+        _request: &iteron_provider::TurnRequest,
+        _on_item: &mut (dyn FnMut(iteron_provider::StreamItem) + Send),
+    ) -> Result<iteron_provider::TurnResult, iteron_provider::ProviderError> {
+        if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            self.started.notify_one();
+            self.release.notified().await;
+        }
+        Ok(iteron_provider::TurnResult {
+            blocks: vec![iteron_protocol::Block::Text {
+                text: "done".into(),
+            }],
+            stop_reason: iteron_protocol::StopReason::EndTurn,
+            usage: iteron_provider::UsageReport::complete(iteron_protocol::Usage::default()),
+        })
+    }
+}
+
+#[derive(Default)]
+struct ToolThenPauseProvider {
+    calls: std::sync::atomic::AtomicUsize,
+    first_started: tokio::sync::Notify,
+    first_release: tokio::sync::Notify,
+}
+
+#[async_trait::async_trait]
+impl iteron_provider::Provider for ToolThenPauseProvider {
+    async fn turn(
+        &self,
+        _request: &iteron_provider::TurnRequest,
+        on_item: &mut (dyn FnMut(iteron_provider::StreamItem) + Send),
+    ) -> Result<iteron_provider::TurnResult, iteron_provider::ProviderError> {
+        if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            self.first_started.notify_one();
+            self.first_release.notified().await;
+            let call = iteron_protocol::ToolUse {
+                id: "pause-boundary-tool".into(),
+                name: "missing_fixture_tool".into(),
+                input: serde_json::json!({}),
+            };
+            on_item(iteron_provider::StreamItem::ToolUseComplete(call.clone()));
+            return Ok(iteron_provider::TurnResult {
+                blocks: vec![iteron_protocol::Block::ToolUse(call)],
+                stop_reason: iteron_protocol::StopReason::ToolUse,
+                usage: iteron_provider::UsageReport::complete(iteron_protocol::Usage::default()),
+            });
+        }
+        Ok(iteron_provider::TurnResult {
+            blocks: vec![iteron_protocol::Block::Text {
+                text: "must not dispatch".into(),
+            }],
+            stop_reason: iteron_protocol::StopReason::EndTurn,
+            usage: iteron_provider::UsageReport::complete(iteron_protocol::Usage::default()),
+        })
+    }
+}
+
+fn pin_test_tunables(agent: &mut Agent, orchestrated: bool, provider_id: &str, model_id: &str) {
+    const FIXED_ARTIFACT_FAMILIES: &[&str] = &[
+        "hooks_map",
+        "operator_prompt_stream",
+        "instruction_bundle",
+        "memory_corpus",
+        "skill_catalog",
+        "provider_model_capability_catalog",
+        "mcp_topology_tool_catalog",
+        "mcp_transport_selection",
+        "oauth_auth_lifecycle_policy",
+        "web_search_backend_catalog",
+    ];
+    let mut input = iteron_record::resolved_fixture::input();
+    input
+        .declared_values
+        .retain(|value| !FIXED_ARTIFACT_FAMILIES.contains(&value.family.as_str()));
+    input
+        .constraint_evidence
+        .retain(|value| !FIXED_ARTIFACT_FAMILIES.contains(&value.family.as_str()));
+
+    let context_window = iteron_tunables::ResolutionValue::Integer { value: 120_000 };
+    let window = input
+        .declared_values
+        .iter_mut()
+        .find(|value| value.family == "context_window_override_reserve")
+        .expect("context-window fixture value");
+    let iteron_tunables::ResolutionValue::Object { fields } = &mut window.value else {
+        panic!("context-window fixture stopped being an object")
+    };
+    fields.insert("model_window_tokens".into(), context_window.clone());
+    fields.insert(
+        "tool_schema_budget_tokens".into(),
+        iteron_tunables::ResolutionValue::Integer { value: 20_000 },
+    );
+    let ceiling = input
+        .constraint_evidence
+        .iter_mut()
+        .find(|evidence| {
+            evidence.family == "context_window_override_reserve"
+                && evidence.field == "model_window_tokens"
+                && evidence.ceiling == iteron_tunables::ExternalCeiling::ProviderCapability
+        })
+        .expect("context-window provider ceiling");
+    ceiling.value = iteron_tunables::ConstraintValue::Domain {
+        minimum: None,
+        maximum: None,
+        allowed_values: Some(
+            [context_window.clone()]
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>(),
+        ),
+        required_values: None,
+        preferred: Some(context_window),
+    };
+    let context_ceiling = input
+        .constraint_evidence
+        .iter_mut()
+        .find(|evidence| {
+            evidence.family == "context_window_override_reserve"
+                && evidence.field == "model_window_tokens"
+                && evidence.ceiling == iteron_tunables::ExternalCeiling::ContextWindow
+        })
+        .expect("context-window local ceiling");
+    context_ceiling.value = iteron_tunables::ConstraintValue::UpperBound {
+        value: iteron_tunables::ResolutionValue::Integer { value: 120_000 },
+    };
+
+    let graph = iteron_workflow::workflow_graph_runtime_identity();
+    let workflow_graph = iteron_tunables::ResolutionValue::CatalogRef {
+        catalog_id: "iteron://tunables/catalogs/workflow_graph-v1".into(),
+        digest_sha256: graph.digest_sha256,
+        entry_count: u64::try_from(graph.entry_count).unwrap(),
+        canonical_bytes: u64::try_from(graph.canonical_bytes).unwrap(),
+    };
+    let environment = iteron_protocol::EnvironmentSnapshotIdentity::from_optional(None);
+    let environment_value = iteron_tunables::ResolutionValue::Object {
+        fields: [
+            (
+                "present".into(),
+                iteron_tunables::ResolutionValue::Boolean {
+                    value: environment.present,
+                },
+            ),
+            (
+                "digest_sha256".into(),
+                iteron_tunables::ResolutionValue::Text {
+                    value: environment.digest_sha256,
+                },
+            ),
+            (
+                "canonical_bytes".into(),
+                iteron_tunables::ResolutionValue::Integer {
+                    value: i64::try_from(environment.canonical_bytes).unwrap(),
+                },
+            ),
+            (
+                "trust".into(),
+                iteron_tunables::ResolutionValue::Enum {
+                    value: "trusted".into(),
+                },
+            ),
+        ]
+        .into_iter()
+        .collect(),
+    };
+    let live_catalog = agent.agent_catalog_snapshot();
+    let catalog = live_catalog.runtime_identity();
+    let agent_catalog = iteron_tunables::ResolutionValue::CatalogRef {
+        catalog_id: "iteron://tunables/catalogs/agent_catalog-v1".into(),
+        digest_sha256: catalog.digest_sha256,
+        entry_count: u64::try_from(catalog.entry_count).unwrap(),
+        canonical_bytes: u64::try_from(catalog.canonical_bytes).unwrap(),
+    };
+    for (family, value) in [
+        ("workflow_graph", workflow_graph),
+        ("environment_snapshot", environment_value),
+        ("agent_catalog", agent_catalog),
+    ] {
+        input
+            .declared_values
+            .iter_mut()
+            .find(|candidate| candidate.family == family)
+            .unwrap_or_else(|| panic!("resolved fixture omitted {family}"))
+            .value = value.clone();
+        for evidence in input
+            .constraint_evidence
+            .iter_mut()
+            .filter(|evidence| evidence.family == family)
+        {
+            if let iteron_tunables::ConstraintValue::Domain { allowed_values, .. } =
+                &mut evidence.value
+            {
+                *allowed_values = Some([value.clone()].into_iter().collect());
+            }
+        }
+    }
+    let admitted_role_routes =
+        crate::runtime_tunables::execution_policy::admitted_role_model_routes(
+            live_catalog.as_ref(),
+            provider_id,
+            model_id,
+        )
+        .expect("the live test catalog must resolve role-specific routes");
+    let selected_route = format!("{provider_id}:{model_id}");
+    let role_specific_models = iteron_tunables::ResolutionValue::Map {
+        entries: admitted_role_routes
+            .iter()
+            .map(|(role, route)| {
+                (
+                    role.clone(),
+                    iteron_tunables::ResolutionValue::Enum {
+                        value: route.clone(),
+                    },
+                )
+            })
+            .collect(),
+    };
+    for (catalog_id, values) in [
+        (
+            "iteron://tunables/catalogs/agent-roles-v1",
+            live_catalog
+                .defs()
+                .iter()
+                .map(|definition| definition.name.clone())
+                .collect::<std::collections::BTreeSet<_>>(),
+        ),
+        (
+            "iteron://tunables/catalogs/model-routes-v1",
+            admitted_role_routes
+                .values()
+                .cloned()
+                .chain(std::iter::once(selected_route.clone()))
+                .collect::<std::collections::BTreeSet<_>>(),
+        ),
+    ] {
+        let snapshot = iteron_tunables::runtime_catalog_snapshot(catalog_id, values)
+            .expect("test catalog owner must publish bounded route values");
+        *input
+            .runtime
+            .catalogs
+            .iter_mut()
+            .find(|catalog| catalog.catalog_id == catalog_id)
+            .unwrap_or_else(|| panic!("resolved fixture omitted {catalog_id}")) = snapshot;
+    }
+    for (family, value) in [
+        ("role_specific_model_map", role_specific_models.clone()),
+        (
+            "per_agent_model",
+            iteron_tunables::ResolutionValue::Enum {
+                value: selected_route.clone(),
+            },
+        ),
+    ] {
+        input
+            .declared_values
+            .iter_mut()
+            .find(|declared| declared.family == family)
+            .unwrap_or_else(|| panic!("resolved fixture omitted {family}"))
+            .value = value;
+    }
+    for evidence in &mut input.constraint_evidence {
+        match evidence.family.as_str() {
+            "role_specific_model_map" => {
+                let iteron_tunables::ConstraintValue::Domain { allowed_values, .. } =
+                    &mut evidence.value
+                else {
+                    panic!("role-specific model ceiling stopped being a domain")
+                };
+                *allowed_values = Some([role_specific_models.clone()].into_iter().collect());
+            }
+            "per_agent_model" => {
+                let iteron_tunables::ConstraintValue::Domain {
+                    allowed_values,
+                    preferred,
+                    ..
+                } = &mut evidence.value
+                else {
+                    panic!("per-agent model ceiling stopped being a domain")
+                };
+                let selected = iteron_tunables::ResolutionValue::Enum {
+                    value: selected_route.clone(),
+                };
+                *allowed_values = Some([selected.clone()].into_iter().collect());
+                if evidence.ceiling == iteron_tunables::ExternalCeiling::ProviderCapability {
+                    *preferred = Some(selected);
+                }
+            }
+            _ => {}
+        }
+    }
+    if orchestrated {
+        let route_topology = iteron_tunables::ResolutionValue::Enum {
+            value: "orchestrated".into(),
+        };
+        input
+            .declared_values
+            .iter_mut()
+            .find(|declared| declared.family == "route_topology")
+            .expect("route-topology fixture value")
+            .value = route_topology.clone();
+        for evidence in input
+            .constraint_evidence
+            .iter_mut()
+            .filter(|evidence| evidence.family == "route_topology")
+        {
+            match &mut evidence.value {
+                iteron_tunables::ConstraintValue::Domain {
+                    allowed_values,
+                    preferred,
+                    ..
+                } => {
+                    *allowed_values = Some([route_topology.clone()].into_iter().collect());
+                    if preferred.is_some() {
+                        *preferred = Some(route_topology.clone());
+                    }
+                }
+                iteron_tunables::ConstraintValue::Exact { value } => {
+                    *value = route_topology.clone();
+                }
+                iteron_tunables::ConstraintValue::UpperBound { .. } => {
+                    panic!("route topology cannot have an upper-bound constraint")
+                }
+            }
+        }
+    }
+    let resolved = iteron_tunables::resolve(input)
+        .expect("the production-compatible app-server fixture must resolve");
+    let resolved = iteron_tunables::with_synthetic_fixed_authority_attestations_for_test(resolved)
+        .expect("the resolver-only fixture must bind every effective fixed authority");
+    agent
+        .pin_resolved_tunables(Arc::new(resolved))
+        .expect("the canonical resolved fixture must install before app-server execution");
+    let effective = crate::runtime_tunables::effective_runtime::decode_checkpoint(
+        agent.tunables_checkpoint().unwrap(),
+        None,
+    )
+    .expect("the canonical checkpoint must have an executable runtime projection")
+    .core;
+    agent.model_context_window = effective.model_context_window;
+    agent.model_max_output_tokens = effective.request_output_cap;
+    if orchestrated {
+        agent
+            .set_provider_controls(effective.provider_governor.controls)
+            .expect("the fixture provider must attest the checkpoint-derived controls");
+        agent
+            .install_provider_governor(
+                effective.provider_governor.policy,
+                [format!("{provider_id}:{model_id}")],
+            )
+            .expect("the fixture must install one provider-governor owner before execution");
+    }
+}
+
+fn agent_in(workspace: &std::path::Path) -> Agent {
+    let rollout = iteron_record::Rollout::open(
+        &workspace.join(".iteron/runs"),
+        &iteron_protocol::RunId("control-plane".into()),
+        iteron_protocol::TenantId::default(),
+    )
+    .unwrap();
+    let mut agent = Agent::new(
+        Arc::new(StubProvider),
+        iteron_tools::Registry::coding_agent(workspace).unwrap(),
+        rollout,
+        "m".into(),
+        "system".into(),
+        iteron_protocol::Budget {
+            max_turns: 4,
+            max_usd: None,
+            max_tokens: None,
+            max_wall_secs: 30,
+            max_consecutive_tool_errors: 3,
+        },
+    );
+    agent.workspace = workspace.to_path_buf();
+    pin_test_tunables(&mut agent, false, "provider-a", "m");
+    agent
+}
+
+fn temp_workspace(tag: &str) -> std::path::PathBuf {
+    let directory = std::env::temp_dir().join(format!(
+        "core-side-control-{tag}-{}-{:x}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or(0)
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    directory
+}
+
+fn enable_plantcore_fixture(agent: &mut Agent, gate: Arc<crate::runtime::DispatchGate>) {
+    let document: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../contracts/plantcore/examples/app-server-v5-bootstrap.json"
+    ))
+    .unwrap();
+    let payload = serde_json::from_value(document["control"]["payload"].clone()).unwrap();
+    agent.install_plantcore_dispatch_gate(gate.clone());
+    agent.enable_plantcore_runtime(&payload).unwrap();
+    agent.set_resume(Vec::new()).unwrap();
+    gate.admit().unwrap();
+}
+
+#[test]
+fn session_snapshot_exposes_the_exact_ordered_runtime_policy_overlay() {
+    let workspace = temp_workspace("runtime-policy-overlay");
+    let mut agent = agent_in(&workspace);
+    agent
+        .configure_initial_runtime_policy(
+            iteron_protocol::Effort::Low,
+            iteron_protocol::PermissionMode::Default,
+            iteron_protocol::PermissionRules::new(),
+        )
+        .unwrap();
+    agent
+        .record_genesis(workspace.display().to_string(), 1, String::new(), None)
+        .unwrap();
+    let stale_frontend_snapshot = control::snapshot_of(&mut agent);
+    let live_operator_sources = agent.operator_status_sources();
+    agent
+        .transition_effort(
+            iteron_protocol::Effort::High,
+            iteron_protocol::RuntimePolicySource::Operator,
+        )
+        .unwrap();
+    agent.set_turn_ceiling(17).unwrap();
+    let mut rules = iteron_protocol::PermissionRules::new();
+    rules
+        .try_set_cap(
+            iteron_protocol::Capability::CodeExecuting,
+            iteron_protocol::Verdict::Deny,
+        )
+        .unwrap();
+    agent
+        .transition_permission_policy(
+            iteron_protocol::PermissionMode::Plan,
+            rules,
+            iteron_protocol::RuntimePolicySource::Operator,
+        )
+        .unwrap();
+
+    let snapshot = control::snapshot_of(&mut agent);
+    let overlay = snapshot
+        .runtime_policy
+        .expect("sealed production state has a complete overlay");
+    assert_eq!(snapshot.effort, overlay.effort.value);
+    assert_eq!(snapshot.mode, overlay.permission_mode.value);
+    assert_eq!(overlay.max_turns.value, 17);
+    assert_eq!(overlay.permission_rule_count, 1);
+    assert_eq!(
+        overlay.effort.observed_via,
+        crate::runtime::RuntimePolicyObservation::LiveCommit
+    );
+    assert!(
+        overlay.effort.sequence < overlay.max_turns.sequence
+            && overlay.max_turns.sequence < overlay.permission_mode.sequence,
+        "the overlay must preserve durable transition order"
+    );
+    let stale_overlay = stale_frontend_snapshot
+        .runtime_policy
+        .expect("genesis overlay");
+    assert_eq!(stale_overlay.effort.value, iteron_protocol::Effort::Low);
+    assert_eq!(stale_overlay.max_turns.value, 4);
+    let live_overlay = live_operator_sources
+        .snapshot()
+        .runtime_policy
+        .expect("captured operator source advances without the frontend cache");
+    assert_eq!(live_overlay.effort.value, iteron_protocol::Effort::High);
+    assert_eq!(live_overlay.max_turns.value, 17);
+    assert_eq!(
+        live_overlay.permission_mode.value,
+        iteron_protocol::PermissionMode::Plan
+    );
+    let _ = std::fs::remove_dir_all(workspace);
+}
+
+/// UX-3 control plane: the side conversation is SERVER state. Every request answers, an
+/// unopened conversation says so instead of inventing zeroes, and the conversation survives
+/// between control requests so a second ask continues the first.
+#[tokio::test]
+async fn the_side_conversation_is_server_state_that_survives_between_control_requests() {
+    let workspace = temp_workspace("survives");
+    let mut agent = agent_in(&workspace);
+    let mut side: Option<crate::runtime::SideConversation> = None;
+
+    // Nothing is open, and nothing is invented.
+    match apply_side(&mut agent, &mut side, SideRequest::Status).await {
+        ControlReply::SideStatus { status, closed } => {
+            assert!(
+                status.is_none(),
+                "an unopened side conversation has no books"
+            );
+            assert!(!closed);
+        }
+        other => panic!("unexpected reply: {other:?}"),
+    }
+    assert!(side.is_none(), "asking for status must not open one");
+
+    let first = match apply_side(
+        &mut agent,
+        &mut side,
+        SideRequest::Ask("first question".into()),
+    )
+    .await
+    {
+        ControlReply::SideAnswer(answer) => *answer,
+        other => panic!("unexpected reply: {other:?}"),
+    };
+    assert_eq!(first.status.asks, 1);
+    assert!(side.is_some(), "the first ask opens the conversation");
+
+    let second = match apply_side(
+        &mut agent,
+        &mut side,
+        SideRequest::Ask("second question".into()),
+    )
+    .await
+    {
+        ControlReply::SideAnswer(answer) => *answer,
+        other => panic!("unexpected reply: {other:?}"),
+    };
+    assert_eq!(
+        second.status.run_id, first.status.run_id,
+        "a second ask continues the SAME side conversation, not a new one"
+    );
+    assert_eq!(second.status.asks, 2);
+
+    // Closing reports the books it is closing, then really is closed.
+    match apply_side(&mut agent, &mut side, SideRequest::Close).await {
+        ControlReply::SideStatus { status, closed } => {
+            assert!(closed);
+            let status = status.expect("closing an open conversation reports its books");
+            assert_eq!(status.run_id, first.status.run_id);
+            assert_eq!(status.asks, 2);
+        }
+        other => panic!("unexpected reply: {other:?}"),
+    }
+    assert!(side.is_none());
+
+    // The session itself never ran a turn because of any of this.
+    assert_eq!(
+        agent.ledger.turns, 0,
+        "side conversation traffic is not the session's traffic"
+    );
+
+    drop(agent);
+    let _ = std::fs::remove_dir_all(&workspace);
+}
+
+#[tokio::test]
+async fn closing_a_side_conversation_that_was_never_opened_is_answered_not_ignored() {
+    let workspace = temp_workspace("close-none");
+    let mut agent = agent_in(&workspace);
+    let mut side: Option<crate::runtime::SideConversation> = None;
+    match apply_side(&mut agent, &mut side, SideRequest::Close).await {
+        ControlReply::SideStatus { status, closed } => {
+            assert!(status.is_none());
+            assert!(closed, "the operator asked to close; the answer says so");
+        }
+        other => panic!("unexpected reply: {other:?}"),
+    }
+    drop(agent);
+    let _ = std::fs::remove_dir_all(&workspace);
+}
+
+#[tokio::test]
+async fn workflow_inventory_and_kill_bypass_the_agent_borrow_but_resume_does_not() {
+    assert!(is_immediate_control(&Control::Workflow(
+        WorkflowControl::Inventory
+    )));
+    assert!(is_immediate_control(&Control::Workflow(
+        WorkflowControl::Cancel {
+            run_id: "wf-live".into()
+        }
+    )));
+    assert!(!is_immediate_control(&Control::Workflow(
+        WorkflowControl::Resume {
+            run_id: "wf-stopped".into()
+        }
+    )));
+    assert!(is_immediate_control(&Control::Job(JobControl::Inventory)));
+    assert!(is_immediate_control(&Control::OperatorStatus));
+    assert!(is_immediate_control(&Control::Mcp(McpControl::Status)));
+    assert!(is_immediate_control(&Control::Mcp(McpControl::Cancel {
+        server: "docs".into(),
+    })));
+    assert!(is_plantcore_admitted_control(&Control::OperatorStatus));
+    assert!(!is_plantcore_admitted_control(&Control::Compact {
+        focus: None,
+    }));
+    assert!(!is_plantcore_admitted_control(&Control::Job(
+        JobControl::Inventory,
+    )));
+    assert!(!is_plantcore_admitted_control(&Control::Mcp(
+        McpControl::Status,
+    )));
+
+    let (settled_tx, _settled_rx) = tokio::sync::mpsc::channel(16);
+    let owner = crate::workflow::WorkflowSupervisor::new(settled_tx);
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    apply_immediate_workflow_control(
+        &owner,
+        ControlRequest {
+            control: Control::Workflow(WorkflowControl::Inventory),
+            reply: reply_tx,
+        },
+    );
+    let ControlReply::Workflows(reply) = reply_rx.await.expect("every control answers") else {
+        panic!("inventory has a typed workflow reply")
+    };
+    assert!(reply.runs.is_empty());
+    assert!(reply.notice.is_none());
+}
+
+#[tokio::test]
+async fn panel_resume_launches_the_persisted_run_and_orders_started_before_finished() {
+    let workspace = temp_workspace("workflow-panel-resume");
+    let mut agent = agent_in(&workspace);
+    agent
+        .record_model_selection(
+            "provider-a".into(),
+            "m".into(),
+            String::new(),
+            String::new(),
+        )
+        .unwrap();
+    let workflows_dir = workspace.join(".iteron/runs/subagents/workflows");
+    let run_id = "wf-panel-resume";
+    let script = "export const meta = { name: 'panel resume', phases: ['restore'] }; return 42;";
+    crate::workflow::persist_inputs(
+        &workflows_dir,
+        &crate::workflow::RunManifest {
+            run_id: run_id.into(),
+            name: "panel resume".into(),
+            args: serde_json::Value::Null,
+            provider_id: "provider-a".into(),
+            model: "m".into(),
+            created_at: 1,
+        },
+        script,
+    )
+    .unwrap();
+
+    let Attached {
+        handle,
+        task,
+        facts: _,
+        initial_state: _,
+        interrupt: _,
+        drain: _,
+        dispatch_gate: _,
+        machine_schema_version: _,
+    } = attach(agent, true, true).unwrap();
+    let AppServerHandle {
+        client,
+        mut events,
+        lifecycle: _,
+        lifecycle_otel: _,
+        hook_health: _,
+        activity: _,
+        mcp_input: _,
+        control,
+    } = handle;
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    control
+        .send(ControlRequest {
+            control: Control::Workflow(WorkflowControl::Resume {
+                run_id: run_id.into(),
+            }),
+            reply: reply_tx,
+        })
+        .await
+        .unwrap();
+    let ControlReply::Workflows(reply) = reply_rx.await.unwrap() else {
+        panic!("resume answers through the typed workflow surface")
+    };
+    assert!(
+        reply
+            .notice
+            .as_deref()
+            .is_some_and(|notice| notice.contains("resumed workflow"))
+    );
+
+    let mut lifecycle = Vec::new();
+    while lifecycle.last().copied() != Some("finished") {
+        let envelope = tokio::time::timeout(std::time::Duration::from_secs(10), events.recv())
+            .await
+            .expect("the resumed run settles")
+            .expect("the event channel stays open");
+        match envelope.into_current().unwrap() {
+            ServerEvent::WorkflowRun(crate::workflow::WorkflowRunUiEvent::Started {
+                run_id: id,
+                ..
+            }) if id == run_id => lifecycle.push("started"),
+            ServerEvent::WorkflowRun(crate::workflow::WorkflowRunUiEvent::Finished {
+                run_id: id,
+                ..
+            }) if id == run_id => lifecycle.push("finished"),
+            _ => {}
+        }
+    }
+    assert_eq!(lifecycle, vec!["started", "finished"]);
+    assert_eq!(
+        crate::workflow::load_result(&workflows_dir, run_id)
+            .expect("the supervisor persists the resumed result")
+            .value,
+        serde_json::json!(42)
+    );
+
+    drop(control);
+    drop(client);
+    drop(events);
+    tokio::time::timeout(std::time::Duration::from_secs(10), task)
+        .await
+        .expect("the server stops after its clients close")
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&workspace);
+}
+
+#[tokio::test]
+async fn noninteractive_app_server_delivers_active_steer_to_the_runtime() {
+    let workspace = temp_workspace("active-steer");
+    let rollout = iteron_record::Rollout::open(
+        &workspace.join(".iteron/runs"),
+        &iteron_protocol::RunId("active-steer".into()),
+        iteron_protocol::TenantId::default(),
+    )
+    .unwrap();
+    let provider = Arc::new(BlockingSteerProvider::default());
+    let mut agent = Agent::new(
+        provider.clone(),
+        iteron_tools::Registry::coding_agent(&workspace).unwrap(),
+        rollout,
+        "m".into(),
+        "system".into(),
+        iteron_protocol::Budget {
+            max_turns: 4,
+            max_usd: None,
+            max_tokens: None,
+            max_wall_secs: 30,
+            max_consecutive_tool_errors: 3,
+        },
+    );
+    agent.workspace = workspace.clone();
+    pin_test_tunables(&mut agent, false, "provider-a", "m");
+    agent
+        .record_genesis(workspace.display().to_string(), 1, String::new(), None)
+        .unwrap();
+    agent
+        .record_model_selection(
+            "provider-a".into(),
+            "m".into(),
+            String::new(),
+            String::new(),
+        )
+        .unwrap();
+
+    let Attached {
+        handle,
+        task,
+        facts: _,
+        initial_state: _,
+        interrupt: _,
+        drain: _,
+        dispatch_gate: _,
+        machine_schema_version: _,
+    } = attach(agent, false, true).unwrap();
+    let AppServerHandle {
+        client,
+        mut events,
+        lifecycle: _,
+        lifecycle_otel: _,
+        hook_health: _,
+        activity: _,
+        mcp_input: _,
+        control,
+    } = handle;
+    client
+        .submit(Op::UserInput {
+            text: "wait for steer".into(),
+        })
+        .unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        provider.started.notified(),
+    )
+    .await
+    .expect("the first provider turn starts");
+    let steer_id = client
+        .submit_identified(Op::Steer {
+            text: "apply once".into(),
+        })
+        .unwrap();
+    provider.release.notify_one();
+
+    let mut steer_events = 0;
+    let mut applied = 0;
+    loop {
+        let event = tokio::time::timeout(std::time::Duration::from_secs(10), events.recv())
+            .await
+            .expect("the run settles")
+            .expect("the event channel stays open")
+            .into_current()
+            .unwrap();
+        match event {
+            ServerEvent::Ui(UiEvent::SteerSubmissionApplied { id }) if id == steer_id => {
+                steer_events += 1
+            }
+            ServerEvent::Submission {
+                id,
+                state: SubmissionLifecycleState::Applied,
+                ..
+            } if id == steer_id => applied += 1,
+            ServerEvent::RunEnded { .. } => break,
+            _ => {}
+        }
+    }
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(steer_events, 1);
+    assert_eq!(applied, 1);
+
+    drop(control);
+    drop(client);
+    drop(events);
+    tokio::time::timeout(std::time::Duration::from_secs(10), task)
+        .await
+        .expect("the server stops after its clients close")
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&workspace);
+}
+
+#[tokio::test]
+async fn rejected_drain_does_not_raise_the_runtime_drain_signal() {
+    let workspace = temp_workspace("rejected-drain-signal");
+    let rollout = iteron_record::Rollout::open(
+        &workspace.join(".iteron/runs"),
+        &iteron_protocol::RunId("rejected-drain-signal".into()),
+        iteron_protocol::TenantId::default(),
+    )
+    .unwrap();
+    let provider = Arc::new(BlockingSteerProvider::default());
+    let mut agent = Agent::new(
+        provider.clone(),
+        iteron_tools::Registry::coding_agent(&workspace).unwrap(),
+        rollout,
+        "m".into(),
+        "system".into(),
+        iteron_protocol::Budget::default(),
+    );
+    agent.workspace = workspace.clone();
+    pin_test_tunables(&mut agent, false, "provider-a", "m");
+    agent
+        .record_genesis(workspace.display().to_string(), 1, String::new(), None)
+        .unwrap();
+    agent
+        .record_model_selection(
+            "provider-a".into(),
+            "m".into(),
+            String::new(),
+            String::new(),
+        )
+        .unwrap();
+
+    let Attached {
+        handle,
+        task,
+        drain,
+        ..
+    } = attach(agent, false, true).unwrap();
+    let AppServerHandle {
+        client,
+        mut events,
+        control,
+        ..
+    } = handle;
+    client
+        .submit(Op::UserInput {
+            text: "hold the Provider".into(),
+        })
+        .unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        provider.started.notified(),
+    )
+    .await
+    .expect("the Provider request starts");
+
+    for index in 0..KERNEL_INBOUND_CAPACITY {
+        let id = client
+            .submit_identified(Op::Steer {
+                text: format!("queued-{index}"),
+            })
+            .unwrap();
+        loop {
+            let event = tokio::time::timeout(std::time::Duration::from_secs(10), events.recv())
+                .await
+                .expect("the App Server forwards the submission")
+                .expect("the event channel stays open")
+                .into_current()
+                .unwrap();
+            match event {
+                ServerEvent::Submission {
+                    id: observed,
+                    state: SubmissionLifecycleState::Admitted,
+                    ..
+                } if observed == id => break,
+                ServerEvent::Submission {
+                    id: observed,
+                    state: SubmissionLifecycleState::Rejected,
+                    reason_code,
+                } if observed == id => {
+                    panic!(
+                        "submission {index} was rejected before the kernel queue filled: {reason_code:?}"
+                    )
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let drain_id = client.submit_identified(Op::Drain).unwrap();
+    loop {
+        let event = tokio::time::timeout(std::time::Duration::from_secs(10), events.recv())
+            .await
+            .expect("the saturated kernel queue rejects drain")
+            .expect("the event channel stays open")
+            .into_current()
+            .unwrap();
+        if let ServerEvent::Submission {
+            id,
+            state: SubmissionLifecycleState::Rejected,
+            reason_code,
+        } = event
+            && id == drain_id
+        {
+            assert_eq!(reason_code, Some("runtime_queue_saturated"));
+            break;
+        }
+    }
+    assert!(!drain.load(Ordering::SeqCst));
+
+    task.abort();
+    let _ = task.await;
+    drop(control);
+    drop(client);
+    drop(events);
+    let _ = std::fs::remove_dir_all(&workspace);
+}
+
+#[tokio::test]
+async fn plantcore_done_publishes_run_ended_from_plain_workspace() {
+    let workspace = temp_workspace("plantcore-done-plain-workspace");
+    let mut agent = agent_in(&workspace);
+    agent
+        .record_genesis(workspace.display().to_string(), 1, String::new(), None)
+        .unwrap();
+    agent
+        .record_model_selection(
+            "provider-a".into(),
+            "m".into(),
+            String::new(),
+            String::new(),
+        )
+        .unwrap();
+    let gate = crate::runtime::DispatchGate::new();
+    enable_plantcore_fixture(&mut agent, gate);
+    let Attached { handle, task, .. } = attach(agent, false, true).unwrap();
+    let AppServerHandle {
+        client,
+        mut events,
+        control,
+        ..
+    } = handle;
+    client
+        .submit(Op::UserInput {
+            text: "complete this Run".into(),
+        })
+        .unwrap();
+    let summary = loop {
+        let event = tokio::time::timeout(std::time::Duration::from_secs(10), events.recv())
+            .await
+            .expect("the completed Run publishes its terminal")
+            .expect("the event channel stays open")
+            .into_current()
+            .unwrap();
+        if let ServerEvent::RunEnded { summary, .. } = event {
+            break summary;
+        }
+    };
+    let result = summary.v7_result().unwrap();
+    assert_eq!(result["outcome"], "done", "{summary:?}");
+    assert_eq!(
+        result["product_result_candidate"]["status"], "completed",
+        "{result}"
+    );
+    assert_eq!(
+        result["product_result_candidate"]["assistant_text_utf8"], "side reply",
+        "{result}"
+    );
+
+    drop(control);
+    drop(client);
+    drop(events);
+    tokio::time::timeout(std::time::Duration::from_secs(10), task)
+        .await
+        .expect("the server stops after its clients close")
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&workspace);
+}
+
+#[tokio::test]
+async fn plantcore_harness_error_stops_the_resident_session_after_run_ended() {
+    let workspace = temp_workspace("plantcore-harness-error-exit");
+    let mut agent = agent_in(&workspace);
+    agent
+        .record_genesis(workspace.display().to_string(), 1, String::new(), None)
+        .unwrap();
+    agent
+        .record_model_selection(
+            "provider-a".into(),
+            "m".into(),
+            String::new(),
+            String::new(),
+        )
+        .unwrap();
+    let gate = crate::runtime::DispatchGate::new();
+    enable_plantcore_fixture(&mut agent, gate);
+    agent.arm_recording_harness_error();
+    let Attached { handle, task, .. } = attach(agent, false, true).unwrap();
+    let AppServerHandle {
+        client,
+        mut events,
+        control,
+        ..
+    } = handle;
+    client
+        .submit(Op::UserInput {
+            text: "reach the deterministic harness fault".into(),
+        })
+        .unwrap();
+
+    let summary = loop {
+        let event = tokio::time::timeout(std::time::Duration::from_secs(10), events.recv())
+            .await
+            .expect("the failed Run publishes its terminal")
+            .expect("the event channel stays open through RunEnded")
+            .into_current()
+            .unwrap();
+        if let ServerEvent::RunEnded { summary, .. } = event {
+            break summary;
+        }
+    };
+    assert_eq!(summary.v7_result().unwrap()["outcome"], "harness_error");
+    tokio::time::timeout(std::time::Duration::from_secs(10), task)
+        .await
+        .expect("the PlantCore session stops after harness_error")
+        .unwrap();
+
+    drop(control);
+    drop(client);
+    drop(events);
+    let _ = std::fs::remove_dir_all(&workspace);
+}
+
+#[tokio::test]
+async fn paused_next_provider_dispatch_drained_by_worker_publishes_run_ended() {
+    let workspace = temp_workspace("paused-next-dispatch-drain");
+    let rollout = iteron_record::Rollout::open(
+        &workspace.join(".iteron/runs"),
+        &iteron_protocol::RunId("paused-next-dispatch-drain".into()),
+        iteron_protocol::TenantId::default(),
+    )
+    .unwrap();
+    let provider = Arc::new(ToolThenPauseProvider::default());
+    let mut agent = Agent::new(
+        provider.clone(),
+        iteron_tools::Registry::coding_agent(&workspace).unwrap(),
+        rollout,
+        "m".into(),
+        "system".into(),
+        iteron_protocol::Budget {
+            max_turns: 4,
+            max_usd: None,
+            max_tokens: None,
+            max_wall_secs: 30,
+            max_consecutive_tool_errors: 3,
+        },
+    );
+    agent.workspace = workspace.clone();
+    pin_test_tunables(&mut agent, false, "provider-a", "m");
+    agent
+        .record_genesis(workspace.display().to_string(), 1, String::new(), None)
+        .unwrap();
+    agent
+        .record_model_selection(
+            "provider-a".into(),
+            "m".into(),
+            String::new(),
+            String::new(),
+        )
+        .unwrap();
+    let gate = crate::runtime::DispatchGate::new();
+    enable_plantcore_fixture(&mut agent, gate.clone());
+
+    let Attached {
+        handle,
+        task,
+        facts: _,
+        initial_state: _,
+        interrupt: _,
+        drain: _,
+        dispatch_gate: _,
+        machine_schema_version: _,
+    } = attach(agent, false, true).unwrap();
+    let AppServerHandle {
+        client,
+        mut events,
+        lifecycle: _,
+        lifecycle_otel: _,
+        hook_health: _,
+        activity: _,
+        mcp_input: _,
+        control,
+    } = handle;
+    client
+        .submit(Op::UserInput {
+            text: "pause before the next Provider dispatch".into(),
+        })
+        .unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        provider.first_started.notified(),
+    )
+    .await
+    .expect("the first Provider request starts");
+    let pausing_gate = gate.clone();
+    let paused = tokio::spawn(async move { pausing_gate.pause_after_safe_point().await });
+    provider.first_release.notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(10), paused)
+        .await
+        .expect("the dispatch gate reaches its safe point")
+        .unwrap()
+        .unwrap();
+    gate.terminalize_if_accepted(|| client.submit_identified(Op::Drain))
+        .unwrap()
+        .unwrap();
+
+    let summary = loop {
+        let event = tokio::time::timeout(std::time::Duration::from_secs(10), events.recv())
+            .await
+            .expect("the drained Run publishes its terminal")
+            .expect("the event channel stays open")
+            .into_current()
+            .unwrap();
+        if let ServerEvent::RunEnded { summary, .. } = event {
+            break summary;
+        }
+    };
+    assert_eq!(summary.v7_result().unwrap()["outcome"], "drained");
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+
+    drop(control);
+    drop(client);
+    drop(events);
+    tokio::time::timeout(std::time::Duration::from_secs(10), task)
+        .await
+        .expect("the server stops after its clients close")
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&workspace);
+}
