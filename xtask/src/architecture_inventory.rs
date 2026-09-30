@@ -296,6 +296,15 @@ const SURFACES: &[Surface] = &[
         ],
         next_seams: &["physical provider dispatch and monetary admission remain independent"],
     },
+    Surface {
+        path: "crates/cli/src/runtime/early_tool_executor.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "actual streamed tool task, lock queue and governor permit owner",
+            "hook/cancellation/raw-publication/spill terminal execution receipts",
+        ],
+        next_seams: &["admission/journal ownership remains disjoint; no mutable Agent"],
+    },
 ];
 
 #[derive(Serialize)]

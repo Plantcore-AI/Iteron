@@ -190,10 +190,13 @@ async fn plan_mode_never_starts_streaming_commands() {
 #[tokio::test]
 async fn exclusive_tool_waits_for_reads_and_blocks_later_reads() {
     let gate = Arc::new(tokio::sync::RwLock::new(()));
-    let first_read = super::stream_tools::execution_guard(gate.clone(), true).await;
-    let mut write = Box::pin(super::stream_tools::execution_guard(gate.clone(), false));
+    let first_read = super::early_tool_executor::execution_guard(gate.clone(), true).await;
+    let mut write = Box::pin(super::early_tool_executor::execution_guard(
+        gate.clone(),
+        false,
+    ));
     assert!(futures_util::poll!(&mut write).is_pending());
-    let mut later_read = Box::pin(super::stream_tools::execution_guard(gate, true));
+    let mut later_read = Box::pin(super::early_tool_executor::execution_guard(gate, true));
     assert!(futures_util::poll!(&mut later_read).is_pending());
     drop(first_read);
     let write = write.await;

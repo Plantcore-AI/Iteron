@@ -3,29 +3,8 @@
 //! The execution gate follows Codex's tool policy: parallel-capable handlers share a
 //! read guard, mutations requiring ordering retain an exclusive guard through execution.
 
-use super::*;
-
-pub(super) struct ExecutionGuard {
-    _shared: Option<tokio::sync::OwnedRwLockReadGuard<()>>,
-    _exclusive: Option<tokio::sync::OwnedRwLockWriteGuard<()>>,
-}
-
-pub(super) async fn execution_guard(
-    gate: std::sync::Arc<tokio::sync::RwLock<()>>,
-    supports_parallel: bool,
-) -> ExecutionGuard {
-    if supports_parallel {
-        ExecutionGuard {
-            _shared: Some(gate.read_owned().await),
-            _exclusive: None,
-        }
-    } else {
-        ExecutionGuard {
-            _shared: None,
-            _exclusive: Some(gate.write_owned().await),
-        }
-    }
-}
+use super::{Agent, InboundControl};
+use iteron_protocol::{Capability, Trust, Verdict};
 
 impl Agent {
     pub(super) fn early_local_tool_capability(
@@ -56,50 +35,5 @@ impl Agent {
             return None;
         }
         (admission.verdict == Verdict::Auto).then_some(capability)
-    }
-}
-
-/// Poll once at declaration time: Tokio's fair lock queue then reflects model call
-/// order even if spawned tasks are first polled in a different order.
-pub(super) fn reserve_execution(
-    gate: std::sync::Arc<tokio::sync::RwLock<()>>,
-    supports_parallel: bool,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = ExecutionGuard> + Send>> {
-    let mut future = Box::pin(execution_guard(gate, supports_parallel));
-    let mut context = std::task::Context::from_waker(futures_util::task::noop_waker_ref());
-    match std::future::Future::poll(future.as_mut(), &mut context) {
-        std::task::Poll::Ready(guard) => Box::pin(std::future::ready(guard)),
-        std::task::Poll::Pending => future,
-    }
-}
-
-/// A fallible record/projection path must never detach an already admitted tool.
-/// Its durable intent stays unresolved if that path cannot append a terminal.
-pub(super) struct EarlyToolTask(tokio::task::JoinHandle<EarlyPureToolOutcome>);
-
-impl EarlyToolTask {
-    pub(super) fn new(handle: tokio::task::JoinHandle<EarlyPureToolOutcome>) -> Self {
-        Self(handle)
-    }
-
-    pub(super) fn abort(&self) {
-        self.0.abort();
-    }
-}
-
-impl std::future::Future for EarlyToolTask {
-    type Output = Result<EarlyPureToolOutcome, tokio::task::JoinError>;
-
-    fn poll(
-        mut self: std::pin::Pin<&mut Self>,
-        context: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
-        std::pin::Pin::new(&mut self.0).poll(context)
-    }
-}
-
-impl Drop for EarlyToolTask {
-    fn drop(&mut self) {
-        self.0.abort();
     }
 }
