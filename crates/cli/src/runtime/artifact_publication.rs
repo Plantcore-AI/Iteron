@@ -174,6 +174,9 @@ impl ToolOutputPublicationPort for CapturedOutputPublisher {
                 {
                     ArtifactSchema::BrowserObservation
                 }
+                "iteron.desktop-observation.v1" if call.name == "desktop" => {
+                    ArtifactSchema::DesktopObservation
+                }
                 _ => {
                     unavailable = true;
                     continue;

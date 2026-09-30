@@ -437,6 +437,15 @@ pub(crate) struct Cli {
     #[arg(long, value_name = "ORIGIN", requires = "browser_webdriver")]
     pub(crate) browser_origin: Vec<String>,
 
+    /// Explicit local Appium Mac2 driver for native desktop control and MAIN desktop screenshots.
+    /// Registration does not authorize individual effects or isolate the operating system.
+    #[arg(long, value_name = "LOOPBACK_HTTP_DRIVER", requires = "desktop_bundle")]
+    pub(crate) desktop_webdriver: Option<String>,
+
+    /// Native macOS application bundle selected by the operator, never project/model input.
+    #[arg(long, value_name = "BUNDLE_ID", requires = "desktop_webdriver")]
+    pub(crate) desktop_bundle: Option<String>,
+
     /// Print the whole machine-readable optimization surface as JSON and exit: every family,
     /// every exposed parameter, the module axis and the addressable prompt artifacts. This is
     /// what an external optimizer reads to construct a legal profile.

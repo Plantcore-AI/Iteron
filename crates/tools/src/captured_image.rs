@@ -15,6 +15,7 @@ pub struct CapturedToolImage {
 pub struct CapturedImageObservation {
     source_url: String,
     observed_unix_ms: u64,
+    scope: iteron_protocol::tool_image::ToolImageScopeV1,
 }
 impl std::fmt::Debug for CapturedImageObservation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -32,10 +33,20 @@ impl CapturedImageObservation {
         self.observed_unix_ms
     }
     pub fn execution_scope(&self) -> &'static str {
-        "isolated_browser_viewport"
+        self.scope.as_str()
+    }
+    pub fn scope(&self) -> iteron_protocol::tool_image::ToolImageScopeV1 {
+        self.scope
     }
     pub fn evidence_source(&self) -> &'static str {
-        "actual_w3c_screenshot_reply"
+        match self.scope {
+            iteron_protocol::tool_image::ToolImageScopeV1::IsolatedBrowserViewport => {
+                "actual_w3c_screenshot_reply"
+            }
+            iteron_protocol::tool_image::ToolImageScopeV1::NativeMacDesktop => {
+                "actual_appium_mac2_screenshot_reply"
+            }
+        }
     }
 }
 impl std::fmt::Debug for CapturedToolImage {
@@ -106,6 +117,24 @@ impl CapturedToolImage {
         self.observation = Some(CapturedImageObservation {
             source_url,
             observed_unix_ms,
+            scope: iteron_protocol::tool_image::ToolImageScopeV1::IsolatedBrowserViewport,
+        });
+        Ok(self)
+    }
+    /// Native full-desktop pixels are explicitly labelled; the selected app is data provenance,
+    /// and does not imply that other windows in the screenshot are isolated or redacted.
+    pub fn with_desktop_observation(
+        mut self,
+        bundle_id: String,
+        observed_unix_ms: u64,
+    ) -> Result<Self, &'static str> {
+        if observed_unix_ms == 0 || !iteron_protocol::tool_image::valid_native_bundle(&bundle_id) {
+            return Err("captured_desktop_source_invalid");
+        }
+        self.observation = Some(CapturedImageObservation {
+            source_url: format!("macos-application://{bundle_id}"),
+            observed_unix_ms,
+            scope: iteron_protocol::tool_image::ToolImageScopeV1::NativeMacDesktop,
         });
         Ok(self)
     }

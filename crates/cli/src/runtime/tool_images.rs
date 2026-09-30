@@ -4,7 +4,7 @@ use crate::artifacts::DurableArtifactStore;
 use base64::Engine as _;
 use iteron_protocol::{
     Block, EventKind, ImageContent, ImageMediaType, Message, ToolUse,
-    tool_image::{MAX_TOOL_IMAGE_ENCODED_BYTES, ToolImageObservationV1, ToolImageScopeV1},
+    tool_image::{MAX_TOOL_IMAGE_ENCODED_BYTES, ToolImageObservationV1},
 };
 use iteron_tools::CapturedToolImage;
 
@@ -29,7 +29,7 @@ impl Agent {
         if !receipt.successful()
             || receipt.tenant() != self.rollout.tenant()
             || receipt.run() != self.rollout.run_id()
-            || !matches!(receipt.tool(), "browser" | "computer")
+            || !matches!(receipt.tool(), "browser" | "computer" | "desktop")
         {
             self.ui(UiEvent::Notice(IMAGE_UNAVAILABLE.into()));
             return Vec::new();
@@ -75,6 +75,12 @@ impl Agent {
                 return Err(());
             }
             let source = image.observation().ok_or(())?;
+            if (receipt.tool() == "desktop")
+                != (source.scope()
+                    == iteron_protocol::tool_image::ToolImageScopeV1::NativeMacDesktop)
+            {
+                return Err(());
+            }
             let encoded_bytes = image.bytes().len().div_ceil(3).checked_mul(4).ok_or(())?;
             if encoded_bytes > MAX_TOOL_IMAGE_ENCODED_BYTES {
                 return Err(());
@@ -87,7 +93,7 @@ impl Agent {
                 terminal_seq: receipt.sequence(),
                 observed_unix_ms: source.observed_unix_ms(),
                 source_url_display: iteron_record::redact::scrub(source.source_url()),
-                scope: ToolImageScopeV1::IsolatedBrowserViewport,
+                scope: source.scope(),
                 artifact_id: image.sha256().into(),
                 width: image.width(),
                 height: image.height(),

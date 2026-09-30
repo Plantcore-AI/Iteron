@@ -42,6 +42,21 @@ impl OperationEffects {
     /// The registered capability is always retained, including code execution for literal
     /// observation commands. Classification is an additional constraint, never a replacement.
     pub fn classify(call: &ToolUse, registered: Capability) -> Self {
+        if call.name == "desktop" && registered == Capability::CodeExecuting {
+            return Self {
+                canonical_tool: None,
+                extension_ceiling: None,
+                required: CapabilitySet::from_iter_capabilities([
+                    Capability::CodeExecuting,
+                    Capability::ReversibleLocal,
+                    Capability::TrustMutating,
+                    Capability::IrreversibleExternal,
+                ]),
+                knowledge: EffectKnowledge::Unknown,
+                targets: Vec::new(),
+                reason: "native desktop input may change local/trust configuration or publish externally; the host cannot infer a narrower effect from a screenshot",
+            };
+        }
         if matches!(call.name.as_str(), "browser" | "computer")
             && registered == Capability::CodeExecuting
         {

@@ -3,7 +3,8 @@
 The host can explicitly install two effecting tools against an operator-selected local W3C
 WebDriver: `browser` for navigation, DOM observation and CSS interaction; `computer` for actual
 PNG screenshots, pointer clicks, wheel scrolling and a fixed set of keyboard keys. The computer
-surface controls only that isolated browser viewport. OS desktop automation is not implemented.
+surface controls only that isolated browser viewport. A separate optional
+[native desktop tool](native-desktop.md) controls an operator-selected macOS application.
 
 The default registry installs neither tool and starts no driver, browser, proxy or network task.
 `BrowserConfig::new` admits an explicit loopback HTTP driver endpoint and 1–32 exact web origins.
@@ -78,5 +79,5 @@ Anthropic nests the pixels inside the matching `tool_result`, following its
 [tool-result image format](https://platform.claude.com/docs/en/agents-and-tools/tool-use/handle-tool-calls).
 
 Native browser/process gates and final integration tests remain required. The
-computer surface controls an isolated browser viewport. OS desktop control is not
-implemented.
+computer surface controls an isolated browser viewport. Native desktop observations retain
+their distinct scope through publication, model projection and recovery.

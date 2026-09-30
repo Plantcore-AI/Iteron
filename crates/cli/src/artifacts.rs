@@ -82,6 +82,7 @@ pub(crate) enum ArtifactSchema {
     ViewportImage,
     ViewportImageObservation,
     BrowserObservation,
+    DesktopObservation,
 }
 
 impl ArtifactSchema {
@@ -99,6 +100,7 @@ impl ArtifactSchema {
             Self::ViewportImage => "iteron.viewport-image.v1",
             Self::ViewportImageObservation => "iteron.viewport-image-observation.v1",
             Self::BrowserObservation => "iteron.browser-observation.v1",
+            Self::DesktopObservation => "iteron.desktop-observation.v1",
         }
     }
 
@@ -118,7 +120,7 @@ impl ArtifactSchema {
                 PrivateContentNamespace::ToolArtifact,
                 PrivateContentClass::ToolOutput,
             ),
-            Self::BrowserObservation => (
+            Self::BrowserObservation | Self::DesktopObservation => (
                 PrivateContentNamespace::ToolArtifact,
                 PrivateContentClass::ToolOutput,
             ),

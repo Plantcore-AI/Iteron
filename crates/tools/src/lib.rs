@@ -19,6 +19,7 @@ pub mod browser;
 #[cfg(unix)]
 mod confined_fs;
 mod confined_helper;
+pub mod desktop;
 mod edit;
 mod egress;
 mod execution_policy;

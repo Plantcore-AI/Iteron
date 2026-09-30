@@ -37,8 +37,15 @@ impl DurableArtifactStore {
         let tool_name = match call.name.as_str() {
             "browser" => "browser",
             "computer" => "computer",
+            "desktop" => "desktop",
             _ => return Err(ArtifactStoreError::InvalidRequest),
         };
+        if (call.name == "desktop")
+            != (observation.scope()
+                == iteron_protocol::tool_image::ToolImageScopeV1::NativeMacDesktop)
+        {
+            return Err(ArtifactStoreError::InvalidRequest);
+        }
         let png = self.publish_bytes(
             source_event_seq,
             ArtifactSchema::ViewportImage,

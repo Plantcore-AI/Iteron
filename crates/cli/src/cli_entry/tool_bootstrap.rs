@@ -151,6 +151,12 @@ pub(crate) fn assemble(
         })
         .collect();
     let mut registry = Registry::coding_agent_with_lsp_routes(&repo, lsp_routes)?;
+    install_desktop(
+        &mut registry,
+        cli.desktop_webdriver.as_deref(),
+        cli.desktop_bundle.as_deref(),
+        plantcore_serve,
+    )?;
     install_browser(
         &mut registry,
         cli.browser_webdriver.as_deref(),
@@ -231,6 +237,29 @@ pub(crate) fn assemble(
         mcp_runtime,
         config_warnings,
     })
+}
+
+fn install_desktop(
+    registry: &mut Registry,
+    endpoint: Option<&str>,
+    bundle: Option<&str>,
+    plantcore_serve: bool,
+) -> anyhow::Result<()> {
+    match (endpoint, bundle) {
+        (None, None) => Ok(()),
+        (Some(_), _) if plantcore_serve => {
+            anyhow::bail!("PlantCore recording mode does not admit native desktop execution")
+        }
+        (Some(endpoint), Some(bundle)) => {
+            let config = iteron_tools::desktop::DesktopConfig::new(endpoint, bundle)
+                .map_err(anyhow::Error::msg)?;
+            iteron_tools::desktop::register(registry, config)?;
+            Ok(())
+        }
+        _ => anyhow::bail!(
+            "desktop requires an explicit local Mac2 driver and native application bundle"
+        ),
+    }
 }
 
 fn install_browser(

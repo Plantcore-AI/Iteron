@@ -70,7 +70,7 @@ pub(super) fn evaluate_operation(
         {
             let interpreter = matches!(
                 canonical,
-                "bash" | "process_start" | "process_write" | "browser" | "computer"
+                "bash" | "process_start" | "process_write" | "browser" | "computer" | "desktop"
             );
             let operation_name = if interpreter && capability == Capability::IrreversibleExternal {
                 format!("{name}:external")

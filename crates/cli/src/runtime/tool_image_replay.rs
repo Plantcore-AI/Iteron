@@ -5,7 +5,14 @@ use iteron_record::ScopedEvent;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, VecDeque};
 
-type TerminalKey = (String, String, u32, u64, String);
+type TerminalKey = (
+    String,
+    String,
+    u32,
+    u64,
+    String,
+    iteron_protocol::tool_image::ToolImageScopeV1,
+);
 type WitnessKey = (String, String, u64, String, [u8; 32]);
 const MAX_WITNESSES: usize = 256;
 
@@ -16,6 +23,7 @@ fn key(image: &ToolImageObservationV1, turn: u32) -> TerminalKey {
         turn,
         image.terminal_seq.0,
         image.tool_use_id.clone(),
+        image.scope,
     )
 }
 fn commitment(image: &ToolImageObservationV1) -> [u8; 32] {
@@ -27,6 +35,7 @@ fn commitment(image: &ToolImageObservationV1) -> [u8; 32] {
         image.tool_use_id.as_bytes(),
         image.artifact_id.as_bytes(),
         image.source_url_display.as_bytes(),
+        image.scope.as_str().as_bytes(),
         image.image.data.as_str().as_bytes(),
     ] {
         hash.update((field.len() as u64).to_le_bytes());
@@ -57,13 +66,20 @@ pub(super) fn verified_image_events(rows: Vec<ScopedEvent>) -> Vec<Event> {
                 effect_id: Some(_),
                 result,
                 ..
-            } if matches!(tool.as_str(), "browser" | "computer") && !result.is_error => {
+            } if matches!(tool.as_str(), "browser" | "computer" | "desktop")
+                && !result.is_error =>
+            {
                 terminals.push_back((
                     row.tenant.0.clone(),
                     row.run_id.0.clone(),
                     event.turn.0,
                     event.seq.0,
                     result.tool_use_id.clone(),
+                    if tool == "desktop" {
+                        iteron_protocol::tool_image::ToolImageScopeV1::NativeMacDesktop
+                    } else {
+                        iteron_protocol::tool_image::ToolImageScopeV1::IsolatedBrowserViewport
+                    },
                 ));
                 if terminals.len() > MAX_WITNESSES {
                     terminals.pop_front();
@@ -259,6 +275,59 @@ mod tests {
                 },
             ),
         ]);
+        let EventKind::Compaction { messages } = &events[2].kind else {
+            panic!()
+        };
+        assert!(
+            messages[0]
+                .content
+                .iter()
+                .any(|block| matches!(block, Block::ToolImage(_)))
+        );
+        assert!(
+            !messages[1]
+                .content
+                .iter()
+                .any(|block| matches!(block, Block::ToolImage(_)))
+        );
+    }
+    #[test]
+    fn actual_desktop_terminal_cannot_witness_browser_scope_or_relabelled_pixels() {
+        let mut native = image("native");
+        native.scope = ToolImageScopeV1::NativeMacDesktop;
+        native.source_url_display = "macos-application://com.example.NativeFixture".into();
+        let mut terminal = done("native");
+        if let EventKind::ToolDone { tool, .. } = &mut terminal.event.kind {
+            *tool = Some("desktop".into());
+        }
+        let mut relabelled = native.clone();
+        relabelled.scope = ToolImageScopeV1::IsolatedBrowserViewport;
+        relabelled.source_url_display = "https://example.com/".into();
+        let events = verified_image_events(vec![
+            terminal,
+            row(
+                "native",
+                8,
+                EventKind::ToolImageObservedV1 {
+                    observation: native.clone(),
+                },
+            ),
+            row(
+                "native",
+                9,
+                EventKind::ToolImageObservedV1 {
+                    observation: relabelled.clone(),
+                },
+            ),
+            row(
+                "child",
+                1,
+                EventKind::Compaction {
+                    messages: vec![message(native), message(relabelled)],
+                },
+            ),
+        ]);
+        assert_eq!(events.len(), 3);
         let EventKind::Compaction { messages } = &events[2].kind else {
             panic!()
         };
