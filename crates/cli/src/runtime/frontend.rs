@@ -811,12 +811,12 @@ impl Agent {
     /// strictly richer here; the record stays the authority for the paths that cross a process
     /// boundary — `--resume`, fork, crash recovery — and those still call `set_resume`.
     pub(super) async fn stage_follow_up_transcript(&mut self) -> Result<(), KernelError> {
-        let Some(working) = self.working_set.take() else {
+        if self.transcript_state.working().is_none() {
             // Nothing has run in this process yet, so the record is the only transcript there is.
             let path = self.rollout.path().to_path_buf();
             let prior = Self::messages_from_rollout(&path)?;
             return self.set_resume(prior);
-        };
+        }
         self.budget.validate().map_err(KernelError::InvalidBudget)?;
         // Turn ids are canonical effect/correlation identities, not an invocation-local counter, so
         // the follow-up must open a NEW one exactly as `set_resume` does when it continues after the
@@ -828,7 +828,12 @@ impl Agent {
         // An interrupted or errored run can leave a trailing assistant message whose tool_use was
         // never answered. Repair it exactly as the replay path does, or the provider rejects the
         // next request.
-        self.resumed = Some(reconcile_transcript(working));
+        let working = self
+            .transcript_state
+            .take_working()
+            .expect("resident working transcript retained through the advance barrier");
+        self.transcript_state
+            .replace_restored(Some(reconcile_transcript(working)));
         // This transcript and its effect gate never crossed a process boundary. The next run must
         // not replay and re-hash the complete rollout merely because `resumed` is also the common
         // input slot used by explicit recovery.

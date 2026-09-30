@@ -341,8 +341,9 @@ impl PersistentAgentRuntime for KernelPersistentRuntime {
                 };
             }
         };
-        let mut started_before = child.ledger.provider_attempts > 0 || child.working_set.is_some();
-        if !started_before && child.resumed.is_some() {
+        let mut started_before =
+            child.ledger.provider_attempts > 0 || child.transcript_state.working().is_some();
+        if !started_before && child.transcript_state.restored().is_some() {
             started_before = true;
         }
         let result = {
@@ -407,7 +408,8 @@ impl PersistentAgentRuntime for KernelPersistentRuntime {
         let summary = match &result {
             Ok(outcome) => {
                 let answer = child
-                    .working_set
+                    .transcript_state
+                    .working()
                     .as_ref()
                     .and_then(|messages| {
                         messages
@@ -544,7 +546,7 @@ pub(super) fn expire_restored(
     child: &mut Agent,
     mailbox: &LiveAgentMailbox,
 ) -> Result<(), KernelError> {
-    let Some(mut messages) = child.resumed.clone() else {
+    let Some(mut messages) = child.transcript_state.restored().clone() else {
         return Ok(());
     };
     if !mailbox
@@ -559,7 +561,7 @@ pub(super) fn expire_restored(
             messages: messages.clone(),
         },
     )?;
-    child.resumed = Some(messages);
+    child.transcript_state.replace_restored(Some(messages));
     child.context_estimator.invalidate_transcript();
     Ok(())
 }
@@ -568,7 +570,7 @@ pub(super) fn expire_unrequested(
     child: &mut Agent,
     mailbox: &LiveAgentMailbox,
 ) -> Result<(), KernelError> {
-    let Some(mut messages) = child.working_set.clone() else {
+    let Some(mut messages) = child.transcript_state.working().clone() else {
         return Ok(());
     };
     if !mailbox
@@ -583,7 +585,7 @@ pub(super) fn expire_unrequested(
             messages: messages.clone(),
         },
     )?;
-    child.working_set = Some(messages);
+    child.transcript_state.replace_working(Some(messages));
     child.context_estimator.invalidate_transcript();
     Ok(())
 }

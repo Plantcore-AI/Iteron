@@ -173,6 +173,7 @@ mod runtime_policy_overlay;
 mod session_control;
 mod session_inbox;
 mod session_spawn_ledger;
+mod session_transcript;
 mod side_conversation;
 mod strategy_ports;
 mod strategy_runtime;
@@ -1261,16 +1262,9 @@ pub struct Agent {
     /// system clock exactly once at provider admission.
     #[cfg(test)]
     pricing_now_unix_secs: Option<u64>,
-    /// If set, the run resumes from this reconstructed transcript instead of starting fresh
-    /// (invariant #2, recoverable). Set via `set_resume`.
-    resumed: Option<Vec<Message>>,
-    /// The working message set the last admitted run finished with, kept so an IN-PROCESS follow-up
-    /// continues from what this process already had. Reconstructing it instead means replaying and
-    /// SHA-256-verifying the whole rollout — twice, because `set_resume` replays it again — between
-    /// every pair of operator messages. It is deliberately NOT a substitute for replay on a genuine
-    /// resume (`--resume`, a fork, crash recovery): those cross a process boundary, where the record
-    /// on disk is the only thing that carries authority.
-    working_set: Option<Vec<Message>>,
+    /// Sole resident restored/finished transcript owner. Live followups stage this exact state;
+    /// process-boundary adoption still requires verified record recovery.
+    transcript_state: session_transcript::SessionTranscriptOwner,
     /// Route-bound content keys for successfully appended run-level provider notices. Provider
     /// proposals are pure; this bounded set advances only after WAL commit and is restored only
     /// from this physical run, so failure/fork/route changes cannot consume another run's notice.
@@ -1811,38 +1805,20 @@ impl Agent {
 
     /// Durably admit one operator submission before any provider request derived from it.
     fn admit_submission(&mut self, task: &str) -> Result<Vec<Message>, KernelError> {
-        match self.resumed.take() {
-            Some(mut m) => {
-                // Resuming: the prior transcript is already recorded. A non-empty `task` here is
-                // a NEW operator instruction (a TUI follow-up, or `--resume <id> "do Y"`): append
-                // AND record it, or it is silently discarded (code review F2). Guard on non-empty
-                // so a pure interrupted-run continuation injects nothing. Only append after an
-                // assistant message (else two consecutive user messages break role alternation).
-                if !task.trim().is_empty() {
-                    let task_msg = Message::user_text(task);
-                    let receipt = self.emit_durable_seq(
-                        TurnId(self.seq_turn),
-                        EventKind::Message {
-                            message: task_msg.clone(),
-                        },
-                    )?;
-                    self.task_plan.observe_submission(receipt);
-                    merge_adjacent_user_message(&mut m, task_msg);
-                }
-                Ok(m)
-            }
-            None => {
-                let task_msg = Message::user_text(task);
-                let receipt = self.emit_durable_seq(
-                    TurnId(self.seq_turn),
-                    EventKind::Message {
-                        message: task_msg.clone(),
-                    },
-                )?;
-                self.task_plan.observe_submission(receipt);
-                Ok(vec![task_msg])
-            }
-        }
+        self.transcript_state.admit_submission(
+            TurnId(self.seq_turn),
+            task,
+            &mut session_transcript::TranscriptAdmissionJournal {
+                rollout: &mut self.rollout,
+                ledger: &mut self.ledger,
+                record_failed: &mut self.record_failed,
+                diagnostics: &self.diagnostics,
+                publications: &mut self.turn_publications,
+                #[cfg(test)]
+                fault: &mut self.fail_next_durable_append,
+            },
+            &mut self.task_plan,
+        )
     }
 
     /// The ordinary bounded writer loop. Any workflow begins only after the model calls its tool.
@@ -1927,7 +1903,7 @@ impl Agent {
         let outcome = self
             .drive_admitted_loop(&mut messages, relevance_task, input_images)
             .await;
-        self.working_set = Some(messages);
+        self.transcript_state.replace_working(Some(messages));
         outcome
     }
 

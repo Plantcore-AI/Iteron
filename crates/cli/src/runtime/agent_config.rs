@@ -211,8 +211,7 @@ impl Agent {
             sensitive_env_names: Vec::new(),
             #[cfg(test)]
             pricing_now_unix_secs: None,
-            resumed: None,
-            working_set: None,
+            transcript_state: super::session_transcript::SessionTranscriptOwner::default(),
             committed_provider_run_notices: std::collections::BTreeSet::new(),
             verify_attempts: 0,
             verification_tasks: bounded_verify::VerificationTaskRegistry::new(),

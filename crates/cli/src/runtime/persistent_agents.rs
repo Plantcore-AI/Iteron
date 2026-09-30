@@ -19,6 +19,7 @@ use tokio::sync::{Semaphore, watch};
 
 #[path = "persistent_agents/parent_turn.rs"]
 mod parent_turn;
+#[path = "persistent_agents/prepared_mailbox.rs"]
 pub(super) mod prepared_mailbox;
 #[path = "persistent_agents/weak_mailbox.rs"]
 mod weak_mailbox;

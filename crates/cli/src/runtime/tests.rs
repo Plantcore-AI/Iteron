@@ -6011,7 +6011,7 @@ mod gate_integration_tests {
         assert_eq!(agent.run("first task").await.unwrap(), Outcome::Done);
         let first_turn = agent.seq_turn;
         assert!(
-            agent.working_set.is_some(),
+            agent.transcript_state.working().is_some(),
             "a finished run hands its working set to the next follow-up"
         );
 
@@ -6023,7 +6023,7 @@ mod gate_integration_tests {
             "follow-up must advance the turn id exactly as the replay path does"
         );
         assert!(
-            agent.working_set.is_some(),
+            agent.transcript_state.working().is_some(),
             "and it keeps its own, so a second follow-up is free as well"
         );
 
@@ -6045,7 +6045,7 @@ mod gate_integration_tests {
         // The equivalence that licenses skipping the replay: what this process held is exactly what
         // reading the record back would have rebuilt.
         let replayed = Agent::messages_from_rollout(agent.rollout.path()).unwrap();
-        let held = reconcile_transcript(agent.working_set.clone().unwrap());
+        let held = reconcile_transcript(agent.transcript_state.working().clone().unwrap());
         assert_eq!(transcript_shape(&held), transcript_shape(&replayed));
 
         // The record stays the authority wherever a process boundary is crossed: an explicit resume
@@ -6053,7 +6053,7 @@ mod gate_integration_tests {
         agent
             .set_resume(vec![Message::user_text("replayed transcript")])
             .unwrap();
-        assert!(agent.working_set.is_none());
+        assert!(agent.transcript_state.working().is_none());
         assert_eq!(agent.run("third task").await.unwrap(), Outcome::Done);
         let last = provider
             .requests
@@ -6845,7 +6845,8 @@ mod gate_integration_tests {
         pin_test_tunables(&mut live);
         live.record_genesis_with_tunables(ws.display().to_string(), 1, String::new(), None)
             .unwrap();
-        live.working_set = Some(vec![Message::user_text("live A transcript")]);
+        live.transcript_state
+            .replace_working(Some(vec![Message::user_text("live A transcript")]));
         live.ledger.turns = 7;
         live.ledger.provider_attempts = 9;
 
@@ -6898,7 +6899,10 @@ mod gate_integration_tests {
         assert_eq!(live.runtime_policy_overlay(), live_overlay);
         assert_eq!(live.ledger.turns, live_turns);
         assert_eq!(live.ledger.provider_attempts, live_attempts);
-        assert_eq!(live.working_set.as_ref().map(Vec::len), Some(1));
+        assert_eq!(
+            live.transcript_state.working().as_ref().map(Vec::len),
+            Some(1)
+        );
         assert!(
             Rollout::open_existing(&runs, &live_run_id, iteron_protocol::TenantId::default(),)
                 .is_err(),
@@ -7266,7 +7270,8 @@ mod gate_integration_tests {
         live.ledger.turns = 3;
         live.ledger.provider_attempts = 3;
         live.last_assistant_text = "an answer from the run being left".into();
-        live.working_set = Some(vec![Message::user_text("the transcript being left")]);
+        live.transcript_state
+            .replace_working(Some(vec![Message::user_text("the transcript being left")]));
         live.failed_actions
             .insert("edit:x".into(), "a failure from the run being left".into());
 
@@ -7295,11 +7300,11 @@ mod gate_integration_tests {
             "the previous run's ledger must not be charged to the adopted run"
         );
         assert_eq!(adopted.turns, 0);
-        assert!(live.working_set.is_none());
+        assert!(live.transcript_state.working().is_none());
         assert!(live.last_assistant_text.is_empty());
         assert!(live.failed_actions.is_empty());
         assert_eq!(
-            live.resumed.as_ref().map(Vec::len),
+            live.transcript_state.restored().as_ref().map(Vec::len),
             Some(2),
             "the next turn continues the adopted transcript"
         );
@@ -7307,9 +7312,9 @@ mod gate_integration_tests {
         // A follow-up stages from the ADOPTED journal. This is the property that makes the
         // adoption real rather than cosmetic: the transcript the next turn continues is read back
         // from the record this session now writes to.
-        live.working_set = None;
+        live.transcript_state.replace_working(None);
         live.stage_follow_up_transcript().await.unwrap();
-        let staged = live.resumed.clone().unwrap();
+        let staged = live.transcript_state.restored().clone().unwrap();
         assert!(
             staged
                 .iter()
@@ -7457,7 +7462,8 @@ mod gate_integration_tests {
         pin_test_tunables(&mut live);
         live.record_genesis_with_tunables(ws.display().to_string(), 1, String::new(), None)
             .unwrap();
-        live.working_set = Some(vec![Message::user_text("the live transcript")]);
+        live.transcript_state
+            .replace_working(Some(vec![Message::user_text("the live transcript")]));
         let before = live.rollout.path().to_path_buf();
 
         let rollout =
@@ -7473,7 +7479,7 @@ mod gate_integration_tests {
             "a record that cannot be replayed must not move the live session"
         );
         assert_eq!(
-            live.working_set.as_ref().map(Vec::len),
+            live.transcript_state.working().as_ref().map(Vec::len),
             Some(1),
             "a refused adoption must not clear the live transcript"
         );
@@ -8221,7 +8227,8 @@ ant-api03-SuperSecretModelToken12345"
             "fixed evidence\n"
         );
         let graph_instructions = agent
-            .working_set
+            .transcript_state
+            .working()
             .as_ref()
             .expect("the completed run retains its working set")
             .iter()
@@ -8391,7 +8398,8 @@ ant-api03-SuperSecretModelToken12345"
             "const RegistryOwnerKey: &str = \"fixed evidence\";\nfn read_evidence() -> &'static str {\n    RegistryOwnerKey\n}\n"
         );
         let checkpoints = agent
-            .working_set
+            .transcript_state
+            .working()
             .as_ref()
             .expect("the completed run retains its working set")
             .iter()

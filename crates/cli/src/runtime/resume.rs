@@ -67,7 +67,7 @@ impl Agent {
         self.budget.validate().map_err(KernelError::InvalidBudget)?;
         // An explicit resume replaces the transcript outright; a working set left over from an
         // earlier run in this process must never outrank it on the next follow-up.
-        self.working_set = None;
+        self.transcript_state.replace_working(None);
         self.last_compaction_turn = None;
         // Redaction is applied on the RECORD path (ADR-008 §1). Resuming from that record can
         // therefore give the model masked tool output where the live turn saw the original bytes.
@@ -336,7 +336,7 @@ impl Agent {
                     runtime_policy_overlay::RuntimePolicyProvenance::default();
             }
         }
-        self.resumed = Some(messages);
+        self.transcript_state.replace_restored(Some(messages));
         Ok(())
     }
 
@@ -918,8 +918,8 @@ impl Agent {
         self.workspace_checkpoints = workspace_checkpoint::WorkspaceCheckpointOwner::default();
 
         // Per-run state `set_resume` does not own. Every one of these describes the run being left.
-        self.working_set = None;
-        self.resumed = None;
+        self.transcript_state.replace_working(None);
+        self.transcript_state.replace_restored(None);
         self.tunables_pin = Some(tunables_pin);
         self.tool_output_spill = Some(tool_output_spill);
         self.budget = staged.budget;
@@ -1002,7 +1002,8 @@ impl Agent {
         // A failed append belongs to the journal it failed on. The adopted journal was just replayed
         // and opened with its own writer descriptor, so the halt does not carry over.
         self.record_failed = false;
-        self.resumed = Some(staged.messages);
+        self.transcript_state
+            .replace_restored(Some(staged.messages));
         if staged.redacted_tool_results > 0 {
             self.diagnostics
                 .emit(KernelDiagnostic::ResumeRedactionDegraded {

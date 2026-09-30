@@ -56,7 +56,7 @@ impl Agent {
                     )
                     .is_ok()
                 {
-                    self.working_set = None;
+                    self.transcript_state.replace_working(None);
                 }
             }
         }
@@ -424,7 +424,7 @@ impl Agent {
         // Use its incremental estimator as a cheap negative precheck; only a near-threshold turn
         // pays for durable replay and SHA verification. A missing working set means compaction or
         // recovery rewrote the record, so replay remains mandatory and authoritative.
-        let prechecked = self.working_set.clone().map(|projected| {
+        let prechecked = self.transcript_state.working().clone().map(|projected| {
             let estimate = self.context_estimator.estimate_with_tool_tokens(
                 &system,
                 &projected,
@@ -568,7 +568,7 @@ impl Agent {
                     // replay from the rollout, which now carries the compaction — the one case where the
                     // #I-21 shortcut must not be taken, and it costs one replay per compaction rather
                     // than one per turn.
-                    self.working_set = None;
+                    self.transcript_state.replace_working(None);
                 }
             }
             Err(_) => self.apply_automatic_compaction_failure(

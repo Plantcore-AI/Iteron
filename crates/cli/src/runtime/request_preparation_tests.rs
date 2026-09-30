@@ -73,7 +73,9 @@ fn fixture() -> (PathBuf, Agent, Vec<Message>) {
             )
             .unwrap();
     }
-    agent.working_set = Some(messages.clone());
+    agent
+        .transcript_state
+        .replace_working(Some(messages.clone()));
     (directory, agent, messages)
 }
 fn preparation<'a>(agent: &mut Agent, messages: &'a mut Vec<Message>) -> RequestPreparation<'a> {
@@ -142,7 +144,7 @@ fn real_writer_refusal_keeps_original_transcript_and_candidate_unusable() {
         serde_json::to_value(&original).unwrap()
     );
     assert_eq!(
-        serde_json::to_value(&agent.working_set).unwrap(),
+        serde_json::to_value(&agent.transcript_state.working()).unwrap(),
         serde_json::to_value(Some(&original)).unwrap()
     );
     assert!(owner.validate().is_err());

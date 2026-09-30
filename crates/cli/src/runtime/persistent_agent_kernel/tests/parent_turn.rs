@@ -98,9 +98,13 @@ async fn actual_main_and_child_exchange_consumed_inputs_without_a_second_root_re
             .contains_key(&AgentIdV1(1))
     );
     assert_eq!(main.observed_trust, iteron_protocol::Trust::Untrusted);
-    assert!(text(main.working_set.as_ref().unwrap()).contains("actual Main operator instruction"));
     assert!(
-        main.working_set
+        text(main.transcript_state.working().as_ref().unwrap())
+            .contains("actual Main operator instruction")
+    );
+    assert!(
+        main.transcript_state
+            .working()
             .as_ref()
             .unwrap()
             .iter()
