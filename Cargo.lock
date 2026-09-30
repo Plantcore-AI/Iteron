@@ -1338,6 +1338,7 @@ version = "0.0.26"
 dependencies = [
  "iteron-ctx",
  "iteron-protocol",
+ "iteron-support",
  "iteron-tunables",
  "libc",
  "serde",
@@ -1623,6 +1624,7 @@ dependencies = [
  "iteron-record",
  "iteron-tunables",
  "thiserror 2.0.20",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1684,6 +1686,7 @@ dependencies = [
  "hex",
  "iteron-protocol",
  "iteron-sched",
+ "iteron-support",
  "iteron-tunables",
  "jsonschema",
  "libc",

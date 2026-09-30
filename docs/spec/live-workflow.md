@@ -49,8 +49,15 @@ An ambiguous commit poisons the live owner until reopening and reconciliation.
 
 The directory is a host trust boundary and must not be an untrusted workspace path. SHA-256 is
 an accidental corruption check, not authentication against an actor who owns the state directory.
-This adapter does not claim durable namespace support on Windows. A different journal adapter
-can implement the same typed contract without changing scheduler state rules.
+Windows supplies a separate schema/CAS adapter over the support crate's bounded local NTFS byte
+publication port: pinned directory/child handles, protected current-user DACLs, an independent
+writer lease and handle-relative write-through publication. Remote shares and other filesystems
+are refused. This platform port holds no shared mutable agent or scheduler domain state.
+
+Cross compilation proves source compatibility only. Native Windows lease, replacement,
+rename-failure poisoning, lost snapshot, hardlink/junction refusal and process-kill/reopen tests
+must pass on the final candidate before that platform is accepted. Power-loss guarantees still
+depend on the local NTFS/device flush contract; write-through flags alone are not acceptance.
 
 ## Evidence and integration status
 

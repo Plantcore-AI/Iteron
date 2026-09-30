@@ -1,8 +1,10 @@
 //! Private application-state adapter. The untrusted workspace is never a journal directory.
 //!
 //! Unix pins an owner-only directory and holds an independent writer lease across atomic snapshot
-//! replacement. Namespace durability on other platforms is not claimed by this adapter.
+//! replacement. Windows delegates only byte publication to the private local NTFS adapter;
+//! snapshot schema, integrity and compare-and-commit remain owned by this workflow domain.
 
+#[cfg(not(windows))]
 use std::path::Path;
 
 use super::{WorkflowPlanJournal, WorkflowSchedulerSnapshotV1, WorkflowStoreError};
@@ -228,17 +230,23 @@ mod unix {
 #[cfg(unix)]
 pub use unix::WorkflowFileJournal;
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+#[path = "file_journal_windows.rs"]
+mod windows;
+#[cfg(windows)]
+pub use windows::WorkflowFileJournal;
+
+#[cfg(not(any(unix, windows)))]
 pub struct WorkflowFileJournal;
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 impl WorkflowFileJournal {
     pub fn open(_: &Path) -> Result<Self, WorkflowStoreError> {
         Err(WorkflowStoreError::Unavailable)
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 impl WorkflowPlanJournal for WorkflowFileJournal {
     fn load(&mut self) -> Result<Option<WorkflowSchedulerSnapshotV1>, WorkflowStoreError> {
         Err(WorkflowStoreError::Unavailable)

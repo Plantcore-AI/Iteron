@@ -29,6 +29,9 @@
 use iteron_record::redact::scrub;
 use std::collections::BTreeMap;
 
+#[cfg(windows)]
+pub mod durable_windows_state;
+
 /// Environment variables permitted into a bundle. Deliberately short, and deliberately excluding
 /// anything whose name ends in `KEY`, `TOKEN` or `SECRET`.
 pub const ENV_ALLOWLIST: &[&str] = &["LANG", "LC_ALL", "TERM", "SHELL", "TZ"];

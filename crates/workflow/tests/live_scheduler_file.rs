@@ -1,6 +1,7 @@
-#![cfg(unix)]
+#![cfg(any(unix, windows))]
 
 use std::fs;
+#[cfg(unix)]
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -21,8 +22,13 @@ impl PrivateDirectory {
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
-        fs::create_dir(&path).unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+        #[cfg(unix)]
+        {
+            fs::create_dir(&path).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        #[cfg(windows)]
+        iteron_support::durable_windows_state::provision_private_directory(&path).unwrap();
         Self(path)
     }
 }
@@ -120,6 +126,7 @@ fn lost_durable_snapshot_and_corrupt_payload_are_never_fresh_workflows() {
 }
 
 #[test]
+#[cfg(unix)]
 fn untrusted_directory_symlink_and_hardlink_do_not_gain_storage_authority() {
     let directory = PrivateDirectory::new();
     fs::set_permissions(&directory.0, fs::Permissions::from_mode(0o755)).unwrap();

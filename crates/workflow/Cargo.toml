@@ -36,5 +36,8 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 libc = "0.2"
 
+[target.'cfg(windows)'.dependencies]
+iteron-support = { path = "../support" }
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "sync"] }
