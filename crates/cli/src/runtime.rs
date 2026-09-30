@@ -30,6 +30,7 @@ mod tool_execution_journal;
 mod approval_wait;
 mod control_terminal;
 mod kernel_effect_bridge;
+mod model_response;
 mod provider_dispatch;
 mod provider_round;
 mod provider_stream_attempt;
@@ -3155,186 +3156,54 @@ impl Agent {
                 .into());
             }
             if total_tools == 0 {
-                // Close the Tools phase before interpreting the terminal model response. In
-                // particular, a configured verification oracle has its own independently timed
-                // phase and must never be folded into tool execution.
                 self.ledger.phase_tools(tools_span.elapsed_ms());
                 if let Some(outcome) = self.collect_and_finish_requested_control(turn_id).await? {
                     return Ok(outcome);
                 }
-                match turn_res.stop_reason {
-                    StopReason::MaxTokens => {
-                        if let Some(reason) = self.completed_turn_budget_exhaustion() {
-                            return self.finish(turn_id, Outcome::BudgetExhausted(reason)).await;
-                        }
-                        // A provider may cut a tool argument mid-JSON. Adapters deliberately omit
-                        // such partial calls; append a real user turn so every provider receives a
-                        // valid alternating transcript and the model can re-emit the call in full.
-                        let continuation = Message::user_text(
-                            "The previous response reached its output-token limit. Continue from the exact stopping point. Do not repeat completed work. If a tool call was cut off, emit that tool call again with its complete arguments.",
-                        );
-                        self.emit(
+                let decision = model_response::ModelResponseInterpreter {
+                    submitted: &mut submitted_turn,
+                    convergence: &mut investigation_convergence,
+                    scope: model_response::ModelResponseScope {
+                        exhausted: self.completed_turn_budget_exhaustion(),
+                        interactive: self.interactive_approvals,
+                        configured_verifier: self.verify_command.is_some(),
+                        task: relevance_task,
+                        answer: &self.last_assistant_text,
+                        recovered_stream: stream_recovered,
+                    },
+                }
+                .decide(&turn_res.stop_reason);
+                if let Some(notice) = decision.notice() {
+                    self.emit(
                         turn_id,
                         EventKind::Notice {
-                            text:
-                                "model output reached max tokens; requesting a bounded continuation"
-                                    .into(),
+                            text: notice.durable.into(),
                         },
                     );
-                        self.ui(UiEvent::Notice(
-                            "model output reached max tokens; continuing".into(),
-                        ));
-                        self.commit_message(turn_id, messages, continuation)?;
-                        self.advance_turn().await?;
-                        continue;
-                    }
-                    StopReason::PauseTurn => {
-                        if let Some(reason) = self.completed_turn_budget_exhaustion() {
-                            return self.finish(turn_id, Outcome::BudgetExhausted(reason)).await;
-                        }
-                        // A provider pause is a valid, resumable terminal. Append a user-role
-                        // continuation so the next request remains portable across adapters and
-                        // the ordinary max-turn/wall/USD ceilings still bound repeated pauses.
-                        let continuation = Message::user_text(if stream_recovered {
-                            "The connection interrupted the previous response. Continue from the stopping point without repeating completed work. Re-emit only tool calls whose arguments were incomplete."
-                        } else {
-                            "The provider paused the previous turn. Continue from the exact stopping point without repeating completed work."
-                        });
-                        self.emit(
-                            turn_id,
-                            EventKind::Notice {
-                                text: if stream_recovered {
-                                    "provider stream recovery; requesting a bounded continuation"
-                                } else {
-                                    "provider paused the turn; requesting a bounded continuation"
-                                }
-                                .into(),
+                    self.ui(UiEvent::Notice(notice.visible.into()));
+                    if let Some((event, reason, outcome)) = notice.lifecycle {
+                        self.lifecycle_event(
+                            event,
+                            Some(turn_id),
+                            LifecyclePayload {
+                                reason_code: Some(reason.into()),
+                                outcome_code: outcome.map(str::to_owned),
+                                ..LifecyclePayload::default()
                             },
                         );
-                        self.ui(UiEvent::Notice(
-                            if stream_recovered {
-                                "provider disconnected; reconnecting"
-                            } else {
-                                "provider paused the turn; continuing"
-                            }
-                            .into(),
-                        ));
-                        self.commit_message(turn_id, messages, continuation)?;
+                    }
+                }
+                match decision {
+                    model_response::ModelResponseDecision::Continue { guidance, .. } => {
+                        self.commit_message(turn_id, messages, Message::user_text(guidance))?;
                         self.advance_turn().await?;
                         continue;
                     }
-                    StopReason::EndTurn => {
-                        if let Some(reason) = self.completed_turn_budget_exhaustion() {
-                            return self.finish(turn_id, Outcome::BudgetExhausted(reason)).await;
-                        }
-                        let promised_immediate_candidate = investigation_convergence.enabled()
-                            && !self.interactive_approvals
-                            && completion_semantics::task_requests_candidate_action(relevance_task)
-                            && completion_semantics::commits_to_immediate_candidate_action(
-                                &self.last_assistant_text,
-                            );
-                        if promised_immediate_candidate && submitted_turn.candidate_recovery_used()
-                        {
-                            let notice = "provider repeated an immediate edit promise after its bounded action continuation without creating a candidate";
-                            self.emit(
-                                turn_id,
-                                EventKind::Notice {
-                                    text: notice.into(),
-                                },
-                            );
-                            self.ui(UiEvent::Notice(notice.into()));
-                            return self.finish(turn_id, Outcome::Stuck).await;
-                        }
-                        if promised_immediate_candidate
-                            && investigation_convergence.reopen_immediate_candidate_action()
-                        {
-                            submitted_turn.claim_candidate_recovery();
-                            let notice = "provider promised an immediate candidate edit but ended without one; requesting one bounded action continuation";
-                            self.emit(
-                                turn_id,
-                                EventKind::Notice {
-                                    text: notice.into(),
-                                },
-                            );
-                            self.ui(UiEvent::Notice(notice.into()));
-                            self.lifecycle_event(
-                                "session.idle",
-                                Some(turn_id),
-                                LifecyclePayload {
-                                    reason_code: Some(
-                                        "immediate_candidate_action_continuation".into(),
-                                    ),
-                                    ..LifecyclePayload::default()
-                                },
-                            );
-                            self.commit_message(
-                                turn_id,
-                                messages,
-                                Message::user_text(
-                                    "You committed to an immediate candidate edit but ended the turn without making it. Execute that stated minimal edit now. If the visible evidence does not support it, explicitly conclude evidence-insufficient without promising future action.",
-                                ),
-                            )?;
-                            self.advance_turn().await?;
-                            continue;
-                        }
-                        if self.last_assistant_text.trim().is_empty() {
-                            let decision = completion_semantics::empty_end_turn_decision(
-                                self.verify_command.is_some(),
-                                investigation_convergence.candidate_handoff_terminal(),
-                            );
-                            if matches!(
-                                decision,
-                                completion_semantics::EmptyEndTurnDecision::AcceptCandidateHandoff
-                            ) {
-                                let notice = "provider ended without prose after stable candidate convergence; controller accepted the diff handoff";
-                                self.emit(
-                                    turn_id,
-                                    EventKind::Notice {
-                                        text: notice.into(),
-                                    },
-                                );
-                                self.ui(UiEvent::Notice(notice.into()));
-                                self.lifecycle_event(
-                                    "session.idle",
-                                    Some(turn_id),
-                                    LifecyclePayload {
-                                        reason_code: Some(
-                                            "stable_candidate_empty_end_turn_handoff".into(),
-                                        ),
-                                        outcome_code: Some("accepted".into()),
-                                        ..LifecyclePayload::default()
-                                    },
-                                );
-                            } else {
-                                let interactive = self.interactive_approvals;
-                                let notice = if interactive {
-                                    "provider ended the turn without an answer; completion was not accepted"
-                                } else {
-                                    "provider ended the automated turn without an answer; completion requires a configured oracle"
-                                };
-                                self.emit(
-                                    turn_id,
-                                    EventKind::Notice {
-                                        text: notice.into(),
-                                    },
-                                );
-                                self.ui(UiEvent::Notice(notice.into()));
-                                self.lifecycle_event(
-                                    "session.failed",
-                                    Some(turn_id),
-                                    LifecyclePayload {
-                                        reason_code: Some("empty_end_turn".into()),
-                                        ..LifecyclePayload::default()
-                                    },
-                                );
-                                if matches!(
-                                    decision,
-                                    completion_semantics::EmptyEndTurnDecision::Reject
-                                ) {
-                                    return self.finish(turn_id, Outcome::HarnessError).await;
-                                }
-                            }
-                        }
+                    model_response::ModelResponseDecision::Finish { outcome, .. } => {
+                        return self.finish(turn_id, outcome).await;
+                    }
+                    model_response::ModelResponseDecision::Refused(error) => return Err(error),
+                    model_response::ModelResponseDecision::Candidate { .. } => {
                         // A message typed while this turn was decoding wins over the model's claim
                         // to be done: durably admit it, then build another turn. This is the
                         // Claude/Codex steering contract at a safe point, never mid-effect.
@@ -3415,29 +3284,6 @@ impl Agent {
                         }
                         self.publish_available_answer(turn_id, &turn_res.blocks)?;
                         return self.finish(turn_id, Outcome::Done).await;
-                    }
-                    StopReason::ToolUse => {
-                        return Err(iteron_provider::ProviderError::Decode(
-                            "provider ended with tool_use but emitted no complete tool call".into(),
-                        )
-                        .into());
-                    }
-                    StopReason::StopSequence => {
-                        // Core does not configure provider stop sequences. Treat an unsolicited
-                        // stop-sequence terminal as an incomplete/invalid turn, never as success.
-                        return Err(iteron_provider::ProviderError::Decode(
-                            "provider returned an unsolicited stop_sequence terminal".into(),
-                        )
-                        .into());
-                    }
-                    StopReason::Refusal => {
-                        return Err(iteron_provider::ProviderError::Refusal.into());
-                    }
-                    StopReason::Unknown(code) => {
-                        return Err(iteron_provider::ProviderError::UnknownStopReason {
-                            code: Box::new(code),
-                        }
-                        .into());
                     }
                 }
             }
