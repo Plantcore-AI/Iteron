@@ -272,6 +272,21 @@ pub(super) fn snapshot(value: &WorkflowSchedulerSnapshotV1) -> Result<(), Error>
         if let Some(handle) = record.state.lease() {
             lease(handle, record.node.assigned_agent)?;
         }
+        if let Some(task) = &record.admitted_task
+            && (task.workflow_id != value.config.workflow_id
+                || task.node_id != record.node.id
+                || Some(task.attempt) != record.state.attempt()
+                || task.input_digest != record.node.input_digest
+                || task.assigned_agent != record.node.assigned_agent
+                || task.task != record.node.task
+                || task.budget != record.node.budget
+                || task.deadline_unix_ms <= value.config.started_at_unix_ms
+                || task.deadline_unix_ms > value.config.deadline_unix_ms)
+        {
+            return Err(Error::Invalid(
+                "stored admitted task differs from its node/attempt",
+            ));
+        }
         match &record.state {
             WorkflowNodeStateV1::Succeeded { result_digest, .. } => digest(result_digest)?,
             WorkflowNodeStateV1::Failed { detail, .. }

@@ -369,6 +369,11 @@ async fn restart_quarantines_active_attempt_and_retains_budget_and_completed_inp
     drop(scheduler);
     let mut recovered = WorkflowScheduler::open(journal.clone(), config()).unwrap();
     let snapshot = recovered.snapshot().unwrap();
+    assert_eq!(
+        snapshot.node(2).unwrap().admitted_task.as_ref(),
+        controller.dispatched.lock().unwrap().get(1),
+        "restart must retain the exact deadline/input envelope for controller proof lookup"
+    );
     assert!(matches!(
         snapshot.node(1).unwrap().state,
         State::Succeeded { .. }

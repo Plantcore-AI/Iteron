@@ -152,6 +152,7 @@ impl<J: WorkflowPlanJournal> WorkflowScheduler<J> {
                         WorkflowNodeRecordV1 {
                             node,
                             state: State::Pending,
+                            admitted_task: None,
                             next_attempt: 1,
                             usage: BudgetUsage::default(),
                             attempt_usage: BudgetUsage::default(),
@@ -184,6 +185,7 @@ impl<J: WorkflowPlanJournal> WorkflowScheduler<J> {
                     }
                     record.node = node;
                     record.state = State::Pending;
+                    record.admitted_task = None;
                 }
             }
         }
@@ -310,6 +312,7 @@ impl<J: WorkflowPlanJournal> WorkflowScheduler<J> {
             budget: record.node.budget,
             deadline_unix_ms,
         };
+        record.admitted_task = Some(task.clone());
         self.commit(next)?;
         // The port is a bounded admission operation, not the duration of the model turn.
         let timeout =

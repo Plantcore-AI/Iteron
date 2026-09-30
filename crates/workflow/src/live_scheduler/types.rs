@@ -162,6 +162,9 @@ impl WorkflowNodeStateV1 {
 pub struct WorkflowNodeRecordV1 {
     pub node: WorkflowNodeV1,
     pub state: WorkflowNodeStateV1,
+    /// Exact write-ahead envelope retained across restart for controller receipt lookup.
+    #[serde(default)]
+    pub admitted_task: Option<ScheduledTaskV1>,
     /// Monotonic across graph edits, retries and restart. Old outputs cannot settle new work.
     pub next_attempt: u64,
     pub usage: BudgetUsage,
