@@ -344,6 +344,28 @@ const SURFACES: &[Surface] = &[
         next_seams: &["immutable provider proof port only; no budget or route selection mutation"],
     },
     Surface {
+        path: "crates/cli/src/runtime/provider_route_turn.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "single actual request/route/retry/ticket/permit/physical identity owner",
+            "typed next step from real settled attempts and normalized fallback geometry",
+        ],
+        next_seams: &[
+            "actual journal, signed finance and durable route selection remain separate authorities",
+        ],
+    },
+    Surface {
+        path: "crates/cli/src/runtime/provider_route_events.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "concrete immutable lifecycle/activity projection and actual bounded retry wait",
+            "completed wait ledger evidence; cancellation never reports completed retry",
+        ],
+        next_seams: &[
+            "read-only controls plus actual Ledger; no request admission or route permission",
+        ],
+    },
+    Surface {
         path: "crates/cli/src/runtime/provider_turn_evidence.rs",
         boundary: "cli-host",
         responsibilities: &[
