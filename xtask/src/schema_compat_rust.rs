@@ -16,6 +16,8 @@ mod cli_effort;
 mod cli_exact;
 #[path = "schema_compat_rust_cli_main.rs"]
 mod cli_main;
+#[path = "schema_compat_rust_cli_entry.rs"]
+mod cli_entry;
 #[path = "schema_compat_rust_cli_parse.rs"]
 mod cli_parse;
 #[path = "schema_compat_rust_cli_parse_scan.rs"]

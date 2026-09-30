@@ -16,7 +16,7 @@ pub(super) fn validate(source: &str) -> Result<()> {
     validate_run_cli(&file)
 }
 
-fn validate_top_level_authority(file: &syn::File) -> Result<()> {
+pub(super) fn validate_top_level_authority(file: &syn::File) -> Result<()> {
     let mut emitter_origins = Vec::new();
     let mut format_origins = Vec::new();
     for item in &file.items {
@@ -79,7 +79,7 @@ fn validate_top_level_authority(file: &syn::File) -> Result<()> {
 /// rather than unwinding, every path goes through `run_cli` exactly once, and a failure is scrubbed
 /// before it is printed and reported as the harness exit. A spelling that drops any of those still
 /// fails, including the one that would quietly print an unscrubbed error.
-fn validate_entrypoint(file: &syn::File) -> Result<()> {
+pub(super) fn validate_entrypoint(file: &syn::File) -> Result<()> {
     let actual = unique_function(file, "main")?;
 
     let expected_output: syn::ReturnType = syn::parse_quote!(-> std::process::ExitCode);
@@ -112,13 +112,17 @@ fn validate_entrypoint(file: &syn::File) -> Result<()> {
 
 fn validate_run_cli(file: &syn::File) -> Result<()> {
     let function = unique_function(file, "run_cli")?;
+    validate_machine_driver(function, false)
+}
+
+pub(super) fn validate_machine_driver(function: &syn::ItemFn, extracted: bool) -> Result<()> {
     if !function.attrs.is_empty()
-        || !matches!(function.vis, syn::Visibility::Inherited)
+        || (!extracted && !matches!(function.vis, syn::Visibility::Inherited))
         || function.sig.asyncness.is_none()
         || function.sig.constness.is_some()
         || function.sig.unsafety.is_some()
         || function.sig.abi.is_some()
-        || !function.sig.inputs.is_empty()
+        || (!extracted && !function.sig.inputs.is_empty())
         || !function.sig.generics.params.is_empty()
         || function.sig.generics.where_clause.is_some()
     {
@@ -156,7 +160,7 @@ fn validate_run_cli(file: &syn::File) -> Result<()> {
     Ok(())
 }
 
-fn unique_function<'a>(file: &'a syn::File, name: &str) -> Result<&'a syn::ItemFn> {
+pub(super) fn unique_function<'a>(file: &'a syn::File, name: &str) -> Result<&'a syn::ItemFn> {
     let mut functions = file.items.iter().filter_map(|item| match item {
         syn::Item::Fn(function) if function.sig.ident == name => Some(function),
         _ => None,
@@ -294,7 +298,7 @@ fn is_emitter_binding(statement: &syn::Stmt) -> bool {
         && path_is(&call.args[1], &["machine_schema_version"])
 }
 
-fn path_is(expression: &syn::Expr, expected: &[&str]) -> bool {
+pub(super) fn path_is(expression: &syn::Expr, expected: &[&str]) -> bool {
     let syn::Expr::Path(path) = expression else {
         return false;
     };
@@ -309,7 +313,7 @@ fn path_is(expression: &syn::Expr, expected: &[&str]) -> bool {
             .all(|(actual, expected)| actual.ident == expected)
 }
 
-fn flatten_use(
+pub(super) fn flatten_use(
     tree: &syn::UseTree,
     prefix: &mut Vec<String>,
     bindings: &mut Vec<(String, Vec<String>, bool)>,

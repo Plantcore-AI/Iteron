@@ -16,8 +16,8 @@ pub(super) fn validate_cli_writer_dataflow(root: &Path, source: &[u8]) -> Result
 
     let main = read_bounded(root, "crates/cli/src/main.rs", MAX_SOURCE_BYTES)?;
     let main = std::str::from_utf8(&main).context("CLI main source is not UTF-8")?;
-    super::cli_main::validate(main)?;
-    validate_final_result_call(main)
+    let owner = super::cli_entry::validate(root, main)?;
+    validate_final_result_call(&owner.source, owner.function)
 }
 
 fn validate_json_line_writer(file: &syn::File) -> Result<()> {
@@ -242,9 +242,9 @@ fn validate_single_flush(block: &syn::Block, method: &str, boolean: bool) -> Res
     Ok(())
 }
 
-fn validate_final_result_call(source: &str) -> Result<()> {
+fn validate_final_result_call(source: &str, function_name: &str) -> Result<()> {
     let file = syn::parse_file(source).context("CLI main source does not parse as Rust")?;
-    let function = root_function(&file, "run_cli")?;
+    let function = root_function(&file, function_name)?;
     let mut binding_index = None;
     for (index, statement) in function.block.stmts.iter().enumerate() {
         let syn::Stmt::Local(local) = statement else {
