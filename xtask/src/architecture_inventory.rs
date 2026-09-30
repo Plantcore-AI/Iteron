@@ -74,7 +74,7 @@ const SURFACES: &[Surface] = &[
     },
     Surface {
         path: "crates/cli/src/tui.rs",
-        boundary: "cli-interaction",
+        boundary: "cli-tui",
         responsibilities: &[
             "terminal lifecycle and rendering",
             "input/edit interaction",
