@@ -118,9 +118,9 @@ pub(super) fn attach_with_plantcore(
     plantcore: PlantcoreAdmission,
 ) -> Result<Attached, ProtocolVersionError> {
     let machine_schema_version = if plantcore.is_enabled() {
-        crate::output::V7_SCHEMA_VERSION
+        crate::machine_projection::V7_SCHEMA_VERSION
     } else {
-        crate::output::SCHEMA_VERSION
+        crate::machine_projection::SCHEMA_VERSION
     };
     let dispatch_gate = plantcore.dispatch_gate();
     if let Some(gate) = &dispatch_gate {

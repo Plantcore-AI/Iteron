@@ -269,10 +269,14 @@ impl FrontendChannelHealth {
         event: UiEvent,
     ) -> bool {
         match event {
-            UiEvent::Text(text) if text.len() > crate::output::max_stream_ui_delta_bytes() => {
+            UiEvent::Text(text)
+                if text.len() > crate::machine_projection::max_stream_ui_delta_bytes() =>
+            {
                 self.try_send_stream_delta(tx, text, false)
             }
-            UiEvent::Thinking(text) if text.len() > crate::output::max_stream_ui_delta_bytes() => {
+            UiEvent::Thinking(text)
+                if text.len() > crate::machine_projection::max_stream_ui_delta_bytes() =>
+            {
                 self.try_send_stream_delta(tx, text, true)
             }
             event => self.try_send_bounded_ui(tx, event),
@@ -286,12 +290,12 @@ impl FrontendChannelHealth {
     ) -> bool {
         match event {
             super::RuntimeFrontendEvent::Ui(UiEvent::Text(text))
-                if text.len() > crate::output::max_stream_ui_delta_bytes() =>
+                if text.len() > crate::machine_projection::max_stream_ui_delta_bytes() =>
             {
                 self.try_send_runtime_delta(tx, text, false)
             }
             super::RuntimeFrontendEvent::Ui(UiEvent::Thinking(text))
-                if text.len() > crate::output::max_stream_ui_delta_bytes() =>
+                if text.len() > crate::machine_projection::max_stream_ui_delta_bytes() =>
             {
                 self.try_send_runtime_delta(tx, text, true)
             }
@@ -324,7 +328,7 @@ impl FrontendChannelHealth {
         while !remaining.is_empty() {
             let mut split = remaining
                 .len()
-                .min(crate::output::max_stream_ui_delta_bytes());
+                .min(crate::machine_projection::max_stream_ui_delta_bytes());
             while !remaining.is_char_boundary(split) {
                 split -= 1;
             }
@@ -407,7 +411,7 @@ impl FrontendChannelHealth {
         while !remaining.is_empty() {
             let mut split = remaining
                 .len()
-                .min(crate::output::max_stream_ui_delta_bytes());
+                .min(crate::machine_projection::max_stream_ui_delta_bytes());
             while !remaining.is_char_boundary(split) {
                 split -= 1;
             }

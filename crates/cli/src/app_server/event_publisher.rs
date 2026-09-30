@@ -90,7 +90,7 @@ impl PendingCosmetic {
                 Some(ServerEvent::Ui(UiEvent::Thinking(existing))),
                 ServerEvent::Ui(UiEvent::Thinking(delta)),
             ) if existing.len().saturating_add(delta.len())
-                <= crate::output::max_stream_ui_delta_bytes() =>
+                <= crate::machine_projection::max_stream_ui_delta_bytes() =>
             {
                 existing.push_str(delta);
                 self.bytes = self.bytes.saturating_add(bytes);

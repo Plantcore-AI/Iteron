@@ -3808,7 +3808,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
     fn one_shot_terminal_result(summary: &app_server::TerminalSummary) -> serde_json::Value {
         summary
-            .result_for_schema(crate::output::SCHEMA_VERSION)
+            .result_for_schema(crate::machine_projection::SCHEMA_VERSION)
             .expect("current terminal facts must project")
     }
 
@@ -3882,7 +3882,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
     fn capture_v7_machine_parity(summary: &app_server::TerminalSummary) -> ClientParityCapture {
         let plantcore_resident = summary
-            .result_for_schema(crate::output::V7_SCHEMA_VERSION)
+            .result_for_schema(crate::machine_projection::V7_SCHEMA_VERSION)
             .expect("v7 terminal facts must project");
         let (protocol_version, seq, headless) =
             headless::capture_plantcore_terminal_result_frame(41, summary);
@@ -4012,7 +4012,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             terminal_evidence: None,
         };
         let outcome = summary.terminal.outcome();
-        let expected = crate::output::final_result(
+        let expected = crate::machine_projection::final_result(
             &outcome,
             &summary.assistant_text,
             &summary.run_id,

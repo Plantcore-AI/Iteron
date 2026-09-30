@@ -704,7 +704,10 @@ fn raw_v7_recording_frame(seq: u64, raw_bytes: usize) -> Result<ServerFrame> {
     if serde_json::to_vec(&event)?.len() != raw_bytes {
         bail!("fixed raw-v7 recording fault does not have the declared size");
     }
-    match (raw_bytes, crate::output::canonical_v7_event_bytes(&event)) {
+    match (
+        raw_bytes,
+        crate::machine_projection::canonical_v7_event_bytes(&event),
+    ) {
         (65_536, Ok(bytes)) if bytes.len() == raw_bytes => {}
         (65_537, Err(_)) => {}
         _ => bail!("fixed raw-v7 recording fault disagrees with the v7 canonicalizer"),

@@ -35,7 +35,7 @@ use self::input::MAX_PENDING_CLIENT_BYTES;
 #[cfg(test)]
 use crate::app_server::TerminalSummary;
 use crate::app_server::{AppServerClient, Attached, ControlRequest, ServerEvent};
-use crate::output;
+use crate::machine_projection as projection;
 use crate::runtime::{PlantcoreUiEvent, UiEvent};
 use anyhow::{Context, Result, bail};
 use iteron_protocol::PROTOCOL_VERSION;
@@ -58,7 +58,7 @@ const AUTHENTICATED_IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const ROLLOUT_REPLAY_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn project_v7_plantcore_event(
-    assistant: &mut output::V7AssistantStream,
+    assistant: &mut projection::V7AssistantStream,
     event: PlantcoreUiEvent,
 ) -> Result<Vec<Value>> {
     let mut values = Vec::with_capacity(2);
@@ -67,15 +67,15 @@ fn project_v7_plantcore_event(
     {
         values.push(delta);
     }
-    values.push(output::v7_plantcore_event(event)?);
+    values.push(projection::v7_plantcore_event(event)?);
     Ok(values)
 }
 
 /// Preserve redaction state across V4/V5/V6 provider chunks and emit only complete tokens.
 #[derive(Default)]
 struct LegacyStreamScrubbers {
-    assistant: output::StreamingScrubber,
-    reasoning: output::StreamingScrubber,
+    assistant: projection::StreamingScrubber,
+    reasoning: projection::StreamingScrubber,
 }
 
 impl LegacyStreamScrubbers {
@@ -85,7 +85,10 @@ impl LegacyStreamScrubbers {
         turn: &mut u32,
         schema: u32,
     ) -> Result<()> {
-        logical.push((false, output::stream_event_for_schema(event, turn, schema)?));
+        logical.push((
+            false,
+            projection::stream_event_for_schema(event, turn, schema)?,
+        ));
         Ok(())
     }
 
@@ -155,7 +158,7 @@ pub(super) fn capture_terminal_result_frame(
     seq: u64,
     summary: &TerminalSummary,
 ) -> (u32, u64, Value) {
-    capture_terminal_result_frame_for_schema(seq, summary, output::SCHEMA_VERSION)
+    capture_terminal_result_frame_for_schema(seq, summary, projection::SCHEMA_VERSION)
 }
 
 #[cfg(test)]
@@ -163,7 +166,7 @@ pub(super) fn capture_plantcore_terminal_result_frame(
     seq: u64,
     summary: &TerminalSummary,
 ) -> (u32, u64, Value) {
-    capture_terminal_result_frame_for_schema(seq, summary, output::V7_SCHEMA_VERSION)
+    capture_terminal_result_frame_for_schema(seq, summary, projection::V7_SCHEMA_VERSION)
 }
 
 #[cfg(test)]
@@ -255,9 +258,9 @@ impl Shared {
         &self,
         event: ServerEvent,
         turn: u32,
-        mut assistant: output::V7AssistantStream,
+        mut assistant: projection::V7AssistantStream,
         mut legacy: LegacyStreamScrubbers,
-    ) -> Result<(u32, output::V7AssistantStream, LegacyStreamScrubbers)> {
+    ) -> Result<(u32, projection::V7AssistantStream, LegacyStreamScrubbers)> {
         // `resume_from` names this transport's presentation stream, not the in-process EQ. Some EQ
         // variants intentionally have no frozen stream-json representation, so carrying their EQ
         // sequence numbers across the projection would manufacture holes that every correct client
@@ -292,18 +295,24 @@ impl Shared {
             let mut logical = Vec::with_capacity(3);
             match event {
                 ServerEvent::Ui(UiEvent::Text(delta))
-                    if machine_schema_version == output::V7_SCHEMA_VERSION =>
+                    if machine_schema_version == projection::V7_SCHEMA_VERSION =>
                 {
                     if let Some(event) = assistant.push(&delta)? {
                         logical.push((false, event));
                     }
                 }
-                ServerEvent::Ui(event) if machine_schema_version != output::V7_SCHEMA_VERSION => {
+                ServerEvent::Ui(event)
+                    if machine_schema_version != projection::V7_SCHEMA_VERSION =>
+                {
                     legacy.project(event, &mut logical, &mut next_turn, machine_schema_version)?;
                 }
                 ServerEvent::Ui(event) => logical.push((
                     false,
-                    output::stream_event_for_schema(event, &mut next_turn, machine_schema_version)?,
+                    projection::stream_event_for_schema(
+                        event,
+                        &mut next_turn,
+                        machine_schema_version,
+                    )?,
                 )),
                 ServerEvent::Plantcore(event) => {
                     legacy.finish(&mut logical, &mut next_turn, machine_schema_version)?;
@@ -335,7 +344,7 @@ impl Shared {
                 }
                 ServerEvent::RunEnded { summary, .. } => {
                     legacy.finish(&mut logical, &mut next_turn, machine_schema_version)?;
-                    if machine_schema_version == output::V7_SCHEMA_VERSION {
+                    if machine_schema_version == projection::V7_SCHEMA_VERSION {
                         let completes_assistant = summary.completes_assistant_stream_for_v7();
                         logical.extend(
                             assistant
@@ -526,7 +535,7 @@ pub(crate) async fn serve(
     let pump_shared = shared.clone();
     let mut pump = tokio::spawn(async move {
         let mut turn = 0;
-        let mut assistant = output::V7AssistantStream::default();
+        let mut assistant = projection::V7AssistantStream::default();
         let mut legacy = LegacyStreamScrubbers::default();
         let mut last_seq = 0;
         while let Some(envelope) = events.recv().await {
@@ -753,7 +762,7 @@ mod boundary_tests {
     #[tokio::test]
     async fn legacy_headless_replay_frames_scrub_split_url_and_token() {
         use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-        for schema in output::SUPPORTED_SCHEMA_VERSIONS {
+        for schema in projection::SUPPORTED_SCHEMA_VERSIONS {
             let mut scrubbers = LegacyStreamScrubbers::default();
             let mut turn = 0;
             let mut logical = Vec::new();
@@ -876,7 +885,7 @@ mod boundary_tests {
 
     #[test]
     fn usage_follows_every_preceding_assistant_byte() {
-        let mut assistant = output::V7AssistantStream::default();
+        let mut assistant = projection::V7AssistantStream::default();
         assert!(assistant.push("answer").unwrap().is_none());
         let values = project_v7_plantcore_event(
             &mut assistant,

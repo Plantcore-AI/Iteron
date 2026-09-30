@@ -910,15 +910,16 @@ fn parity_transcript_done_capture_matches_terminal_summary_projection() {
             include_str!("../../../governance/client-conformance/client-parity-v6.json"),
         ),
         (
-            crate::output::SCHEMA_VERSION,
+            crate::machine_projection::SCHEMA_VERSION,
             include_str!("../../../governance/client-conformance/client-parity-v8.json"),
         ),
     ] {
         let transcript: serde_json::Value = serde_json::from_str(fixture).unwrap();
         let captures = transcript["clients"].as_array().unwrap();
         assert_eq!(captures.len(), 3);
-        let expected = crate::output::project_schema(authoritative.clone(), schema_version)
-            .expect("published schema projection is valid");
+        let expected =
+            crate::machine_projection::project_schema(authoritative.clone(), schema_version)
+                .expect("published schema projection is valid");
         for capture in captures {
             assert_eq!(
                 capture["result"], expected,
@@ -932,7 +933,7 @@ fn parity_transcript_done_capture_matches_terminal_summary_projection() {
     assert_eq!(authoritative["type"], "result");
     assert_eq!(
         authoritative["schema_version"],
-        crate::output::SCHEMA_VERSION
+        crate::machine_projection::SCHEMA_VERSION
     );
 }
 
@@ -1125,10 +1126,10 @@ async fn a_saturated_eq_coalesces_every_delta_and_never_loses_the_terminal_event
             }
             ServerEvent::Lagged { dropped } => panic!("coalesced bytes were lost: {dropped}"),
             ServerEvent::Ui(UiEvent::Text(delta)) => {
-                crate::output::stream_event_for_schema(
+                crate::machine_projection::stream_event_for_schema(
                     UiEvent::Text(delta.clone()),
                     &mut 0,
-                    crate::output::V7_SCHEMA_VERSION,
+                    crate::machine_projection::V7_SCHEMA_VERSION,
                 )
                 .expect("every coalesced stream segment fits one canonical v7 event");
                 text.push_str(&delta);

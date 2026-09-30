@@ -751,10 +751,10 @@ struct App {
     live_markdown_layout: live_markdown::LiveMarkdownLayout,
     // Hold the unfinished token across arbitrary provider deltas so a split credential cannot be
     // rendered for one frame before the complete token becomes recognizable.
-    text_scrubber: crate::output::StreamingScrubber,
+    text_scrubber: crate::machine_projection::StreamingScrubber,
     // live extended-thinking tail, shown dimmed while the model reasons (bounded).
     cur_think: String,
-    thinking_scrubber: crate::output::StreamingScrubber,
+    thinking_scrubber: crate::machine_projection::StreamingScrubber,
     /// The operator's current permission posture (mirrors the agent's; shown in the status line).
     mode: PermissionMode,
     effort: Effort,

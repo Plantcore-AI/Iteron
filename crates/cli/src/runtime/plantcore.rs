@@ -738,7 +738,7 @@ fn completed_product(assistant_text: &str, artifacts: &[ArtifactDeclaration]) ->
 
 fn validate_product_result(product: &ProductResult) -> Result<(), &'static str> {
     product.validate()?;
-    crate::output::v7_result(&PlantcoreTerminalOutcome::Done(product.clone()))
+    crate::machine_projection::v7_result(&PlantcoreTerminalOutcome::Done(product.clone()))
         .map(|_| ())
         .map_err(|_| "product result exceeds the canonical v7 event limit")
 }

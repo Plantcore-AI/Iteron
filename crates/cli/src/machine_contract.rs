@@ -131,8 +131,8 @@ impl MachineContract {
             kind: MACHINE_CONTRACT_TYPE,
             contract_version: MACHINE_CONTRACT_VERSION,
             release_id: format!("iteron-v{}", env!("CARGO_PKG_VERSION")),
-            cli_stream_versions: crate::output::SUPPORTED_SCHEMA_VERSIONS.to_vec(),
-            default_cli_stream_version: crate::output::DEFAULT_SCHEMA_VERSION,
+            cli_stream_versions: crate::machine_projection::SUPPORTED_SCHEMA_VERSIONS.to_vec(),
+            default_cli_stream_version: crate::machine_projection::DEFAULT_SCHEMA_VERSION,
             resident_protocol_version: iteron_protocol::PROTOCOL_VERSION,
             canonical_json: CanonicalJsonCapability {
                 version: PORTABLE_CANONICAL_JSON_VERSION,

@@ -330,7 +330,7 @@ pub(super) fn apply_server_event<T: notification::NotificationTransport + ?Sized
                     block::NoticeLevel::Warn,
                     format!(
                         "stopped on the {reason} ceiling — {}",
-                        crate::output::budget_remedy(reason)
+                        crate::machine_projection::budget_remedy(reason)
                     ),
                 );
             }

@@ -10,7 +10,7 @@ use super::{
 ///
 /// Keeping this projection on the server side is what lets one-shot and headless clients remain
 /// clients: neither needs to reclaim the [`Agent`] or parse `UiEvent::Done`'s debug string. The
-/// current versioned result object is still constructed by `output::final_result` at the client
+/// current versioned result object is still constructed by `machine_projection::final_result` at the client
 /// boundary.
 #[derive(Debug, Clone)]
 pub(crate) struct TerminalSummary {
@@ -67,7 +67,7 @@ impl TerminalSummary {
     /// client. Presentation remains client-owned; outcome, exit status, and result fields do not.
     pub(crate) fn current_result(&self) -> serde_json::Value {
         let outcome = self.terminal.outcome();
-        crate::output::final_result(
+        crate::machine_projection::final_result(
             &outcome,
             &self.assistant_text,
             &self.run_id,
@@ -80,7 +80,9 @@ impl TerminalSummary {
 
     pub(crate) fn v7_result(&self) -> anyhow::Result<serde_json::Value> {
         match &self.terminal {
-            TerminalAuthority::Plantcore(terminal) => Ok(crate::output::v7_result(terminal)?),
+            TerminalAuthority::Plantcore(terminal) => {
+                Ok(crate::machine_projection::v7_result(terminal)?)
+            }
             TerminalAuthority::Runtime(outcome) => {
                 let product_result = matches!(outcome, Outcome::Done).then(|| {
                     iteron_protocol::ProductResult::Completed {
@@ -98,7 +100,7 @@ impl TerminalSummary {
                     )
                     .map_err(anyhow::Error::msg)?,
                 };
-                Ok(crate::output::v7_result(&terminal)?)
+                Ok(crate::machine_projection::v7_result(&terminal)?)
             }
         }
     }
@@ -107,13 +109,13 @@ impl TerminalSummary {
         &self,
         schema_version: u32,
     ) -> anyhow::Result<serde_json::Value> {
-        if schema_version == crate::output::V7_SCHEMA_VERSION {
+        if schema_version == crate::machine_projection::V7_SCHEMA_VERSION {
             return self.v7_result();
         }
         let assistant_text = iteron_record::redact::scrub(&self.assistant_text);
         let error = self.error.as_deref().map(iteron_record::redact::scrub);
         let outcome = self.terminal.outcome();
-        Ok(crate::output::final_result(
+        Ok(crate::machine_projection::final_result(
             &outcome,
             &assistant_text,
             &self.run_id,

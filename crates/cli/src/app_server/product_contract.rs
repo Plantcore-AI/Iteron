@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 /// The scan buffer is bounded; an overlong candidate is suppressed through its END marker.
 #[derive(Default)]
 struct ProductStreamScrubber {
-    token: crate::output::StreamingScrubber,
+    token: crate::machine_projection::StreamingScrubber,
     scan: String,
     candidate: bool,
     in_private_key: bool,
@@ -567,7 +567,7 @@ impl Projection {
             .as_ref()
             .and_then(|s| s.turn.as_ref())
             .map(|t| t.turn_id);
-        // Match `output::stream_event`'s public boundary: scrub the complete source value before
+        // Match `machine_projection::stream_event`'s public boundary: scrub the complete source value before
         // any chunking, so a token crossing an 8 KiB product chunk is still recognized. Tool
         // inputs are recursively scrubbed before serialization at their call site below.
         let redacted = iteron_record::redact::scrub(content);

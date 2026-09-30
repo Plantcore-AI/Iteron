@@ -7,6 +7,8 @@ remain required.
 
 | Source | Actual state owner | Inputs and outputs |
 | --- | --- | --- |
+| `machine_projection.rs` and its `v7` child | Actual shared schema compatibility and streaming scrubber state | Immutable runtime facts → scrubbed bounded machine values; no CLI format/options, physical IO, server or TUI dependency |
+| `output.rs` | One-shot CLI stdout format and physical emitter | Shared machine values → selected stdout framing/flush and bounded stderr notices |
 | `app_server/session_host.rs` | Resident Agent and idle/running session lifetime | Authenticated typed commands → actual runtime operation; immutable events/replies leave the owner |
 | `app_server/session_services.rs` | Captured actual controller/workflow/process/MCP/verifier/read ports | Same real owner handles refresh at adoption; shared activity scope leases prevent stale mutation |
 | `app_server/turn_pump.rs` | Borrowed turn future and disjoint frontend channels | Fair runtime/control/event polling; no mutable Agent aggregate |

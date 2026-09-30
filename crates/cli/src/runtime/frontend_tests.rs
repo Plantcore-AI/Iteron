@@ -15,10 +15,14 @@ fn oversized_stream_delta_is_split_into_v7_safe_utf8_events_without_data_loss() 
         let UiEvent::Text(fragment) = &event else {
             panic!("stream splitter must preserve the event kind")
         };
-        assert!(fragment.len() <= crate::output::max_stream_ui_delta_bytes());
+        assert!(fragment.len() <= crate::machine_projection::max_stream_ui_delta_bytes());
         reassembled.push_str(fragment);
-        crate::output::stream_event_for_schema(event, &mut turn, crate::output::V7_SCHEMA_VERSION)
-            .expect("every emitted fragment fits one canonical v7 logical object");
+        crate::machine_projection::stream_event_for_schema(
+            event,
+            &mut turn,
+            crate::machine_projection::V7_SCHEMA_VERSION,
+        )
+        .expect("every emitted fragment fits one canonical v7 logical object");
     }
     assert_eq!(reassembled, original);
 }
