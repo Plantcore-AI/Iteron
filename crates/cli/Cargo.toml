@@ -48,6 +48,7 @@ async-trait = "0.1"
 url = "2"
 reqwest = { workspace = true }
 sha2 = { workspace = true }
+ed25519-dalek = { workspace = true }
 hex = { workspace = true }
 getrandom = { workspace = true }
 zeroize = { workspace = true }
