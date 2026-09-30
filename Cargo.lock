@@ -1631,6 +1631,7 @@ dependencies = [
 name = "iteron-tools"
 version = "0.0.26"
 dependencies = [
+ "base64",
  "futures-util",
  "getrandom 0.4.3",
  "ignore",
