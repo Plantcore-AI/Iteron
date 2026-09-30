@@ -190,9 +190,9 @@ fn dispatch_lifecycle_hook(
     }
 }
 
+use crate::queue_policy::{SQ_BYTE_CAPACITY, SQ_ENTRY_OVERHEAD_BYTES, sq_control_reserve_bytes};
 #[cfg(test)]
 use crate::queue_policy::{SQ_CAPACITY, SQ_CONTROL_RESERVE_BYTES, SQ_PRIORITY_CAPACITY};
-use crate::queue_policy::{SQ_BYTE_CAPACITY, SQ_ENTRY_OVERHEAD_BYTES, sq_control_reserve_bytes};
 #[cfg(test)]
 const SQ_DATA_CAPACITY: usize = SQ_CAPACITY - SQ_PRIORITY_CAPACITY;
 

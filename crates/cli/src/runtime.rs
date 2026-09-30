@@ -28,6 +28,7 @@ mod extension_control;
 mod tool_execution_journal;
 
 mod kernel_effect_bridge;
+mod provider_round;
 mod provider_stream_attempt;
 mod provider_stream_observer;
 mod provider_transport_attempt;
@@ -2653,7 +2654,6 @@ impl Agent {
             // Carry each pure tool's id so a panicked/cancelled task can still answer its
             // tool_use with an error result (code review: an unanswered tool_use is a dangling
             // block the model API rejects on the next turn).
-            let mut tool_turn = tool_turn::ToolTurnOwner::default();
             let stream_execution_gate = std::sync::Arc::new(tokio::sync::RwLock::new(()));
             let early_local_effects = !investigation_convergence.enabled()
                 && self.verify_command.is_none()
@@ -2681,7 +2681,7 @@ impl Agent {
             )
             .min(INTERRUPTED_STREAM_MAX_BYTES);
             // I-53: transport metadata, captured here and folded into the agent after the turn.
-            let mut provider_evidence = provider_stream_observer::ProviderStreamObserver::new(
+            let mut provider_round = provider_round::ProviderRoundOwner::new(
                 provider_stream_observer::ProviderStreamScope {
                     turn: turn_id,
                     started: stream_start,
@@ -2729,7 +2729,7 @@ impl Agent {
                 } else {
                     None
                 };
-                let physical_attempt = {
+                {
                     let request_observer = route_turn.ticket().map(|ticket| {
                         request_manifests.for_ticket(ticket, route_turn.request().max_tokens)
                     });
@@ -2737,92 +2737,86 @@ impl Agent {
                     let correlation = self.lifecycle_correlation(Some(turn_id));
                     let requested = self.requested_control() != InboundControl::None;
                     let publication = self.tool_output_publication_factory();
-                    let tool_admission = stream_tool_admission::StreamToolAdmission::new(
-                        &mut tool_turn,
-                        stream_tool_journal::StreamToolJournal {
-                            rollout: &mut self.rollout,
-                            effects: &mut self.effect_journal,
-                            policy: self.policy_evidence.as_mut(),
-                            ledger: &mut self.ledger,
-                            record_failed: &mut self.record_failed,
-                            diagnostics: &self.diagnostics,
-                            #[cfg(test)]
-                            fault: &mut self.fail_next_durable_append,
-                        },
-                        stream_tool_admission::StreamToolScope {
-                            turn: turn_id,
-                            workspace: &self.workspace,
-                            registry: &self.registry,
-                            strategy: tool_policy.as_ref(),
-                            operation: permission_policy::OperationPolicy {
-                                mode: self.permission_mode,
-                                rules: &self.permission_rules,
-                                bypass: self.bypass_permissions,
-                                task_ceiling: self.authority_ceiling,
-                                policy_capabilities: self.policy_capabilities,
-                                governing_trust: argument_trust,
-                                authority,
+                    provider_round
+                        .run_attempt(
+                            &mut route_turn,
+                            stream_tool_journal::StreamToolJournal {
+                                rollout: &mut self.rollout,
+                                effects: &mut self.effect_journal,
+                                policy: self.policy_evidence.as_mut(),
+                                ledger: &mut self.ledger,
+                                record_failed: &mut self.record_failed,
+                                diagnostics: &self.diagnostics,
+                                #[cfg(test)]
+                                fault: &mut self.fail_next_durable_append,
                             },
-                            trust: argument_trust,
-                            failed_actions: &self.failed_actions,
-                            recovered: &submitted_turn,
-                            overlap: pure_overlap_enabled,
-                            early_effects: early_local_effects,
-                            compatibility_hook: compatibility_pre_tool_hook,
-                            lifecycle_hook: lifecycle_pre_tool_hook,
-                            hooks: early_hooks.clone(),
-                            hook_journal: early_hook_journal.clone(),
-                            governor: gov.clone(),
-                            queued: queued_pure.clone(),
-                            execution_gate: stream_execution_gate.clone(),
-                            control: stream_tool_admission::StreamToolControl {
-                                deadline: self.run_deadline,
-                                requested,
-                                interrupt: tool_interrupt.clone(),
-                                force_cancel: tool_force_cancel.clone(),
-                                drain: tool_drain.clone(),
+                            stream_tool_admission::StreamToolScope {
+                                turn: turn_id,
+                                workspace: &self.workspace,
+                                registry: &self.registry,
+                                strategy: tool_policy.as_ref(),
+                                operation: permission_policy::OperationPolicy {
+                                    mode: self.permission_mode,
+                                    rules: &self.permission_rules,
+                                    bypass: self.bypass_permissions,
+                                    task_ceiling: self.authority_ceiling,
+                                    policy_capabilities: self.policy_capabilities,
+                                    governing_trust: argument_trust,
+                                    authority,
+                                },
+                                trust: argument_trust,
+                                failed_actions: &self.failed_actions,
+                                recovered: &submitted_turn,
+                                overlap: pure_overlap_enabled,
+                                early_effects: early_local_effects,
+                                compatibility_hook: compatibility_pre_tool_hook,
+                                lifecycle_hook: lifecycle_pre_tool_hook,
+                                hooks: early_hooks.clone(),
+                                hook_journal: early_hook_journal.clone(),
+                                governor: gov.clone(),
+                                queued: queued_pure.clone(),
+                                execution_gate: stream_execution_gate.clone(),
+                                control: stream_tool_admission::StreamToolControl {
+                                    deadline: self.run_deadline,
+                                    requested,
+                                    interrupt: tool_interrupt.clone(),
+                                    force_cancel: tool_force_cancel.clone(),
+                                    drain: tool_drain.clone(),
+                                },
+                                publication,
+                                spill: self.tool_output_spill.clone(),
+                                events: stream_tool_events::StreamToolEvents {
+                                    frontend: frontend_saturation.clone(),
+                                    ui: ui_tx.clone(),
+                                    resident_ui: resident_ui_tx.clone(),
+                                    lifecycle: self.lifecycle_emitter.clone(),
+                                    lifecycle_hooks: self.lifecycle_hooks.clone(),
+                                    correlation,
+                                },
                             },
-                            publication,
-                            spill: self.tool_output_spill.clone(),
-                            events: stream_tool_events::StreamToolEvents {
-                                frontend: frontend_saturation.clone(),
-                                ui: ui_tx.clone(),
-                                resident_ui: resident_ui_tx.clone(),
-                                lifecycle: self.lifecycle_emitter.clone(),
-                                lifecycle_hooks: self.lifecycle_hooks.clone(),
-                                correlation,
+                            provider_attempt_pump::ProviderAttemptTransport {
+                                observer: request_observer,
+                                deadline: provider_deadline,
+                                started: provider_attempt_started,
+                                cancellation: provider_transport_attempt::ProviderCancellation {
+                                    interrupt: provider_interrupt.clone(),
+                                    force_cancel: provider_force_cancel.clone(),
+                                    drain: provider_drain.clone(),
+                                    attempt: None,
+                                    allow_in_flight_past_deadline,
+                                },
                             },
-                        },
-                    );
-                    provider_attempt_pump::ProviderAttemptPump::run(
-                        &mut route_turn,
-                        provider_stream_attempt::ProviderStreamAttempt {
-                            observer: &mut provider_evidence,
-                            tools: tool_admission,
-                        },
-                        provider_attempt_pump::ProviderAttemptTransport {
-                            observer: request_observer,
-                            deadline: provider_deadline,
-                            started: provider_attempt_started,
-                            cancellation: provider_transport_attempt::ProviderCancellation {
-                                interrupt: provider_interrupt.clone(),
-                                force_cancel: provider_force_cancel.clone(),
-                                drain: provider_drain.clone(),
-                                attempt: None,
-                                allow_in_flight_past_deadline,
-                            },
-                        },
-                        hedged_dispatch.take(),
-                        provider_refusal.take(),
-                    )
-                    .await?
-                };
+                            hedged_dispatch.take(),
+                            provider_refusal.take(),
+                        )
+                        .await?;
+                }
                 if request_manifests.context_inclusion_confirmed() {
                     self.observe_memory_provider_exposure(turn_id);
                 }
                 let financial = self.provider_financial_context();
                 let pricing_now = self.pricing_now();
-                let completed = physical_attempt.settle(
+                let completed = provider_round.settle_attempt(
                     &mut route_turn,
                     provider_attempt_journal::ProviderAttemptJournal {
                         rollout: &mut self.rollout,
@@ -2852,28 +2846,29 @@ impl Agent {
                         attempt_rate_limit,
                     )?;
                 }
-                drop(route_turn.take_route_permit());
-                drop(route_turn.take_dispatch_permit());
-                route_turn.settled();
-                if let Some(error) = tool_turn.take_record_error() {
+                provider_round.release_attempt(&mut route_turn)?;
+                if let Some(error) = provider_round.take_record_error() {
                     break Err(error);
                 }
                 let failover = result.as_ref().err().and_then(|error| {
-                    self.admitted_failover(error, provider_evidence.semantic_output_observed())
+                    self.admitted_failover(
+                        error,
+                        provider_round.observations().semantic_output_observed(),
+                    )
                 });
-                match route_turn.next(
+                match provider_round.next_route(
+                    &mut route_turn,
                     &result,
-                    provider_evidence.semantic_output_observed(),
                     failover,
                     &self.fallback_provider_routes,
-                ) {
+                )? {
                     provider_route_turn::ProviderRouteNext::Retry { delay } => {
                         if let Err(error) =
                             self.admit_followup_after_route_attempt_set(monetary_followup_safe)
                         {
                             break Err(error);
                         }
-                        provider_evidence.fail_connect();
+                        provider_round.fail_connect();
                         if let Err(error) = route_events
                             .wait_retry(
                                 provider_route_events::ProviderRetryWait {
@@ -3011,46 +3006,14 @@ impl Agent {
                     self.ledger
                         .record_broker_latency_us(elapsed_us(broker_started));
                 }
-                stream_start = Instant::now();
-                provider_evidence.restart_connect(stream_start);
+                provider_round.restart_connect()?;
                 route_events.request_sent(route_turn.retry_index());
             };
             if provider_refusal.is_none() && !request_manifests.context_inclusion_confirmed() {
                 self.observe_memory_inclusion_unconfirmed(turn_id);
             }
-            match &provider_result {
-                Ok(_) => provider_evidence.complete_stream(),
-                Err(error) => {
-                    let detail = match error {
-                        KernelError::Provider(iteron_provider::ProviderError::DeadlineExceeded) => {
-                            iteron_protocol::ActivityDetailCode::WaitingFirstToken
-                        }
-                        _ => iteron_protocol::ActivityDetailCode::TransportConnect,
-                    };
-                    provider_evidence.fail_stream(detail);
-                }
-            }
-            match &provider_result {
-                Ok(_) => self.lifecycle_event(
-                    "model.stream_completed",
-                    Some(turn_id),
-                    LifecyclePayload {
-                        count: Some(u64::from(provider_evidence.stream_items())),
-                        duration_us: Some(elapsed_us(stream_start)),
-                        ..LifecyclePayload::default()
-                    },
-                ),
-                Err(error) => self.lifecycle_event(
-                    "model.request_failed",
-                    Some(turn_id),
-                    LifecyclePayload {
-                        reason_code: Some(provider_route::provider_failure_stage(error).into()),
-                        duration_us: Some(elapsed_us(stream_start)),
-                        ..LifecyclePayload::default()
-                    },
-                ),
-            }
-            if let Some(snapshot) = provider_evidence.take_quota() {
+            provider_round.close(&provider_result, &route_events)?;
+            if let Some(snapshot) = provider_round.take_quota() {
                 self.last_rate_limit = Some(snapshot);
                 self.lifecycle_event(
                     "model.quota_updated",
@@ -3062,14 +3025,14 @@ impl Agent {
             let pre_output_retry_exhausted =
                 provider_route::retryable_before_semantic_output_provider_error(
                     &provider_result,
-                    provider_evidence.semantic_output_observed(),
+                    provider_round.observations().semantic_output_observed(),
                 )
                 .is_some();
             let turn_res = match provider_result {
                 Ok(result) => result,
                 Err(ref error)
                     if !self.plantcore_runtime_enabled()
-                        && !tool_turn.has_contract_error()
+                        && !provider_round.tools().has_contract_error()
                         && !pre_output_retry_exhausted
                         && submitted_turn.stream_recoveries().saturating_add(1)
                             < self.retry_policy.max_attempts
@@ -3103,14 +3066,14 @@ impl Agent {
                     if let Err(recovery_error) = prepare_recovery {
                         self.abort_early_pure_tools(
                             turn_id,
-                            &mut tool_turn.take_early_for_cleanup(),
+                            &mut provider_round.take_early_for_cleanup(),
                         )
                         .await?;
                         self.preserve_interrupted_stream(
                             turn_id,
                             messages,
-                            provider_evidence.text(),
-                            provider_evidence.thinking(),
+                            provider_round.observations().text(),
+                            provider_round.observations().thinking(),
                         );
                         return Err(recovery_error);
                     }
@@ -3121,29 +3084,18 @@ impl Agent {
                     // Preserve only complete calls. The existing collection path settles their
                     // running tasks and records results before the next request is constructed.
                     // The physical provider effect above remains failed/unknown, not successful.
-                    let mut calls = tool_turn
-                        .early()
-                        .iter()
-                        .map(|(index, tool, ..)| (*index, tool.clone()))
-                        .chain(
-                            tool_turn
-                                .deferred()
-                                .iter()
-                                .map(|(index, tool, _)| (*index, tool.clone())),
-                        )
-                        .collect::<Vec<_>>();
-                    calls.sort_by_key(|(index, _)| *index);
+                    let calls = provider_round.declared_calls();
                     let has_calls = !calls.is_empty();
                     let mut blocks = Vec::new();
-                    if !provider_evidence.text().is_empty() {
+                    if !provider_round.observations().text().is_empty() {
                         blocks.push(Block::Text {
                             text: format!(
                                 "{}\n\n{INTERRUPTED_STREAM_MARKER}",
-                                provider_evidence.text()
+                                provider_round.observations().text()
                             ),
                         });
                     }
-                    blocks.extend(calls.into_iter().map(|(_, tool)| Block::ToolUse(tool)));
+                    blocks.extend(calls.into_iter().map(Block::ToolUse));
                     stream_recovered = true;
                     iteron_provider::TurnResult {
                         blocks,
@@ -3163,14 +3115,17 @@ impl Agent {
                     // A streaming adapter can fail after emitting a complete pure tool call.
                     // Dropping JoinHandles would detach those reads and let work outlive the
                     // failed turn. Abort *and await* them before crossing the turn boundary.
-                    self.abort_early_pure_tools(turn_id, &mut tool_turn.take_early_for_cleanup())
-                        .await?;
+                    self.abort_early_pure_tools(
+                        turn_id,
+                        &mut provider_round.take_early_for_cleanup(),
+                    )
+                    .await?;
                     // Before the error leaves: keep what the model already said (I-39).
                     self.preserve_interrupted_stream(
                         turn_id,
                         messages,
-                        provider_evidence.text(),
-                        provider_evidence.thinking(),
+                        provider_round.observations().text(),
+                        provider_round.observations().thinking(),
                     );
                     self.emit_plantcore_turn_usage(turn_id)?;
                     if let Some(outcome) =
@@ -3206,11 +3161,11 @@ impl Agent {
                     return Err(error);
                 }
             };
-            if let Some(error) = tool_turn.take_contract_error() {
+            if let Some(error) = provider_round.take_contract_error() {
                 // The provider route terminal already committed its exact physical charge. A
                 // malformed tool projection invalidates the semantic turn, not the billing
                 // receipt, so preserve the known monetary state while failing the turn.
-                self.abort_early_pure_tools(turn_id, &mut tool_turn.take_early_for_cleanup())
+                self.abort_early_pure_tools(turn_id, &mut provider_round.take_early_for_cleanup())
                     .await?;
                 if let Some(outcome) = self.collect_and_finish_requested_control(turn_id).await? {
                     return Ok(outcome);
@@ -3220,43 +3175,24 @@ impl Agent {
             // The stream completion callback is the dispatch boundary while TurnResult is the
             // transcript boundary. They must describe the exact same ordered calls; otherwise a
             // provider adapter could execute one projection and durably commit another.
-            let mut streamed_tools: Vec<(usize, ToolUse)> = tool_turn
-                .early()
-                .iter()
-                .map(|(index, tool, _, _, _)| (*index, tool.clone()))
-                .chain(
-                    tool_turn
-                        .deferred()
-                        .iter()
-                        .map(|(index, tool, _)| (*index, tool.clone())),
-                )
-                .collect();
-            streamed_tools.sort_by_key(|(index, _)| *index);
-            let returned_tools: Vec<ToolUse> = turn_res
-                .blocks
-                .iter()
-                .filter_map(|block| match block {
-                    Block::ToolUse(tool) => Some(tool.clone()),
-                    _ => None,
-                })
-                .collect();
-            if streamed_tools
-                .iter()
-                .map(|(_, tool)| tool)
-                .ne(returned_tools.iter())
-            {
-                // Stream/transcript disagreement is a provider contract failure after an exact
-                // physical terminal. It cannot erase or weaken that already-verified charge.
-                self.abort_early_pure_tools(turn_id, &mut tool_turn.take_early_for_cleanup())
+            let returned_tools = match provider_round.validated_tools(&turn_res) {
+                Ok(tools) => tools,
+                Err(error) => {
+                    // Stream/transcript disagreement is a provider contract failure after an exact
+                    // physical terminal. It cannot erase or weaken that already-verified charge.
+                    self.abort_early_pure_tools(
+                        turn_id,
+                        &mut provider_round.take_early_for_cleanup(),
+                    )
                     .await?;
-                if let Some(outcome) = self.collect_and_finish_requested_control(turn_id).await? {
-                    return Ok(outcome);
+                    if let Some(outcome) =
+                        self.collect_and_finish_requested_control(turn_id).await?
+                    {
+                        return Ok(outcome);
+                    }
+                    return Err(error);
                 }
-                return Err(iteron_provider::ProviderError::Decode(
-                    "provider stream/tool transcript projections disagree".into(),
-                )
-                .into());
-            }
+            };
             // The obs field is named for the behaviour it used to measure (an inline serial tail);
             // it now counts the calls that queued for a permit. Same question — "did the cap bind
             // this turn?" — answered without the serialisation that used to be its only symptom.
@@ -3264,10 +3200,12 @@ impl Agent {
             // Provider-active time only: local preparation, admission/fsync, retry backoff and
             // failover selection have their own clocks and cannot inflate `model_ms`.
             let model_ms = iteron_obs::duration_ms_ceil(route_turn.active());
-            let stream_elapsed = stream_start.elapsed();
+            let stream_elapsed = provider_round.stream_started().elapsed();
             // Measured only if the stream actually produced an item. An attempt that failed before
             // its first byte leaves every field `None` rather than reporting a zero it did not see.
-            let stream_timing = provider_evidence.timing(stream_start);
+            let stream_timing = provider_round
+                .observations()
+                .timing(provider_round.stream_started());
             self.last_assistant_text = turn_res.text();
             self.run_assistant_text.push_str(&self.last_assistant_text);
 
@@ -3280,13 +3218,16 @@ impl Agent {
             ) {
                 Ok(usage) => usage,
                 Err(error) => {
-                    self.abort_early_pure_tools(turn_id, &mut tool_turn.take_early_for_cleanup())
-                        .await?;
+                    self.abort_early_pure_tools(
+                        turn_id,
+                        &mut provider_round.take_early_for_cleanup(),
+                    )
+                    .await?;
                     return Err(error);
                 }
             };
             if let Err(error) = self.emit_plantcore_turn_usage(turn_id) {
-                self.abort_early_pure_tools(turn_id, &mut tool_turn.take_early_for_cleanup())
+                self.abort_early_pure_tools(turn_id, &mut provider_round.take_early_for_cleanup())
                     .await?;
                 return Err(error);
             }
@@ -3342,7 +3283,7 @@ impl Agent {
             if (!stream_recovered || !assistant.content.is_empty())
                 && let Err(error) = self.commit_message(turn_id, messages, assistant)
             {
-                self.abort_early_pure_tools(turn_id, &mut tool_turn.take_early_for_cleanup())
+                self.abort_early_pure_tools(turn_id, &mut provider_round.take_early_for_cleanup())
                     .await?;
                 return Err(error);
             }
@@ -3369,7 +3310,7 @@ impl Agent {
                 };
             }
 
-            let total_tools = tool_turn.call_count();
+            let total_tools = provider_round.tools().call_count();
             // A final model answer has no tool phase. Avoid a redundant durable phase append and
             // frontend transition on the common no-tool completion path; an explicit verifier
             // still keeps the phase boundary used by its timing and audit contract.
@@ -3417,7 +3358,7 @@ impl Agent {
                     .iter()
                     .filter_map(|path| self.workspace.join(path).canonicalize().ok())
                     .collect::<std::collections::BTreeSet<_>>();
-                for (index, tool, _) in tool_turn.deferred() {
+                for (index, tool, _) in provider_round.tools().deferred() {
                     if !self.registry.is_candidate_change_tool(&tool.name) {
                         continue;
                     }
@@ -3490,7 +3431,7 @@ impl Agent {
                     .iter()
                     .any(|tool| tool.name == iteron_tools::REQUEST_USER_INPUT)
             {
-                self.abort_early_pure_tools(turn_id, &mut tool_turn.take_early_for_cleanup())
+                self.abort_early_pure_tools(turn_id, &mut provider_round.take_early_for_cleanup())
                     .await?;
                 let terminal = if total_tools == 1 {
                     let tool = &returned_tools[0];
@@ -3566,7 +3507,7 @@ impl Agent {
                         | StopReason::Unknown(_)
                 )
             {
-                self.abort_early_pure_tools(turn_id, &mut tool_turn.take_early_for_cleanup())
+                self.abort_early_pure_tools(turn_id, &mut provider_round.take_early_for_cleanup())
                     .await?;
                 if let Some(outcome) = self.collect_and_finish_requested_control(turn_id).await? {
                     return Ok(outcome);
@@ -3864,11 +3805,12 @@ impl Agent {
                 }
             }
 
+            let stream_start = provider_round.stream_started();
             let tool_turn::ToolTurnWork {
                 early: pure,
                 mut deferred,
                 replayed: replayed_tool_results,
-            } = tool_turn.into_work();
+            } = provider_round.into_tool_work()?;
             let mut results: Vec<Option<ToolResult>> = (0..total_tools).map(|_| None).collect();
             let mut any_error = false;
             let mut image_projections = Vec::new();
