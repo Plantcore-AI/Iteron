@@ -137,7 +137,7 @@ pub(super) fn submit_prepared_composer(
     prepared_images: Vec<image_input::PreparedImage>,
     prepared_files: Vec<file_input::PreparedFile>,
 ) {
-    let mut staged: ImageAttachments = app.editor.attachments().clone();
+    let mut staged: image_input::ImageAttachments = app.editor.attachments().clone();
     for prepared in prepared_images {
         if let Err(error) = staged.admit_prepared(prepared) {
             app.note(
