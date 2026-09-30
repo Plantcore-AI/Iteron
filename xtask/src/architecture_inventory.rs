@@ -325,6 +325,17 @@ const SURFACES: &[Surface] = &[
             "tool WAL and physical provider dispatch/budget remain directional independent owners",
         ],
     },
+    Surface {
+        path: "crates/cli/src/runtime/tool_turn.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "single mutable tool declaration/identity/failure/routing owner",
+            "owned early tasks and ordered deferred/recovery stage transfer",
+        ],
+        next_seams: &[
+            "policy draft is not admission; actual WAL and settlement stay concrete directional ports",
+        ],
+    },
 ];
 
 #[derive(Serialize)]

@@ -6,6 +6,7 @@ observation; it does not grant permission or acquire mutable ownership of anothe
 | Source | Owner/responsibility | Directional interface |
 | --- | --- | --- |
 | `runtime.rs` / `Agent` | Session composition and current journal/provider turn coordinator | Owns durable admission/settlement; calls execution and projection ports |
+| `runtime/tool_turn.rs` | Single mutable tool declaration/routing/failure/task-retention owner | Validated declaration → typed index and immutable policy draft; owned early/deferred/replayed work released once to physical settlement phase |
 | `runtime/early_tool_executor.rs` | Physical streamed task, fair execution lock and governor permit owner | Already-admitted call plus immutable execution/hook/cancellation/publication scope → owned task and actual receipt; drop revokes task without claiming physical effect truth |
 | `runtime/deferred_batch_executor.rs` | Physical futures, governor permits and cancellation scope for an already-admitted batch | Accepts `ToolIntent`, immutable registry/governor/cancellation ports; returns declaration-ordered `DeferredToolReceipt` |
 | `runtime/artifact_publication.rs` | Trusted full-output publication adapter | `ToolOutputPublicationPort` receives repaired raw `ToolResult` and actual effect-known flag before spill/truncation |
