@@ -269,21 +269,7 @@ impl Agent {
     /// stream. Journalling them inside the boundary would manufacture an unknown effect out of a
     /// request that never left the process.
     pub(super) fn provider_dispatch_refusal(&self) -> Option<KernelError> {
-        let deadline = self.run_deadline?;
-        if deadline.saturating_duration_since(Instant::now()).is_zero() {
-            return Some(KernelError::Provider(
-                iteron_provider::ProviderError::DeadlineExceeded,
-            ));
-        }
-        let interrupted = self.drain.load(std::sync::atomic::Ordering::Relaxed)
-            || self.force_cancel.load(std::sync::atomic::Ordering::Acquire)
-            || self
-                .interrupt
-                .as_ref()
-                .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed));
-        interrupted.then_some(KernelError::Provider(
-            iteron_provider::ProviderError::Interrupted,
-        ))
+        self.control.provider_refusal(self.run_deadline)
     }
 
     /// One paid inference request, across the effect boundary.
@@ -479,9 +465,9 @@ impl Agent {
                             .unwrap_or_else(Instant::now)
                     }),
                     ProviderCancellation {
-                        interrupt: self.interrupt.clone(),
-                        force_cancel: self.force_cancel.clone(),
-                        drain: self.drain.clone(),
+                        interrupt: self.control.interrupt().cloned(),
+                        force_cancel: self.control.force_cancel().clone(),
+                        drain: self.control.drain().clone(),
                         attempt: None,
                         allow_in_flight_past_deadline: self.plantcore_runtime_enabled(),
                     },
@@ -633,23 +619,16 @@ impl Agent {
     }
 
     pub(super) async fn wait_provider_retry(&self, delay: Duration) -> Result<(), KernelError> {
-        let deadline = Instant::now()
-            .checked_add(delay)
-            .unwrap_or_else(Instant::now);
-        loop {
-            if let Some(refusal) = self.provider_dispatch_refusal() {
-                return Err(refusal);
-            }
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return Ok(());
-            }
-            tokio::time::sleep(remaining.min(iteron_tunables::param_duration(
-                "cli.runtime.provider_interrupt_poll_interval",
-                PROVIDER_INTERRUPT_POLL_INTERVAL,
-            )))
-            .await;
-        }
+        self.control
+            .wait_retry(
+                delay,
+                self.run_deadline,
+                iteron_tunables::param_duration(
+                    "cli.runtime.provider_interrupt_poll_interval",
+                    PROVIDER_INTERRUPT_POLL_INTERVAL,
+                ),
+            )
+            .await
     }
 }
 

@@ -152,11 +152,10 @@ impl Agent {
             self.permission_rules.clone(),
         )
         .map_err(|error| error.public_summary())?;
-        if let Some(interrupt) = &self.interrupt {
-            side.set_interrupt(interrupt.clone());
+        if let Some(interrupt) = self.control.interrupt() {
+            side.inherit_interrupt(interrupt.clone());
         }
-        side.drain = self.drain.clone();
-        side.owns_drain = false;
+        side.control.inherit_drain(self.control.drain().clone());
         let created_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| duration.as_secs())

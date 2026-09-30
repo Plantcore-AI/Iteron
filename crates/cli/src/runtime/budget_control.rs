@@ -146,7 +146,7 @@ impl Agent {
 
     /// Install the resident safe-point command channel without enabling human approval prompts.
     pub(crate) fn set_inbound_control(&mut self, rx: tokio::sync::mpsc::Receiver<TurnSubmission>) {
-        self.approvals_rx = Some(rx);
+        self.inbox.bind_receiver(rx);
     }
 
     /// Bind the product/user-facing epoch before starting its runtime future, then clear it at
@@ -155,7 +155,7 @@ impl Agent {
         &mut self,
         id: Option<iteron_protocol::product_contract::ProductTurnId>,
     ) {
-        self.active_product_turn_id = id;
+        self.inbox.bind_product_turn(id);
     }
 
     /// Install the TUI's command and approval-answer channel. An `Ask` verdict may then block

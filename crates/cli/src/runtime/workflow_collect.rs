@@ -241,8 +241,7 @@ impl Agent {
         // child's stop surface: it mints a call-scoped flag and republishes BOTH of the parent's
         // stop surfaces onto it. Inheriting the parent's optional atomic here as well would give
         // the child two flags, only one of which the queued-`Op::Interrupt` operator can ever set.
-        sub.drain = self.drain.clone();
-        sub.owns_drain = false;
+        sub.control.inherit_drain(self.control.drain().clone());
         let prompt = format!(
             "{subtask}\n\nReturn a concise summary with file:line references. Do not attempt to edit anything."
         );

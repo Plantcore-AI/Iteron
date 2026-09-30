@@ -76,7 +76,7 @@ impl Agent {
         text: &str,
         superseded_id: Option<&str>,
     ) -> Result<(), &'static str> {
-        if self.pending_steers.len() >= super::inbound_control::inbound_poll_limit() {
+        if self.inbox.len() >= super::inbound_control::inbound_poll_limit() {
             return Err("the bounded session refresh queue is full");
         }
         let source_turn = TurnId(self.seq_turn);
@@ -90,18 +90,6 @@ impl Agent {
             source_turn
         };
         let fact_digest_sha256 = digest(text.as_bytes());
-        if self.session_memory_visibility.len() == iteron_ctx::MAX_MEMORY_TRACE_VISIBILITY {
-            self.session_memory_visibility.pop_front();
-        }
-        self.session_memory_visibility
-            .push_back(MemoryVisibilityEvidence {
-                fact_id: memory_fact_id(fact_digest_sha256),
-                fact_digest_sha256,
-                source_turn,
-                destination_turn,
-                state: MemoryVisibilityState::Scheduled,
-            });
-        self.registry.invalidate_pure_cache();
         let fact = strict_utf8_head(
             text,
             iteron_tunables::param_integer("cli.runtime.max_steer_bytes", MAX_STEER_BYTES)
@@ -123,8 +111,21 @@ impl Agent {
                  `read_memory` can retrieve it by id; the stable REC-INJECT prefix remains unchanged."
             ),
         };
-        self.pending_steers
-            .push_back(super::inbound_control::PendingSteer::internal(notification));
+        self.inbox
+            .push(super::inbound_control::PendingSteer::internal(notification))
+            .map_err(|_| "the bounded session refresh queue is full")?;
+        if self.session_memory_visibility.len() == iteron_ctx::MAX_MEMORY_TRACE_VISIBILITY {
+            self.session_memory_visibility.pop_front();
+        }
+        self.session_memory_visibility
+            .push_back(MemoryVisibilityEvidence {
+                fact_id: memory_fact_id(fact_digest_sha256),
+                fact_digest_sha256,
+                source_turn,
+                destination_turn,
+                state: MemoryVisibilityState::Scheduled,
+            });
+        self.registry.invalidate_pure_cache();
         Ok(())
     }
 

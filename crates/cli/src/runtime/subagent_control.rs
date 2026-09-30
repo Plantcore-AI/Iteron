@@ -60,8 +60,8 @@ impl Agent {
         // Seed before the child starts: a stop the operator raised while the parent was still
         // admitting must make the child refuse at its first safe point, not one poll interval in.
         self.pump_child_stop(&stop);
-        child.set_interrupt(stop.clone());
-        child.set_force_cancel(self.force_cancel.clone());
+        child.inherit_interrupt(stop.clone());
+        child.inherit_force_cancel(self.control.force_cancel().clone());
         // A dispatched subagent is read-only + SingleAgent effort, so it never orchestrates:
         // `run_leaf` is behavior-identical to `run` here and keeps `run_orchestrated` OUT of every
         // child's call graph, so a caller may own/spawn the child without pulling the parent writer
@@ -158,7 +158,7 @@ impl Agent {
         cx.context_home_dir = self.context_home_dir.clone();
         cx.dependency_skill_dirs = self.dependency_skill_dirs.clone();
         cx.agent_catalog = self.agent_catalog.clone();
-        cx.drain = Some(self.drain.clone());
+        cx.drain = Some(self.control.drain().clone());
         cx.lifecycle_emitter = self.lifecycle_emitter.clone();
         cx.lifecycle_telemetry = self.lifecycle_telemetry.clone();
         cx.lifecycle_hooks = self.lifecycle_hooks.clone();

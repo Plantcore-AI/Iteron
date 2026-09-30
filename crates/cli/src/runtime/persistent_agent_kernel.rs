@@ -320,13 +320,12 @@ impl PersistentAgentRuntime for KernelPersistentRuntime {
         let tokens_before = total_tokens(child.ledger.usage);
         let cost_before = known_cost(&child.ledger.cost_state());
         child.persistent_mailbox = Some(mailbox.clone());
-        let stop = child
-            .interrupt
-            .clone()
-            .unwrap_or_else(|| Arc::new(std::sync::atomic::AtomicBool::new(false)));
-        child.set_interrupt(stop.clone());
-        stop.store(false, Ordering::Release);
-        child.force_cancel.store(false, Ordering::Release);
+        // Each accepted epoch owns fresh stop surfaces. Never clear the prior epoch's caller
+        // signal: an inherited parent/sibling may still be quiescing behind its own terminal.
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        child.inherit_interrupt(stop.clone());
+        child.inherit_force_cancel(Arc::new(std::sync::atomic::AtomicBool::new(false)));
+        child.control.reset_after_adoption();
         let (tx, rx) = tokio::sync::mpsc::channel(128);
         child.set_inbound_control(rx);
         let task = match initial
@@ -388,7 +387,7 @@ impl PersistentAgentRuntime for KernelPersistentRuntime {
             }
         };
         let _ = child.take_unadmitted_steers_with_client_count();
-        child.approvals_rx = None;
+        let _ = child.inbox.take_receiver();
         let processes_settled = child.settle_persistent_owned_processes().await;
         let cleaned = expire_unrequested(&mut child, &mailbox).is_ok();
         child.persistent_mailbox = None;

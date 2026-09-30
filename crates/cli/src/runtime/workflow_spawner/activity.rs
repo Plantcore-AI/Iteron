@@ -106,7 +106,7 @@ impl KernelSpawner {
         // cancelled run then stops the child cleanly (durable safe point) rather than relying solely
         // on the engine's hard task-abort backstop.
         let interrupt = Arc::new(AtomicBool::new(false));
-        child.set_interrupt(interrupt.clone());
+        child.inherit_interrupt(interrupt.clone());
         let cancel = call.cancel.clone();
         let cancel_bridge = tokio::spawn(async move {
             cancel.cancelled().await;

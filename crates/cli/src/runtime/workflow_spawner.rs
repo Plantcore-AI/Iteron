@@ -805,8 +805,7 @@ impl KernelSpawner {
             .spawn_depth
             .ok_or_else(|| safe_agent_refusal("pinned spawn-depth policy is inactive"))?;
         if let Some(drain) = &cx.drain {
-            sub.drain = drain.clone();
-            sub.owns_drain = false;
+            sub.control.inherit_drain(drain.clone());
         }
 
         // --- Public-surface inherited context ---

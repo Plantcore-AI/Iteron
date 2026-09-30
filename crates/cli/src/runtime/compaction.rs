@@ -384,9 +384,7 @@ impl Agent {
             return;
         }
         let _ = self.collect_inbound_ops(TurnId(self.seq_turn));
-        if !self.pending_steers.is_empty()
-            || !matches!(self.requested_control(), InboundControl::None)
-        {
+        if !self.inbox.is_empty() || !matches!(self.requested_control(), InboundControl::None) {
             return;
         }
         // Use the checkpointed interactive request reservation. Provider metadata is only its

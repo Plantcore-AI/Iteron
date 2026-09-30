@@ -981,6 +981,21 @@ impl Agent {
             Capability::CodeExecuting,
             serde_json::json!({ "command": command }),
         )?;
+        let task = match self
+            .verification_tasks
+            .begin(self.rollout.run_id(), &ticket)
+        {
+            Ok(task) => task,
+            Err(reason) => {
+                self.settle_kernel_effect(
+                    ticket,
+                    effects::Settlement::Definite(effect_failed_terminal(
+                        turn, class, ordinal, reason,
+                    )),
+                )?;
+                return Err(KernelError::ContextResolution(reason.into()));
+            }
+        };
         self.lifecycle_event(
             "verification.check_started",
             Some(turn),
@@ -1002,7 +1017,9 @@ impl Agent {
             timeout.as_secs()
         )));
         let started = Instant::now();
-        let dispatch = self.dispatch_verify(command).await;
+        let dispatch = self.dispatch_verify_task(command, Some(&task)).await;
+        let known_terminal = !matches!(&dispatch, VerifyDispatch::Dropped(_));
+        let observed = matches!(&dispatch, VerifyDispatch::Observed(_));
         let (settlement, verdict) = match dispatch {
             // The oracle future was never polled, so no sandboxed process was ever started. The
             // effect provably did not happen; saying "unknown" here would strand the session over
@@ -1041,6 +1058,7 @@ impl Agent {
             }
         };
         self.settle_kernel_effect(ticket, settlement)?;
+        task.settled(known_terminal, &verdict, observed);
         self.lifecycle_event(
             if verdict.passed() {
                 "verification.check_completed"
@@ -1067,9 +1085,19 @@ impl Agent {
     /// Build and run the oracle. Split from [`Agent::run_verify`] so the boundary owns the
     /// intent/terminal pair and this owns only the dispatch.
     pub(super) async fn dispatch_verify(&mut self, command: &str) -> VerifyDispatch {
+        self.dispatch_verify_task(command, None).await
+    }
+
+    async fn dispatch_verify_task(
+        &mut self,
+        command: &str,
+        task: Option<&super::bounded_verify::VerificationTask>,
+    ) -> VerifyDispatch {
         #[cfg(test)]
         if let Some(oracle) = self.verify_oracle.clone() {
-            return self.run_bounded_verify(oracle).await;
+            return self
+                .run_bounded_verify_observed(oracle, None, None, task)
+                .await;
         }
 
         let attempt = self.verify_attempts.saturating_add(1);
@@ -1109,6 +1137,7 @@ impl Agent {
             std::sync::Arc::new(oracle),
             Some(output_observer),
             Some(output_receiver),
+            task,
         )
         .await
     }
@@ -1122,7 +1151,8 @@ impl Agent {
         &mut self,
         oracle: std::sync::Arc<dyn iteron_verify::Oracle>,
     ) -> VerifyDispatch {
-        self.run_bounded_verify_observed(oracle, None, None).await
+        self.run_bounded_verify_observed(oracle, None, None, None)
+            .await
     }
 
     async fn run_bounded_verify_observed(
@@ -1130,6 +1160,7 @@ impl Agent {
         oracle: std::sync::Arc<dyn iteron_verify::Oracle>,
         output_observer: Option<iteron_sandbox::OutputObserver>,
         mut output_receiver: Option<iteron_sandbox::OutputObserverReceiver>,
+        task: Option<&super::bounded_verify::VerificationTask>,
     ) -> VerifyDispatch {
         enum VerifyPoll {
             Verdict(iteron_verify::Verdict),
@@ -1161,8 +1192,8 @@ impl Agent {
             let _ = self.collect_inbound_ops(TurnId(self.seq_turn));
             let control = self.requested_control();
             let flag_cancelled = self
-                .interrupt
-                .as_ref()
+                .control
+                .interrupt()
                 .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed));
             // Drain is quiescence, not cancellation. An already-admitted verifier must produce
             // its authoritative verdict before the drain checkpoint is taken; only interactive
@@ -1171,6 +1202,7 @@ impl Agent {
                 control,
                 InboundControl::Interrupt | InboundControl::ForceCancel
             ) || flag_cancelled
+                || task.is_some_and(|task| task.cancelled())
             {
                 if let Some(observer) = &output_observer {
                     observer.cancel();
@@ -1210,6 +1242,9 @@ impl Agent {
             ));
 
             dispatched = true;
+            if let Some(task) = task {
+                task.dispatched();
+            }
             let observation = async {
                 match output_receiver.as_mut() {
                     Some(receiver) => receiver.recv().await,
@@ -1230,13 +1265,14 @@ impl Agent {
                     let _ = self.collect_inbound_ops(TurnId(self.seq_turn));
                     let control = self.requested_control();
                     let flag_cancelled = self
-                        .interrupt
-                        .as_ref()
+                        .control
+                        .interrupt()
                         .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed));
                     if matches!(
                         control,
                         InboundControl::Interrupt | InboundControl::ForceCancel
                     ) || flag_cancelled
+                        || task.is_some_and(|task| task.cancelled())
                     {
                         // The oracle completed; only its verdict is being discarded in favour of
                         // the operator's stop. The sandboxed process demonstrably ended, so the

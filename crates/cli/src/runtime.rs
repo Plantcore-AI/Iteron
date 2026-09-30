@@ -71,6 +71,7 @@ pub(crate) mod advisory_maintenance;
 mod agent_config;
 mod agent_loop;
 mod artifact_publication;
+pub(crate) mod bounded_verify;
 mod budget_control;
 pub(crate) mod client_inventory;
 mod compaction;
@@ -117,6 +118,7 @@ pub(crate) mod persistent_agents;
 mod persistent_parent_turn;
 mod persistent_provider_budget;
 mod plantcore;
+mod provider_effect_identity;
 pub(crate) use plantcore::{DispatchGate, ResumeActivation};
 mod policy_evidence;
 pub(crate) mod policy_evidence_recorder;
@@ -131,6 +133,8 @@ mod route_attempt_accounting;
 mod route_state;
 mod route_validation;
 mod runtime_policy_overlay;
+mod session_control;
+mod session_inbox;
 mod session_spawn_ledger;
 mod side_conversation;
 mod strategy_ports;
@@ -939,19 +943,7 @@ struct SelectedRoute {
     route: PricingRoute,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum InboundControl {
-    None,
-    Interrupt,
-    ForceCancel,
-    Drain,
-}
-
-impl InboundControl {
-    fn interrupts(self) -> bool {
-        matches!(self, Self::Interrupt | Self::ForceCancel | Self::Drain)
-    }
-}
+use session_control::InboundControl;
 
 fn control_refusal(tool: &ToolUse, control: InboundControl) -> ToolResult {
     let reason = match control {
@@ -1249,15 +1241,7 @@ pub struct Agent {
     committed_provider_run_notices: std::collections::BTreeSet<String>,
     /// Guard so a wrong verify gate cannot loop forever (bounded, invariant #1).
     verify_attempts: u32,
-    /// Absorbing session-stop request. Drain cancels in-flight work immediately and settles the
-    /// durable conversation record; it never requires Git or a workspace snapshot.
-    drain_requested: bool,
-    /// Cooperative drain shared with admitted descendants. Queue polling remains parent-owned,
-    /// but once the parent observes Drain every child can stop before its next provider turn.
-    drain: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    /// Only the root run clears the shared drain after its durable terminal; a child must leave
-    /// the flag set so its parent also checkpoints and exits.
-    owns_drain: bool,
+    verification_tasks: std::sync::Arc<bounded_verify::VerificationTaskRegistry>,
     /// Fault-injection seam for verification-gate tests. Production always constructs the real
     /// sandbox-backed oracle in `run_verify`; the TCB exposes no runtime fault switch.
     #[cfg(test)]
@@ -1276,17 +1260,10 @@ pub struct Agent {
     recording_harness_error_armed: bool,
     /// Single live effect identity, unknown-outcome, recovery and workspace mutation owner.
     effect_journal: effect_journal_owner::EffectJournalOwner,
-    /// Cooperative interrupt (operability): when set (e.g. by a Ctrl-C handler), an in-flight
-    /// provider turn is cancelled MID-STREAM (D1-16) and the loop then stops. No effect is ever
-    /// left half-committed and the run stays resumable, but the turn itself is NOT atomic with
-    /// respect to the interrupt: a cancelled turn produces no assistant text and no usage record.
-    interrupt: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
-    /// Queue-owned interrupt request, for embedders that use SQ without an out-of-band atomic.
-    interrupt_requested: bool,
-    /// Escalated cancellation is a separate authority from cooperative interrupt.  It is never
-    /// inferred from Ctrl-C and stays asserted until its distinct terminal evidence is durable.
-    force_cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    force_cancel_requested: bool,
+    /// Single cooperative control latch and inherited cancellation-signal owner.
+    control: session_control::SessionControlState,
+    /// Single bounded SQ receiver, exact product epoch and pending-steer owner.
+    inbox: session_inbox::SessionSubmissionInbox,
     /// Optional process-owner request/evidence bridge. Absence is represented honestly as
     /// unproven process reaping; dropping the in-process future still happens immediately.
     force_cancel_seam: Option<force_cancel::ForceCancelSeam>,
@@ -1438,17 +1415,8 @@ pub struct Agent {
     /// Capabilities declared by the immutable selected policy manifest. Loading a candidate can
     /// only intersect this set; it cannot refill authority absent from the task ceiling.
     policy_capabilities: CapabilitySet,
-    /// Inbound operator channel for safe-point commands and approval answers (the SQ seed,
-    /// ADR-010). Resident frontends install it even when human approval prompts are disabled.
-    approvals_rx: Option<tokio::sync::mpsc::Receiver<TurnSubmission>>,
-    /// Stable user-facing Product Turn epoch, distinct from physical kernel TurnId. A single
-    /// Product Turn can contain several model calls and compaction turns.
-    active_product_turn_id: Option<iteron_protocol::product_contract::ProductTurnId>,
-    /// Whether an `Ask` verdict may wait for an operator response on `approvals_rx`.
+    /// Whether an `Ask` verdict may wait for an operator response through the session inbox.
     interactive_approvals: bool,
-    /// Steering received while a provider/tool/approval was active. It is admitted only at a
-    /// turn-atomic safe point and in submission order.
-    pending_steers: std::collections::VecDeque<inbound_control::PendingSteer>,
     /// Monotonic counter minting `SubmissionId`s for approval requests (per-run, deterministic).
     approval_seq: u64,
     /// Re-entry guard scoped to the Ultracode admission wrapper.
@@ -2445,7 +2413,7 @@ impl Agent {
                     }
                 }
             }
-            let mut physical_attempt = if use_hedge { 0 } else { 1 };
+            let mut physical_attempt = 0u32;
             let mut route_transition_reason: Option<&'static str> = None;
             let mut provider_route_permit = admission.primary_route_permit;
             if provider_refusal.is_some() {
@@ -2475,7 +2443,18 @@ impl Agent {
                 // written. Recording one would invent an effect out of a request that never left.
                 (Some(_), _) | (None, true) => None,
                 (None, false) => {
-                    provider_ordinal = self.next_effect_ordinal(turn_id, provider_class);
+                    (provider_ordinal, physical_attempt) =
+                        match self.next_provider_effect_identity(turn_id) {
+                            Ok(identity) => identity,
+                            Err(error) => {
+                                drop(provider_route_permit.take());
+                                drop(provider_dispatch_permit.take());
+                                if let Some(budget) = &self.usd_budget {
+                                    budget.settle_not_dispatched();
+                                }
+                                return Err(error);
+                            }
+                        };
                     let (objective_score, objective_evidence) =
                         self.objective_rank_evidence(&active_provider_route);
                     let broker_started = Instant::now();
@@ -2601,9 +2580,9 @@ impl Agent {
             let ui_tx = self.ui_tx.clone();
             let resident_ui_tx = self.resident_ui_tx.clone();
             let frontend_saturation = self.frontend_saturation.clone();
-            let tool_interrupt = self.interrupt.clone();
-            let tool_force_cancel = self.force_cancel.clone();
-            let tool_drain = self.drain.clone();
+            let tool_interrupt = self.control.interrupt().cloned();
+            let tool_force_cancel = self.control.force_cancel().clone();
+            let tool_drain = self.control.drain().clone();
             // A PreToolUse/tool.call_proposed hook must gate the read, but it is a per-call gate,
             // not a session-wide reason to give up mid-stream dispatch. The early task below runs
             // the hook first and does not poll the registry future until the hook allows it. An
@@ -2681,9 +2660,9 @@ impl Agent {
                     .unwrap_or_else(Instant::now)
             });
             let allow_in_flight_past_deadline = self.plantcore_runtime_enabled();
-            let provider_interrupt = self.interrupt.clone();
-            let provider_force_cancel = self.force_cancel.clone();
-            let provider_drain = self.drain.clone();
+            let provider_interrupt = self.control.interrupt().cloned();
+            let provider_force_cancel = self.control.force_cancel().clone();
+            let provider_drain = self.control.drain().clone();
             let mut retry_index = 0u32;
             let mut retry_jitter = iteron_sched::backoff::Jitter::new();
             let mut provider_active = Duration::ZERO;
@@ -3003,8 +2982,18 @@ impl Agent {
                         break Err(refusal);
                     }
                     self.reserve_provider_followup_if_needed(&req)?;
-                    physical_attempt = physical_attempt.saturating_add(1);
-                    provider_ordinal = self.next_effect_ordinal(turn_id, provider_class);
+                    (provider_ordinal, physical_attempt) =
+                        match self.next_provider_effect_identity(turn_id) {
+                            Ok(identity) => identity,
+                            Err(error) => {
+                                drop(provider_route_permit.take());
+                                drop(provider_dispatch_permit.take());
+                                if let Some(budget) = &self.usd_budget {
+                                    budget.settle_not_dispatched();
+                                }
+                                break Err(error);
+                            }
+                        };
                     let (objective_score, objective_evidence) =
                         self.objective_rank_evidence(&active_provider_route);
                     let broker_started = Instant::now();
@@ -4548,9 +4537,9 @@ impl Agent {
                     .span(turn_activity::ActivityStage::ToolRunning, Some(turn_id));
                 let registry = &self.registry;
                 let spill_store = self.ordinary_tool_spill_store(&tu.name);
-                let interrupt = self.interrupt.clone();
-                let force_cancel = self.force_cancel.clone();
-                let drain = self.drain.clone();
+                let interrupt = self.control.interrupt().cloned();
+                let force_cancel = self.control.force_cancel().clone();
+                let drain = self.control.drain().clone();
                 let settle_mcp_on_drain = mcp_dispatch_permit.is_some();
                 self.observe_process_tool_started(turn_id, registry_effect_id.clone(), &tu);
                 let tool_use_id = intent.call.id.clone();
@@ -5044,8 +5033,8 @@ impl Agent {
             workspace: self.workspace.as_path(),
             hooks: &self.hooks,
             command_journal: self.hook_effect_journal.clone(),
-            interrupt: self.interrupt.clone(),
-            drain: self.drain.clone(),
+            interrupt: self.control.interrupt().cloned(),
+            drain: self.control.drain().clone(),
             activity: self.activity.clone(),
             emitter: self.lifecycle_emitter.clone(),
             dispatcher: self.lifecycle_hooks.clone(),
@@ -5155,8 +5144,8 @@ impl Agent {
             workspace: self.workspace.as_path(),
             hooks: &self.hooks,
             command_journal: self.hook_effect_journal.clone(),
-            interrupt: self.interrupt.clone(),
-            drain: self.drain.clone(),
+            interrupt: self.control.interrupt().cloned(),
+            drain: self.control.drain().clone(),
             activity: self.activity.clone(),
             emitter: self.lifecycle_emitter.clone(),
             dispatcher: self.lifecycle_hooks.clone(),
@@ -5178,9 +5167,9 @@ impl Agent {
                 registry: &self.registry,
                 governor,
                 spill_owner: self.tool_output_spill.clone(),
-                interrupt: self.interrupt.clone(),
-                force_cancel: self.force_cancel.clone(),
-                drain: self.drain.clone(),
+                interrupt: self.control.interrupt().cloned(),
+                force_cancel: self.control.force_cancel().clone(),
+                drain: self.control.drain().clone(),
                 projection: result_projection_budget,
                 publication,
                 hooks,
@@ -5398,13 +5387,7 @@ impl Agent {
                 // the frontend can observe RunEnded first and discard the only proof distinguishing
                 // a reaped force-cancel from an unproven one.
                 let outcome = self.finish(turn, Outcome::Interrupted).await?;
-                self.force_cancel_requested = false;
-                self.force_cancel
-                    .store(false, std::sync::atomic::Ordering::SeqCst);
-                self.interrupt_requested = false;
-                if let Some(interrupt) = &self.interrupt {
-                    interrupt.store(false, std::sync::atomic::Ordering::SeqCst);
-                }
+                self.control.clear_cancel_after_terminal();
                 Ok(Some(outcome))
             }
             InboundControl::Drain => self.finish_drained(turn).await.map(Some),
@@ -5417,10 +5400,7 @@ impl Agent {
                 // The shared signal remains asserted until the Interrupted terminal is durable.
                 // Clearing it earlier can both lose a failed cancellation and immediately cancel
                 // the ordered follow-up that the frontend dispatches after RunEnded.
-                self.interrupt_requested = false;
-                if let Some(interrupt) = &self.interrupt {
-                    interrupt.store(false, std::sync::atomic::Ordering::SeqCst);
-                }
+                self.control.clear_interrupt_after_terminal();
                 Ok(Some(outcome))
             }
             InboundControl::None => Ok(None),
@@ -5428,22 +5408,7 @@ impl Agent {
     }
 
     fn requested_control(&self) -> InboundControl {
-        if self.force_cancel_requested
-            || self.force_cancel.load(std::sync::atomic::Ordering::Acquire)
-        {
-            InboundControl::ForceCancel
-        } else if self.drain_requested || self.drain.load(std::sync::atomic::Ordering::Relaxed) {
-            InboundControl::Drain
-        } else if self.interrupt_requested
-            || self
-                .interrupt
-                .as_ref()
-                .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed))
-        {
-            InboundControl::Interrupt
-        } else {
-            InboundControl::None
-        }
+        self.control.requested()
     }
 
     async fn collect_and_finish_requested_control(
@@ -5528,11 +5493,7 @@ impl Agent {
         // Drain is absorbing only until the durable checkpoint + terminal pair completes. The
         // interactive frontend intentionally reuses this Agent for follow-ups; leaving the latch
         // set would make every later operator submission checkpoint and exit before admission.
-        self.drain_requested = false;
-        if self.owns_drain {
-            self.drain
-                .store(false, std::sync::atomic::Ordering::Relaxed);
-        }
+        self.control.clear_drain_after_terminal();
         Ok(outcome)
     }
 
@@ -5784,8 +5745,8 @@ impl Agent {
             return Ok(false);
         }
         // Take the receiver out so the recv loop holds no `&mut self` borrow across `self.emit`.
-        let mut rx = self.approvals_rx.take().unwrap();
-        let interrupt = self.interrupt.clone();
+        let mut rx = self.inbox.take_receiver().unwrap();
+        let interrupt = self.control.interrupt().cloned();
         let mut approved = false;
         let mut remember_approved = false;
         let mut matched_response_submission_id = None;
@@ -5819,8 +5780,7 @@ impl Agent {
             .await
             {
                 Ok(Some(envelope)) => {
-                    if inbound_control::stale_product_epoch(self.active_product_turn_id, &envelope)
-                    {
+                    if inbound_control::stale_product_epoch(self.inbox.product_turn(), &envelope) {
                         self.reject_stale_product_submissions(vec![envelope.submission_id]);
                         continue;
                     }
@@ -5869,7 +5829,7 @@ impl Agent {
                         Op::ApprovalResponse { .. } => {}
                         Op::Interrupt => {
                             // Deny this call and park the run at the next safe point.
-                            self.interrupt_requested = true;
+                            self.control.request(InboundControl::Interrupt);
                             reason_code = "interrupt_requested";
                             if let Some(f) = &interrupt {
                                 f.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -5885,9 +5845,10 @@ impl Agent {
                         Op::ForceCancel => {
                             // Escalation is distinct from cooperative Ctrl-C even while the
                             // approval modal owns input. The effect has not crossed admission yet.
-                            self.force_cancel_requested = true;
+                            self.control.request(InboundControl::ForceCancel);
                             reason_code = "force_cancel_requested";
-                            self.force_cancel
+                            self.control
+                                .force_cancel()
                                 .store(true, std::sync::atomic::Ordering::Release);
                             let requested = self
                                 .force_cancel_seam
@@ -5919,7 +5880,7 @@ impl Agent {
                         Op::Drain => {
                             // Deny the not-yet-admitted effect, then checkpoint at the ordinary
                             // post-tool safe point. Drain never aliases the cancellation flag.
-                            self.drain_requested = true;
+                            self.control.request(InboundControl::Drain);
                             reason_code = "drain_requested";
                             if submission_id.0 != 0 {
                                 self.ui(UiEvent::ControlSubmissionApplied {
@@ -5932,13 +5893,13 @@ impl Agent {
                         Op::Steer { text } => {
                             // Preserve steering that arrived while the approval modal owned input;
                             // it is admitted immediately after the effect boundary, never dropped.
-                            self.pending_steers.push_back(
-                                inbound_control::PendingSteer::from_steer(text, submission_id),
-                            );
+                            self.retain_pending_steer(inbound_control::PendingSteer::from_steer(
+                                text,
+                                submission_id,
+                            ));
                         }
                         Op::UserInput { text } => {
-                            self.pending_steers
-                                .push_back(inbound_control::PendingSteer::user(text));
+                            self.retain_pending_steer(inbound_control::PendingSteer::user(text));
                         }
                         Op::UserInputV2 { .. } | Op::UserInputV3 { .. } | Op::Unknown => self
                             .record_rejected_submissions(
@@ -5956,7 +5917,7 @@ impl Agent {
                 Err(_) => {}       // 200ms tick: re-check the interrupt flag
             }
         }
-        self.approvals_rx = Some(rx);
+        self.inbox.bind_receiver(rx);
         let final_verdict = if approved {
             Verdict::Auto
         } else {

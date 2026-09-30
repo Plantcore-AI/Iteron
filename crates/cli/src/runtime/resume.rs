@@ -27,6 +27,7 @@ struct StagedAdoptedResume {
     ledger: Ledger,
     observed_trust: Trust,
     turn_publications: turn_publication::TurnPublicationOwner,
+    verification_tasks: std::sync::Arc<bounded_verify::VerificationTaskRegistry>,
 }
 
 impl Agent {
@@ -97,6 +98,15 @@ impl Agent {
         // unexpectedly fails, do not widen authority on the resume path.
         match replay_scoped_rollout(self.rollout.path()) {
             Ok(scoped_events) => {
+                let verification_tasks = bounded_verify::VerificationTaskRegistry::new();
+                verification_tasks.recover(
+                    self.rollout.run_id(),
+                    scoped_events
+                        .iter()
+                        .filter(|scoped| &scoped.run_id == self.rollout.run_id())
+                        .map(|scoped| &scoped.event),
+                );
+                self.verification_tasks = verification_tasks;
                 self.turn_publications =
                     turn_publication::TurnPublicationOwner::from_verified_scoped(
                         &scoped_events,
@@ -609,6 +619,14 @@ impl Agent {
             )));
         }
 
+        let verification_tasks = bounded_verify::VerificationTaskRegistry::new();
+        verification_tasks.recover(
+            rollout.run_id(),
+            scoped_events
+                .iter()
+                .filter(|scoped| &scoped.run_id == rollout.run_id())
+                .map(|scoped| &scoped.event),
+        );
         Ok(StagedAdoptedResume {
             messages,
             redacted_tool_results,
@@ -629,6 +647,7 @@ impl Agent {
             selected_route,
             ledger: restored,
             observed_trust,
+            verification_tasks,
             turn_publications: turn_publication::TurnPublicationOwner::from_verified_scoped(
                 &scoped_events,
                 rollout.tenant(),
@@ -888,6 +907,7 @@ impl Agent {
         // is leaving becomes resumable by another process the moment this returns.
         let previous = std::mem::replace(&mut self.rollout, rollout);
         self.turn_publications = staged.turn_publications;
+        self.verification_tasks = staged.verification_tasks;
         self.workspace_checkpoints = workspace_checkpoint::WorkspaceCheckpointOwner::default();
 
         // Per-run state `set_resume` does not own. Every one of these describes the run being left.
@@ -952,16 +972,13 @@ impl Agent {
         self.instruction_context = self.composition_instruction_context.clone();
         self.last_assistant_text.clear();
         self.failed_actions.clear();
-        self.pending_steers.clear();
+        self.inbox.clear();
         self.verify_attempts = 0;
         self.verification_quarantine.clear();
         self.verification_quarantine_restored = false;
         self.compacted_in_run = false;
         self.last_compaction_turn = staged.last_compaction_turn;
-        self.interrupt_requested = false;
-        self.force_cancel_requested = false;
-        self.force_cancel
-            .store(false, std::sync::atomic::Ordering::Release);
+        self.control.reset_after_adoption();
         self.pricing = None;
         // At-most-once identities are per-journal. `guard_unresolved_effects` reseeds this from the
         // adopted record before the next turn dispatches anything; clearing it now means the window

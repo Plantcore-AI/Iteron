@@ -565,7 +565,7 @@ impl Agent {
     }
 
     pub(crate) fn interrupt_handle(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
-        self.interrupt.clone()
+        self.control.interrupt().cloned()
     }
 
     /// Settle the cooperative interrupt used by an idle, frontend-owned control request.
@@ -575,17 +575,11 @@ impl Agent {
     /// calls this only after that standalone request has produced its authoritative reply; normal
     /// turn interrupts remain owned by `finish_requested_control` and the EQ terminal event.
     pub(crate) fn settle_standalone_control_interrupt(&mut self) {
-        self.interrupt_requested = false;
-        self.force_cancel_requested = false;
-        self.force_cancel
-            .store(false, std::sync::atomic::Ordering::SeqCst);
-        if let Some(interrupt) = &self.interrupt {
-            interrupt.store(false, std::sync::atomic::Ordering::SeqCst);
-        }
+        self.control.clear_cancel_after_terminal();
     }
 
     pub(crate) fn drain_handle(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
-        self.drain.clone()
+        self.control.drain().clone()
     }
 
     /// Install a cooperative interrupt flag. When it flips true (e.g. from a Ctrl-C handler),
@@ -593,20 +587,35 @@ impl Agent {
     /// effect is left half-committed and the run is resumable; the turn is not atomic with
     /// respect to the interrupt.
     pub fn set_interrupt(&mut self, flag: std::sync::Arc<std::sync::atomic::AtomicBool>) {
-        self.interrupt = Some(flag);
+        self.control.bind_interrupt(flag);
     }
 
     /// Install the distinct escalated-cancellation authority. A frontend must set this only for an
     /// explicit ForceCancel operation; cooperative Ctrl-C continues to use [`Self::set_interrupt`].
     pub fn set_force_cancel(&mut self, flag: std::sync::Arc<std::sync::atomic::AtomicBool>) {
-        self.force_cancel = flag;
+        self.control.bind_force_cancel(flag);
+    }
+
+    /// A child observes its caller-owned stop signal but cannot clear it at its own terminal.
+    pub(crate) fn inherit_interrupt(
+        &mut self,
+        flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) {
+        self.control.inherit_interrupt(flag);
+    }
+
+    /// Shared escalated cancellation remains asserted until its caller records actual shutdown.
+    pub(crate) fn inherit_force_cancel(
+        &mut self,
+        flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) {
+        self.control.inherit_force_cancel(flag);
     }
 
     /// Install the session drain flag. Provider streams and admitted tools race it at the same
     /// bounded polling boundary as interrupt; descendants also observe it at their safe points.
     pub fn set_drain(&mut self, flag: std::sync::Arc<std::sync::atomic::AtomicBool>) {
-        self.drain = flag;
-        self.owns_drain = true;
+        self.control.bind_drain(flag);
     }
 
     /// Install a typed diagnostic evidence port. Payloads are content-free and emissions are

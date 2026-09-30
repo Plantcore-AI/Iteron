@@ -304,6 +304,17 @@ impl Agent {
         self.effect_journal.next_ordinal(turn, class)
     }
 
+    /// Mint one physical billing identity from the same restored Provider effect allocator.
+    pub(super) fn next_provider_effect_identity(
+        &mut self,
+        turn: TurnId,
+    ) -> Result<(usize, u32), KernelError> {
+        let ordinal = self.next_effect_ordinal(turn, effect_class::EffectClass::Provider);
+        let physical =
+            super::provider_effect_identity::physical_attempt_for_provider_ordinal(ordinal)?;
+        Ok((ordinal, physical))
+    }
+
     /// Open a non-registry effect: admit the identity and fsync its write-ahead intent.
     ///
     /// The two-phase form exists for the executors that need `&mut self` while they run — the
@@ -544,8 +555,8 @@ impl Agent {
             workspace: self.workspace.as_path(),
             hooks: &self.hooks,
             command_journal: self.hook_effect_journal.clone(),
-            interrupt: self.interrupt.clone(),
-            drain: self.drain.clone(),
+            interrupt: self.control.interrupt().cloned(),
+            drain: self.control.drain().clone(),
             activity: self.activity.clone(),
             emitter: self.lifecycle_emitter.clone(),
             dispatcher: self.lifecycle_hooks.clone(),

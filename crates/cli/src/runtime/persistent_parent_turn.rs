@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 pub(super) struct ParentTurnGuard {
     control: Arc<dyn AgentControlPort>,
     turn: ParentRuntimeTurn,
-    old_interrupt: Option<Arc<AtomicBool>>,
+    old_interrupt: super::session_control::InterruptSignalBinding,
     old_deadline: Option<Instant>,
     settled: bool,
 }
@@ -53,9 +53,10 @@ impl Agent {
         if self.persistent_mailbox.is_some() {
             return Err(KernelError::AgentControl(ControllerError::StaleEpoch));
         }
-        let old_interrupt = self.interrupt.clone();
+        let old_interrupt = self.control.interrupt_binding();
         let signal = old_interrupt
-            .clone()
+            .flag()
+            .cloned()
             .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
         // This exact descriptor identifies the existing thread submission. The original task is
         // admitted by the normal Message WAL; this marker adds no duplicate instruction authority.
@@ -77,7 +78,9 @@ impl Agent {
             .checked_add(Duration::from_millis(remaining))
             .unwrap_or_else(Instant::now);
         self.run_deadline = Some(old_deadline.map_or(deadline, |existing| existing.min(deadline)));
-        self.interrupt = Some(signal);
+        if old_interrupt.flag().is_none() {
+            self.control.bind_interrupt(signal);
+        }
         self.persistent_mailbox = Some(turn.mailbox.clone());
         let guard = ParentTurnGuard {
             control,
@@ -88,7 +91,8 @@ impl Agent {
         };
         if let Err(error) = persistent_agent_kernel::expire_restored(self, &guard.turn.mailbox) {
             self.persistent_mailbox = None;
-            self.interrupt = guard.old_interrupt.clone();
+            self.control
+                .restore_interrupt_binding(guard.old_interrupt.clone());
             self.run_deadline = guard.old_deadline;
             return Err(error);
         }
@@ -186,7 +190,8 @@ impl Agent {
         // Even when durable terminalization fails, do not retain a mailbox from a prior epoch in
         // the current Agent. The controller's poisoned/active ownership remains fail-closed.
         self.persistent_mailbox = None;
-        self.interrupt = guard.old_interrupt.clone();
+        self.control
+            .restore_interrupt_binding(guard.old_interrupt.clone());
         self.run_deadline = guard.old_deadline;
         // The host retains this exact physical proof for bounded retry. Drop must never replace
         // a known terminal with an invented Unknown merely because its final append was refused.

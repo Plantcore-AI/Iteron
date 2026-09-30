@@ -91,10 +91,10 @@ fn bounded_inbound_poll_limit(configured: usize) -> usize {
 
 #[derive(Debug, Clone)]
 pub(super) struct PendingSteer {
-    text: String,
+    pub(super) text: String,
     /// Internal runtime notifications must never consume a client's steer receipt.
-    client_visible: bool,
-    submission_id: Option<SubmissionId>,
+    pub(super) client_visible: bool,
+    pub(super) submission_id: Option<SubmissionId>,
 }
 
 /// One message reclaimed at the run boundary. The source bit is authoritative for frontend
@@ -152,55 +152,13 @@ impl Agent {
         turn: TurnId,
         limit: usize,
     ) -> InboundControl {
-        let mut steering = Vec::new();
-        let mut unknown = 0usize;
-        let mut version_mismatch = 0usize;
-        let mut stale_ids = Vec::new();
-        let mut control = InboundControl::None;
-        let mut control_submission_id = None;
-        let active_product_turn_id = self.active_product_turn_id;
-        if let Some(rx) = self.approvals_rx.as_mut() {
-            for _ in 0..limit.clamp(1, MAX_INBOUND_OPS_PER_POLL) {
-                let Ok(envelope) = rx.try_recv() else {
-                    break;
-                };
-                if stale_product_epoch(active_product_turn_id, &envelope) {
-                    stale_ids.push(envelope.submission_id);
-                    continue;
-                }
-                let Ok((submission_id, op)) = envelope.into_current_identified() else {
-                    version_mismatch = version_mismatch.saturating_add(1);
-                    continue;
-                };
-                match op {
-                    Op::Steer { text } => {
-                        steering.push(PendingSteer::from_steer(text, submission_id));
-                    }
-                    Op::UserInput { text } => steering.push(PendingSteer::user(text)),
-                    Op::Interrupt => {
-                        control = InboundControl::Interrupt;
-                        control_submission_id = (submission_id.0 != 0).then_some(submission_id);
-                        break;
-                    }
-                    Op::ForceCancel => {
-                        control = InboundControl::ForceCancel;
-                        control_submission_id = (submission_id.0 != 0).then_some(submission_id);
-                        break;
-                    }
-                    Op::Drain => {
-                        control = InboundControl::Drain;
-                        control_submission_id = (submission_id.0 != 0).then_some(submission_id);
-                        break;
-                    }
-                    // An approval response has meaning only while `await_approval` owns the queue.
-                    Op::ApprovalResponse { .. } => {}
-                    Op::UserInputV2 { .. } | Op::UserInputV3 { .. } | Op::Unknown => {
-                        unknown = unknown.saturating_add(1)
-                    }
-                }
-            }
-        }
-        self.pending_steers.extend(steering);
+        let receipt = self.inbox.poll(&mut self.control, limit, false);
+        let control = receipt.control;
+        let control_submission_id = receipt.control_submission;
+        let unknown = receipt.unknown;
+        let version_mismatch = receipt.versions;
+        let stale_ids = receipt.stale;
+        self.reject_saturated_steers(receipt.saturated, turn);
         self.reject_stale_product_submissions(stale_ids);
         self.record_rejected_submissions(
             turn,
@@ -215,16 +173,7 @@ impl Agent {
             VERSION_MISMATCH_SUBMISSION_NOTICE,
         );
         match control {
-            InboundControl::Interrupt => {
-                self.interrupt_requested = true;
-                if let Some(interrupt) = &self.interrupt {
-                    interrupt.store(true, std::sync::atomic::Ordering::Relaxed);
-                }
-            }
             InboundControl::ForceCancel => {
-                self.force_cancel_requested = true;
-                self.force_cancel
-                    .store(true, std::sync::atomic::Ordering::Release);
                 let requested = self
                     .force_cancel_seam
                     .as_mut()
@@ -245,11 +194,7 @@ impl Agent {
                     },
                 );
             }
-            InboundControl::Drain => {
-                self.drain_requested = true;
-                self.drain.store(true, std::sync::atomic::Ordering::Relaxed);
-            }
-            InboundControl::None => {}
+            _ => {}
         }
         if let Some(id) = control_submission_id {
             let kind = match control {
@@ -261,6 +206,36 @@ impl Agent {
             self.ui(UiEvent::ControlSubmissionApplied { id, kind });
         }
         control
+    }
+
+    fn reject_saturated_steers(&mut self, ids: Vec<SubmissionId>, turn: TurnId) {
+        for id in ids {
+            if self
+                .emit_durable(
+                    turn,
+                    EventKind::Notice {
+                        text: "steering queue capacity exceeded; submission was not applied".into(),
+                    },
+                )
+                .is_err()
+            {
+                break;
+            }
+            if id.0 != 0 {
+                self.ui(UiEvent::SubmissionRejected {
+                    id,
+                    reason_code: "steering_queue_saturated",
+                });
+            }
+        }
+    }
+    pub(super) fn retain_pending_steer(&mut self, steer: PendingSteer) {
+        if let Err(steer) = self.inbox.push(steer) {
+            self.reject_saturated_steers(
+                vec![steer.submission_id.unwrap_or(SubmissionId(0))],
+                TurnId(self.seq_turn),
+            );
+        }
     }
 
     pub(super) fn reject_stale_product_submissions(&mut self, ids: Vec<SubmissionId>) {
@@ -312,37 +287,13 @@ impl Agent {
     pub(crate) fn take_unadmitted_steers_with_client_count(
         &mut self,
     ) -> (Vec<UnadmittedSteer>, usize) {
-        let mut unknown = 0usize;
-        let mut version_mismatch = 0usize;
-        let mut stale_ids = Vec::new();
-        let active_product_turn_id = self.active_product_turn_id;
-        if let Some(rx) = self.approvals_rx.as_mut() {
-            for _ in 0..inbound_poll_limit() {
-                let Ok(envelope) = rx.try_recv() else {
-                    break;
-                };
-                if stale_product_epoch(active_product_turn_id, &envelope) {
-                    stale_ids.push(envelope.submission_id);
-                    continue;
-                }
-                let Ok((submission_id, op)) = envelope.into_current_identified() else {
-                    version_mismatch = version_mismatch.saturating_add(1);
-                    continue;
-                };
-                match op {
-                    Op::Steer { text } => self
-                        .pending_steers
-                        .push_back(PendingSteer::from_steer(text, submission_id)),
-                    Op::UserInput { text } => {
-                        self.pending_steers.push_back(PendingSteer::user(text));
-                    }
-                    Op::UserInputV2 { .. } | Op::UserInputV3 { .. } | Op::Unknown => {
-                        unknown = unknown.saturating_add(1)
-                    }
-                    Op::ApprovalResponse { .. } | Op::Interrupt | Op::ForceCancel | Op::Drain => {}
-                }
-            }
-        }
+        let receipt = self
+            .inbox
+            .poll(&mut self.control, inbound_poll_limit(), true);
+        let unknown = receipt.unknown;
+        let version_mismatch = receipt.versions;
+        let stale_ids = receipt.stale;
+        self.reject_saturated_steers(receipt.saturated, TurnId(self.seq_turn));
         self.reject_stale_product_submissions(stale_ids);
         self.record_rejected_submissions(
             TurnId(self.seq_turn),
@@ -356,17 +307,7 @@ impl Agent {
             SubmissionRejectionReason::ProtocolVersionMismatch,
             VERSION_MISMATCH_SUBMISSION_NOTICE,
         );
-        let entries = self
-            .pending_steers
-            .drain(..)
-            .map(|steer| UnadmittedSteer {
-                text: steer.text,
-                client_visible: steer.client_visible,
-                submission_id: steer.submission_id,
-            })
-            .collect::<Vec<_>>();
-        let client_visible_count = entries.iter().filter(|steer| steer.client_visible).count();
-        (entries, client_visible_count)
+        self.inbox.reclaim()
     }
 
     /// Admit queued steering at a turn boundary. The durable message is written before the working
@@ -379,7 +320,7 @@ impl Agent {
         let _ = self.collect_inbound_ops(turn);
         let mut admitted = 0usize;
         let mut legacy_client_visible = 0usize;
-        while let Some(steer) = self.pending_steers.pop_front() {
+        while let Some(steer) = self.inbox.pop() {
             if steer.text.trim().is_empty() {
                 continue;
             }
@@ -412,7 +353,7 @@ impl Agent {
             ) {
                 // The rejected append has no receipt and may not consume an identified steer.
                 // Preserve it ahead of the tail for the App Server's exact-ID requeue handoff.
-                self.pending_steers.push_front(steer);
+                self.inbox.restore_front(steer);
                 if admitted > 0 {
                     self.context_estimator.invalidate_transcript();
                 }
