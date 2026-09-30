@@ -113,9 +113,9 @@ impl Provider for ProviderFixture {
             .rev()
             .find(|message| {
                 message.role == iteron_protocol::Role::User
-                    && !message.content.iter().any(|block| {
-                        matches!(block,
-                    Block::Text { text } if text.contains("Main thread task source sha256:"))
+                    && message.content.iter().any(|block| {
+                        matches!(block, Block::Text { text }
+                            if !text.contains("Main thread task source sha256:"))
                     })
             })
             .map(|message| {
@@ -123,7 +123,11 @@ impl Provider for ProviderFixture {
                     .content
                     .iter()
                     .filter_map(|block| match block {
-                        Block::Text { text } => Some(text.as_str()),
+                        Block::Text { text }
+                            if !text.contains("Main thread task source sha256:") =>
+                        {
+                            Some(text.as_str())
+                        }
                         _ => None,
                     })
                     .collect::<Vec<_>>()

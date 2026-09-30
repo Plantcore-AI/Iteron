@@ -99,6 +99,17 @@ async fn actual_main_and_child_exchange_consumed_inputs_without_a_second_root_re
     );
     assert_eq!(main.observed_trust, iteron_protocol::Trust::Untrusted);
     assert!(text(main.working_set.as_ref().unwrap()).contains("actual Main operator instruction"));
+    assert!(
+        main.working_set
+            .as_ref()
+            .unwrap()
+            .iter()
+            .any(|message| message.role == iteron_protocol::Role::User
+                && text(std::slice::from_ref(message))
+                    .contains("actual Main operator instruction")
+                && text(std::slice::from_ref(message)).contains("Main thread task source sha256:")
+                && text(std::slice::from_ref(message)).contains("untrusted child-to-main data"))
+    );
     let to_child = host
         .command(
             AgentActor::Agent(AgentIdV1(1)),

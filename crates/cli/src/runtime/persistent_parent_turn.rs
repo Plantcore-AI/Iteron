@@ -1,7 +1,7 @@
 //! Actual Main Agent lease, mailbox safe points and terminal settlement. Authority stays in the
 //! installed host; input envelopes are ordinary low-trust data in the real thread journal.
 use super::persistent_agents::{AgentControlPort, AgentSettlement, ParentRuntimeTurn};
-use super::{Agent, KernelError, persistent_agent_kernel};
+use super::{Agent, KernelError, merge_adjacent_user_message, persistent_agent_kernel};
 use iteron_agents::{AgentWorkflowTerminal, ControllerError};
 use iteron_protocol::{EventKind, Message, Outcome, Trust, TurnId};
 use sha2::{Digest, Sha256};
@@ -124,7 +124,9 @@ impl Agent {
             if input.sender.is_some() {
                 self.observed_trust = self.observed_trust.min(Trust::Untrusted);
             }
-            messages.push(message);
+            // Preserve the original task's component admission and provider role alternation.
+            // This exact host envelope is still matched as an intact text block by the receipt.
+            merge_adjacent_user_message(messages, message);
             self.context_estimator.invalidate_transcript();
         }
         Ok(())
