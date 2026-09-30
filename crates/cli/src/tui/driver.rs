@@ -765,7 +765,7 @@ pub async fn run(
                     }
                     app.workspace_dirty = workspace_dirty;
                     app.hyperlink_policy = hyperlink_policy;
-                    app.render_cache.clear();
+                    app.geometry.clear();
                     app.assistant.invalidate_layout();
                     app.mark_transcript_changed();
                     redraw = true;

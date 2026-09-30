@@ -755,6 +755,6 @@ pub(super) fn clear_conversation(app: &mut App) {
     app.tool_index.clear();
     app.workflow_index.clear();
     app.assistant.reset();
-    app.render_cache.clear();
+    app.geometry.clear();
     app.push(dim(), "transcript cleared");
 }

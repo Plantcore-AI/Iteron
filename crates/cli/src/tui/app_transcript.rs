@@ -116,7 +116,7 @@ impl App {
             .position(|block| ids.contains(&block.id))
             .unwrap_or(self.transcript.len());
         self.transcript.retain(|block| !ids.contains(&block.id));
-        self.render_cache.retain(|id, _| !ids.contains(id));
+        self.geometry.forget(&ids);
         if let Some(document) = document {
             let id = self.next_id;
             self.next_id = self.next_id.wrapping_add(1);

@@ -7,6 +7,7 @@ pub(super) struct ConversationViewport {
     unread: bool,
     total_rows: u16,
     height: u16,
+    anchor_missing: bool,
 }
 impl Default for ConversationViewport {
     fn default() -> Self {
@@ -16,6 +17,7 @@ impl Default for ConversationViewport {
             unread: false,
             total_rows: 0,
             height: 0,
+            anchor_missing: false,
         }
     }
 }
@@ -37,6 +39,7 @@ impl ConversationViewport {
         self.following = true;
         self.offset = 0;
         self.unread = false;
+        self.anchor_missing = false;
     }
     pub(super) fn scroll_up(&mut self, rows: u16) {
         self.following = false;
@@ -68,6 +71,38 @@ impl ConversationViewport {
             self.follow_latest();
         }
         extent - self.offset
+    }
+    pub(super) fn requested_first_row(&self) -> Option<usize> {
+        (!self.following && self.height > 0).then(|| {
+            usize::from(
+                self.total_rows
+                    .saturating_sub(self.height)
+                    .saturating_sub(self.offset),
+            )
+        })
+    }
+    pub(super) fn observe_anchored_layout(
+        &mut self,
+        total_rows: u16,
+        height: u16,
+        row: usize,
+    ) -> u16 {
+        let extent = total_rows.saturating_sub(height);
+        let row = u16::try_from(row).unwrap_or(u16::MAX).min(extent);
+        self.total_rows = total_rows;
+        self.height = height;
+        self.offset = extent - row;
+        self.anchor_missing = false;
+        if self.offset == 0 {
+            self.follow_latest();
+        }
+        row
+    }
+    pub(super) fn anchor_unavailable(&mut self) {
+        self.anchor_missing = true;
+    }
+    pub(super) fn has_missing_anchor(&self) -> bool {
+        self.anchor_missing
     }
     #[cfg(test)]
     pub(super) fn offset(&self) -> u16 {

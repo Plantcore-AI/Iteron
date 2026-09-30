@@ -160,6 +160,21 @@ impl HeightIndex {
         self.starts.get(index).copied().unwrap_or(self.total_rows)
     }
 
+    /// Actual rows for one block, excluding its leading gap. Hidden/evicted blocks have no rows.
+    pub(super) fn block_rows(&self, block_index: usize) -> Option<(usize, usize)> {
+        let first = *self.block_entry_starts.get(block_index)?;
+        for index in first..self.entries.len() {
+            let entry = &self.entries[index];
+            if entry.block_index != block_index {
+                break;
+            }
+            if !matches!(entry.source, Source::Blank) && entry.rows > 0 {
+                return Some((self.row_start(index), entry.rows));
+            }
+        }
+        None
+    }
+
     pub(super) fn visible_range(&self, first_row: usize, last_row: usize) -> Range<usize> {
         self.visible_range_with_work(first_row, last_row).0
     }

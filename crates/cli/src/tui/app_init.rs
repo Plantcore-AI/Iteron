@@ -1,7 +1,6 @@
 use super::{
     App, ApprovalChoice, CostState, Editor, Effort, PermissionMode, RouteView, block, hyperlink,
-    mouse_capture, theme, transcript_layout, transcript_viewer, ui_safe_text, workflow_region,
-    workflows_panel,
+    mouse_capture, theme, transcript_viewer, ui_safe_text, workflow_region, workflows_panel,
 };
 use ratatui::style::{Color, Style};
 #[cfg(test)]
@@ -47,10 +46,7 @@ impl App {
             color_depth,
             theme_epoch: 0,
             hyperlink_policy: hyperlink::Policy::disabled(),
-            render_cache: std::collections::HashMap::new(),
-            render_cache_width: 0,
-            render_cache_theme_epoch: 0,
-            transcript_layout: transcript_layout::HeightIndex::default(),
+            geometry: super::transcript_geometry::TranscriptGeometry::default(),
             editor: Editor::new(),
             pending_mcp_input: None,
             queued_mcp_inputs: VecDeque::new(),

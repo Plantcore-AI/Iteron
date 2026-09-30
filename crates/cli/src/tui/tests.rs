@@ -2207,10 +2207,10 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             app.toggle_last_fold();
         }
         let _ = render_text(&mut app, 80, 18);
-        assert!(app.render_cache.len() <= app.transcript.len());
-        assert!(app.render_cache.contains_key(&1));
+        assert!(app.geometry.cache_len() <= app.transcript.len());
+        assert!(app.geometry.cached_revision(1).is_some());
         assert_eq!(
-            app.render_cache.get(&1).map(|(revision, _)| *revision),
+            app.geometry.cached_revision(1),
             Some(app.transcript[1].revision)
         );
     }
@@ -2226,11 +2226,11 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             });
         }
         let _ = render_text(&mut app, 80, 24);
-        let rebuilt = app.transcript_layout.rebuilds();
+        let rebuilt = app.geometry.layout().rebuilds();
         assert_eq!(rebuilt, 1);
         let _ = render_text(&mut app, 80, 24);
         assert_eq!(
-            app.transcript_layout.rebuilds(),
+            app.geometry.layout().rebuilds(),
             rebuilt,
             "an unchanged frame must use binary visible-range lookup, not scan/rebuild 1,200 blocks"
         );
@@ -2849,7 +2849,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             }
             assert!(screen.contains("markdown"));
             assert!(!screen.contains('�'));
-            cache_widths.push(app.render_cache_width);
+            cache_widths.push(app.geometry.cache_width());
             assert_eq!(
                 app.assistant.document_revision(),
                 app.assistant.source_revision()

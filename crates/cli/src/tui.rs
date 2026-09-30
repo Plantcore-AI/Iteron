@@ -102,6 +102,7 @@ mod terminal_input;
 mod terminal_lifecycle;
 pub(crate) mod transcript_effect;
 mod transcript_export;
+mod transcript_geometry;
 mod transcript_layout;
 mod transcript_viewer;
 mod tunables_view;
@@ -684,16 +685,7 @@ struct App {
     theme_epoch: u64,
     /// Session-stable, conservatively admitted OSC 8 support and local-link workspace boundary.
     hyperlink_policy: hyperlink::Policy,
-    /// Settled semantic blocks render once per width/theme/revision. Active blocks bypass this cache
-    /// so spinner and workflow state remain live.
-    /// One render slot per settled block. Replacing the `(revision, rows)` tuple on mutation keeps
-    /// repeated fold/unfold cycles bounded instead of retaining every historical revision.
-    render_cache: std::collections::HashMap<u64, (u64, crate::render::RenderedLines)>,
-    render_cache_width: u16,
-    render_cache_theme_epoch: u64,
-    /// Prefix-sum geometry retained across frames. An unchanged 1,200-block transcript is located
-    /// with two binary searches instead of being walked for every spinner tick.
-    transcript_layout: transcript_layout::HeightIndex,
+    geometry: transcript_geometry::TranscriptGeometry,
     editor: Editor,
     pending_mcp_input: Option<mcp_input::PendingMcpInput>,
     queued_mcp_inputs: VecDeque<app_server::McpInputPrompt>,

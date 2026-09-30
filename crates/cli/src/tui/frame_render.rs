@@ -336,11 +336,10 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
     // scrollbar owns its own stage-gutter rect. Reserving it before wrapping keeps the indicator
     // from overwriting the final evidence cell when the transcript overflows.
     let inner_w = surface.transcript_content_width();
-    if app.render_cache_width != inner_w || app.render_cache_theme_epoch != app.theme_epoch {
-        app.render_cache.clear();
-        app.render_cache_width = inner_w;
-        app.render_cache_theme_epoch = app.theme_epoch;
-    }
+    let reading_anchor = app
+        .viewport
+        .requested_first_row()
+        .and_then(|row| app.geometry.reading_anchor(row));
     // Streaming Markdown is parsed only when provider text changes. Active frames still re-render
     // at 10 fps for the caret/activity animation, but unchanged deltas do not repeatedly rebuild
     // the semantic document.
@@ -360,75 +359,25 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
             hyperlinks: hyperlink_policy,
         });
     }
-    // Rebuild retained block geometry only when its semantic key changes. Ordinary spinner and
-    // streaming frames reuse the prefix sums below and locate their viewport with two binary
-    // searches; they never walk all 1,200 retained blocks.
-    let full_layout_rebuild =
-        !app.transcript_layout
-            .matches(inner_w, app.theme_epoch, region_block);
-    let dirty_from = full_layout_rebuild
-        .then_some(0)
-        .or(app.transcript_dirty_from);
-    if let Some(dirty_from) = dirty_from {
-        let mut entries = Vec::new();
-        let theme = &app.theme;
-        let spin = app.spin;
-        let hyperlink_policy = &app.hyperlink_policy;
-        let render_cache = &mut app.render_cache;
-        let mut previous: Option<&block::BlockKind> = app.transcript[..dirty_from]
-            .iter()
-            .rev()
-            .find(|block| Some(block.id) != region_block)
-            .map(|block| &block.kind);
-        for (block_index, block) in app.transcript.iter().enumerate().skip(dirty_from) {
-            if Some(block.id) == region_block {
-                continue;
-            }
-            if let Some(previous) = previous {
-                let gap = usize::from(block::gap_before(previous, &block.kind));
-                if gap > 0 {
-                    entries.push(transcript_layout::Entry::blank(gap, block_index));
-                }
-            }
-            previous = Some(&block.kind);
-            if block.cacheable() {
-                if render_cache.get(&block.id).map(|(revision, _)| *revision)
-                    != Some(block.revision)
-                {
-                    let rendered =
-                        block.render_with_hyperlinks(inner_w, theme, spin, hyperlink_policy);
-                    render_cache.insert(block.id, (block.revision, rendered));
-                }
-                let rows = render_cache
-                    .get(&block.id)
-                    .map_or(0, |(_, rendered)| rendered.lines.len());
-                entries.push(transcript_layout::Entry::cached(
-                    block.id,
-                    block_index,
-                    rows,
-                ));
-            } else {
-                let rows = block
-                    .render_with_hyperlinks(inner_w, theme, spin, hyperlink_policy)
-                    .lines
-                    .len();
-                entries.push(transcript_layout::Entry::live(block_index, rows));
-            }
-        }
-        if full_layout_rebuild {
-            app.transcript_layout
-                .rebuild(inner_w, app.theme_epoch, region_block, entries);
-        } else {
-            app.transcript_layout.rebuild_suffix(dirty_from, entries);
-        }
-        app.transcript_dirty_from = None;
-    }
+    let geometry_changed = app.geometry.prepare(
+        &app.transcript,
+        app.transcript_dirty_from,
+        super::transcript_geometry::GeometryContext {
+            width: inner_w,
+            theme_epoch: app.theme_epoch,
+            theme: &app.theme,
+            spin: app.spin,
+            hyperlinks: &app.hyperlink_policy,
+            region_block,
+        },
+    );
+    app.transcript_dirty_from = None;
 
     // The two in-flight projections are not retained transcript blocks. Their plan is bounded to
     // four entries (gap + thinking + gap + answer) and is appended after the indexed geometry.
     let mut live: Vec<crate::render::RenderedLines> = Vec::new();
     let mut tail_plan: Vec<(TranscriptRows, usize, usize)> = Vec::new();
-    let retained_rows = app.transcript_layout.total_rows();
+    let retained_rows = app.geometry.layout().total_rows();
     let mut total_rows = retained_rows;
     {
         let theme = &app.theme;
@@ -463,7 +412,17 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
     }
     let total = u16::try_from(total_rows).unwrap_or(u16::MAX); // saturating (review LOW: >65535 rows)
     let view_h = surface.transcript.height;
-    let scroll = app.viewport.observe_layout(total, view_h);
+    let anchored_row = geometry_changed
+        .then(|| reading_anchor.and_then(|anchor| app.geometry.resolve_anchor(anchor)))
+        .flatten();
+    let scroll = if let Some(row) = anchored_row {
+        app.viewport.observe_anchored_layout(total, view_h, row)
+    } else {
+        if geometry_changed && reading_anchor.is_some() {
+            app.viewport.anchor_unavailable();
+        }
+        app.viewport.observe_layout(total, view_h)
+    };
     // Pass three: materialise the window only. `hyperlink_regions` keeps ABSOLUTE transcript rows —
     // that is the coordinate `apply_to_buffer` subtracts the scroll from — while `row_map` is now
     // viewport-relative, because the hit-test already knows which row the viewport starts at.
@@ -476,13 +435,14 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
     let mut row_map: Vec<usize> = Vec::with_capacity(window); // block index per VISIBLE row (usize::MAX = spacer/stream)
     let mut hyperlink_regions = Vec::new();
     let retained_visible = app
-        .transcript_layout
+        .geometry
+        .layout()
         .visible_range(first_row, last_row.min(retained_rows));
     for entry_index in retained_visible {
-        let Some(entry) = app.transcript_layout.entry(entry_index).copied() else {
+        let Some(entry) = app.geometry.layout().entry(entry_index).copied() else {
             continue;
         };
-        let segment_start = app.transcript_layout.row_start(entry_index);
+        let segment_start = app.geometry.layout().row_start(entry_index);
         let segment_end = segment_start.saturating_add(entry.rows);
         let from = first_row.max(segment_start) - segment_start;
         let to = last_row.min(segment_end) - segment_start;
@@ -494,7 +454,7 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
                 }
             }
             transcript_layout::Source::Cached(id) => {
-                if let Some((_, rendered)) = app.render_cache.get(&id) {
+                if let Some(rendered) = app.geometry.rendered(id) {
                     push_viewport_rows(
                         rendered,
                         entry.block_index,

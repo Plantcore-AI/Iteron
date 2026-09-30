@@ -322,8 +322,13 @@ pub(super) fn render_status(f: &mut Frame, area: Rect, density: surface::Density
         } else {
             " · new output".to_string()
         };
+        let anchor = if app.viewport.has_missing_anchor() {
+            " · prior block unavailable"
+        } else {
+            ""
+        };
         vec![Span::styled(
-            format!("↑ reading history{unread} · ctrl+end to follow"),
+            format!("↑ reading history{unread}{anchor} · ctrl+end to follow"),
             Style::default().fg(th.warn),
         )]
     } else if let Some((activity, elapsed)) = visible_activity(app) {

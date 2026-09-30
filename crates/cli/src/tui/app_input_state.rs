@@ -36,8 +36,7 @@ impl App {
                     true
                 }
             });
-            self.render_cache
-                .retain(|block_id, _| !evicted.contains(block_id));
+            self.geometry.forget(&evicted);
             self.tool_index.retain(|_, bid| !evicted.contains(bid));
             self.workflow_index.retain(|_, bid| !evicted.contains(bid));
             if !evicted.is_empty() {
@@ -53,7 +52,7 @@ impl App {
     pub(super) fn set_theme(&mut self, theme: theme::Theme) {
         self.theme = self.color_depth.project_theme(theme);
         self.theme_epoch = self.theme_epoch.wrapping_add(1);
-        self.render_cache.clear();
+        self.geometry.clear();
     }
 
     /// Adopt a theme that late terminal evidence detected AFTER the first frame was painted.
