@@ -128,6 +128,8 @@ pub(crate) mod policy_evidence_recorder;
 mod pricing;
 mod private_attachments;
 mod provider_accounting;
+mod provider_charge_evidence;
+mod provider_financial_context;
 mod provider_governor_state;
 mod provider_hedge;
 mod provider_output_request;

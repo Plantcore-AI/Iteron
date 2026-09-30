@@ -320,6 +320,7 @@ impl ExternalStrategySlot {
         for entry in &self.chain {
             entry.require_dispatch()?;
             self.ledger.record(entry.module, Stage::Begin)?;
+            entry.require_dispatch()?;
             *locked = Some(ImplementationRuntime::launch(entry.plan.clone()).map_err(|_| ())?);
             let run_id = format!(
                 "external-{}-{}",
