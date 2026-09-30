@@ -54,6 +54,7 @@ impl AgentControllerJournal for Store {
 #[derive(Default)]
 struct ProviderFixture {
     requests: AtomicUsize,
+    tool_started: AtomicUsize,
     texts: Mutex<Vec<String>>,
 }
 
@@ -81,7 +82,15 @@ impl Provider for ProviderFixture {
         self.texts.lock().unwrap().push(texts);
         let last = request
             .messages
-            .last()
+            .iter()
+            .rev()
+            .find(|message| {
+                message.role == iteron_protocol::Role::User
+                    && !message.content.iter().any(|block| {
+                        matches!(block,
+                    Block::Text { text } if text.contains("Main thread task source sha256:"))
+                    })
+            })
             .map(|message| {
                 message
                     .content
@@ -224,7 +233,7 @@ fn setup_with_financial(
         .unwrap(),
     );
     let mut context = KernelSpawnerContext::new(
-        provider,
+        provider.clone(),
         "test-model".into(),
         "test-provider".into(),
         route.catalog_digest,
@@ -247,15 +256,18 @@ fn setup_with_financial(
     let mut runtime = KernelPersistentRuntime::new(context);
     if block_tool {
         let settled = settled.clone();
+        let provider = provider.clone();
         runtime.fixture = Some(Arc::new(move |child| {
             let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
             child.set_interrupt(stop.clone());
             let settled = settled.clone();
+            let provider = provider.clone();
             child.registry.register_external(ToolSpec {
                 name: "controlled_wait".into(), description: "bounded cancellation fixture".into(), input_schema: serde_json::json!({"type":"object","properties":{},"additionalProperties":false}), purity: Purity::Effecting, capability: Capability::ReadOnly,
             }, move |call, _| {
-                let stop = stop.clone(); let settled = settled.clone();
+                let stop = stop.clone(); let settled = settled.clone(); let provider = provider.clone();
                 Box::pin(async move {
+                    provider.tool_started.fetch_add(1, Ordering::SeqCst);
                     for _ in 0..1_000 {
                         if stop.load(Ordering::Acquire) { break }
                         tokio::time::sleep(Duration::from_millis(2)).await;
@@ -272,6 +284,7 @@ fn setup_with_financial(
         root_capabilities: CapabilitySet::only(Capability::ReadOnly),
         root_budget: AgentBudgetV1 {
             cost_microusd: cost,
+            tokens: 4_000_000,
             ..budget(20)
         },
         max_agents: 8,
@@ -354,7 +367,7 @@ async fn real_agent_interrupt_reaps_admitted_tool_before_same_id_followup() {
     let provider = Arc::new(ProviderFixture::default());
     let (host, _runtime, settled, _keepalive) = setup(&root, provider.clone(), true);
     let child = spawn(&host, "block-tool");
-    until(|| provider.requests.load(Ordering::SeqCst) == 1).await;
+    until(|| provider.tool_started.load(Ordering::SeqCst) == 1).await;
     let epoch = host
         .inspect(AgentActor::Operator, child)
         .unwrap()
@@ -530,3 +543,5 @@ async fn small_workflow_node_does_not_shrink_resident_lifetime_and_physical_turn
         4
     );
 }
+
+mod parent_turn;

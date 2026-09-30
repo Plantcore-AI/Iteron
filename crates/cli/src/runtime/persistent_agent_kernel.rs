@@ -435,6 +435,7 @@ impl PersistentAgentRuntime for KernelPersistentRuntime {
         };
         let _ = child.take_unadmitted_steers_with_client_count();
         child.approvals_rx = None;
+        let processes_settled = child.settle_persistent_owned_processes().await;
         let cleaned = expire_unrequested(&mut child, &mailbox).is_ok();
         child.persistent_mailbox = None;
         let finalized = child.finalize_policy_run().is_ok();
@@ -509,6 +510,8 @@ impl PersistentAgentRuntime for KernelPersistentRuntime {
             tokens,
             cost_microusd: cost.unwrap_or(0),
             effects_known: cleaned
+                && processes_settled
+                && child.parent_effects_known()
                 && finalized
                 && writer_settled
                 && cost.is_some()
@@ -584,7 +587,10 @@ fn total_tokens(usage: iteron_protocol::Usage) -> u64 {
         .saturating_add(usage.thinking)
 }
 
-fn expire_restored(child: &mut Agent, mailbox: &LiveAgentMailbox) -> Result<(), KernelError> {
+pub(super) fn expire_restored(
+    child: &mut Agent,
+    mailbox: &LiveAgentMailbox,
+) -> Result<(), KernelError> {
     let Some(mut messages) = child.resumed.clone() else {
         return Ok(());
     };
@@ -605,7 +611,10 @@ fn expire_restored(child: &mut Agent, mailbox: &LiveAgentMailbox) -> Result<(), 
     Ok(())
 }
 
-fn expire_unrequested(child: &mut Agent, mailbox: &LiveAgentMailbox) -> Result<(), KernelError> {
+pub(super) fn expire_unrequested(
+    child: &mut Agent,
+    mailbox: &LiveAgentMailbox,
+) -> Result<(), KernelError> {
     let Some(mut messages) = child.working_set.clone() else {
         return Ok(());
     };

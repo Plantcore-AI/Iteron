@@ -689,8 +689,7 @@ pub(super) fn validate(snapshot: &AgentControllerSnapshot) -> Result<(), Control
         match receipt.request.epoch {
             None if receipt.request.agent_id == AgentIdV1(1) && receipt.turn_debit == 1 => {}
             Some(epoch)
-                if receipt.request.agent_id != AgentIdV1(1)
-                    && epoch.incarnation <= record.view.incarnation
+                if epoch.incarnation <= record.view.incarnation
                     && epoch.turn < record.next_turn => {}
             _ => {
                 return Err(ControllerError::Invalid(

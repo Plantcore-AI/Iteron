@@ -1,0 +1,195 @@
+//! Actual Main Agent lease, mailbox safe points and terminal settlement. Authority stays in the
+//! installed host; input envelopes are ordinary low-trust data in the real thread journal.
+use super::persistent_agents::{AgentControlPort, AgentSettlement, ParentRuntimeTurn};
+use super::{Agent, KernelError, persistent_agent_kernel};
+use iteron_agents::{AgentWorkflowTerminal, ControllerError};
+use iteron_protocol::{EventKind, Message, Outcome, Trust, TurnId};
+use sha2::{Digest, Sha256};
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::time::{Duration, Instant};
+
+pub(super) struct ParentTurnGuard {
+    control: Arc<dyn AgentControlPort>,
+    turn: ParentRuntimeTurn,
+    started: Instant,
+    old_interrupt: Option<Arc<AtomicBool>>,
+    old_deadline: Option<Instant>,
+    settled: bool,
+}
+impl Drop for ParentTurnGuard {
+    fn drop(&mut self) {
+        if self.settled {
+            return;
+        }
+        // Future drop/panic is not a cleanup proof. Keep the durable lease quarantined, including
+        // physical reservations and Delivered envelopes, rather than silently resetting it.
+        let _ = self.control.finish_parent_turn(
+            &self.turn,
+            &AgentSettlement {
+                turns: 0,
+                summary: "Main execution dropped; physical recovery is required".into(),
+                tokens: 0,
+                cost_microusd: 0,
+                effects_known: false,
+                terminal: AgentWorkflowTerminal::StoppedRecovery,
+            },
+            self.elapsed(),
+        );
+    }
+}
+impl ParentTurnGuard {
+    fn elapsed(&self) -> u64 {
+        u64::try_from(self.started.elapsed().as_millis())
+            .unwrap_or(u64::MAX)
+            .max(1)
+    }
+}
+impl Agent {
+    pub(super) fn begin_parent_runtime_bridge(
+        &mut self,
+        task: &str,
+    ) -> Result<Option<ParentTurnGuard>, KernelError> {
+        let Some(control) = self.persistent_agents.clone() else {
+            return Ok(None);
+        };
+        if self.persistent_mailbox.is_some() {
+            return Err(KernelError::AgentControl(ControllerError::StaleEpoch));
+        }
+        let old_interrupt = self.interrupt.clone();
+        let signal = old_interrupt
+            .clone()
+            .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+        // This exact descriptor identifies the existing thread submission. The original task is
+        // admitted by the normal Message WAL; this marker adds no duplicate instruction authority.
+        let source = format!(
+            "Main thread task source sha256:{:x}; original instruction is in the thread journal.",
+            Sha256::digest(task.as_bytes())
+        );
+        let turn = control
+            .begin_parent_turn(source, signal.clone())
+            .map_err(KernelError::AgentControl)?;
+        let old_deadline = self.run_deadline;
+        let remaining = turn
+            .view
+            .budget
+            .wall_ms
+            .saturating_sub(turn.view.usage.wall_ms);
+        let deadline = Instant::now()
+            .checked_add(Duration::from_millis(remaining))
+            .unwrap_or_else(Instant::now);
+        self.run_deadline = Some(old_deadline.map_or(deadline, |existing| existing.min(deadline)));
+        self.interrupt = Some(signal);
+        self.persistent_mailbox = Some(turn.mailbox.clone());
+        let guard = ParentTurnGuard {
+            control,
+            turn,
+            started: Instant::now(),
+            old_interrupt,
+            old_deadline,
+            settled: false,
+        };
+        if let Err(error) = persistent_agent_kernel::expire_restored(self, &guard.turn.mailbox) {
+            self.persistent_mailbox = None;
+            self.interrupt = guard.old_interrupt.clone();
+            self.run_deadline = guard.old_deadline;
+            return Err(error);
+        }
+        Ok(Some(guard))
+    }
+
+    /// Called at the real driver boundary before context projection. No UI queue is replaced.
+    pub(super) fn admit_parent_mailbox(
+        &mut self,
+        turn: TurnId,
+        messages: &mut Vec<Message>,
+    ) -> Result<(), KernelError> {
+        if self.persistent_agents.is_none() {
+            return Ok(());
+        }
+        let Some(mailbox) = self.persistent_mailbox.clone() else {
+            return Ok(());
+        };
+        if mailbox.stop_requested() {
+            return Ok(());
+        }
+        let inputs = mailbox.receive().map_err(KernelError::AgentControl)?;
+        for input in inputs {
+            let text = mailbox.render(&input).map_err(KernelError::AgentControl)?;
+            let message = Message::user_text(text);
+            self.emit_durable(
+                turn,
+                EventKind::Message {
+                    message: message.clone(),
+                },
+            )?;
+            // Sibling/child text never creates operator, capability, tool or write authority.
+            if input.sender.is_some() {
+                self.observed_trust = self.observed_trust.min(Trust::Untrusted);
+            }
+            messages.push(message);
+            self.context_estimator.invalidate_transcript();
+        }
+        Ok(())
+    }
+
+    /// Every controller-owned task proves physical process cleanup before returning a known
+    /// settlement. A timeout or an Unknown terminal is retained as recovery, never as successful reap.
+    pub(super) async fn settle_persistent_owned_processes(&self) -> bool {
+        let Some(processes) = self.registry.process_control() else {
+            return true;
+        };
+        if !matches!(
+            tokio::time::timeout(Duration::from_secs(5), processes.clean()).await,
+            Ok(Ok(_))
+        ) {
+            return false;
+        }
+        let health = processes.health();
+        health.active_jobs == 0 && health.cleanup_unknown_jobs == 0
+    }
+
+    pub(super) async fn finish_parent_runtime_bridge(
+        &mut self,
+        guard: Option<ParentTurnGuard>,
+        outcome: &Result<Outcome, KernelError>,
+    ) -> Result<(), KernelError> {
+        let Some(mut guard) = guard else {
+            return Ok(());
+        };
+        let processes = self.settle_persistent_owned_processes().await;
+        let expired =
+            persistent_agent_kernel::expire_unrequested(self, &guard.turn.mailbox).is_ok();
+        let terminal = match outcome {
+            Ok(Outcome::Done) => AgentWorkflowTerminal::Succeeded,
+            Ok(Outcome::Interrupted | Outcome::Drained) => AgentWorkflowTerminal::Cancelled,
+            _ => AgentWorkflowTerminal::Failed,
+        };
+        let summary = match outcome {
+            Ok(outcome) => format!("Main task settled: {outcome:?}"),
+            Err(error) => error.public_summary(),
+        };
+        let result = guard.control.finish_parent_turn(
+            &guard.turn,
+            &AgentSettlement {
+                turns: 0,
+                tokens: 0,
+                cost_microusd: 0,
+                summary: super::strict_utf8_head(
+                    &iteron_record::redact::scrub(&summary),
+                    iteron_protocol::agent_control::MAX_AGENT_TEXT_BYTES,
+                ),
+                effects_known: processes && expired && self.parent_effects_known(),
+                terminal,
+            },
+            guard.elapsed(),
+        );
+        // Even when durable terminalization fails, do not retain a mailbox from a prior epoch in
+        // the current Agent. The controller's poisoned/active ownership remains fail-closed.
+        self.persistent_mailbox = None;
+        self.interrupt = guard.old_interrupt.clone();
+        self.run_deadline = guard.old_deadline;
+        guard.settled = result.is_ok();
+        result.map_err(KernelError::AgentControl)
+    }
+}

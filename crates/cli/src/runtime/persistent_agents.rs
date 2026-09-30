@@ -17,6 +17,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::{Semaphore, watch};
 
+#[path = "persistent_agents/parent_turn.rs"]
+mod parent_turn;
+#[path = "persistent_agents/weak_mailbox.rs"]
+mod weak_mailbox;
+pub(crate) use parent_turn::ParentRuntimeTurn;
 #[path = "persistent_agents/provider_budget.rs"]
 mod provider_budget;
 #[path = "persistent_agents/workflow.rs"]
@@ -31,6 +36,22 @@ const MAX_INPUT_BATCH: usize = 128;
 /// decoded from command JSON. Queries are current observations and must not be memoized.
 #[async_trait]
 pub(crate) trait AgentControlPort: Send + Sync {
+    fn begin_parent_turn(
+        &self,
+        _source: String,
+        _stop: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<ParentRuntimeTurn, ControllerError> {
+        Err(ControllerError::Permission)
+    }
+    fn finish_parent_turn(
+        &self,
+        _turn: &ParentRuntimeTurn,
+        _result: &AgentSettlement,
+        _wall_ms: u64,
+    ) -> Result<(), ControllerError> {
+        Err(ControllerError::Permission)
+    }
+
     fn provider_budget_port(&self) -> Result<Arc<dyn RuntimeProviderBudgetPort>, ControllerError> {
         Err(ControllerError::Permission)
     }
@@ -147,6 +168,7 @@ pub(crate) struct LiveAgentMailbox {
     epoch: AgentEpochV1,
     port: Arc<dyn MailboxPort>,
     witnesses: Arc<Mutex<BTreeMap<AgentMessageIdV1, String>>>,
+    deferred: Arc<Mutex<Vec<AgentMailboxMessage>>>,
 }
 
 impl LiveAgentMailbox {
@@ -160,7 +182,16 @@ impl LiveAgentMailbox {
     }
 
     pub fn receive(&self) -> Result<Vec<AgentMailboxMessage>, ControllerError> {
-        self.port.deliver(self.id, self.epoch)
+        let mut deferred = self
+            .deferred
+            .lock()
+            .map_err(|_| ControllerError::Poisoned)?;
+        let fresh = self.port.deliver(self.id, self.epoch)?;
+        if deferred.len().saturating_add(fresh.len()) > MAX_INPUT_BATCH {
+            return Err(ControllerError::Capacity);
+        }
+        deferred.extend(fresh);
+        Ok(std::mem::take(&mut *deferred))
     }
 
     /// Render one host-authenticated source envelope. It cannot grant execution authority.
@@ -369,6 +400,7 @@ struct Shared<J> {
     permits: Arc<Semaphore>,
     parallel: usize,
     changed: watch::Sender<u64>,
+    parent_stop: Mutex<Option<parent_turn::ParentStop>>,
     pending_settlements: Mutex<BTreeMap<AgentIdV1, (AgentEpochV1, AgentSettlement, u64)>>,
 }
 
@@ -407,6 +439,7 @@ impl<J: AgentControllerJournal + Send + 'static> PersistentAgentHost<J> {
                 permits: Arc::new(Semaphore::new(parallel)),
                 parallel,
                 changed,
+                parent_stop: Mutex::new(None),
                 pending_settlements: Mutex::new(BTreeMap::new()),
             }),
         })
@@ -463,8 +496,9 @@ impl<J: AgentControllerJournal + Send + 'static> PersistentAgentHost<J> {
         let mailbox = LiveAgentMailbox {
             id: view.agent_id,
             epoch,
-            port: Arc::new(self.clone()),
+            port: Arc::new(weak_mailbox::WeakMailbox::new(self)),
             witnesses: Arc::new(Mutex::new(BTreeMap::new())),
+            deferred: Arc::new(Mutex::new(Vec::new())),
         };
         tokio::spawn(async move {
             let id = view.agent_id;
@@ -519,10 +553,11 @@ impl<J: AgentControllerJournal + Send + 'static> PersistentAgentHost<J> {
                 .remove(&id);
         }
         let views = self.list(AgentActor::Operator)?;
-        for view in views
-            .into_iter()
-            .filter(|agent| agent.state == AgentStateV1::Idle && agent.queued_messages > 0)
-        {
+        for view in views.into_iter().filter(|agent| {
+            agent.parent_id.is_some()
+                && agent.state == AgentStateV1::Idle
+                && agent.queued_messages > 0
+        }) {
             let Ok(permit) = self.shared.permits.clone().try_acquire_owned() else {
                 break;
             };
@@ -583,6 +618,22 @@ impl<J: AgentControllerJournal + Send + 'static> PersistentAgentHost<J> {
 
 #[async_trait]
 impl<J: AgentControllerJournal + Send + 'static> AgentControlPort for PersistentAgentHost<J> {
+    fn begin_parent_turn(
+        &self,
+        source: String,
+        stop: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<ParentRuntimeTurn, ControllerError> {
+        self.begin_parent(source, stop)
+    }
+    fn finish_parent_turn(
+        &self,
+        turn: &ParentRuntimeTurn,
+        result: &AgentSettlement,
+        wall_ms: u64,
+    ) -> Result<(), ControllerError> {
+        self.finish_parent(turn, result, wall_ms)
+    }
+
     fn provider_budget_port(&self) -> Result<Arc<dyn RuntimeProviderBudgetPort>, ControllerError> {
         let id = self
             .shared
@@ -710,6 +761,7 @@ impl<J: AgentControllerJournal + Send + 'static> AgentControlPort for Persistent
         };
         // Acceptance remains valid if later execution cannot start. A worker never starts twice
         // because begin_turn is the durable controller claim under the same state-owner mutex.
+        self.signal_parent_stop()?;
         let _ = self.dispatch_ready();
         Ok(reply)
     }

@@ -348,3 +348,136 @@ fn finite_zero_reservation_requires_exact_some_zero_identity() {
         .reserve_provider_budget(request(root, None, &scope, 1, 0))
         .unwrap();
 }
+
+#[test]
+fn main_parent_lease_owns_messages_and_physical_attempts_without_an_extra_resident() {
+    let mut controller = AgentController::open(Store::default(), config()).unwrap();
+    let child = child(&mut controller);
+    let root = controller.root_id();
+    let receipt = controller
+        .execute(
+            AgentActor::Agent(child),
+            "child-root-message",
+            AgentCommandV1::SendMessage {
+                agent_id: root,
+                text: "child result is data".into(),
+            },
+        )
+        .unwrap()
+        .message_id
+        .unwrap();
+    assert_eq!(
+        controller
+            .inspect(AgentActor::Operator, root)
+            .unwrap()
+            .state,
+        AgentStateV1::Idle
+    );
+    assert!(controller.begin_runtime_turn(root, 1).is_err());
+    let epoch = controller
+        .begin_parent_runtime_turn("actual main source descriptor".into(), 1)
+        .unwrap();
+    let inputs = controller.deliver(root, epoch, true).unwrap();
+    assert!(inputs.iter().any(|message| message.id == receipt));
+    controller
+        .mark_consumed(
+            root,
+            epoch,
+            &inputs.iter().map(|message| message.id).collect::<Vec<_>>(),
+        )
+        .unwrap();
+    let scope = sha('e');
+    controller.bind_provider_budget(root, &scope).unwrap();
+    let first = request(root, Some(epoch), &scope, 1, 200);
+    controller.reserve_provider_budget(first.clone()).unwrap();
+    settle(
+        &mut controller,
+        &first,
+        AgentProviderBudgetTerminal::Known {
+            tokens: 50,
+            cost_microusd: 50,
+        },
+        'f',
+    )
+    .unwrap();
+    let second = request(root, Some(epoch), &scope, 2, 200);
+    controller.reserve_provider_budget(second.clone()).unwrap();
+    settle(
+        &mut controller,
+        &second,
+        AgentProviderBudgetTerminal::NotDispatched,
+        'a',
+    )
+    .unwrap();
+    controller
+        .finish_turn_with_usage(
+            root,
+            epoch,
+            "actual main terminal",
+            AgentUsageV1 {
+                wall_ms: 5,
+                ..Default::default()
+            },
+            true,
+        )
+        .unwrap();
+    let view = controller.inspect(AgentActor::Operator, root).unwrap();
+    assert_eq!(view.state, AgentStateV1::Idle);
+    assert_eq!(view.usage.turns, 2); // One actual Main lease, two admitted physical slots.
+    assert_eq!(view.usage.tokens, 50);
+    assert!(
+        matches!(controller.message(AgentActor::Operator, receipt).unwrap().state,
+        iteron_protocol::agent_control::AgentMessageStateV1::Consumed { epoch: consumed } if consumed == epoch)
+    );
+}
+
+#[test]
+fn root_restart_rejects_old_unconsumed_inputs_and_needs_measured_recovery() {
+    let store = Store::default();
+    let mut controller = AgentController::open(store.clone(), config()).unwrap();
+    let root = controller.root_id();
+    let epoch = controller
+        .begin_parent_runtime_turn("real main source".into(), 1)
+        .unwrap();
+    let delivered = controller.deliver(root, epoch, true).unwrap();
+    drop(controller);
+    let mut controller = AgentController::open(store, config()).unwrap();
+    assert!(matches!(
+        controller.begin_parent_runtime_turn("new source".into(), 2),
+        Err(ControllerError::RecoveryRequired)
+    ));
+    assert!(
+        controller
+            .reconcile_stopped(root, epoch, true, false)
+            .is_err()
+    );
+    controller
+        .reconcile_stopped_with_usage(
+            root,
+            epoch,
+            true,
+            false,
+            AgentUsageV1 {
+                wall_ms: 10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    for message in delivered {
+        assert_eq!(
+            controller
+                .message(AgentActor::Operator, message.id)
+                .unwrap()
+                .state,
+            iteron_protocol::agent_control::AgentMessageStateV1::Rejected
+        );
+    }
+    let next = controller
+        .begin_parent_runtime_turn("next actual source".into(), 11)
+        .unwrap();
+    assert_ne!(epoch, next);
+    assert!(matches!(
+        controller.mark_consumed(root, epoch, &[]),
+        Err(ControllerError::StaleEpoch)
+    ));
+}

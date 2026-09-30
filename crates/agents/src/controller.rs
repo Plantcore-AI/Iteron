@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
+mod parent_turn;
 mod provider_budget;
 mod snapshot_validation;
 mod workflow_claim;
