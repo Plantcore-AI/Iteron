@@ -35,15 +35,10 @@ pub(super) struct FileJournal {
 }
 impl FileJournal {
     pub(super) fn open(path: &Path) -> Result<Self, MaintenanceReadError> {
-        provision_private(path)?;
         #[cfg(unix)]
         {
-            use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-            let directory = std::fs::OpenOptions::new()
-                .read(true)
-                .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_DIRECTORY)
-                .open(path)
-                .map_err(|_| MaintenanceReadError::ReconciliationNeeded)?;
+            use std::os::unix::fs::MetadataExt;
+            let directory = super::directory::provision(path)?;
             let metadata = directory
                 .metadata()
                 .map_err(|_| MaintenanceReadError::ReconciliationNeeded)?;
@@ -64,6 +59,7 @@ impl FileJournal {
         }
         #[cfg(windows)]
         {
+            super::directory::provision_windows(path)?;
             Ok(Self {
                 windows: iteron_support::durable_windows_state::WindowsSnapshotStore::open(
                     path,
@@ -234,59 +230,6 @@ impl MaintenanceJournal for FileJournal {
     }
 }
 
-fn provision_private(path: &Path) -> Result<(), MaintenanceReadError> {
-    provision_directory(path)
-}
-/// Persist every newly created Unix namespace link before publication can claim completion.
-/// Existing host directories are not chmodded, and a bounded walk refuses symlink components.
-pub(super) fn provision_directory(path: &Path) -> Result<(), MaintenanceReadError> {
-    fn ensure(path: &Path, depth: usize) -> Result<(), MaintenanceReadError> {
-        if depth >= 64 {
-            return Err(MaintenanceReadError::ReconciliationNeeded);
-        }
-        match std::fs::symlink_metadata(path) {
-            Ok(metadata) if metadata.is_dir() => return Ok(()),
-            Ok(_) => return Err(MaintenanceReadError::ReconciliationNeeded),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => return Err(MaintenanceReadError::ReconciliationNeeded),
-        }
-        let parent = path
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."));
-        ensure(parent, depth + 1)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-            match std::fs::DirBuilder::new().mode(0o700).create(path) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-                Err(_) => return Err(MaintenanceReadError::ReconciliationNeeded),
-            }
-            for directory in [path, parent] {
-                let file = std::fs::OpenOptions::new()
-                    .read(true)
-                    .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_DIRECTORY)
-                    .open(directory)
-                    .map_err(|_| MaintenanceReadError::ReconciliationNeeded)?;
-                file.sync_all()
-                    .map_err(|_| MaintenanceReadError::ReconciliationNeeded)?;
-            }
-            Ok(())
-        }
-        #[cfg(windows)]
-        {
-            // The initial shared helper only calls CreateDirectoryW. New path publication must
-            // wait for its independently reviewed native child+parent metadata flush adapter.
-            Err(MaintenanceReadError::Unavailable)
-        }
-        #[cfg(not(any(unix, windows)))]
-        {
-            Err(MaintenanceReadError::Unavailable)
-        }
-    }
-    ensure(path, 0)
-}
 #[cfg(unix)]
 fn open_at(directory: &File, name: &std::ffi::CStr, flags: libc::c_int) -> std::io::Result<File> {
     use std::os::fd::{AsRawFd, FromRawFd};

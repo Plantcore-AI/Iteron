@@ -2,10 +2,13 @@ use super::store::{FileJournal, MaintenanceJournal};
 use super::*;
 
 fn owner(directory: &Path) -> Arc<MaintenanceOwner> {
-    MaintenanceOwner::new(directory.join("journal"), hash(b"one exact host run"))
+    MaintenanceOwner::new(
+        directory.canonicalize().unwrap().join("journal"),
+        hash(b"one exact host run"),
+    )
 }
 fn target_path(directory: &Path) -> PathBuf {
-    let parent = directory.join("cache");
+    let parent = directory.canonicalize().unwrap().join("cache");
     #[cfg(windows)]
     iteron_support::durable_windows_state::provision_private_directory(&parent).unwrap();
     parent.join("token-calibration-v1.json")
@@ -306,4 +309,72 @@ fn blocked_real_writer_barrier_never_blocks_the_main_read_or_queue_port() {
         assert!(Instant::now() < deadline);
         std::thread::sleep(Duration::from_millis(5));
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlink_in_any_existing_ancestor_is_refused_before_native_publication() {
+    use std::os::unix::fs::symlink;
+    let directory = tempfile::tempdir().unwrap();
+    let base = directory.path().canonicalize().unwrap();
+    let real = base.join("real");
+    std::fs::create_dir(&real).unwrap();
+    symlink(&real, base.join("alias")).unwrap();
+    assert!(FileJournal::open(&base.join("alias/journal")).is_err());
+    assert!(!real.join("journal").exists());
+    assert!(
+        cache::CacheLease::open(
+            &base.join("alias/token-calibration-v1.json"),
+            MaintenanceKindV1::TokenCalibration
+        )
+        .is_err()
+    );
+    assert!(!real.join("token-calibration-v1.json").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn cache_crash_fixture_child() {
+    let Some(path) = std::env::var_os("ITERON_TEST_MAINTENANCE_PENDING_TARGET") else {
+        return;
+    };
+    let target = PathBuf::from(path);
+    let mut lease = cache::CacheLease::open(&target, MaintenanceKindV1::TokenCalibration).unwrap();
+    // This is the same actual pending barrier called immediately before native cache publication.
+    lease.begin_pending().unwrap();
+    std::fs::write(target.with_extension("ready"), b"pending barrier committed").unwrap();
+    std::thread::sleep(Duration::from_secs(30));
+}
+
+#[cfg(unix)]
+#[test]
+fn killed_pending_cache_writer_does_not_allow_another_run_to_overwrite() {
+    let directory = tempfile::tempdir().unwrap();
+    let target = target_path(directory.path());
+    let executable = std::env::current_exe().unwrap();
+    let mut child = std::process::Command::new(executable)
+        .arg("--exact")
+        .arg("runtime::advisory_maintenance::tests::cache_crash_fixture_child")
+        .arg("--nocapture")
+        .env("ITERON_TEST_MAINTENANCE_PENDING_TARGET", &target)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !target.with_extension("ready").exists() {
+        if Instant::now() >= deadline || child.try_wait().unwrap().is_some() {
+            let _ = child.kill();
+            panic!("pending cache fixture failed to reach its actual durable barrier");
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    child.kill().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while child.try_wait().unwrap().is_none() {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(!target.exists());
+    assert!(cache::CacheLease::open(&target, MaintenanceKindV1::TokenCalibration).is_err());
 }

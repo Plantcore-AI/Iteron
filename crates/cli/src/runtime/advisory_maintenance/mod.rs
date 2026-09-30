@@ -1,6 +1,7 @@
 //! Independent evidence for optional cache writes. This owner never shares an unlocked Rollout
 //! with a worker. Read projections advance only after the maintenance journal's own barrier.
 mod cache;
+mod directory;
 mod pool;
 mod store;
 #[cfg(test)]
@@ -335,6 +336,11 @@ impl MaintenanceOwner {
                 .writer
                 .lock()
                 .map_err(|_| MaintenanceReadError::ReconciliationNeeded)?;
+            // Another worker can fault the owner while this one waits for its physical writer.
+            // Recheck under that same lock before opening a store or starting another mutation.
+            if self.faulted.load(Ordering::Acquire) {
+                return Err(MaintenanceReadError::ReconciliationNeeded);
+            }
             if slot.is_none() {
                 *slot = Some(self.open_writer()?);
             }
@@ -453,6 +459,12 @@ impl MaintenanceOwner {
                 (!known).then_some("cache_publication_unknown"),
             );
             physical_known = known && terminal.is_ok();
+            if physical_known && target_lease.clear_after_terminal().is_err() {
+                // The payload/terminal proof stays known, but releasing its target marker is
+                // uncertain. Keep the physical lease and stop this owner's future admissions.
+                physical_known = false;
+                self.unavailable(MaintenanceReadError::ReconciliationNeeded);
+            }
             if !physical_known {
                 // Retain an absorbing target marker across processes. A stopped native call may
                 // still have published bytes; another run must not automatically rerun it.

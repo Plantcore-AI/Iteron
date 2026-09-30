@@ -37,13 +37,8 @@ impl CacheLease {
             .ok_or(MaintenanceReadError::ReconciliationNeeded)?;
         #[cfg(unix)]
         {
-            use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-            super::store::provision_directory(parent)?;
-            let directory = std::fs::OpenOptions::new()
-                .read(true)
-                .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_DIRECTORY)
-                .open(parent)
-                .map_err(|_| MaintenanceReadError::ReconciliationNeeded)?;
+            use std::os::unix::fs::MetadataExt;
+            let directory = super::directory::provision(parent)?;
             let metadata = directory
                 .metadata()
                 .map_err(|_| MaintenanceReadError::ReconciliationNeeded)?;
@@ -88,8 +83,7 @@ impl CacheLease {
         {
             // The native platform store refuses reparse points, shared/non-NTFS filesystems and
             // an inherited public DACL. Never claim Windows completion through Unix dir-sync.
-            iteron_support::durable_windows_state::provision_private_directory(parent)
-                .map_err(|_| MaintenanceReadError::ReconciliationNeeded)?;
+            super::directory::provision_windows(parent)?;
             let digest = hash(expected.as_bytes());
             let mut quarantine_guard =
                 iteron_support::durable_windows_state::WindowsSnapshotStore::open(
@@ -100,7 +94,7 @@ impl CacheLease {
             if quarantine_guard
                 .load()
                 .map_err(|_| MaintenanceReadError::ReconciliationNeeded)?
-                .is_some()
+                .is_some_and(|bytes| bytes != b"cache-write-completed-v1")
             {
                 return Err(MaintenanceReadError::ReconciliationNeeded);
             }
@@ -125,6 +119,7 @@ impl CacheLease {
         #[cfg(unix)]
         {
             use std::os::fd::AsRawFd;
+            self.begin_pending()?;
             // SAFETY: fixed private staging name and retained target directory descriptor.
             let removed =
                 unsafe { libc::unlinkat(self.directory.as_raw_fd(), self.pending.as_ptr(), 0) };
@@ -163,6 +158,7 @@ impl CacheLease {
         {
             // Existing advisory data can predate this writer's lease genesis. The native store
             // verifies and pins the exact cache file; its first flag means absent data only.
+            self.begin_pending()?;
             let first = self
                 .windows
                 .load()
@@ -178,6 +174,53 @@ impl CacheLease {
             Err(MaintenanceReadError::Unavailable)
         }
     }
+    pub(super) fn begin_pending(&mut self) -> Result<(), MaintenanceReadError> {
+        #[cfg(unix)]
+        {
+            self.lease
+                .write_all(b"cache-write-pending-v1")
+                .and_then(|()| self.lease.sync_all())
+                .and_then(|()| self.directory.sync_all())
+                .map_err(|_| MaintenanceReadError::ReconciliationNeeded)
+        }
+        #[cfg(windows)]
+        {
+            let first = self
+                .quarantine_guard
+                .load()
+                .map_err(|_| MaintenanceReadError::ReconciliationNeeded)?
+                .is_none();
+            self.quarantine_guard
+                .publish(b"cache-write-pending-v1", first)
+                .map_err(|_| MaintenanceReadError::ReconciliationNeeded)
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            Err(MaintenanceReadError::Unavailable)
+        }
+    }
+    pub(super) fn clear_after_terminal(&mut self) -> Result<(), MaintenanceReadError> {
+        #[cfg(unix)]
+        {
+            self.lease
+                .set_len(0)
+                .and_then(|()| self.lease.sync_all())
+                .and_then(|()| self.directory.sync_all())
+                .map_err(|_| MaintenanceReadError::ReconciliationNeeded)
+        }
+        #[cfg(windows)]
+        {
+            // A completed sentinel is a durable release, rather than deleting the guard's
+            // genesis. The next owner verifies the guard before taking a new native lease.
+            self.quarantine_guard
+                .publish(b"cache-write-completed-v1", false)
+                .map_err(|_| MaintenanceReadError::ReconciliationNeeded)
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            Err(MaintenanceReadError::Unavailable)
+        }
+    }
     pub(super) fn quarantine(&mut self) -> Result<(), MaintenanceReadError> {
         #[cfg(unix)]
         {
@@ -190,7 +233,7 @@ impl CacheLease {
         #[cfg(windows)]
         {
             self.quarantine_guard
-                .publish(b"cache-outcome-unknown-v1", true)
+                .publish(b"cache-outcome-unknown-v1", false)
                 .map_err(|_| MaintenanceReadError::ReconciliationNeeded)
         }
         #[cfg(not(any(unix, windows)))]
