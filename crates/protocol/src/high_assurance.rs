@@ -224,46 +224,6 @@ impl HighAssuranceAuditV1 {
         }
     }
 }
-/// Extra-verifier budget evidence belongs only to the harness's canonical verifier namespace.
-/// Partial, invalid, or user/tool-masquerading markers refuse instead of receiving scrub exemptions.
-pub fn verification_profile_identity<'a>(
-    turn: crate::TurnId,
-    id: &crate::EffectId,
-    tool_use_id: &str,
-    tool: &str,
-    capability: crate::Capability,
-    arguments: &'a serde_json::Value,
-) -> Result<Option<(&'a str, &'a str)>, &'static str> {
-    let policy = arguments.get("high_assurance_policy_sha256");
-    let scope = arguments.get("high_assurance_scope_sha256");
-    if policy.is_none() && scope.is_none() {
-        return Ok(None);
-    }
-    let policy = policy
-        .and_then(serde_json::Value::as_str)
-        .ok_or("extra_verifier_policy_marker_bounds")?;
-    let scope = scope
-        .and_then(serde_json::Value::as_str)
-        .ok_or("extra_verifier_scope_marker_bounds")?;
-    if fixed_hex::<32>(policy).is_none()
-        || fixed_hex::<32>(scope).is_none()
-        || tool != "verify"
-        || capability != crate::Capability::CodeExecuting
-    {
-        return Err("extra_verifier_marker_authority_bounds");
-    }
-    let prefix = format!("fx1-{:08x}-vf-", turn.0);
-    let ordinal =
-        id.0.strip_prefix(&prefix)
-            .and_then(|value| usize::from_str_radix(value, 16).ok())
-            .ok_or("extra_verifier_effect_namespace")?;
-    if id.0 != format!("{prefix}{ordinal:04x}")
-        || tool_use_id != format!("hx1-vf-{:08x}-{ordinal:04x}", turn.0)
-    {
-        return Err("extra_verifier_correlation_namespace");
-    }
-    Ok(Some((policy, scope)))
-}
 fn frame(digest: &mut Sha256, bytes: &[u8]) {
     digest.update((bytes.len() as u64).to_le_bytes());
     digest.update(bytes);
