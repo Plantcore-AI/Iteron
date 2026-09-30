@@ -1,3 +1,5 @@
+mod architecture_contract;
+mod architecture_inventory;
 mod client_conformance;
 mod conformance;
 mod docs_cli;
@@ -165,6 +167,9 @@ fn main() -> Result<()> {
     let registry = load_registry(&root)?;
 
     match args.as_slice() {
+        [group, command] if group == "architecture" && command == "inventory" => {
+            architecture_inventory::print(&root)?;
+        }
         [group, command] if group == "boundaries" && command == "check" => {
             let report = validate::validate(&root, &registry)?;
             let lifecycle = lifecycle_coverage::check(&root)?;
