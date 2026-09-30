@@ -3,6 +3,7 @@
 //! Public identity names the scrubbed bytes actually served. Content handles participate in the
 //! record owner's erasure and source-revocation graph. No client-supplied file locator is admitted.
 
+pub(crate) mod request_manifest;
 mod storage;
 mod structural;
 #[cfg(test)]
@@ -72,6 +73,8 @@ pub(crate) enum ArtifactTextSchema {
     FileDiff,
     FileSnapshot,
     CapturedReplacement,
+    ProviderRequestBody,
+    ProviderRequestManifest,
 }
 
 impl ArtifactTextSchema {
@@ -83,6 +86,8 @@ impl ArtifactTextSchema {
             Self::FileDiff => "iteron.file-diff.v1",
             Self::FileSnapshot => "iteron.file-snapshot.v1",
             Self::CapturedReplacement => "iteron.captured-replacement.v1",
+            Self::ProviderRequestBody => "iteron.provider-request-body.v1",
+            Self::ProviderRequestManifest => "iteron.provider-request-manifest.v1",
         }
     }
 
@@ -92,7 +97,12 @@ impl ArtifactTextSchema {
                 PrivateContentNamespace::ToolArtifact,
                 PrivateContentClass::ToolOutput,
             ),
-            Self::FinalAnswer | Self::FileDiff | Self::FileSnapshot | Self::CapturedReplacement => {
+            Self::FinalAnswer
+            | Self::FileDiff
+            | Self::FileSnapshot
+            | Self::CapturedReplacement
+            | Self::ProviderRequestBody
+            | Self::ProviderRequestManifest => {
                 (PrivateContentNamespace::Export, PrivateContentClass::Export)
             }
         }
@@ -167,6 +177,31 @@ struct ContentRef {
 }
 
 impl DurableArtifactStore {
+    /// The runtime writer already holds the authenticated Rollout and an actual durable effect
+    /// ticket. Capture that immutable authority once; never replay the complete WAL per physical
+    /// request. Public readers still use `open` and its independently verified metadata gates.
+    pub(crate) fn from_rollout_writer(
+        rollout: &iteron_record::Rollout,
+        workspace: &Path,
+    ) -> Result<Self, ArtifactStoreError> {
+        let runs = rollout
+            .path()
+            .parent()
+            .ok_or(ArtifactStoreError::Scope)?
+            .canonicalize()
+            .map_err(|_| ArtifactStoreError::Scope)?;
+        let workspace = workspace
+            .canonicalize()
+            .map_err(|_| ArtifactStoreError::Scope)?;
+        Ok(Self {
+            workspace_digest: hex::encode(Sha256::digest(workspace.to_string_lossy().as_bytes())),
+            runs,
+            tenant: rollout.tenant().clone(),
+            run: rollout.run_id().clone(),
+            workspace,
+        })
+    }
+
     /// Inputs come only from the authenticated runtime/rollout owner, never from wire JSON.
     pub(crate) fn open(
         runs_dir: &Path,

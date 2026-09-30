@@ -30,6 +30,8 @@ mod provider_stream_observer;
 mod provider_transport_attempt;
 mod provider_turn_evidence;
 mod request_context_evidence;
+mod request_manifest;
+mod request_manifest_runtime;
 mod submitted_turn_state;
 mod terminal_record;
 mod turn_publication;
@@ -2715,6 +2717,9 @@ impl Agent {
                     .is_none_or(|dispatch| dispatch.monetary_followup_safe);
                 let hedged_this_attempt = hedged_dispatch.is_some();
                 let attempt_receipt = {
+                    let request_observer = provider_ticket
+                        .as_ref()
+                        .map(|ticket| self.request_manifest_factory().for_ticket(ticket));
                     let authority = self.operator_authority();
                     let correlation = self.lifecycle_correlation(Some(turn_id));
                     let requested = self.requested_control() != InboundControl::None;
@@ -2786,7 +2791,7 @@ impl Agent {
                             request: &req,
                             // Root installs a trusted immutable observer for this exact physical
                             // ticket; absence remains explicitly unavailable capture evidence.
-                            request_observer: None,
+                            request_observer,
                             deadline: provider_deadline,
                             cancellation: provider_transport_attempt::ProviderCancellation {
                                 interrupt: provider_interrupt.clone(),

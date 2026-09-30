@@ -89,6 +89,7 @@ pub(super) struct HedgedProviderDispatch {
 }
 
 struct PreparedAttempt {
+    request_observer: Arc<dyn iteron_provider::request_capture::ProviderRequestObserver>,
     index: u8,
     ordinal: usize,
     physical_attempt: u32,
@@ -331,6 +332,7 @@ impl Agent {
             };
             cancellation.push((index, attempt_cancel.clone()));
             prepared.push(PreparedAttempt {
+                request_observer: self.request_manifest_factory().for_ticket(&ticket),
                 index,
                 ordinal,
                 physical_attempt,
@@ -788,7 +790,7 @@ async fn run_attempt(
                 buffer_overflow = Some(overflow);
             }
         };
-        provider_route::execute_admitted_provider_turn(
+        provider_route::execute_admitted_provider_turn_observed(
             attempt.provider,
             attempt.deadline,
             provider_route::ProviderCancellation {
@@ -800,6 +802,7 @@ async fn run_attempt(
             },
             &attempt.request,
             &mut on_item,
+            Some(attempt.request_observer.as_ref()),
         )
         .await
     };

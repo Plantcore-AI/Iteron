@@ -15,24 +15,6 @@ pub(super) struct ProviderCancellation {
     pub(super) allow_in_flight_past_deadline: bool,
 }
 
-pub(super) async fn execute_admitted_provider_turn(
-    provider: Arc<dyn Provider>,
-    deadline: Instant,
-    cancellation: ProviderCancellation,
-    request: &TurnRequest,
-    on_item: &mut (dyn FnMut(StreamItem) + Send),
-) -> Result<iteron_provider::TurnResult, KernelError> {
-    execute_admitted_provider_turn_observed(
-        provider,
-        deadline,
-        cancellation,
-        request,
-        on_item,
-        None,
-    )
-    .await
-}
-
 pub(super) async fn execute_admitted_provider_turn_observed(
     provider: std::sync::Arc<dyn Provider>,
     deadline: Instant,

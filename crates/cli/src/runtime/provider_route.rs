@@ -470,7 +470,8 @@ impl Agent {
                     settlement?;
                     return Err(KernelError::AgentControl(error));
                 }
-                let result = execute_admitted_provider_turn(
+                let request_observer = self.request_manifest_factory().for_ticket(&ticket);
+                let result = execute_admitted_provider_turn_observed(
                     provider.clone(),
                     self.run_deadline.unwrap_or_else(|| {
                         Instant::now()
@@ -486,6 +487,7 @@ impl Agent {
                     },
                     &governed_request,
                     &mut guarded,
+                    Some(request_observer.as_ref()),
                 )
                 .await;
                 let accounting = self.route_attempt_accounting(
@@ -653,7 +655,7 @@ impl Agent {
 
 // Existing ordinary/auxiliary/hedge call sites enter the same physical transport owner.
 pub(super) use super::provider_transport_attempt::{
-    ProviderCancellation, execute_admitted_provider_turn,
+    ProviderCancellation, execute_admitted_provider_turn_observed,
 };
 
 /// Classify one paid physical attempt after it crosses the effect boundary.
