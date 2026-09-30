@@ -82,6 +82,12 @@ fn key(scope: &str, effect: &str) -> String {
     format!("sha256:{:x}", hash.finalize())
 }
 impl AgentControllerSnapshot {
+    pub(super) fn primary_provider_scope_owner(&self, scope: &str) -> Option<AgentIdV1> {
+        self.provider_budget
+            .bindings
+            .iter()
+            .find_map(|(id, binding)| (binding.scope_sha256 == scope).then_some(*id))
+    }
     pub fn provider_budget_baseline(
         &self,
         scope: &str,
@@ -121,6 +127,16 @@ impl AgentProviderBudgetRequest {
 }
 
 impl<J: AgentControllerJournal> AgentController<J> {
+    pub(super) fn provider_budget_scope_owner(&self, scope: &str) -> Option<AgentIdV1> {
+        self.snapshot
+            .primary_provider_scope_owner(scope)
+            .or_else(|| {
+                self.snapshot
+                    .cohort_root_scope(scope)
+                    .then_some(self.root_id())
+            })
+    }
+
     /// Exact host run binding. Rebinding an existing identity to a new rollout cannot reset its
     /// budget or transplant outstanding receipts; model and WireControl cannot call this port.
     pub fn bind_provider_budget(
@@ -135,18 +151,21 @@ impl<J: AgentControllerJournal> AgentController<J> {
             ));
         }
         if let Some(binding) = self.snapshot.provider_budget.bindings.get(&id) {
-            return if binding.scope_sha256 == scope {
+            return if binding.scope_sha256 == scope
+                || (id == self.root_id() && self.snapshot.cohort_root_scope(scope))
+            {
                 Ok(())
             } else {
                 Err(ControllerError::RequestConflict)
             };
         }
-        if self
-            .snapshot
-            .provider_budget
-            .bindings
-            .values()
-            .any(|binding| binding.scope_sha256 == scope)
+        if self.snapshot.cohort_root_scope(scope)
+            || self
+                .snapshot
+                .provider_budget
+                .bindings
+                .values()
+                .any(|binding| binding.scope_sha256 == scope)
         {
             return Err(ControllerError::Permission);
         }
@@ -176,7 +195,11 @@ impl<J: AgentControllerJournal> AgentController<J> {
             .provider_budget
             .bindings
             .get(&request.agent_id)
-            .is_none_or(|binding| binding.scope_sha256 != request.scope_sha256)
+            .is_none_or(|binding| {
+                binding.scope_sha256 != request.scope_sha256
+                    && !(request.agent_id == self.root_id()
+                        && self.snapshot.cohort_root_scope(&request.scope_sha256))
+            })
         {
             return Err(ControllerError::Permission);
         }
@@ -687,7 +710,11 @@ pub(super) fn validate(snapshot: &AgentControllerSnapshot) -> Result<(), Control
             || state
                 .bindings
                 .get(&receipt.request.agent_id)
-                .is_none_or(|binding| binding.scope_sha256 != receipt.request.scope_sha256)
+                .is_none_or(|binding| {
+                    binding.scope_sha256 != receipt.request.scope_sha256
+                        && !(receipt.request.agent_id == AgentIdV1(1)
+                            && snapshot.cohort_root_scope(&receipt.request.scope_sha256))
+                })
             || receipt.terminal.is_some() != receipt.terminal_sha256.is_some()
             || receipt
                 .terminal_sha256

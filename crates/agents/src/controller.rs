@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
+mod cohort_binding;
 mod parent_turn;
 mod provider_budget;
 mod snapshot_validation;
@@ -117,6 +118,11 @@ pub struct AgentControllerSnapshot {
     workspace_witness: Option<AgentWorkspaceWitness>,
     #[serde(default)]
     provider_budget: provider_budget::ProviderBudgetState,
+    #[serde(
+        default,
+        skip_serializing_if = "cohort_binding::CohortBindings::is_empty"
+    )]
+    cohort_bindings: cohort_binding::CohortBindings,
 }
 
 impl AgentControllerSnapshot {
@@ -182,6 +188,7 @@ impl<J: AgentControllerJournal> AgentController<J> {
                     workflow_claims: BTreeMap::new(),
                     workspace_witness: None,
                     provider_budget: provider_budget::ProviderBudgetState::default(),
+                    cohort_bindings: cohort_binding::CohortBindings::default(),
                 };
                 journal
                     .commit(None, &snapshot)

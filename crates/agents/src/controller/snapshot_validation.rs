@@ -13,6 +13,7 @@ use iteron_protocol::agent_control::{
 pub(super) fn validate_snapshot(snapshot: &AgentControllerSnapshot) -> Result<(), ControllerError> {
     snapshot.config.validate()?;
     super::provider_budget::validate(snapshot)?;
+    super::cohort_binding::validate(snapshot)?;
     if let Some(witness) = &snapshot.workspace_witness {
         witness.validate()?;
         if !snapshot
