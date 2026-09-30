@@ -36,6 +36,7 @@ pub enum ContextSourceClass {
     ImageAttachment,
     FileAttachment,
     WorkflowEvidence,
+    TaskPlanReference,
     SubagentEvidence,
     Steering,
     QueuedSubmission,

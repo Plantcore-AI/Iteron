@@ -192,6 +192,8 @@ impl InstructionBundle {
         policy: InstructionDiscoveryPolicy,
     ) -> (String, Vec<CapturedContextMaterial>, u32) {
         let render = self.render_materialized_with_policy(policy);
+        let mut retained_bytes = 0usize;
+        let mut dropped = render.dropped;
         let materials = render
             .admit(
                 0,
@@ -200,9 +202,27 @@ impl InstructionBundle {
                 iteron_protocol::Trust::Untrusted,
             )
             .into_iter()
-            .map(|material| material.with_renderer(ContextMaterialRendererV1::FrontendInstructions))
+            .filter_map(|material| {
+                let mut material =
+                    material.with_renderer(ContextMaterialRendererV1::FrontendInstructions);
+                if material.captured_bytes()
+                    > crate::context_provenance::MAX_CONTEXT_PROVENANCE_BYTES
+                        .saturating_sub(retained_bytes)
+                {
+                    material = material.without_retained_source();
+                }
+                if material.captured_bytes()
+                    > crate::context_provenance::MAX_CONTEXT_PROVENANCE_BYTES
+                        .saturating_sub(retained_bytes)
+                {
+                    dropped = dropped.saturating_add(1);
+                    return None;
+                }
+                retained_bytes += material.captured_bytes();
+                Some(material)
+            })
             .collect();
-        (render.text, materials, render.dropped)
+        (render.text, materials, dropped)
     }
 
     pub(crate) fn render_materialized_with_policy(

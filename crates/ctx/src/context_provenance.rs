@@ -61,6 +61,7 @@ pub enum ContextMaterialVersionV1 {
         run_scope_sha256: String,
         source_event_seq: u64,
         record_revision: u64,
+        observation_event_seq: Option<u64>,
     },
 }
 
@@ -149,6 +150,26 @@ impl CapturedContextMaterial {
             .get_or_insert(ContextMaterialUnavailableV1::RetentionBound);
         result
     }
+    pub fn with_journal_observation(mut self, source_event_seq: u64) -> Self {
+        if let Some(ContextMaterialVersionV1::JournalRecord {
+            observation_event_seq,
+            ..
+        }) = &mut self.view.source_version
+        {
+            if source_event_seq > 0 {
+                *observation_event_seq = Some(source_event_seq);
+                self.view.material_id_sha256 = digest(
+                    &serde_json::to_vec(&(
+                        "iteron-context-journal-observation-v1",
+                        &self.view.material_id_sha256,
+                        source_event_seq,
+                    ))
+                    .unwrap_or_default(),
+                );
+            }
+        }
+        self
+    }
     fn bound_rendered(&mut self) {
         if self.rendered.len() > MAX_CONTEXT_MATERIAL_BYTES {
             self.rendered = Arc::from("");
@@ -158,7 +179,17 @@ impl CapturedContextMaterial {
         }
     }
     pub(crate) fn with_renderer(mut self, renderer: ContextMaterialRendererV1) -> Self {
-        self.view.renderer = renderer;
+        if self.view.renderer != renderer {
+            self.view.material_id_sha256 = digest(
+                &serde_json::to_vec(&(
+                    "iteron-context-renderer-scope-v1",
+                    &self.view.material_id_sha256,
+                    renderer,
+                ))
+                .unwrap_or_default(),
+            );
+            self.view.renderer = renderer;
+        }
         self
     }
     /// Caller supplies the exact host-owned journal scope and durable receipt. This records
@@ -186,6 +217,7 @@ impl CapturedContextMaterial {
                 run_scope_sha256: run_scope_sha256.into(),
                 source_event_seq,
                 record_revision: revision,
+                observation_event_seq: None,
             });
         } else {
             source = MaterialSource::unavailable(
@@ -196,23 +228,26 @@ impl CapturedContextMaterial {
         let mut render = MaterialRender::default();
         render.append(source, rendered);
         let mut captured = render.admit(0, rendered, rendered.len(), trust).remove(0);
-        captured.view.renderer = ContextMaterialRendererV1::JournalReference;
+        captured = captured.with_renderer(ContextMaterialRendererV1::JournalReference);
         captured.bound_rendered();
         captured
     }
 
     /// Frozen recorded context has actual rendered bytes but no recovered original-file owner.
     pub fn historical(text: &str, trust: Trust) -> Self {
+        Self::historical_source(ContextSourceClass::CompactionSummary, text, trust)
+    }
+    pub fn historical_source(source_class: ContextSourceClass, text: &str, trust: Trust) -> Self {
         let mut render = MaterialRender::default();
         render.append(
             MaterialSource::unavailable(
-                ContextSourceClass::CompactionSummary,
+                source_class,
                 ContextMaterialUnavailableV1::HistoricalSourceNotRetained,
             ),
             text,
         );
         let mut captured = render.admit(0, text, text.len(), trust).remove(0);
-        captured.view.renderer = ContextMaterialRendererV1::HistoricalInjection;
+        captured = captured.with_renderer(ContextMaterialRendererV1::HistoricalInjection);
         captured.bound_rendered();
         captured
     }
@@ -454,6 +489,7 @@ impl MaterialRender {
                 &source.version,
                 start,
                 end,
+                digest(before.as_bytes()),
             ))
             .unwrap_or_default();
             output.push(CapturedContextMaterial {

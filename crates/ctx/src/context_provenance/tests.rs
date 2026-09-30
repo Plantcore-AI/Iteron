@@ -216,6 +216,65 @@ fn actual_budget_clip_retains_original_file_commitment_and_only_the_admitted_fra
     std::fs::remove_dir_all(root).unwrap();
 }
 
+#[test]
+fn exact_journal_source_and_observed_rendering_have_distinct_immutable_identities() {
+    let scope = "a".repeat(64);
+    let record = r#"{"type":"task_plan_updated_v1","snapshot":{"revision":7}}"#;
+    let first = CapturedContextMaterial::journal_record(
+        ContextSourceClass::TaskPlanReference,
+        &scope,
+        19,
+        7,
+        record,
+        "plan state: current",
+        Trust::Untrusted,
+    );
+    let second = CapturedContextMaterial::journal_record(
+        ContextSourceClass::TaskPlanReference,
+        &scope,
+        19,
+        7,
+        record,
+        "plan state: changed",
+        Trust::Untrusted,
+    );
+    assert_eq!(first.source_bytes(), Some(record));
+    assert_eq!(first.view().source_version, second.view().source_version);
+    assert_ne!(
+        first.view().material_id_sha256,
+        second.view().material_id_sha256
+    );
+    let observed = first.clone().with_journal_observation(23);
+    assert_ne!(
+        first.view().material_id_sha256,
+        observed.view().material_id_sha256
+    );
+    assert!(matches!(
+        &observed.view().source_version,
+        Some(ContextMaterialVersionV1::JournalRecord {
+            source_event_seq: 19,
+            record_revision: 7,
+            observation_event_seq: Some(23),
+            ..
+        })
+    ));
+    let invalid = CapturedContextMaterial::journal_record(
+        ContextSourceClass::TaskPlanReference,
+        "not a host journal scope",
+        0,
+        7,
+        record,
+        "actual reference rendering",
+        Trust::Untrusted,
+    );
+    assert!(invalid.source_bytes().is_none());
+    assert!(invalid.view().path.is_none());
+    assert_eq!(
+        invalid.view().source_unavailable,
+        Some(ContextMaterialUnavailableV1::InvalidSourceIdentity)
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn actual_refused_symlink_import_has_an_explicit_unavailable_source_without_target_bytes() {
