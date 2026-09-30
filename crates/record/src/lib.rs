@@ -54,7 +54,8 @@ mod cache_io;
 
 pub use checkpoint::{
     Snapshot, SnapshotInventory, checkpoint, checkpoint_excluding_runtime_state,
-    checkpoint_supported, rewind_workspace, rewind_workspace_with_policy, snapshot_inventory,
+    checkpoint_supported, rewind_workspace, rewind_workspace_excluding_runtime_state,
+    rewind_workspace_with_policy, snapshot_inventory,
 };
 pub use session::{
     DeleteSessionError, Provenance, ScopedEvent, SessionAncestryReceipt, SessionMeta, SessionPage,
