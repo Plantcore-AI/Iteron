@@ -199,11 +199,7 @@ pub(super) fn handle_key(
             }
         }
         KeyCode::Enter | KeyCode::Char('j') if ctrl || alt || shift => {
-            app.pending_mcp_input
-                .as_mut()
-                .expect("the MCP form owns this key")
-                .editor
-                .newline();
+            active_editor(app).newline();
         }
         KeyCode::Left if alt => active_editor(app).word_left(),
         KeyCode::Right if alt => active_editor(app).word_right(),
