@@ -5,10 +5,10 @@ use super::{
     FRAME_COALESCE, InputThreadControl, Instant, PreparedAdoption, PreparedAdoptionResult,
     PromptHistoryMode, ProviderDirectory, RouteView, SPINNER_TICK, Session, TERMINAL_READ_SLICE,
     TermGuard, Terminal, TerminalOptions, VecDeque, Viewport, app_server, apply_server_event,
-    apply_session_page_result, apply_transcript_effect_event, block, cached_workspace_dirty,
-    dispatch_slash_command, draw, finish_attachment_effect, hyperlink, input_dispatch, keymap,
-    local_job_wake, next_wake, notification, product_projection, project_recorded_transcript,
-    prompt_history, report_stopped_workflows, restore_terminal, schedule_transcript_viewer_effect,
+    apply_transcript_effect_event, block, cached_workspace_dirty, dispatch_slash_command, draw,
+    finish_attachment_effect, hyperlink, input_dispatch, keymap, local_job_wake, next_wake,
+    notification, product_projection, project_recorded_transcript, prompt_history,
+    report_stopped_workflows, restore_terminal, schedule_transcript_viewer_effect,
     service_input_control, session_display_name, slash_command_body, startup,
     submit_queued_model_input, submit_turn, terminal_input, theme, transcript_effect,
     update_keymap_status, wait_for_forced_server_shutdown, wait_for_server_shutdown, wake_until,
@@ -459,16 +459,9 @@ pub async fn run(
             );
             redraw = true;
         }
-        if app
-            .session_picker_job
-            .as_ref()
-            .is_some_and(|job| job.is_finished())
-        {
-            let job = app
-                .session_picker_job
-                .take()
-                .expect("finished session picker job was present");
-            redraw |= apply_session_page_result(&mut app, job.await);
+        if let Some(update) = app.pickers.poll_page().await {
+            for warning in update.warnings { app.note(block::NoticeLevel::Info, warning); }
+            redraw |= update.changed;
         }
         if app
             .session_preview_job
@@ -804,7 +797,7 @@ pub async fn run(
         if let Some(due) = resize_due {
             wake = Some(wake.map_or(due, |scheduled| scheduled.min(due)));
         }
-        let local_job_active = app.session_picker_job.is_some()
+        let local_job_active = app.pickers.has_worker()
             || app.session_preview_job.is_some()
             || app.session_adoption_job.is_some()
             || app.completions.has_worker()
@@ -968,9 +961,7 @@ pub async fn run(
             persisted_history_len = history_len;
         }
     }
-    if let Some(job) = app.session_picker_job.take() {
-        job.abort();
-    }
+    let _ = app.pickers.close();
     if let Some(job) = app.session_preview_job.take() {
         job.abort();
     }

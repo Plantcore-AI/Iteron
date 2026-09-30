@@ -32,15 +32,15 @@ fn max_background_session_index_rebuilds() -> usize {
     .clamp(1, 8)
 }
 
-fn session_picker_page_size() -> usize {
+pub(super) fn session_picker_page_size() -> usize {
     iteron_tunables::param_integer(
         "cli.tui.session_picker.session_picker_page_size",
         SESSION_PICKER_PAGE_SIZE,
     )
-    .max(1)
+    .clamp(1, 64)
 }
 
-fn session_picker_prefetch_distance() -> usize {
+pub(super) fn session_picker_prefetch_distance() -> usize {
     iteron_tunables::param_integer(
         "cli.tui.session_picker.session_picker_prefetch_distance",
         SESSION_PICKER_PREFETCH_DISTANCE,
@@ -197,39 +197,10 @@ pub(super) fn open_session_picker(app: &mut App, session: &Session) {
         .file_stem()
         .and_then(|stem| stem.to_str())
         .unwrap_or_default();
-    if let Some(previous) = app.session_picker_job.take() {
-        previous.abort();
-    }
     if let Some(previous) = app.session_preview_job.take() {
         previous.abort();
     }
-    app.session_picker_backing = None;
-    app.session_picker_generation = app.session_picker_generation.wrapping_add(1);
-    let generation = app.session_picker_generation;
-    let mut loading = PickItem::flat(
-        "Loading sessions…",
-        "reading your saved conversations",
-        false,
-        PickAction::Info,
-    );
-    loading.enabled = false;
-    loading.disabled_reason = Some("Esc to close while sessions load".into());
-    app.picker = Some(Picker {
-        title: "Sessions · resume here".into(),
-        items: vec![loading],
-        sel: 0,
-        query: String::new(),
-        saved_theme: None,
-    });
-    let current_run = current_run.to_owned();
-    app.session_picker_job = Some(spawn_session_page_load(
-        runs,
-        current_run,
-        generation,
-        None,
-        session_picker_page_size(),
-        true,
-    ));
+    app.pickers.open_sessions(runs, current_run.to_owned());
 }
 
 pub(super) fn load_session_page(
@@ -346,7 +317,7 @@ fn rebuild_session_index(runs: &Path) -> Result<(), String> {
     ))
 }
 
-fn failed_session_page(
+pub(super) fn failed_session_page(
     runs: PathBuf,
     current_run: String,
     generation: u64,
@@ -424,103 +395,20 @@ pub(super) fn spawn_session_page_load(
     })
 }
 
+#[cfg(test)]
 pub(super) fn apply_session_page_result(
     app: &mut App,
     result: Result<SessionPageResult, tokio::task::JoinError>,
 ) -> bool {
-    if app
-        .picker
-        .as_ref()
-        .is_none_or(|picker| picker.title != "Sessions · resume here")
-    {
-        return false;
-    }
-    let mut page = match result {
-        Ok(page) if page.generation == app.session_picker_generation => page,
-        Ok(_) => return false,
-        Err(_) => failed_session_page(
-            PathBuf::new(),
-            String::new(),
-            app.session_picker_generation,
-            "Session loading failed. Close and reopen /resume to retry.",
-        ),
-    };
-    if let Some(warning) = page.warning.take() {
+    let update = app.pickers.apply_page(result);
+    for warning in update.warnings {
         app.note(block::NoticeLevel::Info, warning);
     }
-    if page.replace {
-        if page.items.is_empty() {
-            let mut empty = PickItem::flat(
-                "No sessions recorded yet",
-                "start a prompt to create one",
-                false,
-                PickAction::Info,
-            );
-            empty.enabled = false;
-            page.items.push(empty);
-        }
-        if let Some(picker) = app.picker.as_mut() {
-            picker.sel = initial_picker_selection(&page.items);
-            picker.items = page.items;
-        }
-        app.session_picker_backing = Some(SessionPickerBacking {
-            runs: page.runs,
-            current_run: page.current_run,
-            next_cursor: page.next_cursor,
-            has_more: page.has_more,
-            generation: page.generation,
-        });
-    } else if let Some(backing) = app.session_picker_backing.as_mut()
-        && backing.generation == page.generation
-    {
-        backing.next_cursor = page.next_cursor;
-        backing.has_more = page.has_more;
-        if let Some(picker) = app.picker.as_mut() {
-            picker.items.extend(page.items);
-        }
-    }
-    maybe_prefetch_session_page(app);
-    true
+    update.changed
 }
 
-/// Start the next storage page once the selection reaches the configured prefetch distance. Only
-/// an opaque generation-bound byte cursor is retained; no full session list exists in the TUI.
 pub(super) fn maybe_prefetch_session_page(app: &mut App) {
-    if app.session_picker_job.is_some() {
-        return;
-    }
-    let Some(picker) = app
-        .picker
-        .as_ref()
-        .filter(|picker| picker.title == "Sessions · resume here")
-    else {
-        return;
-    };
-    let Some(backing) = app.session_picker_backing.as_ref() else {
-        return;
-    };
-    if !backing.has_more
-        || backing.next_cursor.is_none()
-        || picker
-            .sel
-            .saturating_add(session_picker_prefetch_distance())
-            < picker.items.len()
-    {
-        return;
-    }
-    let page_size = session_picker_page_size();
-    let runs = backing.runs.clone();
-    let current_run = backing.current_run.clone();
-    let generation = backing.generation;
-    let cursor = backing.next_cursor;
-    app.session_picker_job = Some(spawn_session_page_load(
-        runs,
-        current_run,
-        generation,
-        cursor,
-        page_size,
-        false,
-    ));
+    app.pickers.prefetch();
 }
 
 pub(super) fn start_session_preview(app: &mut App, session: &Session, run: String) {

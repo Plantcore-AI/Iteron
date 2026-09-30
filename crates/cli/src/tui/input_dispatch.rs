@@ -87,7 +87,7 @@ pub(super) async fn dispatch<B: ratatui::backend::Backend>(
         // A modal picker owns bracketed paste as well as physical keys. Consume a bounded,
         // sanitized query here before the generic composer/image path can mutate draft
         // text, cursor, or attachments.
-        CEvent::Paste(pasted) if app.picker.is_some() => {
+        CEvent::Paste(pasted) if app.pickers.is_open() => {
             let _ = app.picker_paste(&pasted);
         }
         // Bracketed paste: insert the WHOLE pasted text (incl. newlines) into the editor
@@ -267,7 +267,7 @@ pub(super) async fn dispatch<B: ratatui::backend::Backend>(
 
             // An open picker OWNS the keyboard (C6): route the key to it, apply on accept
             // (take-then-apply, C5), and fully consume — no fall-through to editor/history/mode.
-            if app.picker.is_some() {
+            if app.pickers.is_open() {
                 let picker_event = app.picker_key_with_modifiers(k.code, k.modifiers);
                 maybe_prefetch_session_page(app);
                 match picker_event {

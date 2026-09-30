@@ -89,7 +89,7 @@ pub(super) fn open_tunables_picker_with_runtime_policy(
     picker.append_query_text(&initial_query);
     let visible = picker.visible_indices();
     picker.normalize_selection(&visible);
-    app.picker = Some(picker);
+    app.pickers.open(picker);
 }
 
 /// Build a picker's items, pre-selecting the current value, and open it — refusing (with a Notice)
@@ -144,7 +144,7 @@ pub(super) fn open_picker(
                 })
                 .collect();
             let saved = app.theme.clone();
-            app.picker = Some(Picker {
+            app.pickers.open(Picker {
                 title: "Theme".into(),
                 items,
                 sel: 0,
@@ -157,7 +157,7 @@ pub(super) fn open_picker(
     };
     let sel = initial_picker_selection(&items);
     expand_selection_ancestors(&mut items, sel);
-    app.picker = Some(Picker {
+    app.pickers.open(Picker {
         title: title.into(),
         items,
         sel,

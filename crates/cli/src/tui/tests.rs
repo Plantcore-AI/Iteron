@@ -464,7 +464,7 @@ mod tests {
     #[test]
     fn picker_query_reveals_leaf_and_ancestors_then_accepts_with_one_enter() {
         let mut app = App::new();
-        app.picker = Some(Picker {
+        app.pickers.open(Picker {
             title: "model".into(),
             items: model_tree(),
             sel: 0,
@@ -475,7 +475,7 @@ mod tests {
         for ch in "gpt-5".chars() {
             app.picker_key(KeyCode::Char(ch));
         }
-        let picker = app.picker.as_ref().unwrap();
+        let picker = app.pickers.view().unwrap();
         assert_eq!(picker.visible_indices(), vec![0, 1, 2]);
         assert_eq!(picker.sel, 2, "search focuses the actionable matching leaf");
         assert!(matches!(
@@ -490,7 +490,7 @@ mod tests {
     #[test]
     fn picker_query_is_cjk_safe_bounded_and_has_an_explicit_no_result_state() {
         let mut app = App::new();
-        app.picker = Some(Picker {
+        app.pickers.open(Picker {
             title: "model".into(),
             items: vec![
                 pick("通义千问", PickAction::Info),
@@ -503,22 +503,22 @@ mod tests {
         for ch in "智谱".chars() {
             app.picker_key(KeyCode::Char(ch));
         }
-        assert_eq!(app.picker.as_ref().unwrap().visible_indices(), vec![1]);
-        assert_eq!(app.picker.as_ref().unwrap().sel, 1);
+        assert_eq!(app.pickers.view().unwrap().visible_indices(), vec![1]);
+        assert_eq!(app.pickers.view().unwrap().sel, 1);
 
         app.picker_key(KeyCode::Char('x'));
-        assert!(app.picker.as_ref().unwrap().visible_indices().is_empty());
+        assert!(app.pickers.view().unwrap().visible_indices().is_empty());
         assert!(render_text(&mut app, 80, 18).contains("No matches"));
         for _ in 0..(MAX_PICKER_QUERY_CHARS + 20) {
             app.picker_key(KeyCode::Char('a'));
         }
-        assert!(app.picker.as_ref().unwrap().query.chars().count() <= MAX_PICKER_QUERY_CHARS);
+        assert!(app.pickers.view().unwrap().query.chars().count() <= MAX_PICKER_QUERY_CHARS);
 
         app.picker_key(KeyCode::Esc);
-        assert!(app.picker.is_some(), "first Esc clears the query");
-        assert!(app.picker.as_ref().unwrap().query.is_empty());
+        assert!(app.pickers.is_open(), "first Esc clears the query");
+        assert!(app.pickers.view().unwrap().query.is_empty());
         app.picker_key(KeyCode::Esc);
-        assert!(app.picker.is_none(), "second Esc closes the picker");
+        assert!(!app.pickers.is_open(), "second Esc closes the picker");
     }
 
     #[test]
@@ -534,7 +534,7 @@ mod tests {
         let original_text = app.editor.text();
         let original_cursor = app.editor.cursor();
         let original_attachments = app.editor.attachments().clone();
-        app.picker = Some(Picker {
+        app.pickers.open(Picker {
             title: "model".into(),
             items: vec![
                 pick("通义千问", PickAction::Info),
@@ -546,7 +546,7 @@ mod tests {
         });
 
         assert!(app.picker_paste("智谱\n\u{1b}\u{202e}"));
-        let picker = app.picker.as_ref().expect("picker remains open");
+        let picker = app.pickers.view().expect("picker remains open");
         assert_eq!(picker.query, "智谱 ");
         assert_eq!(picker.visible_indices(), vec![1]);
         assert_eq!(picker.sel, 1);
@@ -561,13 +561,9 @@ mod tests {
             .filter_map(char::from_u32)
             .collect();
         for unsafe_character in unsafe_codepoints {
-            app.picker
-                .as_mut()
-                .expect("picker remains open")
-                .query
-                .clear();
+            app.pickers.clear_query();
             assert!(app.picker_paste(&format!("安全{unsafe_character}😀")));
-            let query = &app.picker.as_ref().expect("picker remains open").query;
+            let query = &app.pickers.view().expect("picker remains open").query;
             assert!(query.contains("安全"));
             assert!(query.contains('😀'));
             assert!(!query.contains(unsafe_character));
@@ -575,7 +571,7 @@ mod tests {
         }
 
         assert!(app.picker_paste(&"无匹配😀".repeat(2_000)));
-        let picker = app.picker.as_ref().expect("picker remains open");
+        let picker = app.pickers.view().expect("picker remains open");
         assert!(picker.visible_indices().is_empty());
         assert!(picker.query.chars().count() <= MAX_PICKER_QUERY_CHARS);
         assert!(picker.query.len() <= MAX_PICKER_QUERY_BYTES);
@@ -600,7 +596,7 @@ mod tests {
         for ch in "route_selection".chars() {
             app.picker_key(KeyCode::Char(ch));
         }
-        let picker = app.picker.as_ref().expect("tunables picker opens");
+        let picker = app.pickers.view().expect("tunables picker opens");
         assert_eq!(picker.items.len(), iteron_tunables::EXPECTED_FAMILY_COUNT);
         assert_eq!(picker.query, "route_selection");
         assert_eq!(picker.visible_indices(), vec![0]);
@@ -995,7 +991,7 @@ mod tests {
     #[test]
     fn session_picker_one_enter_selects_the_run_to_adopt_in_process() {
         let mut app = App::new();
-        app.picker = Some(Picker {
+        app.pickers.open(Picker {
             title: "sessions".into(),
             items: session_picker_items(
                 vec![session_meta(
@@ -1053,46 +1049,48 @@ mod tests {
         assert!(page.replace);
         assert!(page.items.len() <= 25);
         let mut app = App::new();
-        app.session_picker_generation = 7;
-        app.session_picker_backing = Some(SessionPickerBacking {
-            runs: runs.clone(),
-            current_run: String::new(),
-            next_cursor: page.next_cursor,
-            has_more: page.has_more,
-            generation: 7,
-        });
-        app.picker = Some(Picker {
-            title: "Sessions · resume here".into(),
-            items: page.items,
-            sel: 0,
-            query: String::new(),
-            saved_theme: None,
-        });
+        app.pickers.install_session_fixture(
+            Picker {
+                title: "Sessions · resume here".into(),
+                items: page.items,
+                sel: 0,
+                query: String::new(),
+                saved_theme: None,
+            },
+            7,
+            Some(SessionPickerBacking {
+                runs: runs.clone(),
+                current_run: String::new(),
+                next_cursor: page.next_cursor,
+                has_more: page.has_more,
+                generation: 7,
+            }),
+        );
 
         maybe_prefetch_session_page(&mut app);
-        assert!(
-            app.session_picker_job.is_none(),
-            "an exhausted cursor stops"
-        );
-        assert!(!app.session_picker_backing.as_ref().unwrap().has_more);
+        assert!(!app.pickers.has_worker(), "an exhausted cursor stops");
+        assert!(!app.pickers.has_more());
         let _ = std::fs::remove_dir_all(runs);
     }
 
     fn loading_session_picker(generation: u64) -> App {
         let mut app = App::new();
-        app.session_picker_generation = generation;
-        app.picker = Some(Picker {
-            title: "Sessions · resume here".into(),
-            items: vec![PickItem::flat(
-                "Loading sessions…",
-                "reading saved conversations",
-                false,
-                PickAction::Info,
-            )],
-            sel: 0,
-            query: String::new(),
-            saved_theme: None,
-        });
+        app.pickers.install_session_fixture(
+            Picker {
+                title: "Sessions · resume here".into(),
+                items: vec![PickItem::flat(
+                    "Loading sessions…",
+                    "reading saved conversations",
+                    false,
+                    PickAction::Info,
+                )],
+                sel: 0,
+                query: String::new(),
+                saved_theme: None,
+            },
+            generation,
+            None,
+        );
         app
     }
 
@@ -1160,7 +1158,7 @@ mod tests {
         .unwrap();
         let mut app = loading_session_picker(9);
         assert!(apply_session_page_result(&mut app, Ok(page)));
-        let picker = app.picker.as_ref().unwrap();
+        let picker = app.pickers.view().unwrap();
         assert!(picker.items.iter().any(
             |item| matches!(&item.action, PickAction::AdoptRun(id) if id == "saved-conversation")
         ));
@@ -1185,8 +1183,8 @@ mod tests {
         assert!(rendered.contains("retry"), "{rendered}");
         assert!(!rendered.contains("Loading sessions"));
         assert!(
-            app.picker
-                .as_ref()
+            app.pickers
+                .view()
                 .unwrap()
                 .items
                 .iter()
@@ -1331,7 +1329,7 @@ mod tests {
     #[test]
     fn picker_nav_wraps_and_accept_returns_action() {
         let mut app = App::new();
-        app.picker = Some(Picker {
+        app.pickers.open(Picker {
             title: "effort".into(),
             sel: 0,
             query: String::new(),
@@ -1342,13 +1340,13 @@ mod tests {
             ],
         });
         app.picker_key(KeyCode::Down);
-        assert_eq!(app.picker.as_ref().unwrap().sel, 1);
+        assert_eq!(app.pickers.view().unwrap().sel, 1);
         let accepted = matches!(
             app.picker_key(KeyCode::Enter),
             Some(PickerEvent::Accept(PickAction::SetEffort(Effort::High)))
         );
         assert!(accepted, "Enter returns the selected action");
-        assert!(app.picker.is_none(), "picker closes on accept");
+        assert!(!app.pickers.is_open(), "picker closes on accept");
     }
 
     #[test]
@@ -1368,7 +1366,7 @@ mod tests {
         assert_eq!(selection, 2, "first actionable model should be focused");
         expand_selection_ancestors(&mut items, selection);
         let mut app = App::new();
-        app.picker = Some(Picker {
+        app.pickers.open(Picker {
             title: "model".into(),
             items,
             sel: selection,
@@ -1376,8 +1374,8 @@ mod tests {
             saved_theme: None,
         });
         assert!(
-            app.picker
-                .as_ref()
+            app.pickers
+                .view()
                 .unwrap()
                 .visible_indices()
                 .contains(&selection)
@@ -1403,7 +1401,7 @@ mod tests {
         assert!(items[selection].enabled);
 
         let mut app = App::new();
-        app.picker = Some(Picker {
+        app.pickers.open(Picker {
             title: "permissions".into(),
             items,
             sel: selection,
@@ -1419,7 +1417,7 @@ mod tests {
         };
         rules.try_set_cap(capability, verdict).unwrap();
         assert_eq!(rules.cap_rule(capability), Some(verdict));
-        assert!(app.picker.is_none());
+        assert!(!app.pickers.is_open());
     }
 
     #[test]
@@ -1446,7 +1444,7 @@ mod tests {
             .unwrap();
         assert!(!items[unsafe_auto].enabled);
         let mut app = App::new();
-        app.picker = Some(Picker {
+        app.pickers.open(Picker {
             title: "permissions".into(),
             items,
             sel: unsafe_auto,
@@ -1457,7 +1455,7 @@ mod tests {
             app.picker_key(KeyCode::Enter),
             Some(PickerEvent::Consumed)
         ));
-        assert!(app.picker.is_some(), "unsafe choice must remain unapplied");
+        assert!(app.pickers.is_open(), "unsafe choice must remain unapplied");
         assert!(
             rules
                 .try_set_cap(Capability::TrustMutating, Verdict::Auto)
@@ -1469,7 +1467,7 @@ mod tests {
     #[test]
     fn hierarchical_picker_expands_collapses_and_moves_to_parent() {
         let mut app = App::new();
-        app.picker = Some(Picker {
+        app.pickers.open(Picker {
             title: "model".into(),
             sel: 0,
             query: String::new(),
@@ -1477,50 +1475,47 @@ mod tests {
             items: model_tree(),
         });
 
-        assert_eq!(app.picker.as_ref().unwrap().visible_indices(), vec![0, 4]);
+        assert_eq!(app.pickers.view().unwrap().visible_indices(), vec![0, 4]);
         assert!(matches!(
             app.picker_key(KeyCode::Enter),
             Some(PickerEvent::Consumed)
         ));
         assert_eq!(
-            app.picker.as_ref().unwrap().visible_indices(),
+            app.pickers.view().unwrap().visible_indices(),
             vec![0, 1, 4],
             "Enter expands a provider header"
         );
 
         app.picker_key(KeyCode::Down);
-        assert_eq!(app.picker.as_ref().unwrap().sel, 1);
+        assert_eq!(app.pickers.view().unwrap().sel, 1);
         app.picker_key(KeyCode::Right);
         assert_eq!(
-            app.picker.as_ref().unwrap().visible_indices(),
+            app.pickers.view().unwrap().visible_indices(),
             vec![0, 1, 2, 3, 4],
             "Right expands a family header"
         );
 
         app.picker_key(KeyCode::Down);
-        assert_eq!(app.picker.as_ref().unwrap().sel, 2);
+        assert_eq!(app.pickers.view().unwrap().sel, 2);
         app.picker_key(KeyCode::Left);
         assert_eq!(
-            app.picker.as_ref().unwrap().sel,
+            app.pickers.view().unwrap().sel,
             1,
             "Left on a leaf moves to its parent"
         );
         app.picker_key(KeyCode::Left);
-        assert_eq!(
-            app.picker.as_ref().unwrap().visible_indices(),
-            vec![0, 1, 4]
-        );
-        assert_eq!(app.picker.as_ref().unwrap().sel, 1);
+        assert_eq!(app.pickers.view().unwrap().visible_indices(), vec![0, 1, 4]);
+        assert_eq!(app.pickers.view().unwrap().sel, 1);
         app.picker_key(KeyCode::Left);
-        assert_eq!(app.picker.as_ref().unwrap().sel, 0);
+        assert_eq!(app.pickers.view().unwrap().sel, 0);
         app.picker_key(KeyCode::Left);
-        assert_eq!(app.picker.as_ref().unwrap().visible_indices(), vec![0, 4]);
+        assert_eq!(app.pickers.view().unwrap().visible_indices(), vec![0, 4]);
     }
 
     #[test]
     fn hierarchical_navigation_uses_only_visible_rows() {
         let mut app = App::new();
-        app.picker = Some(Picker {
+        app.pickers.open(Picker {
             title: "model".into(),
             sel: 0,
             query: String::new(),
@@ -1529,19 +1524,19 @@ mod tests {
         });
 
         app.picker_key(KeyCode::Down);
-        assert_eq!(app.picker.as_ref().unwrap().sel, 4);
+        assert_eq!(app.pickers.view().unwrap().sel, 4);
         app.picker_key(KeyCode::Down);
         assert_eq!(
-            app.picker.as_ref().unwrap().sel,
+            app.pickers.view().unwrap().sel,
             0,
             "Down wraps across visible roots without entering hidden descendants"
         );
         app.picker_key(KeyCode::End);
-        assert_eq!(app.picker.as_ref().unwrap().sel, 4);
+        assert_eq!(app.pickers.view().unwrap().sel, 4);
         app.picker_key(KeyCode::Home);
-        assert_eq!(app.picker.as_ref().unwrap().sel, 0);
+        assert_eq!(app.pickers.view().unwrap().sel, 0);
         app.picker_key(KeyCode::PageDown);
-        assert_eq!(app.picker.as_ref().unwrap().sel, 4);
+        assert_eq!(app.pickers.view().unwrap().sel, 4);
     }
 
     #[test]
@@ -1550,7 +1545,7 @@ mod tests {
         items[0].expanded = true;
         items[1].expanded = true;
         let mut app = App::new();
-        app.picker = Some(Picker {
+        app.pickers.open(Picker {
             title: "model".into(),
             sel: 3,
             query: String::new(),
@@ -1562,13 +1557,16 @@ mod tests {
             app.picker_key(KeyCode::Enter),
             Some(PickerEvent::Consumed)
         ));
-        assert!(app.picker.is_some(), "disabled model keeps the picker open");
-        assert_eq!(app.picker.as_ref().unwrap().sel, 3);
+        assert!(
+            app.pickers.is_open(),
+            "disabled model keeps the picker open"
+        );
+        assert_eq!(app.pickers.view().unwrap().sel, 3);
         assert!(matches!(
             app.picker_key(KeyCode::Tab),
             Some(PickerEvent::Consumed)
         ));
-        assert!(app.picker.is_some(), "Tab cannot bypass disabled state");
+        assert!(app.pickers.is_open(), "Tab cannot bypass disabled state");
     }
 
     #[test]
@@ -1577,7 +1575,7 @@ mod tests {
         let mut app = App::new();
         let orig = app.theme.clone();
         let light = theme::Theme::light();
-        app.picker = Some(Picker {
+        app.pickers.open(Picker {
             title: "theme".into(),
             sel: 0,
             query: String::new(),
@@ -1595,7 +1593,7 @@ mod tests {
         );
         app.picker_key(KeyCode::Esc); // restore
         assert_eq!(app.theme.fg, orig.fg, "Esc restores the pre-open theme");
-        assert!(app.picker.is_none());
+        assert!(!app.pickers.is_open());
     }
 
     #[test]
@@ -1605,7 +1603,7 @@ mod tests {
             PickItem::flat("unavailable", "missing credential", true, PickAction::Info);
         unavailable.enabled = false;
         unavailable.disabled_reason = Some("missing credential".into());
-        app.picker = Some(Picker {
+        app.pickers.open(Picker {
             title: "model".into(),
             items: vec![unavailable],
             sel: 0,
@@ -1619,7 +1617,10 @@ mod tests {
             KeyModifiers::ALT,
             &repo,
         ));
-        assert!(app.picker.is_none(), "the Esc half must cancel the picker");
+        assert!(
+            !app.pickers.is_open(),
+            "the Esc half must cancel the picker"
+        );
         assert_eq!(app.editor.text(), "/", "the slash half must not be lost");
 
         // Exercise the same completion-to-submit path used by the event loop. This is the failure
@@ -1645,7 +1646,7 @@ mod tests {
         let original = theme::Theme::dark();
         let selected = theme::Theme::light();
         app.set_theme(original.clone());
-        app.picker = Some(Picker {
+        app.pickers.open(Picker {
             title: "theme".into(),
             sel: 0,
             query: String::new(),
@@ -1671,7 +1672,7 @@ mod tests {
         let mut items = model_tree();
         items[0].expanded = true;
         items[1].expanded = true;
-        app.picker = Some(Picker {
+        app.pickers.open(Picker {
             title: "model".into(),
             sel: 3,
             query: String::new(),
@@ -1711,7 +1712,7 @@ mod tests {
         use ratatui::backend::TestBackend;
         let mut app = App::new();
         app.theme = theme::Theme::mono();
-        app.picker = Some(Picker {
+        app.pickers.open(Picker {
             title: "model".into(),
             sel: 0,
             query: String::new(),

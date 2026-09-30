@@ -15,6 +15,8 @@ remain required.
 | `app_server/presentation.rs` and product/publication readers | Shared bounded immutable projection | Actual source events/receipts → snapshots; views do not grant permissions |
 | `tui/session_client.rs` | Client handle, negotiated version and immutable current session facts | Public typed controls and queue submissions; no runtime ownership |
 | `tui/driver.rs` | Terminal/input/event loop and bounded worker coordination | Client events + terminal input → view changes or typed client commands |
+| `tui/completion_owner.rs` | Private menu, debounce, source generation and unique physical completion worker | Exact editor draft → due worker/read-only menu/navigation; stale or dismissed observations cannot reopen the menu |
+| `tui/picker_owner.rs` | Private modal selection and session cursor/page worker | Physical key/paste → immutable action/theme effect; storage observations use exact generation and a bounded 512-row window |
 | `tui/input_lanes.rs` | Single private after-turn/steer queue and exact local submission ownership | Owned inputs preserve words/chips; read-only lane views; exact receipt reconciliation never resubmits another identified client |
 | `tui/input_dispatch.rs` | Borrowed editor/view/key routing context | Input events → explicit local effects or shared client controls |
 | `tui/terminal_lifecycle.rs` and `terminal_input.rs` | Physical terminal mode restoration and bounded input producer | Native terminal IO → input events; restoration on actual shutdown |

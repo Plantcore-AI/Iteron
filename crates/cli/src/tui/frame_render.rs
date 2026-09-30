@@ -712,7 +712,7 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
     // Selection picker overlay (R7.a) — the SAME component as the completion menu (TUI v3 §9), so the
     // width, height, border, nav, title grammar and selection bar are identical. Rendered last so it
     // sits above any stray completion.
-    if let Some(pk) = &app.picker {
+    if let Some(pk) = app.pickers.view() {
         let visible = pk.visible_indices();
         let rows: Vec<PopupRow> = visible
             .iter()
@@ -768,10 +768,19 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
             .collect();
         // Just the title — the modal-title icon zoo (◇◆▷⚿◈, three indistinguishable diamonds) is gone
         // (findings 5); identity is the word, like the tool line.
+        let picker_title = if app.pickers.omitted_rows() == 0 {
+            pk.title.clone()
+        } else {
+            format!(
+                "{} · {} earlier rows omitted",
+                pk.title,
+                app.pickers.omitted_rows()
+            )
+        };
         render_list_popup(
             f,
             surface.overlay_anchor,
-            &ui_safe_text(&pk.title),
+            &ui_safe_text(&picker_title),
             &rows,
             pk.visible_selection(&visible),
             Some(&pk.query),

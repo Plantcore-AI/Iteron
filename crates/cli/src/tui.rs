@@ -82,6 +82,7 @@ mod mouse_capture;
 mod notification;
 mod persistent_agents;
 mod picker_catalog;
+mod picker_owner;
 mod plugins;
 mod product_projection;
 mod session_adoption;
@@ -183,10 +184,14 @@ use session_adoption::{
     format_resume_command, project_recorded_transcript, recorded_route, start_adopt_session,
     start_fresh_session,
 };
+#[cfg(test)]
 use session_picker::{
-    SessionPageResult, SessionPickerBacking, SessionPreviewResult, apply_session_page_result,
-    handle_sessions_command, load_session_page, maybe_prefetch_session_page, open_session_picker,
-    session_display_name, session_picker_items, spawn_session_page_load,
+    SessionPickerBacking, apply_session_page_result, load_session_page, session_picker_items,
+    spawn_session_page_load,
+};
+use session_picker::{
+    SessionPreviewResult, handle_sessions_command, maybe_prefetch_session_page,
+    open_session_picker, session_display_name,
 };
 #[cfg(test)]
 use std::collections::HashSet;
@@ -776,13 +781,7 @@ struct App {
     /// Keyboard focus inside the blocking permission decision. Deny is the fail-closed default.
     approval_choice: ApprovalChoice,
     completions: completion_owner::CompletionOwner,
-    /// The open selection picker, if any (owns the keyboard while open).
-    picker: Option<Picker>,
-    /// One cancel-on-replacement session-page worker. Opening the modal is immediate; disk/index
-    /// enumeration never runs in the key/command branch.
-    session_picker_job: Option<tokio::task::JoinHandle<SessionPageResult>>,
-    session_picker_backing: Option<SessionPickerBacking>,
-    session_picker_generation: u64,
+    pickers: picker_owner::PickerOwner,
     session_preview_job: Option<tokio::task::JoinHandle<SessionPreviewResult>>,
     session_preview_generation: u64,
     session_adoption_job: Option<tokio::task::JoinHandle<PreparedAdoptionResult>>,

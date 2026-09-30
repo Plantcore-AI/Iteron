@@ -449,7 +449,7 @@ pub(super) fn render_composer(f: &mut Frame, area: Rect, app: &mut App) {
     let cursor_y = text_area
         .y
         .saturating_add(crow_u16.saturating_sub(scroll_y));
-    if app.picker.is_none() && cursor_x < text_area.right() && cursor_y < text_area.bottom() {
+    if !app.pickers.is_open() && cursor_x < text_area.right() && cursor_y < text_area.bottom() {
         f.set_cursor_position((cursor_x, cursor_y));
     }
 }
