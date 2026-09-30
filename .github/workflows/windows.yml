@@ -251,6 +251,13 @@ jobs:
           targets: x86_64-pc-windows-msvc
       - name: check the workspace for Windows
         run: cargo check --workspace --locked --target x86_64-pc-windows-msvc
+      - name: native private journal fault and restart oracles
+        timeout-minutes: 10
+        run: |
+          cargo test --locked -p iteron-support --test windows_state --target x86_64-pc-windows-msvc -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked -p iteron-workflow --test live_scheduler_file --target x86_64-pc-windows-msvc -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       # The compile above can finish suspiciously fast against a warm persistent `target/`. This
       # links and runs a real binary through the native pseudoconsole, so the lane cannot pass
       # without having genuinely built something.

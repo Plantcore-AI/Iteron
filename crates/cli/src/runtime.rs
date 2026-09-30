@@ -32,19 +32,12 @@ enum EarlyPureToolOutcome {
         hook: Option<EarlyHookSummary>,
         effect_unknown: bool,
         operator_interrupted: bool,
+        publication_error: Option<String>,
     },
     Refused {
         reason: String,
         hook: EarlyHookSummary,
     },
-}
-
-#[derive(Debug, Clone, Copy)]
-struct EarlyHookSummary {
-    completed: u32,
-    failed: u32,
-    timed_out: u32,
-    lifecycle_dispatch_failed: bool,
 }
 
 #[derive(Default)]
@@ -54,121 +47,37 @@ struct EarlyHookEffectTickets {
     lifecycle: Option<(usize, effects::EffectTicket)>,
 }
 
-struct EarlyHookRefusal {
-    reason: String,
-    summary: EarlyHookSummary,
-}
-
-struct EarlyHookGateContext<'a> {
-    journal: Option<&'a hooks::journal::HookEffectJournal>,
-    compatibility_enabled: bool,
-    lifecycle_enabled: bool,
-    compatibility_json: &'a str,
-    lifecycle_json: &'a str,
-    interrupt: Option<&'a std::sync::atomic::AtomicBool>,
-    drain: &'a std::sync::atomic::AtomicBool,
-}
-
-/// Execute an early read's blocking tool gates only after the caller has fsynced the matching
-/// kernel effect intents. This has the same role as the app-server gate of the same name: the
-/// caller owns the universal effect tickets, while this helper owns the bounded journaled process
-/// dispatch. Keeping it separate lets the provider callback start the future without lending the
-/// spawned task mutable access to the rollout.
-async fn run_lifecycle_gate(
-    hooks: &Hooks,
-    context: EarlyHookGateContext<'_>,
-) -> Result<Option<EarlyHookSummary>, EarlyHookRefusal> {
-    if !context.compatibility_enabled && !context.lifecycle_enabled {
-        return Ok(None);
-    }
-    let Some(journal) = context.journal else {
-        return Err(EarlyHookRefusal {
-            reason: "tool gate hook journal is unavailable; the read was not started".into(),
-            summary: EarlyHookSummary {
-                completed: 0,
-                failed: 1,
-                timed_out: 0,
-                lifecycle_dispatch_failed: context.lifecycle_enabled,
-            },
-        });
-    };
-    let compatibility = if context.compatibility_enabled {
-        Some(
-            hooks
-                .run_cancellable_journaled_report(
-                    HookEvent::PreToolUse,
-                    context.compatibility_json,
-                    context.interrupt,
-                    Some(context.drain),
-                    journal,
-                )
-                .await,
-        )
-    } else {
-        None
-    };
-    let lifecycle = if context.lifecycle_enabled {
-        Some(
-            hooks
-                .run_lifecycle_cancellable_journaled(
-                    "tool.call_proposed",
-                    context.lifecycle_json,
-                    context.interrupt,
-                    Some(context.drain),
-                    journal,
-                )
-                .await,
-        )
-    } else {
-        None
-    };
-    let lifecycle_report = lifecycle.as_ref().and_then(|value| value.as_ref().ok());
-    let summary = EarlyHookSummary {
-        completed: compatibility
-            .as_ref()
-            .map_or(0, |report| report.completed)
-            .saturating_add(lifecycle_report.map_or(0, |report| report.completed)),
-        failed: compatibility
-            .as_ref()
-            .map_or(0, |report| report.failed)
-            .saturating_add(lifecycle_report.map_or(0, |report| report.failed))
-            .saturating_add(u32::from(lifecycle.as_ref().is_some_and(Result::is_err))),
-        timed_out: compatibility
-            .as_ref()
-            .map_or(0, |report| report.timed_out)
-            .saturating_add(lifecycle_report.map_or(0, |report| report.timed_out)),
-        lifecycle_dispatch_failed: lifecycle.as_ref().is_some_and(Result::is_err),
-    };
-    let denial = compatibility
-        .as_ref()
-        .and_then(|report| match &report.decision {
-            HookDecision::Allow => None,
-            HookDecision::Deny(reason) => Some(reason.clone()),
-        })
-        .or_else(|| {
-            lifecycle_report.and_then(|report| match &report.decision {
-                HookDecision::Allow => None,
-                HookDecision::Deny(reason) => Some(reason.clone()),
-            })
-        })
-        .or_else(|| {
-            lifecycle
-                .as_ref()
-                .and_then(|result| result.as_ref().err().map(|reason| (*reason).to_owned()))
-        })
-        .or_else(|| {
-            (summary.failed > 0 || summary.timed_out > 0)
-                .then(|| "tool gate hook did not produce a complete allow decision".to_owned())
-        });
-    match denial {
-        Some(reason) => Err(EarlyHookRefusal { reason, summary }),
-        None => Ok(Some(summary)),
-    }
-}
+mod kernel_effect_bridge;
+mod provider_turn_evidence;
+mod submitted_turn_state;
+use kernel_effect_bridge::{
+    KernelEffect, broker_kernel_effect, effect_class_label, effect_done_terminal,
+    effect_failed_terminal, effect_workspace,
+};
+mod early_tool_gate;
+use early_tool_gate::{EarlyHookGateContext, EarlyHookSummary, run_lifecycle_gate};
+mod deferred_batch_executor;
+mod frontend_events;
+mod stream_progress;
+mod tool_presentation;
+pub use frontend_events::{
+    ApprovalResolution, ControlSubmissionKind, UiEvent, WorkflowAgentOutcomeUi,
+    WorkflowExecutionModeUi, WorkflowPhaseUi, WorkflowRunOutcomeUi, WorkflowTaskUi,
+    WorkflowUiEvent,
+};
+pub(crate) use frontend_events::{PlantcoreUiEvent, RuntimeFrontendEvent};
+use stream_progress::{InternalStreamProgress, StreamTiming};
+pub(crate) use tool_presentation::bounded_child_report;
+use tool_presentation::{
+    scrub_value, strict_utf8_head, tool_end_ui, truncate_tail, ui_approval_arguments,
+    ui_verification_rollback_arguments,
+};
 
 mod agent_config;
 mod agent_loop;
+mod artifact_publication;
 mod budget_control;
+pub(crate) mod client_inventory;
 mod compaction;
 mod compaction_coverage;
 mod completion_semantics;
@@ -190,6 +99,7 @@ mod candidate_workspace;
 mod file_submission;
 pub(crate) mod force_cancel;
 mod frontend;
+pub(crate) use frontend::FrontendChannelHealth;
 pub mod hooks;
 mod inbound_control;
 #[cfg(any(feature = "ticket-investigation", test))]
@@ -394,264 +304,6 @@ pub(crate) const MEMORY_ADDED_NOTIFICATION_PREFIX: &str =
 /// narrow this per opportunity, but it cannot expand beyond this owner value.
 pub(crate) const DEFAULT_MAX_TOOL_CONCURRENCY: usize = 16;
 
-/// A permission decision, not evidence that the proposed tool effect ran or succeeded.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ApprovalResolution {
-    Approved,
-    Denied,
-    Cancelled,
-    TimedOut,
-}
-
-/// An identified control command that the runtime actually admitted. This is not a claim that a
-/// tool or external effect succeeded; it only records the cooperative control-state transition.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ControlSubmissionKind {
-    Interrupt,
-    ForceCancel,
-    Drain,
-}
-
-impl ControlSubmissionKind {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Interrupt => "interrupt",
-            Self::ForceCancel => "force_cancel",
-            Self::Drain => "drain",
-        }
-    }
-}
-
-/// Events a UI (the TUI) renders. The kernel sends these to an optional channel so a front-end
-/// can display the run live without the kernel writing to stdout.
-#[derive(Debug, Clone)]
-pub enum UiEvent {
-    /// Streamed assistant text.
-    Text(String),
-    /// Streamed reasoning (extended thinking).
-    Thinking(String),
-    /// A tool is about to run: a stable id (to correlate with `ToolEnd`), its name, and its
-    /// (secret-scrubbed) args as structured JSON so the TUI can humanize them into a card
-    /// (ADR-015). `args` is scrubbed before it crosses this seam (R1).
-    ToolStart {
-        id: String,
-        name: String,
-        args: serde_json::Value,
-    },
-    /// A tool finished: correlated to its `ToolStart` by `id`. Carries the full (scrubbed, bounded)
-    /// output so the TUI can render a collapsible result card, and an optional parsed `FileDiff`
-    /// for edit tools (populated in P1; `None` at P0). ADR-015 R1/R5/R7.
-    ToolEnd {
-        id: String,
-        ok: bool,
-        exit_code: Option<i32>,
-        output: String,
-        diff: Option<iteron_protocol::FileDiff>,
-    },
-    /// Phase transition.
-    Phase(Phase),
-    /// End of one provider turn. `usage` is provider-reported for this turn only; input excludes
-    /// cache classes per the protocol contract. `context` is the labelled preflight estimate for
-    /// the request that just ran. The model window remains `None` until catalog metadata proves it;
-    /// the compaction trigger is a policy threshold and must never be rendered as that window.
-    TurnEnd {
-        cost: CostState,
-        usage: iteron_protocol::Usage,
-        context: ContextEstimate,
-        model_context_window: Option<u64>,
-        /// Exact output allowance reserved by the admission check for this request.
-        reserved_output_tokens: u32,
-        compaction_trigger_tokens: usize,
-        effort: iteron_provider::EffortApplication,
-    },
-    /// A structured workflow lifecycle update. Frontends project these id-correlated events into
-    /// one live card/tree instead of printing a line per worker (the Claude Code/Codex interaction
-    /// model). Task labels are scrubbed and bounded before crossing this seam.
-    #[allow(dead_code)]
-    Workflow(WorkflowUiEvent),
-    /// Legacy/unidentified steering messages admitted at a turn boundary. This count is never
-    /// authoritative for an identified client's submission receipt.
-    SteerApplied { count: usize },
-    /// An exact identified steer was durably appended to the run record. App Server settles only
-    /// this submission ID as Applied; queue admission by itself is not successful execution.
-    SteerSubmissionApplied { id: SubmissionId },
-    /// Exact rejection of a product-turn-scoped command that arrived after its user-facing turn
-    /// ceased to own the kernel queue. The reason is a closed, non-secret code.
-    SubmissionRejected {
-        id: SubmissionId,
-        reason_code: &'static str,
-    },
-    /// Exact identified interrupt/drain command applied to runtime control state. A terminal
-    /// event alone does not prove this happened, so the App Server must not infer it by FIFO.
-    ControlSubmissionApplied {
-        id: SubmissionId,
-        kind: ControlSubmissionKind,
-    },
-    /// A harness notice (compaction, verify gate, interrupt, ...).
-    Notice(String),
-    /// A capability gate needs the operator's answer (mode = default/plan/... produced `Ask`). The
-    /// TUI renders a prompt and answers on the approvals channel (`Op::ApprovalResponse`).
-    ApprovalRequest {
-        id: SubmissionId,
-        tool: String,
-        capability: Capability,
-        reason: String,
-        /// Secret-scrubbed exact tool arguments. Frontends must keep the decision actions visible
-        /// even on short screens; this is presentation evidence, not a capability grant.
-        arguments: serde_json::Value,
-        /// Bounded workspace provenance for the effect target.
-        workspace: String,
-    },
-    /// Authoritative resolution of the same approval id after its durable decision boundary.
-    /// `Approved` permits the later tool admission; it never claims the tool was executed.
-    ApprovalResolved {
-        id: SubmissionId,
-        resolution: ApprovalResolution,
-        reason_code: &'static str,
-        /// Exact client response submission accepted for this durable decision. Missing on
-        /// timeout, cancellation, one-shot denial, or a response never matched to this request.
-        response_submission_id: Option<SubmissionId>,
-    },
-    /// The run ended.
-    Done(String),
-}
-
-/// PlantCore-only runtime facts carried beside the frozen CLI `UiEvent` vocabulary.
-#[derive(Debug, Clone)]
-pub(crate) enum PlantcoreUiEvent {
-    Usage(iteron_protocol::TurnUsage),
-    RunAdmitted {
-        profile_digest_sha256: iteron_protocol::HexSha256,
-    },
-}
-
-/// Ordered ingress from the resident runtime into App Server presentation.
-#[derive(Debug, Clone)]
-pub(crate) enum RuntimeFrontendEvent {
-    Ui(UiEvent),
-    Plantcore(PlantcoreUiEvent),
-}
-
-/// A bounded, presentation-safe task declared by a workflow plan.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-pub struct WorkflowTaskUi {
-    pub id: usize,
-    pub label: String,
-}
-
-/// Actual execution posture. Keeping this explicit prevents the fan from being mislabeled: `Direct`
-/// is the single-writer path, `Concurrent` is the bounded-concurrent read-only investigation fan
-/// (owned tasks under a `Governor` permit cap). `Sequential` is retained for older frontends/tests
-/// that still describe the pre-concurrency executor; the kernel no longer emits it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-#[allow(dead_code)] // Frozen frontend vocabulary includes legacy states this runtime does not emit.
-pub enum WorkflowExecutionModeUi {
-    Direct,
-    Sequential,
-    Concurrent,
-}
-
-/// Replay-compatible user-visible workflow phases for the frozen frontend projection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-#[allow(dead_code)] // Frozen machine/frontend projection; the engine tree is the live renderer.
-pub enum WorkflowPhaseUi {
-    Planning,
-    Exploring,
-    Synthesizing,
-    Writing,
-    Direct,
-}
-
-/// Terminal state of one workflow worker.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-#[allow(dead_code)] // Frozen frontend vocabulary includes a replay-only pre-start state.
-pub enum WorkflowAgentOutcomeUi {
-    Done,
-    Failed,
-    Interrupted,
-    SkippedBudget,
-    NotStarted,
-}
-
-/// Terminal state of the workflow as a whole.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-#[allow(dead_code)] // Frozen machine/frontend projection; the engine tree is the live renderer.
-pub enum WorkflowRunOutcomeUi {
-    Done,
-    Degraded,
-    BudgetExhausted,
-    Stuck,
-    Failed,
-    Stopped,
-}
-
-/// Id-correlated workflow lifecycle. The event names intentionally mirror the stable workflow
-/// projection used by production coding agents: run -> plan -> phase -> agent -> terminal.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-#[serde(tag = "event", rename_all = "snake_case")]
-#[allow(dead_code)] // Replay compatibility; production emits WorkflowRunUiEvent from the engine.
-pub enum WorkflowUiEvent {
-    RunStarted {
-        run_id: String,
-        name: String,
-        class: String,
-    },
-    PlanReady {
-        run_id: String,
-        tasks: Vec<WorkflowTaskUi>,
-        dropped: usize,
-        duplicates_removed: usize,
-        invalid_removed: usize,
-        execution_mode: WorkflowExecutionModeUi,
-        fan_turn_budget: u32,
-        writer_turn_reserve: u32,
-        fan_wall_secs: u64,
-        writer_wall_reserve_secs: u64,
-    },
-    PhaseChanged {
-        run_id: String,
-        phase: WorkflowPhaseUi,
-    },
-    AgentStarted {
-        run_id: String,
-        agent_id: usize,
-        sub_run: String,
-        turn_budget: u32,
-    },
-    AgentActivity {
-        run_id: String,
-        agent_id: usize,
-        activity: String,
-    },
-    AgentFinished {
-        run_id: String,
-        agent_id: usize,
-        outcome: WorkflowAgentOutcomeUi,
-        turns: u32,
-        tokens: u64,
-        tool_calls: u64,
-        elapsed_ms: u64,
-        summary_preview: Option<String>,
-        error_preview: Option<String>,
-    },
-    RunFinished {
-        run_id: String,
-        outcome: WorkflowRunOutcomeUi,
-        reason: Option<String>,
-        elapsed_ms: u64,
-        provider_attempts: u32,
-        turns: u32,
-        tokens: u64,
-        tool_calls: u64,
-        failed_tasks: u32,
-        skipped_tasks: u32,
-    },
-}
-
 /// Cheap non-blocking bridge from the engine thread back to the parent turn, which owns the
 /// durable compatibility stream. The surviving phase-tree renderer receives the same events from
 /// `UiProgressSink`; this channel exists only for parent accounting and the frozen machine surface.
@@ -723,292 +375,6 @@ struct OrchestrationAllocation {
     writer_wall_reserved_secs: u64,
 }
 
-/// Keep the tail of a long string (test failures print last) within a bound. UTF-8-safe
-/// (delegates to protocol::text::tail; a raw byte slice would panic on a multibyte cut).
-fn truncate_tail(s: &str, max: usize) -> String {
-    iteron_protocol::text::tail(s, max)
-}
-
-pub(crate) fn bounded_child_report(
-    policy: crate::runtime_tunables::execution_policy::ExecutionRuntimePolicy,
-    report: &str,
-) -> String {
-    strict_utf8_head(report.trim(), policy.report_budget_bytes)
-}
-
-/// Build the `ToolEnd` UI event from a completed `ToolResult`: correlate by the tool_use id and
-/// carry the scrubbed+bounded output so the TUI can render a collapsible result card (ADR-015).
-fn tool_end_ui(tu: &ToolUse, r: &ToolResult) -> UiEvent {
-    UiEvent::ToolEnd {
-        id: r.tool_use_id.clone(),
-        ok: !r.is_error, // UNCHANGED — is_error drives failed-action dedup + verify gate (C9)
-        exit_code: bash_exit_code(tu, r),
-        output: tool_card_output(tu, r),
-        diff: edit_diff_from(tu, r),
-    }
-}
-
-fn tool_card_output(tu: &ToolUse, r: &ToolResult) -> String {
-    if tu.name != "bash" {
-        return ui_tool_output(&r.content);
-    }
-
-    let output = parse_bash_operator_output(&r.content)
-        .map(render_bash_operator_output)
-        .unwrap_or_else(|| strip_bash_protocol_fallback(&strip_exit_line(tu, &r.content)));
-    ui_tool_output(&output)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BashOperatorState {
-    Done,
-    Running,
-    Failed,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-struct BashOperatorOutput {
-    state: BashOperatorState,
-    job_id: Option<String>,
-    failure_kind: Option<String>,
-    stdout: String,
-    stderr: String,
-}
-
-fn parse_bash_operator_output(content: &str) -> Option<BashOperatorOutput> {
-    let (header, body) = content.split_once('\n').unwrap_or((content, ""));
-    let (state, job_id, failure_kind) = if header == "[done]" {
-        (BashOperatorState::Done, None, None)
-    } else if let Some(fields) = header
-        .strip_prefix("[running ")
-        .and_then(|header| header.strip_suffix(']'))
-    {
-        let job_id = fields
-            .split(';')
-            .find_map(|field| field.trim().strip_prefix("session_id="))
-            .filter(|job_id| !job_id.is_empty())
-            .map(str::to_owned);
-        (BashOperatorState::Running, job_id, None)
-    } else {
-        let state_json = header
-            .strip_prefix("[failed state=")
-            .and_then(|header| header.strip_suffix(']'))?;
-        let failure_kind = serde_json::from_str::<serde_json::Value>(state_json)
-            .ok()
-            .and_then(|state| state.get("kind")?.as_str().map(str::to_owned));
-        (BashOperatorState::Failed, None, failure_kind)
-    };
-
-    let mut parsed = BashOperatorOutput {
-        state,
-        job_id,
-        failure_kind,
-        stdout: String::new(),
-        stderr: String::new(),
-    };
-    if body.starts_with("[stream ") {
-        parse_length_prefixed_bash_streams(body, &mut parsed)?;
-    } else {
-        parse_complete_bash_streams(body, &mut parsed)?;
-    }
-    Some(parsed)
-}
-
-fn parse_length_prefixed_bash_streams(
-    mut remaining: &str,
-    parsed: &mut BashOperatorOutput,
-) -> Option<()> {
-    while remaining.starts_with("[stream ") {
-        let header_end = remaining.find('\n')?;
-        let header = &remaining[..header_end];
-        let frame = header.strip_prefix("[stream ")?.strip_suffix(']')?;
-        let (stream, metadata) = frame.split_once(';')?;
-        let content_bytes = metadata
-            .split(';')
-            .find_map(|field| field.trim().strip_prefix("contentBytes="))?
-            .parse::<usize>()
-            .ok()?;
-        let content_start = header_end.checked_add(1)?;
-        let content_end = content_start.checked_add(content_bytes)?;
-        let payload = remaining.get(content_start..content_end)?;
-        let suffix = remaining.get(content_end..)?;
-        let closing = format!("\n[/stream {stream}]\n");
-        remaining = suffix.strip_prefix(&closing)?;
-        match stream {
-            "stdout" => parsed.stdout.push_str(payload),
-            "stderr" => parsed.stderr.push_str(payload),
-            _ => return None,
-        }
-    }
-
-    if remaining.is_empty() || remaining.starts_with("[resumeHint:") {
-        Some(())
-    } else {
-        None
-    }
-}
-
-fn parse_complete_bash_streams(body: &str, parsed: &mut BashOperatorOutput) -> Option<()> {
-    if body.is_empty() {
-        return Some(());
-    }
-    if let Some(stdout) = body.strip_prefix("[stdout]\n") {
-        if let Some(marker) = stdout.rfind("\n[stderr]\n")
-            && !stdout[marker + "\n[stderr]\n".len()..].is_empty()
-        {
-            parsed.stdout.push_str(&stdout[..marker]);
-            parsed
-                .stderr
-                .push_str(&stdout[marker + "\n[stderr]\n".len()..]);
-        } else {
-            parsed.stdout.push_str(stdout);
-        }
-        return Some(());
-    }
-    if let Some(stderr) = body.strip_prefix("[stderr]\n") {
-        parsed.stderr.push_str(stderr);
-        return Some(());
-    }
-    None
-}
-
-fn render_bash_operator_output(parsed: BashOperatorOutput) -> String {
-    let mut output = String::new();
-    append_operator_stream(&mut output, &parsed.stdout);
-    append_operator_stream(&mut output, &parsed.stderr);
-    match parsed.state {
-        BashOperatorState::Done => {}
-        BashOperatorState::Running => {
-            let status = parsed.job_id.map_or_else(
-                || "process continues in background".to_owned(),
-                |job_id| format!("process continues in background · {job_id}"),
-            );
-            append_operator_status(&mut output, &status);
-        }
-        BashOperatorState::Failed if output.is_empty() => {
-            let status = parsed.failure_kind.map_or_else(
-                || "process failed".to_owned(),
-                |kind| format!("process failed · {}", kind.replace('_', " ")),
-            );
-            output.push_str(&status);
-        }
-        BashOperatorState::Failed => {}
-    }
-    output
-}
-
-fn append_operator_stream(output: &mut String, stream: &str) {
-    let stream = stream.trim_end_matches('\n');
-    if stream.is_empty() {
-        return;
-    }
-    if !output.is_empty() {
-        output.push('\n');
-    }
-    output.push_str(stream);
-}
-
-fn append_operator_status(output: &mut String, status: &str) {
-    if !output.is_empty() {
-        output.push_str("\n\n");
-    }
-    output.push_str(status);
-}
-
-fn strip_bash_protocol_fallback(content: &str) -> String {
-    content
-        .lines()
-        .filter(|line| !is_bash_protocol_line(line))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn is_bash_protocol_line(line: &str) -> bool {
-    line == "[done]"
-        || line == "[stdout]"
-        || line == "[stderr]"
-        || line.starts_with("[running session_id=")
-        || line.starts_with("[failed state=")
-        || line.starts_with("[stream stdout;")
-        || line.starts_with("[stream stderr;")
-        || line == "[/stream stdout]"
-        || line == "[/stream stderr]"
-        || line.starts_with("[resumeHint:")
-}
-
-/// Build a one-hunk `FileDiff` from an edit/write tool's args (path/old/new) — KERNEL-side, so the
-/// tool's result string stays terse and the durable record is not polluted (ADR-015 C8). The old/new
-/// text is secret-scrubbed BEFORE it becomes a diff (C10; `from_replacement` also caps at 200 lines).
-fn edit_diff_from(tu: &ToolUse, r: &ToolResult) -> Option<iteron_protocol::FileDiff> {
-    if r.is_error {
-        return None; // a refused/failed edit landed no change
-    }
-    let get = |k: &str| tu.input.get(k).and_then(|v| v.as_str()).unwrap_or("");
-    let path = get("path");
-    if path.is_empty() {
-        return None;
-    }
-    let (old, new) = match tu.name.as_str() {
-        "edit" | "str_replace" => (get("old"), get("new")),
-        "write" | "create" | "write_file" => (
-            "",
-            tu.input
-                .get("content")
-                .or_else(|| tu.input.get("file_text"))
-                .and_then(|v| v.as_str())
-                .unwrap_or(""),
-        ),
-        _ => return None,
-    };
-    let old = iteron_record::redact::scrub(old);
-    let new = iteron_record::redact::scrub(new);
-    Some(iteron_protocol::FileDiff::from_replacement(
-        path, &old, &new,
-    ))
-}
-
-/// The bash tool embeds `[exit N]` as the FIRST line of its (non-error) result (shell.rs) without
-/// setting is_error. Surface that code as `ToolEnd.exit_code` so the card colors ✗/red on a non-zero
-/// exit WITHOUT flipping is_error (C9). Parsed from RAW content (the marker has no secrets).
-fn bash_exit_code(tu: &ToolUse, r: &ToolResult) -> Option<i32> {
-    if tu.name != "bash" {
-        return None;
-    }
-    let first = r.content.lines().next()?;
-    if let Some(exit) = first
-        .strip_prefix("[exit ")
-        .and_then(|line| line.strip_suffix(']'))
-    {
-        return exit.trim().parse::<i32>().ok();
-    }
-    let state_json = first.strip_prefix("[failed state=")?.strip_suffix(']')?;
-    let state = serde_json::from_str::<serde_json::Value>(state_json).ok()?;
-    i32::try_from(state.get("exit_code")?.as_i64()?).ok()
-}
-
-/// For bash, drop a leading `[exit N]` line so it is not duplicated with the card's exit-code label.
-fn strip_exit_line(tu: &ToolUse, content: &str) -> String {
-    if tu.name == "bash"
-        && let Some(rest) = content.strip_prefix("[exit ")
-    {
-        if let Some(nl) = rest.find('\n') {
-            return rest[nl + 1..].to_string();
-        }
-        return String::new(); // only the exit line, nothing else
-    }
-    content.to_string()
-}
-
-/// Prepare tool output for the UI seam (ADR-015 R1/R5): secret-scrub it (the record is already
-/// masked, but the live UI / `/export` / scrollback are new exfiltration surfaces), then BOUND it at
-/// ingest — a collapsed card is a few rows but must not retain multi-MB raw output (bounded
-/// invariant #1). Keep the first 60 + last 20 lines, then a hard char cap.
-fn ui_tool_output(content: &str) -> String {
-    let scrubbed = iteron_record::redact::scrub(content);
-    let bounded = bound_middle(&scrubbed, 60, 20);
-    iteron_protocol::text::head(&bounded, 12_000)
-}
-
 /// What the verifier dispatch proved, which is a different question from what it decided.
 ///
 /// The caller only ever wants the [`iteron_verify::Verdict`]; the boundary needs to know whether that
@@ -1041,254 +407,6 @@ impl VerifyDispatch {
             | VerifyDispatch::NotDispatched(verdict) => verdict,
         }
     }
-}
-
-/// One non-registry effect, addressed to the boundary.
-///
-/// A descriptor rather than a parameter list because the dispatch helper needs disjoint mutable and
-/// shared borrows of the agent at the same time, and because six positional arguments of which three
-/// are integers is exactly the shape that gets mis-ordered silently.
-struct KernelEffect<'a> {
-    turn: TurnId,
-    class: effect_class::EffectClass,
-    ordinal: usize,
-    /// The class this dispatch is *audited* as. Recording it grants nothing: the constitutional
-    /// gate has already run, and the boundary only writes down what was admitted.
-    capability: Capability,
-    audit_arguments: serde_json::Value,
-    workspace: &'a std::path::Path,
-}
-
-/// Dispatch one non-registry effect across the single boundary.
-///
-/// Every class that is not a registry tool call goes through here, which is what makes the boundary
-/// test enforceable: there is exactly one place in the kernel that builds a
-/// [`effects::BrokeredEffect`] for them, so "no call site bypasses the broker" is a property of one
-/// function rather than a promise about thirty call sites.
-///
-/// It is a free function, not a method, for a load-bearing reason: the executor almost always needs
-/// to borrow *some* part of the agent (`hooks`, `provider`, `verify` state) while the boundary needs
-/// `&mut rollout` and `&mut effect_admissions`. Taking the two ledgers explicitly lets the caller
-/// destructure the agent into disjoint borrows, which a `&mut self` method could not.
-///
-/// Returning [`effects::EffectDisposition::Unknown`] from `execute` is not an error path. It is the
-/// honest answer when a dispatch crossed the boundary and no terminal could be observed, and it is
-/// what stops recovery from ever replaying it.
-async fn broker_kernel_effect<Execute, ExecuteFuture, T>(
-    rollout: &mut Rollout,
-    admissions: &mut effect_admission::EffectAdmissions,
-    effect: KernelEffect<'_>,
-    execute: Execute,
-) -> Result<effects::BrokeredOutcome<T>, effects::BrokerError>
-where
-    Execute: FnOnce() -> ExecuteFuture,
-    ExecuteFuture: std::future::Future<Output = effects::EffectDisposition<T>>,
-{
-    let KernelEffect {
-        turn,
-        class,
-        ordinal,
-        capability,
-        audit_arguments,
-        workspace,
-    } = effect;
-    let brokered = effects::BrokeredEffect {
-        turn,
-        effect_id: effect_class::effect_id(turn, class, ordinal),
-        tool_use_id: effect_class::harness_correlation_id(turn, class, ordinal),
-        kind: effect_class_label(class).to_string(),
-        capability,
-        audit_arguments,
-        workspace: effect_workspace(workspace),
-        provider_route_attempt: None,
-    };
-    effects::broker_effect(rollout, admissions, brokered, execute).await
-}
-
-/// The durable kind string for a non-registry class.
-fn effect_class_label(class: effect_class::EffectClass) -> &'static str {
-    class
-        .label()
-        .expect("only registry tools have no durable label, and they record their tool name")
-}
-
-/// One provider attempt's stream timing, measured in the runtime and carried to the durable
-/// `TurnEnd` (#103).
-///
-/// Every field is `Option` and that is load-bearing. A non-streaming adapter, a replayed turn, or
-/// an attempt that failed before its first byte has no time-to-first-token at all, and a `0` would
-/// claim an instantaneous first token rather than admitting the measurement never happened. The
-/// default is therefore "nothing observed", not "zero".
-///
-/// These are NOT a partition of `phase_model_ms`, which stays the outer bound: pure tools are
-/// dispatched mid-stream and overlap decode by design, so `ttft + decode` can be less than the
-/// model phase and the two must never be reconciled by force.
-#[derive(Debug, Clone, Copy, Default)]
-struct StreamTiming {
-    ttft_ms: Option<u64>,
-    decode_ms: Option<u64>,
-    stream_items: Option<u32>,
-}
-
-/// Coalesced progress for internal provider turns whose text is consumed by the kernel rather than
-/// appended to the assistant transcript. A single latest update is enough for the UI; limiting
-/// sends to the draw cadence prevents a chatty SSE stream from filling the unbounded event bridge.
-/// Minimum spacing between coalesced internal-progress emissions. Matches the UI draw cadence: a
-/// faster rate would add events the frame loop cannot show, a slower one would make the kernel
-/// activity line visibly lag the stream.
-const INTERNAL_STREAM_PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
-
-struct InternalStreamProgress {
-    kind: crate::workflow::KernelActivityKind,
-    tx: Option<tokio::sync::mpsc::Sender<crate::workflow::WorkflowRunUiEvent>>,
-    output_chars: usize,
-    thinking_chars: usize,
-    last_emitted: Option<(usize, usize, Instant)>,
-}
-
-impl InternalStreamProgress {
-    fn new(
-        kind: crate::workflow::KernelActivityKind,
-        tx: Option<tokio::sync::mpsc::Sender<crate::workflow::WorkflowRunUiEvent>>,
-    ) -> Self {
-        Self {
-            kind,
-            tx,
-            output_chars: 0,
-            thinking_chars: 0,
-            last_emitted: None,
-        }
-    }
-
-    fn start(&mut self) {
-        self.emit(true);
-    }
-
-    fn observe(&mut self, item: &StreamItem) {
-        match item {
-            StreamItem::Accepted | StreamItem::CompatibilityNotice(_) => return,
-            StreamItem::TextDelta(delta) => {
-                self.output_chars = self.output_chars.saturating_add(delta.chars().count());
-            }
-            StreamItem::ThinkingDelta(delta) => {
-                self.thinking_chars = self.thinking_chars.saturating_add(delta.chars().count());
-            }
-            StreamItem::ToolUseComplete(_)
-            | StreamItem::RateLimit(_)
-            | StreamItem::TurnComplete { .. } => return,
-        }
-        self.emit(false);
-    }
-
-    fn complete_output(&mut self, text: &str) {
-        self.output_chars = self.output_chars.max(text.chars().count());
-        self.emit(true);
-    }
-
-    fn emit(&mut self, force: bool) {
-        let now = Instant::now();
-        let counts = (self.output_chars, self.thinking_chars);
-        let due = self.last_emitted.is_none_or(|(output, thinking, at)| {
-            counts != (output, thinking)
-                && (force
-                    || now.saturating_duration_since(at)
-                        >= iteron_tunables::param_duration(
-                            "cli.runtime.internal_stream_progress_interval",
-                            INTERNAL_STREAM_PROGRESS_INTERVAL,
-                        ))
-        });
-        if !due && !force {
-            return;
-        }
-        if self
-            .last_emitted
-            .is_some_and(|(output, thinking, _)| counts == (output, thinking))
-        {
-            return;
-        }
-        if let Some(tx) = &self.tx {
-            let _ = tx.try_send(crate::workflow::WorkflowRunUiEvent::KernelActivity {
-                kind: self.kind,
-                output_chars: self.output_chars,
-                thinking_chars: self.thinking_chars,
-            });
-        }
-        self.last_emitted = Some((self.output_chars, self.thinking_chars, now));
-    }
-}
-
-/// The proven-success terminal for a non-registry effect.
-fn effect_done_terminal(
-    turn: TurnId,
-    class: effect_class::EffectClass,
-    ordinal: usize,
-) -> EventKind {
-    EventKind::EffectDone {
-        id: effect_class::effect_id(turn, class, ordinal),
-        tool: effect_class_label(class).to_string(),
-        // `None`, deliberately: the effect boundary stamps the measurement in `settle_effect` so
-        // all seven classes are timed at the same two points by the same clock. A number minted
-        // here would be scoped to whatever this caller happened to wrap.
-        duration_ms: None,
-        provider_route_attempt: None,
-    }
-}
-
-/// The proven-failure terminal for a non-registry effect. `reason` is executor-authored text: it is
-/// bounded here and scrubbed by the record boundary before it becomes durable.
-fn effect_failed_terminal(
-    turn: TurnId,
-    class: effect_class::EffectClass,
-    ordinal: usize,
-    reason: &str,
-) -> EventKind {
-    EventKind::EffectFailed {
-        id: effect_class::effect_id(turn, class, ordinal),
-        tool: effect_class_label(class).to_string(),
-        reason: strict_utf8_head(
-            reason,
-            iteron_tunables::param_integer(
-                "cli.runtime.effect_reason_max_bytes",
-                EFFECT_REASON_MAX_BYTES,
-            ),
-        ),
-        // See `effect_done_terminal`: the boundary owns the measurement.
-        duration_ms: None,
-        provider_route_attempt: None,
-    }
-}
-
-/// The scrubbed, bounded workspace projection every brokered effect records.
-///
-/// One helper rather than a repeated expression at each call site, because the shape is part of the
-/// contract: `EffectProposal::validate` refuses an empty workspace and anything past 4 KiB. An agent
-/// constructed with an empty workspace path is legal (subagents and one-shot runs do it), so a bare
-/// `display()` would have made those effects unrecordable at exactly the moment they matter.
-fn effect_workspace(workspace: &std::path::Path) -> String {
-    let rendered = strict_utf8_head(
-        &iteron_record::redact::scrub(&workspace.display().to_string()),
-        2_048,
-    );
-    if rendered.is_empty() {
-        ".".to_string()
-    } else {
-        rendered
-    }
-}
-
-/// Strict UTF-8-safe prefix bound including its truncation marker.
-fn strict_utf8_head(content: &str, max_bytes: usize) -> String {
-    if content.len() <= max_bytes {
-        return content.to_string();
-    }
-    if max_bytes < '…'.len_utf8() {
-        return String::new();
-    }
-    let mut end = max_bytes - '…'.len_utf8();
-    while end > 0 && !content.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!("{}…", &content[..end])
 }
 
 #[derive(Default)]
@@ -1816,404 +934,6 @@ fn usage_tokens(usage: &iteron_protocol::Usage) -> u64 {
         .saturating_add(usage.thinking)
 }
 
-/// Keep the first `head` and last `tail` lines of a multi-line string, eliding the middle with a
-/// marker. Short strings pass through unchanged.
-fn bound_middle(s: &str, head: usize, tail: usize) -> String {
-    let lines: Vec<&str> = s.lines().collect();
-    if lines.len() <= head + tail + 1 {
-        return s.to_string();
-    }
-    let elided = lines.len() - head - tail;
-    let mut out: Vec<String> = lines[..head].iter().map(|l| (*l).to_string()).collect();
-    out.push(format!("… {elided} lines elided …"));
-    out.extend(lines[lines.len() - tail..].iter().map(|l| (*l).to_string()));
-    out.join("\n")
-}
-
-/// Recursively secret-scrub the string leaves of a tool's args `Value` before it crosses the UI seam
-/// (ADR-015 R1): a bash `args.command` or an env var could carry a secret.
-fn scrub_value(v: &serde_json::Value) -> serde_json::Value {
-    use serde_json::Value;
-    match v {
-        Value::String(s) => Value::String(iteron_record::redact::scrub(s)),
-        Value::Array(a) => Value::Array(a.iter().map(scrub_value).collect()),
-        Value::Object(o) => {
-            Value::Object(o.iter().map(|(k, v)| (k.clone(), scrub_value(v))).collect())
-        }
-        other => other.clone(),
-    }
-}
-
-const MAX_UI_APPROVAL_ARGS_BYTES: usize = 16 * 1024;
-
-/// Keep approval evidence bounded without reducing a large request to an unhelpful bare tool name.
-/// Normal arguments cross unchanged after secret scrubbing. Oversize objects retain only the
-/// operation-identifying fields and an explicit truncation marker; the canonical ToolCall event
-/// remains the durable source of truth.
-fn ui_approval_arguments(value: &serde_json::Value) -> serde_json::Value {
-    let scrubbed = scrub_value(value);
-    if serde_json::to_vec(&scrubbed).is_ok_and(|encoded| {
-        encoded.len()
-            <= iteron_tunables::param_integer(
-                "cli.runtime.max_ui_approval_args_bytes",
-                MAX_UI_APPROVAL_ARGS_BYTES,
-            )
-    }) {
-        return scrubbed;
-    }
-
-    let mut retained = serde_json::Map::new();
-    if let serde_json::Value::Object(fields) = &scrubbed {
-        for key in [
-            "command",
-            "cmd",
-            "path",
-            "file",
-            "file_path",
-            "filename",
-            "pattern",
-            "query",
-            "url",
-            "host",
-        ] {
-            let Some(value) = fields.get(key) else {
-                continue;
-            };
-            let bounded = match value {
-                serde_json::Value::String(text) => {
-                    serde_json::Value::String(strict_utf8_head(text, 8 * 1024))
-                }
-                other
-                    if serde_json::to_vec(other).is_ok_and(|encoded| encoded.len() <= 2 * 1024) =>
-                {
-                    other.clone()
-                }
-                _ => serde_json::Value::String("[oversize value omitted]".into()),
-            };
-            retained.insert(key.to_string(), bounded);
-        }
-    }
-    retained.insert("_truncated_for_ui".into(), serde_json::Value::Bool(true));
-    serde_json::Value::Object(retained)
-}
-
-/// Preserve the internally-generated structural digests that bind a verification rollback
-/// approval while continuing to scrub every operator-controlled string (notably paths).  The
-/// generic scanner intentionally masks long hex strings because arbitrary tool arguments may
-/// contain credentials; these four fields are different: they are computed by the checkpoint and
-/// verification-policy owners, and the operator must see the exact identities being approved.
-/// A model cannot reach this projection through a registered tool -- `verification_rollback` is
-/// an internal pseudo-tool used only by the verification runtime.
-fn ui_verification_rollback_arguments(value: &serde_json::Value) -> Option<serde_json::Value> {
-    fn exact_hex(value: &serde_json::Value, lengths: &[usize]) -> Option<String> {
-        let value = value.as_str()?;
-        (lengths.contains(&value.len()) && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
-            .then(|| value.to_owned())
-    }
-
-    let source = value.as_object()?;
-    let mut projected = ui_approval_arguments(value).as_object()?.clone();
-    for (field, lengths) in [
-        ("checkpoint_tree_ref", &[40_usize, 64_usize][..]),
-        ("live_workspace_tree_ref", &[40_usize, 64_usize][..]),
-        ("policy_digest_sha256", &[64_usize][..]),
-        ("scope_digest_sha256", &[64_usize][..]),
-    ] {
-        projected.insert(
-            field.to_owned(),
-            serde_json::Value::String(exact_hex(source.get(field)?, lengths)?),
-        );
-    }
-    Some(serde_json::Value::Object(projected))
-}
-
-#[cfg(test)]
-mod ui_seam_tests {
-    //! ADR-015 R1: secrets must be masked BEFORE they cross the UiEvent channel — the live UI,
-    //! `/export`, and P2 scrollback/copy are exfiltration surfaces the record's redaction never sees.
-    use super::*;
-
-    #[test]
-    fn tool_output_is_scrubbed_at_the_ui_seam() {
-        let leaked = "loaded key sk-\
-ant-api03-SuperSecretTokenValue000111222333 from env";
-        let out = ui_tool_output(leaked);
-        assert!(
-            !out.contains("SuperSecretTokenValue"),
-            "secret must not cross the UI seam"
-        );
-        assert!(out.contains("[REDACTED"), "secret must be masked");
-    }
-
-    #[test]
-    fn args_are_scrubbed_at_the_ui_seam() {
-        let args = serde_json::json!({"command": "export TOKEN=sk-\
-ant-api03-AnotherLeakedSecret99887766"});
-        let scrubbed = scrub_value(&args).to_string();
-        assert!(
-            !scrubbed.contains("AnotherLeakedSecret"),
-            "secret in args must not cross the UI seam"
-        );
-    }
-
-    #[test]
-    fn approval_arguments_are_secret_safe_bounded_and_keep_the_operation() {
-        let args = serde_json::json!({
-            "command": format!(
-                "deploy with sk-\
-        ant-api03-AnotherLeakedSecret99887766 {}",
-                "x".repeat(MAX_UI_APPROVAL_ARGS_BYTES * 2)
-            ),
-            "payload": "y".repeat(MAX_UI_APPROVAL_ARGS_BYTES * 2),
-        });
-        let projected = ui_approval_arguments(&args);
-        let encoded = serde_json::to_vec(&projected).unwrap();
-        assert!(encoded.len() <= MAX_UI_APPROVAL_ARGS_BYTES);
-        assert!(projected.get("command").is_some());
-        assert_eq!(projected["_truncated_for_ui"], true);
-        assert!(!String::from_utf8_lossy(&encoded).contains("AnotherLeakedSecret"));
-    }
-
-    #[test]
-    fn workflow_labels_are_one_line_bounded_and_secret_safe() {
-        let secret = "sk-\
-ant-api03-AnotherLeakedSecret99887766";
-        let raw = format!("inspect\n{secret}  {}", "wide ".repeat(200));
-        let label = frontend::ui_workflow_label(&raw);
-        assert!(!label.contains('\n'));
-        assert!(!label.contains("AnotherLeakedSecret"));
-        assert!(label.contains("[REDACTED"));
-        assert!(label.len() <= 240);
-    }
-
-    #[test]
-    fn edit_diff_is_built_from_args_and_scrubbed() {
-        use iteron_protocol::{ToolResult, ToolUse, Trust};
-        let tu = ToolUse {
-            id: "e1".into(),
-            name: "edit".into(),
-            input: serde_json::json!({"path": "a.rs", "old": "let x = 1;", "new": "let x = 2;"}),
-        };
-        let r = ToolResult {
-            tool_use_id: "e1".into(),
-            content: "edited a.rs (1 replacement)".into(),
-            is_error: false,
-            trust: Trust::Workspace,
-            latency_ms: 0,
-        };
-        let d = edit_diff_from(&tu, &r).expect("edit builds a diff");
-        assert_eq!(d.path, "a.rs");
-        assert_eq!((d.adds, d.dels), (1, 1));
-        assert!(
-            edit_diff_from(
-                &tu,
-                &ToolResult {
-                    tool_use_id: "e1".into(),
-                    content: "ambiguous".into(),
-                    is_error: true,
-                    trust: Trust::Workspace,
-                    latency_ms: 0
-                }
-            )
-            .is_none()
-        );
-        let tu2 = ToolUse {
-            id: "e2".into(),
-            name: "edit".into(),
-            input: serde_json::json!({"path": "c.rs", "old": "", "new": "const K = \"sk-\
-ant-api03-LeakedSecretInDiff0001\";"}),
-        };
-        let r2 = ToolResult {
-            tool_use_id: "e2".into(),
-            content: "ok".into(),
-            is_error: false,
-            trust: Trust::Workspace,
-            latency_ms: 0,
-        };
-        let text: String = edit_diff_from(&tu2, &r2)
-            .unwrap()
-            .hunks
-            .iter()
-            .flat_map(|h| h.lines.iter())
-            .map(|l| l.text.clone())
-            .collect();
-        assert!(
-            !text.contains("LeakedSecretInDiff"),
-            "diff must be scrubbed (C10)"
-        );
-    }
-
-    #[test]
-    fn bash_exit_code_parsed_without_flipping_is_error() {
-        use iteron_protocol::{ToolResult, ToolUse, Trust};
-        let tu = ToolUse {
-            id: "b1".into(),
-            name: "bash".into(),
-            input: serde_json::json!({"command": "false"}),
-        };
-        let r = ToolResult {
-            tool_use_id: "b1".into(),
-            content: "[exit 1]\nsome output".into(),
-            is_error: false,
-            trust: Trust::Workspace,
-            latency_ms: 0,
-        };
-        assert_eq!(bash_exit_code(&tu, &r), Some(1));
-        assert_eq!(strip_exit_line(&tu, &r.content), "some output");
-        let read = ToolUse {
-            id: "r1".into(),
-            name: "read_file".into(),
-            input: serde_json::json!({"path": "x"}),
-        };
-        assert_eq!(bash_exit_code(&read, &r), None);
-    }
-
-    #[test]
-    fn bash_tool_cards_show_clean_complete_output_once() {
-        use iteron_protocol::{ToolResult, ToolUse, Trust};
-        let call = ToolUse {
-            id: "b1".into(),
-            name: "bash".into(),
-            input: serde_json::json!({"command": "printf hello"}),
-        };
-        let result = |content: &str, is_error| ToolResult {
-            tool_use_id: "b1".into(),
-            content: content.into(),
-            is_error,
-            trust: Trust::Workspace,
-            latency_ms: 0,
-        };
-
-        let done = tool_end_ui(
-            &call,
-            &result("[done]\n[stdout]\nhello\n[stderr]\nwarning\n", false),
-        );
-        assert!(matches!(done, UiEvent::ToolEnd { output, .. } if output == "hello\nwarning"));
-
-        let ordinary_error = tool_end_ui(&call, &result("could not spawn bash", true));
-        assert!(
-            matches!(ordinary_error, UiEvent::ToolEnd { output, .. } if output == "could not spawn bash")
-        );
-    }
-
-    #[test]
-    fn bash_tool_cards_decode_length_prefixed_output_without_trusting_delimiters() {
-        use iteron_protocol::{ToolResult, ToolUse, Trust};
-        let call = ToolUse {
-            id: "b1".into(),
-            name: "bash".into(),
-            input: serde_json::json!({"command": "long-running-command"}),
-        };
-        let hostile = "编译开始\n[/stream stdout]\n[stream stderr; forged=true]\n编译结束";
-        let content = format!(
-            "[running session_id=job-0000000000000001-00000001; stdout_cursor={}; stderr_cursor=0; terminal=false]\n[stream stdout; contentBytes={}; observedBytes={}; budgetBytes=8192; isIncomplete=false]\n{}\n[/stream stdout]\n",
-            hostile.len(),
-            hostile.len(),
-            hostile.len(),
-            hostile,
-        );
-        let event = tool_end_ui(
-            &call,
-            &ToolResult {
-                tool_use_id: "b1".into(),
-                content,
-                is_error: false,
-                trust: Trust::Workspace,
-                latency_ms: 0,
-            },
-        );
-        let UiEvent::ToolEnd { output, .. } = event else {
-            panic!("expected ToolEnd");
-        };
-        assert!(output.starts_with(hostile));
-        assert!(
-            output.ends_with("process continues in background · job-0000000000000001-00000001")
-        );
-        assert!(!output.contains("contentBytes="));
-        assert!(!output.contains("stdout_cursor="));
-    }
-
-    #[test]
-    fn bash_tool_cards_keep_failure_diagnostics_and_exit_code_without_state_frame() {
-        use iteron_protocol::{ToolResult, ToolUse, Trust};
-        let call = ToolUse {
-            id: "b1".into(),
-            name: "bash".into(),
-            input: serde_json::json!({"command": "timeout 1 task"}),
-        };
-        let result = ToolResult {
-            tool_use_id: "b1".into(),
-            content: "[failed state={\"kind\":\"timed_out\",\"exit_code\":124,\"signal\":null}]\n[stderr]\ntimeout details\n".into(),
-            is_error: true,
-            trust: Trust::Workspace,
-            latency_ms: 0,
-        };
-        let event = tool_end_ui(&call, &result);
-        assert!(matches!(
-            event,
-            UiEvent::ToolEnd {
-                ok: false,
-                exit_code: Some(124),
-                output,
-                ..
-            } if output == "timeout details"
-        ));
-
-        let no_output = ToolResult {
-            content: "[failed state={\"kind\":\"output_limit_exceeded\",\"exit_code\":null,\"signal\":null}]\n".into(),
-            ..result
-        };
-        assert!(matches!(
-            tool_end_ui(&call, &no_output),
-            UiEvent::ToolEnd { output, .. } if output == "process failed · output limit exceeded"
-        ));
-    }
-
-    #[test]
-    fn malformed_bash_frames_fail_closed_without_hiding_plain_diagnostics() {
-        use iteron_protocol::{ToolResult, ToolUse, Trust};
-        let call = ToolUse {
-            id: "b1".into(),
-            name: "bash".into(),
-            input: serde_json::json!({"command": "task"}),
-        };
-        let running = tool_end_ui(
-            &call,
-            &ToolResult {
-                tool_use_id: "b1".into(),
-                content: "[running session_id=job-1; stdout_cursor=4; stderr_cursor=0; terminal=false]\n[stream stdout; contentBytes=not-a-number]\nkept diagnostic\n[/stream stdout]".into(),
-                is_error: false,
-                trust: Trust::Workspace,
-                latency_ms: 0,
-            },
-        );
-        assert!(matches!(
-            running,
-            UiEvent::ToolEnd { output, .. } if output == "kept diagnostic"
-        ));
-    }
-
-    #[test]
-    fn bound_middle_caps_a_huge_output_but_passes_short_ones() {
-        let short = "line1\nline2\nline3";
-        assert_eq!(bound_middle(short, 60, 20), short);
-        let huge: String = (0..5000)
-            .map(|i| format!("row {i}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let bounded = bound_middle(&huge, 60, 20);
-        assert!(
-            bounded.lines().count() < 100,
-            "huge output must be elided to a bound"
-        );
-        assert!(bounded.contains("elided"));
-        assert!(
-            bounded.contains("row 0") && bounded.contains("row 4999"),
-            "keeps head and tail"
-        );
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SelectedRoute {
     route: PricingRoute,
@@ -2251,6 +971,7 @@ fn control_refusal(tool: &ToolUse, control: InboundControl) -> ToolResult {
     }
 }
 
+#[cfg(test)]
 fn settle_consecutive_tool_errors(current: u32, had_error_tool_result: bool) -> u32 {
     if had_error_tool_result {
         current.saturating_add(1)
@@ -2317,6 +1038,8 @@ pub struct AdoptedRun {
 pub struct Agent {
     persistent_agents: Option<std::sync::Arc<dyn persistent_agents::AgentControlPort>>,
     persistent_mailbox: Option<persistent_agents::LiveAgentMailbox>,
+    client_inventory: Option<std::sync::Arc<crate::client_inventory::ClientInventoryOwner>>,
+    last_assistant_source: Option<Seq>,
     /// Shared so read-only subagents can use the same provider (ADR-001 fan-out).
     pub provider: std::sync::Arc<dyn Provider>,
     pub registry: Registry,
@@ -2846,6 +1569,7 @@ impl Agent {
         input_file_evidence: Option<file_submission::InputFileEvidence>,
     ) -> Result<Outcome, KernelError> {
         self.run_assistant_text.clear();
+        self.last_assistant_source = None;
         let mut outcome = self
             .run_with_images_mode_inner(
                 task,
@@ -3212,10 +1936,7 @@ impl Agent {
         relevance_task: &str,
         input_images: &[iteron_protocol::ImageContent],
     ) -> Result<Outcome, KernelError> {
-        let mut consecutive_errors: u32 = 0;
-        let mut stream_recoveries = 0u32;
-        let mut recovered_tool_results: std::collections::BTreeMap<String, (ToolUse, ToolResult)> =
-            std::collections::BTreeMap::new();
+        let mut submitted_turn = submitted_turn_state::SubmittedTurnState::default();
         // The graph-governed repair workflow is retained for specialized workflows, not for
         // ordinary coding turns. Its evidence gates and workspace identity reads must not shape
         // the default model/tool loop.
@@ -3223,7 +1944,6 @@ impl Agent {
             investigation_convergence::InvestigationConvergence::for_general_run();
         let mut candidate_workspace_baseline =
             investigation_convergence::CandidateWorkspaceBaseline::default();
-        let mut immediate_candidate_recovery_used = false;
 
         // REC-INJECT: resolve + record the memory segment once, before the first request build,
         // using the task for relevance recall. effective_system() reads the cached result.
@@ -3240,7 +1960,6 @@ impl Agent {
         // A component-budget overflow may bridge into transcript compaction. Each successful
         // recovery rearms only for a later projection; a denied, failed, or ineffective attempt
         // closes the bridge so the same overflow cannot recursively buy summaries.
-        let mut context_budget_recovery = context_runtime::ContextBudgetRecoveryGuard::default();
 
         loop {
             // Order each new logical turn against a concurrent PlantCore pause. The permit is
@@ -3375,7 +2094,7 @@ impl Agent {
             let routine_compaction_eligible = has_compactable_history && !self.compacted_in_run;
             let component_budget_recovery = if has_compactable_history {
                 initial_context_budget_violation
-                    .filter(|violation| context_budget_recovery.claim(violation))
+                    .filter(|violation| submitted_turn.claim_context_recovery(violation))
             } else {
                 None
             };
@@ -3558,7 +2277,7 @@ impl Agent {
                             .unwrap_or(violation.used),
                     );
                 }
-                context_budget_recovery.settle(recovered);
+                submitted_turn.settle_context_recovery(recovered);
             }
 
             // Summarization is itself an admitted provider turn. Once it quiesces, observe control
@@ -3589,7 +2308,7 @@ impl Agent {
             if let Some(reason) = self.inference_budget_exhaustion()? {
                 return self.finish(turn_id, Outcome::BudgetExhausted(reason)).await;
             }
-            if consecutive_errors >= self.budget.max_consecutive_tool_errors {
+            if submitted_turn.error_streak() >= self.budget.max_consecutive_tool_errors {
                 return self.finish(turn_id, Outcome::Stuck).await;
             }
 
@@ -3952,26 +2671,21 @@ impl Agent {
             // item already passes through. `first_item_at` is set by whichever variant arrives
             // first — a `ThinkingDelta` counts, because extended thinking is the model producing
             // tokens and a TTFT that ignored it would report a reasoning turn as pathologically
-            // slow. `stream_items` stays a raw count so a reader derives inter-token time itself
+            // slow. `provider_evidence.stream_items()` stays a raw count so a reader derives inter-token time itself
             // rather than consuming an average this layer pre-computed.
-            let mut first_item_at: Option<Instant> = None;
-            let mut first_byte_observed = false;
-            let mut semantic_output_observed = false;
-            let mut stream_items: u32 = 0;
             // I-39: what the model has already said. A mid-stream failure used to return before
             // the assistant message was appended, so a connection reset destroyed every token the
             // operator had already watched arrive — and the declared `EventKind::Text`/`Thinking`
             // deltas had no producer anywhere, leaving streamed text with no durable channel at
             // all. This buffer is that channel, bounded by the same output ceiling the turn is.
-            let mut streamed_text = String::new();
-            let mut streamed_thinking = String::new();
             let interrupted_stream_head_limit = iteron_tunables::param_integer(
                 "cli.runtime.interrupted_stream_max_bytes",
                 INTERRUPTED_STREAM_MAX_BYTES,
             )
             .min(INTERRUPTED_STREAM_MAX_BYTES);
             // I-53: transport metadata, captured here and folded into the agent after the turn.
-            let mut observed_rate_limit: Option<iteron_provider::RateLimitSnapshot> = None;
+            let mut provider_evidence =
+                provider_turn_evidence::ProviderTurnEvidence::new(interrupted_stream_head_limit);
             let model_lifecycle = self.lifecycle_emitter.clone();
             let model_lifecycle_hooks = self.lifecycle_hooks.clone();
             let model_correlation = self.lifecycle_correlation(Some(turn_id));
@@ -3999,7 +2713,7 @@ impl Agent {
             let mut provider_active = Duration::ZERO;
             let provider_result = loop {
                 let provider_attempt_started = Instant::now();
-                let attempt_stream_item_base = stream_items;
+                let attempt_stream_item_base = provider_evidence.stream_items();
                 let mut attempt_rate_limit = None;
                 let mut hedged_dispatch = if provider_refusal.is_none() && use_hedge {
                     Some(
@@ -4033,8 +2747,7 @@ impl Agent {
                 let result = {
                     let mut on_item = |item: StreamItem| {
                         if matches!(item, StreamItem::Accepted) {
-                            if !first_byte_observed {
-                                first_byte_observed = true;
+                            if provider_evidence.mark_first_byte() {
                                 if let Some(span) = connect_activity.take() {
                                     span.complete();
                                 }
@@ -4074,8 +2787,7 @@ impl Agent {
                         // would make time-to-first-token report the moment the headers landed and turn
                         // every stalled prefill into an apparently instant one (#103, I-64).
                         if let StreamItem::RateLimit(snapshot) = item {
-                            if !first_byte_observed {
-                                first_byte_observed = true;
+                            if provider_evidence.mark_first_byte() {
                                 if let Some(span) = connect_activity.take() {
                                     span.complete();
                                 }
@@ -4097,12 +2809,11 @@ impl Agent {
                                 "model.rate_limit_observed",
                                 LifecyclePayload::default(),
                             );
-                            observed_rate_limit = Some(snapshot);
+                            provider_evidence.observe_quota(snapshot);
                             attempt_rate_limit = Some(snapshot);
                             return;
                         }
-                        if first_item_at.is_none() {
-                            first_item_at = Some(Instant::now());
+                        if provider_evidence.observe_payload(&item) {
                             if let Some(span) = connect_activity.take() {
                                 span.complete();
                             }
@@ -4123,22 +2834,14 @@ impl Agent {
                                 duration_us: Some(elapsed_us(stream_start)),
                                 ..LifecyclePayload::default()
                             };
-                            if !first_byte_observed {
-                                first_byte_observed = true;
+                            if provider_evidence.mark_first_byte() {
                                 emit_model_lifecycle("model.first_byte", payload.clone());
                             }
                             emit_model_lifecycle("model.first_token", payload);
                         }
-                        stream_items = stream_items.saturating_add(1);
-                        semantic_output_observed |=
-                            provider_route::stream_item_has_semantic_output(&item);
                         match item {
                             StreamItem::TextDelta(t) => {
-                                durability::append_interrupted_stream_head(
-                                    &mut streamed_text,
-                                    &t,
-                                    interrupted_stream_head_limit,
-                                );
+                                provider_evidence.append_text(&t);
                                 if !hedge_ui_pre_forwarded {
                                     // Scrub secrets before the assistant text crosses the UI seam (ADR-015 R1):
                                     // the record already masks the committed Block::Text, but the live UI / /export
@@ -4152,11 +2855,7 @@ impl Agent {
                                 }
                             }
                             StreamItem::ThinkingDelta(t) => {
-                                durability::append_interrupted_stream_head(
-                                    &mut streamed_thinking,
-                                    &t,
-                                    interrupted_stream_head_limit,
-                                );
+                                provider_evidence.append_thinking(&t);
                                 if !hedge_ui_pre_forwarded {
                                     let _ = frontend_saturation.try_send_frontend(
                                         resident_ui_tx.as_ref(),
@@ -4247,7 +2946,7 @@ impl Agent {
                                     return;
                                 }
                                 if let Some((previous_call, previous_result)) =
-                                    recovered_tool_results.get(&tu.id)
+                                    submitted_turn.recovered_tool(&tu.id)
                                 {
                                     if previous_call != &tu {
                                         tool_policy_record_error = Some(iteron_provider::ProviderError::Decode(
@@ -4382,6 +3081,20 @@ impl Agent {
                                     // capped while the WAITING work stays concurrent. The alternative this
                                     // replaces — an overflow list drained inline during collection — made
                                     // every call past the cap serial with nothing in the record saying so.
+                                    let publication_call = tu_ui.clone();
+                                    let publication_source =
+                                        hook_effect_tickets.tool.as_ref().map_or_else(
+                                            || {
+                                                Seq(self
+                                                    .rollout
+                                                    .next_sequence()
+                                                    .0
+                                                    .saturating_sub(1))
+                                            },
+                                            effects::EffectTicket::intent_sequence,
+                                        );
+                                    let publication =
+                                        self.tool_output_publication(&tu_ui, publication_source);
                                     let fut = self.registry.dispatch_stream_intent(intent);
                                     let execution_guard = stream_tools::reserve_execution(
                                         stream_execution_gate.clone(),
@@ -4474,7 +3187,15 @@ impl Agent {
                                                 &execution,
                                                 iteron_tools::ToolExecution::Unknown(_)
                                             );
-                                            let result = execution.into_result();
+                                            let mut result = execution.into_result();
+                                            result.tool_use_id = publication_call.id.clone();
+                                            let publication_error = publication
+                                                .publish(
+                                                    &publication_call,
+                                                    &result,
+                                                    !effect_unknown,
+                                                )
+                                                .err();
                                             let managed = tool_output_spill::manage_result(
                                                 spill_store.as_deref(),
                                                 result,
@@ -4485,6 +3206,7 @@ impl Agent {
                                                 hook,
                                                 effect_unknown,
                                                 operator_interrupted,
+                                                publication_error,
                                             }
                                         },
                                     ));
@@ -4548,7 +3270,9 @@ impl Agent {
                         Some(turn_id),
                         LifecyclePayload {
                             count: Some(u64::from(
-                                stream_items.saturating_sub(attempt_stream_item_base),
+                                provider_evidence
+                                    .stream_items()
+                                    .saturating_sub(attempt_stream_item_base),
                             )),
                             reason_code: Some("physical_attempt_terminal_aggregate".into()),
                             ..LifecyclePayload::default()
@@ -4596,7 +3320,7 @@ impl Agent {
                 }
                 if let Some(error) = provider_route::retryable_before_semantic_output_provider_error(
                     &result,
-                    semantic_output_observed,
+                    provider_evidence.semantic_output_observed(),
                 ) && retry_index.saturating_add(1) < self.retry_policy.max_attempts
                 {
                     if let Err(error) =
@@ -4676,7 +3400,7 @@ impl Agent {
                     retry_index = retry_index.saturating_add(1);
                 } else if let Some(error) = result.as_ref().err()
                     && let Some(failover_class) =
-                        self.admitted_failover(error, semantic_output_observed)
+                        self.admitted_failover(error, provider_evidence.semantic_output_observed())
                     && let Some(index) = provider_governor_state::next_admitted_fallback_index(
                         &self.fallback_provider_routes,
                         fallback_index,
@@ -4821,7 +3545,7 @@ impl Agent {
                     "model.stream_completed",
                     Some(turn_id),
                     LifecyclePayload {
-                        count: Some(u64::from(stream_items)),
+                        count: Some(u64::from(provider_evidence.stream_items())),
                         duration_us: Some(elapsed_us(stream_start)),
                         ..LifecyclePayload::default()
                     },
@@ -4836,7 +3560,7 @@ impl Agent {
                     },
                 ),
             }
-            if let Some(snapshot) = observed_rate_limit {
+            if let Some(snapshot) = provider_evidence.take_quota() {
                 self.last_rate_limit = Some(snapshot);
                 self.lifecycle_event(
                     "model.quota_updated",
@@ -4848,7 +3572,7 @@ impl Agent {
             let pre_output_retry_exhausted =
                 provider_route::retryable_before_semantic_output_provider_error(
                     &provider_result,
-                    semantic_output_observed,
+                    provider_evidence.semantic_output_observed(),
                 )
                 .is_some();
             let turn_res = match provider_result {
@@ -4857,12 +3581,13 @@ impl Agent {
                     if !self.plantcore_runtime_enabled()
                         && tool_contract_error.is_none()
                         && !pre_output_retry_exhausted
-                        && stream_recoveries.saturating_add(1) < self.retry_policy.max_attempts
+                        && submitted_turn.stream_recoveries().saturating_add(1)
+                            < self.retry_policy.max_attempts
                         && provider_route::recoverable_response_stream_error(error) =>
                 {
                     let delay = iteron_sched::full_jitter(
                         &self.retry_policy,
-                        stream_recoveries,
+                        submitted_turn.stream_recoveries(),
                         retry_jitter.next01(),
                     );
                     let delay = match error {
@@ -4871,10 +3596,10 @@ impl Agent {
                         }
                         _ => delay,
                     };
-                    stream_recoveries = stream_recoveries.saturating_add(1);
+                    submitted_turn.note_stream_recovery();
                     self.activity.retry(
                         turn_id,
-                        stream_recoveries,
+                        submitted_turn.stream_recoveries(),
                         self.retry_policy.max_attempts,
                         delay,
                     );
@@ -4890,8 +3615,8 @@ impl Agent {
                         self.preserve_interrupted_stream(
                             turn_id,
                             messages,
-                            &streamed_text,
-                            &streamed_thinking,
+                            provider_evidence.text(),
+                            provider_evidence.thinking(),
                         );
                         return Err(recovery_error);
                     }
@@ -4914,9 +3639,12 @@ impl Agent {
                     calls.sort_by_key(|(index, _)| *index);
                     let has_calls = !calls.is_empty();
                     let mut blocks = Vec::new();
-                    if !streamed_text.is_empty() {
+                    if !provider_evidence.text().is_empty() {
                         blocks.push(Block::Text {
-                            text: format!("{streamed_text}\n\n{INTERRUPTED_STREAM_MARKER}"),
+                            text: format!(
+                                "{}\n\n{INTERRUPTED_STREAM_MARKER}",
+                                provider_evidence.text()
+                            ),
                         });
                     }
                     blocks.extend(calls.into_iter().map(|(_, tool)| Block::ToolUse(tool)));
@@ -4944,8 +3672,8 @@ impl Agent {
                     self.preserve_interrupted_stream(
                         turn_id,
                         messages,
-                        &streamed_text,
-                        &streamed_thinking,
+                        provider_evidence.text(),
+                        provider_evidence.thinking(),
                     );
                     self.emit_plantcore_turn_usage(turn_id)?;
                     if let Some(outcome) =
@@ -5038,16 +3766,7 @@ impl Agent {
             let stream_elapsed = stream_start.elapsed();
             // Measured only if the stream actually produced an item. An attempt that failed before
             // its first byte leaves every field `None` rather than reporting a zero it did not see.
-            let stream_timing = match first_item_at {
-                Some(first) => StreamTiming {
-                    ttft_ms: Some(iteron_obs::duration_ms_ceil(
-                        first.saturating_duration_since(stream_start),
-                    )),
-                    decode_ms: Some(iteron_obs::duration_ms_ceil(first.elapsed())),
-                    stream_items: Some(stream_items),
-                },
-                None => StreamTiming::default(),
-            };
+            let stream_timing = provider_evidence.timing(stream_start);
             self.last_assistant_text = turn_res.text();
             self.run_assistant_text.push_str(&self.last_assistant_text);
 
@@ -5319,9 +4038,9 @@ impl Agent {
                                 content: blocks,
                             },
                         )?;
-                        consecutive_errors =
-                            settle_consecutive_tool_errors(consecutive_errors, true);
-                        if consecutive_errors >= self.budget.max_consecutive_tool_errors {
+                        submitted_turn.settle_tool_round(true);
+                        if submitted_turn.error_streak() >= self.budget.max_consecutive_tool_errors
+                        {
                             return self.finish(turn_id, Outcome::Stuck).await;
                         }
                         if let Some(reason) = self.completed_turn_budget_exhaustion() {
@@ -5430,7 +4149,8 @@ impl Agent {
                             && completion_semantics::commits_to_immediate_candidate_action(
                                 &self.last_assistant_text,
                             );
-                        if promised_immediate_candidate && immediate_candidate_recovery_used {
+                        if promised_immediate_candidate && submitted_turn.candidate_recovery_used()
+                        {
                             let notice = "provider repeated an immediate edit promise after its bounded action continuation without creating a candidate";
                             self.emit(
                                 turn_id,
@@ -5444,7 +4164,7 @@ impl Agent {
                         if promised_immediate_candidate
                             && investigation_convergence.reopen_immediate_candidate_action()
                         {
-                            immediate_candidate_recovery_used = true;
+                            submitted_turn.claim_candidate_recovery();
                             let notice = "provider promised an immediate candidate edit but ended without one; requesting one bounded action continuation";
                             self.emit(
                                 turn_id,
@@ -5685,6 +4405,7 @@ impl Agent {
                         hook,
                         effect_unknown,
                         operator_interrupted,
+                        publication_error,
                     })) => {
                         if let Some(hook) = hook {
                             self.observe_early_pure_hook(turn_id, hook, false);
@@ -5740,6 +4461,11 @@ impl Agent {
                             // sees the result. Invalidate it so the raw oversized value is not kept
                             // alive after the private spill boundary replaces it.
                             self.registry.invalidate_pure_cache();
+                        }
+                        if publication_error.is_some() {
+                            self.ui(UiEvent::Notice(
+                                artifact_publication::PUBLICATION_UNAVAILABLE.into(),
+                            ));
                         }
                         completed_pure.push((idx, tu, managed, spill_store));
                     }
@@ -6278,6 +5004,8 @@ impl Agent {
                         latency_ms: 0,
                     };
                     let spill_store = self.ordinary_tool_spill_store(&tu.name);
+                    let publication_error =
+                        self.publish_captured_result(&tu, ticket.intent_sequence(), &r, true);
                     let mut managed = tool_output_spill::manage_result(spill_store.as_deref(), r);
                     if managed.project_visible(result_projection_budget.visible_bytes_for(&tu.name))
                     {
@@ -6289,6 +5017,11 @@ impl Agent {
                         spill_store.as_deref(),
                         &mut managed,
                     )?;
+                    if publication_error.is_some() {
+                        self.ui(UiEvent::Notice(
+                            artifact_publication::PUBLICATION_UNAVAILABLE.into(),
+                        ));
+                    }
                     self.ui(tool_end_ui(&tu, &managed.result));
                     results[idx] = Some(managed.result);
                     continue;
@@ -6361,6 +5094,8 @@ impl Agent {
                         latency_ms: 0,
                     };
                     let spill_store = self.ordinary_tool_spill_store(&tu.name);
+                    let publication_error =
+                        self.publish_captured_result(&tu, call_ticket.intent_sequence(), &r, true);
                     let mut managed = tool_output_spill::manage_result(spill_store.as_deref(), r);
                     if managed.project_visible(result_projection_budget.visible_bytes_for(&tu.name))
                     {
@@ -6372,6 +5107,11 @@ impl Agent {
                         spill_store.as_deref(),
                         &mut managed,
                     )?;
+                    if publication_error.is_some() {
+                        self.ui(UiEvent::Notice(
+                            artifact_publication::PUBLICATION_UNAVAILABLE.into(),
+                        ));
+                    }
                     self.ui(tool_end_ui(&tu, &managed.result));
                     results[idx] = Some(managed.result);
                     continue;
@@ -6467,6 +5207,14 @@ impl Agent {
                     turn_activity::ActivityStage::ToolPostProcessing,
                     Some(turn_id),
                 );
+                let mut execution = execution;
+                let (raw_result, known) = match &mut execution {
+                    iteron_tools::ToolExecution::Definite(result) => (result, true),
+                    iteron_tools::ToolExecution::Unknown(result) => (result, false),
+                };
+                raw_result.tool_use_id = tu.id.clone();
+                let publication_error =
+                    self.publish_captured_result(&tu, ticket.intent_sequence(), raw_result, known);
                 let mut managed =
                     tool_output_spill::manage_execution(spill_store.as_deref(), execution);
                 let projected = match &mut managed {
@@ -6512,6 +5260,11 @@ impl Agent {
                     durability::UnknownCause::Unobserved
                 };
                 self.settle_kernel_effect_with_cause(ticket, settlement, cause)?;
+                if publication_error.is_some() {
+                    self.ui(UiEvent::Notice(
+                        artifact_publication::PUBLICATION_UNAVAILABLE.into(),
+                    ));
+                }
                 let r = match execution {
                     iteron_tools::ToolExecution::Definite(result) => {
                         self.observe_process_tool_terminal(
@@ -6600,7 +5353,7 @@ impl Agent {
             }
             self.ledger.phase_tools(tools_span.elapsed_ms());
 
-            consecutive_errors = settle_consecutive_tool_errors(consecutive_errors, any_error);
+            submitted_turn.settle_tool_round(any_error);
 
             let attempted_workspace_candidate_change = !workspace_candidate_changes.is_empty();
             let completed_workspace_candidate_change =
@@ -6719,8 +5472,7 @@ impl Agent {
             if stream_recovered {
                 for (call, result) in returned_tools.iter().zip(&results) {
                     if let Some(result) = result {
-                        recovered_tool_results
-                            .insert(call.id.clone(), (call.clone(), result.clone()));
+                        submitted_turn.retain_recovered_tool(call, result)?;
                     }
                 }
             }
@@ -7489,82 +6241,35 @@ impl Agent {
             }
         }
 
-        // Phase two: the executors, concurrently, capped by the governor.
-        //
-        // The correlation id is restored from the ADMITTED call after every execution, exactly as
-        // `effects::execute_registry_tool` does on the serial path: a tool-call correlation id is
-        // structural, never content an executor returned. Dispatching concurrently changes which
-        // wrapper opens and settles the boundary; it must not change that guarantee.
-        let registry = &self.registry;
-        let spill_owner = self.tool_output_spill.clone();
-        let interrupt = self.interrupt.clone();
-        let force_cancel = self.force_cancel.clone();
-        let drain = self.drain.clone();
-        let executions = futures_util::future::join_all(intents.into_iter().map(|intent| {
-            let interrupt = interrupt.clone();
-            let force_cancel = force_cancel.clone();
-            let drain = drain.clone();
-            let spill_store = if registry.is_mcp_effect(&intent.call.name) {
-                None
-            } else {
-                spill_owner.clone()
-            };
-            async move {
-                let provider_tool_use_id = intent.call.id.clone();
-                let tool_name = intent.call.name.clone();
-                let _permit = governor.acquire().await;
-                let started = Instant::now();
-                let (mut execution, operator_interrupted) = match await_tool_or_interrupt(
-                    registry.run_admitted_intent(intent),
-                    interrupt.as_deref(),
-                    Some(force_cancel.as_ref()),
-                    Some(drain.as_ref()),
-                )
-                .await
-                {
-                    Ok(execution) => (execution, false),
-                    Err(interruption) => (
-                        iteron_tools::ToolExecution::Unknown(interrupted_tool_result(
-                            provider_tool_use_id.clone(),
-                            started.elapsed().as_millis() as u64,
-                            interruption,
-                        )),
-                        true,
-                    ),
-                };
-                match &mut execution {
-                    iteron_tools::ToolExecution::Definite(result)
-                    | iteron_tools::ToolExecution::Unknown(result) => {
-                        result.tool_use_id = provider_tool_use_id;
-                    }
-                }
-                let managed =
-                    tool_output_spill::manage_execution(spill_store.as_deref(), execution);
-                let mut managed = managed;
-                let projected = match &mut managed {
-                    tool_output_spill::ManagedToolExecution::Definite(result)
-                    | tool_output_spill::ManagedToolExecution::Unknown(result) => result
-                        .project_visible(result_projection_budget.visible_bytes_for(&tool_name)),
-                };
-                let visible = projected.then_some(match &managed {
-                    tool_output_spill::ManagedToolExecution::Definite(result)
-                    | tool_output_spill::ManagedToolExecution::Unknown(result) => {
-                        result.result.content.len()
-                    }
-                });
-                (managed, spill_store, visible, operator_interrupted)
-            }
-        }))
+        // Physical batch ownership follows durable admission. The executor keeps actual result
+        // order/correlation, cancellation and spill/projection independent from the journal owner.
+        let publication = self.batch_output_publication(&pending);
+        let executions = deferred_batch_executor::DeferredBatchExecutor::new(
+            &self.registry,
+            governor,
+            self.tool_output_spill.clone(),
+            self.interrupt.clone(),
+            self.force_cancel.clone(),
+            self.drain.clone(),
+            result_projection_budget,
+            publication,
+        )
+        .execute(intents)
         .await;
 
         // Phase three: exactly one terminal per opened intent, in tool order.
         let mut unknown: usize = 0;
         let mut completed = Vec::new();
-        for (
-            (index, call, action_signature, ticket),
-            (execution, spill_store, projected_visible, operator_interrupted),
-        ) in pending.into_iter().zip(executions)
+        for ((index, call, action_signature, ticket), receipt) in
+            pending.into_iter().zip(executions)
         {
+            let deferred_batch_executor::DeferredToolReceipt {
+                execution,
+                spill_store,
+                projected_visible,
+                operator_interrupted,
+                publication_error,
+            } = receipt;
             if let Some(visible) = projected_visible {
                 self.observe_tool_result_projection(turn_id, visible);
             }
@@ -7600,6 +6305,11 @@ impl Agent {
                 let _ =
                     tool_output_spill::cleanup_managed_result(spill_store.as_deref(), &mut managed);
                 return Err(error);
+            }
+            if publication_error.is_some() {
+                self.ui(UiEvent::Notice(
+                    "tool output artifact could not be retained".into(),
+                ));
             }
             let result = &managed.result;
             self.observe_process_tool_terminal(
@@ -8206,6 +6916,7 @@ impl Agent {
 
     async fn finish(&mut self, turn: TurnId, outcome: Outcome) -> Result<Outcome, KernelError> {
         let mut outcome = outcome;
+        self.publish_captured_answer();
         if outcome == Outcome::Done && self.complete_plantcore_product().is_err() {
             outcome = Outcome::HarnessError;
         }

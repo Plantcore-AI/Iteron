@@ -1137,6 +1137,52 @@
       ]
     },
     {
+      "id": "agent-controller",
+      "title": "Persistent agent controller",
+      "summary": "Sole durable owner of persistent agent identities, turn epochs, mailbox confirmations, scoped control and lifetime budget reservations. Scheduler and provider adapters use typed commands.",
+      "status": "open",
+      "risk": "critical",
+      "primary": null,
+      "reviewers": [],
+      "paths": [
+        {
+          "kind": "file",
+          "path": "crates/agents/src/controller.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/agents/src/controller_error.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/agents/src/controller_file.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/agents/src/controller_file_windows.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/agents/src/mailbox.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/agents/src/controller"
+        }
+      ],
+      "contracts": [
+        "persistent-identity-single-active-turn",
+        "scoped-host-bound-control",
+        "durable-mailbox-confirmation-stages",
+        "monotonic-lifetime-budget-reservation",
+        "unknown-effect-reconciliation"
+      ],
+      "checks": [
+        "cargo test -p iteron-agents --locked",
+        "iteron-xtask boundaries check"
+      ]
+    },
+    {
       "id": "agent-orchestration",
       "title": "Agent orchestration",
       "summary": "Task classification, decomposition, deterministic Fan and Reduce policy, and workflow data.",
@@ -2447,6 +2493,38 @@
         {
           "kind": "file",
           "path": "scripts/test_plantcore_recording_driver.py"
+        },
+        {
+          "kind": "file",
+          "path": "crates/agents/src/controller.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/agents/src/controller_error.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/agents/src/controller_file.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/agents/src/controller_file_windows.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/agents/src/mailbox.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/agents/src/controller"
+        },
+        {
+          "kind": "file",
+          "path": "crates/protocol/src/agent_control.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/workflow/src/live_scheduler"
         }
       ]
     },
@@ -2517,6 +2595,38 @@
         {
           "kind": "file",
           "path": "crates/cli/src/runtime.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/agents/src/controller.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/agents/src/controller_error.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/agents/src/controller_file.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/agents/src/controller_file_windows.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/agents/src/mailbox.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/agents/src/controller"
+        },
+        {
+          "kind": "file",
+          "path": "crates/protocol/src/agent_control.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/workflow/src/live_scheduler"
         }
       ]
     },
@@ -2813,6 +2923,14 @@
         {
           "kind": "file",
           "path": "scripts/test_plantcore_recording_driver.py"
+        },
+        {
+          "kind": "file",
+          "path": "crates/protocol/src/agent_control.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/workflow/src/live_scheduler"
         }
       ]
     },
@@ -3430,6 +3548,7 @@
         "normal": [
           "iteron-ctx",
           "iteron-protocol",
+          "iteron-support",
           "iteron-tunables"
         ],
         "dev": [],
@@ -3627,6 +3746,7 @@
         "normal": [
           "iteron-protocol",
           "iteron-sched",
+          "iteron-support",
           "iteron-tunables"
         ],
         "dev": [],

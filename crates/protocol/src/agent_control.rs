@@ -11,17 +11,15 @@ pub const MAX_AGENT_WRITE_PATHS: usize = 64;
 pub const MAX_AGENT_WRITE_PATH_BYTES: usize = 2_048;
 pub const MAX_AGENT_REQUEST_ID_BYTES: usize = 128;
 
-macro_rules! id {
-    ($name:ident) => {
-        #[derive(
-            Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
-        )]
-        #[serde(transparent)]
-        pub struct $name(pub u64);
-    };
-}
-id!(AgentIdV1);
-id!(AgentMessageIdV1);
+/// Durable persistent agent identity. Explicit declaration is visible to protocol source census.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct AgentIdV1(pub u64);
+
+/// Durable mailbox identity; it is distinct from an agent or provider request identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct AgentMessageIdV1(pub u64);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

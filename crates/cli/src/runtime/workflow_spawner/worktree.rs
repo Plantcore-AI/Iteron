@@ -1,13 +1,14 @@
 //! Host-owned isolated writer worktrees and validating serialized merge mechanics.
 
 use std::ffi::OsStr;
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 
 use iteron_verify::Oracle as _;
 use sha2::{Digest as _, Sha256};
 
+mod git_process;
 pub(in crate::runtime) mod persistent;
 
 /// Symlink verdict for a path whose metadata cannot be read at all: provisioning refuses it rather
@@ -607,12 +608,7 @@ fn has_untracked(path: &Path) -> Result<bool, MergeFailure> {
 }
 
 fn git_quiet<const N: usize>(path: &Path, args: [&str; N]) -> Result<bool, MergeFailure> {
-    let status = git_command(path)?
-        .args(args)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map_err(|error| MergeFailure::new(MergeFailureKind::WorktreeState, error.to_string()))?;
+    let status = git_capture(path, args)?.status;
     match status.code() {
         Some(0) => Ok(true),
         Some(1) => Ok(false),
@@ -661,30 +657,9 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    let mut child = git_command(path)?
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| MergeFailure::new(MergeFailureKind::WorktreeState, error.to_string()))?;
-    let stdout = child.stdout.take().ok_or_else(|| {
-        MergeFailure::new(MergeFailureKind::WorktreeState, "Git stdout was not piped")
-    })?;
-    let stderr = child.stderr.take().ok_or_else(|| {
-        MergeFailure::new(MergeFailureKind::WorktreeState, "Git stderr was not piped")
-    })?;
-    let out = std::thread::spawn(move || read_bounded(stdout));
-    let err = std::thread::spawn(move || read_bounded(stderr));
-    let status = child
-        .wait()
-        .map_err(|error| MergeFailure::new(MergeFailureKind::WorktreeState, error.to_string()))?;
-    let stdout = out.join().unwrap_or_default();
-    let stderr = err.join().unwrap_or_default();
-    Ok(GitOutput {
-        status,
-        stdout,
-        stderr,
-    })
+    let mut command = git_command(path)?;
+    command.args(args);
+    git_process::capture(command, None, MAX_GIT_MESSAGE_BYTES, false)
 }
 
 fn git_capture_with_input<I, S>(
@@ -696,50 +671,15 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    let mut child = git_command(path)?
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| MergeFailure::new(MergeFailureKind::WorktreeState, error.to_string()))?;
-    let mut stdin = child.stdin.take().ok_or_else(|| {
-        MergeFailure::new(MergeFailureKind::WorktreeState, "Git stdin was not piped")
-    })?;
-    let stdout = child.stdout.take().ok_or_else(|| {
-        MergeFailure::new(MergeFailureKind::WorktreeState, "Git stdout was not piped")
-    })?;
-    let stderr = child.stderr.take().ok_or_else(|| {
-        MergeFailure::new(MergeFailureKind::WorktreeState, "Git stderr was not piped")
-    })?;
-    let input = input.to_vec();
-    let input_writer = std::thread::spawn(move || stdin.write_all(&input));
-    let out = std::thread::spawn(move || read_bounded(stdout));
-    let err = std::thread::spawn(move || read_bounded(stderr));
-    let status = child
-        .wait()
-        .map_err(|error| MergeFailure::new(MergeFailureKind::WorktreeState, error.to_string()))?;
-    let input_result = input_writer.join().map_err(|_| {
-        MergeFailure::new(
-            MergeFailureKind::WorktreeState,
-            "Git patch input writer did not complete",
-        )
-    })?;
-    if let Err(error) = input_result
-        && error.kind() != std::io::ErrorKind::BrokenPipe
-    {
+    if input.len() as u64 > MAX_WRITER_PATCH_BYTES {
         return Err(MergeFailure::new(
-            MergeFailureKind::WorktreeState,
-            error.to_string(),
+            MergeFailureKind::PatchTooLarge,
+            "Git input exceeds the writer patch ceiling",
         ));
     }
-    let stdout = out.join().unwrap_or_default();
-    let stderr = err.join().unwrap_or_default();
-    Ok(GitOutput {
-        status,
-        stdout,
-        stderr,
-    })
+    let mut command = git_command(path)?;
+    command.args(args);
+    git_process::capture(command, Some(input.to_vec()), MAX_GIT_MESSAGE_BYTES, false)
 }
 
 fn raw_git_command(path: &Path) -> Command {
@@ -759,6 +699,7 @@ fn raw_git_command(path: &Path) -> Command {
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_ATTR_NOSYSTEM", "1")
+        .env("GIT_NO_LAZY_FETCH", "1")
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_PAGER", "cat")
         .stdin(Stdio::null());
@@ -773,48 +714,28 @@ fn raw_git_command(path: &Path) -> Command {
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_ATTR_NOSYSTEM", "1")
+        .env("GIT_NO_LAZY_FETCH", "1")
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_PAGER", "cat");
     command
 }
 
 fn git_command(path: &Path) -> Result<Command, MergeFailure> {
-    let status = raw_git_command(path)
-        .args(["config", "--name-only", "--get-regexp", "^filter\\."])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map_err(|_| {
-            MergeFailure::new(
-                MergeFailureKind::WorktreeState,
-                "Git filter configuration inspection failed",
-            )
-        })?;
+    let mut inspection = raw_git_command(path);
+    inspection.args([
+        "config",
+        "--name-only",
+        "--get-regexp",
+        "^filter\\.|^diff\\..*\\.textconv$|^remote\\..*\\.promisor$|^extensions\\.partialClone$",
+    ]);
+    let status = git_process::capture(inspection, None, MAX_GIT_MESSAGE_BYTES, false)?.status;
     if status.code() != Some(1) {
         return Err(MergeFailure::new(
             MergeFailureKind::WorktreeState,
-            "isolated writer refuses repository filter driver configuration",
+            "isolated writer refuses repository filters, text conversion or lazy-fetch configuration",
         ));
     }
     Ok(raw_git_command(path))
-}
-
-fn read_bounded(mut reader: impl Read) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    let _ = reader
-        .by_ref()
-        .take(
-            (iteron_tunables::param_integer(
-                "cli.runtime.workflow_spawner.worktree.max_git_message_bytes",
-                MAX_GIT_MESSAGE_BYTES,
-            ) + 1) as u64,
-        )
-        .read_to_end(&mut bytes);
-    bytes.truncate(iteron_tunables::param_integer(
-        "cli.runtime.workflow_spawner.worktree.max_git_message_bytes",
-        MAX_GIT_MESSAGE_BYTES,
-    ));
-    bytes
 }
 
 fn bounded_detail(value: &str) -> String {

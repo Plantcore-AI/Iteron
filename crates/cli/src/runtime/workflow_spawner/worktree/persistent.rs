@@ -135,46 +135,15 @@ impl PersistentWriterWorktree {
             let scratch = ScratchIndex::new(&state)?;
             scratch.run(&parent, ["read-tree", &witness.working_tree])?;
             if !patch.is_empty() {
-                let result = scratch
-                    .command(&parent)?
-                    .args(["apply", "--cached", "--binary", "--whitespace=nowarn", "-"])
-                    .stdin(Stdio::piped())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .spawn()
-                    .map_err(|_| {
-                        MergeFailure::new(
-                            MergeFailureKind::PatchConflict,
-                            "combined patch composition failed",
-                        )
-                    })?;
-                let mut child = result;
-                child
-                    .stdin
-                    .take()
-                    .ok_or_else(|| {
-                        MergeFailure::new(
-                            MergeFailureKind::PatchConflict,
-                            "combined patch input unavailable",
-                        )
-                    })?
-                    .write_all(&patch)
-                    .map_err(|_| {
-                        MergeFailure::new(
-                            MergeFailureKind::PatchConflict,
-                            "combined patch input failed",
-                        )
-                    })?;
-                if !child
-                    .wait()
-                    .map_err(|_| {
-                        MergeFailure::new(
-                            MergeFailureKind::PatchConflict,
-                            "combined patch composition did not settle",
-                        )
-                    })?
-                    .success()
-                {
+                let mut command = scratch.command(&parent)?;
+                command.args(["apply", "--cached", "--binary", "--whitespace=nowarn", "-"]);
+                let result = super::git_process::capture(
+                    command,
+                    Some(patch.clone()),
+                    MAX_GIT_MESSAGE_BYTES,
+                    false,
+                )?;
+                if !result.status.success() {
                     return Err(MergeFailure::new(
                         MergeFailureKind::PatchConflict,
                         "writer patch conflicts with admitted sibling writes",
@@ -329,65 +298,8 @@ fn parent_capture_with_input<const N: usize>(
             Ok(())
         });
     }
-    let mut child = command
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|_| {
-            MergeFailure::new(
-                MergeFailureKind::ApplyFailed,
-                "descriptor-bound parent mutator did not start",
-            )
-        })?;
-    let mut stdin = child.stdin.take().ok_or_else(|| {
-        MergeFailure::new(
-            MergeFailureKind::ApplyFailed,
-            "parent mutator input unavailable",
-        )
-    })?;
-    let stdout = child.stdout.take().ok_or_else(|| {
-        MergeFailure::new(
-            MergeFailureKind::ApplyFailed,
-            "parent mutator output unavailable",
-        )
-    })?;
-    let stderr = child.stderr.take().ok_or_else(|| {
-        MergeFailure::new(
-            MergeFailureKind::ApplyFailed,
-            "parent mutator evidence unavailable",
-        )
-    })?;
-    let bytes = input.to_vec();
-    let writer = std::thread::spawn(move || stdin.write_all(&bytes));
-    let out = std::thread::spawn(move || read_bounded(stdout));
-    let err = std::thread::spawn(move || read_bounded(stderr));
-    let status = child.wait().map_err(|_| {
-        MergeFailure::new(
-            MergeFailureKind::ApplyFailed,
-            "parent mutator did not settle",
-        )
-    })?;
-    let written = writer.join().map_err(|_| {
-        MergeFailure::new(
-            MergeFailureKind::ApplyFailed,
-            "parent mutator input did not settle",
-        )
-    })?;
-    if let Err(error) = written
-        && error.kind() != std::io::ErrorKind::BrokenPipe
-    {
-        return Err(MergeFailure::new(
-            MergeFailureKind::ApplyFailed,
-            "parent mutator input failed",
-        ));
-    }
-    Ok(GitOutput {
-        status,
-        stdout: out.join().unwrap_or_default(),
-        stderr: err.join().unwrap_or_default(),
-    })
+    command.args(args);
+    super::git_process::capture(command, Some(input.to_vec()), MAX_GIT_MESSAGE_BYTES, false)
 }
 #[cfg(not(unix))]
 fn parent_capture_with_input<const N: usize>(
@@ -466,16 +378,10 @@ impl ScratchIndex {
         Ok(command)
     }
     fn run<const N: usize>(&self, parent: &Path, args: [&str; N]) -> Result<(), MergeFailure> {
-        if !self
-            .command(parent)?
-            .args(args)
-            .status()
-            .map_err(|_| {
-                MergeFailure::new(
-                    MergeFailureKind::WorktreeState,
-                    "private index command did not settle",
-                )
-            })?
+        let mut command = self.command(parent)?;
+        command.args(args);
+        if !super::git_process::capture(command, None, MAX_GIT_MESSAGE_BYTES, false)?
+            .status
             .success()
         {
             return Err(MergeFailure::new(
@@ -486,17 +392,9 @@ impl ScratchIndex {
         Ok(())
     }
     fn tree(&self, parent: &Path) -> Result<String, MergeFailure> {
-        let output = self
-            .command(parent)?
-            .arg("write-tree")
-            .stdout(Stdio::piped())
-            .output()
-            .map_err(|_| {
-                MergeFailure::new(
-                    MergeFailureKind::WorktreeState,
-                    "private writer tree evidence unavailable",
-                )
-            })?;
+        let mut command = self.command(parent)?;
+        command.arg("write-tree");
+        let output = super::git_process::capture(command, None, MAX_GIT_MESSAGE_BYTES, true)?;
         let id = String::from_utf8_lossy(&output.stdout).trim().to_owned();
         if !output.status.success()
             || !matches!(id.len(), 40 | 64)
@@ -584,52 +482,16 @@ fn bound_workspace_delta(parent: &Path) -> Result<(), MergeFailure> {
 
 fn bounded_names(parent: &Path, args: &[&str]) -> Result<Vec<PathBuf>, MergeFailure> {
     const MAX_NAMES_BYTES: u64 = 2 * 1024 * 1024;
-    let mut child = git_command(parent)?
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|_| {
-            MergeFailure::new(
-                MergeFailureKind::WorktreeState,
-                "writer delta inspection failed",
-            )
-        })?;
-    let mut names = Vec::new();
-    let read = child
-        .stdout
-        .take()
-        .ok_or_else(|| {
-            MergeFailure::new(
-                MergeFailureKind::WorktreeState,
-                "writer delta evidence unavailable",
-            )
-        })?
-        .take(MAX_NAMES_BYTES + 1)
-        .read_to_end(&mut names);
-    if read.is_err() || names.len() as u64 > MAX_NAMES_BYTES {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(MergeFailure::new(
-            MergeFailureKind::PatchTooLarge,
-            "writer delta path evidence exceeds its hard byte limit",
-        ));
-    }
-    if !child
-        .wait()
-        .map_err(|_| {
-            MergeFailure::new(
-                MergeFailureKind::WorktreeState,
-                "writer delta inspection did not settle",
-            )
-        })?
-        .success()
-    {
+    let mut command = git_command(parent)?;
+    command.args(args);
+    let output = super::git_process::capture(command, None, MAX_NAMES_BYTES as usize, true)?;
+    if !output.status.success() {
         return Err(MergeFailure::new(
             MergeFailureKind::WorktreeState,
             "writer delta inspection refused",
         ));
     }
+    let names = output.stdout;
     names
         .split(|byte| *byte == 0)
         .filter(|name| !name.is_empty())

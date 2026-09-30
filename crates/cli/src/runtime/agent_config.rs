@@ -132,6 +132,8 @@ impl Agent {
         Agent {
             persistent_agents: None,
             persistent_mailbox: None,
+            client_inventory: None,
+            last_assistant_source: None,
             provider,
             registry,
             tool_output_spill: None,

@@ -43,8 +43,19 @@ pub(crate) fn local_erasure_request(
 }
 
 pub(crate) fn print_erasure_receipt(
+    runs_dir: &std::path::Path,
     receipt: &iteron_protocol::ErasureReceipt,
 ) -> anyhow::Result<u8> {
+    if receipt.state() == iteron_protocol::ErasureState::Verified
+        && matches!(
+            receipt.request().target,
+            iteron_protocol::ErasureTarget::ExactSession { .. }
+        )
+    {
+        crate::artifacts::remove_erased_catalog(runs_dir, receipt).map_err(|_| {
+            anyhow::anyhow!("verified session artifact index cleanup is unavailable")
+        })?;
+    }
     println!("{}", serde_json::to_string_pretty(receipt)?);
     Ok(output::EXIT_SUCCESS)
 }
@@ -69,7 +80,10 @@ pub(crate) fn run_record_command(
                     run_id: ErasureTargetId::new(run_id.clone())?,
                 },
             )?;
-            print_erasure_receipt(&iteron_record::erasure::execute_erasure(runs_dir, request)?)
+            print_erasure_receipt(
+                runs_dir,
+                &iteron_record::erasure::execute_erasure(runs_dir, request)?,
+            )
         }
         RecordAction::Revoke {
             digest,
@@ -83,7 +97,10 @@ pub(crate) fn run_record_command(
                     content_digest: ErasureContentDigest::new(digest.clone())?,
                 },
             )?;
-            print_erasure_receipt(&iteron_record::erasure::execute_erasure(runs_dir, request)?)
+            print_erasure_receipt(
+                runs_dir,
+                &iteron_record::erasure::execute_erasure(runs_dir, request)?,
+            )
         }
         RecordAction::Prune {
             older_than_days,
@@ -102,13 +119,16 @@ pub(crate) fn run_record_command(
                     keep_last: *keep_last,
                 },
             )?;
-            print_erasure_receipt(&iteron_record::erasure::execute_erasure(runs_dir, request)?)
+            print_erasure_receipt(
+                runs_dir,
+                &iteron_record::erasure::execute_erasure(runs_dir, request)?,
+            )
         }
         RecordAction::Receipt { operation_id } => {
             let operation_id = iteron_protocol::ErasureOperationId::new(operation_id.clone())?;
             let receipt = iteron_record::erasure::read_erasure_receipt(runs_dir, &operation_id)?
                 .ok_or_else(|| anyhow::anyhow!("erasure operation {operation_id} was not found"))?;
-            print_erasure_receipt(&receipt)
+            print_erasure_receipt(runs_dir, &receipt)
         }
         RecordAction::Receipts { limit } => {
             let receipts = iteron_record::erasure::list_erasure_receipts(runs_dir, *limit)?;
@@ -120,12 +140,12 @@ pub(crate) fn run_record_command(
             let receipt = iteron_record::erasure::read_erasure_receipt(runs_dir, &operation_id)?
                 .ok_or_else(|| anyhow::anyhow!("erasure operation {operation_id} was not found"))?;
             if receipt.state().is_terminal() {
-                return print_erasure_receipt(&receipt);
+                return print_erasure_receipt(runs_dir, &receipt);
             }
-            print_erasure_receipt(&iteron_record::erasure::execute_erasure(
+            print_erasure_receipt(
                 runs_dir,
-                receipt.request().clone(),
-            )?)
+                &iteron_record::erasure::execute_erasure(runs_dir, receipt.request().clone())?,
+            )
         }
     }
 }

@@ -68,6 +68,7 @@ pub(crate) enum ArtifactTextSchema {
     ToolOutput,
     FinalAnswer,
     FileDiff,
+    CapturedReplacement,
 }
 
 impl ArtifactTextSchema {
@@ -76,6 +77,7 @@ impl ArtifactTextSchema {
             Self::ToolOutput => "iteron.tool-output.v1",
             Self::FinalAnswer => "iteron.final-answer.v1",
             Self::FileDiff => "iteron.file-diff.v1",
+            Self::CapturedReplacement => "iteron.captured-replacement.v1",
         }
     }
 
@@ -85,7 +87,7 @@ impl ArtifactTextSchema {
                 PrivateContentNamespace::ToolArtifact,
                 PrivateContentClass::ToolOutput,
             ),
-            Self::FinalAnswer | Self::FileDiff => {
+            Self::FinalAnswer | Self::FileDiff | Self::CapturedReplacement => {
                 (PrivateContentNamespace::Export, PrivateContentClass::Export)
             }
         }

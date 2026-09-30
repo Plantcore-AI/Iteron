@@ -8,6 +8,7 @@ mod app_server;
 mod artifacts;
 mod block;
 mod cli_entry;
+mod client_inventory;
 mod commands;
 mod config;
 mod editor;
@@ -60,13 +61,7 @@ mod workspace_review;
 
 use clap::Parser;
 use cli_entry::load_project_config;
-#[cfg(test)]
-use cli_entry::{
-    BUILD_COMMIT, BUILD_DATE, BUILD_STALE_AFTER_DAYS, BUILTIN_DEFAULT_PROVIDER, SYSTEM_PROMPT,
-    assemble_system_prompt, build_date_days, build_one_shot_submission, confined_execution,
-    default_permission_mode, long_version, safe_agent_diagnostic, staleness_note, submit_one_shot,
-    trusted_allow_code, validate_plantcore_provider_credentials, validate_serve_listen,
-};
+
 use cli_entry::{
     CLI_OVERRIDE_PROVIDER_ID, Cli, ConfigAction, LocalCommand, StderrDiagnosticDrain,
     admitted_execution_posture, agent_catalog_snapshot_path, compaction_summary_prompt,
@@ -75,18 +70,12 @@ use cli_entry::{
 };
 use cli_entry::{RUN_ID_NANOS_WITHOUT_FRESH_CLOCK, UNIX_SECS_ON_UNUSABLE_CLOCK};
 
-use config::FileConfig;
 use iteron_protocol::{Budget, RunId, TenantId};
 use iteron_record::Rollout;
-use iteron_tools::Registry;
 
 use runtime::Agent;
-use std::path::PathBuf;
 
-/// Build identity, stamped by the release build (`.github/workflows/release.yml` exports both
-/// before `cargo build`). Two artifacts cut from different commits both reported `iteron 0.0.1`,
-/// and there is no self-update or staleness hint, so a user had no way to learn which binary
-/// they were running. An unstamped local build says `unknown` rather than claiming an identity.
+/// Enter the private confinement helper before creating threads, then admit one CLI launch.
 fn main() -> std::process::ExitCode {
     // The confined file mutator must enter before Tokio creates any worker thread: Landlock is
     // inherited by threads created afterward, not retroactively imposed on an existing pool.
@@ -1169,6 +1158,17 @@ async fn run_cli() -> anyhow::Result<u8> {
         agent.arm_recording_harness_error();
     }
 
+    agent
+        .install_client_inventory(
+            client_inventory::ClientInventoryOwner::capture(
+                &provider_directory,
+                &runtime_plugins,
+                &selection,
+            )
+            .map_err(anyhow::Error::msg)?,
+        )
+        .map_err(anyhow::Error::msg)?;
+
     cli_entry::frontend::drive(cli_entry::frontend::FrontendLaunch {
         agent,
         cli,
@@ -1200,6 +1200,14 @@ async fn run_cli() -> anyhow::Result<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli_entry::{
+        BUILD_COMMIT, BUILD_DATE, BUILD_STALE_AFTER_DAYS, BUILTIN_DEFAULT_PROVIDER, SYSTEM_PROMPT,
+        assemble_system_prompt, build_date_days, build_one_shot_submission, confined_execution,
+        default_permission_mode, long_version, safe_agent_diagnostic, staleness_note,
+        submit_one_shot, trusted_allow_code, validate_plantcore_provider_credentials,
+        validate_serve_listen,
+    };
+    use iteron_tools::Registry;
 
     #[test]
     fn rejected_agent_diagnostics_are_redacted_single_line_and_strictly_bounded() {

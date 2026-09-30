@@ -50,6 +50,14 @@ impl Agent {
 
     /// Load a prior run's transcript so `run` continues it instead of starting fresh.
     pub fn set_resume(&mut self, messages: Vec<Message>) -> Result<(), KernelError> {
+        if self.persistent_agents.is_some() {
+            return Err(KernelError::AgentControl(
+                iteron_agents::ControllerError::Invalid(
+                    "installed persistent agents require their existing session owner; restart to resume another run",
+                ),
+            ));
+        }
+
         self.budget.validate().map_err(KernelError::InvalidBudget)?;
         // An explicit resume replaces the transcript outright; a working set left over from an
         // earlier run in this process must never outrank it on the next follow-up.
@@ -656,6 +664,14 @@ impl Agent {
     /// run, its policy publication handle, and its writer lock intact. The target may contain a
     /// successfully committed monotone USD tightening, but is never reported as the active run.
     pub fn adopt_run(&mut self, mut rollout: Rollout) -> Result<AdoptedRun, KernelError> {
+        if self.persistent_agents.is_some() {
+            return Err(KernelError::AgentControl(
+                iteron_agents::ControllerError::Invalid(
+                    "installed persistent agents require their existing session owner; restart to resume another run",
+                ),
+            ));
+        }
+
         // Replay first: this is the only step that can fail without leaving the session between two
         // runs, so it happens while the live run is still entirely intact.
         let messages = Self::messages_from_rollout(rollout.path())?;

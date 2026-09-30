@@ -395,6 +395,7 @@ where
 #[must_use = "an opened effect owes the log a terminal; dropping the ticket makes recovery treat it as unknown"]
 pub struct EffectTicket {
     turn: TurnId,
+    intent_sequence: Seq,
     effect_id: EffectId,
     kind: String,
     provider_route_attempt: Option<iteron_protocol::ProviderRouteAttemptIdentity>,
@@ -410,6 +411,16 @@ pub struct EffectTicket {
 }
 
 impl EffectTicket {
+    /// Turn bound by the durable intent, independent of a caller's current turn counter.
+    pub fn turn(&self) -> TurnId {
+        self.turn
+    }
+
+    /// Exact source returned by the durable log after the intent append succeeded.
+    pub fn intent_sequence(&self) -> Seq {
+        self.intent_sequence
+    }
+
     /// The identity this ticket will settle. Callers that need to name the effect in their own
     /// terminal event (a registry `ToolDone`, say) read it from here rather than re-minting it.
     pub fn effect_id(&self) -> &EffectId {
@@ -529,7 +540,7 @@ where
         workspace,
         provider_route_attempt,
     } = effect;
-    log.append_effect(&Event {
+    let intent_sequence = log.append_effect(&Event {
         seq: Seq::ZERO,
         turn,
         kind: EventKind::EffectIntent {
@@ -544,6 +555,7 @@ where
     })?;
     Ok(EffectTicket {
         turn,
+        intent_sequence,
         effect_id,
         kind,
         provider_route_attempt,
@@ -566,6 +578,7 @@ where
 {
     let EffectTicket {
         turn,
+        intent_sequence: _,
         effect_id,
         kind,
         provider_route_attempt,

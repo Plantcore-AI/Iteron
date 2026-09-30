@@ -1058,7 +1058,10 @@ impl Agent {
     ) -> Result<(), KernelError> {
         // The working transcript is a projection of durable state, never a parallel authority.
         // If append/fsync fails, do not let the model-visible state advance past the journal.
-        self.emit_durable(turn, EventKind::Message { message: m.clone() })?;
+        let source = self.emit_durable_seq(turn, EventKind::Message { message: m.clone() })?;
+        if m.role == Role::Assistant {
+            self.last_assistant_source = Some(source);
+        }
         if let Some(trust) = Trust::governing(m.content.iter().filter_map(|block| match block {
             Block::ToolResult(result) => Some(result.trust),
             _ => None,
