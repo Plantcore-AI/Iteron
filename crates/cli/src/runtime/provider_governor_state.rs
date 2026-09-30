@@ -248,32 +248,11 @@ impl Agent {
         error: &KernelError,
         semantic_output_observed: bool,
     ) -> Option<iteron_provider::FailoverClass> {
-        let governor = self.provider_governor.as_ref()?;
-        let KernelError::Provider(error) = error else {
-            return None;
-        };
-        if matches!(
+        super::provider_followup::admitted_failover(
+            self.provider_governor.as_ref(),
             error,
-            iteron_provider::ProviderError::RequestCaptureRefusedBeforeDispatch
-                | iteron_provider::ProviderError::RequestDeadlineBeforeDispatch
-        ) {
-            return None;
-        }
-        let point = if matches!(
-            error,
-            iteron_provider::ProviderError::ConnectFailed
-                | iteron_provider::ProviderError::KnownModelUnavailable { .. }
-                | iteron_provider::ProviderError::KnownAccountUnavailable { .. }
-        ) {
-            iteron_provider::FailurePoint::PreDispatch
-        } else if !semantic_output_observed
-            && !super::provider_route::provider_outcome_is_unobservable(error)
-        {
-            iteron_provider::FailurePoint::ProvenTerminal
-        } else {
-            return None;
-        };
-        governor.failover_class(error, point)
+            semantic_output_observed,
+        )
     }
 
     /// Durably move to the next already-attested route before its provider effect intent opens.

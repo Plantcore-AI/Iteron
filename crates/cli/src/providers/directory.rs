@@ -19,8 +19,9 @@ use super::{
 };
 use futures_util::future::join_all;
 use iteron_provider::{
-    AccountAvailability, BalanceAvailability, CatalogStrategy, ErrorProfile, HealthReportingProvider,
-    ModelDescriptor, Provider, ProviderHealth, ProviderHealthStore, Selectability,
+    AccountAvailability, BalanceAvailability, CatalogStrategy, ErrorProfile,
+    HealthReportingProvider, ModelDescriptor, Provider, ProviderHealth, ProviderHealthStore,
+    Selectability,
 };
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
