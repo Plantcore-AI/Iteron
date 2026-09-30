@@ -233,7 +233,7 @@ impl Identity {
                 continue;
             }
             if u32::from(header.AceType) != ACCESS_ALLOWED_ACE_TYPE
-                || usize::from(header.AceSize) < size_of::<ACCESS_ALLOWED_ACE>()
+                || usize::from(header.AceSize) < offset_of!(ACCESS_ALLOWED_ACE, SidStart) + 8
             {
                 return Err(WindowsStateError::Unavailable);
             }
@@ -243,7 +243,8 @@ impl Identity {
                     .add(offset_of!(ACCESS_ALLOWED_ACE, SidStart))
                     .cast()
             };
-            // SAFETY: IsValidAcl verifies the ACE structure; enforce SID length within its size.
+            // SAFETY: the ACE contains the complete eight-byte SID prefix. IsValidAcl proves list
+            // bounds only; GetLengthSid is checked before EqualSid may read subauthorities.
             if unsafe { IsValidSid(ace_sid) } == 0
                 || unsafe { GetLengthSid(ace_sid) } as usize
                     + offset_of!(ACCESS_ALLOWED_ACE, SidStart)
