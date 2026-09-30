@@ -256,7 +256,7 @@ impl Agent {
         self.registry.invalidate_pure_cache();
     }
     pub(super) fn token_calibration_route(&self) -> (&str, &str) {
-        self.selected_route.as_ref().map_or_else(
+        self.provider_selection.selected().map_or_else(
             || {
                 (
                     self.provider.provider_instance_id().unwrap_or("unbound"),

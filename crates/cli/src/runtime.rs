@@ -141,6 +141,8 @@ mod provider_route_admission;
 mod provider_route_events;
 mod provider_route_journal;
 mod provider_route_turn;
+mod provider_selection;
+mod provider_selection_journal;
 mod resume;
 mod route_attempt_accounting;
 mod route_state;
@@ -952,10 +954,8 @@ fn usage_tokens(usage: &iteron_protocol::Usage) -> u64 {
         .saturating_add(usage.thinking)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct SelectedRoute {
-    route: PricingRoute,
-}
+#[cfg(test)]
+use provider_selection::SelectedRoute;
 
 use session_control::InboundControl;
 
@@ -1009,6 +1009,8 @@ mod plantcore_stuck_tests {
 enum DurableAppendFault {
     BestEffort,
     SteerMessage,
+    ModelSelected,
+    RateCardBound,
     ContextInjection,
     Notice,
     TurnStart,
@@ -1069,13 +1071,9 @@ pub struct Agent {
     pub ledger: Ledger,
     pub budget: Budget,
     pub model: String,
-    /// Exact durable route snapshot. Pricing is accepted only when it matches this pair byte for
-    /// byte; a route switch clears the old binding before another provider turn can be admitted.
-    selected_route: Option<SelectedRoute>,
-    /// Exact provider object authorized by the latest durable selection. The public provider field
-    /// remains source-compatible, but swapping its Arc without recording a new selection is not an
-    /// admissible route change.
-    selected_provider: Option<std::sync::Arc<dyn Provider>>,
+    /// Sole owner of the durable selection epoch, exact provider object and authenticated card.
+    /// Public provider/model mutations cannot bypass its checked executable binding.
+    provider_selection: provider_selection::ProviderSelectionOwner,
     /// The most recent quota the provider published on its response headers. Read before the
     /// first token of the answer, so a shrinking budget is visible while there is still time to
     /// act on it rather than only after the 429 that already cost a request (I-53).
@@ -1086,11 +1084,6 @@ pub struct Agent {
     provider_governor: Option<iteron_provider::ProviderGovernor>,
     /// Ordered, pre-attested fallback bindings. The primary route stays in `provider`.
     fallback_provider_routes: Vec<GovernedProviderRoute>,
-    /// Injected, pure pricing strategy port. Its concrete implementation owns trust material; the
-    /// kernel stores neither HMAC bytes nor a price table.
-    pricing_port: Option<std::sync::Arc<dyn PricingPort>>,
-    /// Public immutable artifact selected by the port for the exact durable route.
-    pricing: Option<SignedRateCard>,
     /// One ceiling shared by this agent and all descendants. Child spend is visible immediately,
     /// before additive ledgers are merged back into the parent.
     usd_budget: Option<std::sync::Arc<SharedUsdBudget>>,
@@ -1613,8 +1606,8 @@ impl Agent {
             .usd_budget
             .as_ref()
             .is_some_and(|budget| budget.requires_pricing())
-            && (self.pricing_port.is_none()
-                || self.pricing.is_none()
+            && (self.provider_selection.pricing_port().is_none()
+                || self.provider_selection.card().is_none()
                 || matches!(self.ledger.cost_state(), CostState::Unknown { .. }))
         {
             return Err(KernelError::UnpricedUsdCeiling);
@@ -1732,8 +1725,8 @@ impl Agent {
             .usd_budget
             .as_ref()
             .is_some_and(|budget| budget.requires_pricing())
-            && (self.pricing_port.is_none()
-                || self.pricing.is_none()
+            && (self.provider_selection.pricing_port().is_none()
+                || self.provider_selection.card().is_none()
                 || matches!(self.ledger.cost_state(), CostState::Unknown { .. }))
         {
             return Err(KernelError::UnpricedUsdCeiling);

@@ -103,6 +103,18 @@ impl ProviderSelectionOwner {
         }
         Ok(())
     }
+    pub(super) fn validate_request(
+        &self,
+        provider: &Arc<dyn Provider>,
+        resident_model: &str,
+        request_model: &str,
+    ) -> Result<(), KernelError> {
+        self.validate_live(provider, resident_model)?;
+        if self.selected.as_ref().is_some_and(|selected| selected.route.model_id != request_model) {
+            return Err(KernelError::InvalidRoute("request model changed without a durable model selection"));
+        }
+        Ok(())
+    }
     pub(super) fn bind_card(
         &mut self,
         turn: TurnId,

@@ -106,7 +106,7 @@ impl Agent {
         // A rate that is never charged cannot be misapplied, so an unreported cache-creation count
         // only makes the turn unpriceable when the bound card actually bills for cache writes.
         let unpriceable_cache_creation = !cache_creation_reported
-            && self.pricing.as_ref().is_some_and(|signed| {
+            && self.provider_selection.card().is_some_and(|signed| {
                 signed.rate_card.rates.cache_creation_microusd_per_million > 0
             });
         let projection_identity = CostProjectionIdentity {
@@ -116,7 +116,10 @@ impl Agent {
             provider_attempt: self.ledger.provider_attempts,
             attribution: self.projection_attribution.clone(),
         };
-        let projection = match (&self.pricing_port, &self.pricing) {
+        let projection = match (
+            self.provider_selection.pricing_port(),
+            self.provider_selection.card(),
+        ) {
             (Some(port), Some(rate_card)) if !unpriceable_cache_creation => Some(port.project(
                 rate_card,
                 projection_identity.clone(),
@@ -181,13 +184,13 @@ impl Agent {
                 self.close_usd_if_physical_charge_is_unproved(turn);
                 return Err(error);
             }
-            let Some(port) = &self.pricing_port else {
+            let Some(port) = self.provider_selection.pricing_port() else {
                 self.close_usd_if_physical_charge_is_unproved(turn);
                 return Err(KernelError::PricingLedger(
                     "signed projection lost its pricing authority",
                 ));
             };
-            let Some(rate_card) = &self.pricing else {
+            let Some(rate_card) = self.provider_selection.card() else {
                 self.close_usd_if_physical_charge_is_unproved(turn);
                 return Err(KernelError::PricingLedger(
                     "signed projection lost its bound rate card",

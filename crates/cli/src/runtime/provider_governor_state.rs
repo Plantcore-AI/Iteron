@@ -317,8 +317,8 @@ impl Agent {
     }
 
     pub(super) fn governed_route_id(&self) -> String {
-        self.selected_route
-            .as_ref()
+        self.provider_selection
+            .selected()
             .map(|selected| format!("{}:{}", selected.route.provider_id, selected.route.model_id))
             .unwrap_or_else(|| {
                 format!(

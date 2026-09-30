@@ -105,7 +105,12 @@ impl Agent {
         let Some(budget) = &self.usd_budget else {
             return Ok(());
         };
-        let replay = replay_route_charges(scoped_events, self.pricing_port.as_deref())?;
+        let replay = replay_route_charges(
+            scoped_events,
+            self.provider_selection
+                .pricing_port()
+                .map(|port| port.as_ref()),
+        )?;
         budget
             .restore_provider_route_charges(&self.ledger.cost_state(), replay)
             .map_err(KernelError::PricingLedger)

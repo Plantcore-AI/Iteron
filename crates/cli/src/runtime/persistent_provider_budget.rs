@@ -62,8 +62,8 @@ impl Agent {
                 attribution: self.projection_attribution.clone(),
             },
             ProviderPricingEvidence {
-                port: self.pricing_port.clone(),
-                card: self.pricing.clone(),
+                port: self.provider_selection.pricing_port().cloned(),
+                card: self.provider_selection.card().cloned(),
                 context_window: self.execution_context_window(),
             },
             ProviderFinancialOwners {
@@ -174,7 +174,9 @@ impl Agent {
                         &scoped.run_id,
                         scoped.event.turn,
                         None,
-                        self.pricing_port.as_deref(),
+                        self.provider_selection
+                            .pricing_port()
+                            .map(|port| port.as_ref()),
                     )? {
                         route_attempt_accounting::RouteChargeTruth::Known(charge) => {
                             let ProviderRouteUsageTruth::Known { usage } = accounting.usage else {

@@ -32,31 +32,8 @@ impl Agent {
                 error.to_string(),
             ))
         })?;
-        if let Some(selected) = &self.selected_route
-            && (self.model != selected.route.model_id || request.model != selected.route.model_id)
-        {
-            return Err(KernelError::InvalidRoute(
-                "request model changed without a durable model selection",
-            ));
-        }
-        if self.selected_route.is_some()
-            && self
-                .selected_provider
-                .as_ref()
-                .is_none_or(|selected| !std::sync::Arc::ptr_eq(selected, &self.provider))
-        {
-            return Err(KernelError::InvalidRoute(
-                "provider instance changed without a durable provider selection",
-            ));
-        }
-        if let Some(selected) = &self.selected_route
-            && self.pricing.is_some()
-            && self.provider.provider_instance_id() != Some(selected.route.provider_id.as_str())
-        {
-            return Err(KernelError::InvalidRoute(
-                "provider instance identity does not match the priced durable route",
-            ));
-        }
+        self.provider_selection
+            .validate_request(&self.provider, &self.model, &request.model)?;
         Ok(())
     }
 
@@ -77,7 +54,7 @@ impl Agent {
         let mut hasher = Sha256::new();
         hasher.update(b"iteron.provider-run-notice-key.v1");
         field(&mut hasher, &self.rollout.run_id().0);
-        if let Some(selected) = &self.selected_route {
+        if let Some(selected) = self.provider_selection.selected() {
             field(&mut hasher, "durable-route");
             field(&mut hasher, &selected.route.provider_id);
             field(&mut hasher, &selected.route.model_id);
@@ -171,14 +148,14 @@ impl Agent {
             .usd_budget
             .as_ref()
             .is_some_and(|budget| budget.requires_pricing())
-            && (self.pricing_port.is_none()
-                || self.pricing.is_none()
+            && (self.provider_selection.pricing_port().is_none()
+                || self.provider_selection.card().is_none()
                 || matches!(self.ledger.cost_state(), CostState::Unknown { .. }))
         {
             return Err(KernelError::UnpricedUsdCeiling);
         }
         let projected_at_unix_secs = self.pricing_now();
-        if let Some(rate_card) = &self.pricing {
+        if let Some(rate_card) = self.provider_selection.card() {
             if projected_at_unix_secs < rate_card.rate_card.issued_at_unix_secs {
                 return Err(iteron_obs::PricingError::RateCardNotYetValid.into());
             }

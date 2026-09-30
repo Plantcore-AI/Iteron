@@ -2950,15 +2950,17 @@ mod gate_integration_tests {
             .provider_instance_id()
             .unwrap_or("test-provider")
             .to_string();
-        agent.selected_route = Some(SelectedRoute {
-            route: PricingRoute {
-                provider_id,
-                model_id: agent.model.clone(),
-                catalog_digest: String::new(),
-                capability_digest: String::new(),
-            },
-        });
-        agent.selected_provider = Some(agent.provider.clone());
+        agent.provider_selection.fixture_selection(
+            Some(SelectedRoute {
+                route: PricingRoute {
+                    provider_id,
+                    model_id: agent.model.clone(),
+                    catalog_digest: String::new(),
+                    capability_digest: String::new(),
+                },
+            }),
+            agent.provider.clone(),
+        );
     }
 
     /// Install the same immutable orchestrated policy, selected route, and provider governor that
@@ -2968,7 +2970,12 @@ mod gate_integration_tests {
     fn record_orchestrated_test_genesis(agent: &mut Agent, workspace: &std::path::Path) {
         agent.model = "fixture:value-2".into();
         bind_unrecorded_test_route(agent);
-        agent.selected_route.as_mut().unwrap().route.provider_id = "fixture:value-1".into();
+        agent
+            .provider_selection
+            .fixture_selected_mut()
+            .unwrap()
+            .route
+            .provider_id = "fixture:value-1".into();
         record_test_genesis_with_tunable_edits(
             agent,
             workspace,
@@ -17662,7 +17669,7 @@ ant-api03-SuperSecretModelToken12345"
                 ..
             })
         ));
-        assert!(agent.pricing.is_none());
+        assert!(agent.provider_selection.card().is_none());
         let _ = std::fs::remove_dir_all(&ws);
     }
 
@@ -17709,7 +17716,7 @@ ant-api03-SuperSecretModelToken12345"
                 format!("sha256:{}", "c".repeat(64)),
             )
             .unwrap();
-        assert!(agent.pricing.is_none());
+        assert!(agent.provider_selection.card().is_none());
         assert!(!agent.bind_selected_rate_card().unwrap());
         let _ = std::fs::remove_dir_all(&ws);
     }
@@ -17751,7 +17758,7 @@ ant-api03-SuperSecretModelToken12345"
         assert!(agent.bind_selected_rate_card().unwrap());
 
         select(&mut agent).unwrap();
-        assert!(agent.pricing.is_none());
+        assert!(agent.provider_selection.card().is_none());
         assert!(matches!(
             agent.run("must wait for rebind").await,
             Err(KernelError::UnpricedUsdCeiling)
@@ -18560,7 +18567,7 @@ ant-api03-SuperSecretModelToken12345"
             agent.workspace = ws.clone();
             bind_test_pricing(&mut agent);
             assert!(
-                agent.pricing.as_ref().is_some_and(|signed| signed
+                agent.provider_selection.card().is_some_and(|signed| signed
                     .rate_card
                     .rates
                     .cache_creation_microusd_per_million

@@ -24,7 +24,7 @@ struct StagedAdoptedResume {
     seq_turn: u32,
     last_compaction_turn: Option<u64>,
     approval_seq: u64,
-    selected_route: Option<SelectedRoute>,
+    selected_route: super::provider_selection::RecoveredProviderSelection,
     ledger: Ledger,
     observed_trust: Trust,
     turn_publications: turn_publication::TurnPublicationOwner,
@@ -268,24 +268,10 @@ impl Agent {
                         "cli.runtime.resume.no_approval_seq",
                         NO_APPROVAL_SEQ,
                     ));
-                self.selected_route = events.iter().rev().find_map(|event| match &event.kind {
-                    EventKind::ModelSelected {
-                        provider_id,
-                        model_id,
-                        catalog_digest,
-                        capability_digest,
-                    } => Some(SelectedRoute {
-                        route: PricingRoute {
-                            provider_id: provider_id.clone(),
-                            model_id: model_id.clone(),
-                            catalog_digest: catalog_digest.clone(),
-                            capability_digest: capability_digest.clone(),
-                        },
-                    }),
-                    _ => None,
-                });
-                self.selected_provider =
-                    self.selected_route.as_ref().map(|_| self.provider.clone());
+                let recovered_selection =
+                    super::provider_selection::ProviderSelectionOwner::recover_verified(&events)?;
+                self.provider_selection
+                    .adopt_verified(recovered_selection, self.provider.clone());
                 // A newly constructed Agent has an empty in-memory ledger. Rebuild completed
                 // usage/cost and admitted provider attempts from the verified logical record so
                 // resume cannot reset max_turns/max_usd. A live TUI follow-up already owns a
@@ -294,8 +280,8 @@ impl Agent {
                 if self.ledger.provider_attempts == 0 && self.ledger.turns == 0 {
                     let mut restored = Ledger::new();
                     let mut pricing_replay = self
-                        .pricing_port
-                        .as_ref()
+                        .provider_selection
+                        .pricing_port()
                         .map(|pricing| iteron_obs::PricingReplay::trusted(pricing.clone()))
                         .unwrap_or_default();
                     for scoped in &scoped_events {
@@ -563,27 +549,12 @@ impl Agent {
                 "cli.runtime.resume.no_approval_seq",
                 NO_APPROVAL_SEQ,
             ));
-        let selected_route = events.iter().rev().find_map(|event| match &event.kind {
-            EventKind::ModelSelected {
-                provider_id,
-                model_id,
-                catalog_digest,
-                capability_digest,
-            } => Some(SelectedRoute {
-                route: PricingRoute {
-                    provider_id: provider_id.clone(),
-                    model_id: model_id.clone(),
-                    catalog_digest: catalog_digest.clone(),
-                    capability_digest: capability_digest.clone(),
-                },
-            }),
-            _ => None,
-        });
-
+        let selected_route =
+            super::provider_selection::ProviderSelectionOwner::recover_verified(&events)?;
         let mut restored = Ledger::new();
         let mut pricing_replay = self
-            .pricing_port
-            .as_ref()
+            .provider_selection
+            .pricing_port()
             .map(|pricing| iteron_obs::PricingReplay::trusted(pricing.clone()))
             .unwrap_or_default();
         for scoped in &scoped_events {
@@ -597,7 +568,9 @@ impl Agent {
                 let budget = std::sync::Arc::new(SharedUsdBudget::from_microusd(ceiling));
                 let route_replay = route_attempt_accounting::replay_route_charges(
                     &scoped_events,
-                    self.pricing_port.as_deref(),
+                    self.provider_selection
+                        .pricing_port()
+                        .map(|port| port.as_ref()),
                 )?;
                 budget
                     .restore_provider_route_charges(&restored.cost_state(), route_replay)
@@ -981,8 +954,8 @@ impl Agent {
         self.committed_provider_run_notices = staged.committed_provider_run_notices;
         self.composition_environment_context = staged.composition_environment_context.clone();
         self.environment_context = staged.composition_environment_context;
-        self.selected_route = staged.selected_route;
-        self.selected_provider = self.selected_route.as_ref().map(|_| self.provider.clone());
+        self.provider_selection
+            .adopt_verified(staged.selected_route, self.provider.clone());
         self.seq_turn = staged.seq_turn;
         self.approval_seq = staged.approval_seq;
         self.observed_trust = staged.observed_trust;
@@ -1005,7 +978,6 @@ impl Agent {
         self.compacted_in_run = false;
         self.last_compaction_turn = staged.last_compaction_turn;
         self.control.reset_after_adoption();
-        self.pricing = None;
         // At-most-once identities are per-journal. `guard_unresolved_effects` reseeds this from the
         // adopted record before the next turn dispatches anything; clearing it now means the window
         // in between cannot admit an effect against the previous run's ledger.

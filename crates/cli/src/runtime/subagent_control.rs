@@ -115,7 +115,7 @@ impl Agent {
         cx.model_max_output_tokens = self.model_max_output_tokens;
         cx.tunables_pin = self.tunables_pin.clone();
         cx.sensitive_env_names = self.sensitive_env_names.clone();
-        cx.pricing_port = self.pricing_port.clone();
+        cx.pricing_port = self.provider_selection.pricing_port().cloned();
         cx.usd_budget = self.usd_budget.clone();
         cx.session_spawn_ledger = self.session_spawn_ledger.clone();
         cx.budget.max_usd = self.effective_max_usd();
