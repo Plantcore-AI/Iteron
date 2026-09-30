@@ -1,7 +1,7 @@
 //! Actual Agent→driver→observed-provider→physical-WAL fault journeys. No fabricated terminal or
 //! copied phase state is supplied to the driver.
 use crate::runtime::{Agent, DurableAppendFault, KernelError, Outcome, gate_integration_tests};
-use iteron_protocol::{Block, Budget, EventKind, RunId, StopReason, TenantId, Usage};
+use iteron_protocol::{Block, Budget, EventKind, RunId, StopReason, TenantId, ToolUse, Usage};
 use iteron_provider::request_capture::{ProviderRequestObserver, ProviderWireRequest};
 use iteron_provider::{
     AdapterKind, Provider, ProviderError, StreamItem, TurnRequest, TurnResult, UsageReport,
@@ -20,6 +20,7 @@ struct ObservedProvider {
     connect_failure_once: bool,
     refuse_capture: bool,
     stream_failure_once: bool,
+    tool_round: bool,
 }
 #[async_trait::async_trait]
 impl Provider for ObservedProvider {
@@ -72,6 +73,47 @@ impl Provider for ObservedProvider {
             .dispatching()
             .map_err(|_| ProviderError::RequestCaptureRefusedBeforeDispatch)?;
         self.sent.fetch_add(1, Ordering::SeqCst);
+        if self.tool_round {
+            if attempt == 0 {
+                let calls = ["alpha", "beta"]
+                    .into_iter()
+                    .map(|name| ToolUse {
+                        id: format!("observed-{name}"),
+                        name: "read_file".into(),
+                        input: serde_json::json!({"path":format!("{name}.txt")}),
+                    })
+                    .collect::<Vec<_>>();
+                for call in &calls {
+                    on_item(StreamItem::ToolUseComplete(call.clone()));
+                }
+                return Ok(TurnResult {
+                    blocks: calls.into_iter().map(Block::ToolUse).collect(),
+                    stop_reason: StopReason::ToolUse,
+                    usage: UsageReport::complete(Usage::default()),
+                });
+            }
+            let results = request
+                .messages
+                .last()
+                .expect("settled tool response")
+                .content
+                .iter()
+                .filter_map(|block| match block {
+                    Block::ToolResult(result) => Some(result),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(results.len(), 2);
+            for (result, name) in results.iter().zip(["alpha", "beta"]) {
+                assert_eq!(result.tool_use_id, format!("observed-{name}"));
+                assert!(
+                    result
+                        .content
+                        .contains(&format!("actual native {name} bytes"))
+                );
+                assert!(!result.is_error);
+            }
+        }
         if attempt == 0 && self.stream_failure_once {
             on_item(StreamItem::TextDelta("observed partial output".into()));
             return Err(ProviderError::Http("fixture response disconnect".into()));
@@ -84,6 +126,44 @@ impl Provider for ObservedProvider {
             usage: UsageReport::complete(Usage::default()),
         })
     }
+}
+
+#[tokio::test]
+async fn actual_native_tool_round_is_complete_ordered_and_counted_once_after_reopen() {
+    let provider = Arc::new(ObservedProvider {
+        tool_round: true,
+        ..Default::default()
+    });
+    let mut owner = agent(provider.clone(), "driver-native-tool-round");
+    owner.pure_overlap_enabled = false;
+    for name in ["alpha", "beta"] {
+        std::fs::write(
+            owner.workspace.join(format!("{name}.txt")),
+            format!("actual native {name} bytes"),
+        )
+        .unwrap();
+    }
+    assert_eq!(
+        owner.run("read the two real files").await.unwrap(),
+        Outcome::Done
+    );
+    assert_eq!(owner.ledger.tool_calls, 2);
+    assert_eq!(provider.sent.load(Ordering::SeqCst), 2);
+    let path = owner.rollout.path().to_owned();
+    drop(owner);
+    let events = iteron_record::replay(&path).unwrap();
+    let ids = events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            EventKind::ToolDone {
+                tool: Some(tool),
+                result,
+                ..
+            } if tool == "read_file" => Some(result.tool_use_id.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(ids, vec!["observed-alpha", "observed-beta"]);
 }
 fn agent(provider: Arc<ObservedProvider>, label: &str) -> Agent {
     let workspace = gate_integration_tests::temp_ws(label);
