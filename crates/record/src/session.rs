@@ -547,7 +547,13 @@ struct ReadLine {
 fn read_chain(path: &Path) -> Result<Vec<ReadLine>, RecordError> {
     let mut total_bytes = 0;
     let mut total_physical_lines = 0;
-    read_chain_with_limits(path, &mut total_bytes, &mut total_physical_lines, None)
+    read_chain_with_limits(
+        path,
+        &mut total_bytes,
+        &mut total_physical_lines,
+        None,
+        None,
+    )
 }
 
 fn read_chain_budgeted(
@@ -559,6 +565,7 @@ fn read_chain_budgeted(
         &mut budget.bytes,
         &mut budget.physical_lines,
         Some(&mut budget.events),
+        budget.projection.as_mut(),
     )
 }
 
@@ -567,6 +574,7 @@ fn read_chain_with_limits(
     total_bytes: &mut u64,
     total_physical_lines: &mut usize,
     mut total_events: Option<&mut usize>,
+    mut projection_budget: Option<&mut crate::bounded_replay::ReplayReadBudget>,
 ) -> Result<Vec<ReadLine>, RecordError> {
     #[cfg(test)]
     READ_CHAIN_CALLS.with(|calls| calls.set(calls.get().saturating_add(1)));
@@ -581,6 +589,9 @@ fn read_chain_with_limits(
     // scan_tail already gives the append path. A partial FINAL line (no trailing newline) is dropped.
     crate::visit_record_lines_charged(path, total_bytes, total_physical_lines, |line| {
         physical_bytes = physical_bytes.saturating_add(line.len() as u64 + 1);
+        if let Some(budget) = projection_budget.as_deref_mut() {
+            budget.line(line.len().saturating_add(1), !line.trim().is_empty())?;
+        }
         if line.trim().is_empty() {
             return Ok(());
         }
@@ -616,10 +627,11 @@ fn read_chain_with_limits(
                 "rollout path has no runs directory",
             ))
         })?;
-        crate::content_store::hydrate_event_payload(
+        crate::content_store::hydrate_event_payload_budgeted(
             runs_dir,
             &TenantId(cl.tenant.clone()),
             &mut payload,
+            projection_budget.as_deref_mut(),
         )?;
         // Unknown event kinds deserialize to `EventKind::Unknown` (R5-review Risk 6), so a newer
         // writer's kinds do not fail the scan.
@@ -1108,11 +1120,19 @@ fn load_session_projection(
     run: &RunId,
     pricing: Option<Arc<dyn PricingPort>>,
 ) -> Result<SessionProjection, RecordError> {
+    load_session_projection_budgeted(runs_dir, run, pricing, LogicalReplayBudget::default())
+}
+
+fn load_session_projection_budgeted(
+    runs_dir: &Path,
+    run: &RunId,
+    pricing: Option<Arc<dyn PricingPort>>,
+    mut replay_budget: LogicalReplayBudget,
+) -> Result<SessionProjection, RecordError> {
     let path = rollout_path(runs_dir, run)?;
     let complete_len_before = complete_record_len(&path);
     // Keep the child journal and its ancestry inside one logical read budget. The verified child
     // lines are reused below instead of opening and parsing the same near-cap file a second time.
-    let mut replay_budget = LogicalReplayBudget::default();
     let lines = read_chain_budgeted(&path, &mut replay_budget)?;
     let physical_tail = lines.last().map(|line| (line.seq, line.hash.clone()));
 
@@ -2990,8 +3010,56 @@ pub fn load_forked_scoped(runs_dir: &Path, run: &RunId) -> Result<Vec<ScopedEven
     expand_scoped(runs_dir, run, None, 0, &mut budget)
 }
 
+pub(crate) fn bounded_scoped(
+    runs: &Path,
+    run: &RunId,
+    limits: crate::bounded_replay::ReplayReadLimits,
+) -> Result<Vec<ScopedEvent>, RecordError> {
+    crate::require_strict_replay_policy()?;
+    let mut budget = LogicalReplayBudget {
+        projection: Some(limits.budget()?),
+        ..Default::default()
+    };
+    expand_scoped(runs, run, None, 0, &mut budget)
+}
+
+pub(crate) fn bounded_meta(
+    runs: &Path,
+    run: &RunId,
+    limits: crate::bounded_replay::ReplayReadLimits,
+) -> Result<SessionMeta, RecordError> {
+    crate::require_strict_replay_policy()?;
+    let budget = LogicalReplayBudget {
+        projection: Some(limits.budget()?),
+        ..Default::default()
+    };
+    Ok(load_session_projection_budgeted(runs, run, None, budget)?.into_meta())
+}
+
+pub(crate) fn bounded_physical_events(
+    path: &Path,
+    limits: crate::bounded_replay::ReplayReadLimits,
+) -> Result<Vec<Event>, RecordError> {
+    crate::require_strict_replay_policy()?;
+    let mut budget = LogicalReplayBudget {
+        projection: Some(limits.budget()?),
+        ..Default::default()
+    };
+    let lines = read_chain_budgeted(path, &mut budget)?;
+    crate::guard_replay_lineage(path, lines.first().map(|line| &line.tenant))?;
+    Ok(lines
+        .into_iter()
+        .map(|line| {
+            let mut event = line.event;
+            event.seq = line.seq;
+            event
+        })
+        .collect())
+}
+
 #[derive(Default)]
 struct LogicalReplayBudget {
+    projection: Option<crate::bounded_replay::ReplayReadBudget>,
     bytes: u64,
     events: usize,
     physical_lines: usize,

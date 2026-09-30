@@ -573,6 +573,10 @@
         },
         {
           "kind": "file",
+          "path": "crates/record/src/bounded_replay.rs"
+        },
+        {
+          "kind": "file",
           "path": "crates/record/src/checkpoint.rs"
         },
         {
@@ -2400,6 +2404,10 @@
       "paths": [
         {
           "kind": "file",
+          "path": "crates/record/src/bounded_replay.rs"
+        },
+        {
+          "kind": "file",
           "path": "crates/cli/src/artifacts.rs"
         },
         {
@@ -2568,6 +2576,10 @@
       "reviewers": [],
       "requires_independent_review": true,
       "paths": [
+        {
+          "kind": "file",
+          "path": "crates/record/src/bounded_replay.rs"
+        },
         {
           "kind": "file",
           "path": "crates/cli/src/artifacts.rs"
@@ -2836,6 +2848,10 @@
       "reviewers": [],
       "requires_independent_review": true,
       "paths": [
+        {
+          "kind": "file",
+          "path": "crates/record/src/bounded_replay.rs"
+        },
         {
           "kind": "file",
           "path": "crates/cli/src/artifacts.rs"

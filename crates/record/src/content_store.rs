@@ -32,9 +32,9 @@ use sha2::{Digest, Sha256};
 use std::path::Path;
 use storage::{
     Layout, OwnerLock, StoreLock, crate_sync_dir, ensure_available_locked, ensure_layout,
-    load_bytes, load_bytes_with_state, lock_owner, lock_owner_shared, lock_store,
-    lock_store_shared, read_edges, read_limited, read_state, reference_edge_path,
-    remove_if_present, store_locked, write_edge_locked, write_state, write_tombstone,
+    load_bytes, lock_owner, lock_owner_shared, lock_store, lock_store_shared, read_edges,
+    read_limited, read_state, reference_edge_path, remove_if_present, store_locked,
+    write_edge_locked, write_state, write_tombstone,
 };
 
 const RECORD_LOCK_RETRY_ATTEMPTS: usize = 401;
@@ -899,6 +899,15 @@ pub(crate) fn hydrate_event_payload(
     tenant: &TenantId,
     payload: &mut serde_json::Value,
 ) -> Result<(), ContentStoreError> {
+    hydrate_event_payload_budgeted(runs_dir, tenant, payload, None)
+}
+
+pub(crate) fn hydrate_event_payload_budgeted(
+    runs_dir: &Path,
+    tenant: &TenantId,
+    payload: &mut serde_json::Value,
+    mut budget: Option<&mut crate::bounded_replay::ReplayReadBudget>,
+) -> Result<(), ContentStoreError> {
     let Some(version) = payload
         .as_object_mut()
         .ok_or(ContentStoreError::Corrupt)?
@@ -926,7 +935,15 @@ pub(crate) fn hydrate_event_payload(
                 generation: tombstone.generation,
             });
         }
-        let bytes = load_bytes_with_state(&layout, &state, &digest)?;
+        let bytes = storage::load_bytes_with_state_bounded(
+            &layout,
+            &state,
+            &digest,
+            budget.as_ref().map(|budget| budget.remaining_content()),
+        )?;
+        if let Some(budget) = budget.as_deref_mut() {
+            budget.content(bytes.len())?;
+        }
         *value = encoding::decode(&bytes, encoding)
             .map_err(|reason| ContentStoreError::Unresolved { digest, reason })?;
         Ok(())

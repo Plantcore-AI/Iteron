@@ -19,6 +19,7 @@
 //! tracked outside the source API rather than presented as a live stub.
 
 mod append_actor;
+pub mod bounded_replay;
 pub mod checkpoint;
 pub mod content_store;
 pub mod erasure;

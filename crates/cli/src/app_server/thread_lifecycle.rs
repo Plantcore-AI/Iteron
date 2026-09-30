@@ -99,7 +99,18 @@ impl HistoryScope {
             .run_id()
             .expect("non-list command has an exact identity")
             .clone();
-        let meta = self.metadata(&run)?;
+        let meta = if matches!(
+            &command,
+            ThreadLifecycleCommandV1::Inspect { .. } | ThreadLifecycleCommandV1::TraceRead { .. }
+        ) {
+            let meta = super::thread_inspection::metadata(&self.runs, &run)?;
+            if meta.tenant != self.tenant || !same_workspace(&meta.cwd, &self.workspace) {
+                return Err("thread unavailable in this workspace".into());
+            }
+            meta
+        } else {
+            self.metadata(&run)?
+        };
         match command {
             ThreadLifecycleCommandV1::List { .. } => {
                 unreachable!("list was dispatched before per-thread metadata access")

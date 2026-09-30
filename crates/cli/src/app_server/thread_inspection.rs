@@ -5,6 +5,9 @@ use iteron_protocol::client_artifact::ClientArtifactCommandV1;
 use iteron_protocol::thread_lifecycle::ThreadLifecycleCommandV1;
 use iteron_protocol::{Block, EventKind, Role, RunId, SessionId};
 use iteron_record::SessionMeta;
+use iteron_record::bounded_replay::{
+    ReplayReadLimits, load_forked_scoped_bounded, meta_bounded, replay_bounded,
+};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -16,9 +19,26 @@ const MAX_GOAL_BYTES: usize = 1024;
 const MAX_TRACE_DISPLAY_BYTES: usize = 64 * 1024;
 const MAX_TRACE_PAGE_BYTES: usize = 512 * 1024;
 
+fn limits() -> ReplayReadLimits {
+    ReplayReadLimits {
+        physical_bytes: MAX_INSPECTION_RECORD_BYTES as usize,
+        hydrated_bytes: MAX_INSPECTION_RECORD_BYTES as usize,
+        events: MAX_INSPECTION_EVENTS,
+    }
+}
+
+pub(super) fn metadata(runs: &Path, run: &RunId) -> Result<SessionMeta, String> {
+    let physical = std::fs::symlink_metadata(runs.join(format!("{}.jsonl", run.0)))
+        .map_err(|_| "inspection record unavailable")?;
+    if !physical.is_file() || physical.len() > MAX_INSPECTION_RECORD_BYTES {
+        return Err("inspection exceeds its bounded physical record window".into());
+    }
+    meta_bounded(runs, run, limits()).map_err(|_| "bounded verified metadata unavailable".into())
+}
+
 pub(super) fn inspect(runs: &Path, meta: &SessionMeta, workspace: &Path) -> Result<Value, String> {
     admit(runs, meta)?;
-    let events = iteron_record::load_forked_scoped(runs, &meta.run_id)
+    let events = load_forked_scoped_bounded(runs, &meta.run_id, limits())
         .map_err(|_| "verified session history unavailable")?;
     if events.len() > MAX_INSPECTION_EVENTS
         || events.iter().any(|event| event.tenant != meta.tenant)
@@ -124,7 +144,7 @@ pub(super) fn trace(
 ) -> Result<Value, String> {
     admit(runs, meta)?;
     // Trace pages describe this physical owner only. Fork origins remain explicit in inspection.
-    let events = iteron_record::replay(&runs.join(format!("{}.jsonl", meta.run_id.0)))
+    let events = replay_bounded(&runs.join(format!("{}.jsonl", meta.run_id.0)), limits())
         .map_err(|_| "verified trace unavailable")?;
     let newest = events.last().map_or(0, |event| event.seq.0);
     if after.is_some_and(|after| after > newest) {
