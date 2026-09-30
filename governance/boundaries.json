@@ -2553,6 +2553,10 @@
         {
           "kind": "tree",
           "path": "crates/workflow/src/live_scheduler"
+        },
+        {
+          "kind": "file",
+          "path": "crates/protocol/src/turn_publication.rs"
         }
       ]
     },
@@ -2679,6 +2683,10 @@
         {
           "kind": "tree",
           "path": "crates/workflow/src/live_scheduler"
+        },
+        {
+          "kind": "file",
+          "path": "crates/protocol/src/turn_publication.rs"
         }
       ]
     },
@@ -2999,6 +3007,10 @@
         {
           "kind": "tree",
           "path": "crates/workflow/src/live_scheduler"
+        },
+        {
+          "kind": "file",
+          "path": "crates/protocol/src/turn_publication.rs"
         }
       ]
     },

@@ -140,6 +140,7 @@ pub(crate) enum PlantcoreUiEvent {
 pub(crate) enum RuntimeFrontendEvent {
     Ui(UiEvent),
     Plantcore(PlantcoreUiEvent),
+    TurnPublication(iteron_protocol::turn_publication::TurnPublicationEventV1),
 }
 
 /// A bounded, presentation-safe task declared by a workflow plan.

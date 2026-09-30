@@ -1202,6 +1202,11 @@ pub enum EventKind {
         version: VerificationPolicyEventVersion,
         event: VerificationPolicyEvent,
     },
+    /// Answer availability with an exact earlier committed Message source. The live terminal
+    /// publication reuses the existing Done sequence; it does not append another terminal event.
+    TurnPublicationV1 {
+        fact: crate::turn_publication::TurnPublicationFactV1,
+    },
     /// The run ended.
     Done { outcome: String },
     /// Forward-compatibility: an event kind this build does not recognize (written by a newer

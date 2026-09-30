@@ -144,6 +144,7 @@ pub mod client_artifact;
 pub mod client_inventory;
 pub mod client_negotiation;
 pub mod thread_lifecycle;
+pub mod turn_publication;
 
 pub use wire::{EqEnvelope, PROTOCOL_VERSION, ProtocolVersionError, SqEnvelope};
 
