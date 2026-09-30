@@ -626,11 +626,8 @@ pub(super) async fn dispatch<B: ratatui::backend::Backend>(
                     refresh = true;
                 }
                 // A queued (not yet delivered) follow-up is safe to take back for editing.
-                KeyCode::Up if alt && app.running && app.editor.is_empty() => {
-                    if let Some(input) = app.input_lanes.take_latest() {
-                        app.editor.insert_str(&input.text);
-                        refresh = true;
-                    }
+                KeyCode::Up if alt && app.running => {
+                    refresh = reclaim_queued_key(app, k);
                 }
                 KeyCode::Delete => {
                     app.editor.delete();
@@ -894,4 +891,13 @@ pub(super) async fn dispatch<B: ratatui::backend::Backend>(
     }
 
     Ok(false)
+}
+
+/// The exact Alt-Up branch used by physical input dispatch. A draft containing any text, paste
+/// or image/file chip keeps focus and cannot be replaced by a queued value.
+pub(super) fn reclaim_queued_key(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
+    app.running
+        && key.code == KeyCode::Up
+        && key.modifiers.contains(KeyModifiers::ALT)
+        && app.input_lanes.reclaim_latest(&mut app.editor)
 }

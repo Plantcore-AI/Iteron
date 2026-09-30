@@ -4,43 +4,114 @@ mod tests {
 
     #[test]
     fn live_workflow_view_renders_real_revision_recovery_and_driver_failure() {
-        use iteron_workflow::live_scheduler::{WorkflowConfigV1, WorkflowNodeV1, WorkflowNodeRecordV1, WorkflowNodeStateV1};
-        use iteron_workflow::task_dag::{TaskBudget, BudgetUsage};
         use crate::workflow::live_session::{LiveWorkflowReplyV1, LiveWorkflowViewV1};
-        let budget = TaskBudget { max_turns: 1, max_tokens: 1000, max_cost_microusd: 1000, max_wall_ms: 1000 };
-        let reply = LiveWorkflowReplyV1 { receipt: None, view: LiveWorkflowViewV1 {
-            version: 1,
-            config: WorkflowConfigV1 { workflow_id: "graph-render".into(), budget, max_nodes: 4, max_edges: 4, max_concurrency: 2, started_at_unix_ms: 1000, deadline_unix_ms: 2000 },
-            revision: 7, sequence: 11,
-            nodes: vec![WorkflowNodeRecordV1 { node: WorkflowNodeV1 { id: 3, label: "inspect delivery".into(), task: "task".into(), dependencies: vec![], assigned_agent: 2, input_digest: "a".repeat(64), budget }, state: WorkflowNodeStateV1::RecoveryRequired { attempt: 1, lease: None, reason: "host proof pending".into() }, next_attempt: 2, usage: BudgetUsage::default(), attempt_usage: BudgetUsage::default(), reserved_budget: BudgetUsage::default() }],
-            reserved: BudgetUsage::default(), ready: vec![], observed_at_unix_ms: 1500, driver_error: Some("controller unavailable".into()),
-        }};
+        use iteron_workflow::live_scheduler::{
+            WorkflowConfigV1, WorkflowNodeRecordV1, WorkflowNodeStateV1, WorkflowNodeV1,
+        };
+        use iteron_workflow::task_dag::{BudgetUsage, TaskBudget};
+        let budget = TaskBudget {
+            max_turns: 1,
+            max_tokens: 1000,
+            max_cost_microusd: 1000,
+            max_wall_ms: 1000,
+        };
+        let reply = LiveWorkflowReplyV1 {
+            receipt: None,
+            view: LiveWorkflowViewV1 {
+                version: 1,
+                config: WorkflowConfigV1 {
+                    workflow_id: "graph-render".into(),
+                    budget,
+                    max_nodes: 4,
+                    max_edges: 4,
+                    max_concurrency: 2,
+                    started_at_unix_ms: 1000,
+                    deadline_unix_ms: 2000,
+                },
+                revision: 7,
+                sequence: 11,
+                nodes: vec![WorkflowNodeRecordV1 {
+                    node: WorkflowNodeV1 {
+                        id: 3,
+                        label: "inspect delivery".into(),
+                        task: "task".into(),
+                        dependencies: vec![],
+                        assigned_agent: 2,
+                        input_digest: "a".repeat(64),
+                        budget,
+                    },
+                    state: WorkflowNodeStateV1::RecoveryRequired {
+                        attempt: 1,
+                        lease: None,
+                        reason: "host proof pending".into(),
+                    },
+                    next_attempt: 2,
+                    usage: BudgetUsage::default(),
+                    attempt_usage: BudgetUsage::default(),
+                    reserved_budget: BudgetUsage::default(),
+                }],
+                reserved: BudgetUsage::default(),
+                ready: vec![],
+                observed_at_unix_ms: 1500,
+                driver_error: Some("controller unavailable".into()),
+            },
+        };
         let mut app = App::new();
         live_workflows::render(&mut app, &reply);
         let text = app.transcript.last().unwrap().to_text();
-        for expected in ["7 / 11", "recovery required", "host proof pending", "controller unavailable"] { assert!(text.contains(expected), "{expected}"); }
+        for expected in [
+            "7 / 11",
+            "recovery required",
+            "host proof pending",
+            "controller unavailable",
+        ] {
+            assert!(text.contains(expected), "{expected}");
+        }
         assert!(render_text(&mut app, 120, 30).contains("graph-render"));
     }
 
     #[test]
     fn live_agent_views_render_exact_state_and_preserve_observed_epoch_for_controls() {
-        use iteron_protocol::agent_control::{AgentBudgetV1, AgentEpochV1, AgentIdV1, AgentStateV1, AgentViewV1};
+        use iteron_protocol::agent_control::{
+            AgentBudgetV1, AgentEpochV1, AgentIdV1, AgentStateV1, AgentViewV1,
+        };
         let view = AgentViewV1 {
             agent_id: AgentIdV1(2),
             parent_id: Some(AgentIdV1(1)),
             label: "bounded investigator".into(),
             workspace_scope: "workspace-scope".into(),
             incarnation: 7,
-            state: AgentStateV1::Running { epoch: AgentEpochV1 { incarnation: 7, turn: 3 } },
-            capabilities: iteron_protocol::capability_set::CapabilitySet::only(iteron_protocol::Capability::ReadOnly),
-            budget: AgentBudgetV1 { turns: 2, tokens: 1000, cost_microusd: 1000, wall_ms: 1000 },
+            state: AgentStateV1::Running {
+                epoch: AgentEpochV1 {
+                    incarnation: 7,
+                    turn: 3,
+                },
+            },
+            capabilities: iteron_protocol::capability_set::CapabilitySet::only(
+                iteron_protocol::Capability::ReadOnly,
+            ),
+            budget: AgentBudgetV1 {
+                turns: 2,
+                tokens: 1000,
+                cost_microusd: 1000,
+                wall_ms: 1000,
+            },
             write_paths: Vec::new(),
             queued_messages: 1,
             last_summary: None,
         };
         let mut app = App::new();
-        persistent_agents::render(&mut app, &serde_json::json!({"type":"agents_v1","agents":[view]}));
-        assert_eq!(app.persistent_agent_views[0].state.epoch(), Some(AgentEpochV1 { incarnation: 7, turn: 3 }));
+        persistent_agents::render(
+            &mut app,
+            &serde_json::json!({"type":"agents_v1","agents":[view]}),
+        );
+        assert_eq!(
+            app.persistent_agent_views[0].state.epoch(),
+            Some(AgentEpochV1 {
+                incarnation: 7,
+                turn: 3
+            })
+        );
         let panel = app.transcript.last().unwrap().to_text();
         assert!(panel.contains("bounded investigator"));
         assert!(panel.contains("running"));
@@ -1895,7 +1966,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             app.requeue_unadmitted(vec!["late steer".into()], &[Some(SubmissionId(1))]);
         assert_eq!((moved, unmatched), (1, 0));
         assert_eq!(
-            app.input_lanes.queued()
+            app.input_lanes
+                .queued()
                 .iter()
                 .map(|input| input.text.as_str())
                 .collect::<Vec<_>>(),
@@ -1930,7 +2002,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert_eq!((reported, preserved), (1, 1));
         assert!(app.input_lanes.steers().is_empty());
         assert_eq!(
-            app.input_lanes.queued()
+            app.input_lanes
+                .queued()
                 .iter()
                 .map(|input| input.text.as_str())
                 .collect::<Vec<_>>(),
@@ -1948,30 +2021,53 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         let mut app = App::new();
         app.running = true;
         app.editor.insert_str("owned image draft");
-        app.editor.attach_image_bytes("owned.png", &png_1x1()).unwrap();
+        app.editor
+            .attach_image_bytes("owned.png", &png_1x1())
+            .unwrap();
         assert!(queue_draft_with_chips(&mut app));
         let owned_image = app.input_lanes.queued().front().cloned().unwrap();
         for index in 0..MAX_PENDING_SUBMISSIONS - 2 {
             app.queue_after_turn(format!("owned next {index}")).unwrap();
         }
         app.track_steer("original owned steering".into(), SubmissionId(500));
-        let mut words = (0..64).map(|index| format!("foreign steering {index}")).collect::<Vec<_>>();
-        let mut ids = (0..64).map(|index| Some(SubmissionId(index))).collect::<Vec<_>>();
+        let mut words = (0..64)
+            .map(|index| format!("foreign steering {index}"))
+            .collect::<Vec<_>>();
+        let mut ids = (0..64)
+            .map(|index| Some(SubmissionId(index)))
+            .collect::<Vec<_>>();
         words.push("returned text cannot replace original words".into());
         ids.push(Some(SubmissionId(500)));
         assert_eq!(app.requeue_unadmitted(words, &ids), (1, 0));
         assert_eq!(app.input_lanes.pending_count(), MAX_PENDING_SUBMISSIONS);
         assert!(app.input_lanes.steers().is_empty());
         assert_eq!(app.input_lanes.queued().front(), Some(&owned_image));
-        assert_eq!(app.input_lanes.queued().front().unwrap().images.as_slice(), owned_image.images.as_slice());
-        assert_eq!(app.input_lanes.queued().back().unwrap().text, "original owned steering");
-        assert!(app.input_lanes.queued().iter().all(|input| !input.text.starts_with("foreign")));
-        assert!(app.transcript.iter().any(|block| block.to_text().contains("64 unadmitted steering submission(s) belong to another client")));
+        assert_eq!(
+            app.input_lanes.queued().front().unwrap().images.as_slice(),
+            owned_image.images.as_slice()
+        );
+        assert_eq!(
+            app.input_lanes.queued().back().unwrap().text,
+            "original owned steering"
+        );
+        assert!(
+            app.input_lanes
+                .queued()
+                .iter()
+                .all(|input| !input.text.starts_with("foreign"))
+        );
+        assert!(app.transcript.iter().any(|block| {
+            block
+                .to_text()
+                .contains("64 unadmitted steering submission(s) belong to another client")
+        }));
         let next = app.input_lanes.pop_next().unwrap();
         app.input_lanes.restore_next(next);
         assert_eq!(app.input_lanes.queued().front(), Some(&owned_image));
         let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(120, 2)).unwrap();
-        terminal.draw(|frame| render_pending_lanes(frame, frame.area(), &app)).unwrap();
+        terminal
+            .draw(|frame| render_pending_lanes(frame, frame.area(), &app))
+            .unwrap();
         let screen = buffer_text(&terminal);
         assert!(screen.contains("owned image draft"), "{screen}");
         assert!(!screen.contains("foreign steering"));
@@ -1983,11 +2079,113 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         for index in 0..MAX_PENDING_SUBMISSIONS - 1 {
             app.track_steer(format!("own {index}"), SubmissionId(index as u64));
         }
-        assert_eq!(app.requeue_unadmitted((0..64).map(|index| format!("legacy {index}")).collect(), &[]), (1, MAX_PENDING_SUBMISSIONS - 1));
+        assert_eq!(
+            app.requeue_unadmitted(
+                (0..64).map(|index| format!("legacy {index}")).collect(),
+                &[]
+            ),
+            (1, MAX_PENDING_SUBMISSIONS - 1)
+        );
         assert_eq!(app.input_lanes.pending_count(), MAX_PENDING_SUBMISSIONS);
         assert_eq!(app.input_lanes.queued().front().unwrap().text, "own 0");
         assert_eq!(app.input_lanes.queued().back().unwrap().text, "legacy 0");
-        assert!(app.transcript.iter().any(|block| block.to_text().contains("63 legacy steering submission(s)")));
+        assert!(
+            app.transcript
+                .iter()
+                .any(|block| block.to_text().contains("63 legacy steering submission(s)"))
+        );
+    }
+
+    #[test]
+    fn refused_multimodal_queue_returns_all_owned_stores_for_exact_restoration() {
+        let mut app = App::new();
+        for index in 0..MAX_PENDING_SUBMISSIONS {
+            app.queue_after_turn(format!("already pending {index}"))
+                .unwrap();
+        }
+        let mut editor = crate::editor::Editor::new();
+        editor.insert_str("refused draft ");
+        editor
+            .capture_paste("actual pasted first line\nsecond line")
+            .unwrap();
+        editor
+            .attach_image_bytes("refused.png", &png_1x1())
+            .unwrap();
+        let raw = editor.text();
+        let expanded = editor.submission_text();
+        let images = editor.attachments().clone();
+        let metadata = editor.queued_draft_metadata();
+        let refusal = app
+            .queue_after_turn_with_draft(
+                expanded.clone(),
+                images.clone(),
+                file_input::FileAttachments::default(),
+                Some(metadata),
+            )
+            .err()
+            .expect("full lane returns the draft");
+        assert_eq!(app.input_lanes.pending_count(), MAX_PENDING_SUBMISSIONS);
+        editor.clear();
+        assert!(
+            editor
+                .restore_owned_draft(refusal.into_owned_draft())
+                .is_ok()
+        );
+        assert_eq!(editor.text(), raw);
+        assert_eq!(editor.submission_text(), expanded);
+        assert_eq!(editor.attachments().as_slice(), images.as_slice());
+        assert_eq!(editor.pastes().len(), 1);
+    }
+
+    #[test]
+    fn alt_up_restores_actual_png_file_paste_and_declines_a_newer_attachment_draft() {
+        let root = std::env::temp_dir().join(format!("iteron-alt-up-draft-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("owned.txt"), "actual captured file content").unwrap();
+        let mut app = App::new();
+        app.running = true;
+        app.editor.insert_str("restore this draft ");
+        app.editor
+            .capture_paste("original pasted lines\nsecond line")
+            .unwrap();
+        app.editor
+            .attach_image_bytes("owned.png", &png_1x1())
+            .unwrap();
+        app.editor
+            .attach_file_path(&root, Path::new("owned.txt"))
+            .unwrap();
+        let raw = app.editor.text();
+        let expanded = app.editor.submission_text();
+        let images = app.editor.attachments().clone();
+        let files = app.editor.files().clone();
+        assert!(queue_draft_with_chips(&mut app));
+        assert!(app.editor.can_restore_owned_draft());
+        // A newer attachment draft must remain in the composer rather than be overwritten.
+        app.editor
+            .attach_image_bytes("newer.png", &png_1x1())
+            .unwrap();
+        let newer = app.editor.attachments().clone();
+        let key = crossterm::event::KeyEvent::new(KeyCode::Up, KeyModifiers::ALT);
+        assert!(!input_dispatch::reclaim_queued_key(&mut app, key));
+        assert_eq!(app.input_lanes.queued().len(), 1);
+        assert_eq!(app.editor.attachments().as_slice(), newer.as_slice());
+        app.editor.clear();
+        assert!(input_dispatch::reclaim_queued_key(&mut app, key));
+        app.schedule_completion();
+        assert!(app.input_lanes.queued().is_empty());
+        assert_eq!(app.editor.text(), raw);
+        assert_eq!(app.editor.submission_text(), expanded);
+        assert_eq!(app.editor.pastes().len(), 1);
+        assert_eq!(app.editor.attachments().as_slice(), images.as_slice());
+        assert_eq!(app.editor.files().as_slice(), files.as_slice());
+        assert_eq!(app.editor.chip_count(), 3);
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(120, 16)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let screen = buffer_text(&terminal);
+        assert!(screen.contains("owned.png"), "{screen}");
+        assert!(screen.contains("owned.txt"), "{screen}");
+        assert!(screen.contains("restore this draft"), "{screen}");
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -3996,12 +4194,12 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             app
         }
 
-        let record_error = crate::runtime::KernelError::Record(
-            iteron_record::RecordError::Io(std::io::Error::new(
+        let record_error = crate::runtime::KernelError::Record(iteron_record::RecordError::Io(
+            std::io::Error::new(
                 std::io::ErrorKind::StorageFull,
                 "private/client/sk-test-secret",
-            )),
-        )
+            ),
+        ))
         .public_summary();
         let mut app = end_failed_run(record_error);
         assert!(app.retryable_task.is_none());
@@ -5961,7 +6159,11 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             "the chips leave the composer with the text, not after it"
         );
         assert!(app.editor.is_empty(), "the draft was consumed");
-        let queued = app.input_lanes.queued().front().expect("one queued submission");
+        let queued = app
+            .input_lanes
+            .queued()
+            .front()
+            .expect("one queued submission");
         assert_eq!(
             queued.images.len(),
             1,

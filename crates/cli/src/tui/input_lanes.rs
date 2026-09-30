@@ -34,6 +34,7 @@ pub(super) struct PendingInput {
     /// frozen), which is why a draft with chips is always routed to this queue.
     pub(super) images: image_input::ImageAttachments,
     pub(super) files: file_input::FileAttachments,
+    pub(super) draft: Option<crate::editor::QueuedDraftMetadata>,
 }
 
 /// Identity of a queued submission is what it will send: its order, its words, and how many chips
@@ -88,9 +89,43 @@ impl InputLanes {
     pub(super) fn pop_next(&mut self) -> Option<PendingInput> {
         self.queued.pop_front()
     }
-    pub(super) fn take_latest(&mut self) -> Option<PendingInput> {
-        self.queued.pop_back()
+    pub(super) fn reclaim_latest(&mut self, editor: &mut crate::editor::Editor) -> bool {
+        if !editor.can_restore_owned_draft() {
+            return false;
+        }
+        let Some(input) = self.queued.pop_back() else {
+            return false;
+        };
+        let seq = input.seq;
+        let submission_id = input.submission_id;
+        let draft = crate::editor::OwnedComposerDraft {
+            text: input.text,
+            images: input.images,
+            files: input.files,
+            metadata: input.draft,
+        };
+        match editor.restore_owned_draft(draft) {
+            Ok(()) => true,
+            Err(draft) => {
+                let crate::editor::OwnedComposerDraft {
+                    text,
+                    images,
+                    files,
+                    metadata,
+                } = *draft;
+                self.queued.push_back(PendingInput {
+                    seq,
+                    submission_id,
+                    text,
+                    images,
+                    files,
+                    draft: metadata,
+                });
+                false
+            }
+        }
     }
+
     /// Restore the very value whose submission or local command was refused. Its chips and order
     /// were never cloned into another live queue.
     pub(super) fn restore_next(&mut self, input: PendingInput) {
@@ -117,7 +152,8 @@ impl InputLanes {
         text: String,
         images: image_input::ImageAttachments,
         files: file_input::FileAttachments,
-    ) -> Result<(), QueueRefusal> {
+        draft: Option<crate::editor::QueuedDraftMetadata>,
+    ) -> Result<(), Box<QueueRefusal>> {
         let has_attachments = !images.is_empty() || !files.is_empty();
         let admission = Self::admission(&text, self.pending_count());
         let refusal = match admission {
@@ -129,11 +165,18 @@ impl InputLanes {
             Ok(_) => None,
         };
         if let Some(reason) = refusal {
-            return Err(QueueRefusal { text, reason });
+            return Err(Box::new(QueueRefusal {
+                text,
+                images,
+                files,
+                draft,
+                reason,
+            }));
         }
         let mut input = self.mint(text);
         input.images = images;
         input.files = files;
+        input.draft = draft;
         self.queued.push_back(input);
         Ok(())
     }
@@ -178,6 +221,7 @@ impl InputLanes {
             submission_id: None,
             images: image_input::ImageAttachments::default(),
             files: file_input::FileAttachments::default(),
+            draft: None,
         }
     }
 
@@ -239,7 +283,21 @@ pub(super) enum LaneRefusal {
 pub(super) struct QueueRefusal {
     pub(super) text: String,
     pub(super) reason: LaneRefusal,
+    pub(super) images: image_input::ImageAttachments,
+    pub(super) files: file_input::FileAttachments,
+    pub(super) draft: Option<crate::editor::QueuedDraftMetadata>,
 }
+impl QueueRefusal {
+    pub(super) fn into_owned_draft(self) -> crate::editor::OwnedComposerDraft {
+        crate::editor::OwnedComposerDraft {
+            text: self.text,
+            images: self.images,
+            files: self.files,
+            metadata: self.draft,
+        }
+    }
+}
+
 #[derive(Default)]
 pub(super) struct RequeueReport {
     pub(super) queued: usize,

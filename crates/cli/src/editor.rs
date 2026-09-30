@@ -171,6 +171,21 @@ enum ChipKind {
     Paste(u32),
 }
 
+/// Private restoration metadata captured from the actual editor before queue acceptance.
+/// It does not contain provider input or grant filesystem authority.
+#[derive(Clone)]
+pub(crate) struct QueuedDraftMetadata {
+    raw_text: String,
+    pastes: PastedTexts,
+    chip_order: Vec<ChipKind>,
+}
+pub(crate) struct OwnedComposerDraft {
+    pub(crate) text: String,
+    pub(crate) images: ImageAttachments,
+    pub(crate) files: FileAttachments,
+    pub(crate) metadata: Option<QueuedDraftMetadata>,
+}
+
 /// One composer chip in the exact order it was attached. Payloads stay borrowed and never enter
 /// terminal text; the renderer uses this projection solely for one-row identity/metadata lines.
 pub enum DraftChip<'a> {
@@ -226,6 +241,70 @@ impl Editor {
                 ChipKind::Paste(id) => self.pastes.get(*id).map(DraftChip::Paste),
             })
             .collect()
+    }
+
+    pub(crate) fn queued_draft_metadata(&self) -> QueuedDraftMetadata {
+        QueuedDraftMetadata {
+            raw_text: self.text(),
+            pastes: self.pastes.clone(),
+            chip_order: self.chip_order.clone(),
+        }
+    }
+
+    pub(crate) fn can_restore_owned_draft(&self) -> bool {
+        self.buf.is_empty()
+            && self.attachments.is_empty()
+            && self.files.is_empty()
+            && self.pastes.as_slice().is_empty()
+    }
+
+    /// Restore an owned queued draft only into an actually empty composer. Rejection returns all
+    /// words, paste metadata and prepared media stores to the caller; it never overwrites chips.
+    pub(crate) fn restore_owned_draft(
+        &mut self,
+        draft: OwnedComposerDraft,
+    ) -> Result<(), Box<OwnedComposerDraft>> {
+        if !self.can_restore_owned_draft() {
+            return Err(Box::new(draft));
+        }
+        let OwnedComposerDraft {
+            text,
+            images,
+            files,
+            metadata,
+        } = draft;
+        let QueuedDraftMetadata {
+            raw_text,
+            pastes,
+            chip_order,
+        } = metadata.unwrap_or_else(|| {
+            let mut raw_text = text;
+            let mut chip_order = Vec::with_capacity(images.len() + files.len());
+            for image in images.as_slice() {
+                raw_text.push_str(&crate::paste_input::image_anchor(image.id()));
+                chip_order.push(ChipKind::Image(image.id()));
+            }
+            for file in files.as_slice() {
+                raw_text.push_str(&crate::paste_input::file_anchor(file.id()));
+                chip_order.push(ChipKind::File(file.id()));
+            }
+            QueuedDraftMetadata {
+                raw_text,
+                pastes: PastedTexts::default(),
+                chip_order,
+            }
+        });
+        self.buf = raw_text.chars().collect();
+        self.cursor = self.buf.len();
+        self.attachments = images;
+        self.files = files;
+        self.pastes = pastes;
+        self.chip_order = chip_order;
+        self.hist_pos = None;
+        self.stash = None;
+        self.reverse_search = None;
+        self.mark_persistence_change();
+        Ok(())
     }
 
     pub fn attachments(&self) -> &ImageAttachments {

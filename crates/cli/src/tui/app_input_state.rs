@@ -109,29 +109,29 @@ impl App {
     }
 
     pub(super) fn queue_after_turn(&mut self, text: String) -> Result<(), String> {
-        self.queue_after_turn_with(
+        self.queue_after_turn_with_draft(
             text,
             image_input::ImageAttachments::default(),
             file_input::FileAttachments::default(),
+            None,
         )
+        .map_err(|refusal| refusal.into_owned_draft().text)
     }
 
-    /// Queue a submission together with the chips it was composed with.
-    ///
-    /// An empty draft is still queued when it carries attachments: "[1 image attachment]" is a real
-    /// submission, and the admission check would otherwise drop it as empty and take the images with
-    /// it. The admission BOUND (how many may be pending) still applies to both.
-    pub(super) fn queue_after_turn_with(
+    /// Acceptance transfers the complete draft to the lane. Refusal returns every owned store;
+    /// the composer adapter keeps its original draft until this port actually accepts it.
+    pub(super) fn queue_after_turn_with_draft(
         &mut self,
         text: String,
         images: image_input::ImageAttachments,
         files: file_input::FileAttachments,
-    ) -> Result<(), String> {
-        match self.input_lanes.queue(text, images, files) {
+        draft: Option<crate::editor::QueuedDraftMetadata>,
+    ) -> Result<(), Box<super::input_lanes::QueueRefusal>> {
+        match self.input_lanes.queue(text, images, files, draft) {
             Ok(()) => Ok(()),
             Err(refusal) => {
                 self.note_lane_refusal(refusal.reason, "pending input");
-                Err(refusal.text)
+                Err(refusal)
             }
         }
     }

@@ -806,7 +806,11 @@ pub(super) fn queue_draft_with_chips(app: &mut App) -> bool {
     }
     let images = app.editor.attachments().clone();
     let files = app.editor.files().clone();
-    if app.queue_after_turn_with(preview, images, files).is_err() {
+    let draft = app.editor.queued_draft_metadata();
+    if app
+        .queue_after_turn_with_draft(preview, images, files, Some(draft))
+        .is_err()
+    {
         // The actual owner refused before composer mutation: words, pastes and chips remain exact.
         return false;
     }
