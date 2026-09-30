@@ -165,19 +165,27 @@ impl Agent {
         &mut self,
         turn: TurnId,
         outcome: String,
-    ) -> Result<(), KernelError> {
+    ) -> Result<Seq, KernelError> {
+        #[cfg(test)]
+        if self.fail_next_durable_append == Some(DurableAppendFault::RunTerminal) {
+            self.fail_next_durable_append = None;
+            self.record_failed = true;
+            self.diagnostic_record_append_failed();
+            return Err(KernelError::Record(iteron_record::RecordError::Io(
+                std::io::Error::other("injected durable run-terminal append refusal"),
+            )));
+        }
         let result = self.terminal_record.append_visible_terminal(
             &mut self.rollout,
             &mut self.ledger,
             turn,
             outcome,
         );
-        if let Err(error) = result {
+        result.map_err(|error| {
             self.record_failed = true;
             self.diagnostic_record_append_failed();
-            return Err(KernelError::Record(error));
-        }
-        Ok(())
+            KernelError::Record(error)
+        })
     }
 
     /// Append and return the authoritative record sequence for cross-event correlation (workflow

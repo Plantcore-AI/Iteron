@@ -29,6 +29,9 @@ mod provider_turn_evidence;
 mod request_context_evidence;
 mod submitted_turn_state;
 mod terminal_record;
+mod turn_publication;
+#[cfg(test)]
+mod turn_publication_runtime_tests;
 use effect_descriptor::{
     KernelEffect, effect_class_label, effect_done_terminal, effect_failed_terminal,
     effect_workspace,
@@ -83,6 +86,7 @@ mod file_submission;
 pub(crate) mod force_cancel;
 mod frontend;
 pub(crate) use frontend::FrontendChannelHealth;
+mod hook_execution;
 pub mod hooks;
 mod inbound_control;
 #[cfg(any(feature = "ticket-investigation", test))]
@@ -997,6 +1001,7 @@ enum DurableAppendFault {
     SubagentFinished,
     UsdCeiling,
     TurnCeiling,
+    RunTerminal,
     GenesisPolicyTail,
     AdoptProjection,
 }
@@ -3863,6 +3868,7 @@ impl Agent {
                             self.advance_turn().await?;
                             continue;
                         }
+                        self.publish_available_answer(turn_id, &turn_res.blocks)?;
                         return self.finish(turn_id, Outcome::Done).await;
                     }
                     StopReason::ToolUse => {
@@ -5386,204 +5392,26 @@ impl Agent {
         results: &mut [Option<ToolResult>],
         any_error: &mut bool,
     ) -> Result<Vec<AutoApprovedCall>, KernelError> {
-        let compatibility_enabled = !self.hooks.is_empty_for(HookEvent::PreToolUse);
-        let lifecycle_enabled = !self.hooks.is_empty_for_lifecycle("tool.call_proposed");
-        if !compatibility_enabled && !lifecycle_enabled {
-            return Ok(batch);
-        }
-        let journal = self.hook_effect_journal.clone().ok_or_else(|| {
-            KernelError::ContextResolution(
-                "hook command journal is unavailable; concurrent tool gates were not started"
-                    .into(),
-            )
-        })?;
-        // A hook command is repo-controlled code, so it can write even around a read-only tool.
-        // This line is only reachable from a turn that already made tool calls, so counting it
-        // never costs a pure question-and-answer turn its zero-Git-work property.
-        self.effect_journal.note_workspace_mutation();
-        let class = effect_class::EffectClass::Hook;
-        let hook_activity = self
-            .activity
-            .span(turn_activity::ActivityStage::ToolHook, Some(turn));
-        let mut prepared = Vec::with_capacity(batch.len());
-        for admitted in batch {
-            let compatibility_ticket = if compatibility_enabled {
-                let ordinal = self.next_effect_ordinal(turn, class);
-                let ticket = self.open_kernel_effect(
-                    turn,
-                    class,
-                    ordinal,
-                    Capability::CodeExecuting,
-                    serde_json::json!({"event": HookEvent::PreToolUse.key(), "tool_index": admitted.index}),
-                )?;
-                Some((ordinal, ticket))
-            } else {
-                None
+        let admission = self.hook_execution(turn).gate_batch(batch).await?;
+        for denied in admission.denied {
+            let admitted = denied.admitted;
+            let result = ToolResult {
+                tool_use_id: admitted.call.id.clone(),
+                content: format!(
+                    "tool `{}` blocked by a tool gate hook: {}",
+                    admitted.call.name, denied.reason
+                ),
+                is_error: true,
+                trust: Trust::Workspace,
+                latency_ms: 0,
             };
-            let lifecycle_ticket = if lifecycle_enabled {
-                let ordinal = self.next_effect_ordinal(turn, class);
-                let ticket = self.open_kernel_effect(
-                    turn,
-                    class,
-                    ordinal,
-                    Capability::CodeExecuting,
-                    serde_json::json!({"event": "tool.call_proposed", "tool_index": admitted.index}),
-                )?;
-                Some((ordinal, ticket))
-            } else {
-                None
-            };
-            prepared.push((admitted, compatibility_ticket, lifecycle_ticket));
+            self.commit_refused_tool_result(turn, &admitted.call.name, &result)?;
+            self.ui(tool_end_ui(&admitted.call, &result));
+            results[admitted.index] = Some(result);
+            *any_error = true;
+            self.lifecycle_event("hook.blocked", Some(turn), LifecyclePayload::default());
         }
-        self.lifecycle_event(
-            "hook.started",
-            Some(turn),
-            LifecyclePayload {
-                count: Some(u64::try_from(prepared.len()).unwrap_or(u64::MAX)),
-                ..LifecyclePayload::default()
-            },
-        );
-
-        let hooks = self.hooks.clone();
-        let interrupt = self.interrupt.clone();
-        let drain = self.drain.clone();
-        let reports = futures_util::future::join_all(prepared.iter().map(|(admitted, _, _)| {
-            let compatibility_context = serde_json::json!({
-                "event": "PreToolUse",
-                "tool": admitted.call.name,
-                "input": admitted.call.input,
-            })
-            .to_string();
-            let lifecycle_context = serde_json::json!({
-                "catalog_version": iteron_protocol::lifecycle::LIFECYCLE_CATALOG_VERSION.0,
-                "event_id": "tool.call_proposed",
-                "turn_id": turn.0,
-            })
-            .to_string();
-            let hooks = hooks.clone();
-            let journal = journal.clone();
-            let interrupt = interrupt.clone();
-            let drain = drain.clone();
-            async move {
-                let compatibility = if compatibility_enabled {
-                    Some(
-                        hooks
-                            .run_cancellable_journaled_report(
-                                HookEvent::PreToolUse,
-                                &compatibility_context,
-                                interrupt.as_deref(),
-                                Some(drain.as_ref()),
-                                &journal,
-                            )
-                            .await,
-                    )
-                } else {
-                    None
-                };
-                let lifecycle = if lifecycle_enabled {
-                    Some(
-                        hooks
-                            .run_lifecycle_cancellable_journaled(
-                                "tool.call_proposed",
-                                &lifecycle_context,
-                                interrupt.as_deref(),
-                                Some(drain.as_ref()),
-                                &journal,
-                            )
-                            .await,
-                    )
-                } else {
-                    None
-                };
-                (compatibility, lifecycle)
-            }
-        }))
-        .await;
-
-        let mut allowed = Vec::with_capacity(prepared.len());
-        let mut hook_failed = false;
-        for ((admitted, compatibility_ticket, lifecycle_ticket), (compatibility, lifecycle)) in
-            prepared.into_iter().zip(reports)
-        {
-            if let Some((ordinal, ticket)) = compatibility_ticket {
-                self.settle_kernel_effect(
-                    ticket,
-                    effects::Settlement::Definite(effect_done_terminal(turn, class, ordinal)),
-                )?;
-            }
-            if let Some((ordinal, ticket)) = lifecycle_ticket {
-                let settlement = match lifecycle.as_ref() {
-                    Some(Ok(_)) => {
-                        effects::Settlement::Definite(effect_done_terminal(turn, class, ordinal))
-                    }
-                    Some(Err(reason)) => effects::Settlement::Definite(effect_failed_terminal(
-                        turn, class, ordinal, reason,
-                    )),
-                    None => unreachable!("a lifecycle ticket has a lifecycle report"),
-                };
-                self.settle_kernel_effect(ticket, settlement)?;
-            }
-            let lifecycle = match lifecycle {
-                Some(Ok(report)) => Some(report),
-                Some(Err(reason)) => {
-                    self.lifecycle_event(
-                        "hook.failed",
-                        Some(turn),
-                        LifecyclePayload {
-                            reason_code: Some("tool_gate_dispatch_failed".into()),
-                            ..LifecyclePayload::default()
-                        },
-                    );
-                    return Err(KernelError::ContextResolution(reason.to_owned()));
-                }
-                None => None,
-            };
-            let denied = compatibility
-                .as_ref()
-                .and_then(|report| match &report.decision {
-                    HookDecision::Allow => None,
-                    HookDecision::Deny(reason) => Some(reason.clone()),
-                })
-                .or_else(|| {
-                    lifecycle
-                        .as_ref()
-                        .and_then(|report| match &report.decision {
-                            HookDecision::Allow => None,
-                            HookDecision::Deny(reason) => Some(reason.clone()),
-                        })
-                });
-            if let Some(reason) = denied {
-                let result = ToolResult {
-                    tool_use_id: admitted.call.id.clone(),
-                    content: format!(
-                        "tool `{}` blocked by a tool gate hook: {reason}",
-                        admitted.call.name
-                    ),
-                    is_error: true,
-                    trust: Trust::Workspace,
-                    latency_ms: 0,
-                };
-                self.commit_refused_tool_result(turn, &admitted.call.name, &result)?;
-                self.ui(tool_end_ui(&admitted.call, &result));
-                results[admitted.index] = Some(result);
-                *any_error = true;
-                self.lifecycle_event("hook.blocked", Some(turn), LifecyclePayload::default());
-            } else {
-                hook_failed |= compatibility
-                    .as_ref()
-                    .is_some_and(|report| report.failed > 0 || report.timed_out > 0)
-                    || lifecycle
-                        .as_ref()
-                        .is_some_and(|report| report.failed > 0 || report.timed_out > 0);
-                allowed.push(admitted);
-            }
-        }
-        if hook_failed {
-            hook_activity.fail(iteron_protocol::ActivityDetailCode::HookGate);
-        } else {
-            hook_activity.complete();
-        }
-        Ok(allowed)
+        Ok(admission.allowed)
     }
 
     /// Observe completed concurrent tools without serializing their independent PostToolUse hook
@@ -5594,82 +5422,7 @@ impl Agent {
         turn: TurnId,
         completed: &[(ToolUse, ToolResult)],
     ) -> Result<(), KernelError> {
-        if self.hooks.is_empty_for(HookEvent::PostToolUse) || completed.is_empty() {
-            return Ok(());
-        }
-        let journal = self.hook_effect_journal.clone().ok_or_else(|| {
-            KernelError::ContextResolution(
-                "hook command journal is unavailable; concurrent post-tool observers were not started"
-                    .into(),
-            )
-        })?;
-        // Same reasoning as the pre-tool gate: a PostToolUse hook (a formatter, a codegen step) is
-        // repo-controlled code that can write behind a read-only tool.
-        self.effect_journal.note_workspace_mutation();
-        let class = effect_class::EffectClass::Hook;
-        let mut tickets = Vec::with_capacity(completed.len());
-        for (index, _) in completed.iter().enumerate() {
-            let ordinal = self.next_effect_ordinal(turn, class);
-            let ticket = self.open_kernel_effect(
-                turn,
-                class,
-                ordinal,
-                Capability::CodeExecuting,
-                serde_json::json!({"event": HookEvent::PostToolUse.key(), "tool_index": index}),
-            )?;
-            tickets.push((ordinal, ticket));
-        }
-        let hooks = self.hooks.clone();
-        let interrupt = self.interrupt.clone();
-        let drain = self.drain.clone();
-        let reports = futures_util::future::join_all(completed.iter().map(|(call, result)| {
-            let context = serde_json::json!({
-                "event": "PostToolUse",
-                "tool": call.name,
-                "tool_use_id": result.tool_use_id,
-                "is_error": result.is_error,
-                "content": iteron_protocol::text::head(&result.content, 2000),
-            })
-            .to_string();
-            let hooks = hooks.clone();
-            let journal = journal.clone();
-            let interrupt = interrupt.clone();
-            let drain = drain.clone();
-            async move {
-                hooks
-                    .run_cancellable_journaled_report(
-                        HookEvent::PostToolUse,
-                        &context,
-                        interrupt.as_deref(),
-                        Some(drain.as_ref()),
-                        &journal,
-                    )
-                    .await
-            }
-        }))
-        .await;
-        for ((ordinal, ticket), report) in tickets.into_iter().zip(reports) {
-            self.settle_kernel_effect(
-                ticket,
-                effects::Settlement::Definite(effect_done_terminal(turn, class, ordinal)),
-            )?;
-            self.lifecycle_event(
-                if report.timed_out > 0 {
-                    "hook.timed_out"
-                } else if report.failed > 0 {
-                    "hook.failed"
-                } else {
-                    "hook.completed"
-                },
-                Some(turn),
-                LifecyclePayload {
-                    count: Some(u64::from(report.completed)),
-                    magnitude: Some(u64::from(report.timed_out)),
-                    ..LifecyclePayload::default()
-                },
-            );
-        }
-        Ok(())
+        self.hook_execution(turn).post_tools(completed).await
     }
 
     /// Execute one auto-approved, non-overlapping group of deferred calls concurrently.
@@ -6549,7 +6302,11 @@ impl Agent {
         )?;
         // A frontend may only observe a terminal state that is already durable.  Returning Done
         // after either append failed made recovery disagree with the operator-visible outcome.
-        self.emit_durable_run_terminal(turn, format!("{outcome:?}"))?;
+        let publication =
+            iteron_protocol::turn_publication::TurnPublicationFactV1::finalized(&outcome)
+                .map_err(|reason| KernelError::ContextResolution(reason.into()))?;
+        let done_source = self.emit_durable_run_terminal(turn, format!("{outcome:?}"))?;
+        self.publish_finalized_turn(turn, done_source, publication);
         if outcome == Outcome::Done {
             self.persist_last_success_route(turn);
         }

@@ -32,6 +32,7 @@ pub(crate) trait ToolOutputPublicationPort: Send + Sync {
 
 pub(crate) trait ToolOutputPublicationFactory: Send + Sync {
     fn for_call(&self, call: &ToolUse, source: Seq) -> Arc<dyn ToolOutputPublicationPort>;
+    fn for_calls(&self, calls: &[(ToolUse, Seq)]) -> Arc<dyn ToolOutputPublicationPort>;
 }
 
 struct CapturedOutputPublicationFactory {
@@ -42,6 +43,28 @@ impl ToolOutputPublicationFactory for CapturedOutputPublicationFactory {
     fn for_call(&self, call: &ToolUse, source: Seq) -> Arc<dyn ToolOutputPublicationPort> {
         let mut publisher = self.scope.clone();
         publisher.sources = BTreeMap::from([(call.id.clone(), source.0)]);
+        Arc::new(publisher)
+    }
+
+    fn for_calls(&self, calls: &[(ToolUse, Seq)]) -> Arc<dyn ToolOutputPublicationPort> {
+        let mut publisher = self.scope.clone();
+        // A malformed batch gets an empty correlation map. Every publication then refuses;
+        // source identity must never fall back to the last event or a different tool's intent.
+        if calls.len() > iteron_kernel::effects::MAX_TOOL_CALLS_PER_TURN {
+            return Arc::new(publisher);
+        }
+        for (call, source) in calls {
+            if source.0 == 0
+                || call.id.is_empty()
+                || publisher
+                    .sources
+                    .insert(call.id.clone(), source.0)
+                    .is_some()
+            {
+                publisher.sources.clear();
+                return Arc::new(publisher);
+            }
+        }
         Arc::new(publisher)
     }
 }

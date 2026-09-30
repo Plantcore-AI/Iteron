@@ -326,6 +326,15 @@ const SURFACES: &[Surface] = &[
         next_seams: &["typed disjoint recorder/rollout/ledger ports; no mutable Agent"],
     },
     Surface {
+        path: "crates/cli/src/runtime/turn_publication.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "actual non-tool EndTurn answer Message join and confirmed Done sequence projection",
+            "bounded verified current-run publication recovery with explicit provenance refusal",
+        ],
+        next_seams: &["readonly frontend facts; no terminal or ancestor scope inference"],
+    },
+    Surface {
         path: "crates/cli/src/runtime/provider_stream_observer.rs",
         boundary: "cli-host",
         responsibilities: &[

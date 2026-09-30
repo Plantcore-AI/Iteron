@@ -108,7 +108,9 @@ impl TurnPublicationEventV1 {
         {
             return Err("invalid_publication_run");
         }
-        if self.source_seq == 0 || self.turn_id.0 == 0 {
+        // Runtime turns begin at zero. This also admits a real durable terminal before provider
+        // dispatch (for example cancellation); only the source sequence must be nonzero.
+        if self.source_seq == 0 {
             return Err("invalid_publication_source");
         }
         self.fact.validate()?;

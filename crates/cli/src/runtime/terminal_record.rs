@@ -98,7 +98,7 @@ impl TerminalRecordOwner {
         ledger: &mut Ledger,
         turn: TurnId,
         outcome: String,
-    ) -> Result<(), RecordError> {
+    ) -> Result<Seq, RecordError> {
         let events = [
             Event {
                 seq: Seq::ZERO,
@@ -115,7 +115,7 @@ impl TerminalRecordOwner {
         let result = rollout.append_batch(&events);
         ledger.record_fsync_latency_us(elapsed_us(started));
         match result {
-            Ok(sequences) if sequences.len() == events.len() => Ok(()),
+            Ok(sequences) if sequences.len() == events.len() => Ok(sequences[1]),
             Ok(_) => Err(RecordError::InvalidAppendBatch {
                 reason: "run terminal batch returned an incomplete sequence receipt",
             }),
