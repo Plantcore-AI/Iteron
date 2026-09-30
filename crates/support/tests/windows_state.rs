@@ -134,6 +134,11 @@ fn directory_junction_does_not_gain_storage_authority() {
         WindowsSnapshotStore::open(&alias, "state"),
         Err(WindowsStateError::Unavailable)
     );
+    assert_eq!(
+        provision_private_directory(&alias.join("child")),
+        Err(WindowsStateError::Unavailable)
+    );
+    assert!(!directory.0.join("child").exists());
     std::fs::remove_dir(alias).unwrap();
     assert!(refused);
 }
@@ -141,10 +146,15 @@ fn directory_junction_does_not_gain_storage_authority() {
 #[test]
 fn process_crash_releases_lease_and_preserves_publication() {
     let directory = PrivateDirectory::new();
-    let ready = directory.0.join("child.ready");
+    // The child provisions both new namespace links itself before publishing the completion.
+    let namespace = directory
+        .0
+        .join("advisory-maintenance-v1")
+        .join("run-scope");
+    let ready = namespace.join("child.ready");
     let mut child = Command::new(std::env::current_exe().unwrap())
         .args(["--exact", "windows_state_process_child", "--nocapture"])
-        .env("ITERON_WINDOWS_STATE_CHILD_DIR", &directory.0)
+        .env("ITERON_WINDOWS_STATE_CHILD_DIR", &namespace)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -163,12 +173,12 @@ fn process_crash_releases_lease_and_preserves_publication() {
         panic!("child publication exceeded the bounded fixture deadline");
     }
     assert!(matches!(
-        WindowsSnapshotStore::open(&directory.0, "state"),
+        WindowsSnapshotStore::open(&namespace, "state"),
         Err(WindowsStateError::Conflict)
     ));
     child.kill().unwrap();
     child.wait().unwrap();
-    let mut reopened = WindowsSnapshotStore::open(&directory.0, "state").unwrap();
+    let mut reopened = WindowsSnapshotStore::open(&namespace, "state").unwrap();
     assert_eq!(
         reopened.load().unwrap(),
         Some(b"published-before-crash".to_vec())
@@ -181,6 +191,8 @@ fn windows_state_process_child() {
         return;
     };
     let directory = PathBuf::from(directory);
+    provision_private_directory(directory.parent().unwrap()).unwrap();
+    provision_private_directory(&directory).unwrap();
     let mut store = WindowsSnapshotStore::open(&directory, "state").unwrap();
     store.publish(b"published-before-crash", true).unwrap();
     let mut ready = File::create(directory.join("child.ready")).unwrap();

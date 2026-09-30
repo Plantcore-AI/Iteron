@@ -14,18 +14,19 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::mem::{offset_of, size_of};
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle};
-use std::path::Path;
+use std::path::{Component, Path, PathBuf, Prefix};
 use std::ptr::{null, null_mut};
 
 use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows_sys::Wdk::Storage::FileSystem::{
-    FILE_CREATE, FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_IF, FILE_OPEN_REPARSE_POINT,
-    FILE_SYNCHRONOUS_IO_NONALERT, FILE_WRITE_THROUGH, NtCreateFile,
+    FILE_CREATE, FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_IF,
+    FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT, FILE_WRITE_THROUGH, NtCreateFile,
+    NtFlushBuffersFileEx,
 };
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_ALREADY_EXISTS, ERROR_SUCCESS, GENERIC_READ, GENERIC_WRITE, HANDLE,
-    INVALID_HANDLE_VALUE, LocalFree, OBJ_CASE_INSENSITIVE, STATUS_OBJECT_NAME_NOT_FOUND,
-    STATUS_OBJECT_PATH_NOT_FOUND, UNICODE_STRING,
+    CloseHandle, ERROR_SUCCESS, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
+    LocalFree, OBJ_CASE_INSENSITIVE, STATUS_OBJECT_NAME_NOT_FOUND, STATUS_OBJECT_PATH_NOT_FOUND,
+    UNICODE_STRING,
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo,
@@ -34,15 +35,15 @@ use windows_sys::Win32::Security::Authorization::{
 use windows_sys::Win32::Security::{
     ACCESS_ALLOWED_ACE, ACE_HEADER, DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetLengthSid,
     GetSecurityDescriptorControl, GetTokenInformation, IsValidAcl, IsValidSid,
-    OWNER_SECURITY_INFORMATION, PSID, SE_DACL_PROTECTED, SECURITY_ATTRIBUTES, TOKEN_QUERY,
-    TOKEN_USER, TokenUser,
+    OWNER_SECURITY_INFORMATION, PSID, SE_DACL_PROTECTED, TOKEN_QUERY, TOKEN_USER, TokenUser,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    BY_HANDLE_FILE_INFORMATION, CreateDirectoryW, CreateFileW, DELETE, FILE_ADD_FILE,
-    FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT,
-    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAG_WRITE_THROUGH,
-    FILE_LIST_DIRECTORY, FILE_RENAME_INFO, FILE_RENAME_INFO_0, FILE_SHARE_READ, FILE_SHARE_WRITE,
-    FILE_TRAVERSE, FileDispositionInfo, FileRenameInfo, GetFileInformationByHandle,
+    BY_HANDLE_FILE_INFORMATION, CreateFileW, DELETE, DRIVE_FIXED, FILE_ADD_FILE,
+    FILE_ADD_SUBDIRECTORY, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL,
+    FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+    FILE_FLAG_WRITE_THROUGH, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_RENAME_INFO,
+    FILE_RENAME_INFO_0, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TRAVERSE, FILE_WRITE_ATTRIBUTES,
+    FileDispositionInfo, FileRenameInfo, GetDriveTypeW, GetFileInformationByHandle,
     GetVolumeInformationByHandleW, OPEN_EXISTING, READ_CONTROL, SYNCHRONIZE,
     SetFileInformationByHandle,
 };
@@ -262,21 +263,208 @@ impl Identity {
     }
 }
 
-/// Provision only a new, private application directory. Existing directories are never granted
-/// authority or rewritten; opening a store validates their owner and protected DACL separately.
+/// Create one private component below an existing host-computed parent, then persist both
+/// directory metadata and the parent's namespace link before reporting success. Existing ACLs
+/// are never changed. Callers provision an absent chain from its existing ancestor outward.
+///
+/// Every ancestor is opened relative to a pinned, non-reparse handle; directory creation uses
+/// FILE_DIRECTORY_FILE + FILE_WRITE_THROUGH. The explicit normal NtFlushBuffersFileEx barrier
+/// writes metadata and synchronizes the storage cache, rather than inferring directory durability
+/// from a later descendant file flush:
+/// https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/nf-ntifs-ntflushbuffersfileex
+/// Native fault/restart validation remains required for supported local NTFS/storage devices.
 pub fn provision_private_directory(path: &Path) -> Result<(), WindowsStateError> {
+    provision_directory_with_barrier(path, flush_directory)
+}
+
+fn provision_directory_with_barrier(
+    path: &Path,
+    barrier: fn(&File) -> Result<(), WindowsStateError>,
+) -> Result<(), WindowsStateError> {
     let identity = Identity::current()?;
-    let attributes = SECURITY_ATTRIBUTES {
-        nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
-        lpSecurityDescriptor: identity.descriptor.0,
-        bInheritHandle: 0,
+    let parent = path.parent().ok_or(WindowsStateError::Unavailable)?;
+    let name = path.file_name().ok_or(WindowsStateError::Unavailable)?;
+    let parents = pin_directory_chain(parent)?;
+    let parent = parents.last().ok_or(WindowsStateError::Unavailable)?;
+    let (child, created) = open_directory_relative(parent, name, Some(&identity))?;
+    // After creation, any validation or flush failure leaves namespace publication uncertain.
+    // The owner must quarantine/reconcile instead of accepting Completed or retrying effects.
+    let uncertainty = if created {
+        WindowsStateError::OutcomeUnknown
+    } else {
+        WindowsStateError::Unavailable
     };
-    let wide = wide_path(path)?;
-    // SAFETY: path and security descriptor outlive the CreateDirectory call.
-    if unsafe { CreateDirectoryW(wide.as_ptr(), &attributes) } == 0
-        && std::io::Error::last_os_error().raw_os_error() != Some(ERROR_ALREADY_EXISTS as i32)
+    identity
+        .validate_handle(&child, true)
+        .map_err(|_| uncertainty)?;
+    barrier(&child).map_err(|_| WindowsStateError::OutcomeUnknown)?;
+    barrier(parent).map_err(|_| WindowsStateError::OutcomeUnknown)?;
+    Ok(())
+}
+
+fn pin_directory_chain(path: &Path) -> Result<Vec<File>, WindowsStateError> {
+    let mut components = path.components();
+    let Some(Component::Prefix(prefix)) = components.next() else {
+        return Err(WindowsStateError::Unavailable);
+    };
+    if !matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_))
+        || components.next() != Some(Component::RootDir)
     {
         return Err(WindowsStateError::Unavailable);
+    }
+    let root = PathBuf::from(prefix.as_os_str()).join(r"\");
+    let names = components.collect::<Vec<_>>();
+    if names.len() > 64 {
+        return Err(WindowsStateError::Unavailable);
+    }
+    let wide = wide_path(&root)?;
+    // Only the final parent needs create/flush access. Earlier pinned ancestors need traversal
+    // and attribute access; requesting write access to a drive root would need excess authority.
+    let writable = names.is_empty();
+    // SAFETY: terminated local drive root, fixed flags and non-inherited fresh handle output.
+    let raw = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            directory_access(writable),
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_WRITE_THROUGH,
+            null_mut(),
+        )
+    };
+    if raw == INVALID_HANDLE_VALUE {
+        return Err(WindowsStateError::Unavailable);
+    }
+    // SAFETY: successful CreateFileW transfers a fresh owned directory handle exactly once.
+    let root = unsafe { File::from_raw_handle(raw) };
+    validate_directory_geometry(&root)?;
+    local_ntfs(&root)?;
+    let mut pinned = vec![root];
+    for (index, name) in names.iter().enumerate() {
+        let Component::Normal(name) = name else {
+            return Err(WindowsStateError::Unavailable);
+        };
+        let (file, _) = open_directory_at(
+            pinned.last().ok_or(WindowsStateError::Unavailable)?,
+            name,
+            None,
+            index + 1 == names.len(),
+        )?;
+        pinned.push(file);
+    }
+    Ok(pinned)
+}
+
+fn directory_access(writable: bool) -> u32 {
+    FILE_LIST_DIRECTORY
+        | FILE_TRAVERSE
+        | FILE_READ_ATTRIBUTES
+        | READ_CONTROL
+        | SYNCHRONIZE
+        | if writable {
+            FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY | FILE_WRITE_ATTRIBUTES
+        } else {
+            0
+        }
+}
+
+fn open_directory_relative(
+    parent: &File,
+    name: &std::ffi::OsStr,
+    identity: Option<&Identity>,
+) -> Result<(File, bool), WindowsStateError> {
+    open_directory_at(parent, name, identity, true)
+}
+
+fn open_directory_at(
+    parent: &File,
+    name: &std::ffi::OsStr,
+    identity: Option<&Identity>,
+    writable: bool,
+) -> Result<(File, bool), WindowsStateError> {
+    let mut units = name.encode_wide().collect::<Vec<_>>();
+    if units.is_empty()
+        || units.len() > 255
+        || units.contains(&0)
+        || units.iter().any(|unit| matches!(*unit, 47 | 58 | 92))
+        || name == std::ffi::OsStr::new(".")
+        || name == std::ffi::OsStr::new("..")
+    {
+        return Err(WindowsStateError::Unavailable);
+    }
+    let unicode = UNICODE_STRING {
+        Length: (units.len() * 2) as u16,
+        MaximumLength: (units.len() * 2) as u16,
+        Buffer: units.as_mut_ptr(),
+    };
+    let attributes = OBJECT_ATTRIBUTES {
+        Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
+        RootDirectory: parent.as_raw_handle(),
+        ObjectName: &unicode,
+        Attributes: OBJ_CASE_INSENSITIVE,
+        SecurityDescriptor: identity.map_or(null(), |value| value.descriptor.0.cast()),
+        SecurityQualityOfService: null(),
+    };
+    let mut raw = null_mut();
+    let mut status_block = IO_STATUS_BLOCK::default();
+    // SAFETY: bounded single component resolves beneath the retained parent; outputs are aligned.
+    let status = unsafe {
+        NtCreateFile(
+            &mut raw,
+            directory_access(writable),
+            &attributes,
+            &mut status_block,
+            null(),
+            FILE_ATTRIBUTE_DIRECTORY,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            if identity.is_some() {
+                FILE_OPEN_IF
+            } else {
+                FILE_OPEN
+            },
+            FILE_DIRECTORY_FILE
+                | FILE_OPEN_REPARSE_POINT
+                | FILE_SYNCHRONOUS_IO_NONALERT
+                | FILE_WRITE_THROUGH,
+            null(),
+            0,
+        )
+    };
+    if status < 0 {
+        return Err(WindowsStateError::Unavailable);
+    }
+    // SAFETY: successful NtCreateFile returned a fresh owned directory handle.
+    let file = unsafe { File::from_raw_handle(raw) };
+    let created = status_block.Information == 2; // FILE_CREATED (documented IO_STATUS_BLOCK value).
+    validate_directory_geometry(&file).map_err(|_| {
+        if created {
+            WindowsStateError::OutcomeUnknown
+        } else {
+            WindowsStateError::Unavailable
+        }
+    })?;
+    Ok((file, created))
+}
+
+fn validate_directory_geometry(file: &File) -> Result<(), WindowsStateError> {
+    let mut information = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: live pinned handle and writable structure are valid.
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut information) } == 0
+        || information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+        || information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0
+    {
+        return Err(WindowsStateError::Unavailable);
+    }
+    Ok(())
+}
+
+fn flush_directory(file: &File) -> Result<(), WindowsStateError> {
+    let mut status = IO_STATUS_BLOCK::default();
+    // SAFETY: synchronous live directory handle has write/append access; flags0 includes metadata
+    // and the physical storage-cache synchronization. No DATA_ONLY/NO_SYNC shortcut is accepted.
+    if unsafe { NtFlushBuffersFileEx(file.as_raw_handle(), 0, null(), 0, &mut status) } < 0 {
+        return Err(WindowsStateError::OutcomeUnknown);
     }
     Ok(())
 }
@@ -593,10 +781,62 @@ fn wide_path(path: &Path) -> Result<Vec<u16>, WindowsStateError> {
     if !path.is_absolute() {
         return Err(WindowsStateError::Unavailable);
     }
+    let mut components = path.components();
+    let Some(Component::Prefix(prefix)) = components.next() else {
+        return Err(WindowsStateError::Unavailable);
+    };
+    if !matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_)) {
+        return Err(WindowsStateError::Unavailable);
+    }
+    let root = PathBuf::from(prefix.as_os_str()).join(r"\");
+    let root_units = root
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    // SAFETY: terminated drive-root path; only supported local fixed disks can claim this contract.
+    if unsafe { GetDriveTypeW(root_units.as_ptr()) } != DRIVE_FIXED {
+        return Err(WindowsStateError::Unavailable);
+    }
     let mut units = path.as_os_str().encode_wide().collect::<Vec<_>>();
     if units.is_empty() || units.len() > 32_000 || units.contains(&0) {
         return Err(WindowsStateError::Unavailable);
     }
     units.push(0);
     Ok(units)
+}
+
+#[cfg(test)]
+mod directory_barrier_tests {
+    use super::{WindowsStateError, flush_directory, provision_directory_with_barrier};
+    use std::fs::File;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn failed_parent_barrier_after_real_creation_never_reports_success() {
+        static BARRIERS: AtomicUsize = AtomicUsize::new(0);
+        fn child_flush_then_refuse_parent(file: &File) -> Result<(), WindowsStateError> {
+            if BARRIERS.fetch_add(1, Ordering::SeqCst) == 0 {
+                flush_directory(file)
+            } else {
+                Err(WindowsStateError::OutcomeUnknown)
+            }
+        }
+        let path = std::env::temp_dir().join(format!(
+            "iteron-directory-barrier-fault-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir(&path);
+        let result = provision_directory_with_barrier(&path, child_flush_then_refuse_parent);
+        assert_eq!(result, Err(WindowsStateError::OutcomeUnknown));
+        assert!(
+            path.is_dir(),
+            "fixture reached the actual namespace creation boundary"
+        );
+        assert_eq!(BARRIERS.load(Ordering::SeqCst), 2);
+        // Explicit reconciliation reopens the exact existing directory and performs both actual
+        // native barriers; the failed prior attempt never became a success or a fresh namespace.
+        super::provision_private_directory(&path).unwrap();
+        std::fs::remove_dir(path).unwrap();
+    }
 }
