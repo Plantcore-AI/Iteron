@@ -35,13 +35,43 @@ impl CompactionStateOwner {
     pub(super) fn last_committed_turn(&self) -> Option<u64> {
         self.last_committed_turn
     }
-    pub(super) fn restore(&mut self, last: Option<u64>) {
+    /// Replaying the same journal cannot undo a run's previously observed boundary failure.
+    pub(super) fn restore_same_run(&mut self, last: Option<u64>) {
         self.compacted_in_submission = false;
         self.last_committed_turn = last;
+    }
+    /// Called only after verified adoption has swapped to a different physical run owner.
+    pub(super) fn replace_verified_run(&mut self, last: Option<u64>) {
+        *self = Self {
+            failed_closed: false,
+            compacted_in_submission: false,
+            last_committed_turn: last,
+        };
     }
     fn committed(&mut self, turn: TurnId) {
         self.compacted_in_submission = true;
         self.last_committed_turn = Some(u64::from(turn.0));
+    }
+}
+
+#[cfg(test)]
+mod state_tests {
+    use super::CompactionStateOwner;
+    use iteron_protocol::TurnId;
+
+    #[test]
+    fn replay_keeps_run_failure_but_verified_replacement_does_not_inherit_it() {
+        let mut state = CompactionStateOwner::default();
+        state.committed(TurnId(4));
+        state.close();
+        state.restore_same_run(Some(4));
+        assert!(state.failed_closed());
+        assert!(!state.compacted());
+        assert_eq!(state.last_committed_turn(), Some(4));
+        state.replace_verified_run(Some(9));
+        assert!(!state.failed_closed());
+        assert!(!state.compacted());
+        assert_eq!(state.last_committed_turn(), Some(9));
     }
 }
 
