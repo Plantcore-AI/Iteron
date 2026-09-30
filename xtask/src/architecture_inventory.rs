@@ -305,6 +305,15 @@ const SURFACES: &[Surface] = &[
         ],
         next_seams: &["admission/journal ownership remains disjoint; no mutable Agent"],
     },
+    Surface {
+        path: "crates/cli/src/runtime/terminal_record.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "single mutable turn cost/counter/verifier terminal evidence owner",
+            "physical policy-terminal and visible Idle/Done durable append adapters",
+        ],
+        next_seams: &["typed disjoint recorder/rollout/ledger ports; no mutable Agent"],
+    },
 ];
 
 #[derive(Serialize)]

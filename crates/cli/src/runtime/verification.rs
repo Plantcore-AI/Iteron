@@ -275,23 +275,24 @@ impl Agent {
         }
         let verify_span = PhaseSpan::enter(Phase::Verify);
         let verdict = self.run_verification_policy(command, verify_plan).await?;
-        self.policy_verifier_outcome = match verdict.outcome {
-            iteron_verify::VerificationOutcome::Pass => {
-                iteron_protocol::PolicyVerifierOutcome::Passed
-            }
-            iteron_verify::VerificationOutcome::TestFailure => {
-                iteron_protocol::PolicyVerifierOutcome::TestFailure
-            }
-            iteron_verify::VerificationOutcome::TimedOut => {
-                iteron_protocol::PolicyVerifierOutcome::TimedOut
-            }
-            iteron_verify::VerificationOutcome::InfrastructureFailure => {
-                iteron_protocol::PolicyVerifierOutcome::InfrastructureFailure
-            }
-            iteron_verify::VerificationOutcome::Cancelled => {
-                iteron_protocol::PolicyVerifierOutcome::Cancelled
-            }
-        };
+        self.terminal_record
+            .observe_verifier(match verdict.outcome {
+                iteron_verify::VerificationOutcome::Pass => {
+                    iteron_protocol::PolicyVerifierOutcome::Passed
+                }
+                iteron_verify::VerificationOutcome::TestFailure => {
+                    iteron_protocol::PolicyVerifierOutcome::TestFailure
+                }
+                iteron_verify::VerificationOutcome::TimedOut => {
+                    iteron_protocol::PolicyVerifierOutcome::TimedOut
+                }
+                iteron_verify::VerificationOutcome::InfrastructureFailure => {
+                    iteron_protocol::PolicyVerifierOutcome::InfrastructureFailure
+                }
+                iteron_verify::VerificationOutcome::Cancelled => {
+                    iteron_protocol::PolicyVerifierOutcome::Cancelled
+                }
+            });
         self.ledger.phase_verify(verify_span.elapsed_ms());
 
         // Drain deliberately lets the already-admitted oracle reach a verdict, then checkpoints

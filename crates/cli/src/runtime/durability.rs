@@ -175,39 +175,18 @@ impl Agent {
         turn: TurnId,
         outcome: String,
     ) -> Result<(), KernelError> {
-        let events = [
-            Event {
-                seq: Seq::ZERO,
-                turn,
-                kind: EventKind::Phase { phase: Phase::Idle },
-            },
-            Event {
-                seq: Seq::ZERO,
-                turn,
-                kind: EventKind::Done { outcome },
-            },
-        ];
-        let fsync_started = Instant::now();
-        let appended = self.rollout.append_batch(&events);
-        self.ledger
-            .record_fsync_latency_us(elapsed_us(fsync_started));
-        match appended {
-            Ok(sequences) if sequences.len() == events.len() => Ok(()),
-            Ok(_) => {
-                self.record_failed = true;
-                self.diagnostic_record_append_failed();
-                Err(KernelError::Record(
-                    iteron_record::RecordError::InvalidAppendBatch {
-                        reason: "run terminal batch returned an incomplete sequence receipt",
-                    },
-                ))
-            }
-            Err(error) => {
-                self.record_failed = true;
-                self.diagnostic_record_append_failed();
-                Err(KernelError::Record(error))
-            }
+        let result = self.terminal_record.append_visible_terminal(
+            &mut self.rollout,
+            &mut self.ledger,
+            turn,
+            outcome,
+        );
+        if let Err(error) = result {
+            self.record_failed = true;
+            self.diagnostic_record_append_failed();
+            return Err(KernelError::Record(error));
         }
+        Ok(())
     }
 
     /// Append and return the authoritative record sequence for cross-event correlation (workflow
