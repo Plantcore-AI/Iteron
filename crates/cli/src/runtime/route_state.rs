@@ -1,4 +1,5 @@
 use super::*;
+use iteron_protocol::advisory_maintenance::MaintenanceKindV1;
 
 const MODEL_ROUTE_FEATURE_SCHEMA: &str = "iteron:model-route-decision-features-v1";
 
@@ -27,23 +28,12 @@ impl Agent {
             selected.route.catalog_digest.clone(),
             selected.route.capability_digest.clone(),
         );
-        let path = path.to_owned();
-        let emitter = self.lifecycle_emitter.clone();
-        let correlation = self.lifecycle_correlation(Some(turn));
-        if !super::turn_maintenance::enqueue(move || {
-            if snapshot.store(&path).is_err()
-                && let Some(emitter) = emitter
-            {
-                let _ = emitter.emit(
-                    "model.route_failed",
-                    correlation,
-                    LifecyclePayload {
-                        reason_code: Some("last_success_snapshot_persist_failed".into()),
-                        ..LifecyclePayload::default()
-                    },
-                );
-            }
-        }) {
+        let queued = snapshot.maintenance_bytes().ok().is_some_and(|bytes| {
+            self.advisory_maintenance_owner().is_some_and(|owner| {
+                owner.enqueue(MaintenanceKindV1::LastSuccessfulRoute, turn.0, &bytes, path)
+            })
+        });
+        if !queued {
             self.lifecycle_event(
                 "model.route_failed",
                 Some(turn),

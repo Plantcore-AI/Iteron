@@ -217,35 +217,15 @@ impl LastSuccessRouteSnapshot {
         Ok(Some(snapshot))
     }
 
-    pub(crate) fn store(&self, path: &std::path::Path) -> Result<(), String> {
-        let parent = path
-            .parent()
-            .ok_or_else(|| "last-success route has no parent directory".to_string())?;
-        std::fs::create_dir_all(parent)
-            .map_err(|error| format!("cannot create last-success route directory: {error}"))?;
+    /// Capture a bounded immutable value; actual filesystem publication belongs to the
+    /// independently journaled advisory worker.
+    pub(crate) fn maintenance_bytes(&self) -> Result<Vec<u8>, String> {
         let bytes = serde_json::to_vec(self)
             .map_err(|error| format!("cannot encode last-success route: {error}"))?;
         if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > last_success_route_max_bytes() {
             return Err("last-success route exceeded its fixed byte ceiling".into());
         }
-        let temporary = path.with_extension(format!("tmp-{}", std::process::id()));
-        {
-            use std::io::Write as _;
-            let mut file = std::fs::OpenOptions::new()
-                .create(true)
-                .truncate(true)
-                .write(true)
-                .open(&temporary)
-                .map_err(|error| format!("cannot create last-success route: {error}"))?;
-            file.write_all(&bytes)
-                .and_then(|_| file.sync_all())
-                .map_err(|error| format!("cannot persist last-success route: {error}"))?;
-        }
-        std::fs::rename(&temporary, path)
-            .map_err(|error| format!("cannot install last-success route: {error}"))?;
-        std::fs::File::open(parent)
-            .and_then(|directory| directory.sync_all())
-            .map_err(|error| format!("cannot sync last-success route directory: {error}"))
+        Ok(bytes)
     }
 }
 

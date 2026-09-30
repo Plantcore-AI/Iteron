@@ -63,6 +63,7 @@ use tool_presentation::{
     ui_verification_rollback_arguments,
 };
 
+pub(crate) mod advisory_maintenance;
 mod agent_config;
 mod agent_loop;
 mod artifact_publication;
@@ -77,13 +78,13 @@ mod decomposition;
 mod deferred_tools;
 mod durability;
 mod failed_action_cache;
+mod maintenance_runtime;
 #[cfg(test)]
 mod route_controls_tests;
 mod stream_tools;
 #[cfg(test)]
 mod stream_tools_tests;
 pub(crate) mod turn_activity;
-mod turn_maintenance;
 pub(crate) use failed_action_cache::FailedActionPolicy;
 mod candidate_workspace;
 mod file_submission;
@@ -143,10 +144,12 @@ mod workflow_prepare;
 mod workflow_spawner;
 use iteron_ctx::{CompactionPolicy, ContextEstimate};
 // The uncached projection is now only a test oracle: the turn loop reads `Agent::context_estimator`.
+use deferred_tools::AutoApprovedCall;
 pub(crate) use deferred_tools::EffectingToolAdmissionPolicy;
 #[cfg(test)]
 use deferred_tools::declared_write_paths;
-use deferred_tools::{AutoApprovedCall, scheduling_write_paths, write_paths_conflict};
+#[cfg(test)]
+use deferred_tools::{scheduling_write_paths, write_paths_conflict};
 use diagnostics::{DiagnosticEmitter, KernelDiagnostic};
 use hooks::{HookDecision, HookEvent, Hooks};
 pub(crate) use inbound_control::TurnSubmission;
@@ -1031,6 +1034,8 @@ pub struct AdoptedRun {
 
 /// The agent: a controller wired to its five collaborators.
 pub struct Agent {
+    advisory_maintenance:
+        std::sync::Mutex<Option<std::sync::Arc<advisory_maintenance::MaintenanceOwner>>>,
     persistent_agents: Option<std::sync::Arc<dyn persistent_agents::AgentControlPort>>,
     persistent_mailbox: Option<persistent_agents::LiveAgentMailbox>,
     client_inventory: Option<std::sync::Arc<crate::client_inventory::ClientInventoryOwner>>,
@@ -5016,98 +5021,26 @@ impl Agent {
         messages: &[Message],
         excluded_indices: &std::collections::BTreeSet<usize>,
     ) -> Result<Vec<AutoApprovedCall>, KernelError> {
-        // Tool hooks are per-call boundaries, not a global serialization switch. The executor
-        // below runs every admitted call's pre-gates concurrently (under the shared hook
-        // semaphore), preserves configured decision order, then runs non-conflicting tools and
-        // post observers concurrently. Stop/session hooks remain unrelated to this decision.
-        let governing_trust = self.governing_turn_trust(messages);
-        let mut batch: Vec<AutoApprovedCall> = Vec::new();
-        let mut claimed: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-        let mut signatures: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-        for (index, call, proposal) in deferred {
-            if excluded_indices.contains(index) {
-                break;
-            }
-            // Both fan out real children and spend provider budget through their own effect
-            // classes; neither is a registry dispatch, so neither can join a registry group.
-            if call.name == iteron_tools::DISPATCH_AGENT || call.name == iteron_tools::WORKFLOW_TOOL
-            {
-                break;
-            }
-            // PlantCore's reversible gate is per external dispatch. Keep MCP calls on the ordered
-            // executor so each one acquires and retains its exact gate permit through terminal
-            // accounting; ordinary built-ins may still use the independent batch.
-            if self.plantcore_dispatch_gate().is_some()
-                && self.is_plantcore_mcp_dispatch(&call.name)
-            {
-                break;
-            }
-            // A repeat of an already-failed action is answered from the record, not re-run. That
-            // answer is cheap and ordered; keeping it in the loop keeps one path for it.
-            //
-            // The second test is the same rule applied to THIS group. `failed_actions` only learns
-            // about a failure once the group settles, so two identical calls admitted together
-            // would both reach the executor — running a side effect the ordered loop performs at
-            // most once. Ending the group at the repeat hands it back to the loop, which sees the
-            // now-recorded failure and replays it exactly as ADR-003 says.
-            let action_signature = format!("{}::{}", call.name, call.input);
-            if self.failed_actions.contains_key(&action_signature)
-                || !signatures.insert(action_signature.clone())
-            {
-                break;
-            }
-            let proposal = match proposal {
-                Ok(proposal) => proposal.clone(),
-                Err(_) => break,
-            };
-            let Some(_) = proposal.eligible.iter().next() else {
-                break;
-            };
-            let admission = self.tool_operation_admission(call, governing_trust);
-            let capability = admission.capability;
-            // A group never consumes approval authority. Every effect class must already be Auto.
-            if admission.verdict != Verdict::Auto {
-                break;
-            }
-            // Only a DECLARED path can be proven not to collide. Unknown/empty write sets therefore
-            // remain in the ordered executor; a model emitting calls together is not independent
-            // authority to widen physical side-effect concurrency.
-            let declared = match scheduling_write_paths(&call.name, &call.input) {
-                Ok(declared) => declared,
-                Err(_) => break,
-            };
-            // An undeclared shell command remains opaque, but it no longer serializes unrelated
-            // structured writes behind it. Its synthetic domain conflicts with every other bash
-            // call; explicit shell paths additionally conflict with structured path writers.
-            if self
+        deferred_tools::DeferredBatchPolicy {
+            registry: &self.registry,
+            operation: permission_policy::OperationPolicy {
+                mode: self.permission_mode,
+                rules: &self.permission_rules,
+                bypass: self.bypass_permissions,
+                task_ceiling: self.authority_ceiling,
+                policy_capabilities: self.policy_capabilities,
+                governing_trust: self.governing_turn_trust(messages),
+                authority: self.operator_authority(),
+            },
+            failed_actions: &self.failed_actions,
+            declared_set_required: self
                 .execution_policy
                 .effecting_tool_admission
-                .declared_set_required
-                && declared.is_empty()
-                && capability != Capability::ReadOnly
-            {
-                break;
-            }
-            if declared.iter().any(|path| {
-                claimed
-                    .iter()
-                    .any(|existing| write_paths_conflict(path, existing))
-            }) {
-                break;
-            }
-            claimed.extend(declared);
-            batch.push(AutoApprovedCall {
-                index: *index,
-                intent: {
-                    let admitted = proposal.eligible;
-                    proposal.admit(admitted)
-                },
-                capability,
-                call: call.clone(),
-                action_signature,
-            });
+                .declared_set_required,
+            external_dispatch_gate: self.plantcore_dispatch_gate().is_some(),
+            plantcore_gateway_enabled: self.plantcore_runtime_enabled(),
         }
-        Ok(batch)
+        .select(deferred, excluded_indices)
     }
 
     /// Assemble real independent execution observations and physical settlement owners. The
