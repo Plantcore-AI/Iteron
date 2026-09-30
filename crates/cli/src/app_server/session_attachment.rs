@@ -178,7 +178,11 @@ pub(super) fn attach_with_plantcore(
 
     // The `Agent` moves in here and never comes back. "A run is in flight" becomes the server's
     // fact to report, not a slot a client can inspect.
-    let task = tokio::spawn(AppServer::new(agent, ends, interactive_approvals).serve());
+    let session_factory = super::session_factory::SessionFactory::capture(&agent, &handle.client);
+    let task = tokio::spawn(
+        AppServer::new_with_session_factory(agent, ends, interactive_approvals, session_factory)
+            .serve(),
+    );
 
     Ok(Attached {
         handle,

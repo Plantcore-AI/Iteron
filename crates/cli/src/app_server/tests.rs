@@ -3104,3 +3104,202 @@ async fn ordinary_sdk_public_reads_actual_host_widgets_events_and_admission_scop
     drop(agent);
     let _ = std::fs::remove_dir_all(workspace);
 }
+
+/// Native configured provider construction is real; no provider call/network is used by navigation.
+pub(crate) fn navigation_agent(workspace: &std::path::Path) -> Agent {
+    use std::collections::BTreeMap;
+    let credential = workspace.join("fixture-credential");
+    std::fs::write(&credential, "test-only-navigation-token\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&credential, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let config = crate::config::ProviderConfig {
+        id: "fixture-navigation".into(),
+        display_name: Some("Navigation fixture".into()),
+        adapter: "openai_chat".into(),
+        error_profile: Some("openai".into()),
+        api_root: "http://127.0.0.1:9/v1".into(),
+        key_env: None,
+        credential: Some(crate::config::ProviderCredential::File {
+            path: credential.display().to_string(),
+        }),
+        enabled: true,
+        catalog: false,
+        models: vec!["m".into()],
+        model_capabilities: BTreeMap::new(),
+    };
+    let directory = crate::providers::ProviderDirectory::inspect_local(&[config]).unwrap();
+    let selection = crate::providers::ModelSelection {
+        provider_id: "fixture-navigation".into(),
+        model_id: "m".into(),
+    };
+    let rollout = iteron_record::Rollout::open(
+        &workspace.join(".iteron/runs"),
+        &RunId("navigation-origin".into()),
+        iteron_protocol::TenantId::default(),
+    )
+    .unwrap();
+    let mut agent = Agent::new(
+        directory.build(&selection).unwrap(),
+        iteron_tools::Registry::coding_agent(workspace).unwrap(),
+        rollout,
+        "m".into(),
+        "system".into(),
+        iteron_protocol::Budget {
+            max_turns: 4,
+            max_usd: None,
+            max_tokens: None,
+            max_wall_secs: 30,
+            max_consecutive_tool_errors: 3,
+        },
+    );
+    agent.workspace = workspace.to_path_buf();
+    pin_test_tunables(
+        &mut agent,
+        false,
+        &selection.provider_id,
+        &selection.model_id,
+    );
+    agent
+        .record_genesis_with_tunables(
+            workspace.display().to_string(),
+            1,
+            "navigation-fixture".into(),
+            None,
+        )
+        .unwrap();
+    agent
+        .install_client_inventory(
+            crate::client_inventory::ClientInventoryOwner::capture(
+                &directory,
+                &crate::plugin_runtime::RuntimePlugins::default(),
+                &selection,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    agent
+}
+
+#[tokio::test]
+async fn native_session_factory_new_resume_fork_share_public_ids_and_confirm_actual_host_selection()
+{
+    use iteron_protocol::session_navigation::SessionNavigationV1;
+    let workspace = temp_workspace("native-navigation");
+    let agent = navigation_agent(&workspace);
+    let origin = agent.rollout.run_id().clone();
+    let Attached { handle, task, .. } = attach(agent, true, false).unwrap();
+    let thread = handle.client.thread_snapshot_v1().unwrap().thread_id;
+    async fn request(
+        sender: &mpsc::Sender<ControlRequest>,
+        command: SessionNavigationV1,
+    ) -> ControlReply {
+        let (reply, received) = tokio::sync::oneshot::channel();
+        sender
+            .send(ControlRequest {
+                control: Control::SessionNavigate {
+                    command,
+                    cancel: None,
+                },
+                reply,
+            })
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(10), received)
+            .await
+            .unwrap()
+            .unwrap()
+    }
+    let ControlReply::SessionNavigated(created) = request(
+        &handle.control,
+        SessionNavigationV1::New {
+            thread_id: thread.clone(),
+            run_id: origin.clone(),
+        },
+    )
+    .await
+    else {
+        panic!("host creates actual new session")
+    };
+    let created_run = created.presentation.run_id.clone();
+    assert!(created.presentation.fresh);
+    assert_eq!(
+        handle.client.thread_snapshot_v1().unwrap().run_id,
+        created_run
+    );
+    assert_eq!(created.presentation.provider_id, "fixture-navigation");
+    let physical = iteron_record::replay(&created.adopted.rollout_path).unwrap();
+    assert!(matches!(
+        &physical[0].kind,
+        iteron_protocol::EventKind::RunStart { .. }
+    ));
+    assert!(matches!(
+        &physical[1].kind,
+        iteron_protocol::EventKind::TunablesSnapshotV2 { .. }
+    ));
+    assert_eq!(
+        iteron_record::tunables_checkpoint_from_events(&physical)
+            .unwrap()
+            .unwrap()
+            .snapshot_digest_sha256(),
+        created.presentation.checkpoint_digest_sha256
+    );
+    // A stale command cannot create a second session under the new selected scope.
+    assert!(matches!(
+        request(
+            &handle.control,
+            SessionNavigationV1::New {
+                thread_id: thread.clone(),
+                run_id: origin.clone()
+            }
+        )
+        .await,
+        ControlReply::Refused(_)
+    ));
+    let ControlReply::SessionNavigated(resumed) = request(
+        &handle.control,
+        SessionNavigationV1::Resume {
+            thread_id: thread.clone(),
+            run_id: created_run,
+            target_run_id: origin.clone(),
+        },
+    )
+    .await
+    else {
+        panic!("host resumes the original checked run")
+    };
+    assert_eq!(resumed.presentation.run_id, origin);
+    assert!(!resumed.presentation.fresh);
+    let ControlReply::SessionNavigated(forked) = request(
+        &handle.control,
+        SessionNavigationV1::Fork {
+            thread_id: thread.clone(),
+            run_id: origin.clone(),
+            through_seq: None,
+        },
+    )
+    .await
+    else {
+        panic!("host forks actual verified physical tail")
+    };
+    assert_ne!(forked.presentation.run_id, origin);
+    let fork_events = iteron_record::replay(&forked.adopted.rollout_path).unwrap();
+    assert!(
+        matches!(&fork_events[0].kind,iteron_protocol::EventKind::RunStart{parent_run:Some(parent),..} if parent==&origin.0)
+    );
+    assert_eq!(
+        handle.client.thread_snapshot_v1().unwrap().run_id,
+        forked.presentation.run_id
+    );
+    drop(created);
+    drop(resumed);
+    drop(forked);
+    drop(handle);
+    tokio::time::timeout(std::time::Duration::from_secs(10), task)
+        .await
+        .unwrap()
+        .unwrap();
+    std::fs::remove_dir_all(workspace).unwrap();
+}

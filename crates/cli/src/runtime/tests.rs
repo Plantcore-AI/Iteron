@@ -7139,6 +7139,7 @@ mod gate_integration_tests {
                     crate::app_server::AdoptRun {
                         rollout: target,
                         fresh: true,
+                        created_at: Some(1),
                         route: Box::new(crate::app_server::ModelSelection {
                             provider,
                             provider_id: "provider-a".into(),

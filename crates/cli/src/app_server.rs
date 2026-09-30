@@ -63,6 +63,7 @@ const WORKFLOW_SETTLED_CAPACITY: usize = 64;
 mod activity_control;
 mod ordinary_extensions;
 mod plugin_control;
+mod session_factory;
 mod session_host;
 pub(crate) use session_host::AppServer;
 
@@ -84,9 +85,9 @@ mod messages;
 use messages::event_heap_bytes;
 pub(crate) use messages::{
     AdoptRun, Control, ControlReply, ControlRequest, EventEnvelope, EventEnvelopeError, JobControl,
-    McpControl, McpControlReply, MemoryControl, MemoryControlReply, ModelSelection, ServerEvent,
-    SessionSnapshot, SideRequest, TerminalAuthority, TerminalSummary, WorkflowControl,
-    WorkflowControlReply,
+    McpControl, McpControlReply, MemoryControl, MemoryControlReply, ModelSelection,
+    NavigatedSession, ServerEvent, SessionSnapshot, SideRequest, TerminalAuthority,
+    TerminalSummary, WorkflowControl, WorkflowControlReply,
 };
 mod text_spill;
 mod turn_pump;
@@ -406,3 +407,6 @@ const _: () = assert!(
 #[cfg(test)]
 #[path = "app_server/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+pub(crate) use tests::navigation_agent;

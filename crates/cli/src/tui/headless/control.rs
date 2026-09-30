@@ -48,6 +48,9 @@ impl PlantcoreCommand {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum WireControl {
+    SessionNavigateV1 {
+        command: iteron_protocol::session_navigation::SessionNavigationV1,
+    },
     OrdinaryExtensionsV1 {
         command: iteron_protocol::ordinary_extension_control::OrdinaryExtensionReadV1,
     },
@@ -311,6 +314,10 @@ impl WireControl {
 
     pub(super) fn into_app_server(self) -> Control {
         match self {
+            Self::SessionNavigateV1 { command } => Control::SessionNavigate {
+                command,
+                cancel: None,
+            },
             Self::OrdinaryExtensionsV1 { command } => Control::OrdinaryExtensions(command),
             Self::PluginManagementV1 { command } => Control::PluginManagement(command),
             Self::ActivityCenterV1 { command } => Control::ActivityCenter(command),
@@ -555,6 +562,9 @@ pub(super) fn reply_value(reply: ControlReply) -> Value {
             "code": error.code,
             "message": error.message,
         }),
+        ControlReply::SessionNavigated(reply) => {
+            json!({"type":"session_navigated_v1","navigation":reply.presentation,"state":snapshot_value(&reply.snapshot)})
+        }
         ControlReply::ThreadLifecycle(value) => value,
         ControlReply::PersistentAgents(value) => value,
         ControlReply::OrdinaryExtensions(value) => value,

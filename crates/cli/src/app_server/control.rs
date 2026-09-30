@@ -458,6 +458,7 @@ async fn apply_workflow_control(
 )]
 pub(super) async fn apply_control(
     agent: &mut Agent,
+    session_factory: Option<&std::sync::Arc<super::session_factory::SessionFactory>>,
     workflows: &crate::workflow::WorkflowSupervisor,
     processes: Option<&iteron_tools::ProcessControl>,
     operator_status: &OperatorStatusSources,
@@ -475,7 +476,11 @@ pub(super) async fn apply_control(
     }
     // Adoption swaps the runtime journal. Check the public projection before that mutation so
     // the two identities cannot diverge if a live product turn still owns this thread.
-    if matches!(&request.control, Control::AdoptRun(_)) && !events.can_rebind_contract_run() {
+    if matches!(
+        &request.control,
+        Control::AdoptRun(_) | Control::SessionNavigate { .. }
+    ) && !events.can_rebind_contract_run()
+    {
         let _ = request.reply.send(ControlReply::Refused(
             "cannot adopt while the public Thread projection has an active turn".into(),
         ));
@@ -483,7 +488,10 @@ pub(super) async fn apply_control(
     }
     // A detached owner operation cannot outlive its admitted selection into a new run.
     // Hold the actual generation barrier BEFORE adoption mutates Agent or the public projection.
-    let _activity_adoption = if matches!(&request.control, Control::AdoptRun(_)) {
+    let _activity_adoption = if matches!(
+        &request.control,
+        Control::AdoptRun(_) | Control::SessionNavigate { .. }
+    ) {
         match operator_status.activity.adoption_barrier().await {
             Ok(lease) => Some(lease),
             Err(reason) => {
@@ -503,7 +511,80 @@ pub(super) async fn apply_control(
         operator_status.agents.dispatch(command, request.reply);
         return;
     }
-    let reply = match request.control {
+    let (control, navigation) = match request.control {
+        Control::SessionNavigate { command, cancel } => {
+            let Some(factory) = session_factory else {
+                let _ = request.reply.send(ControlReply::Refused(
+                    "trusted session factory unavailable".into(),
+                ));
+                return;
+            };
+            let Some(scope) = events.contract.snapshot() else {
+                let _ = request.reply.send(ControlReply::Refused(
+                    "public session scope unavailable".into(),
+                ));
+                return;
+            };
+            if scope.run_id != *agent.rollout.run_id()
+                || scope.thread_id != *command.thread_id()
+                || scope.run_id != *command.run_id()
+            {
+                let _ = request.reply.send(ControlReply::Refused(
+                    "session navigation belongs to a previous thread/run".into(),
+                ));
+                return;
+            }
+            let checkpoint = match agent.tunables_checkpoint() {
+                Ok(checkpoint) => checkpoint.clone(),
+                Err(error) => {
+                    let _ = request
+                        .reply
+                        .send(ControlReply::Refused(error.public_summary().to_owned()));
+                    return;
+                }
+            };
+            let origin = super::session_factory::PreparationOrigin {
+                thread: scope.thread_id,
+                run: scope.run_id,
+                checkpoint,
+                selection: crate::providers::ModelSelection {
+                    provider_id: iteron_provider::Provider::provider_instance_id(
+                        agent.provider.as_ref(),
+                    )
+                    .unwrap_or_default()
+                    .to_owned(),
+                    model_id: agent.model.clone(),
+                },
+            };
+            let prepared = match factory.prepare(origin, command, cancel.clone()).await {
+                Ok(prepared) => prepared,
+                Err(reason) => {
+                    let _ = request.reply.send(ControlReply::Refused(reason));
+                    return;
+                }
+            };
+            if cancel
+                .as_ref()
+                .is_some_and(|signal| signal.load(std::sync::atomic::Ordering::Acquire))
+            {
+                let _ = request.reply.send(ControlReply::Refused(format!(
+                    "session navigation cancelled before adoption; retained run {}",
+                    prepared.run_id().0
+                )));
+                return;
+            }
+            let (native, presentation, admission) = prepared.into_parts();
+            (
+                Control::AdoptRun(Box::new(native)),
+                Some((presentation, admission)),
+            )
+        }
+        other => (other, None),
+    };
+    let reply = match control {
+        Control::SessionNavigate { .. } => {
+            unreachable!("session navigation is normalized by the trusted host factory")
+        }
         Control::OrdinaryExtensions(command) => {
             operator_status.ordinary_extensions.dispatch(
                 &operator_status.activity,
@@ -642,12 +723,15 @@ pub(super) async fn apply_control(
                 rollout,
                 route,
                 fresh,
+                created_at,
             } = *request;
             let adoption = if fresh {
-                let created_at = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|duration| duration.as_secs())
-                    .unwrap_or(0);
+                let Some(created_at) = created_at else {
+                    let _ = request.reply.send(ControlReply::Refused(
+                        "new session has no host clock receipt".into(),
+                    ));
+                    return;
+                };
                 agent.adopt_fresh_run(
                     rollout,
                     agent.workspace.display().to_string(),
@@ -757,6 +841,51 @@ pub(super) async fn apply_control(
         }
     };
     // A frontend that dropped the receiver has moved on; that is not the server's problem.
+    let reply = if let Some((presentation, _admission)) = navigation {
+        match reply {
+            ControlReply::Adopted {
+                adopted,
+                snapshot,
+                tunables_checkpoint,
+                compaction_trigger_tokens,
+                blocked,
+            } => {
+                let public = iteron_protocol::session_navigation::SessionNavigationReplyV1 {
+                    version: 1,
+                    thread_id: presentation.origin_thread,
+                    origin_run_id: presentation.origin_run,
+                    run_id: iteron_protocol::RunId(adopted.run_id.clone()),
+                    fresh: !*started,
+                    provider_id: snapshot.provider_id.clone(),
+                    model_id: snapshot.model.clone(),
+                    effort: snapshot.effort,
+                    context_window_tokens: agent.model_context_window,
+                    messages: adopted.messages,
+                    turns: adopted.turns,
+                    checkpoint_digest_sha256: tunables_checkpoint
+                        .snapshot_digest_sha256()
+                        .to_owned(),
+                    blocked,
+                    substituted_route: presentation.substituted,
+                    transcript: presentation.projection,
+                };
+                ControlReply::SessionNavigated(Box::new(NavigatedSession {
+                    presentation: public,
+                    adopted: *adopted,
+                    snapshot: *snapshot,
+                    tunables_checkpoint: *tunables_checkpoint,
+                    compaction_trigger_tokens,
+                }))
+            }
+            ControlReply::Refused(reason) => ControlReply::Refused(format!(
+                "{reason}; target run {} is retained and was not reported as selected",
+                presentation.retained_run.0
+            )),
+            other => other,
+        }
+    } else {
+        reply
+    };
     let _ = request.reply.send(reply);
 }
 

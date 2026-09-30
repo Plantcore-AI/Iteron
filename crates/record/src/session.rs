@@ -2717,8 +2717,30 @@ pub fn fork_with_resolved_tunables(
     ))
 }
 
+/// Version-neutral checked fork against the immutable current host checkpoint. Compatibility
+/// is established before creating the child; no resolver or ambient configuration is consulted.
+pub fn fork_with_checkpoint(
+    runs_dir: &Path,
+    parent: &RunId,
+    at: Seq,
+    tenant: &TenantId,
+    checkpoint: &tunables::TunablesCheckpoint,
+    legacy: tunables::LegacyTunablesPolicy,
+) -> Result<(RunId, tunables::TunablesCompatibility), RecordError> {
+    let expected = ForkTunablesExpectation::Checkpoint(checkpoint, legacy);
+    let (child, compatibility) = fork_internal(runs_dir, parent, at, tenant, Some(expected))?;
+    Ok((
+        child,
+        compatibility.expect("checked fork computes compatibility"),
+    ))
+}
+
 #[derive(Clone, Copy)]
 enum ForkTunablesExpectation<'a> {
+    Checkpoint(
+        &'a tunables::TunablesCheckpoint,
+        tunables::LegacyTunablesPolicy,
+    ),
     V1(
         &'a iteron_protocol::RunGenesisTunablesSnapshot,
         tunables::LegacyTunablesPolicy,
@@ -2750,6 +2772,9 @@ fn fork_internal(
     let compatibility = if let Some(expected) = expected {
         let recorded = checked_genesis_tunables(&parent_lines)?;
         Some(match expected {
+            ForkTunablesExpectation::Checkpoint(checkpoint, legacy) => {
+                tunables::check_checkpoint_compatibility(recorded.as_ref(), checkpoint, legacy)?
+            }
             ForkTunablesExpectation::V1(expected, legacy) => {
                 let expected = tunables::TunablesCheckpoint::V1(expected.clone());
                 tunables::check_checkpoint_compatibility(recorded.as_ref(), &expected, legacy)?

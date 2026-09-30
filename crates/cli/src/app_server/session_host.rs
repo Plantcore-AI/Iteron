@@ -18,6 +18,7 @@ use super::{
 /// Owns the actual resident Agent and its bounded admission/presentation ports.
 pub(crate) struct AppServer {
     pub(super) agent: Agent,
+    pub(super) session_factory: Option<std::sync::Arc<super::session_factory::SessionFactory>>,
     pub(super) submissions: mpsc::Receiver<QueuedSubmission>,
     pub(super) priority_submissions: mpsc::Receiver<QueuedSubmission>,
     pub(super) control: mpsc::Receiver<ControlRequest>,
@@ -43,7 +44,12 @@ impl AppServer {
     /// the queue outlives every turn. That is what removes `take_unadmitted_steers`: the reconcile
     /// path existed only because the receiver used to travel with the `Agent` in and out of a task
     /// the frontend owned.
-    pub(crate) fn new(mut agent: Agent, ends: ServerEnds, interactive_approvals: bool) -> Self {
+    pub(super) fn new_with_session_factory(
+        mut agent: Agent,
+        ends: ServerEnds,
+        interactive_approvals: bool,
+        session_factory: Option<std::sync::Arc<super::session_factory::SessionFactory>>,
+    ) -> Self {
         let mut ends = ends;
         if interactive_approvals && let Some(runtime) = agent.mcp_runtime_control() {
             let _ = runtime.install_mrtr_handler(ends.mcp_input.handler.clone());
@@ -71,6 +77,7 @@ impl AppServer {
         } = session_hooks::SessionHooks::install(&mut agent, &mut ends);
         Self {
             agent,
+            session_factory,
             submissions: ends.submissions,
             priority_submissions: ends.priority_submissions,
             control: ends.control,
@@ -116,6 +123,7 @@ impl AppServer {
     pub(crate) async fn serve(self) -> crate::workflow::ShutdownReport {
         let Self {
             mut agent,
+            session_factory,
             mut submissions,
             mut priority_submissions,
             mut control,
@@ -265,6 +273,7 @@ impl AppServer {
                             Some(request) => {
                                 apply_control(
                                     &mut agent,
+                                    session_factory.as_ref(),
                                     &workflows,
                                     processes.as_ref(),
                                     &operator_status,
@@ -724,6 +733,7 @@ impl AppServer {
             for request in deferred {
                 apply_control(
                     &mut agent,
+                    session_factory.as_ref(),
                     &workflows,
                     processes.as_ref(),
                     &operator_status,

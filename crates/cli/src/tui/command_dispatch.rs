@@ -760,38 +760,7 @@ pub(super) fn handle_registered_command(
         }
         SlashCommand::Finalization => super::turn_publication::render(app, session),
         SlashCommand::Jobs => jobs::queue(app, session, transcript_effects, interrupt, arg),
-        SlashCommand::Fork => {
-            // Fork the CURRENT session at its tail into a new branch (shared past, divergent future).
-            let path = session.rollout_path().to_path_buf();
-            let runs = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
-            let stem = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("")
-                .to_string();
-            match iteron_record::replay(&path) {
-                Ok(events) if !events.is_empty() => {
-                    let at = events.last().map(|e| e.seq).unwrap();
-                    match iteron_record::fork(
-                        &runs,
-                        &iteron_protocol::RunId(stem),
-                        at,
-                        &iteron_protocol::TenantId::default(),
-                    ) {
-                        Ok(child) => {
-                            app.note(
-                                block::NoticeLevel::Ok,
-                                format!("forked {child} · adopting the divergent branch"),
-                            );
-                            start_adopt_session(app, session, directory, child.0);
-                        }
-                        Err(e) => app.push(fg(Color::Red), format!("fork failed: {e}")),
-                    }
-                }
-                Ok(_) => app.push(fg(Color::Red), "nothing to fork yet"),
-                Err(e) => app.push(fg(Color::Red), format!("cannot read this session: {e}")),
-            }
-        }
+        SlashCommand::Fork => super::session_adoption::start_fork_session(app, session),
         SlashCommand::Agents => {
             if arg.trim().is_empty() || arg.trim() == "definitions" {
                 show_agent_catalog(app, session);

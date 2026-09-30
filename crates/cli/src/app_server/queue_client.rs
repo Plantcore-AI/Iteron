@@ -364,6 +364,24 @@ impl AppServerClient {
         self.contract.artifacts_v1(command)
     }
 
+    /// Trusted attach-time host capability over the existing physical SQ permits.
+    pub(super) fn session_submission_exclusion(
+        &self,
+    ) -> Option<super::session_factory::SubmissionExclusion> {
+        match &self.submissions {
+            SubmissionSender::Weighted {
+                data_slots,
+                priority_slots,
+                ..
+            } => super::session_factory::SubmissionExclusion::capture(
+                data_slots.clone(),
+                priority_slots.clone(),
+            ),
+            #[cfg(test)]
+            SubmissionSender::Bare(_) => None,
+        }
+    }
+
     /// The protocol version agreed during the handshake and stamped on every submission.
     #[cfg(test)]
     pub(crate) fn negotiated_version(&self) -> u32 {

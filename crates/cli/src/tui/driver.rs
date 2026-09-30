@@ -2,16 +2,16 @@
 
 use super::{
     App, Arc, CEvent, CatchUp, Duration, FIRST_TOKEN_SPINNER_TICK, FRAME_COALESCE,
-    InputThreadControl, Instant, PreparedAdoption, PromptHistoryMode, ProviderDirectory, RouteView,
-    SPINNER_TICK, Session, TERMINAL_READ_SLICE, TermGuard, Terminal, TerminalOptions, VecDeque,
-    Viewport, app_server, apply_server_event, apply_transcript_effect_event, block,
-    cached_workspace_dirty, dispatch_slash_command, draw, finish_attachment_effect, hyperlink,
-    input_dispatch, keymap, local_job_wake, next_wake, notification, product_projection,
-    project_recorded_transcript, prompt_history, report_stopped_workflows, restore_terminal,
-    schedule_transcript_viewer_effect, service_input_control, session_display_name,
-    slash_command_body, startup, submit_queued_model_input, submit_turn, terminal_input, theme,
-    transcript_effect, update_keymap_status, wait_for_forced_server_shutdown,
-    wait_for_server_shutdown, wake_until, workflow_region, workspace_command,
+    InputThreadControl, Instant, PromptHistoryMode, ProviderDirectory, RouteView, SPINNER_TICK,
+    Session, TERMINAL_READ_SLICE, TermGuard, Terminal, TerminalOptions, VecDeque, Viewport,
+    app_server, apply_server_event, apply_transcript_effect_event, block, cached_workspace_dirty,
+    dispatch_slash_command, draw, finish_attachment_effect, hyperlink, input_dispatch, keymap,
+    local_job_wake, next_wake, notification, product_projection, project_recorded_transcript,
+    prompt_history, report_stopped_workflows, restore_terminal, schedule_transcript_viewer_effect,
+    service_input_control, session_display_name, slash_command_body, startup,
+    submit_queued_model_input, submit_turn, terminal_input, theme, transcript_effect,
+    update_keymap_status, wait_for_forced_server_shutdown, wait_for_server_shutdown, wake_until,
+    workflow_region, workspace_command,
 };
 
 pub(crate) struct RunConfig {
@@ -470,47 +470,13 @@ pub async fn run(
             }
             redraw = true;
         }
-        if let Some(update) = app.navigation.poll_adoption(navigation_scope.as_ref()).await {
+        if let Some(update)=app.navigation.poll_adoption(navigation_scope.as_ref()).await {
             match update {
-                super::session_navigation::AdoptionUpdate::Ready(prepared) => {
-                    let PreparedAdoption {
-                        fresh,
-                        control,
-                        run_id,
-                        events,
-                        selection,
-                        substituted,
-                        context_window_tokens,
-                    } = prepared;
-                    let request = transcript_effect::Request::Control {
-                        sender: session.control_sender(),
-                        control,
-                        interrupt: interrupt.clone(),
-                        kind: transcript_effect::ControlKind::Adopt {
-                            fresh,
-                            run_id,
-                            events,
-                            selection,
-                            substituted,
-                            context_window_tokens,
-                        },
-                    };
-                    if transcript_effects.start(request).is_err() {
-                        app.note(
-                            block::NoticeLevel::Warn,
-                            "session adoption not started: another local effect is pending",
-                        );
-                        app.status = "idle · session not resumed".into();
-                    }
-                }
-                super::session_navigation::AdoptionUpdate::Failed {message, handoff_run} => {
-                    app.note(block::NoticeLevel::Err, message);
-                    if let Some(run_id) = handoff_run {app.prepare_resume_handoff(&run_id);}
-                    app.status = "idle · session not resumed".into();
-                }
-                super::session_navigation::AdoptionUpdate::Cancelled => {app.status = "idle · session loading cancelled".into();}
+                super::session_navigation::AdoptionUpdate::Ready(reply)=>super::session_adoption::apply_navigated_session(&mut app,&mut session,&providers,*reply),
+                super::session_navigation::AdoptionUpdate::Failed(message)=>{app.note(block::NoticeLevel::Err,message);app.status="idle · session navigation did not complete".into();}
+                super::session_navigation::AdoptionUpdate::Cancelled=>{app.status="idle · session navigation cancelled".into();}
             }
-            redraw = true;
+            redraw=true;
         }
         redraw |= app.completions.poll_ready(&app.editor).await;
         if app

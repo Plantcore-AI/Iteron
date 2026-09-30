@@ -24,6 +24,11 @@ pub(crate) struct ClientInventoryOwner {
 }
 
 impl ClientInventoryOwner {
+    /// Trusted host composition only: the captured immutable directory, never a client path/config.
+    pub(crate) fn session_directory(&self) -> ProviderDirectory {
+        self.directory.clone()
+    }
+
     /// Only the trusted bootstrap supplies these real captured owners. No config or package file
     /// is reopened, no network discovery runs, and no provider is built until a route is selected.
     pub(crate) fn capture(

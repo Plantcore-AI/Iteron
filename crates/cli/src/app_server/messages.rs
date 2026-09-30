@@ -349,6 +349,11 @@ pub(super) fn event_heap_bytes(event: &ServerEvent) -> usize {
 /// **Folding these into the SQ is a WS1 protocol change, not a WS6 one.** When `Op` grows the
 /// variants, each arm here becomes a `route()` case and this enum shrinks to nothing.
 pub(crate) enum Control {
+    SessionNavigate {
+        command: iteron_protocol::session_navigation::SessionNavigationV1,
+        /// Host-minted local observer cancellation. The public wire can never supply a signal.
+        cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    },
     OrdinaryExtensions(iteron_protocol::ordinary_extension_control::OrdinaryExtensionReadV1),
     PluginManagement(iteron_protocol::plugin_control::PluginControlV1),
     ActivityCenter(iteron_protocol::activity_control::ActivityControlV1),
@@ -479,6 +484,7 @@ pub(crate) struct AdoptRun {
     /// client could resolve a provider for it, otherwise the route this process is already using.
     /// Recorded into the adopted journal, so what the session runs on is what its record says.
     pub(crate) route: Box<ModelSelection>,
+    pub(crate) created_at: Option<u64>,
 }
 
 /// What the operator wants of the side conversation.
@@ -512,6 +518,7 @@ pub(crate) struct ModelSelection {
 /// What a control request answers with.
 #[derive(Debug)]
 pub(crate) enum ControlReply {
+    SessionNavigated(Box<NavigatedSession>),
     OrdinaryExtensions(serde_json::Value),
     PluginManagement(serde_json::Value),
     ActivityCenter(serde_json::Value),
@@ -641,4 +648,15 @@ impl EventEnvelope {
         }
         Ok(self.event)
     }
+}
+
+/// Actual adopted state and bounded public presentation. Native leases and provider constructors
+/// are retained by the host and cannot be supplied or recovered through this reply.
+#[derive(Debug)]
+pub(crate) struct NavigatedSession {
+    pub(crate) presentation: iteron_protocol::session_navigation::SessionNavigationReplyV1,
+    pub(crate) adopted: crate::runtime::AdoptedRun,
+    pub(crate) snapshot: SessionSnapshot,
+    pub(crate) tunables_checkpoint: iteron_record::TunablesCheckpoint,
+    pub(crate) compaction_trigger_tokens: usize,
 }

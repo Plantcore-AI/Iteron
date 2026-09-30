@@ -186,7 +186,7 @@ use ratatui::widgets::{
 };
 use ratatui::{Frame, Terminal, TerminalOptions, Viewport};
 use session_adoption::{
-    MAX_ADOPTED_BLOCKS, PreparedAdoption, PreparedAdoptionResult, adopted_transcript_blocks,
+    MAX_ADOPTED_BLOCKS, adopted_transcript_blocks,
     format_resume_command, project_recorded_transcript, recorded_route, start_adopt_session,
     start_fresh_session,
 };

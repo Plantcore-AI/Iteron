@@ -159,14 +159,6 @@ pub(crate) enum ControlKind {
         context_window_tokens: Option<u64>,
         changed: bool,
     },
-    Adopt {
-        fresh: bool,
-        run_id: String,
-        events: Vec<iteron_protocol::Event>,
-        selection: crate::providers::ModelSelection,
-        substituted: Option<String>,
-        context_window_tokens: Option<u64>,
-    },
     OperatorStatus {
         tunables_argument: Option<String>,
     },
@@ -202,7 +194,6 @@ impl ControlKind {
             Self::PermissionMode(_) => "permission mode change",
             Self::Capability { .. } => "permission rule change",
             Self::Model { .. } => "model change",
-            Self::Adopt { .. } => "session adoption",
             Self::OperatorStatus { .. } => "runtime status",
             Self::TurnBudget { .. } => "turn budget",
             Self::Memory => "memory control",
