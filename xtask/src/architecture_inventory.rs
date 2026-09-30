@@ -380,6 +380,24 @@ const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
+        path: "crates/cli/src/runtime/provider_route_admission.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "actual same-governor permit queue, cancellation and physical quota/circuit observation",
+        ],
+        next_seams: &[
+            "single ProviderGovernor Arc state; real leases/queue activity, no second snapshot or provider execution",
+        ],
+    },
+    Surface {
+        path: "crates/cli/src/runtime/provider_route_journal.rs",
+        boundary: "cli-host",
+        responsibilities: &["closed quota/circuit Notice durable projection adapter"],
+        next_seams: &[
+            "same Rollout/measurement/record fault ports; no model selection, intent or terminal authority",
+        ],
+    },
+    Surface {
         path: "crates/cli/src/runtime/provider_route_turn.rs",
         boundary: "cli-host",
         responsibilities: &[
