@@ -6,6 +6,8 @@ license.workspace = true
 publish.workspace = true
 
 [features]
+default = []
+script-workflows = []
 test-helper = []
 
 [dependencies]

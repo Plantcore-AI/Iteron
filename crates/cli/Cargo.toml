@@ -8,6 +8,7 @@ publish.workspace = true
 [features]
 default = []
 ticket-investigation = []
+script-workflows = ["iteron-workflow/script-workflows", "iteron-tools/script-workflows"]
 
 [[bin]]
 name = "iteron"

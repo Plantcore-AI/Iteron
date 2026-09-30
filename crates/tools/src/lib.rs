@@ -42,6 +42,7 @@ mod tool_policy;
 mod tool_purpose;
 mod tool_search;
 mod web;
+#[cfg(feature = "script-workflows")]
 mod workflow_tool;
 mod workspace_boundary;
 mod write_file;
@@ -525,6 +526,7 @@ impl Registry {
         register_dispatch_agent(&mut r)?;
         // The Workflow launch tool is a WRITER-only surface: it fans out real sub-agents, so it is
         // registered here and deliberately absent from `read_only` (design §4.1).
+        #[cfg(feature = "script-workflows")]
         workflow_tool::register(&mut r)?;
         r.deferred_tool_catalog = Some(tool_search::register(&mut r)?);
         Ok(r)
@@ -1580,7 +1582,7 @@ pub const DISPATCH_AGENT: &str = "dispatch_agent";
 /// The name the kernel intercepts to launch a model-directed workflow (parallels
 /// [`DISPATCH_AGENT`]). Registered only in the writer registry; the kernel handles it by name so
 /// the registered executor's fallback message is only reached by a non-kernel caller.
-pub use workflow_tool::WORKFLOW_TOOL;
+pub const WORKFLOW_TOOL: &str = "Workflow";
 
 fn register_dispatch_agent(r: &mut Registry) -> Result<(), ToolError> {
     r.push_tool(

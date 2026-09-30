@@ -47,7 +47,9 @@ pub(crate) const MAX_DECLARED_CONTEXT_WINDOW: u64 = 1_000_000_000;
 pub(crate) use provider_governor::{
     ProviderGovernorConfig, ResolvedProviderGovernorConfig, builtin_failover_rules,
 };
-pub(crate) use retry::{RetryConfig, load_retry_environment, resolve_retry_policy};
+pub(crate) use retry::{
+    RetryConfig, RetryResolution, load_retry_environment, resolve_retry_policy,
+};
 pub(crate) use schema::{FILE_CONFIG_SCHEMA_VERSION, FileConfigSchemaError};
 pub(crate) use verification::VerificationConfig;
 

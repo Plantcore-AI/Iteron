@@ -73,6 +73,9 @@ pub fn is_trust_path(path: &str) -> bool {
         matches!(
             part,
             ".git"
+                | ".gitattributes"
+                | ".gitmodules"
+                | ".gitconfig"
                 | ".github"
                 | ".iteron"
                 | ".claude"
