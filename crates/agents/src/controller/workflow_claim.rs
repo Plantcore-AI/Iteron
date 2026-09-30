@@ -84,6 +84,14 @@ impl<J: AgentControllerJournal> AgentController<J> {
         if let Some(lease) = self.existing_workflow_lease(&claim)? {
             return Ok(lease);
         }
+        if self.provider_budget_recovery_required() {
+            return Err(ControllerError::RecoveryRequired);
+        }
+        if claim.assigned_agent == self.root_id() {
+            return Err(ControllerError::Invalid(
+                "workflow nodes need an admitted child agent",
+            ));
+        }
         if now_unix_ms == 0 || claim.deadline_unix_ms <= now_unix_ms {
             return Err(ControllerError::Budget);
         }
@@ -259,6 +267,18 @@ impl<J: AgentControllerJournal> AgentController<J> {
         Ok(record.runtime_started_at_unix_ms)
     }
 }
+pub(super) fn provider_task_budget(
+    snapshot: &AgentControllerSnapshot,
+    id: AgentIdV1,
+    epoch: AgentEpochV1,
+) -> Option<AgentBudgetV1> {
+    snapshot
+        .workflow_claims
+        .values()
+        .find(|receipt| receipt.claim.assigned_agent == id && receipt.epoch == epoch)
+        .map(|receipt| receipt.claim.budget)
+}
+
 pub(super) fn settlement_fits(
     snapshot: &AgentControllerSnapshot,
     id: AgentIdV1,
@@ -309,6 +329,7 @@ pub(super) fn recover_completion(
     epoch: AgentEpochV1,
     additional: AgentUsageV1,
 ) -> Result<(), ControllerError> {
+    let physical = super::provider_budget::epoch_usage(snapshot, id, epoch)?;
     for receipt in snapshot
         .workflow_claims
         .values_mut()
@@ -340,6 +361,11 @@ pub(super) fn recover_completion(
             .cost_microusd
             .checked_add(additional.cost_microusd)
             .ok_or(ControllerError::Budget)?;
+        if let Some(usage) = physical {
+            completion.usage.turns = usage.turns;
+            completion.usage.tokens = usage.tokens;
+            completion.usage.cost_microusd = usage.cost_microusd;
+        }
         completion.usage.wall_ms = completion
             .usage
             .wall_ms

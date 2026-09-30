@@ -17,8 +17,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::{Semaphore, watch};
 
+#[path = "persistent_agents/provider_budget.rs"]
+mod provider_budget;
 #[path = "persistent_agents/workflow.rs"]
 mod workflow;
+pub(crate) use provider_budget::{RuntimeProviderBudgetAdmission, RuntimeProviderBudgetPort};
 
 const MAX_PARALLEL_AGENTS: usize = 64;
 const MAX_WAIT_MS: u64 = 60_000;
@@ -28,6 +31,9 @@ const MAX_INPUT_BATCH: usize = 128;
 /// decoded from command JSON. Queries are current observations and must not be memoized.
 #[async_trait]
 pub(crate) trait AgentControlPort: Send + Sync {
+    fn provider_budget_port(&self) -> Result<Arc<dyn RuntimeProviderBudgetPort>, ControllerError> {
+        Err(ControllerError::Permission)
+    }
     fn workspace_witness(
         &self,
     ) -> Result<Option<iteron_agents::AgentWorkspaceWitness>, ControllerError>;
@@ -112,6 +118,11 @@ pub(crate) trait PersistentAgentRuntime: Send + Sync {
 }
 
 trait MailboxPort: Send + Sync {
+    fn provider_budget_port(
+        &self,
+        id: AgentIdV1,
+        epoch: AgentEpochV1,
+    ) -> Result<Arc<dyn RuntimeProviderBudgetPort>, ControllerError>;
     fn message(&self, id: AgentMessageIdV1) -> Result<AgentMailboxMessage, ControllerError>;
     fn deliver(
         &self,
@@ -139,6 +150,11 @@ pub(crate) struct LiveAgentMailbox {
 }
 
 impl LiveAgentMailbox {
+    pub(super) fn provider_budget_port(
+        &self,
+    ) -> Result<Arc<dyn RuntimeProviderBudgetPort>, ControllerError> {
+        self.port.provider_budget_port(self.id, self.epoch)
+    }
     pub fn stop_requested(&self) -> bool {
         !matches!(self.port.state(self.id), Ok(AgentStateV1::Running { epoch }) if epoch == self.epoch)
     }
@@ -567,6 +583,19 @@ impl<J: AgentControllerJournal + Send + 'static> PersistentAgentHost<J> {
 
 #[async_trait]
 impl<J: AgentControllerJournal + Send + 'static> AgentControlPort for PersistentAgentHost<J> {
+    fn provider_budget_port(&self) -> Result<Arc<dyn RuntimeProviderBudgetPort>, ControllerError> {
+        let id = self
+            .shared
+            .controller
+            .lock()
+            .map_err(|_| ControllerError::Poisoned)?
+            .root_id();
+        Ok(Arc::new(provider_budget::ProviderPort::new(
+            self.clone(),
+            id,
+            None,
+        )))
+    }
     fn workspace_witness(
         &self,
     ) -> Result<Option<iteron_agents::AgentWorkspaceWitness>, ControllerError> {
@@ -598,13 +627,17 @@ impl<J: AgentControllerJournal + Send + 'static> AgentControlPort for Persistent
             .map_err(|_| ControllerError::Poisoned)?;
         let root = controller.inspect(AgentActor::Operator, controller.root_id())?;
         let views = controller.list(AgentActor::Operator)?;
-        if views
-            .iter()
-            .any(|view| matches!(view.state, AgentStateV1::RecoveryRequired { .. }))
+        if controller.provider_budget_recovery_required()
+            || views
+                .iter()
+                .any(|view| matches!(view.state, AgentStateV1::RecoveryRequired { .. }))
         {
             return Err(ControllerError::RecoveryRequired);
         }
         let mut used = AgentUsageV1::default();
+        let pending = controller.pending_provider_usage()?;
+        used.tokens = pending.tokens;
+        used.cost_microusd = pending.cost_microusd;
         for view in views {
             used.turns = used
                 .turns
@@ -756,6 +789,25 @@ impl<J: AgentControllerJournal + Send + 'static> AgentControlPort for Persistent
 }
 
 impl<J: AgentControllerJournal + Send + 'static> MailboxPort for PersistentAgentHost<J> {
+    fn provider_budget_port(
+        &self,
+        id: AgentIdV1,
+        epoch: AgentEpochV1,
+    ) -> Result<Arc<dyn RuntimeProviderBudgetPort>, ControllerError> {
+        let controller = self
+            .shared
+            .controller
+            .lock()
+            .map_err(|_| ControllerError::Poisoned)?;
+        if controller.inspect(AgentActor::Operator, id)?.state.epoch() != Some(epoch) {
+            return Err(ControllerError::StaleEpoch);
+        }
+        Ok(Arc::new(provider_budget::ProviderPort::new(
+            self.clone(),
+            id,
+            Some(epoch),
+        )))
+    }
     fn message(&self, id: AgentMessageIdV1) -> Result<AgentMailboxMessage, ControllerError> {
         AgentControlPort::message(self, AgentActor::Operator, id)
     }

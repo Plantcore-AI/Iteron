@@ -16,9 +16,13 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
+mod provider_budget;
 mod snapshot_validation;
 mod workflow_claim;
 mod workspace_witness;
+pub use provider_budget::{
+    AgentProviderBudgetBaseline, AgentProviderBudgetRequest, AgentProviderBudgetTerminal,
+};
 use snapshot_validation::validate_snapshot;
 pub use workflow_claim::{
     AgentWorkflowClaim, AgentWorkflowCompletion, AgentWorkflowLease, AgentWorkflowTerminal,
@@ -110,6 +114,8 @@ pub struct AgentControllerSnapshot {
     workflow_claims: BTreeMap<String, workflow_claim::WorkflowReceipt>,
     #[serde(default)]
     workspace_witness: Option<AgentWorkspaceWitness>,
+    #[serde(default)]
+    provider_budget: provider_budget::ProviderBudgetState,
 }
 
 impl AgentControllerSnapshot {
@@ -174,6 +180,7 @@ impl<J: AgentControllerJournal> AgentController<J> {
                     receipts: BTreeMap::new(),
                     workflow_claims: BTreeMap::new(),
                     workspace_witness: None,
+                    provider_budget: provider_budget::ProviderBudgetState::default(),
                 };
                 journal
                     .commit(None, &snapshot)
@@ -184,7 +191,7 @@ impl<J: AgentControllerJournal> AgentController<J> {
         // Durable running ownership is preserved and quarantined before the host receives any
         // live capability. Delivered input is not downgraded to Accepted or silently replayed.
         let expected = snapshot.revision;
-        let mut changed = false;
+        let mut changed = provider_budget::reopen(&mut snapshot.provider_budget);
         for agent in snapshot.agents.values_mut() {
             if let Some(epoch) = agent.view.state.epoch()
                 && !matches!(agent.view.state, AgentStateV1::RecoveryRequired { .. })
@@ -310,6 +317,9 @@ impl<J: AgentControllerJournal> AgentController<J> {
                 budget,
                 write_paths,
             } => {
+                if self.provider_budget_recovery_required() {
+                    return Err(ControllerError::RecoveryRequired);
+                }
                 if actor != AgentActor::Operator && actor != AgentActor::Agent(parent_id) {
                     return Err(ControllerError::Permission);
                 }
@@ -402,6 +412,11 @@ impl<J: AgentControllerJournal> AgentController<J> {
                 (agent_id, Some(message))
             }
             AgentCommandV1::FollowupTask { agent_id, text } => {
+                if agent_id == self.root_id() {
+                    return Err(ControllerError::Invalid(
+                        "parent runtime tasks use its authenticated thread input port",
+                    ));
+                }
                 self.check_control(actor, agent_id)?;
                 self.check_open(agent_id)?;
                 let message = enqueue(
@@ -533,6 +548,14 @@ impl<J: AgentControllerJournal> AgentController<J> {
         started_at_unix_ms: Option<u64>,
     ) -> Result<Option<AgentEpochV1>, ControllerError> {
         self.check_live()?;
+        if self.provider_budget_recovery_required() {
+            return Err(ControllerError::RecoveryRequired);
+        }
+        if id == self.root_id() {
+            return Err(ControllerError::Invalid(
+                "parent runtime is not a retained child runner",
+            ));
+        }
         self.check_open(id)?;
         let record = self
             .snapshot
@@ -700,6 +723,9 @@ impl<J: AgentControllerJournal> AgentController<J> {
         {
             return Err(ControllerError::StaleEpoch);
         }
+        let (usage, physical, receipts_known) =
+            provider_budget::settlement_usage(&self.snapshot, id, epoch, usage)?;
+        let effects_known = effects_known && receipts_known;
         let workflow_budget_fits =
             workflow_claim::settlement_fits(&self.snapshot, id, epoch, usage);
         let mut next = self.snapshot.clone();
@@ -707,18 +733,20 @@ impl<J: AgentControllerJournal> AgentController<J> {
             .agents
             .get_mut(&id)
             .ok_or(ControllerError::UnknownAgent)?;
-        record.turns_used = record
-            .turns_used
-            .checked_add(usage.turns.saturating_sub(1))
-            .ok_or(ControllerError::Budget)?;
-        record.tokens_used = record
-            .tokens_used
-            .checked_add(usage.tokens)
-            .ok_or(ControllerError::Budget)?;
-        record.cost_used = record
-            .cost_used
-            .checked_add(usage.cost_microusd)
-            .ok_or(ControllerError::Budget)?;
+        if !physical {
+            record.turns_used = record
+                .turns_used
+                .checked_add(usage.turns.saturating_sub(1))
+                .ok_or(ControllerError::Budget)?;
+            record.tokens_used = record
+                .tokens_used
+                .checked_add(usage.tokens)
+                .ok_or(ControllerError::Budget)?;
+            record.cost_used = record
+                .cost_used
+                .checked_add(usage.cost_microusd)
+                .ok_or(ControllerError::Budget)?;
+        }
         record.wall_used_ms = record
             .wall_used_ms
             .checked_add(usage.wall_ms)
@@ -809,6 +837,7 @@ impl<J: AgentControllerJournal> AgentController<J> {
         if current.view.state != (AgentStateV1::RecoveryRequired { epoch }) {
             return Err(ControllerError::StaleEpoch);
         }
+        provider_budget::validate_recovery(&self.snapshot, id, epoch, recovered_usage)?;
         if current.runtime_started_at_unix_ms.is_some() && recovered_usage.wall_ms == 0 {
             return Err(ControllerError::Invalid(
                 "recovery needs measured incremental elapsed usage",

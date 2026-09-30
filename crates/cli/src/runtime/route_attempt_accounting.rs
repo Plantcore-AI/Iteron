@@ -235,7 +235,9 @@ impl Agent {
             version: ProviderRouteAttemptAccountingVersion::V1,
             route_id: route_accounting_id(route_id),
             physical_attempt,
-            max_cost_reservation_microusd: self.active_provider_cost_reservation(),
+            max_cost_reservation_microusd: self
+                .persistent_provider_cost_reservation(turn, route_id, physical_attempt)?
+                .or_else(|| self.active_provider_cost_reservation()),
             usage,
             cost,
         };
@@ -444,13 +446,13 @@ impl Agent {
 }
 
 #[derive(Debug)]
-enum RouteChargeTruth {
+pub(super) enum RouteChargeTruth {
     Known(VerifiedProviderRouteCharge),
     Unknown,
     NotDispatched,
 }
 
-fn verified_charge(
+pub(super) fn verified_charge(
     accounting: &ProviderRouteAttemptAccounting,
     tenant: &iteron_protocol::TenantId,
     run_id: &iteron_protocol::RunId,

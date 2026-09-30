@@ -644,20 +644,50 @@ impl Agent {
         {
             return Err(KernelError::AgentControl(ControllerError::Permission));
         }
-        if config.root_budget.turns > self.budget.remaining_turns(self.seq_turn)
+        let directory = self.runtime_state_dir.join(format!(
+            "agents-{}",
+            self.subagent_run_id("controller", 0, 0).0
+        ));
+        provision_private_directory(&directory).map_err(KernelError::AgentControl)?;
+        let mut journal = AgentFileJournal::open(&directory)
+            .map_err(|error| KernelError::AgentControl(ControllerError::Store(error)))?;
+        let scope = self.provider_scope();
+        let snapshot = iteron_agents::AgentControllerJournal::load(&mut journal)
+            .map_err(|error| KernelError::AgentControl(ControllerError::Store(error)))?;
+        let existing = snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.provider_budget_baseline(&scope))
+            .transpose()
+            .map_err(KernelError::AgentControl)?
+            .flatten();
+        let financial_room = match &existing {
+            Some(baseline) => baseline.financial_room_microusd,
+            None => match &self.usd_budget {
+                Some(parent) => parent
+                    .remaining_microusd()
+                    .map_err(KernelError::PricingLedger)?,
+                None => config.root_budget.cost_microusd,
+            },
+        };
+        let baseline =
+            self.physical_provider_history_baseline(existing.as_ref(), financial_room)?;
+        if config.root_budget.turns > self.budget.max_turns.saturating_sub(baseline.usage.turns)
             || self.budget.max_tokens.is_some_and(|limit| {
-                config.root_budget.tokens > limit.saturating_sub(total_tokens(self.ledger.usage))
+                config.root_budget.tokens > limit.saturating_sub(baseline.usage.tokens)
             })
             || config.root_budget.wall_ms > self.budget.max_wall_secs.saturating_mul(1000)
             || self.budget.max_usd.is_some_and(|ceiling| {
-                config.root_budget.cost_microusd as f64 / 1_000_000.0 > ceiling
+                config.root_budget.cost_microusd as f64 / 1_000_000.0
+                    > (ceiling - baseline.usage.cost_microusd as f64 / 1_000_000.0).max(0.0)
             })
-            || self.run_deadline.is_some_and(|deadline| {
-                config.root_budget.wall_ms as u128
-                    > deadline
-                        .saturating_duration_since(std::time::Instant::now())
-                        .as_millis()
-            })
+            || (existing.is_none()
+                && self.run_deadline.is_some_and(|deadline| {
+                    config.root_budget.wall_ms as u128
+                        > deadline
+                            .saturating_duration_since(std::time::Instant::now())
+                            .as_millis()
+                }))
+            || config.root_budget.cost_microusd > baseline.financial_room_microusd
             || parallel > config.max_agents
         {
             return Err(KernelError::AgentControl(ControllerError::Budget));
@@ -678,28 +708,17 @@ impl Agent {
         }
         context.usd_budget = Some(Arc::new(match &self.usd_budget {
             Some(parent) => {
-                if config.root_budget.cost_microusd
-                    > parent
-                        .remaining_microusd()
-                        .map_err(KernelError::PricingLedger)?
-                {
-                    return Err(KernelError::AgentControl(ControllerError::Budget));
-                }
                 SharedUsdBudget::child(config.root_budget.cost_microusd, parent.clone())
                     .map_err(KernelError::PricingLedger)?
             }
             None => SharedUsdBudget::from_microusd(config.root_budget.cost_microusd),
         }));
         let runtime = Arc::new(KernelPersistentRuntime::new(context));
-        let directory = self.runtime_state_dir.join(format!(
-            "agents-{}",
-            self.subagent_run_id("controller", 0, 0).0
-        ));
-        provision_private_directory(&directory).map_err(KernelError::AgentControl)?;
-        let journal = AgentFileJournal::open(&directory)
-            .map_err(|error| KernelError::AgentControl(ControllerError::Store(error)))?;
-        let controller =
+        let mut controller =
             AgentController::open(journal, config).map_err(KernelError::AgentControl)?;
+        controller
+            .bind_provider_budget_baseline(&scope, baseline)
+            .map_err(KernelError::AgentControl)?;
         let root_id = controller.root_id();
         runtime.restore_monetary(
             &controller

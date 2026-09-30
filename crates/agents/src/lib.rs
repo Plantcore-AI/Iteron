@@ -30,7 +30,8 @@ mod stage;
 pub use catalog::{AgentCatalog, AgentCatalogRuntimeIdentity, LoadError};
 pub use controller::{
     AgentActor, AgentController, AgentControllerConfig, AgentControllerJournal,
-    AgentControllerSnapshot, AgentWorkflowClaim, AgentWorkflowCompletion, AgentWorkflowLease,
+    AgentControllerSnapshot, AgentProviderBudgetBaseline, AgentProviderBudgetRequest,
+    AgentProviderBudgetTerminal, AgentWorkflowClaim, AgentWorkflowCompletion, AgentWorkflowLease,
     AgentWorkflowTerminal, AgentWorkspaceWitness,
 };
 pub use controller_error::{ControllerError, ControllerStoreError};

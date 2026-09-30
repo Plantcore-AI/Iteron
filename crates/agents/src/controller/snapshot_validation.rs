@@ -12,6 +12,7 @@ use iteron_protocol::agent_control::{
 
 pub(super) fn validate_snapshot(snapshot: &AgentControllerSnapshot) -> Result<(), ControllerError> {
     snapshot.config.validate()?;
+    super::provider_budget::validate(snapshot)?;
     if let Some(witness) = &snapshot.workspace_witness {
         witness.validate()?;
         if !snapshot
@@ -124,6 +125,15 @@ pub(super) fn validate_snapshot(snapshot: &AgentControllerSnapshot) -> Result<()
                 .checked_add(child.view.budget.cost_microusd)
                 .ok_or(ControllerError::Budget)?;
         }
+        let pending = super::provider_budget::pending(snapshot, *id)?;
+        reservation.1 = reservation
+            .1
+            .checked_add(pending.0)
+            .ok_or(ControllerError::Budget)?;
+        reservation.2 = reservation
+            .2
+            .checked_add(pending.1)
+            .ok_or(ControllerError::Budget)?;
         if reservation
             != (
                 record.reserved_turns,

@@ -144,7 +144,7 @@ impl Drop for Workspace {
 fn budget(turns: u32) -> AgentBudgetV1 {
     AgentBudgetV1 {
         turns,
-        tokens: 20_000,
+        tokens: 1_000_000,
         cost_microusd: 500_000,
         wall_ms: 10_000,
     }
@@ -168,6 +168,22 @@ fn setup_with_store(
     provider: Arc<ProviderFixture>,
     block_tool: bool,
     store: Store,
+) -> (
+    PersistentAgentHost<Store>,
+    Arc<KernelPersistentRuntime>,
+    Arc<AtomicUsize>,
+    Arc<dyn AgentControlPort>,
+) {
+    setup_with_financial(root, provider, block_tool, store, 500_000, true)
+}
+
+fn setup_with_financial(
+    root: &Workspace,
+    provider: Arc<ProviderFixture>,
+    block_tool: bool,
+    store: Store,
+    cost: u64,
+    priced: bool,
 ) -> (
     PersistentAgentHost<Store>,
     Arc<KernelPersistentRuntime>,
@@ -220,10 +236,12 @@ fn setup_with_store(
         "resident-fixture".into(),
     );
     context.budget.max_turns = 20;
-    context.budget.max_tokens = Some(100_000);
+    context.budget.max_tokens = Some(10_000_000);
     context.budget.max_wall_secs = 30;
     context.budget.max_usd = Some(10.0);
-    context.install_pricing_authority(Some(pricing)).unwrap();
+    if priced {
+        context.install_pricing_authority(Some(pricing)).unwrap();
+    }
     super::super::workflow_spawner::tests::pin_context(&root.0, &mut context);
     let settled = Arc::new(AtomicUsize::new(0));
     let mut runtime = KernelPersistentRuntime::new(context);
@@ -252,7 +270,10 @@ fn setup_with_store(
     let config = AgentControllerConfig {
         workspace_scope: "resident-fixture".into(),
         root_capabilities: CapabilitySet::only(Capability::ReadOnly),
-        root_budget: budget(20),
+        root_budget: AgentBudgetV1 {
+            cost_microusd: cost,
+            ..budget(20)
+        },
         max_agents: 8,
         max_pending_per_agent: 8,
     };
@@ -391,6 +412,9 @@ async fn failed_mailbox_consumption_persists_not_dispatched_and_makes_zero_provi
     })
     .await;
     assert_eq!(provider.requests.load(Ordering::SeqCst), 0);
+    let view = host.inspect(AgentActor::Operator, child).unwrap();
+    assert_eq!(view.reserved.tokens, 0);
+    assert_eq!(view.reserved.cost_microusd, 0);
     let resident = runtime
         .residents
         .lock()
@@ -403,6 +427,50 @@ async fn failed_mailbox_consumption_persists_not_dispatched_and_makes_zero_provi
     assert!(events.iter().any(|event| matches!(&event.kind, EventKind::EffectFailed { tool, provider_route_attempt: Some(receipt), .. }
         if tool == "provider" && matches!(receipt.usage, iteron_protocol::ProviderRouteUsageTruth::NotDispatched)
             && matches!(receipt.cost, iteron_protocol::ProviderRouteCostTruth::NotDispatched))));
+}
+
+#[tokio::test]
+async fn finite_zero_cost_requires_verified_zero_price_before_provider_io() {
+    for priced in [false, true] {
+        let root = Workspace::new();
+        let provider = Arc::new(ProviderFixture::default());
+        let (host, runtime, _, _keepalive) =
+            setup_with_financial(&root, provider.clone(), false, Store::default(), 0, priced);
+        let child = host
+            .command(
+                AgentActor::Operator,
+                "zero-cost",
+                AgentCommandV1::Spawn {
+                    parent_id: AgentIdV1(1),
+                    label: "zero".into(),
+                    task: "zero-price task".into(),
+                    capabilities: CapabilitySet::only(Capability::ReadOnly),
+                    budget: AgentBudgetV1 {
+                        cost_microusd: 0,
+                        ..budget(8)
+                    },
+                    write_paths: vec![],
+                },
+            )
+            .unwrap()
+            .agent_id;
+        until(|| host.inspect(AgentActor::Operator, child).unwrap().state == AgentStateV1::Idle)
+            .await;
+        assert_eq!(
+            provider.requests.load(Ordering::SeqCst),
+            usize::from(priced)
+        );
+        let resident = runtime
+            .residents
+            .lock()
+            .unwrap()
+            .get(&child)
+            .unwrap()
+            .clone();
+        let child = resident.lock().await;
+        let events = iteron_record::replay(child.rollout.path()).unwrap();
+        assert_eq!(events.iter().filter(|event|matches!(&event.kind,EventKind::EffectIntent { tool,.. } if tool == "provider")).count(),usize::from(priced));
+    }
 }
 
 #[tokio::test]
@@ -430,7 +498,7 @@ async fn small_workflow_node_does_not_shrink_resident_lifetime_and_physical_turn
             task: task.into(),
             budget: iteron_workflow::task_dag::TaskBudget {
                 max_turns: turns,
-                max_tokens: 4_000,
+                max_tokens: 500_000,
                 max_cost_microusd: 50_000,
                 max_wall_ms: 5_000,
             },
