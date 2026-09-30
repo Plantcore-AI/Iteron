@@ -386,6 +386,51 @@ mod tests {
     }
 
     #[test]
+    fn portable_legacy_history_identity_remains_usable() {
+        let fixture = Fixture::new();
+        let id = "history.v1 复测";
+        drop(fixture.write(id, "workspace", TenantId::default()));
+        let scope = fixture.scope();
+        iteron_record::session::reindex(&scope.runs).unwrap();
+        let listing = scope
+            .execute(ThreadLifecycleCommandV1::List {
+                cursor: None,
+                limit: 25,
+            })
+            .unwrap();
+        let listed_id = listing["threads"][0]["run_id"].as_str().unwrap();
+        assert_eq!(listed_id, id);
+        let read = scope
+            .execute(ThreadLifecycleCommandV1::Read {
+                run_id: RunId(listed_id.into()),
+            })
+            .unwrap();
+        assert_eq!(read["run_id"], id);
+        let export = scope
+            .execute(ThreadLifecycleCommandV1::Export {
+                run_id: RunId(listed_id.into()),
+            })
+            .unwrap();
+        let document: Value = serde_json::from_str(export["content"].as_str().unwrap()).unwrap();
+        assert_eq!(document["run_id"], id);
+        assert!(
+            scope
+                .execute(ThreadLifecycleCommandV1::Read {
+                    run_id: RunId(format!("../{id}"))
+                })
+                .is_err()
+        );
+        let reply = scope
+            .execute(ThreadLifecycleCommandV1::Rename {
+                run_id: RunId(id.into()),
+                title: "portable legacy history".into(),
+            })
+            .unwrap();
+        assert_eq!(reply["run_id"], id);
+        assert_eq!(reply["title"], "portable legacy history");
+    }
+
+    #[test]
     fn archive_is_reversible_and_permanent_erasure_is_explicit_and_durable() {
         let fixture = Fixture::new();
         drop(fixture.write("mine", "workspace", TenantId::default()));

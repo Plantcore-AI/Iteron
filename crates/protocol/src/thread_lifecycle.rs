@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 pub const THREAD_LIFECYCLE_VERSION: u32 = 1;
 pub const MAX_THREAD_TITLE_BYTES: usize = 256;
 pub const MAX_THREAD_EXPORT_BYTES: usize = 1024 * 1024;
+pub const MAX_THREAD_RUN_ID_BYTES: usize = 200;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -76,10 +77,11 @@ impl ThreadLifecycleCommandV1 {
             .expect("non-list commands contain an exact identity")
             .0;
         if run.is_empty()
-            || run.len() > 128
-            || !run
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+            || run.len() > MAX_THREAD_RUN_ID_BYTES
+            || run.chars().any(char::is_control)
+            || run.contains(['/', '\\', ':', '*', '?', '"', '<', '>', '|'])
+            || matches!(run.as_str(), "." | "..")
+            || run.ends_with(['.', ' '])
         {
             return Err("invalid run identity");
         }
