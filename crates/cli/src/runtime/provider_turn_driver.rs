@@ -321,6 +321,10 @@ impl ProviderTurnDriver {
                 plantcore_terminal: plantcore.terminal(),
                 output_proof_required: environment.output_proof_required,
                 context_tokens: environment.context_tokens,
+                financial: &self.financial,
+                selected: resident.selection,
+                #[cfg(test)]
+                pricing_now_unix_secs: environment.pricing_now_unix_secs,
             },
         }
         .advance(
@@ -330,6 +334,9 @@ impl ProviderTurnDriver {
             completed.monetary_followup_safe,
         )
         .await?;
+        // Retry waits can cross a signed rate-card expiry. Fresh selection/admission must use
+        // the current clock, not the timestamp captured before the physical terminal/wait.
+        let pricing_now = environment.current_pricing_now();
         match followup {
             ProviderFollowupDecision::Terminal(result) => return Ok(Some(result)),
             ProviderFollowupDecision::ReAdmit => {}
@@ -425,6 +432,16 @@ impl ProviderTurnDriver {
             execution: self.execution,
             result,
         })
+    }
+}
+
+impl ProviderTurnEnvironment<'_> {
+    fn current_pricing_now(&self) -> u64 {
+        #[cfg(test)]
+        if let Some(now) = self.pricing_now_unix_secs {
+            return now;
+        }
+        super::provider_accounting::unix_now_secs()
     }
 }
 

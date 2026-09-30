@@ -3,12 +3,14 @@
 use super::KernelError;
 use super::plantcore::PlantcoreTerminal;
 use super::pricing::SharedUsdBudget;
+use super::provider_financial_source::ProviderFinancialSource;
 use super::provider_governor_state::GovernedProviderRoute;
 use super::provider_output_request::{self, PhysicalProviderRequest};
 use super::provider_round::ProviderRoundOwner;
 use super::provider_route::provider_outcome_is_unobservable;
 use super::provider_route_events::{ProviderRetrySchedule, ProviderRetryWait, ProviderRouteEvents};
 use super::provider_route_turn::{self, ProviderRouteNext, ProviderRouteTurn};
+use super::provider_selection::ProviderSelectionOwner;
 use super::session_control::SessionControlState;
 use iteron_obs::Ledger;
 use iteron_provider::{FailoverClass, FailurePoint, ProviderError, ProviderGovernor, TurnResult};
@@ -26,6 +28,10 @@ pub(super) struct ProviderFollowupScope<'a> {
     pub(super) plantcore_terminal: Option<PlantcoreTerminal>,
     pub(super) output_proof_required: bool,
     pub(super) context_tokens: u64,
+    pub(super) financial: &'a ProviderFinancialSource,
+    pub(super) selected: &'a ProviderSelectionOwner,
+    #[cfg(test)]
+    pub(super) pricing_now_unix_secs: Option<u64>,
 }
 
 pub(super) struct PreparedProviderFallback {
@@ -87,6 +93,21 @@ impl ProviderFollowupOwner<'_> {
                     return Ok(ProviderFollowupDecision::Terminal(Err(error)));
                 }
                 route.retry_wait_completed();
+                let financial = self.scope.financial.selected(
+                    self.scope.selected,
+                    route.provider().as_ref(),
+                    &route.request().model,
+                );
+                let funding = financial.output_funding(route.route_id(), self.pricing_now())?;
+                let mut request = route.request().clone();
+                request.max_tokens = route.requested_max_tokens();
+                let physical = provider_output_request::normalize_funded(
+                    route.provider().as_ref(),
+                    request,
+                    self.scope.output_proof_required,
+                    funding.as_ref(),
+                )?;
+                route.rebind_followup(physical)?;
                 Ok(ProviderFollowupDecision::ReAdmit)
             }
             ProviderRouteNext::RetryCeiling { hint, ceiling } => {
@@ -124,10 +145,18 @@ impl ProviderFollowupOwner<'_> {
                 let mut request = route.request().clone();
                 request.model = candidate.route.model_id.clone();
                 request.max_tokens = route.requested_max_tokens();
-                let physical = provider_output_request::normalize(
+                let financial = self.scope.financial.candidate(
+                    self.scope.selected,
+                    &candidate.provider,
+                    &candidate.route,
+                    self.pricing_now(),
+                )?;
+                let funding = financial.output_funding(&candidate.id(), self.pricing_now())?;
+                let physical = provider_output_request::normalize_funded(
                     candidate.provider.as_ref(),
                     request,
                     self.scope.output_proof_required,
+                    funding.as_ref(),
                 )?;
                 provider_route_turn::validate_fallback_request(
                     candidate,
@@ -165,6 +194,14 @@ impl ProviderFollowupOwner<'_> {
             }
         }
         Ok(())
+    }
+
+    fn pricing_now(&self) -> u64 {
+        #[cfg(test)]
+        if let Some(now) = self.scope.pricing_now_unix_secs {
+            return now;
+        }
+        super::provider_accounting::unix_now_secs()
     }
 }
 

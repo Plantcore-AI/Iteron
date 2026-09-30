@@ -217,6 +217,29 @@ impl ProviderRouteTurn {
         self.retry_index = self.retry_index.saturating_add(1);
     }
 
+    /// Requote only at the settled retry safe point. Original policy and physical identity
+    /// counters remain unchanged; the following admission still mints its sole actual intent.
+    pub(super) fn rebind_followup(
+        &mut self,
+        physical: super::provider_output_request::PhysicalProviderRequest,
+    ) -> Result<(), KernelError> {
+        if self.first_attempt
+            || self.ticket.is_some()
+            || self.dispatch_permit.is_some()
+            || self.route_permit.is_some()
+            || physical.request.model != self.request.model
+            || physical.requested_max_tokens != self.requested_max_tokens
+            || physical.request.max_tokens == 0
+        {
+            return Err(KernelError::InvalidRouteMetadata {
+                field: "provider_followup_request",
+                reason: "output funding can only rebind the same settled route and policy",
+            });
+        }
+        self.request = physical.request;
+        Ok(())
+    }
+
     /// The caller has already committed the existing durable ModelSelection and rebound pricing.
     /// Immutable controls are minted from that same selected provider; this method grants no route.
     pub(super) fn selected_fallback(
