@@ -37,6 +37,7 @@ mod schema_retry;
 pub mod cachekey;
 pub mod events;
 pub mod journal;
+pub mod live_scheduler;
 pub mod meta;
 pub mod schema;
 pub mod spawner;
