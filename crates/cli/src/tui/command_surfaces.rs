@@ -17,7 +17,7 @@ pub(super) fn open_tunables_picker_with_runtime_policy(
     argument: &str,
     runtime_policy: Option<&crate::runtime::RuntimePolicyOverlaySnapshot>,
 ) {
-    if app.running || app.pending.is_some() {
+    if app.running || app.permission_prompt.read().is_some() {
         app.note(
             block::NoticeLevel::Warn,
             "finish the current turn before browsing tunables",
@@ -100,7 +100,7 @@ pub(super) fn open_picker(
     directory: &ProviderDirectory,
     kind: &str,
 ) {
-    if app.running || app.pending.is_some() {
+    if app.running || app.permission_prompt.read().is_some() {
         app.note(
             block::NoticeLevel::Warn,
             "finish the current turn before opening a picker",

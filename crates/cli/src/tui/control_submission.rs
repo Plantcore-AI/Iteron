@@ -265,7 +265,7 @@ pub(super) fn request_drain(
     drain.store(true, Ordering::Relaxed);
     app.draining = true;
     app.status = "draining session…".into();
-    if app.pending.take().is_some() {
+    if app.permission_prompt.read().is_some() {
         app.note(
             block::NoticeLevel::Warn,
             "drain requested · stopping active work and settling the session",

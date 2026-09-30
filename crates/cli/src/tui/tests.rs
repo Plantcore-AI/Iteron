@@ -2348,7 +2348,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             cache_read: 40,
             ..Usage::default()
         });
-        app.pending = Some(Pending {
+        app.permission_prompt.present(Pending {
             id: SubmissionId(1),
             tool: "edit".into(),
             cap: Capability::ReversibleLocal,
@@ -2361,7 +2361,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         // CRITICAL regression: the completion menu OPEN on short terminals must not panic (the
         // popup rect must clamp to the frame). Sweep sizes below the popup height.
         app.running = false;
-        app.pending = None;
+        app.permission_prompt.clear();
         app.editor.clear();
         app.editor.insert_str("/"); // 25-command menu -> tall popup
         app.refresh_completion(&std::env::temp_dir());
@@ -2979,7 +2979,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                     screen.contains("[n]"),
                     "fail-closed focus at {width}x{height}: {screen:?}"
                 );
-                assert_eq!(app.approval_choice, ApprovalChoice::Deny);
+                assert_eq!(app.permission_prompt.choice(), ApprovalChoice::Deny);
             }
         }
     }
@@ -3008,7 +3008,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
         let canonical = text(approval_action_line(
             &app,
-            app.pending.as_ref().unwrap(),
+            app.permission_prompt.read().unwrap(),
             20,
         ));
         assert!(canonical.find("[y]") < canonical.find("[a]"));
@@ -3016,7 +3016,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert_eq!(app.approval_key(KeyCode::Left), ApprovalInput::Consumed);
         let after_move = text(approval_action_line(
             &app,
-            app.pending.as_ref().unwrap(),
+            app.permission_prompt.read().unwrap(),
             20,
         ));
         assert_eq!(
@@ -3024,10 +3024,18 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             "focus does not reorder visible actions"
         );
 
-        let paged = text(approval_action_line(&app, app.pending.as_ref().unwrap(), 8));
+        let paged = text(approval_action_line(
+            &app,
+            app.permission_prompt.read().unwrap(),
+            8,
+        ));
         assert_eq!(paged, "[a] <>");
         assert_eq!(app.approval_key(KeyCode::Right), ApprovalInput::Consumed);
-        let deny_page = text(approval_action_line(&app, app.pending.as_ref().unwrap(), 8));
+        let deny_page = text(approval_action_line(
+            &app,
+            app.permission_prompt.read().unwrap(),
+            8,
+        ));
         assert_eq!(deny_page, "[n] <>");
     }
 
@@ -3046,10 +3054,10 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 workspace: "/tmp/project".into(),
             },
         );
-        assert_eq!(app.approval_choice, ApprovalChoice::Deny);
+        assert_eq!(app.permission_prompt.choice(), ApprovalChoice::Deny);
         for theme in [theme::Theme::dark(), theme::Theme::mono()] {
             app.theme = theme;
-            let pending = app.pending.as_ref().expect("pending approval");
+            let pending = app.permission_prompt.read().expect("pending approval");
             let line = approval_action_line(&app, pending, 80);
             let deny = line
                 .spans
@@ -3078,7 +3086,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         );
 
         assert_eq!(app.approval_key(KeyCode::Left), ApprovalInput::Consumed);
-        assert_eq!(app.approval_choice, ApprovalChoice::Session);
+        assert_eq!(app.permission_prompt.choice(), ApprovalChoice::Session);
         assert_eq!(
             app.approval_key(KeyCode::Enter),
             ApprovalInput::Answer {
@@ -3087,7 +3095,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             }
         );
         assert_eq!(app.approval_key(KeyCode::Right), ApprovalInput::Consumed);
-        assert_eq!(app.approval_choice, ApprovalChoice::Deny);
+        assert_eq!(app.permission_prompt.choice(), ApprovalChoice::Deny);
     }
 
     #[test]
@@ -3106,12 +3114,12 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             },
         );
         assert_eq!(app.approval_key(KeyCode::Left), ApprovalInput::Consumed);
-        assert_eq!(app.approval_choice, ApprovalChoice::Once);
+        assert_eq!(app.permission_prompt.choice(), ApprovalChoice::Once);
         assert_eq!(
             app.approval_key(KeyCode::Char('a')),
             ApprovalInput::Consumed
         );
-        assert_ne!(app.approval_choice, ApprovalChoice::Session);
+        assert_ne!(app.permission_prompt.choice(), ApprovalChoice::Session);
     }
 
     #[test]
@@ -7545,8 +7553,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             },
         );
         assert!(!app.transcript_viewer.is_open());
-        assert!(app.pending.is_some());
-        assert_eq!(app.approval_choice, ApprovalChoice::Deny);
+        assert!(app.permission_prompt.read().is_some());
+        assert_eq!(app.permission_prompt.choice(), ApprovalChoice::Deny);
     }
 
     #[test]
@@ -7574,7 +7582,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             },
         );
         assert_eq!(
-            app.pending.as_ref().map(|pending| pending.id),
+            app.permission_prompt.read().map(|pending| pending.id),
             Some(SubmissionId(77))
         );
         apply_event(
@@ -7586,7 +7594,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 response_submission_id: Some(SubmissionId(79)),
             },
         );
-        assert!(app.pending.is_none());
+        assert!(app.permission_prompt.read().is_none());
         assert!(app.status.contains("tool pending"));
         assert!(!app.status.contains("tool complete"));
         assert!(render_text(&mut app, 100, 24).contains("tool pending"));
@@ -7620,7 +7628,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
         assert!(effects.is_active());
         assert!(!app.transcript_viewer.is_open());
-        assert!(app.pending.is_some());
+        assert!(app.permission_prompt.read().is_some());
         effects.shutdown().await;
     }
 
@@ -8104,7 +8112,10 @@ fn ordinary_tui_does_not_offer_approval_for_an_incomplete_product_prompt() {
         },
         1,
     );
-    let pending = app.pending.as_ref().expect("product prompt projected");
+    let pending = app
+        .permission_prompt
+        .read()
+        .expect("product prompt projected");
     assert!(!pending.prompt_complete);
     let actions = approval_action_line(&app, pending, 100)
         .spans
@@ -8139,7 +8150,7 @@ fn product_approval_response_settles_only_its_exact_submission_receipt() {
         },
     };
     let mut app = App::new();
-    app.pending = Some(Pending {
+    app.permission_prompt.present(Pending {
         id: SubmissionId(7),
         tool: "bash".into(),
         cap: Capability::CodeExecuting,
@@ -8148,7 +8159,8 @@ fn product_approval_response_settles_only_its_exact_submission_receipt() {
         workspace: "/fixture".into(),
         prompt_complete: true,
     });
-    app.pending_approval_response = Some(SubmissionId(9));
+    app.permission_prompt
+        .response_queued(SubmissionId(7), SubmissionId(9));
     let mut projection = product_projection::ProductProjection::default();
     projection.ingest_page(
         &mut app,
@@ -8169,7 +8181,7 @@ fn product_approval_response_settles_only_its_exact_submission_receipt() {
         },
         1,
     );
-    assert_eq!(app.pending_approval_response, Some(SubmissionId(9)));
+    assert_eq!(app.permission_prompt.response_id(), Some(SubmissionId(9)));
     projection.ingest_page(
         &mut app,
         ProductEventsPageV1 {
@@ -8190,10 +8202,10 @@ fn product_approval_response_settles_only_its_exact_submission_receipt() {
         2,
     );
     assert_eq!(
-        app.pending.as_ref().map(|pending| pending.id),
+        app.permission_prompt.read().map(|pending| pending.id),
         Some(SubmissionId(7))
     );
-    assert!(app.pending_approval_response.is_none());
+    assert!(app.permission_prompt.response_id().is_none());
     assert!(app.status.contains("rejected"));
 }
 

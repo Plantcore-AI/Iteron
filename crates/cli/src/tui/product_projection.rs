@@ -196,20 +196,17 @@ impl ProductProjection {
                 if receipt.state == iteron_protocol::SubmissionLifecycleState::Applied {
                     app.settle_steer_submission(receipt.submission_id);
                 }
-                if app.pending_approval_response == Some(receipt.submission_id) {
-                    match receipt.state {
-                        iteron_protocol::SubmissionLifecycleState::Applied => {
-                            app.status =
-                                "approval response applied · awaiting tool decision".into();
-                        }
-                        iteron_protocol::SubmissionLifecycleState::Rejected
-                        | iteron_protocol::SubmissionLifecycleState::Expired => {
-                            app.pending_approval_response = None;
-                            app.status =
-                                "approval response rejected · prompt remains pending".into();
-                        }
-                        _ => {}
+                match app
+                    .permission_prompt
+                    .observe_response(receipt.submission_id, receipt.state)
+                {
+                    Some(super::permission_prompt::ResponseObservation::Applied) => {
+                        app.status = "approval response applied · awaiting tool decision".into();
                     }
+                    Some(super::permission_prompt::ResponseObservation::Refused) => {
+                        app.status = "approval response rejected · prompt remains pending".into();
+                    }
+                    None => {}
                 }
             }
             ProductEventKindV1::ApprovalRequested {
@@ -221,17 +218,9 @@ impl ProductProjection {
                 workspace,
                 prompt_complete,
             } => {
-                if app
-                    .pending
-                    .as_ref()
-                    .is_some_and(|pending| pending.id != approval_id)
-                {
-                    app.pending_approval_response = None;
-                }
                 app.flush_text();
                 app.transcript_viewer.close();
-                app.approval_choice = ApprovalChoice::Deny;
-                app.pending = Some(Pending {
+                app.permission_prompt.present(Pending {
                     id: approval_id,
                     tool: ui_safe_text(&tool),
                     cap: capability,
@@ -250,13 +239,7 @@ impl ProductProjection {
                 resolution,
                 reason_code,
             } => {
-                if app
-                    .pending
-                    .as_ref()
-                    .is_some_and(|pending| pending.id == approval_id)
-                {
-                    app.pending = None;
-                    app.pending_approval_response = None;
+                if app.permission_prompt.resolve(approval_id) {
                     app.status = format!(
                         "approval {} · {}",
                         match resolution {

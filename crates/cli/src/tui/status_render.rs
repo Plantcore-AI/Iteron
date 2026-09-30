@@ -306,7 +306,7 @@ pub(super) fn render_status(f: &mut Frame, area: Rect, density: surface::Density
             Span::styled("◆ ", error),
             Span::styled("stronger cancellation requested", error),
         ]
-    } else if app.pending.is_some() {
+    } else if app.permission_prompt.read().is_some() {
         vec![
             Span::styled("◆ ", warn),
             Span::styled("approval required", warn),

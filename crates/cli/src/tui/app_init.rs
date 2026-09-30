@@ -1,6 +1,6 @@
 use super::{
-    App, ApprovalChoice, CostState, Editor, Effort, PermissionMode, RouteView, block, hyperlink,
-    mouse_capture, theme, transcript_viewer, ui_safe_text, workflow_region, workflows_panel,
+    App, CostState, Editor, Effort, PermissionMode, RouteView, block, hyperlink, mouse_capture,
+    theme, transcript_viewer, ui_safe_text, workflow_region, workflows_panel,
 };
 use ratatui::style::{Color, Style};
 #[cfg(test)]
@@ -42,8 +42,7 @@ impl App {
             hyperlink_policy: hyperlink::Policy::disabled(),
             geometry: super::transcript_geometry::TranscriptGeometry::default(),
             editor: Editor::new(),
-            pending_mcp_input: None,
-            queued_mcp_inputs: VecDeque::new(),
+            mcp_form: super::mcp_input::McpInputOwner::default(),
             status: "idle".into(),
             last_result: None,
             running: false,
@@ -70,8 +69,7 @@ impl App {
             compaction_trigger_tokens: iteron_ctx::CompactionPolicy::default().trigger_tokens,
             effort_application: None,
             turns: 0,
-            pending: None,
-            approval_choice: ApprovalChoice::Deny,
+            permission_prompt: super::permission_prompt::PermissionPromptOwner::default(),
             completions: super::completion_owner::CompletionOwner::default(),
             pickers: super::picker_owner::PickerOwner::default(),
             navigation: super::session_navigation::SessionNavigationOwner::default(),
@@ -94,7 +92,6 @@ impl App {
             mouse_capture: mouse_capture::State::default(),
             input_lanes: super::input_lanes::InputLanes::default(),
             pending_turn_receipt: None,
-            pending_approval_response: None,
             product_stream_active: false,
             product_terminal_answer: None,
             product_turn_status: None,

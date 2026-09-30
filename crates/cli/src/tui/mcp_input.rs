@@ -1,10 +1,15 @@
 //! Dedicated terminal form for 2026 MCP multi-round input.
 
-use super::*;
+use super::{
+    App, Arc, AtomicBool, Block, BorderType, Borders, Editor, Frame, KeyCode, KeyModifiers, Line,
+    Paragraph, Rect, Session, Span, Style, app_server, block, clip_text, display_col,
+    request_drain, request_interrupt, ui_safe_text,
+};
+use std::collections::VecDeque;
 
-pub(super) struct PendingMcpInput {
-    pub(super) prompt: app_server::McpInputPrompt,
-    pub(super) editor: Editor,
+struct PendingMcpInput {
+    prompt: app_server::McpInputPrompt,
+    editor: Editor,
 }
 
 impl PendingMcpInput {
@@ -63,42 +68,65 @@ impl PendingMcpInput {
     }
 }
 
+#[derive(Default)]
+pub(super) struct McpInputOwner {
+    pending: Option<PendingMcpInput>,
+    queued: VecDeque<app_server::McpInputPrompt>,
+}
+impl McpInputOwner {
+    pub(super) fn is_waiting(&self) -> bool {
+        self.pending.is_some()
+    }
+    fn enqueue(
+        &mut self,
+        prompt: app_server::McpInputPrompt,
+    ) -> Result<bool, app_server::McpInputPrompt> {
+        if self.pending.is_none() {
+            self.pending = Some(PendingMcpInput::new(prompt));
+            return Ok(true);
+        }
+        if self.queued.len() >= app_server::mcp_input_capacity().saturating_sub(1) {
+            return Err(prompt);
+        }
+        self.queued.push_back(prompt);
+        Ok(false)
+    }
+    fn advance(&mut self, answered_request: u64) -> bool {
+        if self
+            .pending
+            .as_ref()
+            .is_none_or(|pending| pending.prompt.request_id != answered_request)
+        {
+            return false;
+        }
+        self.pending = self.queued.pop_front().map(PendingMcpInput::new);
+        true
+    }
+    pub(super) fn clear(&mut self) {
+        self.pending = None;
+        self.queued.clear();
+    }
+}
 impl App {
     pub(super) fn enqueue_mcp_input(
         &mut self,
         prompt: app_server::McpInputPrompt,
     ) -> Result<(), app_server::McpInputPrompt> {
-        if self.pending_mcp_input.is_none() {
-            self.pending_mcp_input = Some(PendingMcpInput::new(prompt));
+        if self.mcp_form.enqueue(prompt)? {
             self.completions.dismiss();
             self.status = "MCP server is waiting for your input".into();
-            return Ok(());
         }
-        if self.queued_mcp_inputs.len() >= app_server::mcp_input_capacity().saturating_sub(1) {
-            return Err(prompt);
-        }
-        self.queued_mcp_inputs.push_back(prompt);
         Ok(())
     }
-
-    fn advance_mcp_input(&mut self) {
-        self.pending_mcp_input = self.queued_mcp_inputs.pop_front().map(PendingMcpInput::new);
-        self.status = if self.pending_mcp_input.is_some() {
-            "MCP server is waiting for your input".into()
-        } else {
-            "MCP input sent · tool running".into()
-        };
-    }
-
     pub(super) fn clear_mcp_inputs(&mut self) {
-        self.pending_mcp_input = None;
-        self.queued_mcp_inputs.clear();
+        self.mcp_form.clear();
     }
 }
 
 fn send_answer(app: &mut App, session: &Session, answer: app_server::McpInputAnswer) -> bool {
     let Some(request_id) = app
-        .pending_mcp_input
+        .mcp_form
+        .pending
         .as_ref()
         .map(|pending| pending.prompt.request_id)
     else {
@@ -106,7 +134,13 @@ fn send_answer(app: &mut App, session: &Session, answer: app_server::McpInputAns
     };
     match session.answer_mcp_input(app_server::McpInputResponse { request_id, answer }) {
         Ok(()) => {
-            app.advance_mcp_input();
+            if app.mcp_form.advance(request_id) {
+                app.status = if app.mcp_form.is_waiting() {
+                    "MCP server is waiting for your input".into()
+                } else {
+                    "MCP input sent · tool running".into()
+                };
+            }
             true
         }
         Err(error) => {
@@ -150,7 +184,8 @@ pub(super) fn handle_key(
         }
         KeyCode::Enter if !alt && !shift => {
             let answers = app
-                .pending_mcp_input
+                .mcp_form
+                .pending
                 .as_ref()
                 .expect("the MCP form owns this key")
                 .answers();
@@ -198,14 +233,15 @@ pub(super) fn handle_paste(app: &mut App, pasted: &str) {
 
 fn active_editor(app: &mut App) -> &mut Editor {
     &mut app
-        .pending_mcp_input
+        .mcp_form
+        .pending
         .as_mut()
         .expect("an MCP input event owns the editor")
         .editor
 }
 
 pub(super) fn render(f: &mut Frame, area: Rect, app: &mut App) -> bool {
-    let Some(pending) = app.pending_mcp_input.as_ref() else {
+    let Some(pending) = app.mcp_form.pending.as_ref() else {
         return false;
     };
     if area.width == 0 || area.height == 0 {
@@ -359,5 +395,46 @@ mod tests {
             .editor
             .replace_text(r#"{"profile":{"name":"Alice"},"confirm":{"ok":true}}"#);
         assert_eq!(pending.answers().unwrap().len(), 2);
+    }
+    #[test]
+    fn private_form_keeps_owned_draft_and_queue_until_exact_accepted_request() {
+        let mut owner = McpInputOwner::default();
+        let first = pending(vec![field("profile", "name", "string")]).prompt;
+        assert_eq!(owner.enqueue(first.clone()), Ok(true));
+        owner
+            .pending
+            .as_mut()
+            .unwrap()
+            .editor
+            .insert_str(r#"{"name":"retained response"}"#);
+        for id in 1..app_server::mcp_input_capacity() {
+            let mut next = first.clone();
+            next.request_id = 100 + id as u64;
+            assert_eq!(owner.enqueue(next), Ok(false));
+        }
+        let mut excess = first.clone();
+        excess.request_id = 999;
+        assert_eq!(owner.enqueue(excess.clone()), Err(excess));
+        assert!(!owner.advance(999));
+        assert!(
+            owner
+                .pending
+                .as_ref()
+                .unwrap()
+                .editor
+                .text()
+                .contains("retained response")
+        );
+        assert!(owner.advance(first.request_id));
+        if app_server::mcp_input_capacity() > 1 {
+            assert_eq!(owner.pending.as_ref().unwrap().prompt.request_id, 101);
+            assert!(owner.pending.as_ref().unwrap().editor.text().is_empty());
+        } else {
+            assert!(!owner.is_waiting());
+        }
+        owner.clear();
+        assert!(!owner.is_waiting());
+        assert!(owner.queued.is_empty());
+        assert!(!owner.advance(101));
     }
 }

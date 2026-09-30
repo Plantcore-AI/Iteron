@@ -272,7 +272,7 @@ pub(super) fn project_host_transcript(
 }
 
 fn adoption_draft_ready(app: &mut App) -> bool {
-    if app.running || app.pending.is_some() {
+    if app.running || app.permission_prompt.read().is_some() {
         app.note(
             block::NoticeLevel::Warn,
             "finish the current turn before switching sessions",
@@ -434,6 +434,8 @@ pub(super) fn bounded_prefix(text: &str, max_bytes: usize) -> String {
 /// paragraph from the previous run would render under the adopted run's identity.
 pub(super) fn clear_transcript_for_adoption(app: &mut App) {
     app.history.clear();
+    app.permission_prompt.clear();
+    app.mcp_form.clear();
     app.mark_transcript_changed();
     app.tools.clear();
     app.history.clear_workflow_bindings();

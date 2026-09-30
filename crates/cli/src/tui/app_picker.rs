@@ -1,4 +1,4 @@
-use super::{App, ApprovalChoice, ApprovalInput, PickerEvent, capability_can_be_remembered};
+use super::{App, ApprovalInput, PickerEvent};
 use crossterm::event::{KeyCode, KeyModifiers};
 use std::path::Path;
 
@@ -31,72 +31,8 @@ impl App {
         }
     }
 
-    /// Route one physical key through the blocking permission control. Navigation only changes
-    /// focus; Enter emits exactly one answer for that focus. Direct y/a/n shortcuts remain
-    /// available, but an impossible session-wide grant is never constructed.
     pub(super) fn approval_key(&mut self, code: KeyCode) -> ApprovalInput {
-        let Some(pending) = self.pending.as_ref() else {
-            return ApprovalInput::Consumed;
-        };
-        let choices: &[ApprovalChoice] = if capability_can_be_remembered(pending.cap) {
-            &[
-                ApprovalChoice::Once,
-                ApprovalChoice::Session,
-                ApprovalChoice::Deny,
-            ]
-        } else {
-            &[ApprovalChoice::Once, ApprovalChoice::Deny]
-        };
-        if !choices.contains(&self.approval_choice) {
-            self.approval_choice = ApprovalChoice::Deny;
-        }
-        let position = choices
-            .iter()
-            .position(|choice| *choice == self.approval_choice)
-            .unwrap_or(choices.len() - 1);
-        match code {
-            KeyCode::Left | KeyCode::Up | KeyCode::BackTab => {
-                self.approval_choice = choices[(position + choices.len() - 1) % choices.len()];
-                ApprovalInput::Consumed
-            }
-            KeyCode::Right | KeyCode::Down | KeyCode::Tab => {
-                self.approval_choice = choices[(position + 1) % choices.len()];
-                ApprovalInput::Consumed
-            }
-            KeyCode::Enter => match self.approval_choice {
-                ApprovalChoice::Once => ApprovalInput::Answer {
-                    approved: true,
-                    remember: false,
-                },
-                ApprovalChoice::Session if capability_can_be_remembered(pending.cap) => {
-                    ApprovalInput::Answer {
-                        approved: true,
-                        remember: true,
-                    }
-                }
-                ApprovalChoice::Session | ApprovalChoice::Deny => ApprovalInput::Answer {
-                    approved: false,
-                    remember: false,
-                },
-            },
-            KeyCode::Char('y') | KeyCode::Char('Y') => ApprovalInput::Answer {
-                approved: true,
-                remember: false,
-            },
-            KeyCode::Char('a') | KeyCode::Char('A')
-                if capability_can_be_remembered(pending.cap) =>
-            {
-                ApprovalInput::Answer {
-                    approved: true,
-                    remember: true,
-                }
-            }
-            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => ApprovalInput::Answer {
-                approved: false,
-                remember: false,
-            },
-            _ => ApprovalInput::Consumed,
-        }
+        self.permission_prompt.key(code)
     }
 
     /// Legacy terminals encode Alt+key as `ESC` followed by the key bytes. When an automation (or
@@ -152,7 +88,7 @@ impl App {
             || !unbound
             || !self.running
             || self.interrupting
-            || self.pending.is_some()
+            || self.permission_prompt.read().is_some()
             || self.pickers.is_open()
             || !modifiers.contains(KeyModifiers::ALT)
             || modifiers.contains(KeyModifiers::CONTROL)

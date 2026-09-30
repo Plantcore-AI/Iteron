@@ -181,7 +181,7 @@ pub(super) fn session_display_name(rollout_path: &Path) -> String {
 }
 
 pub(super) fn open_session_picker(app: &mut App, session: &Session) {
-    if app.running || app.pending.is_some() {
+    if app.running || app.permission_prompt.read().is_some() {
         app.note(
             block::NoticeLevel::Warn,
             "finish the current turn before browsing sessions",
@@ -432,7 +432,7 @@ pub(super) fn handle_sessions_command(
         open_session_picker(app, session);
         return;
     }
-    if app.running || app.pending.is_some() {
+    if app.running || app.permission_prompt.read().is_some() {
         app.note(
             block::NoticeLevel::Warn,
             "finish the current turn before managing sessions",

@@ -228,31 +228,8 @@ use terminal_lifecycle::{
 };
 use workflow_panel_projection::workflow_panel_runs;
 
-/// A pending capability approval the operator must answer (mode produced an `Ask` verdict).
-struct Pending {
-    id: SubmissionId,
-    tool: String,
-    cap: Capability,
-    reason: String,
-    arguments: serde_json::Value,
-    workspace: String,
-    /// An incomplete public prompt cannot authorize an effect, even if a legacy EQ copy was
-    /// available. The App Server product projection is the visible approval authority.
-    prompt_complete: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ApprovalChoice {
-    Once,
-    Session,
-    Deny,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ApprovalInput {
-    Consumed,
-    Answer { approved: bool, remember: bool },
-}
+mod permission_prompt;
+use permission_prompt::{ApprovalChoice, ApprovalInput, Pending};
 
 /// Everything the frontend holds of the runtime: queue endpoints, a negotiated version, and the
 /// facts that cannot change for the life of the session.
@@ -658,8 +635,7 @@ struct App {
     hyperlink_policy: hyperlink::Policy,
     geometry: transcript_geometry::TranscriptGeometry,
     editor: Editor,
-    pending_mcp_input: Option<mcp_input::PendingMcpInput>,
-    queued_mcp_inputs: VecDeque<app_server::McpInputPrompt>,
+    mcp_form: mcp_input::McpInputOwner,
     status: String,
     /// The canonical current-version result object from the most recently terminalized run.
     ///
@@ -711,10 +687,7 @@ struct App {
     effort_application: Option<EffortApplication>,
     /// Completed model turns this session; wide active shelves and `/status` may disclose it.
     turns: u32,
-    /// An approval the kernel is blocked on, awaiting a y/n/a answer.
-    pending: Option<Pending>,
-    /// Keyboard focus inside the blocking permission decision. Deny is the fail-closed default.
-    approval_choice: ApprovalChoice,
+    permission_prompt: permission_prompt::PermissionPromptOwner,
     completions: completion_owner::CompletionOwner,
     pickers: picker_owner::PickerOwner,
     navigation: session_navigation::SessionNavigationOwner,
@@ -765,7 +738,6 @@ struct App {
     /// Bounded frontend input ownership, separate from editor and transcript presentation.
     input_lanes: input_lanes::InputLanes,
     pending_turn_receipt: Option<PendingTurnReceipt>,
-    pending_approval_response: Option<SubmissionId>,
     /// Ordinary TUI content follows the same bounded Product V1 cursor as headless clients.
     /// Legacy EQ remains for richer tool cards, metrics, and compatibility on older servers.
     product_stream_active: bool,

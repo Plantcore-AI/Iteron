@@ -95,8 +95,7 @@ pub(super) fn apply_event(app: &mut App, ev: UiEvent) {
             app.flush_text();
             app.transcript_viewer.close();
             app.status = "approval required".into();
-            app.approval_choice = ApprovalChoice::Deny;
-            app.pending = Some(Pending {
+            app.permission_prompt.present(Pending {
                 id,
                 tool,
                 cap: capability,
@@ -112,9 +111,7 @@ pub(super) fn apply_event(app: &mut App, ev: UiEvent) {
             reason_code,
             ..
         } => {
-            if app.pending.as_ref().is_some_and(|pending| pending.id == id) {
-                app.pending = None;
-                app.pending_approval_response = None;
+            if app.permission_prompt.resolve(id) {
                 let decision = match resolution {
                     crate::runtime::ApprovalResolution::Approved => "approved · tool pending",
                     crate::runtime::ApprovalResolution::Denied => "denied",

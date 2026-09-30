@@ -73,7 +73,7 @@ pub(super) async fn dispatch<B: ratatui::backend::Backend>(
                     ),
             );
         }
-        CEvent::Paste(pasted) if app.pending_mcp_input.is_some() => {
+        CEvent::Paste(pasted) if app.mcp_form.is_waiting() => {
             mcp_input::handle_paste(app, &pasted);
         }
         CEvent::Paste(pasted) if app.transcript_viewer.is_open() => {
@@ -147,7 +147,7 @@ pub(super) async fn dispatch<B: ratatui::backend::Backend>(
                 return Ok(true);
             }
 
-            if app.pending_mcp_input.is_some() {
+            if app.mcp_form.is_waiting() {
                 if app.transcript_viewer.is_open() {
                     app.transcript_viewer.close();
                 }
@@ -170,7 +170,7 @@ pub(super) async fn dispatch<B: ratatui::backend::Backend>(
             // inspection. In particular, a queued approval cannot have its first key
             // swallowed before the next draw closes the viewer, and Ctrl-C/Ctrl-D still
             // reach the kernel/teardown paths below.
-            if app.pending.is_some() {
+            if app.permission_prompt.read().is_some() {
                 if app.transcript_viewer.is_open() {
                     app.transcript_viewer.close();
                 }
@@ -223,7 +223,9 @@ pub(super) async fn dispatch<B: ratatui::backend::Backend>(
                 app.transcript_viewer.close();
             }
 
-            if mapped_action == Some(keymap::Action::TranscriptViewer) && app.pending.is_none() {
+            if mapped_action == Some(keymap::Action::TranscriptViewer)
+                && app.permission_prompt.read().is_none()
+            {
                 open_transcript_viewer(app, &transcript_effects, "");
                 return Ok(true);
             }
@@ -319,7 +321,7 @@ pub(super) async fn dispatch<B: ratatui::backend::Backend>(
             // While the kernel is blocked on a capability approval, y/n/a/Esc answer it and
             // arrows/Tab + Enter make it a real focusable control; nothing falls through to
             // the editor. This is the in-TUI approval UX (R5 §4.4).
-            if app.running && app.pending.is_some() {
+            if app.running && app.permission_prompt.read().is_some() {
                 if k.code == KeyCode::Char('c') && ctrl {
                     // The runtime settles the prompt; requesting an interrupt is not an
                     // approval decision and cannot clear its pending authority early.
@@ -327,9 +329,9 @@ pub(super) async fn dispatch<B: ratatui::backend::Backend>(
                     return Ok(true);
                 }
                 if let ApprovalInput::Answer { approved, remember } = app.approval_key(k.code)
-                    && let Some(p) = app.pending.as_ref()
+                    && let Some(p) = app.permission_prompt.read()
                 {
-                    if app.pending_approval_response.is_some() {
+                    if app.permission_prompt.awaiting_response() {
                         app.note(
                             block::NoticeLevel::Info,
                             "approval response is awaiting its exact receipt",
@@ -343,14 +345,15 @@ pub(super) async fn dispatch<B: ratatui::backend::Backend>(
                         );
                         return Ok(true);
                     }
+                    let prompt_id = p.id;
                     let result = session.submit_for_running_turn(Op::ApprovalResponse {
-                        id: p.id,
+                        id: prompt_id,
                         approved,
                         remember,
                     });
                     match result {
                         Some(Ok(id)) => {
-                            app.pending_approval_response = Some(id);
+                            app.permission_prompt.response_queued(prompt_id, id);
                             app.status =
                                 format!("approval response {} queued · awaiting runtime", id.0);
                         }

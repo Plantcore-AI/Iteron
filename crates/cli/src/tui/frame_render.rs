@@ -73,18 +73,24 @@ pub(super) fn render_hint(f: &mut Frame, area: Rect, density: surface::Density, 
         return;
     }
     let text = app.editor.text();
-    let left = if app.pending_mcp_input.is_some() {
+    let left = if app.mcp_form.is_waiting() {
         if density == surface::Density::Compact {
             "enter answer · esc decline"
         } else {
             "enter sends JSON · ctrl+j newline · esc declines · ctrl-c declines and interrupts"
         }
-    } else if app.pending.is_some() {
+    } else if app.permission_prompt.read().is_some() {
         let rememberable = app
-            .pending
-            .as_ref()
+            .permission_prompt
+            .read()
             .is_some_and(|pending| capability_can_be_remembered(pending.cap));
-        if density == surface::Density::Compact && rememberable {
+        if app
+            .permission_prompt
+            .read()
+            .is_some_and(|pending| !pending.prompt_complete)
+        {
+            "n deny · complete approval prompt unavailable"
+        } else if density == surface::Density::Compact && rememberable {
             "y once · a session-wide · n deny"
         } else if density == surface::Density::Compact {
             "y once · n deny"
@@ -239,7 +245,7 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
     // the first frame — is a pure projection and never scans sidecars.
     // A newly arrived capability decision outranks optional inspection chrome. The viewer cannot
     // hide a fail-closed approval surface while the runtime is blocked on it.
-    if app.pending.is_some() || app.pending_mcp_input.is_some() {
+    if app.permission_prompt.read().is_some() || app.mcp_form.is_waiting() {
         if app.transcript_viewer.is_open() {
             app.transcript_viewer.close();
         }
@@ -265,13 +271,13 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
     }
     // The dock grows for multiline input, bounded to six editable rows. A blocking approval asks
     // for the full six-row decision surface; short terminals degrade through Surface::resolve.
-    let n_input_rows = if app.pending_mcp_input.is_some() {
+    let n_input_rows = if app.mcp_form.is_waiting() {
         6
     } else {
         (app.editor.text().split('\n').count().clamp(1, 6) as u16)
             .saturating_add(u16::try_from(app.editor.chip_count()).unwrap_or(u16::MAX))
     };
-    let blocking_input = app.pending.is_some() || app.pending_mcp_input.is_some();
+    let blocking_input = app.permission_prompt.read().is_some() || app.mcp_form.is_waiting();
     let lane_rows = if blocking_input {
         0
     } else {
@@ -292,7 +298,7 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
         .unwrap_or(u16::MAX)
         .min(workflow_region_cap(f.area().height));
     let fresh_landing = !app.running
-        && app.pending.is_none()
+        && app.permission_prompt.read().is_none()
         && app.history.blocks().len() == 1
         && matches!(
             app.history.blocks().first().map(|block| &block.kind),

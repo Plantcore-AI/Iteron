@@ -101,7 +101,7 @@ pub(super) fn approval_action_line(app: &App, pending: &Pending, width: u16) -> 
         choices
     };
     let choice_style = |choice: ApprovalChoice| {
-        let selected = app.approval_choice == choice;
+        let selected = app.permission_prompt.choice() == choice;
         if selected && app.theme.mono {
             Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
         } else if selected {
@@ -127,7 +127,7 @@ pub(super) fn approval_action_line(app: &App, pending: &Pending, width: u16) -> 
     if required > width
         && let Some((choice, label)) = choices
             .iter()
-            .find(|(choice, _)| *choice == app.approval_choice)
+            .find(|(choice, _)| *choice == app.permission_prompt.choice())
     {
         // This is an intentional one-slot pager, not a reordered button row: arrow navigation changes
         // the focused label in place, while the canonical y → a → n order returns as soon as it fits.
@@ -159,7 +159,7 @@ pub(super) fn render_composer(f: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
     if area.height == 1
-        && let Some(pending) = &app.pending
+        && let Some(pending) = app.permission_prompt.read()
     {
         // At the physical minimum, fail-closed choice visibility outranks title and transcript.
         f.render_widget(
@@ -171,7 +171,7 @@ pub(super) fn render_composer(f: &mut Frame, area: Rect, app: &mut App) {
     let text = app.editor.text();
     let attachment_count = app.editor.chip_count();
     let is_bash = text.starts_with('!');
-    let line_color = if app.pending.is_some() {
+    let line_color = if app.permission_prompt.read().is_some() {
         app.theme.warn
     } else if !text.is_empty() || attachment_count > 0 || app.running {
         app.theme.accent
@@ -180,7 +180,7 @@ pub(super) fn render_composer(f: &mut Frame, area: Rect, app: &mut App) {
     };
     // Blocking security decisions retain a complete, titled frame. Ordinary composition uses one
     // low-contrast input surface, one semantic left rail, and no redundant title or perimeter.
-    let body = if app.pending.is_some() && area.width >= 3 && area.height >= 3 {
+    let body = if app.permission_prompt.read().is_some() && area.width >= 3 && area.height >= 3 {
         let approval = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
@@ -192,7 +192,7 @@ pub(super) fn render_composer(f: &mut Frame, area: Rect, app: &mut App) {
         let inner = approval.inner(area);
         f.render_widget(approval, area);
         inner
-    } else if app.pending.is_some() {
+    } else if app.permission_prompt.read().is_some() {
         area
     } else {
         let surface_style = if app.theme.mono {
@@ -232,7 +232,7 @@ pub(super) fn render_composer(f: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
 
-    if let Some(pending) = &app.pending {
+    if let Some(pending) = app.permission_prompt.read() {
         let verb = block::verb_for(&pending.tool);
         let title = clip_text(
             &format!("Allow {verb}? · {}", cap_label(pending.cap)),

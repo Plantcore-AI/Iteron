@@ -229,8 +229,7 @@ pub(super) fn apply_server_event<T: notification::NotificationTransport + ?Sized
                 );
             }
             app.flush_text();
-            app.pending = None; // a pending approval cannot outlive its run
-            app.pending_approval_response = None;
+            app.permission_prompt.clear(); // only the actual run terminal clears its prompt
             app.clear_mcp_inputs();
             app.settle_unfinished_tools();
             interrupt.store(false, Ordering::Relaxed);
