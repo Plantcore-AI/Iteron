@@ -613,6 +613,7 @@ impl McpRemoteClient {
                 evidence: Some(evidence),
             };
         }
+        let evidence = evidence.with_captured_result(&result);
         let output = match render_tool_content(&result, self.result_policy, &self.spill_store) {
             Ok(output) => output,
             Err(error) => {
@@ -863,7 +864,8 @@ impl McpRemoteClient {
                             evidence: None,
                         };
                     };
-                    let evidence = remote_mrtr_evidence(&self.server_name, name, dispatched_at);
+                    let evidence = remote_mrtr_evidence(&self.server_name, name, dispatched_at)
+                        .with_captured_result(&result);
                     let output =
                         match render_tool_content(&result, self.result_policy, &self.spill_store) {
                             Ok(output) => output,
@@ -1310,6 +1312,7 @@ impl McpRemoteClient {
                 };
             }
         };
+        let evidence = evidence.with_captured_result(&result);
         match render_extension_content(&result, self.result_policy, &self.spill_store) {
             Ok(content) => match self.cleanup_spills(crate::McpSpillCleanup::ToolEnd) {
                 Ok(()) => McpToolOutcome::Completed {

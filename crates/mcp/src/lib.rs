@@ -19,6 +19,7 @@ use serde_json::{Value, json};
 use std::io::Write;
 
 mod cache;
+mod captured_result;
 pub mod client;
 mod deadlines;
 mod elicitation;
@@ -38,6 +39,7 @@ mod tool_catalog;
 mod tool_filter;
 pub mod wire;
 
+pub use captured_result::McpCapturedResult;
 pub use client::{McpClient, McpToolOutcome};
 pub use deadlines::{MAX_MCP_DEADLINE_MILLISECONDS, McpDeadlinePolicy, McpTransportDeadlines};
 pub use elicitation::{

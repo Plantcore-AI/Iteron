@@ -438,6 +438,7 @@ impl McpClient {
                 };
             }
         };
+        let evidence = evidence.with_captured_result(&result);
         match render_extension_content(&result, self.result_policy, &self.spill_store) {
             Ok(content) => match self.cleanup_spills(crate::McpSpillCleanup::ToolEnd) {
                 Ok(()) => McpToolOutcome::Completed {
@@ -947,7 +948,8 @@ impl McpClient {
                 };
             }
         };
-        let evidence = McpToolCallEvidence::new(&self.server_name, name, latency);
+        let evidence = McpToolCallEvidence::new(&self.server_name, name, latency)
+            .with_captured_result(&result);
         if self.protocol_mode.is_stateless()
             && result.get("resultType").and_then(Value::as_str) == Some("input_required")
         {
@@ -1219,7 +1221,8 @@ impl McpClient {
                             evidence: None,
                         };
                     };
-                    let evidence = mrtr_evidence(&self.server_name, name, dispatched_at);
+                    let evidence = mrtr_evidence(&self.server_name, name, dispatched_at)
+                        .with_captured_result(&result);
                     let output =
                         match render_tool_content(&result, self.result_policy, &self.spill_store) {
                             Ok(output) => output,

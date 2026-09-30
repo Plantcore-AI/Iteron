@@ -8,7 +8,7 @@ use super::tool_interrupt::{ToolInterruption, await_tool_or_interrupt};
 use super::tool_output_spill::{self, ManagedToolResult, ToolOutputSpillStore};
 use iteron_protocol::{ToolResult, ToolUse, Trust};
 use iteron_sched::Governor;
-use iteron_tools::{ToolExecution, effectfut};
+use iteron_tools::{CapturedToolExecution, ToolExecution, capturedfut};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -69,7 +69,7 @@ impl EarlyToolExecutor {
     pub(super) fn spawn(
         self,
         admitted: AdmittedEarlyTool,
-        future: effectfut::BoxFut,
+        future: capturedfut::BoxFut,
     ) -> EarlyToolTask {
         let execution_guard = reserve_execution(
             self.scope.execution_gate.clone(),
@@ -108,7 +108,7 @@ impl EarlyToolExecutor {
                     };
                 }
             };
-            let (execution, operator_interrupted) = match await_tool_or_interrupt(
+            let (mut execution, operator_interrupted) = match await_tool_or_interrupt(
                 future,
                 self.scope.interrupt.as_deref(),
                 Some(self.scope.force_cancel.as_ref()),
@@ -139,23 +139,27 @@ impl EarlyToolExecutor {
                     // A pure read has no external effect by its frozen registry contract. An
                     // interrupted effecting call remains unknown until the journal owner settles.
                     (
-                        if admitted.is_pure {
+                        CapturedToolExecution::from(if admitted.is_pure {
                             ToolExecution::Definite(result)
                         } else {
                             ToolExecution::Unknown(result)
-                        },
+                        }),
                         true,
                     )
                 }
             };
-            let effect_unknown = matches!(&execution, ToolExecution::Unknown(_));
-            let mut result = execution.into_result();
-            result.tool_use_id = admitted.call.id.clone();
+            let effect_unknown = matches!(&execution.execution, ToolExecution::Unknown(_));
+            match &mut execution.execution {
+                ToolExecution::Definite(result) | ToolExecution::Unknown(result) => {
+                    result.tool_use_id = admitted.call.id.clone();
+                }
+            }
             let publication_error = self
                 .scope
                 .publication
-                .publish(&admitted.call, &result, !effect_unknown)
+                .publish_execution(&admitted.call, &execution)
                 .err();
+            let result = execution.into_result();
             let managed = tool_output_spill::manage_result(admitted.spill_store.as_deref(), result);
             EarlyToolOutcome::Completed {
                 managed,

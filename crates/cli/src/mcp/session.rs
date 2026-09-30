@@ -6,7 +6,8 @@
 //! by `iteron_mcp::McpSupervisor`; an unknown external effect is never replayed after reconnect.
 
 use super::{
-    ConfiguredMcpClient, connect_configured_server_with_policies, host_ceiling, mcp_tool_execution,
+    ConfiguredMcpClient, connect_configured_server_with_policies, host_ceiling,
+    mcp_captured_tool_execution,
 };
 use crate::{
     config::{McpServerConfig, McpTransportConfig},
@@ -1587,7 +1588,7 @@ fn register_server_tools(
     } else {
         "name"
     };
-    registry.register_mcp_effect(
+    registry.register_mcp_effect_captured(
         ToolSpec {
             name: format!("{name}__tool_call"),
             description: if uses_plantcore_handle {
@@ -1611,14 +1612,15 @@ fn register_server_tools(
             let server = call_server.clone();
             let exposure = call_exposure.clone();
             let mrtr_handler = call_mrtr_handler.clone();
-            iteron_tools::effectfut::box_it(async move {
+            iteron_tools::capturedfut::box_it(async move {
                 if !server_identity_admitted(&exposure, &server) {
                     return definite_result(
                         call.id,
                         "MCP server identity is not admitted by the pinned plugin exposure policy"
                             .into(),
                         true,
-                    );
+                    )
+                    .into();
                 }
                 let tool = call
                     .input
@@ -1635,7 +1637,7 @@ fn register_server_tools(
                         dispatch_clock.mark_dispatched()
                     })
                     .await;
-                mcp_tool_execution(call.id, outcome)
+                mcp_captured_tool_execution(call.id, outcome)
             })
         },
     )?;
@@ -1644,7 +1646,7 @@ fn register_server_tools(
         let extension_server = server.clone();
         let extension_exposure = exposure.clone();
         let tool_id = format!("{name}__{suffix}");
-        registry.register_mcp_effect(
+        registry.register_mcp_effect_captured(
             ToolSpec {
                 name: tool_id.clone(),
                 description,
@@ -1657,7 +1659,7 @@ fn register_server_tools(
                 let server = extension_server.clone();
                 let exposure = extension_exposure.clone();
                 let tool_id = tool_id.clone();
-                iteron_tools::effectfut::box_it(async move {
+                iteron_tools::capturedfut::box_it(async move {
                     if !server_identity_admitted(&exposure, &server)
                         || !exposure
                             .get()
@@ -1668,16 +1670,16 @@ fn register_server_tools(
                             "MCP resource/prompt capability is not admitted by the pinned exposure policy"
                                 .into(),
                             true,
-                        );
+                        ).into();
                     }
                     let params = match normalize_extension_params(method, call.input.clone()) {
                         Ok(params) => params,
-                        Err(reason) => return definite_result(call.id, reason.into(), true),
+                        Err(reason) => return definite_result(call.id, reason.into(), true).into(),
                     };
                     let outcome = server
                         .extension(method, params, move || dispatch_clock.mark_dispatched())
                         .await;
-                    mcp_tool_execution(call.id, outcome)
+                    mcp_captured_tool_execution(call.id, outcome)
                 })
             },
         )?;

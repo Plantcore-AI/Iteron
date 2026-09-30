@@ -18,6 +18,7 @@ pub struct McpToolCallEvidence {
     pub server_name: String,
     pub tool_name: String,
     pub dispatch_to_terminal_ms: NonZeroU64,
+    captured_result: Option<crate::McpCapturedResult>,
 }
 
 impl McpToolCallEvidence {
@@ -26,7 +27,19 @@ impl McpToolCallEvidence {
             server_name: server_name.to_string(),
             tool_name: tool_name.to_string(),
             dispatch_to_terminal_ms: latency_ms,
+            captured_result: None,
         }
+    }
+
+    /// Full bounded result data exists only after an authoritative matching response. It is
+    /// deliberately separate from timing and from the model-facing capped content.
+    pub fn captured_result(&self) -> Option<&crate::McpCapturedResult> {
+        self.captured_result.as_ref()
+    }
+
+    pub(crate) fn with_captured_result(mut self, result: &serde_json::Value) -> Self {
+        self.captured_result = Some(crate::McpCapturedResult::capture(result));
+        self
     }
 }
 

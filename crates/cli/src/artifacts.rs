@@ -66,8 +66,10 @@ impl ArtifactReadScope {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ArtifactTextSchema {
     ToolOutput,
+    McpResult,
     FinalAnswer,
     FileDiff,
+    FileSnapshot,
     CapturedReplacement,
 }
 
@@ -75,19 +77,21 @@ impl ArtifactTextSchema {
     fn schema(self) -> &'static str {
         match self {
             Self::ToolOutput => "iteron.tool-output.v1",
+            Self::McpResult => "iteron.mcp-result.v1",
             Self::FinalAnswer => "iteron.final-answer.v1",
             Self::FileDiff => "iteron.file-diff.v1",
+            Self::FileSnapshot => "iteron.file-snapshot.v1",
             Self::CapturedReplacement => "iteron.captured-replacement.v1",
         }
     }
 
     fn namespace(self) -> (PrivateContentNamespace, PrivateContentClass) {
         match self {
-            Self::ToolOutput => (
+            Self::ToolOutput | Self::McpResult => (
                 PrivateContentNamespace::ToolArtifact,
                 PrivateContentClass::ToolOutput,
             ),
-            Self::FinalAnswer | Self::FileDiff | Self::CapturedReplacement => {
+            Self::FinalAnswer | Self::FileDiff | Self::FileSnapshot | Self::CapturedReplacement => {
                 (PrivateContentNamespace::Export, PrivateContentClass::Export)
             }
         }

@@ -77,7 +77,7 @@ impl<'a> DeferredBatchExecutor<'a> {
                 let _permit = governor.acquire().await;
                 let started = Instant::now();
                 let (mut execution, operator_interrupted) = match await_tool_or_interrupt(
-                    registry.run_admitted_intent(intent),
+                    registry.run_admitted_intent_captured(intent),
                     interrupt.as_deref(),
                     Some(force_cancel.as_ref()),
                     Some(drain.as_ref()),
@@ -90,21 +90,23 @@ impl<'a> DeferredBatchExecutor<'a> {
                             admitted_call.id.clone(),
                             started.elapsed().as_millis() as u64,
                             interruption,
-                        )),
+                        ))
+                        .into(),
                         true,
                     ),
                 };
-                let (result, effects_known) = match &mut execution {
-                    ToolExecution::Definite(result) => (result, true),
-                    ToolExecution::Unknown(result) => (result, false),
+                let result = match &mut execution.execution {
+                    ToolExecution::Definite(result) | ToolExecution::Unknown(result) => result,
                 };
                 result.tool_use_id = admitted_call.id.clone();
                 let publication_error = publication
-                    .publish(&admitted_call, result, effects_known)
+                    .publish_execution(&admitted_call, &execution)
                     .err()
                     .map(|error| strict_utf8_head(&error, 2_048));
-                let mut managed =
-                    tool_output_spill::manage_execution(spill_store.as_deref(), execution);
+                let mut managed = tool_output_spill::manage_execution(
+                    spill_store.as_deref(),
+                    execution.execution,
+                );
                 let result = match &mut managed {
                     ManagedToolExecution::Definite(result)
                     | ManagedToolExecution::Unknown(result) => result,

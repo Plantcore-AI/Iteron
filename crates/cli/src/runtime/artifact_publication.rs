@@ -22,6 +22,12 @@ pub(crate) trait ToolOutputPublicationPort: Send + Sync {
         raw_result: &ToolResult,
         effects_known: bool,
     ) -> Result<(), String>;
+
+    fn publish_execution(
+        &self,
+        admitted_call: &ToolUse,
+        captured: &iteron_tools::CapturedToolExecution,
+    ) -> Result<(), String>;
 }
 
 struct CapturedOutputPublisher {
@@ -49,6 +55,15 @@ impl CapturedOutputPublisher {
         schema: ArtifactTextSchema,
         text: &str,
     ) -> Result<(), String> {
+        self.retain_text(sequence, schema, text).map(|_| ())
+    }
+
+    fn retain_text(
+        &self,
+        sequence: u64,
+        schema: ArtifactTextSchema,
+        text: &str,
+    ) -> Result<iteron_protocol::client_artifact::ClientArtifactDescriptorV1, String> {
         if sequence == 0 {
             return Err(PUBLICATION_UNAVAILABLE.into());
         }
@@ -56,8 +71,47 @@ impl CapturedOutputPublisher {
         // handle. The artifact owner scrubs and retains the served bytes under session erasure.
         self.store()?
             .publish_text(sequence, schema, text, &[])
-            .map(|_| ())
             .map_err(|_| PUBLICATION_UNAVAILABLE.into())
+    }
+
+    fn publish_native(
+        &self,
+        sequence: u64,
+        receipt: &iteron_tools::NativeMutationReceipt,
+    ) -> Result<(), String> {
+        let mut files = Vec::with_capacity(receipt.files().len());
+        for file in receipt.files() {
+            let relative = file
+                .path()
+                .strip_prefix(&self.workspace)
+                .ok()
+                .and_then(std::path::Path::to_str)
+                .ok_or(PUBLICATION_UNAVAILABLE)?;
+            let before = file
+                .before()
+                .map(|bytes| {
+                    std::str::from_utf8(bytes)
+                        .map_err(|_| PUBLICATION_UNAVAILABLE.to_owned())
+                        .and_then(|text| {
+                            self.retain_text(sequence, ArtifactTextSchema::FileSnapshot, text)
+                        })
+                })
+                .transpose()?;
+            let after = std::str::from_utf8(file.after()).map_err(|_| PUBLICATION_UNAVAILABLE)?;
+            let after = self.retain_text(sequence, ArtifactTextSchema::FileSnapshot, after)?;
+            files.push(serde_json::json!({
+                "path":relative,"before":before,"after":after
+            }));
+        }
+        // Each complete served snapshot has its own real artifact identity. The manifest records
+        // the actual native receipt; it neither fabricates prior bytes nor calls a preview a diff.
+        let manifest = serde_json::to_string(&serde_json::json!({
+            "type":"native_file_diff_v1","tool_use_id":receipt.tool_use_id(),
+            "tool":receipt.tool_name(),"basis":"guarded_native_commit",
+            "encoding":"utf8","redaction":"served_content","files":files
+        }))
+        .map_err(|_| PUBLICATION_UNAVAILABLE)?;
+        self.publish_text(sequence, ArtifactTextSchema::FileDiff, &manifest)
     }
 }
 
@@ -82,6 +136,49 @@ impl ToolOutputPublicationPort for CapturedOutputPublisher {
             self.publish_text(source, ArtifactTextSchema::CapturedReplacement, &diff)?;
         }
         Ok(())
+    }
+
+    fn publish_execution(
+        &self,
+        call: &ToolUse,
+        captured: &iteron_tools::CapturedToolExecution,
+    ) -> Result<(), String> {
+        let (result, known) = match &captured.execution {
+            iteron_tools::ToolExecution::Definite(result) => (result, true),
+            iteron_tools::ToolExecution::Unknown(result) => (result, false),
+        };
+        if result.tool_use_id != call.id {
+            return Err(PUBLICATION_UNAVAILABLE.into());
+        }
+        let source = *self.sources.get(&call.id).ok_or(PUBLICATION_UNAVAILABLE)?;
+        let mut unavailable = captured.capture_error.is_some();
+        unavailable |= self.publish(call, result, known).is_err();
+        for output in &captured.captured_outputs {
+            let schema = match output.schema.as_str() {
+                "iteron.mcp-result.v1" => ArtifactTextSchema::McpResult,
+                _ => {
+                    unavailable = true;
+                    continue;
+                }
+            };
+            unavailable |= self.publish_text(source, schema, &output.text).is_err();
+        }
+        if let Some(receipt) = &captured.native_mutation {
+            if known
+                && !result.is_error
+                && receipt.tool_use_id() == call.id
+                && receipt.tool_name() == call.name
+            {
+                unavailable |= self.publish_native(source, receipt).is_err();
+            } else {
+                unavailable = true;
+            }
+        }
+        if unavailable {
+            Err(PUBLICATION_UNAVAILABLE.into())
+        } else {
+            Ok(())
+        }
     }
 }
 
