@@ -46,7 +46,7 @@ pub use context_ledger::{
     CacheClass, CacheEvidence, CompactionEvidence, ContextDecision, ContextDecisionReason,
     ContextLedger, ContextObservation, ContextObserver, ContextSegmentEvidence, ContextSegmentId,
     ContextSourceClass, ContextTotals, ContextTransformEvidence, ContextTransformKind,
-    NullContextObserver, TokenRange, TokenizerIdentity,
+    MAX_CONTEXT_LEDGER_SEGMENTS, NullContextObserver, TokenRange, TokenizerIdentity,
 };
 pub use context_materialization::ContextMaterializationAudit;
 pub use context_port::{

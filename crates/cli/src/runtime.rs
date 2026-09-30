@@ -26,6 +26,7 @@ use early_tool_executor::EarlyToolOutcome as EarlyPureToolOutcome;
 mod kernel_effect_bridge;
 mod provider_stream_observer;
 mod provider_turn_evidence;
+mod request_context_evidence;
 mod submitted_turn_state;
 mod terminal_record;
 use effect_descriptor::{
@@ -1132,7 +1133,7 @@ pub struct Agent {
     advertised_tool_specs_cache: Option<context_runtime::AdvertisedToolSpecsCache>,
     context_budget_policy: iteron_ctx::ContextBudgetPolicy,
     context_materialization_policy: iteron_ctx::ContextMaterializationPolicy,
-    context_source_evidence: Vec<iteron_ctx::ContextSegmentEvidence>,
+    context_source_evidence: request_context_evidence::RequestContextEvidenceOwner,
     /// Invocation-local file provenance. `None` for text/image-only submissions and cleared when
     /// emergency compaction replaces the source message with a summary.
     input_file_evidence: Option<file_submission::InputFileEvidence>,

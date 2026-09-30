@@ -321,6 +321,7 @@ fn validate_extracted_owners(root: &Path) -> Result<()> {
         "crates/cli/src/runtime/effect_journal_owner.rs",
         "crates/cli/src/runtime/submitted_turn_state.rs",
         "crates/cli/src/runtime/provider_turn_evidence.rs",
+        "crates/cli/src/runtime/request_context_evidence.rs",
         "crates/workflow/src/bindings.rs",
         "crates/workflow/src/bindings/run_state.rs",
         "crates/workflow/src/bindings/attempt_executor.rs",

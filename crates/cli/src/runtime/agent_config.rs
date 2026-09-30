@@ -177,7 +177,8 @@ impl Agent {
             advertised_tool_specs_cache: None,
             context_budget_policy,
             context_materialization_policy: iteron_ctx::ContextMaterializationPolicy::default(),
-            context_source_evidence: Vec::new(),
+            context_source_evidence:
+                super::request_context_evidence::RequestContextEvidenceOwner::default(),
             input_file_evidence: None,
             input_image_evidence: None,
             context_ledgers: iteron_ctx::ContextLedgerStore::default(),

@@ -388,7 +388,7 @@ impl Agent {
         let mut instruction_tokens = 0usize;
         let mut memory_tokens = 0usize;
         let mut injected_task_tokens = 0usize;
-        for segment in &self.context_source_evidence {
+        for segment in self.context_source_evidence.segments() {
             if !matches!(
                 segment.decision,
                 iteron_ctx::ContextDecision::Selected

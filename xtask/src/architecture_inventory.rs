@@ -288,6 +288,17 @@ const SURFACES: &[Surface] = &[
         next_seams: &["private state; typed context/recovery mutations only"],
     },
     Surface {
+        path: "crates/cli/src/runtime/request_context_evidence.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "single bounded materialized/recorded source evidence state",
+            "exact prepared request commitments and token/classification construction",
+        ],
+        next_seams: &[
+            "per-material locator versions and durable physical request manifest evidence remain pending",
+        ],
+    },
+    Surface {
         path: "crates/cli/src/runtime/provider_turn_evidence.rs",
         boundary: "cli-host",
         responsibilities: &[
