@@ -840,6 +840,9 @@ impl ProviderRouteAttemptAccounting {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EventKind {
+    TaskPlanUpdatedV1 {
+        plan: crate::task_plan::TaskPlanSnapshotV1,
+    },
     /// A phase transition. The load-bearing telemetry.
     Phase { phase: Phase },
     /// A turn began.

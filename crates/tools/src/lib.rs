@@ -41,6 +41,7 @@ mod schema;
 mod schema_error;
 mod shell;
 mod skill;
+mod task_plan;
 mod tool_policy;
 mod tool_purpose;
 mod tool_search;
@@ -52,6 +53,7 @@ mod write_file;
 
 pub use captured_execution::{CapturedToolExecution, CapturedToolOutput, capturedfut};
 pub use native_mutation::{MAX_NATIVE_CAPTURE_FILE_BYTES, NativeFileChange, NativeMutationReceipt};
+pub use task_plan::UPDATE_PLAN;
 pub use tool_search::DEFAULT_DEFERRED_TOOL_EAGER_LIMIT;
 pub use web::WEB_SEARCH_RESULT_CAP;
 
@@ -510,6 +512,7 @@ impl Registry {
         };
         fs_tools::register(&mut r)?;
         repair_evidence::register(&mut r)?;
+        task_plan::register(&mut r)?;
         git::register(&mut r)?;
         mem::register(&mut r)?;
         skill::register(&mut r)?;

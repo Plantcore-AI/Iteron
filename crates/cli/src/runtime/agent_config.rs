@@ -132,6 +132,7 @@ impl Agent {
         let turn_publications =
             super::turn_publication::TurnPublicationOwner::for_rollout(&rollout);
         Agent {
+            task_plan: super::task_plan::TaskPlanOwner::default(),
             advisory_maintenance: std::sync::Mutex::new(None),
             persistent_agents: None,
             persistent_mailbox: None,

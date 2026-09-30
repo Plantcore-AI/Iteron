@@ -683,7 +683,9 @@ impl Agent {
     /// resume) — it does NOT touch the disk, so the stable prefix is byte-stable across a run and a
     /// replay reproduces instructions, memory, and skills exactly.
     pub(super) fn effective_system(&self) -> String {
-        iteron_ctx::assemble_system_prompt(&self.system, self.injected.as_deref())
+        let mut system = iteron_ctx::assemble_system_prompt(&self.system, self.injected.as_deref());
+        self.task_plan.append_context(&mut system);
+        system
     }
 
     /// The tool set advertised to the model for this turn.

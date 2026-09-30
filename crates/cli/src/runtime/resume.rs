@@ -8,6 +8,7 @@ const NO_APPROVAL_SEQ: u64 = 0;
 /// validate identities, allocate bounded state, and append a monotone USD tightening to the target
 /// journal; applying it to the resident `Agent` is assignments only.
 struct StagedAdoptedResume {
+    task_plan: super::task_plan::TaskPlanOwner,
     messages: Vec<Message>,
     redacted_tool_results: u32,
     redaction_count_saturated: bool,
@@ -98,6 +99,13 @@ impl Agent {
         // unexpectedly fails, do not widen authority on the resume path.
         match replay_scoped_rollout(self.rollout.path()) {
             Ok(scoped_events) => {
+                self.task_plan = super::task_plan::TaskPlanOwner::recover(
+                    scoped_events
+                        .iter()
+                        .filter(|scoped| &scoped.run_id == self.rollout.run_id())
+                        .map(|scoped| &scoped.event),
+                )
+                .map_err(|reason| KernelError::ContextResolution(reason.into()))?;
                 let verification_tasks = bounded_verify::VerificationTaskRegistry::new();
                 verification_tasks.recover(
                     self.rollout.run_id(),
@@ -630,6 +638,13 @@ impl Agent {
                 .map(|scoped| &scoped.event),
         );
         Ok(StagedAdoptedResume {
+            task_plan: super::task_plan::TaskPlanOwner::recover(
+                scoped_events
+                    .iter()
+                    .filter(|scoped| &scoped.run_id == rollout.run_id())
+                    .map(|scoped| &scoped.event),
+            )
+            .map_err(|reason| KernelError::ContextResolution(reason.into()))?,
             messages,
             redacted_tool_results,
             redaction_count_saturated,
@@ -909,6 +924,7 @@ impl Agent {
         // is leaving becomes resumable by another process the moment this returns.
         let previous = std::mem::replace(&mut self.rollout, rollout);
         self.turn_publications = staged.turn_publications;
+        self.task_plan = staged.task_plan;
         self.verification_tasks = staged.verification_tasks;
         self.workspace_checkpoints = workspace_checkpoint::WorkspaceCheckpointOwner::default();
 

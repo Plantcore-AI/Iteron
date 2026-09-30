@@ -77,3 +77,8 @@ The remaining `Agent` field aggregate and provider/ordered effect coordinator ar
 architecture work; these extractions alone do not close the giant-runtime requirement. Final
 acceptance needs the integrated default/optional profiles and actual concurrent tool, cancellation,
 raw-artifact, frontend and restart journeys.
+
+
+### Optional task plans
+
+`TaskPlanOwner` owns a bounded model-maintained plan, its exact durable publication sequence, the latest admitted user-message sequence, and whether new input requires review. `update_plan` is a writer-only native tool: ordinary permission, hook and control admission precedes its local journal. `inspect` creates no plan; `replace` requires the current revision and submission sequence. A prepared replacement becomes visible only after its `TaskPlanUpdatedV1` fsync receipt. Resume and staged adoption fold verified current-run events once. An active plan and unresolved obligations enter the actual request before input-budget estimation; finished plans with no obligations add no context. Plan statuses describe model intent and do not grant capabilities or prove verification. Whole-loop/native frontend acceptance remains pending.

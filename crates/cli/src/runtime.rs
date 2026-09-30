@@ -35,6 +35,7 @@ mod request_inclusion;
 mod request_manifest;
 mod request_manifest_runtime;
 mod submitted_turn_state;
+mod task_plan;
 mod terminal_record;
 mod turn_publication;
 #[cfg(test)]
@@ -1039,6 +1040,7 @@ pub struct AdoptedRun {
 
 /// The agent: a controller wired to its five collaborators.
 pub struct Agent {
+    task_plan: task_plan::TaskPlanOwner,
     advisory_maintenance:
         std::sync::Mutex<Option<std::sync::Arc<advisory_maintenance::MaintenanceOwner>>>,
     persistent_agents: Option<std::sync::Arc<dyn persistent_agents::AgentControlPort>>,
@@ -1794,24 +1796,26 @@ impl Agent {
                 // assistant message (else two consecutive user messages break role alternation).
                 if !task.trim().is_empty() {
                     let task_msg = Message::user_text(task);
-                    self.emit_durable(
+                    let receipt = self.emit_durable_seq(
                         TurnId(self.seq_turn),
                         EventKind::Message {
                             message: task_msg.clone(),
                         },
                     )?;
+                    self.task_plan.observe_submission(receipt);
                     merge_adjacent_user_message(&mut m, task_msg);
                 }
                 Ok(m)
             }
             None => {
                 let task_msg = Message::user_text(task);
-                self.emit_durable(
+                let receipt = self.emit_durable_seq(
                     TurnId(self.seq_turn),
                     EventKind::Message {
                         message: task_msg.clone(),
                     },
                 )?;
+                self.task_plan.observe_submission(receipt);
                 Ok(vec![task_msg])
             }
         }
@@ -4329,9 +4333,19 @@ impl Agent {
                     results[idx] = Some(result);
                     continue;
                 }
-                // Intercept subagent dispatch only AFTER the ordinary capability gate and
-                // PreToolUse hook. Delegation spends provider budget and creates a child rollout;
-                // Plan/deny/Ask must therefore govern it just like every other effecting tool.
+                // Optional plan changes use the same permission, hook and control admission.
+                if tu.name == iteron_tools::UPDATE_PLAN {
+                    let ticket = self.open_tool_call_effect(turn_id, idx, &tu, cap)?;
+                    let result = self.execute_task_plan(turn_id, &tu)?;
+                    self.commit_admitted_tool_result(ticket, &tu.name, &result, 0)?;
+                    self.ledger.tool(0, 0, result.is_error);
+                    any_error |= result.is_error;
+                    self.ui(tool_end_ui(&tu, &result));
+                    results[idx] = Some(result);
+                    continue;
+                }
+                // Delegation spends provider budget and creates a child rollout. Its ordinary
+                // permission and PreToolUse gates above remain authoritative.
                 if tu.name == iteron_tools::DISPATCH_AGENT {
                     let subtask = tu
                         .input

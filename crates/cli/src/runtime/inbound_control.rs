@@ -401,20 +401,24 @@ impl Agent {
                 }
                 self.observed_trust = self.observed_trust.min(Trust::Untrusted);
             }
-            if let Err(error) = self.emit_durable(
+            let receipt = match self.emit_durable_seq(
                 turn,
                 EventKind::Message {
                     message: message.clone(),
                 },
             ) {
-                // The rejected append has no receipt and may not consume an identified steer.
-                // Preserve it ahead of the tail for the App Server's exact-ID requeue handoff.
-                self.inbox.restore_front(steer);
-                if admitted > 0 {
-                    self.context_estimator.invalidate_transcript();
+                Ok(receipt) => receipt,
+                Err(error) => {
+                    // The rejected append has no receipt and may not consume an identified steer.
+                    // Preserve it ahead of the tail for the App Server's exact-ID requeue handoff.
+                    self.inbox.restore_front(steer);
+                    if admitted > 0 {
+                        self.context_estimator.invalidate_transcript();
+                    }
+                    return Err(error);
                 }
-                return Err(error);
-            }
+            };
+            self.task_plan.observe_submission(receipt);
             if let Some(resolved) = resolved_memory {
                 self.registry.invalidate_pure_cache();
                 if !resolved.evidence.deleted {

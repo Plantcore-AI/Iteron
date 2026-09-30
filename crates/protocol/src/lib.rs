@@ -45,6 +45,7 @@ pub mod pricing;
 pub mod product_contract;
 pub mod slot;
 pub mod task;
+pub mod task_plan;
 pub mod tool;
 pub mod trust;
 pub mod tunables_snapshot;
