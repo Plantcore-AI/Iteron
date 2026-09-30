@@ -483,6 +483,16 @@ const SURFACES: &[Surface] = &[
         next_seams: &["failed snapshot publication retains previous confirmed rollback point"],
     },
     Surface {
+        path: "crates/cli/src/runtime/provider_round.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "one model round's actual stream/declaration/physical pump lifetime and settlement-dependent route phase owner",
+        ],
+        next_seams: &[
+            "temporary typed stream/WAL/finance/route ports; pending terminal blocks redispatch; exact completed tool projection; native inclusion remains between run and settlement",
+        ],
+    },
+    Surface {
         path: "crates/cli/src/runtime/provider_stream_observer.rs",
         boundary: "cli-host",
         responsibilities: &[
