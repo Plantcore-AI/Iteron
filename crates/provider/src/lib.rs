@@ -23,6 +23,7 @@ mod governor_policy;
 mod governor_snapshot;
 pub mod openai;
 mod recording_transport;
+pub mod request_capture;
 pub mod responses;
 pub mod sse;
 mod static_metadata;
@@ -355,6 +356,11 @@ pub enum ProviderError {
     /// retry and route failover cannot duplicate accepted model work.
     #[error("provider connection failed before request acceptance")]
     ConnectFailed,
+    /// Proven refusal in the exact body or observation barrier, before polling HTTP send.
+    #[error("physical request observation refused before dispatch")]
+    RequestCaptureRefusedBeforeDispatch,
+    #[error("physical request deadline exhausted before dispatch")]
+    RequestDeadlineBeforeDispatch,
     #[error("provider retry delay exceeded the interactive wait ceiling")]
     RetryAfterTooLong { retry_after_ms: u64, limit_ms: u64 },
     #[error("provider timeout during {stage}")]
@@ -457,6 +463,8 @@ impl ProviderError {
             | ProviderError::Configuration(_)
             | ProviderError::KnownAccountUnavailable { .. }
             | ProviderError::KnownModelUnavailable { .. }
+            | ProviderError::RequestCaptureRefusedBeforeDispatch
+            | ProviderError::RequestDeadlineBeforeDispatch
             | ProviderError::Json(_) => RetryDisposition::Never,
         }
     }
@@ -483,6 +491,12 @@ impl ProviderError {
             ProviderError::Http(_) => "provider transport failed".into(),
             ProviderError::ConnectFailed => {
                 "provider connection failed before request acceptance".into()
+            }
+            ProviderError::RequestCaptureRefusedBeforeDispatch => {
+                "request observation refused before dispatch".into()
+            }
+            ProviderError::RequestDeadlineBeforeDispatch => {
+                "request deadline exhausted before dispatch".into()
             }
             ProviderError::RetryAfterTooLong { .. } => {
                 "provider requested a retry delay beyond the interactive wait ceiling".into()
@@ -1568,6 +1582,22 @@ pub trait Provider: Send + Sync {
         req: &TurnRequest,
         on_item: &mut (dyn FnMut(StreamItem) + Send),
     ) -> Result<TurnResult, ProviderError>;
+
+    /// Observe the exact wire request for a host-bound physical attempt. Unsupported adapters
+    /// explicitly report missing evidence; the observer chooses whether admission may continue.
+    async fn turn_observed(
+        &self,
+        req: &TurnRequest,
+        on_item: &mut (dyn FnMut(StreamItem) + Send),
+        observer: &dyn request_capture::ProviderRequestObserver,
+    ) -> Result<TurnResult, ProviderError> {
+        if observer.enabled() {
+            observer
+                .unavailable("adapter_wire_capture_unavailable")
+                .map_err(|_| ProviderError::RequestCaptureRefusedBeforeDispatch)?;
+        }
+        self.turn(req, on_item).await
+    }
 }
 
 /// Run one provider turn, but abort the in-flight stream the moment a cooperative interrupt is
@@ -1604,17 +1634,50 @@ pub async fn turn_cancellable_any(
     cancels: &[&std::sync::atomic::AtomicBool],
     poll_interval: Duration,
 ) -> Result<TurnResult, ProviderError> {
+    turn_cancellable_any_inner(provider, request, on_item, None, cancels, poll_interval).await
+}
+
+pub async fn turn_cancellable_any_observed(
+    provider: &dyn Provider,
+    request: &TurnRequest,
+    on_item: &mut (dyn FnMut(StreamItem) + Send),
+    observer: &dyn request_capture::ProviderRequestObserver,
+    cancels: &[&std::sync::atomic::AtomicBool],
+    poll_interval: Duration,
+) -> Result<TurnResult, ProviderError> {
+    turn_cancellable_any_inner(
+        provider,
+        request,
+        on_item,
+        Some(observer),
+        cancels,
+        poll_interval,
+    )
+    .await
+}
+
+async fn turn_cancellable_any_inner(
+    provider: &dyn Provider,
+    request: &TurnRequest,
+    on_item: &mut (dyn FnMut(StreamItem) + Send),
+    observer: Option<&dyn request_capture::ProviderRequestObserver>,
+    cancels: &[&std::sync::atomic::AtomicBool],
+    poll_interval: Duration,
+) -> Result<TurnResult, ProviderError> {
     use std::sync::atomic::Ordering;
-    if cancels.is_empty() {
-        return provider.turn(request, on_item).await;
-    }
     // An interrupt that is already pending must not even open the stream.
     if cancels.iter().any(|cancel| cancel.load(Ordering::Relaxed)) {
         return Err(ProviderError::Interrupted);
     }
     // `async_trait` returns a `Pin<Box<dyn Future + Send>>`, which is `Unpin`, so `&mut turn` is
     // itself a `Future` and can be re-polled across loop iterations without an explicit pin.
-    let mut turn = provider.turn(request, on_item);
+    let mut turn = match observer {
+        Some(observer) => provider.turn_observed(request, on_item, observer),
+        None => provider.turn(request, on_item),
+    };
+    if cancels.is_empty() {
+        return turn.await;
+    }
     loop {
         tokio::select! {
             biased;
@@ -1759,6 +1822,16 @@ impl Provider for HealthReportingProvider {
         request: &TurnRequest,
         on_item: &mut (dyn FnMut(StreamItem) + Send),
     ) -> Result<TurnResult, ProviderError> {
+        self.turn_observed(request, on_item, &request_capture::DisabledRequestObserver)
+            .await
+    }
+
+    async fn turn_observed(
+        &self,
+        request: &TurnRequest,
+        on_item: &mut (dyn FnMut(StreamItem) + Send),
+        observer: &dyn request_capture::ProviderRequestObserver,
+    ) -> Result<TurnResult, ProviderError> {
         if let Some(availability) = self.health.blocked_account(&self.provider_instance_id) {
             return Err(ProviderError::KnownAccountUnavailable {
                 provider: self.provider_instance_id.clone(),
@@ -1775,7 +1848,7 @@ impl Provider for HealthReportingProvider {
             });
         }
 
-        let result = self.inner.turn(request, on_item).await;
+        let result = self.inner.turn_observed(request, on_item, observer).await;
         match &result {
             Ok(_) => self
                 .health

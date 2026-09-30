@@ -28,6 +28,54 @@ impl Provider for FinalAnswer {
     }
 }
 
+#[tokio::test]
+async fn cold_fork_cannot_create_a_fresh_cohort_without_descendant_financial_ancestry() {
+    let workspace = gate_integration_tests::temp_ws("cold-fork-cohort-refusal");
+    let run = RunId("parent-cohort-proof-fixture".into());
+    let mut parent = make_agent(&workspace, &run);
+    assert_eq!(
+        parent.run("produce the owning record").await.unwrap(),
+        Outcome::Done
+    );
+    let record = parent.rollout.path().to_owned();
+    drop(parent);
+    let at = iteron_record::replay(&record).unwrap().last().unwrap().seq;
+    let runs = workspace.join(".iteron/runs");
+    let child = iteron_record::fork(&runs, &run, at, &TenantId::default()).unwrap();
+    let mut agent = reopen_reader(&workspace, &child);
+    agent.workspace = workspace.clone();
+    agent.runtime_state_dir = workspace.join("cold-fork-state");
+    let result = agent.enable_persistent_agents(
+        iteron_agents::AgentControllerConfig {
+            workspace_scope: "fixture".into(),
+            root_capabilities: iteron_protocol::capability_set::CapabilitySet::only(
+                iteron_protocol::Capability::ReadOnly,
+            ),
+            root_budget: iteron_protocol::agent_control::AgentBudgetV1 {
+                turns: 1,
+                tokens: 1,
+                cost_microusd: 0,
+                wall_ms: 1000,
+            },
+            max_agents: 1,
+            max_pending_per_agent: 1,
+        },
+        1,
+    );
+    assert!(matches!(
+        result,
+        Err(super::KernelError::AgentControl(
+            iteron_agents::ControllerError::Invalid(
+                "fork cohort ancestry is unproven; resume the owning run"
+            )
+        ))
+    ));
+    assert!(agent.persistent_agents.is_none());
+    assert!(!agent.runtime_state_dir.exists());
+    drop(agent);
+    let _ = std::fs::remove_dir_all(workspace);
+}
+
 fn make_agent(workspace: &Path, run: &RunId) -> Agent {
     let provider = Arc::new(FinalAnswer);
     let rollout = Rollout::open(&workspace.join(".iteron/runs"), run, TenantId::default()).unwrap();

@@ -784,6 +784,20 @@ impl Provider for Anthropic {
         req: &TurnRequest,
         on_item: &mut (dyn FnMut(StreamItem) + Send),
     ) -> Result<TurnResult, ProviderError> {
+        self.turn_observed(
+            req,
+            on_item,
+            &crate::request_capture::DisabledRequestObserver,
+        )
+        .await
+    }
+
+    async fn turn_observed(
+        &self,
+        req: &TurnRequest,
+        on_item: &mut (dyn FnMut(StreamItem) + Send),
+        observer: &dyn crate::request_capture::ProviderRequestObserver,
+    ) -> Result<TurnResult, ProviderError> {
         let transport = req.controls.transport;
         let deadline = Instant::now()
             .checked_add(transport.request_total)
@@ -793,12 +807,20 @@ impl Provider for Anthropic {
                 )
             })?;
         let client = self.client.client(transport)?;
+        let endpoint = self.api_root.endpoint("messages")?;
+        let bytes = crate::request_capture::prepare_json(
+            AdapterKind::AnthropicMessages,
+            endpoint.as_str(),
+            &self.body(req)?,
+            req,
+            observer,
+        )?;
         let mut request = client
-            .post(self.api_root.endpoint("messages")?)
+            .post(endpoint)
             .header("x-api-key", &self.key)
             .header("anthropic-version", API_VERSION)
             .header("content-type", "application/json")
-            .json(&self.body(req)?);
+            .body(bytes);
         if let Some(header) = self
             .static_metadata
             .anthropic_effort_header(&req.model)
@@ -811,14 +833,15 @@ impl Provider for Anthropic {
         }
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
-            return Err(ProviderError::Timeout {
-                stage: crate::ProviderTimeoutStage::RequestTotal,
-            });
+            return Err(ProviderError::RequestDeadlineBeforeDispatch);
         }
         let header_timeout = remaining.min(iteron_tunables::param_duration(
             "provider.anthropic.response_header_timeout",
             RESPONSE_HEADER_TIMEOUT,
         ));
+        crate::request_capture::dispatching(observer)?;
+        let header_timeout =
+            crate::request_capture::remaining_before_send(deadline, header_timeout)?;
         let resp = tokio::time::timeout(header_timeout, request.send())
             .await
             .map_err(|_| ProviderError::Timeout {

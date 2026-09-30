@@ -205,7 +205,9 @@ impl Agent {
             Err(KernelError::Provider(
                 iteron_provider::ProviderError::KnownModelUnavailable { .. }
                 | iteron_provider::ProviderError::KnownAccountUnavailable { .. }
-                | iteron_provider::ProviderError::ConnectFailed,
+                | iteron_provider::ProviderError::ConnectFailed
+                | iteron_provider::ProviderError::RequestCaptureRefusedBeforeDispatch
+                | iteron_provider::ProviderError::RequestDeadlineBeforeDispatch,
             )) => (
                 ProviderRouteUsageTruth::NotDispatched,
                 ProviderRouteCostTruth::NotDispatched,

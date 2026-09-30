@@ -653,6 +653,7 @@ impl Agent {
         {
             return Err(KernelError::AgentControl(ControllerError::Permission));
         }
+        self.require_complete_cohort_ancestry()?;
         let directory = self.runtime_state_dir.join(format!(
             "agents-{}",
             self.subagent_run_id("controller", 0, 0).0

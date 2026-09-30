@@ -761,6 +761,14 @@
         },
         {
           "kind": "file",
+          "path": "crates/provider/src/request_capture.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/provider/src/request_capture_tests.rs"
+        },
+        {
+          "kind": "file",
           "path": "crates/provider/src/sse.rs"
         },
         {
@@ -2509,6 +2517,14 @@
         {
           "kind": "file",
           "path": "crates/provider/src/recording_transport.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/provider/src/request_capture.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/provider/src/request_capture_tests.rs"
         },
         {
           "kind": "file",

@@ -14,6 +14,28 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 impl Agent {
+    /// A fork's root WAL cannot prove separate descendant controller journals and reservations.
+    /// Refuse before opening a fresh cohort namespace until an owning ancestry closure can be
+    /// authenticated. Ordinary single-agent forks retain their independent admission path.
+    pub(super) fn require_complete_cohort_ancestry(&self) -> Result<(), KernelError> {
+        let events = replay_scoped_rollout(self.rollout.path())?;
+        if events.iter().any(|scoped| {
+            scoped.run_id != *self.rollout.run_id()
+                || matches!(
+                    &scoped.event.kind,
+                    EventKind::RunStart {
+                        parent_run: Some(_),
+                        ..
+                    }
+                )
+        }) {
+            return Err(KernelError::AgentControl(ControllerError::Invalid(
+                "fork cohort ancestry is unproven; resume the owning run",
+            )));
+        }
+        Ok(())
+    }
+
     fn persistent_provider_port(
         &self,
     ) -> Result<Option<Arc<dyn RuntimeProviderBudgetPort>>, KernelError> {

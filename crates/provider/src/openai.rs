@@ -924,6 +924,20 @@ impl Provider for OpenAiCompat {
         req: &TurnRequest,
         on_item: &mut (dyn FnMut(StreamItem) + Send),
     ) -> Result<TurnResult, ProviderError> {
+        self.turn_observed(
+            req,
+            on_item,
+            &crate::request_capture::DisabledRequestObserver,
+        )
+        .await
+    }
+
+    async fn turn_observed(
+        &self,
+        req: &TurnRequest,
+        on_item: &mut (dyn FnMut(StreamItem) + Send),
+        observer: &dyn crate::request_capture::ProviderRequestObserver,
+    ) -> Result<TurnResult, ProviderError> {
         let api_root = self.api_root.as_ref().ok_or_else(|| {
             ProviderError::Configuration(
                 self.configuration_error
@@ -941,20 +955,30 @@ impl Provider for OpenAiCompat {
             })?;
         let client = self.client.client(transport)?;
         let body = self.body(req)?;
+        let endpoint = api_root.endpoint("chat/completions")?;
+        let bytes = crate::request_capture::prepare_json(
+            AdapterKind::OpenAiCompatibleChat,
+            endpoint.as_str(),
+            &body,
+            req,
+            observer,
+        )?;
         let request = client
-            .post(api_root.endpoint("chat/completions")?)
+            .post(endpoint)
             .bearer_auth(&self.key)
-            .json(&body);
+            .header("content-type", "application/json")
+            .body(bytes);
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
-            return Err(ProviderError::Timeout {
-                stage: crate::ProviderTimeoutStage::RequestTotal,
-            });
+            return Err(ProviderError::RequestDeadlineBeforeDispatch);
         }
         let header_timeout = remaining.min(iteron_tunables::param_duration(
             "provider.openai.response_header_timeout",
             RESPONSE_HEADER_TIMEOUT,
         ));
+        crate::request_capture::dispatching(observer)?;
+        let header_timeout =
+            crate::request_capture::remaining_before_send(deadline, header_timeout)?;
         let resp = tokio::time::timeout(header_timeout, request.send())
             .await
             .map_err(|_| ProviderError::Timeout {

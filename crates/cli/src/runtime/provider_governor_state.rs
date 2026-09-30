@@ -353,7 +353,9 @@ impl Agent {
             Ok(_) => governor.observe_success(route_id),
             Err(KernelError::Provider(
                 iteron_provider::ProviderError::Interrupted
-                | iteron_provider::ProviderError::DeadlineExceeded,
+                | iteron_provider::ProviderError::DeadlineExceeded
+                | iteron_provider::ProviderError::RequestCaptureRefusedBeforeDispatch
+                | iteron_provider::ProviderError::RequestDeadlineBeforeDispatch,
             )) => CircuitTransition::None,
             Err(KernelError::Provider(_)) => governor.observe_failure(route_id, Instant::now()),
             Err(_) => CircuitTransition::None,
@@ -371,6 +373,13 @@ impl Agent {
         let KernelError::Provider(error) = error else {
             return None;
         };
+        if matches!(
+            error,
+            iteron_provider::ProviderError::RequestCaptureRefusedBeforeDispatch
+                | iteron_provider::ProviderError::RequestDeadlineBeforeDispatch
+        ) {
+            return None;
+        }
         let point = if matches!(
             error,
             iteron_provider::ProviderError::ConnectFailed

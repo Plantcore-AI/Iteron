@@ -651,83 +651,10 @@ impl Agent {
     }
 }
 
-/// Execute one already-admitted physical provider request without retaining a borrow of the
-/// [`Agent`]. The streaming writer uses this shape so its callback can synchronously fsync policy
-/// evidence through the Agent-owned rollout before it constructs an early pure-tool future.
-///
-/// Route identity, budget, pricing, and the durable provider intent are validated by
-/// [`Agent::admit_provider_effect`] immediately before the caller snapshots these fields. Nothing
-/// in the callback can replace the provider, so repeating those checks here would add no authority;
-/// the single-attempt assertion remains defense in depth at dispatch.
-pub(super) struct ProviderCancellation {
-    pub(super) interrupt: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
-    pub(super) force_cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    pub(super) drain: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    pub(super) attempt: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
-    pub(super) allow_in_flight_past_deadline: bool,
-}
-
-pub(super) async fn execute_admitted_provider_turn(
-    provider: std::sync::Arc<dyn Provider>,
-    deadline: Instant,
-    cancellation: ProviderCancellation,
-    request: &TurnRequest,
-    on_item: &mut (dyn FnMut(StreamItem) + Send),
-) -> Result<iteron_provider::TurnResult, KernelError> {
-    if provider.attempt_semantics() != ProviderAttemptSemantics::Single {
-        return Err(KernelError::OpaqueProviderRetries);
-    }
-    if deadline.saturating_duration_since(Instant::now()).is_zero() {
-        return Err(iteron_provider::ProviderError::DeadlineExceeded.into());
-    }
-    // This is shared by ordinary, auxiliary and hedged physical calls. A fallback/hedge can use a
-    // different adapter than the request's original route; never forward its unsupported hint or
-    // leave the legacy bit true (which some adapters interpret as an implicit rolling hint).
-    let controls = provider
-        .control_capabilities()
-        .adapt_optional_cache_breakpoint(request.controls);
-    let projected;
-    let request = if controls != request.controls {
-        projected = TurnRequest {
-            controls,
-            cache_system: controls.prompt_cache.breakpoint
-                != iteron_provider::CacheBreakpoint::None,
-            ..request.clone()
-        };
-        &projected
-    } else {
-        request
-    };
-    let mut cancels = vec![
-        cancellation.force_cancel.as_ref(),
-        cancellation.drain.as_ref(),
-    ];
-    if let Some(interrupt) = cancellation.interrupt.as_deref() {
-        cancels.push(interrupt);
-    }
-    if let Some(attempt_cancel) = cancellation.attempt.as_deref() {
-        cancels.push(attempt_cancel);
-    }
-    let turn = iteron_provider::turn_cancellable_any(
-        provider.as_ref(),
-        request,
-        on_item,
-        &cancels,
-        iteron_tunables::param_duration(
-            "cli.runtime.provider_interrupt_poll_interval",
-            PROVIDER_INTERRUPT_POLL_INTERVAL,
-        ),
-    );
-    if cancellation.allow_in_flight_past_deadline {
-        turn.await.map_err(KernelError::Provider)
-    } else {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        tokio::time::timeout(remaining, turn)
-            .await
-            .map_err(|_| KernelError::Provider(iteron_provider::ProviderError::DeadlineExceeded))?
-            .map_err(KernelError::Provider)
-    }
-}
+// Existing ordinary/auxiliary/hedge call sites enter the same physical transport owner.
+pub(super) use super::provider_transport_attempt::{
+    ProviderCancellation, execute_admitted_provider_turn,
+};
 
 /// Classify one paid physical attempt after it crosses the effect boundary.
 pub(super) fn provider_settlement(

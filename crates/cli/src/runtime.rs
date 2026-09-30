@@ -25,7 +25,9 @@ mod effect_journal_owner;
 mod tool_execution_journal;
 
 mod kernel_effect_bridge;
+mod provider_stream_attempt;
 mod provider_stream_observer;
+mod provider_transport_attempt;
 mod provider_turn_evidence;
 mod request_context_evidence;
 mod submitted_turn_state;
@@ -2686,7 +2688,6 @@ impl Agent {
             let provider_result = loop {
                 let provider_attempt_started = Instant::now();
                 let attempt_stream_item_base = provider_evidence.stream_items();
-                let mut attempt_rate_limit = None;
                 let mut hedged_dispatch = if provider_refusal.is_none() && use_hedge {
                     Some(
                         self.execute_hedged_provider_turn(
@@ -2713,15 +2714,12 @@ impl Agent {
                     .as_ref()
                     .is_none_or(|dispatch| dispatch.monetary_followup_safe);
                 let hedged_this_attempt = hedged_dispatch.is_some();
-                let hedge_ui_pre_forwarded = hedged_dispatch
-                    .as_ref()
-                    .is_some_and(|dispatch| dispatch.ui_deltas_forwarded);
-                let result = {
+                let attempt_receipt = {
                     let authority = self.operator_authority();
                     let correlation = self.lifecycle_correlation(Some(turn_id));
                     let requested = self.requested_control() != InboundControl::None;
                     let publication = self.tool_output_publication_factory();
-                    let mut tool_admission = stream_tool_admission::StreamToolAdmission::new(
+                    let tool_admission = stream_tool_admission::StreamToolAdmission::new(
                         &mut tool_turn,
                         stream_tool_journal::StreamToolJournal {
                             rollout: &mut self.rollout,
@@ -2778,47 +2776,33 @@ impl Agent {
                             },
                         },
                     );
-                    let mut on_item = |item: StreamItem| match provider_evidence
-                        .observe(item, hedge_ui_pre_forwarded)
-                    {
-                        provider_stream_observer::ObservedStreamItem::Quota(snapshot) => {
-                            attempt_rate_limit = Some(snapshot);
-                        }
-                        provider_stream_observer::ObservedStreamItem::Tool(call) => {
-                            tool_admission.declare(call);
-                        }
-                        provider_stream_observer::ObservedStreamItem::Presented => {}
-                    };
-
-                    // `attempt` means a provider request crossed the dispatch boundary. Local
-                    // context rejection above therefore remains provable zero, while every
-                    // dispatched request without Usage becomes an honest unknown.
-                    if let Some(dispatch) = hedged_dispatch.take() {
-                        for item in dispatch.items {
-                            on_item(item);
-                        }
-                        dispatch.result
-                    } else if provider_refusal.is_some() {
-                        Err(provider_refusal
-                            .take()
-                            .expect("provider refusal is consumed once"))
-                    } else {
-                        provider_route::execute_admitted_provider_turn(
-                            provider_for_stream.clone(),
-                            provider_deadline,
-                            provider_route::ProviderCancellation {
+                    provider_stream_attempt::ProviderStreamAttempt {
+                        observer: &mut provider_evidence,
+                        tools: tool_admission,
+                    }
+                    .run(
+                        provider_stream_attempt::ProviderAttemptScope {
+                            provider: provider_for_stream.clone(),
+                            request: &req,
+                            // Root installs a trusted immutable observer for this exact physical
+                            // ticket; absence remains explicitly unavailable capture evidence.
+                            request_observer: None,
+                            deadline: provider_deadline,
+                            cancellation: provider_transport_attempt::ProviderCancellation {
                                 interrupt: provider_interrupt.clone(),
                                 force_cancel: provider_force_cancel.clone(),
                                 drain: provider_drain.clone(),
                                 attempt: None,
                                 allow_in_flight_past_deadline,
                             },
-                            &req,
-                            &mut on_item,
-                        )
-                        .await
-                    }
+                        },
+                        hedged_dispatch.take(),
+                        provider_refusal.take(),
+                    )
+                    .await
                 };
+                let result = attempt_receipt.result;
+                let attempt_rate_limit = attempt_receipt.quota;
                 provider_active =
                     provider_active.saturating_add(provider_attempt_started.elapsed());
                 // High-frequency deltas stay on the bounded UI stream. Lifecycle telemetry gets

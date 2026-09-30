@@ -1578,6 +1578,20 @@ impl Provider for OpenAiResponses {
         request: &TurnRequest,
         on_item: &mut (dyn FnMut(StreamItem) + Send),
     ) -> Result<TurnResult, ProviderError> {
+        self.turn_observed(
+            request,
+            on_item,
+            &crate::request_capture::DisabledRequestObserver,
+        )
+        .await
+    }
+
+    async fn turn_observed(
+        &self,
+        request: &TurnRequest,
+        on_item: &mut (dyn FnMut(StreamItem) + Send),
+        observer: &dyn crate::request_capture::ProviderRequestObserver,
+    ) -> Result<TurnResult, ProviderError> {
         let transport = request.controls.transport;
         let deadline = Instant::now()
             .checked_add(transport.request_total)
@@ -1589,18 +1603,29 @@ impl Provider for OpenAiResponses {
         let client = self.client.client(transport)?;
         let endpoint = self.root.endpoint("responses")?;
         let body = self.body(request)?;
+        let bytes = crate::request_capture::prepare_json(
+            AdapterKind::OpenAiResponses,
+            endpoint.as_str(),
+            &body,
+            request,
+            observer,
+        )?;
         let request = client
             .post(endpoint)
             .bearer_auth(&self.key)
             .header("content-type", "application/json")
-            .json(&body);
+            .body(bytes);
         let header_timeout = remaining_timeout(
             deadline,
             iteron_tunables::param_duration(
                 "provider.responses.response_header_timeout",
                 RESPONSE_HEADER_TIMEOUT,
             ),
-        )?;
+        )
+        .map_err(|_| ProviderError::RequestDeadlineBeforeDispatch)?;
+        crate::request_capture::dispatching(observer)?;
+        let header_timeout =
+            crate::request_capture::remaining_before_send(deadline, header_timeout)?;
         let response = tokio::time::timeout(header_timeout, request.send())
             .await
             .map_err(|_| ProviderError::Timeout {
@@ -1724,9 +1749,8 @@ fn remaining_timeout(
 ) -> Result<Duration, ProviderError> {
     let remaining = deadline.saturating_duration_since(Instant::now());
     if remaining.is_zero() {
-        // This check precedes polling `request.send()`, but classifying the exact-zero edge as an
-        // unobservable request-total timeout is deliberately fail-closed. It cannot license a
-        // second paid attempt, and avoids making the authority flip between 0ns and 1ns left.
+        // Used after dispatch as well as during request preparation. The pre-send call site
+        // maps exhaustion to its proven no-dispatch disposition; response reads stay unknown.
         return Err(ProviderError::Timeout {
             stage: crate::ProviderTimeoutStage::RequestTotal,
         });
