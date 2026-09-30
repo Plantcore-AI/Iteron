@@ -10,11 +10,13 @@ use super::provider_charge_evidence::{
 use super::provider_route;
 use iteron_agents::{AgentProviderBudgetTerminal, ControllerError};
 use iteron_obs::PricingPort;
+#[cfg(test)]
+use iteron_protocol::ProviderRouteAttemptAccountingVersion;
 use iteron_protocol::{
     CostAttribution, CostProjectionIdentity, ProviderRouteAttemptAccounting,
-    ProviderRouteAttemptAccountingVersion, ProviderRouteAttemptIdentity, ProviderRouteCostTruth,
-    ProviderRouteCostUnknownReason, ProviderRouteUsageTruth, ProviderRouteUsageUnknownReason,
-    RunId, SignedRateCard, TenantId, TurnId, UsageReport,
+    ProviderRouteAttemptIdentity, ProviderRouteCostTruth, ProviderRouteCostUnknownReason,
+    ProviderRouteUsageTruth, ProviderRouteUsageUnknownReason, RunId, SignedRateCard, TenantId,
+    TurnId, UsageReport,
 };
 use iteron_provider::Provider;
 use sha2::{Digest, Sha256};
@@ -80,6 +82,7 @@ impl ProviderFinancialContext {
             budget.settle_not_dispatched();
         }
     }
+    #[cfg(test)]
     pub(super) fn route_attempt_accounting(
         &self,
         turn: TurnId,
@@ -88,7 +91,83 @@ impl ProviderFinancialContext {
         result: &Result<iteron_provider::TurnResult, KernelError>,
         projected_at_unix_secs: u64,
     ) -> Result<ProviderRouteAttemptAccounting, KernelError> {
-        let (usage, cost) = match result {
+        let (usage, cost) = self.observed_truth(
+            turn,
+            route_id,
+            physical_attempt,
+            result,
+            projected_at_unix_secs,
+        );
+        let accounting = ProviderRouteAttemptAccounting {
+            version: ProviderRouteAttemptAccountingVersion::V1,
+            route_id: route_accounting_id(route_id),
+            physical_attempt,
+            max_cost_reservation_microusd: self
+                .cohort_reservation(turn, route_id, physical_attempt)?
+                .or_else(|| self.active_provider_cost_reservation()),
+            usage,
+            cost,
+        };
+        accounting
+            .validate()
+            .map_err(|reason| KernelError::InvalidRouteMetadata {
+                field: "provider_route_attempt",
+                reason,
+            })?;
+        Ok(accounting)
+    }
+
+    /// All identity and predispatch bounds come from the already-durable opaque ticket.
+    /// No live controller query is allowed after physical IO to suppress an honest WAL terminal.
+    pub(super) fn accounting_from_admission(
+        &self,
+        turn: TurnId,
+        route_id: &str,
+        identity: &ProviderRouteAttemptIdentity,
+        result: &Result<iteron_provider::TurnResult, KernelError>,
+        projected_at_unix_secs: u64,
+    ) -> ProviderRouteAttemptAccounting {
+        let (usage, mut cost) = self.observed_truth(
+            turn,
+            route_id,
+            identity.physical_attempt,
+            result,
+            projected_at_unix_secs,
+        );
+        if identity.route_id != route_accounting_id(route_id)
+            && !matches!(usage, ProviderRouteUsageTruth::NotDispatched)
+        {
+            cost = ProviderRouteCostTruth::Unknown {
+                reason: ProviderRouteCostUnknownReason::ProjectionRejected,
+            };
+        }
+        let mut accounting = ProviderRouteAttemptAccounting {
+            version: identity.version,
+            route_id: identity.route_id.clone(),
+            physical_attempt: identity.physical_attempt,
+            max_cost_reservation_microusd: identity.max_cost_reservation_microusd,
+            usage,
+            cost,
+        };
+        // Bad projection/over-bound evidence closes money, but cannot hide the observed usage or
+        // turn a completed physical request into a missing terminal. The sealed identity is valid.
+        if accounting.validate().is_err() {
+            accounting.cost = ProviderRouteCostTruth::Unknown {
+                reason: ProviderRouteCostUnknownReason::ProjectionRejected,
+            };
+        }
+        accounting
+    }
+
+    fn observed_truth(
+        &self,
+        turn: TurnId,
+        route_id: &str,
+        physical_attempt: u32,
+        result: &Result<iteron_provider::TurnResult, KernelError>,
+        projected_at_unix_secs: u64,
+    ) -> (ProviderRouteUsageTruth, ProviderRouteCostTruth) {
+        match result {
             Ok(result) => match result.usage {
                 UsageReport::Complete(usage) => {
                     let cost = self.route_attempt_cost(
@@ -147,24 +226,7 @@ impl ProviderFinancialContext {
                     reason: ProviderRouteCostUnknownReason::ProvenFailureWithoutBillingEvidence,
                 },
             ),
-        };
-        let accounting = ProviderRouteAttemptAccounting {
-            version: ProviderRouteAttemptAccountingVersion::V1,
-            route_id: route_accounting_id(route_id),
-            physical_attempt,
-            max_cost_reservation_microusd: self
-                .cohort_reservation(turn, route_id, physical_attempt)?
-                .or_else(|| self.active_provider_cost_reservation()),
-            usage,
-            cost,
-        };
-        accounting
-            .validate()
-            .map_err(|reason| KernelError::InvalidRouteMetadata {
-                field: "provider_route_attempt",
-                reason,
-            })?;
-        Ok(accounting)
+        }
     }
 
     fn route_attempt_cost(
@@ -403,6 +465,7 @@ impl ProviderFinancialContext {
         .map_err(KernelError::AgentControl)
     }
 
+    #[cfg(test)]
     pub(super) fn cohort_reservation(
         &self,
         turn: TurnId,

@@ -104,8 +104,6 @@ impl ProviderAttemptPump {
                 ticket,
                 ProviderObservedAttempt {
                     route_id: route.route_id(),
-                    physical_attempt: route.physical_attempt(),
-                    ordinal: route.ordinal(),
                     result: &self.result,
                     projected_at_unix_secs,
                 },

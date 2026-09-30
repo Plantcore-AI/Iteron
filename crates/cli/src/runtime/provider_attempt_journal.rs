@@ -2,12 +2,14 @@
 //! signed financial admission follows intent, and controller settlement follows terminal sync.
 #[cfg(test)]
 use super::DurableAppendFault;
+use super::EFFECT_REASON_MAX_BYTES;
 use super::KernelError;
 use super::effect_descriptor::effect_workspace;
 use super::effect_journal_owner::{EffectJournalOwner, UnknownCause};
 use super::provider_charge_evidence::{monetary_followup_safe, route_attempt_identity};
 use super::provider_financial_context::ProviderFinancialContext;
-use super::provider_route::provider_settlement;
+use super::provider_route::provider_outcome_is_unobservable;
+use super::tool_presentation::strict_utf8_head;
 use iteron_kernel::diagnostics::{DiagnosticEmitter, KernelDiagnostic};
 use iteron_kernel::{effect_class, effects};
 use iteron_obs::Ledger;
@@ -36,8 +38,6 @@ pub(super) struct ProviderIntent {
 
 pub(super) struct ProviderObservedAttempt<'a> {
     pub(super) route_id: &'a str,
-    pub(super) physical_attempt: u32,
-    pub(super) ordinal: usize,
     pub(super) result: &'a Result<iteron_provider::TurnResult, KernelError>,
     pub(super) projected_at_unix_secs: u64,
 }
@@ -146,20 +146,54 @@ impl ProviderAttemptJournal<'_> {
         ticket: effects::EffectTicket,
         observed: ProviderObservedAttempt<'_>,
     ) -> Result<(ProviderRouteAttemptAccounting, bool), KernelError> {
-        let accounting = self.financial.route_attempt_accounting(
+        let Some(identity) = ticket.provider_route_attempt() else {
+            self.settle(
+                ticket,
+                effects::Settlement::Unknown(
+                    "provider result has no admitted route identity".into(),
+                ),
+                UnknownCause::Unobserved,
+            )?;
+            return Err(KernelError::InvalidRouteMetadata {
+                field: "provider_route_attempt",
+                reason: "physical provider ticket has no admitted route identity",
+            });
+        };
+        let accounting = self.financial.accounting_from_admission(
             ticket.turn(),
             observed.route_id,
-            observed.physical_attempt,
+            identity,
             observed.result,
             observed.projected_at_unix_secs,
-        )?;
-        let safe = monetary_followup_safe(&accounting);
-        let settlement = provider_settlement(
-            ticket.turn(),
-            observed.ordinal,
-            observed.result,
-            accounting.clone(),
         );
+        let safe = monetary_followup_safe(&accounting);
+        let id = ticket.effect_id().clone();
+        let settlement = match observed.result {
+            Ok(_) => effects::Settlement::Definite(EventKind::EffectDone {
+                id,
+                tool: "provider".into(),
+                duration_ms: None,
+                provider_route_attempt: Some(accounting.clone()),
+            }),
+            Err(KernelError::Provider(error)) if provider_outcome_is_unobservable(error) => {
+                effects::Settlement::Definite(EventKind::EffectUnknown {
+                    id,
+                    tool: "provider".into(),
+                    reason: format!(
+                        "provider request was dispatched and produced no authoritative outcome ({}); billing remains unknown and continuation requires separate budget admission",
+                        error.public_summary()
+                    ),
+                    provider_route_attempt: Some(accounting.clone()),
+                })
+            }
+            Err(error) => effects::Settlement::Definite(EventKind::EffectFailed {
+                id,
+                tool: "provider".into(),
+                reason: strict_utf8_head(&error.public_summary(), EFFECT_REASON_MAX_BYTES),
+                duration_ms: None,
+                provider_route_attempt: Some(accounting.clone()),
+            }),
+        };
         self.settle(ticket, settlement, UnknownCause::Unobserved)?;
         Ok((accounting, safe))
     }
