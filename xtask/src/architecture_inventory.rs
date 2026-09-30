@@ -314,6 +314,17 @@ const SURFACES: &[Surface] = &[
         ],
         next_seams: &["typed disjoint recorder/rollout/ledger ports; no mutable Agent"],
     },
+    Surface {
+        path: "crates/cli/src/runtime/provider_stream_observer.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "actual provider-item activity/frontend/lifecycle observation owner",
+            "metadata-versus-semantic attribution and owned stream phase settlement",
+        ],
+        next_seams: &[
+            "tool WAL and physical provider dispatch/budget remain directional independent owners",
+        ],
+    },
 ];
 
 #[derive(Serialize)]

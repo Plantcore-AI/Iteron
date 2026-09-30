@@ -15,6 +15,7 @@ observation; it does not grant permission or acquire mutable ownership of anothe
 | `runtime/early_tool_gate.rs` | Bounded operator-configured hook predispatch coordinator | Immutable gate context → typed complete-allow summary or refusal; no provider/Agent borrow |
 | `runtime/kernel_effect_bridge.rs` | Single non-registry kernel broker adapter | Typed descriptor plus disjoint journal/admission ports → observed/unknown outcome; executor never gets mutable Agent |
 | `runtime/submitted_turn_state.rs` | Single invocation-local error/recovery/continuation owner | Private counters and immutable recovered receipts; typed context/candidate continuation mutations, no Agent/provider/journal access |
+| `runtime/provider_stream_observer.rs` | Actual stream item presentation and activity span owner | Frozen frontend/lifecycle/activity ports plus StreamItem → typed tool/quota/notice disposition; never provider dispatch, journal admission or budget authority |
 | `runtime/provider_turn_evidence.rs` | Single logical provider-turn observation owner | Header/semantic token evidence, timing, quota and bounded text/thinking prefixes; no dispatch or budget authority |
 | `runtime/terminal_record.rs` | Single mutable turn cost/counter/verifier evidence owner and durable terminal adapter | Actual recorder/rollout/ledger ports → policy terminal and one-barrier Idle/Done receipt; physical append failure never reports success |
 | `runtime/frontend_events.rs` | Immutable frontend/control-resolution vocabulary | Explicit public type re-exports preserve existing runtime API |
