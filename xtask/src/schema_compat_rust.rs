@@ -12,14 +12,12 @@ mod cli;
 mod cli_diff;
 #[path = "schema_compat_rust_cli_effort.rs"]
 mod cli_effort;
+#[path = "schema_compat_rust_cli_entry.rs"]
+mod cli_entry;
 #[path = "schema_compat_rust_cli_exact.rs"]
 mod cli_exact;
 #[path = "schema_compat_rust_cli_main.rs"]
 mod cli_main;
-#[path = "schema_compat_rust_cli_entry.rs"]
-mod cli_entry;
-#[path = "schema_compat_rust_frontend_owner.rs"]
-mod frontend_owner;
 #[path = "schema_compat_rust_cli_parse.rs"]
 mod cli_parse;
 #[path = "schema_compat_rust_cli_parse_scan.rs"]
@@ -33,6 +31,8 @@ mod cli_parse_tokens;
 mod cli_writer;
 #[path = "schema_compat_rust_cli_writer_ast.rs"]
 mod cli_writer_ast;
+#[path = "schema_compat_rust_frontend_owner.rs"]
+mod frontend_owner;
 #[path = "schema_compat_rust_json.rs"]
 mod json;
 #[path = "schema_compat_rust_kernel.rs"]

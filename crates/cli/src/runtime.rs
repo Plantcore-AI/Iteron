@@ -20,25 +20,13 @@ pub use iteron_kernel::{diagnostics, effect_admission, effect_class, effect_jour
 type PureToolInFlight = (
     usize,
     ToolUse,
-    stream_tools::EarlyToolTask,
+    early_tool_executor::EarlyToolTask,
     Instant,
     EarlyHookEffectTickets,
 );
 
-enum EarlyPureToolOutcome {
-    Completed {
-        managed: tool_output_spill::ManagedToolResult,
-        spill_store: Option<std::sync::Arc<tool_output_spill::ToolOutputSpillStore>>,
-        hook: Option<EarlyHookSummary>,
-        effect_unknown: bool,
-        operator_interrupted: bool,
-        publication_error: Option<String>,
-    },
-    Refused {
-        reason: String,
-        hook: EarlyHookSummary,
-    },
-}
+mod early_tool_executor;
+use early_tool_executor::EarlyToolOutcome as EarlyPureToolOutcome;
 
 #[derive(Default)]
 struct EarlyHookEffectTickets {
@@ -50,12 +38,13 @@ struct EarlyHookEffectTickets {
 mod kernel_effect_bridge;
 mod provider_turn_evidence;
 mod submitted_turn_state;
+mod terminal_record;
 use kernel_effect_bridge::{
     KernelEffect, broker_kernel_effect, effect_class_label, effect_done_terminal,
     effect_failed_terminal, effect_workspace,
 };
 mod early_tool_gate;
-use early_tool_gate::{EarlyHookGateContext, EarlyHookSummary, run_lifecycle_gate};
+use early_tool_gate::EarlyHookSummary;
 mod deferred_batch_executor;
 mod frontend_events;
 mod stream_progress;
@@ -1413,15 +1402,8 @@ pub struct Agent {
     /// the legacy unpinned constructor remain source-compatible while every production run is
     /// bound to its exact tunables and compiled-bundle identities.
     policy_evidence: Option<policy_evidence_recorder::PolicyEvidenceRecorder>,
-    /// Cumulative price at the durable start of the current turn. A turn outcome reports only its
-    /// own delta; the run outcome reports the full ledger at session close.
-    policy_turn_cost_baseline: Option<CostState>,
-    /// Durable-counter snapshot at turn start. Token evidence is emitted only when every provider
-    /// attempt since this point has authoritative usage, so stale prior-turn usage is never copied
-    /// into a failed or locally refused turn.
-    policy_turn_counter_baseline: Option<policy_evidence::PolicyTurnCounterBaseline>,
-    /// Latest verifier truth for the current turn, reset only after its policy outcome commits.
-    policy_verifier_outcome: iteron_protocol::PolicyVerifierOutcome,
+    /// Single mutable turn cost/counter/verifier terminal-evidence owner.
+    terminal_record: terminal_record::TerminalRecordOwner,
     /// One exact version-neutral runtime checkpoint. Fresh resolution projects to V2 once; resume
     /// retains the recorded V1/V2 identity. Every child clones the same pin and cannot consult
     /// ambient defaults or silently drift from the root run.
@@ -1805,7 +1787,7 @@ impl Agent {
         self.append_policy_turn_outcome(
             TurnId(self.seq_turn),
             iteron_protocol::PolicyTerminalOutcome::Failed,
-            self.policy_verifier_outcome,
+            self.terminal_record.verifier(),
             Some(policy_evidence::policy_harness_error_code(error)),
         )
     }
@@ -3081,135 +3063,52 @@ impl Agent {
                                     // capped while the WAITING work stays concurrent. The alternative this
                                     // replaces — an overflow list drained inline during collection — made
                                     // every call past the cap serial with nothing in the record saying so.
-                                    let publication_call = tu_ui.clone();
-                                    let publication_source =
-                                        hook_effect_tickets.tool.as_ref().map_or_else(
-                                            || {
-                                                Seq(self
-                                                    .rollout
-                                                    .next_sequence()
-                                                    .0
-                                                    .saturating_sub(1))
+                                    let publication_source = match &hook_effect_tickets.tool {
+                                        Some(ticket) => ticket.intent_sequence(),
+                                        None => match self.emit_durable_seq(
+                                            turn_id,
+                                            EventKind::ToolReady {
+                                                tool: tu_ui.clone(),
+                                                purity_pure: is_pure,
                                             },
-                                            effects::EffectTicket::intent_sequence,
-                                        );
+                                        ) {
+                                            Ok(sequence) => sequence,
+                                            Err(error) => {
+                                                tool_policy_record_error = Some(error);
+                                                return;
+                                            }
+                                        },
+                                    };
                                     let publication =
                                         self.tool_output_publication(&tu_ui, publication_source);
                                     let fut = self.registry.dispatch_stream_intent(intent);
-                                    let execution_guard = stream_tools::reserve_execution(
-                                        stream_execution_gate.clone(),
-                                        supports_parallel,
-                                    );
-                                    let tool_use_id = tu_ui.id.clone();
-                                    let spill_store = self.ordinary_tool_spill_store(&tu_ui.name);
-                                    let interrupt = tool_interrupt.clone();
-                                    let force_cancel = tool_force_cancel.clone();
-                                    let drain = tool_drain.clone();
-                                    let queued_pure = queued_pure.clone();
-                                    let gov = gov.clone();
-                                    let hooks = early_hooks.clone();
-                                    let hook_journal = early_hook_journal.clone();
-                                    let handle = stream_tools::EarlyToolTask::new(tokio::spawn(
-                                        async move {
-                                            let _execution_guard = execution_guard.await;
-                                            // Never hold a governor permit while waiting behind an
-                                            // exclusive call: that call may itself need the permit.
-                                            let _permit = match gov.try_acquire() {
-                                                Some(permit) => permit,
-                                                None => {
-                                                    queued_pure.fetch_add(
-                                                        1,
-                                                        std::sync::atomic::Ordering::Relaxed,
-                                                    );
-                                                    gov.acquire().await
-                                                }
-                                            };
-                                            let hook = match run_lifecycle_gate(
-                                                &hooks,
-                                                EarlyHookGateContext {
-                                                    journal: hook_journal.as_ref(),
-                                                    compatibility_enabled:
-                                                        compatibility_pre_tool_hook,
-                                                    lifecycle_enabled: lifecycle_pre_tool_hook,
-                                                    compatibility_json: &compatibility_context,
-                                                    lifecycle_json: &lifecycle_context,
-                                                    interrupt: interrupt.as_deref(),
-                                                    drain: drain.as_ref(),
-                                                },
-                                            )
-                                            .await
-                                            {
-                                                Ok(summary) => summary,
-                                                Err(refusal) => {
-                                                    return EarlyPureToolOutcome::Refused {
-                                                        reason: refusal.reason,
-                                                        hook: refusal.summary,
-                                                    };
-                                                }
-                                            };
-                                            let mut operator_interrupted = false;
-                                            let execution = match await_tool_or_interrupt(
-                                                fut,
-                                                interrupt.as_deref(),
-                                                Some(force_cancel.as_ref()),
-                                                Some(drain.as_ref()),
-                                            )
-                                            .await
-                                            {
-                                                Ok(result) => result,
-                                                // Pure tools have no externally visible effect by contract, so
-                                                // dropping one on interrupt is a definite cancelled read rather
-                                                // than an unknown effect settlement.
-                                                Err(interruption) => {
-                                                    operator_interrupted = true;
-                                                    let result = ToolResult {
-                                                tool_use_id,
-                                                content: match interruption {
-                                                    ToolInterruption::Forced => "operator force-cancelled the read before it completed",
-                                                    ToolInterruption::Drain => "operator drained the read before it completed",
-                                                    ToolInterruption::Cooperative => "operator interrupted the read before it completed",
-                                                }
-                                                .into(),
-                                                is_error: true,
-                                                trust: Trust::Workspace,
-                                                latency_ms: 0,
-                                                };
-                                                    if is_pure {
-                                                        iteron_tools::ToolExecution::Definite(
-                                                            result,
-                                                        )
-                                                    } else {
-                                                        iteron_tools::ToolExecution::Unknown(result)
-                                                    }
-                                                }
-                                            };
-                                            let effect_unknown = matches!(
-                                                &execution,
-                                                iteron_tools::ToolExecution::Unknown(_)
-                                            );
-                                            let mut result = execution.into_result();
-                                            result.tool_use_id = publication_call.id.clone();
-                                            let publication_error = publication
-                                                .publish(
-                                                    &publication_call,
-                                                    &result,
-                                                    !effect_unknown,
-                                                )
-                                                .err();
-                                            let managed = tool_output_spill::manage_result(
-                                                spill_store.as_deref(),
-                                                result,
-                                            );
-                                            EarlyPureToolOutcome::Completed {
-                                                managed,
-                                                spill_store,
-                                                hook,
-                                                effect_unknown,
-                                                operator_interrupted,
-                                                publication_error,
-                                            }
+                                    let executor = early_tool_executor::EarlyToolExecutor::new(
+                                        early_tool_executor::EarlyToolExecutionScope {
+                                            governor: gov.clone(),
+                                            queued: queued_pure.clone(),
+                                            execution_gate: stream_execution_gate.clone(),
+                                            hooks: early_hooks.clone(),
+                                            hook_journal: early_hook_journal.clone(),
+                                            interrupt: tool_interrupt.clone(),
+                                            force_cancel: tool_force_cancel.clone(),
+                                            drain: tool_drain.clone(),
+                                            publication,
                                         },
-                                    ));
+                                    );
+                                    let handle = executor.spawn(
+                                        early_tool_executor::AdmittedEarlyTool {
+                                            call: tu_ui.clone(),
+                                            is_pure,
+                                            supports_parallel,
+                                            compatibility_pre_hook: compatibility_pre_tool_hook,
+                                            lifecycle_pre_hook: lifecycle_pre_tool_hook,
+                                            compatibility_context,
+                                            lifecycle_context,
+                                            spill_store: self
+                                                .ordinary_tool_spill_store(&tu_ui.name),
+                                        },
+                                        fut,
+                                    );
                                     pure.push((
                                         idx,
                                         tu_ui,
@@ -6404,14 +6303,14 @@ impl Agent {
             .await;
         tool_output_cleanup?;
         mcp_cleanup?;
-        let verifier = self.policy_verifier_outcome;
+        let verifier = self.terminal_record.verifier();
         self.append_policy_turn_outcome(
             TurnId(self.seq_turn),
             iteron_protocol::PolicyTerminalOutcome::Succeeded,
             verifier,
             None,
         )?;
-        self.policy_verifier_outcome = iteron_protocol::PolicyVerifierOutcome::NotRun;
+        self.terminal_record.reset_verifier();
         let next = self
             .seq_turn
             .checked_add(1)
@@ -7002,41 +6901,14 @@ impl Agent {
                 outcome = Outcome::HarnessError;
             }
         }
-        let (policy_terminal, harness_error_code) = match &outcome {
-            Outcome::Done => (iteron_protocol::PolicyTerminalOutcome::Succeeded, None),
-            Outcome::Drained => (
-                iteron_protocol::PolicyTerminalOutcome::Cancelled,
-                Some(iteron_protocol::PolicyHarnessErrorCode::OperatorDrain),
-            ),
-            Outcome::BudgetExhausted(reason) => (
-                iteron_protocol::PolicyTerminalOutcome::BudgetExhausted,
-                Some(policy_evidence::policy_budget_harness_error_code(reason)),
-            ),
-            Outcome::Interrupted => (
-                iteron_protocol::PolicyTerminalOutcome::Interrupted,
-                Some(iteron_protocol::PolicyHarnessErrorCode::OperatorInterrupted),
-            ),
-            Outcome::Stuck => (
-                iteron_protocol::PolicyTerminalOutcome::Failed,
-                Some(iteron_protocol::PolicyHarnessErrorCode::ConsecutiveToolErrors),
-            ),
-            Outcome::HarnessError => (
-                iteron_protocol::PolicyTerminalOutcome::Failed,
-                Some(
-                    if self.plantcore_terminal()
-                        == Some(plantcore::PlantcoreTerminal::UsageUnavailable)
-                    {
-                        iteron_protocol::PolicyHarnessErrorCode::UsageUnavailable
-                    } else {
-                        iteron_protocol::PolicyHarnessErrorCode::HarnessFailure
-                    },
-                ),
-            ),
-        };
+        let (policy_terminal, harness_error_code) = self.terminal_record.classify_outcome(
+            &outcome,
+            self.plantcore_terminal() == Some(plantcore::PlantcoreTerminal::UsageUnavailable),
+        );
         self.append_policy_turn_outcome(
             turn,
             policy_terminal,
-            self.policy_verifier_outcome,
+            self.terminal_record.verifier(),
             harness_error_code,
         )?;
         // A frontend may only observe a terminal state that is already durable.  Returning Done
