@@ -221,6 +221,7 @@ impl Agent {
                         EventKind::EffectIntent { .. }
                     )
                     | (DurableAppendFault::ToolDone, EventKind::ToolDone { .. })
+                    | (DurableAppendFault::Compaction, EventKind::Compaction { .. })
                     | (
                         DurableAppendFault::SubagentFinished,
                         EventKind::SubagentFinished { .. } | EventKind::SubagentFinishedV2 { .. }

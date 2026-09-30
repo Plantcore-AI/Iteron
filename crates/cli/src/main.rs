@@ -22,6 +22,7 @@ mod iteron_workspace_hook;
 mod keymap;
 mod keyword_trigger;
 mod machine_contract;
+mod machine_projection;
 mod maintenance;
 mod markdown;
 mod mcp;

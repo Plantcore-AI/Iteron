@@ -114,22 +114,10 @@ fn tool_projection_task(task: &str, posture: ToolProjectionPosture) -> &str {
     }
 }
 
-/// Active-task token count charged when the transcript holds no user text message to attribute.
-const NO_ACTIVE_TASK_TOKENS: usize = 0;
-
-/// Attachment token count charged when the turn carries no input-file evidence.
-const NO_ATTACHMENT_TOKENS: usize = 0;
-
-fn classify_active_task_attachments(
-    active_task_with_embedded_file: usize,
-    file_tokens: usize,
-    image_tokens: usize,
-) -> (usize, usize) {
-    let embedded_file_tokens = file_tokens.min(active_task_with_embedded_file);
-    (
-        active_task_with_embedded_file.saturating_sub(embedded_file_tokens),
-        embedded_file_tokens.saturating_add(image_tokens),
-    )
+#[cfg(test)]
+fn classify_active_task_attachments(active: usize, file: usize, image: usize) -> (usize, usize) {
+    let file = file.min(active);
+    (active.saturating_sub(file), file.saturating_add(image))
 }
 
 /// Per-submission guard for the component-budget recovery bridge. A successful recovery rearms
@@ -196,6 +184,14 @@ impl TurnResultProjectionBudget {
 }
 
 impl ContextBudgetInspection {
+    pub(super) fn from_policy(
+        usage: iteron_ctx::ContextComponentUsage,
+        policy: iteron_ctx::ContextBudgetPolicy,
+    ) -> Self {
+        let violation = policy.admit_components(&usage).err();
+        Self { usage, violation }
+    }
+
     pub(super) fn violation(self) -> Option<iteron_ctx::ContextBudgetViolation> {
         self.violation
     }
@@ -272,42 +268,23 @@ impl Agent {
         )
     }
 
-    pub(super) fn calibrated_context_estimate(
-        &self,
-        mut estimate: ContextEstimate,
-    ) -> ContextEstimate {
-        let (provider_id, model_id) = self.token_calibration_route();
-        let conservative = u64::try_from(estimate.total_tokens).unwrap_or(u64::MAX);
-        let calibrated =
-            self.token_calibration
-                .calibrated_estimate(provider_id, model_id, conservative);
-        let calibrated = usize::try_from(calibrated).unwrap_or(usize::MAX);
-        let baseline = estimate.total_tokens;
-        if baseline == 0 || calibrated == baseline {
-            return estimate;
-        }
-        let scale = |value: usize| {
-            value
-                .saturating_mul(calibrated)
-                .saturating_add(baseline.saturating_sub(1))
-                / baseline
-        };
-        estimate.system_tokens = scale(estimate.system_tokens);
-        estimate.tool_tokens = scale(estimate.tool_tokens);
-        estimate.conversation_tokens = scale(estimate.conversation_tokens);
-        estimate.tool_result_tokens = scale(estimate.tool_result_tokens);
-        estimate.lsp_result_tokens = scale(estimate.lsp_result_tokens);
-        estimate.transcript_tokens = estimate
-            .conversation_tokens
-            .saturating_add(estimate.tool_result_tokens)
-            .saturating_add(estimate.lsp_result_tokens);
-        estimate.framing_tokens = scale(estimate.framing_tokens);
-        estimate.total_tokens = estimate
-            .system_tokens
-            .saturating_add(estimate.tool_tokens)
-            .saturating_add(estimate.transcript_tokens)
-            .saturating_add(estimate.framing_tokens);
-        estimate
+    pub(super) fn request_accounting(&self) -> request_accounting::RequestAccounting {
+        request_accounting::RequestAccounting::new(
+            self.context_source_evidence.segments(),
+            self.context_budget_policy,
+            self.token_calibration.clone(),
+            self.token_calibration_route(),
+            self.input_file_evidence,
+            self.input_image_evidence,
+        )
+    }
+
+    pub(super) fn calibrated_context_estimate(&self, estimate: ContextEstimate) -> ContextEstimate {
+        request_accounting::calibrated_estimate(
+            &self.token_calibration,
+            self.token_calibration_route(),
+            estimate,
+        )
     }
 
     /// Add the provider-visible image reserve after text calibration. Image-bearing turns do not
@@ -388,103 +365,8 @@ impl Agent {
         messages: &[iteron_protocol::Message],
         estimate: &iteron_ctx::ContextEstimate,
     ) -> iteron_ctx::ContextComponentUsage {
-        let mut instruction_tokens = 0usize;
-        let mut memory_tokens = 0usize;
-        let mut injected_task_tokens = 0usize;
-        for segment in self.context_source_evidence.segments() {
-            if !matches!(
-                segment.decision,
-                iteron_ctx::ContextDecision::Selected
-                    | iteron_ctx::ContextDecision::Truncated
-                    | iteron_ctx::ContextDecision::Compacted
-            ) {
-                continue;
-            }
-            let tokens = usize::try_from(segment.estimated_tokens).unwrap_or(usize::MAX);
-            match segment.source_class {
-                iteron_ctx::ContextSourceClass::OperatorInstructions
-                | iteron_ctx::ContextSourceClass::ProjectInstructions
-                | iteron_ctx::ContextSourceClass::DirectoryInstructions => {
-                    instruction_tokens = instruction_tokens.saturating_add(tokens);
-                }
-                iteron_ctx::ContextSourceClass::UserMemory
-                | iteron_ctx::ContextSourceClass::WorkspaceMemory
-                | iteron_ctx::ContextSourceClass::SessionMemory => {
-                    memory_tokens = memory_tokens.saturating_add(tokens);
-                }
-                iteron_ctx::ContextSourceClass::Environment
-                | iteron_ctx::ContextSourceClass::WorkspaceOutline
-                | iteron_ctx::ContextSourceClass::SkillIndex
-                | iteron_ctx::ContextSourceClass::SkillReference
-                | iteron_ctx::ContextSourceClass::WorkflowEvidence
-                | iteron_ctx::ContextSourceClass::SubagentEvidence
-                | iteron_ctx::ContextSourceClass::Steering
-                | iteron_ctx::ContextSourceClass::QueuedSubmission => {
-                    injected_task_tokens = injected_task_tokens.saturating_add(tokens);
-                }
-                _ => {}
-            }
-        }
-
-        let active_task_with_attachments = messages
-            .iter()
-            .rfind(|message| {
-                message.role == iteron_protocol::Role::User
-                    && message
-                        .content
-                        .iter()
-                        .any(|block| matches!(block, iteron_protocol::Block::Text { .. }))
-            })
-            .map(|message| {
-                message
-                    .content
-                    .iter()
-                    .filter_map(|block| match block {
-                        iteron_protocol::Block::Text { text } => {
-                            Some(self.context_estimator.estimate_text(text))
-                        }
-                        _ => None,
-                    })
-                    .fold(0usize, usize::saturating_add)
-            })
-            .unwrap_or(iteron_tunables::param_integer(
-                "cli.runtime.context_runtime.no_active_task_tokens",
-                NO_ACTIVE_TASK_TOKENS,
-            ));
-        let file_attachment_tokens = self
-            .input_file_evidence
-            .map(|evidence| usize::try_from(evidence.estimated_tokens).unwrap_or(usize::MAX))
-            .unwrap_or(iteron_tunables::param_integer(
-                "cli.runtime.context_runtime.no_attachment_tokens",
-                NO_ATTACHMENT_TOKENS,
-            ))
-            .min(active_task_with_attachments);
-        let image_attachment_tokens = self
-            .input_image_evidence
-            .map(|evidence| usize::try_from(evidence.estimated_tokens).unwrap_or(usize::MAX))
-            .unwrap_or(NO_ATTACHMENT_TOKENS);
-        let (active_task_tokens, attachment_tokens) = classify_active_task_attachments(
-            active_task_with_attachments,
-            file_attachment_tokens,
-            image_attachment_tokens,
-        );
-        let classified_system = instruction_tokens
-            .saturating_add(memory_tokens)
-            .saturating_add(injected_task_tokens);
-
-        iteron_ctx::ContextComponentUsage {
-            stable_prefix_tokens: estimate.system_tokens.saturating_sub(classified_system),
-            instruction_tokens,
-            task_context_tokens: injected_task_tokens.saturating_add(active_task_tokens),
-            memory_tokens,
-            transcript_tokens: estimate
-                .conversation_tokens
-                .saturating_sub(active_task_with_attachments),
-            attachment_tokens,
-            tool_schema_tokens: estimate.tool_tokens,
-            tool_result_tokens: estimate.tool_result_tokens,
-            lsp_result_tokens: estimate.lsp_result_tokens,
-        }
+        self.request_accounting()
+            .components(&self.context_estimator, messages, estimate)
     }
 
     /// Inspect the exact source-separated projection used by provider admission. The policy's

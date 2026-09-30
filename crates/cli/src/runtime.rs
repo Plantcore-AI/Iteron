@@ -33,10 +33,12 @@ mod provider_stream_attempt;
 mod provider_stream_observer;
 mod provider_transport_attempt;
 mod provider_turn_evidence;
+mod request_accounting;
 mod request_context_evidence;
 mod request_inclusion;
 mod request_manifest;
 mod request_manifest_runtime;
+mod request_preparation;
 mod submitted_turn_state;
 mod task_plan;
 mod terminal_record;
@@ -1032,6 +1034,7 @@ enum DurableAppendFault {
     Checkpoint,
     GenesisPolicyTail,
     AdoptProjection,
+    Compaction,
 }
 
 /// What [`Agent::adopt_run`] reached: the identity a frontend must now display, and the identity it
@@ -2033,120 +2036,59 @@ impl Agent {
                 Some(turn_id),
                 LifecyclePayload::default(),
             );
-            let estimated = self.context_estimator.estimate_with_tool_tokens(
-                &effective_system,
-                messages,
-                tool_specs.len(),
-                tool_specs.estimated_tokens(),
-                tool_specs.cache_identity(),
+            let mut request_preparation = request_preparation::RequestPreparation::new(
+                request_preparation::RequestContent {
+                    system: effective_system,
+                    messages: &mut *messages,
+                    input_images: input_images.to_vec(),
+                    tools: tool_specs,
+                    max_tokens: request_max_tokens,
+                },
+                requested_max_tokens,
+                self.execution_context_window(),
+                self.request_accounting(),
+                &mut self.context_estimator,
             );
-            let mut uncalibrated_context_total =
-                self.include_input_image_tokens(estimated).total_tokens;
-            let mut context_estimate =
-                self.include_input_image_tokens(self.calibrated_context_estimate(estimated));
-            let mut context_budget_inspection =
-                self.inspect_context_budget(messages, &context_estimate);
-            let initial_context_budget_violation = context_budget_inspection.violation();
             self.lifecycle_event(
                 "context.tokenizer.estimate_completed",
                 Some(turn_id),
                 LifecyclePayload {
                     magnitude: Some(
-                        u64::try_from(context_estimate.total_tokens).unwrap_or(u64::MAX),
+                        u64::try_from(request_preparation.estimate().total_tokens)
+                            .unwrap_or(u64::MAX),
                     ),
                     ..LifecyclePayload::default()
                 },
             );
-            // ---- compaction, emergency valve only (ADR-002): this projection no longer fits the
-            // proven window or one independently-owned transcript component. In either case the
-            // alternative to summarizing here is a refused request. The
-            // ROUTINE compaction moved off the critical path to `settle_compaction`, at the end of
-            // the turn: buying an extra synchronous round and a cold prefix inside the turn the
-            // operator is waiting on was the whole defect. The exact request estimate above is
-            // already cached and authoritative for admission; do not walk the transcript and
-            // serialize every tool schema a second time just to answer the same threshold test.
-            // Also avoid running a `context.compaction.considered` hook on every ordinary turn:
-            // only a request that actually crossed the overflow precheck reaches that effect. ----
-            let context_window_overflow = match self.execution_context_window() {
-                Some(window) => {
-                    u64::try_from(context_estimate.total_tokens)
-                        .unwrap_or(u64::MAX)
-                        .saturating_add(u64::from(request_max_tokens))
-                        > window
-                }
-                None => {
-                    context_estimate.total_tokens
-                        > self
-                            .compaction
-                            .effective_trigger_tokens(None, request_max_tokens)
-                }
-            };
-            let has_compactable_history = self.compaction.enabled
-                && messages.len() > self.compaction.keep_recent.saturating_add(2);
-            let routine_compaction_eligible = has_compactable_history && !self.compacted_in_run;
-            let component_budget_recovery = if has_compactable_history {
-                initial_context_budget_violation
-                    .filter(|violation| submitted_turn.claim_context_recovery(violation))
-            } else {
-                None
-            };
-            let component_budget_before = component_budget_recovery
-                .map(|violation| context_budget_inspection.component_tokens(violation.class));
-            let mut component_budget_after = None;
-            let compaction_needed = (routine_compaction_eligible && context_window_overflow)
-                || component_budget_recovery.is_some();
-            let compaction_allowed = if compaction_needed {
-                let payload = component_budget_recovery.map_or_else(
-                    || LifecyclePayload {
-                        magnitude: Some(
-                            u64::try_from(context_estimate.total_tokens).unwrap_or(u64::MAX),
-                        ),
-                        ..LifecyclePayload::default()
-                    },
-                    |violation| {
-                        Self::context_budget_recovery_payload(
-                            &violation,
-                            component_budget_before.unwrap_or(violation.used),
-                        )
-                    },
-                );
-                let compaction_gate = self
+            // The preparation owner holds the actual bounded candidate/decision. The host
+            // retains real provider IO, durable transcript commit and control safe points.
+            if let Some(payload) = request_preparation.recovery_request(
+                &self.compaction,
+                self.compacted_in_run,
+                submitted_turn.context_recovery(),
+            ) {
+                let report = self
                     .brokered_lifecycle_gate(
                         turn_id,
                         context_runtime::ContextBudgetRecoveryStage::Considered.event_id(),
                         payload,
                     )
                     .await?;
-                matches!(compaction_gate.decision, HookDecision::Allow)
-            } else {
-                false
-            };
-            if compaction_allowed && let Some(plan) = self.compaction.force_plan(messages) {
-                let before_messages = messages.clone();
-                // Best-effort: if the summary call fails, continue to the exact local refusal
-                // rather than recursively retrying compaction inside this submission.
+                request_preparation.authorize_recovery(
+                    &self.compaction,
+                    matches!(report.decision, HookDecision::Allow),
+                );
+            }
+            if let Some(plan) = request_preparation.plan() {
                 self.lifecycle_event(
                     context_runtime::ContextBudgetRecoveryStage::Started.event_id(),
                     Some(turn_id),
-                    component_budget_recovery.map_or_else(
-                        || LifecyclePayload {
-                            count: Some(u64::try_from(plan.to_summarize.len()).unwrap_or(u64::MAX)),
-                            ..LifecyclePayload::default()
-                        },
-                        |violation| {
-                            Self::context_budget_recovery_payload(
-                                &violation,
-                                component_budget_before.unwrap_or(violation.used),
-                            )
-                        },
-                    ),
+                    request_preparation.recovery_payload(Some(plan.to_summarize.len())),
                 );
                 match self.summarize_compaction(&plan.to_summarize, None).await {
                     Ok(summary) => {
-                        // The summary is a complete physical provider attempt and therefore a
-                        // control safe point. In particular, Drain received while it was in
-                        // flight must win before the optional coverage verifier admits a second
-                        // provider attempt.
+                        // An actual summary quiesced. Drain must win before an existing optional
+                        // coverage request can admit another real physical provider attempt.
                         let _ = self.collect_inbound_ops(TurnId(self.seq_turn));
                         if let Some(outcome) =
                             self.finish_requested_control(TurnId(self.seq_turn)).await?
@@ -2154,97 +2096,60 @@ impl Agent {
                             return Ok(outcome);
                         }
                         let covered = if self.compaction.coverage_check {
-                            self.verify_compaction_summary(&plan.to_summarize, &summary)
-                                .await
-                                .unwrap_or(iteron_tunables::param_bool(
-                                    "cli.runtime.compaction_covered_on_verifier_error",
-                                    COMPACTION_COVERED_ON_VERIFIER_ERROR,
-                                ))
+                            self.verify_compaction_summary(
+                                &request_preparation.plan().expect("owned plan").to_summarize,
+                                &summary,
+                            )
+                            .await
+                            .unwrap_or(iteron_tunables::param_bool(
+                                "cli.runtime.compaction_covered_on_verifier_error",
+                                COMPACTION_COVERED_ON_VERIFIER_ERROR,
+                            ))
                         } else {
                             true
                         };
                         let compaction_result_turn = TurnId(self.seq_turn.saturating_sub(1));
-                        let rebuilt = CompactionPolicy::rebuild(&plan, summary.clone());
-                        let candidate = self.context_estimator.estimate_uncached(
-                            &effective_system,
-                            &rebuilt,
-                            tool_specs.as_ref(),
-                        );
-                        let candidate_uncalibrated_total =
-                            self.include_input_image_tokens(candidate).total_tokens;
-                        let candidate_estimate = self.include_input_image_tokens(
-                            self.calibrated_context_estimate(candidate),
-                        );
-                        let candidate_inspection =
-                            self.inspect_context_budget(&rebuilt, &candidate_estimate);
-                        if let Some(violation) = component_budget_recovery {
-                            component_budget_after =
-                                Some(candidate_inspection.component_tokens(violation.class));
-                        }
-                        let exit_threshold = self.compaction.hysteresis.exit_threshold(
-                            self.compaction.effective_trigger_tokens(
-                                self.execution_context_window(),
-                                request_max_tokens,
-                            ),
-                        );
-                        let exits_required_hysteresis = !context_window_overflow
-                            || candidate_estimate.total_tokens <= exit_threshold;
-                        let components_admitted = candidate_inspection.violation().is_none();
-                        if !covered || !exits_required_hysteresis || !components_admitted {
-                            let failure_reason = if !covered {
-                                "summary_coverage_missing"
-                            } else if !components_admitted {
-                                "component_budget_not_recovered"
-                            } else {
-                                "hysteresis_exit_not_reached"
-                            };
+                        request_preparation
+                            .bind_execution_window(self.execution_context_window())?;
+                        let candidate_accounting = self.request_accounting();
+                        let reason = request_preparation.assess_summary(
+                            &summary,
+                            covered,
+                            &self.compaction,
+                            &self.context_estimator,
+                            candidate_accounting,
+                        )?;
+                        if let Some(reason) = reason {
                             self.lifecycle_event(
                                 "context.compaction.failed",
                                 Some(compaction_result_turn),
                                 LifecyclePayload {
-                                    reason_code: Some(failure_reason.into()),
+                                    reason_code: Some(reason.into()),
                                     ..LifecyclePayload::default()
                                 },
                             );
-                            if initial_context_budget_violation.is_none() {
-                                return Err(KernelError::ContextResolution(if covered {
-                                    "emergency compaction did not cross the resolved hysteresis exit"
-                                        .into()
-                                } else {
-                                    "emergency compaction summary failed the resolved coverage check"
-                                        .into()
-                                }));
+                            if let Some(error) = request_preparation.fatal_recovery_refusal(covered)
+                            {
+                                return Err(error);
                             }
                         } else {
-                            self.record_compaction(
+                            let receipt = self.record_compaction_committed(
                                 compaction_result_turn,
-                                &before_messages,
-                                &plan,
+                                &request_preparation.request().messages,
+                                request_preparation.plan().expect("owned accepted plan"),
                                 &summary,
-                                if component_budget_recovery.is_some() {
-                                    "component_budget_recovery"
-                                } else {
-                                    "overflow_emergency"
-                                },
+                                request_preparation.recovery_reason(),
                                 self.compaction.coverage_check && covered,
-                            );
-                            *messages = rebuilt;
-                            // The source file bytes no longer cross the provider boundary once the
-                            // containing user message has been replaced by a compacted summary.
+                            )?;
+                            let recovery = request_preparation
+                                .commit_candidate(receipt, &mut self.context_estimator)?;
                             self.input_file_evidence = None;
-                            // The transcript was rewritten, not appended to. The candidate above
-                            // is the one re-estimate/re-admission; invalidate only the incremental
-                            // cache so a later appended turn starts from the rebuilt transcript.
-                            self.context_estimator.invalidate_transcript();
-                            uncalibrated_context_total = candidate_uncalibrated_total;
-                            context_estimate = candidate_estimate;
-                            context_budget_inspection = candidate_inspection;
-                            if let Some(violation) = component_budget_recovery {
+                            if let Some((violation, after)) = recovery {
                                 self.emit_context_budget_recovery_event(
                                     compaction_result_turn,
                                     context_runtime::ContextBudgetRecoveryStage::Completed,
                                     &violation,
-                                    component_budget_after.unwrap_or(violation.used),
+                                    after,
                                 );
                             }
                         }
@@ -2256,22 +2161,16 @@ impl Agent {
                     ),
                 }
             }
-
-            if let Some(violation) = component_budget_recovery {
-                let recovered = context_budget_inspection.violation().is_none();
-                if !recovered {
-                    self.emit_context_budget_recovery_event(
-                        TurnId(self.seq_turn.saturating_sub(1).max(turn_id.0)),
-                        context_runtime::ContextBudgetRecoveryStage::Failed,
-                        &violation,
-                        component_budget_after
-                            .or(component_budget_before)
-                            .unwrap_or(violation.used),
-                    );
-                }
-                submitted_turn.settle_context_recovery(recovered);
+            if let Some((violation, after)) =
+                request_preparation.settle_recovery(submitted_turn.context_recovery())
+            {
+                self.emit_context_budget_recovery_event(
+                    TurnId(self.seq_turn.saturating_sub(1).max(turn_id.0)),
+                    context_runtime::ContextBudgetRecoveryStage::Failed,
+                    &violation,
+                    after,
+                );
             }
-
             // Summarization is itself an admitted provider turn. Once it quiesces, observe control
             // again before admitting the main-model request; otherwise Drain received during a
             // long summary could be followed by one additional provider turn.
@@ -2292,8 +2191,12 @@ impl Agent {
             // their own conservative admission, but never train a multiplier later applied to a
             // text-only request.
             if self.input_image_evidence.is_none() {
-                self.remember_token_estimate_baseline(turn_id, uncalibrated_context_total);
+                self.remember_token_estimate_baseline(turn_id, request_preparation.baseline());
             }
+
+            request_preparation.bind_execution_window(self.execution_context_window())?;
+            let context_estimate = request_preparation.estimate();
+            let context_budget_inspection = request_preparation.inspection();
 
             // ---- turn-atomic budget check (ADR-008): checked at turn admission, no mid-turn
             // preempt; a breach stops cleanly at this safe point, never mid-effect. ----
@@ -2323,28 +2226,20 @@ impl Agent {
                 )
                 .unwrap_or(u64::MAX),
             );
-            if let Some(context_window_tokens) = self.execution_context_window() {
-                let estimated_input_tokens =
-                    u64::try_from(context_estimate.total_tokens).unwrap_or(u64::MAX);
-                if estimated_input_tokens.saturating_add(u64::from(request_max_tokens))
-                    > context_window_tokens
-                {
-                    self.observe_context_window_denied(
-                        turn_id,
-                        estimated_input_tokens
-                            .saturating_add(u64::from(request_max_tokens))
-                            .saturating_sub(context_window_tokens),
-                    );
-                    return Err(KernelError::ContextWindowExceeded {
-                        estimated_input_tokens,
-                        reserved_output_tokens: request_max_tokens,
-                        context_window_tokens,
-                    });
-                }
+            if let Some(KernelError::ContextWindowExceeded {
+                estimated_input_tokens,
+                reserved_output_tokens,
+                context_window_tokens,
+            }) = request_preparation.window_refusal()
+            {
+                self.observe_context_window_denied(
+                    turn_id,
+                    estimated_input_tokens
+                        .saturating_add(u64::from(reserved_output_tokens))
+                        .saturating_sub(context_window_tokens),
+                );
             }
-            if let Some(error) = context_budget_inspection.violation() {
-                return Err(KernelError::ContextBudget(error.to_string()));
-            }
+            request_preparation.validate()?;
 
             let context_gates = [(
                 "context.segment.budget_requested",
@@ -2370,9 +2265,9 @@ impl Agent {
             self.observe_context_request(
                 turn_id,
                 decision_observability::ContextRequestObservation {
-                    system: &effective_system,
-                    messages,
-                    tools: &tool_specs,
+                    system: &request_preparation.request().system,
+                    messages: &request_preparation.request().messages,
+                    tools: &request_preparation.request().tools,
                     images: input_images,
                     estimate: context_estimate,
                     output_reserved_tokens: request_max_tokens,
@@ -2388,7 +2283,10 @@ impl Agent {
                 "model.request_prepared",
                 Some(turn_id),
                 LifecyclePayload {
-                    count: Some(u64::try_from(messages.len()).unwrap_or(u64::MAX)),
+                    count: Some(
+                        u64::try_from(request_preparation.request().messages.len())
+                            .unwrap_or(u64::MAX),
+                    ),
                     magnitude: Some(
                         u64::try_from(context_estimate.total_tokens).unwrap_or(u64::MAX),
                     ),
@@ -2396,23 +2294,17 @@ impl Agent {
                 },
             );
 
-            self.admit_tool_image_context(messages, input_images)?;
-            let req = TurnRequest {
-                model: self.model.clone(),
-                system: effective_system,
-                messages: messages.clone(),
-                input_images: input_images.to_vec(),
-                tools: tool_specs,
-                max_tokens: request_max_tokens,
-                // Family 23 is the outer gate and family 158 supplies the exact breakpoint. Keep
-                // the legacy adapter bit consistent with the pinned typed control: Anthropic
-                // deliberately treats `cache_system=true` + `breakpoint=None` as Rolling, so a
-                // hard-coded true here would silently re-enable a disabled cache on the wire.
-                cache_system: self.provider_cache_system_enabled(),
-                thinking_budget: self.effort_thinking_budget(self.effort),
-                reasoning_effort: self.effort_reasoning(self.effort),
-                controls: self.provider_controls,
-            };
+            self.admit_tool_image_context(&request_preparation.request().messages, input_images)?;
+            let (req, requested_max_tokens) =
+                request_preparation.into_request(request_preparation::RequestConfiguration {
+                    // Internal compaction may have durably selected a fallback. Bind the actual
+                    // resident route controls only after that physical work and its safe point.
+                    model: self.model.clone(),
+                    cache_system: self.provider_cache_system_enabled(),
+                    thinking_budget: self.effort_thinking_budget(self.effort),
+                    reasoning_effort: self.effort_reasoning(self.effort),
+                    controls: self.provider_controls,
+                })?;
             let effort_application = self.provider.effort_application(&req);
             local_prepare_activity.complete();
 

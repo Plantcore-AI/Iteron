@@ -1,5 +1,20 @@
 use super::*;
 
+/// Proof that the actual writer accepted and synced this compaction input. Retained record text
+/// still follows the ordinary mandatory redaction policy; this is not a raw-content export proof.
+pub(super) struct CompactionCommitReceipt {
+    sequence: Seq,
+    summarized: usize,
+    submitted_summary_sha256: [u8; 32],
+}
+impl CompactionCommitReceipt {
+    pub(super) fn matches(&self, summarized: usize, digest: &[u8; 32]) -> bool {
+        self.sequence != Seq::ZERO
+            && self.summarized == summarized
+            && &self.submitted_summary_sha256 == digest
+    }
+}
+
 /// Coverage verdict recorded when the coverage check itself failed to complete: an unproven summary
 /// counts as uncovered, never as covered.
 const COVERAGE_UNPROVEN: bool = false;
@@ -30,15 +45,19 @@ impl Agent {
                     "[bounded compaction fallback: {} middle message(s) omitted after {reason}]",
                     plan.to_summarize.len()
                 );
-                self.record_compaction(
-                    turn,
-                    messages,
-                    plan,
-                    &summary,
-                    "failure_truncate_bounded",
-                    false,
-                );
-                self.working_set = None;
+                if self
+                    .record_compaction_committed(
+                        turn,
+                        messages,
+                        plan,
+                        &summary,
+                        "failure_truncate_bounded",
+                        false,
+                    )
+                    .is_ok()
+                {
+                    self.working_set = None;
+                }
             }
         }
     }
@@ -221,7 +240,7 @@ impl Agent {
     /// already holds, so writing it back out wrote the same bytes twice — one line, audited at
     /// 115949 of them, fsynced inline, inside the operator's turn. `replay_compaction` puts them
     /// back together and `messages_from_rollout` proves the result is identical.
-    pub(super) fn record_compaction(
+    pub(super) fn record_compaction_committed(
         &mut self,
         turn: TurnId,
         before_messages: &[Message],
@@ -229,7 +248,8 @@ impl Agent {
         summary: &str,
         reason_code: &'static str,
         coverage_verified: bool,
-    ) {
+    ) -> Result<CompactionCommitReceipt, KernelError> {
+        self.ensure_record_healthy()?;
         let rebuilt = iteron_ctx::CompactionPolicy::rebuild(plan, summary.to_owned());
         let before = before_messages.len();
         let after = rebuilt.len();
@@ -296,15 +316,15 @@ impl Agent {
             elapsed_us: 0,
         });
         ledger.compaction = Some(compaction.clone());
-        self.context_ledgers.publish(ledger);
-        self.compacted_in_run = true;
-        self.last_compaction_turn = Some(u64::from(turn.0));
-        self.emit(
+        let sequence = self.emit_durable_seq(
             turn,
             EventKind::Compaction {
                 messages: iteron_ctx::compaction_seed(plan, summary),
             },
-        );
+        )?;
+        self.context_ledgers.publish(ledger);
+        self.compacted_in_run = true;
+        self.last_compaction_turn = Some(u64::from(turn.0));
         self.lifecycle_event(
             "context.compaction.completed",
             Some(turn),
@@ -361,6 +381,11 @@ impl Agent {
                 text: format!("compacted {before} messages -> {after}"),
             },
         );
+        Ok(CompactionCommitReceipt {
+            sequence,
+            summarized: plan.to_summarize.len(),
+            submitted_summary_sha256: Sha256::digest(summary.as_bytes()).into(),
+        })
     }
 
     /// Compaction at the END of the turn, not inside it (#I-58). The operator already has their
@@ -526,20 +551,25 @@ impl Agent {
                     );
                     return;
                 }
-                self.record_compaction(
-                    compaction_result_turn,
-                    &messages,
-                    &plan,
-                    &summary,
-                    component_pressure.map_or("turn_end", |pressure| pressure.class.reason_code()),
-                    self.compaction.coverage_check && covered,
-                );
-                // The in-memory working set was captured by `drive_admitted` BEFORE this ran, so it
-                // still holds the pre-compaction transcript. Dropping it makes the next follow-up
-                // replay from the rollout, which now carries the compaction — the one case where the
-                // #I-21 shortcut must not be taken, and it costs one replay per compaction rather
-                // than one per turn.
-                self.working_set = None;
+                if self
+                    .record_compaction_committed(
+                        compaction_result_turn,
+                        &messages,
+                        &plan,
+                        &summary,
+                        component_pressure
+                            .map_or("turn_end", |pressure| pressure.class.reason_code()),
+                        self.compaction.coverage_check && covered,
+                    )
+                    .is_ok()
+                {
+                    // The in-memory working set was captured by `drive_admitted` BEFORE this ran, so it
+                    // still holds the pre-compaction transcript. Dropping it makes the next follow-up
+                    // replay from the rollout, which now carries the compaction — the one case where the
+                    // #I-21 shortcut must not be taken, and it costs one replay per compaction rather
+                    // than one per turn.
+                    self.working_set = None;
+                }
             }
             Err(_) => self.apply_automatic_compaction_failure(
                 TurnId(self.seq_turn.saturating_sub(1).max(compaction_turn.0)),
@@ -628,14 +658,14 @@ impl Agent {
             ));
         }
         let after = 2 + plan.keep_verbatim.len();
-        self.record_compaction(
+        self.record_compaction_committed(
             TurnId(self.seq_turn.saturating_sub(1).max(compaction_turn.0)),
             &messages,
             &plan,
             &summary,
             "operator_forced",
             self.compaction.coverage_check,
-        );
+        )?;
         self.emit(
             TurnId(self.seq_turn),
             EventKind::Notice {
