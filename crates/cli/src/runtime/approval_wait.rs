@@ -172,9 +172,9 @@ impl ApprovalWait<'_> {
             );
             return Ok(self.present_refused(&request, "frontend_queue_saturated_or_closed"));
         }
-        // The receiver remains the single session-owned queue. Restoration precedes every terminal
-        // append or policy operation, including failure, so the next resident turn retains ingress.
-        let Some(mut receiver) = self.inbox.take_receiver() else {
+        // The actual unique receiver remains inside the resident inbox across this await.
+        // Future cancellation drops a recv borrow, never the caller's receiver or queued work.
+        if !self.inbox.has_receiver() {
             self.journal.verdict(&request, Verdict::Deny)?;
             return Ok(ApprovalDecision {
                 approved: false,
@@ -186,7 +186,7 @@ impl ApprovalWait<'_> {
                 already_presented: false,
                 activity: Some(activity),
             });
-        };
+        }
         let mut approved = false;
         let mut remember = false;
         let mut response = None;
@@ -216,7 +216,7 @@ impl ApprovalWait<'_> {
                 }
                 InboundControl::None => {}
             }
-            match tokio::time::timeout(request.poll.max(Duration::from_millis(1)), receiver.recv())
+            match tokio::time::timeout(request.poll.max(Duration::from_millis(1)), self.inbox.recv())
                 .await
             {
                 Ok(Some(envelope)) => {
@@ -342,7 +342,6 @@ impl ApprovalWait<'_> {
                 Err(_) => {}
             }
         }
-        self.inbox.bind_receiver(receiver);
         self.journal.verdict(
             &request,
             if approved {

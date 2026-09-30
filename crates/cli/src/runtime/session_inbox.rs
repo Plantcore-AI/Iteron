@@ -33,6 +33,14 @@ impl SessionSubmissionInbox {
     pub(super) fn receiver(&mut self) -> Option<&mut Receiver<TurnSubmission>> {
         self.receiver.as_mut()
     }
+    /// Await ingress without moving its unique receiver out of the resident owner. Dropping an
+    /// approval/provider future cancels only this recv borrow and cannot erase future input.
+    pub(super) async fn recv(&mut self) -> Option<TurnSubmission> {
+        match self.receiver.as_mut() {
+            Some(receiver) => receiver.recv().await,
+            None => None,
+        }
+    }
     pub(super) fn take_receiver(&mut self) -> Option<Receiver<TurnSubmission>> {
         self.receiver.take()
     }

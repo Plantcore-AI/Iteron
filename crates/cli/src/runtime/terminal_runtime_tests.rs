@@ -279,3 +279,67 @@ async fn already_received_physical_reap_receipt_is_not_consumed_twice() {
     drop(agent);
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[tokio::test]
+async fn dropping_approval_wait_preserves_same_resident_ingress_and_next_submission() {
+    let root = gate_integration_tests::temp_ws("approval-owner-future-drop");
+    let mut agent = agent(&root);
+    let (tx, rx) = tokio::sync::mpsc::channel(8);
+    agent.set_approvals(rx);
+    assert!(
+        tokio::time::timeout(
+            Duration::from_millis(20),
+            agent.await_approval(TurnId(0), &write(), Capability::ReversibleLocal)
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        agent.inbox.has_receiver(),
+        "dropping only an approval future must retain the resident inbox"
+    );
+    tx.try_send(TurnSubmission::identified(
+        SubmissionId(17),
+        Op::Steer {
+            text: "after cancelled wait".into(),
+        },
+    ))
+    .unwrap();
+    tx.try_send(TurnSubmission::identified(
+        SubmissionId(18),
+        Op::ApprovalResponse {
+            id: SubmissionId(2),
+            approved: false,
+            remember: false,
+        },
+    ))
+    .unwrap();
+    assert!(
+        !agent
+            .await_approval(TurnId(0), &write(), Capability::ReversibleLocal)
+            .await
+            .unwrap()
+    );
+    let retained = agent.inbox.pop().unwrap();
+    assert_eq!(retained.text, "after cancelled wait");
+    assert_eq!(retained.submission_id, Some(SubmissionId(17)));
+    let verdicts = iteron_record::replay(agent.rollout.path())
+        .unwrap()
+        .iter()
+        .filter_map(|event| match event.kind {
+            EventKind::Approval { id, verdict, .. } => Some((id, verdict)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        verdicts,
+        vec![
+            (SubmissionId(1), Verdict::Ask),
+            (SubmissionId(2), Verdict::Ask),
+            (SubmissionId(2), Verdict::Deny)
+        ]
+    );
+    assert!(!root.join("f").exists());
+    drop(agent);
+    std::fs::remove_dir_all(root).unwrap();
+}
