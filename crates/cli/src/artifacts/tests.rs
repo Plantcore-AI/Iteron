@@ -430,3 +430,62 @@ fn symlink_namespace_and_manifest_cannot_redirect_public_artifact_storage() {
             .is_err()
     );
 }
+
+#[test]
+fn identical_bytes_keep_first_schema_source_and_retained_identity() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let first = store
+        .publish_text(7, ArtifactTextSchema::ToolOutput, "same served bytes", &[])
+        .unwrap();
+    let later = store
+        .publish_text(
+            91,
+            ArtifactTextSchema::FinalAnswer,
+            "same served bytes",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(later, first);
+    assert_eq!(later.schema, "iteron.tool-output.v1");
+    assert_eq!(later.source_event_seq, 7);
+    let reopened = fixture.store();
+    let listing = reopened
+        .read(
+            &fixture.thread(),
+            ClientArtifactCommandV1::List {
+                thread_id: fixture.thread(),
+            },
+        )
+        .unwrap();
+    assert_eq!(listing["artifacts"].as_array().unwrap().len(), 1);
+    assert_eq!(listing["artifacts"][0]["source_event_seq"], 7);
+    assert!(
+        store
+            .publish_text(0, ArtifactTextSchema::ToolOutput, "unknown origin", &[])
+            .is_err()
+    );
+
+    let file = storage::ManifestFile::acquire(&store, true)
+        .unwrap()
+        .unwrap();
+    let mut manifest = file.read().unwrap().unwrap();
+    let duplicate = Entry {
+        descriptor: first,
+        content: manifest.entries[0].content.clone(),
+    };
+    manifest.entries.push(duplicate);
+    file.write(&manifest).unwrap();
+    drop(file);
+    assert!(
+        reopened
+            .read(
+                &fixture.thread(),
+                ClientArtifactCommandV1::List {
+                    thread_id: fixture.thread(),
+                }
+            )
+            .is_err(),
+        "conflicting duplicate references cannot redefine first origin"
+    );
+}

@@ -230,8 +230,11 @@ impl DurableArtifactStore {
         {
             return Err(ArtifactStoreError::Corrupt);
         }
+        let mut identities = std::collections::BTreeSet::new();
         for entry in &manifest.entries {
-            if entry.descriptor.bytes != u64::from(entry.content.handle.byte_len)
+            if !identities.insert(&entry.descriptor.artifact_id)
+                || entry.descriptor.source_event_seq == 0
+                || entry.descriptor.bytes != u64::from(entry.content.handle.byte_len)
                 || entry.descriptor.bytes as usize > MAX_PRIVATE_CONTENT_BYTES
                 || entry.content.handle.digest.as_str()
                     != format!("sha256:{}", entry.descriptor.artifact_id)
@@ -280,6 +283,9 @@ impl DurableArtifactStore {
         text: &str,
         sources: &[PrivateContentSource],
     ) -> Result<ClientArtifactDescriptorV1, ArtifactStoreError> {
+        if source_event_seq == 0 {
+            return Err(ArtifactStoreError::InvalidRequest);
+        }
         if text.len() > MAX_PRIVATE_CONTENT_BYTES || sources.len() > MAX_SOURCES {
             return Err(ArtifactStoreError::Capacity);
         }
@@ -299,6 +305,9 @@ impl DurableArtifactStore {
             .find(|entry| entry.descriptor.artifact_id == artifact_id)
         {
             self.bytes(entry)?;
+            // Identity addresses served bytes, so repeated bytes return the first retained
+            // publication. This is a lookup receipt: never relabel its schema/source as the
+            // later producer or silently rebind the original revocation lineage.
             return Ok(entry.descriptor.clone());
         }
         while manifest.entries.len() >= MAX_ARTIFACTS

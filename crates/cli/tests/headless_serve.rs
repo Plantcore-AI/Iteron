@@ -335,6 +335,15 @@ fn fresh_bearer_token() -> String {
 }
 
 fn core_command(scratch: &Scratch) -> Command {
+    core_command_with_launch(scratch, &scratch.repo(), 1, &[])
+}
+
+fn core_command_with_launch(
+    scratch: &Scratch,
+    workspace: &Path,
+    max_turns: u32,
+    launch_arguments: &[&str],
+) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_iteron"));
     command
         .env_clear()
@@ -351,9 +360,9 @@ fn core_command(scratch: &Scratch) -> Command {
         .env("LANG", "C.UTF-8")
         .env("NO_PROXY", "127.0.0.1,localhost")
         .env(KEY_ENV, KEY)
-        .current_dir(scratch.repo())
+        .current_dir(workspace)
         .arg("--repo")
-        .arg(scratch.repo())
+        .arg(workspace)
         .arg("--runs-dir")
         .arg(scratch.runs())
         .arg("--provider")
@@ -363,7 +372,8 @@ fn core_command(scratch: &Scratch) -> Command {
         .arg("--effort")
         .arg("low")
         .arg("--max-turns")
-        .arg("1")
+        .arg(max_turns.to_string())
+        .args(launch_arguments)
         .arg("serve")
         .arg("--listen")
         .arg("127.0.0.1:0")
@@ -380,7 +390,11 @@ fn core_command(scratch: &Scratch) -> Command {
 }
 
 fn spawn_core_with_token_input(scratch: &Scratch, token_input: &[u8]) -> CoreProcess {
-    let mut child = core_command(scratch)
+    spawn_core_command_with_token_input(core_command(scratch), token_input)
+}
+
+fn spawn_core_command_with_token_input(mut command: Command, token_input: &[u8]) -> CoreProcess {
+    let mut child = command
         .stdin(Stdio::piped())
         .spawn()
         .expect("spawn real headless iteron process");
@@ -1534,3 +1548,6 @@ fn a_cursor_older_than_the_live_ring_receives_rollout_fallback() {
     assert!(stderr.contains("\"event\":\"listening\""));
     assert!(!stderr.contains(&token));
 }
+
+#[path = "headless_serve/artifact_journey.rs"]
+mod artifact_journey;

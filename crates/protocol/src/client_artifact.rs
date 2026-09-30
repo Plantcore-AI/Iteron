@@ -58,5 +58,9 @@ pub struct ClientArtifactDescriptorV1 {
     pub bytes: u64,
     pub complete: bool,
     pub required_capability: crate::Capability,
+    /// First retained publication's source. `retained_owner_manifest` provenance names the
+    /// runtime rollout sequence; resident event provenance names the public event sequence.
+    /// Byte-identical republication preserves this source and schema; this is not a later
+    /// producer receipt or an assertion that the current operation created these bytes.
     pub source_event_seq: u64,
 }
