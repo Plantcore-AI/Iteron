@@ -233,7 +233,18 @@ fn native_large_output_is_complete_after_restart_scoped_and_removed_by_verified_
     assert_eq!(descriptor["schema"], "iteron.tool-output.v1");
     assert_eq!(descriptor["bytes"], expected.len() as u64);
     assert_eq!(descriptor["complete"], true);
-    assert_eq!(listing["provenance"], "retained_owner_manifest");
+    assert_eq!(
+        listing["provenance"],
+        "retained_owner_manifest_or_resident_public_event"
+    );
+    assert!(
+        !listing["resident_artifact_ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|resident| resident == &id),
+        "the complete artifact is retained, not resident fallback"
+    );
     let first = artifact_read(&mut connection, &mut reader, &thread_id, &id, 302, 0);
     assert_eq!(first["provenance"], "retained_owner_manifest");
     let first_bytes = base64::engine::general_purpose::STANDARD
