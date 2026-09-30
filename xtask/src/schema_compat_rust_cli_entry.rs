@@ -20,6 +20,7 @@ pub(super) fn validate(root: &Path, main: &str) -> Result<MachineOwner> {
         .any(|item| matches!(item, syn::Item::Mod(m) if m.ident == "cli_entry"))
     {
         require_module(&file, "cli_entry")?;
+        require_module(&file, "output")?;
         let entry = load(root, "crates/cli/src/cli_entry/mod.rs")?;
         for module in ["frontend", "options", "preflight", "run_options"] {
             require_module(&entry, module)?;
