@@ -5,6 +5,9 @@ use base64::Engine;
 use iteron_protocol::{EventKind, RunId};
 use sha2::{Digest, Sha256};
 
+#[path = "turn_publication_journey.rs"]
+mod turn_publication_journey;
+
 struct OwnedCore(Option<CoreProcess>);
 
 impl OwnedCore {

@@ -39,6 +39,28 @@ such as `bash:external` are exact names. Rules remain subject to Plan mode, capa
 and the runtime gate. The TUI uses `/permissions allow|ask|deny tool:NAME`; existing capability
 syntax remains available. Inventory is returned in the state reply's `permission_rules`.
 
+## Answer and finalization observations V1
+
+Send `{"type":"turn_publications_v1","command":{"type":"read","thread_id":"..."}}`.
+The reply contains a current-run snapshot of up to 256 recent content-free facts. Recovery is
+labelled `verified_record`, `unavailable` or `live_only`; the snapshot is bounded recent history.
+An exact authenticated thread mismatch is refused. The TUI reads this same snapshot through
+`/finalization`.
+
+`answer_available` names the earlier committed assistant Message after an actual final non-tool
+EndTurn. It does not claim the terminal succeeded, that every streamed byte was delivered, or
+that background maintenance finished. `turn_finalized` names the existing committed Done
+sequence and carries the closed runtime outcome and optional budget limit. Runtime turn IDs
+start at zero and are distinct from user-facing Product turn IDs. Their `source_seq` values are
+record sequences, independent of the transport replay cursor.
+
+Use `"type":"subscribe"` in that same command to opt into separate `turn_publication_v1`
+frames. The Subscribe reply is the recovery snapshot; deduplicate overlap by current run and
+record source sequence. The optional stream uses a 64-entry queue. A `turn_publication_gap`
+requires another Read to reconcile; it is never treated as successful delivery. These frames
+do not change the frozen legacy event/result cursor, and clients receive them only after an
+explicit subscription. RunEnded/result remains the separate resident input-readiness boundary.
+
 ## History lifecycle V1
 
 Send `{"type":"thread_lifecycle_v1","command":{...}}`. Commands are `list`, `read`, `rename`,

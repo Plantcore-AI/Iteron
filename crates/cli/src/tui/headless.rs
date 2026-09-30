@@ -8,6 +8,7 @@ mod auth;
 mod control;
 mod framing;
 mod input;
+mod turn_publication;
 
 use self::auth::BearerToken;
 use self::control::PlantcoreCommand;
@@ -1111,8 +1112,6 @@ async fn serve_connection(
     let mut pending_control: Option<control::Pending> = None;
     loop {
         tokio::select! {
-            // Publication facts are queued before the corresponding legacy terminal frame.
-            biased;
             inbound = tokio::time::timeout_at(
                 idle_deadline,
                 reader.next_frame_with_partial_timeout(iteron_tunables::param_duration("cli.tui.headless.partial_frame_timeout", PARTIAL_FRAME_TIMEOUT)),
@@ -1387,14 +1386,10 @@ async fn serve_connection(
             publication = publication_updates.recv(), if publications_enabled => {
                 match publication {
                     Ok(publication) => {
-                        let current = shared.client.thread_snapshot_v1();
-                        if current.as_ref().is_some_and(|thread| thread.run_id == publication.run_id) {
-                            send_frame(
-                                &mut writer, &shared.outbound_budget, &shared.frame_preparers,
-                                &shared.fragment_encoders,
-                                ServerFrame::TurnPublicationV1 { protocol_version: PROTOCOL_VERSION, publication },
-                            ).await?;
-                        }
+                        turn_publication::send(
+                            &mut writer, &shared.client, &shared.outbound_budget,
+                            &shared.frame_preparers, &shared.fragment_encoders, publication,
+                        ).await?;
                     }
                     Err(broadcast::error::RecvError::Lagged(_)) => {
                         send_frame(
@@ -1407,6 +1402,27 @@ async fn serve_connection(
                 }
             }
             outbound = live.recv() => {
+                if publications_enabled {
+                    // The publication source is enqueued before its corresponding legacy
+                    // terminal. Drain at most one bounded channel window before that terminal,
+                    // while keeping the outer select fair to input and other output.
+                    for _ in 0..64 {
+                        match publication_updates.try_recv() {
+                            Ok(publication) => turn_publication::send(
+                                &mut writer, &shared.client, &shared.outbound_budget,
+                                &shared.frame_preparers, &shared.fragment_encoders, publication,
+                            ).await?,
+                            Err(broadcast::error::TryRecvError::Lagged(_)) => {
+                                send_frame(
+                                    &mut writer, &shared.outbound_budget, &shared.frame_preparers,
+                                    &shared.fragment_encoders,
+                                    error_frame("turn_publication_gap", "publication updates exceeded the bounded queue; read turn_publications_v1 to reconcile durable facts"),
+                                ).await?;
+                            }
+                            Err(broadcast::error::TryRecvError::Empty | broadcast::error::TryRecvError::Closed) => break,
+                        }
+                    }
+                }
                 match outbound {
                     Ok(seq) if seq <= delivered => {
                         // Subscription happens before the ring snapshot; a frame replayed from the
