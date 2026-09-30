@@ -332,6 +332,8 @@ fn validate_extracted_owners(root: &Path) -> Result<()> {
         "crates/cli/src/runtime/stream_tool_events.rs",
         "crates/cli/src/runtime/stream_tools.rs",
         "crates/cli/src/runtime/hook_execution.rs",
+        "crates/cli/src/runtime/session_control.rs",
+        "crates/cli/src/runtime/session_inbox.rs",
         "crates/cli/src/runtime/submitted_turn_state.rs",
         "crates/cli/src/runtime/provider_turn_evidence.rs",
         "crates/cli/src/runtime/request_context_evidence.rs",

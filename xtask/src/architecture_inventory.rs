@@ -279,6 +279,28 @@ const SURFACES: &[Surface] = &[
         next_seams: &["disjoint journal/admission ports; no executor receives mutable Agent"],
     },
     Surface {
+        path: "crates/cli/src/runtime/session_control.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "single cooperative control latches and inherited signal owner",
+            "actual predispatch refusal and bounded retry-wait observations",
+        ],
+        next_seams: &[
+            "only actual terminal composition clears controls; no journal/provider authority",
+        ],
+    },
+    Surface {
+        path: "crates/cli/src/runtime/session_inbox.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "single SQ receiver, product epoch and bounded pending-steer owner",
+            "FIFO ingress observations, stale identities and exact reclaim evidence",
+        ],
+        next_seams: &[
+            "durable message/control projection remains a distinct physical journal port",
+        ],
+    },
+    Surface {
         path: "crates/cli/src/runtime/submitted_turn_state.rs",
         boundary: "cli-host",
         responsibilities: &[
