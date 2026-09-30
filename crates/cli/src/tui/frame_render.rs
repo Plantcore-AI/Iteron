@@ -149,27 +149,7 @@ pub(super) fn render_hint(f: &mut Frame, area: Rect, density: surface::Density, 
 /// Refresh the parsed streaming Markdown document only when its source revision changed. Returns
 /// whether a parse occurred, which makes the performance contract directly regression-testable.
 pub(super) fn ensure_stream_doc(app: &mut App) -> bool {
-    if app.cur_text.trim().is_empty()
-        || (app.cur_doc.is_some() && app.cur_doc_revision == app.cur_text_revision)
-    {
-        return false;
-    }
-    // Incremental: `cur_text` only ever grows between stream boundaries, and `cur_doc` is dropped at
-    // every boundary, so `cur_doc == None` is exactly the "this is a new document" signal and is the
-    // one place the settled prefix has to be reset. Re-parsing the whole accumulated answer on every
-    // delta batch is quadratic in answer length, which is why long answers visibly slowed down as
-    // they streamed.
-    if app.cur_doc.is_none() {
-        app.cur_doc = Some(crate::markdown::MarkdownDoc {
-            blocks: Vec::new(),
-            source: None,
-        });
-        app.cur_doc_parse = crate::markdown::StreamingParse::default();
-    }
-    let doc = app.cur_doc.as_mut().expect("just ensured a live document");
-    app.cur_doc_parse.extend(doc, &app.cur_text);
-    app.cur_doc_revision = app.cur_text_revision;
-    true
+    app.assistant.ensure_document()
 }
 
 /// Where one contiguous run of transcript rows lives while a frame is being laid out. Nothing here
@@ -365,30 +345,20 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
     // at 10 fps for the caret/activity animation, but unchanged deltas do not repeatedly rebuild
     // the semantic document.
     ensure_stream_doc(app);
-    if !app.cur_text.trim().is_empty() {
+    {
         let App {
-            live_markdown_layout,
-            cur_doc,
-            cur_doc_parse,
-            cur_text,
+            assistant,
             theme,
             theme_epoch,
             hyperlink_policy,
             ..
         } = app;
-        live_markdown_layout.update(
-            cur_doc
-                .as_ref()
-                .expect("non-empty streaming text has a parsed document"),
-            cur_doc_parse,
-            cur_text,
-            live_markdown::LiveMarkdownRenderContext {
-                width: inner_w,
-                theme_epoch: *theme_epoch,
-                theme,
-                hyperlinks: hyperlink_policy,
-            },
-        );
+        assistant.prepare_layout(live_markdown::LiveMarkdownRenderContext {
+            width: inner_w,
+            theme_epoch: *theme_epoch,
+            theme,
+            hyperlinks: hyperlink_policy,
+        });
     }
     // Rebuild retained block geometry only when its semantic key changes. Ordinary spinner and
     // streaming frames reuse the prefix sums below and locate their viewport with two binary
@@ -463,7 +433,7 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
     {
         let theme = &app.theme;
         let spin = app.spin;
-        if !app.cur_think.trim().is_empty() {
+        if !app.assistant.thinking().trim().is_empty() {
             if total_rows > 0 {
                 tail_plan.push((TranscriptRows::Blank, 1, usize::MAX));
                 total_rows += 1;
@@ -471,7 +441,7 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
             let tb = block::Block::new(
                 u64::MAX,
                 block::BlockKind::Thinking {
-                    text: app.cur_think.clone(),
+                    text: app.assistant.thinking().to_owned(),
                     open: true,
                 },
             );
@@ -481,12 +451,12 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
             live.push(rendered);
             total_rows += count;
         }
-        if !app.cur_text.trim().is_empty() {
+        if app.assistant.has_text() {
             if total_rows > 0 {
                 tail_plan.push((TranscriptRows::Blank, 1, usize::MAX));
                 total_rows += 1;
             }
-            let count = app.live_markdown_layout.len();
+            let count = app.assistant.layout().len();
             tail_plan.push((TranscriptRows::LiveAssistant, count, usize::MAX));
             total_rows += count;
         }
@@ -610,7 +580,7 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
                 &mut hyperlink_regions,
             ),
             TranscriptRows::LiveAssistant => push_live_markdown_rows(
-                &app.live_markdown_layout,
+                app.assistant.layout(),
                 &app.theme,
                 inner_w,
                 app.running,

@@ -14,7 +14,9 @@
 mod driver;
 pub(crate) use driver::{RunConfig, run};
 mod frame_render;
-use frame_render::{draw, ensure_stream_doc, route_label, workflow_region_cap};
+#[cfg(test)]
+use frame_render::ensure_stream_doc;
+use frame_render::{draw, route_label, workflow_region_cap};
 
 mod session_client;
 pub(crate) use session_client::Session;
@@ -52,6 +54,7 @@ mod app_transcript;
 mod app_workflow;
 mod app_workflow_legacy;
 mod artifacts;
+mod assistant_stream;
 mod attachment_owner;
 #[cfg(target_os = "linux")]
 mod capability_fs;
@@ -723,29 +726,9 @@ struct App {
     keymap_status: String,
     /// Char index the visual selection is anchored at; `None` outside visual mode.
     vim_anchor: Option<usize>,
-    // live-accumulating current assistant paragraph (so streamed text coalesces into one line)
-    cur_text: String,
-    /// Exact safe assistant bytes projected for the current model turn. `RunEnded` reconciles this
-    /// with its terminal authority; it is not display markdown and is never inferred from blocks.
-    assistant_stream_authority: String,
-    /// Assistant blocks belonging to that same model turn. A terminal rewrite can replace only
-    /// these ids atomically while preserving prior turns and intervening tool cards.
-    assistant_turn_block_ids: Vec<u64>,
-    cur_text_revision: u64,
-    cur_doc_revision: u64,
-    cur_doc: Option<crate::markdown::MarkdownDoc>,
-    /// How much of `cur_doc` is settled, so a delta re-parses only the tail it changed. Reset with
-    /// `cur_doc` on every stream boundary.
-    cur_doc_parse: crate::markdown::StreamingParse,
-    /// Retained layout of the active assistant answer. Only appended source is processed; frames
-    /// materialize visible rows instead of cloning the entire unfinished answer.
-    live_markdown_layout: live_markdown::LiveMarkdownLayout,
-    // Hold the unfinished token across arbitrary provider deltas so a split credential cannot be
-    // rendered for one frame before the complete token becomes recognizable.
-    text_scrubber: crate::machine_projection::StreamingScrubber,
-    // live extended-thinking tail, shown dimmed while the model reasons (bounded).
-    cur_think: String,
-    thinking_scrubber: crate::machine_projection::StreamingScrubber,
+    /// Private stream/parse/layout authority. Renderers read views; only typed owner operations
+    /// append, finalize, reconcile or reset this model-turn projection.
+    assistant: assistant_stream::AssistantStream,
     /// The operator's current permission posture (mirrors the agent's; shown in the status line).
     mode: PermissionMode,
     effort: Effort,

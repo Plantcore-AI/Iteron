@@ -754,11 +754,7 @@ pub(super) fn clear_conversation(app: &mut App) {
     app.mark_transcript_changed();
     app.tool_index.clear();
     app.workflow_index.clear();
-    app.cur_text.clear();
-    app.cur_text_revision = app.cur_text_revision.wrapping_add(1);
-    app.cur_doc_revision = app.cur_text_revision;
-    app.cur_doc = None;
-    app.cur_think.clear();
+    app.assistant.reset();
     app.render_cache.clear();
     app.push(dim(), "transcript cleared");
 }

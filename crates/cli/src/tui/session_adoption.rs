@@ -442,11 +442,7 @@ pub(super) fn clear_transcript_for_adoption(app: &mut App) {
     app.workflows_panel.reset();
     app.active_tools.clear();
     app.render_cache.clear();
-    app.cur_text.clear();
-    app.cur_text_revision = app.cur_text_revision.wrapping_add(1);
-    app.cur_doc_revision = app.cur_text_revision;
-    app.cur_doc = None;
-    app.cur_think.clear();
+    app.assistant.reset();
     app.last_result = None;
     app.retryable_task = None;
     app.resume_handoff = None;

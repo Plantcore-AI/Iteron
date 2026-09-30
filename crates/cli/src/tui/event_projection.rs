@@ -42,8 +42,7 @@ pub(super) fn apply_event(app: &mut App, ev: UiEvent) {
             app.awaiting_first_token_since = None;
             app.provider_accepted = false;
             if p == iteron_protocol::Phase::Model {
-                app.assistant_stream_authority.clear();
-                app.assistant_turn_block_ids.clear();
+                app.assistant.begin_model_turn();
             }
             app.status = p.label().into();
         }
@@ -58,15 +57,7 @@ pub(super) fn apply_event(app: &mut App, ev: UiEvent) {
         } => {
             // A provider turn is a semantic token boundary. Release the last held word only after
             // scrubbing the complete token; keep it in the live block until Done/tool framing.
-            if let Some(pending) = app.text_scrubber.finish() {
-                let pending = ui_safe_text(&pending);
-                app.cur_text.push_str(&pending);
-                app.assistant_stream_authority.push_str(&pending);
-                app.cur_text_revision = app.cur_text_revision.wrapping_add(1);
-            }
-            if let Some(pending) = app.thinking_scrubber.finish() {
-                app.cur_think.push_str(&ui_safe_text(&pending));
-            }
+            app.assistant.finish_boundaries();
             app.cost = cost;
             app.last_turn_usage = Some(usage);
             app.last_context = Some(context);

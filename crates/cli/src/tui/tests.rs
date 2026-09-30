@@ -1789,7 +1789,7 @@ mod tests {
         app.stream_text("world");
         // still buffered as the in-flight block; no committed block yet
         assert_eq!(app.transcript.len(), base);
-        assert_eq!(app.cur_text, "hello ");
+        assert_eq!(app.assistant.text(), "hello ");
         app.flush_text();
         assert_eq!(app.transcript.len(), base + 1);
         assert!(
@@ -1805,8 +1805,11 @@ mod tests {
     fn streaming_markdown_is_reparsed_only_after_text_revision_changes() {
         let mut app = App::new();
         app.stream_text("**first** ");
-        assert!(app.cur_doc.is_some());
-        assert_eq!(app.cur_doc_revision, app.cur_text_revision);
+        assert!(app.assistant.document().is_some());
+        assert_eq!(
+            app.assistant.document_revision(),
+            app.assistant.source_revision()
+        );
 
         assert!(
             !ensure_stream_doc(&mut app),
@@ -1814,27 +1817,37 @@ mod tests {
         );
         let first_screen = render_text(&mut app, 80, 18);
         assert!(first_screen.contains("first"));
-        assert!(app.cur_doc.is_some());
-        assert_eq!(app.cur_doc_revision, app.cur_text_revision);
-        let first_revision = app.cur_doc_revision;
-        let first_doc = app.cur_doc.clone();
+        assert!(app.assistant.document().is_some());
+        assert_eq!(
+            app.assistant.document_revision(),
+            app.assistant.source_revision()
+        );
+        let first_revision = app.assistant.document_revision();
+        let first_doc = app.assistant.document().cloned();
 
         let second_screen = render_text(&mut app, 80, 18);
         assert!(second_screen.contains("first"));
-        assert_eq!(app.cur_doc_revision, first_revision);
+        assert_eq!(app.assistant.document_revision(), first_revision);
         assert_eq!(
-            app.cur_doc, first_doc,
+            app.assistant.document().cloned(),
+            first_doc,
             "an unchanged frame reuses the parsed doc"
         );
 
         app.stream_text("_second_ ");
-        assert_eq!(app.cur_doc_revision, app.cur_text_revision);
+        assert_eq!(
+            app.assistant.document_revision(),
+            app.assistant.source_revision()
+        );
         assert!(!ensure_stream_doc(&mut app));
         let updated_screen = render_text(&mut app, 80, 18);
         assert!(updated_screen.contains("first"));
         assert!(updated_screen.contains("second"));
-        assert_eq!(app.cur_doc_revision, app.cur_text_revision);
-        assert_ne!(app.cur_doc_revision, first_revision);
+        assert_eq!(
+            app.assistant.document_revision(),
+            app.assistant.source_revision()
+        );
+        assert_ne!(app.assistant.document_revision(), first_revision);
     }
 
     #[test]
@@ -1842,51 +1855,43 @@ mod tests {
         let mut app = App::new();
         let chunk = "streaming-word ".repeat(256);
         let target = 1024 * 1024;
-        while app.assistant_stream_authority.len() < target {
+        while app.assistant.authority().len() < target {
             app.stream_text(&chunk);
             let App {
-                live_markdown_layout,
-                cur_doc,
-                cur_doc_parse,
-                cur_text,
+                assistant,
                 theme,
                 theme_epoch,
                 hyperlink_policy,
                 ..
             } = &mut app;
-            live_markdown_layout.update(
-                cur_doc.as_ref().expect("production append parses the doc"),
-                cur_doc_parse,
-                cur_text,
-                super::live_markdown::LiveMarkdownRenderContext {
-                    width: 80,
-                    theme_epoch: *theme_epoch,
-                    theme,
-                    hyperlinks: hyperlink_policy,
-                },
-            );
+            assistant.prepare_layout(super::live_markdown::LiveMarkdownRenderContext {
+                width: 80,
+                theme_epoch: *theme_epoch,
+                theme,
+                hyperlinks: hyperlink_policy,
+            });
         }
         // The live unfinished paragraph is only scanned and retained as bounded pending chunks;
         // none of its accumulated prefix is fed back through the block parser per provider delta.
-        assert_eq!(app.cur_doc_parse.parsed_source_bytes(), 0);
-        let exact = app.assistant_stream_authority.clone();
+        assert_eq!(app.assistant.parsed_source_bytes(), 0);
+        let exact = app.assistant.authority().to_owned();
         assert_eq!(
-            app.live_markdown_layout.laid_out_source_bytes(),
+            app.assistant.layout().laid_out_source_bytes(),
             exact.len(),
             "the production live-layout path must inspect each source byte once"
         );
-        let laid_out = app.live_markdown_layout.laid_out_source_bytes();
+        let laid_out = app.assistant.layout().laid_out_source_bytes();
         for _ in 0..8 {
             let screen = render_text(&mut app, 80, 18);
             assert!(screen.contains("streaming-word"));
         }
         assert_eq!(
-            app.live_markdown_layout.laid_out_source_bytes(),
+            app.assistant.layout().laid_out_source_bytes(),
             laid_out,
             "animation frames must reuse retained wrap state"
         );
         app.flush_text();
-        assert_eq!(app.cur_doc_parse.parsed_source_bytes(), exact.len());
+        assert_eq!(app.assistant.parsed_source_bytes(), exact.len());
         let block::BlockKind::Assistant(actual) =
             &app.transcript.last().expect("assistant block").kind
         else {
@@ -1901,12 +1906,12 @@ mod tests {
         let secret = "sk-\
 ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         app.stream_text("answer sk-ant-api03-AbCd");
-        assert_eq!(app.cur_text, "answer ");
+        assert_eq!(app.assistant.text(), "answer ");
         app.stream_text("EfGhIjKlMnOpQrStUvWx");
-        assert!(!app.cur_text.contains(secret));
+        assert!(!app.assistant.text().contains(secret));
         app.stream_text(" done");
-        assert!(!app.cur_text.contains(secret));
-        assert!(app.cur_text.contains("[REDACTED"));
+        assert!(!app.assistant.text().contains(secret));
+        assert!(app.assistant.text().contains("[REDACTED"));
         app.flush_text();
         assert!(
             !app.transcript
@@ -2845,7 +2850,10 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             assert!(screen.contains("markdown"));
             assert!(!screen.contains('�'));
             cache_widths.push(app.render_cache_width);
-            assert_eq!(app.cur_doc_revision, app.cur_text_revision);
+            assert_eq!(
+                app.assistant.document_revision(),
+                app.assistant.source_revision()
+            );
         }
         assert_ne!(cache_widths[0], cache_widths[1]);
         assert_eq!(cache_widths[0], cache_widths[5]);
@@ -4847,8 +4855,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     #[test]
     fn kernel_activity_updates_status_without_leaking_internal_draft_text() {
         let mut app = App::new();
-        app.cur_text = "visible answer".into();
-        app.cur_think = "visible reasoning".into();
+        app.assistant.fixture_text("visible answer".into());
+        app.assistant.fixture_thinking("visible reasoning".into());
         app.awaiting_first_token_since = Some(Instant::now());
         let transcript_len = app.transcript.len();
 
@@ -4860,8 +4868,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
         assert_eq!(app.status, "planning · 1.2k chars · 320 reasoning");
         assert!(app.awaiting_first_token_since.is_none());
-        assert_eq!(app.cur_text, "visible answer");
-        assert_eq!(app.cur_think, "visible reasoning");
+        assert_eq!(app.assistant.text(), "visible answer");
+        assert_eq!(app.assistant.thinking(), "visible reasoning");
         assert_eq!(app.transcript.len(), transcript_len);
     }
 
@@ -8199,6 +8207,6 @@ fn product_run_rebind_skips_retained_old_run_content_and_terminal() {
         5,
     );
     new_app.finish_text_boundary();
-    assert_eq!(new_app.assistant_stream_authority, "fresh content ");
+    assert_eq!(new_app.assistant.authority(), "fresh content ");
     assert!(!tests::render_text(&mut new_app, 100, 24).contains("old replay"));
 }

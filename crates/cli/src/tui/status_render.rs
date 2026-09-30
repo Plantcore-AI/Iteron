@@ -160,8 +160,8 @@ pub(super) fn status_right_groups(app: &App, density: surface::Density) -> Vec<s
             Accent::Metadata,
         ));
     }
-    if app.running && !app.assistant_stream_authority.is_empty() {
-        let approximate_tokens = app.assistant_stream_authority.chars().count().div_ceil(4);
+    if app.running && !app.assistant.authority().is_empty() {
+        let approximate_tokens = app.assistant.approximate_tokens();
         groups.push(Group::single(
             format!("~{approximate_tokens} tok"),
             Accent::Usage,
