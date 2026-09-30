@@ -260,6 +260,15 @@ const SURFACES: &[Surface] = &[
         ],
         next_seams: &["WAL admission/settlement stay with the journal owner"],
     },
+    Surface {
+        path: "crates/cli/src/runtime/early_tool_gate.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "bounded operator-configured hook predispatch coordinator",
+            "immutable gate context and typed summary/refusal",
+        ],
+        next_seams: &["hook journal and kernel effect admission remain independent owners"],
+    },
 ];
 
 #[derive(Serialize)]
