@@ -67,6 +67,28 @@ pub fn admit_verified_projection(
         .map_err(ProjectionAdmissionError::Ledger)
 }
 
+/// Admit an already signed exact physical receipt without rebinding it to the currently selected
+/// card. Retry/fallback may have changed that card after the physical admission was sealed.
+/// The caller supplies the identity from its opaque durable terminal receipt, never a counter.
+pub fn admit_verified_projection_by_digest(
+    pricing: &dyn PricingPort,
+    expected_identity: &CostProjectionIdentity,
+    projection: &CostProjection,
+    ledger: &mut Ledger,
+) -> Result<(), ProjectionAdmissionError> {
+    if projection.identity.as_ref() != Some(expected_identity) {
+        return Err(ProjectionAdmissionError::Pricing(
+            PricingError::ProjectionIdentityMismatch,
+        ));
+    }
+    pricing
+        .verify_projection_by_digest(projection)
+        .map_err(ProjectionAdmissionError::Pricing)?;
+    ledger
+        .apply_cost_projection(projection)
+        .map_err(ProjectionAdmissionError::Ledger)
+}
+
 /// Honest cumulative monetary state. Core does not infer billing from token counts without a
 /// route-bound, versioned rate card and does not treat an attempt without usage as free.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

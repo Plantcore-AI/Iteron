@@ -14,6 +14,7 @@ struct Attempt<'a> {
     identity: Option<&'a ProviderRouteAttemptIdentity>,
     terminal: Option<&'a ProviderRouteAttemptAccounting>,
     closed: bool,
+    pricing_at: Option<u64>,
 }
 pub(in crate::runtime) struct ProviderReplayEvidence<'a> {
     attempts: BTreeMap<Key<'a>, Attempt<'a>>,
@@ -32,6 +33,7 @@ impl<'a> ProviderReplayEvidence<'a> {
                     id,
                     tool,
                     provider_route_attempt,
+                    arguments,
                     ..
                 } if tool == "provider" => {
                     let key = (row.tenant.0.as_str(), row.run_id.0.as_str(), id.0.as_str());
@@ -55,6 +57,14 @@ impl<'a> ProviderReplayEvidence<'a> {
                             result.invalid = true;
                         }
                     }
+                    let pricing_at = arguments
+                        .get("provider_pricing_at_unix_secs")
+                        .and_then(serde_json::Value::as_u64);
+                    if arguments.get("provider_pricing_at_unix_secs").is_some()
+                        && pricing_at.is_none()
+                    {
+                        result.invalid = true;
+                    }
                     result.attempts.insert(
                         key,
                         Attempt {
@@ -62,6 +72,7 @@ impl<'a> ProviderReplayEvidence<'a> {
                             identity: provider_route_attempt.as_ref(),
                             terminal: None,
                             closed: false,
+                            pricing_at,
                         },
                     );
                 }
@@ -96,9 +107,23 @@ impl<'a> ProviderReplayEvidence<'a> {
                     }
                     attempt.closed = true;
                     attempt.terminal = provider_route_attempt.as_ref();
+                    if matches!(&row.event.kind, EventKind::EffectUnknown { .. })
+                        && attempt.terminal.is_some_and(|terminal| {
+                            matches!(
+                                terminal.cost,
+                                ProviderRouteCostTruth::Known { .. }
+                                    | ProviderRouteCostTruth::NotDispatched
+                            )
+                        })
+                    {
+                        result.invalid = true;
+                    }
                     match (attempt.identity, attempt.terminal) {
                         (Some(identity), Some(terminal)) => {
-                            if terminal.validate().is_err() || !matches_identity(identity, terminal)
+                            if terminal.validate().is_err()
+                                || !matches_identity(identity, terminal)
+                                || matches!(&terminal.cost, ProviderRouteCostTruth::Known { projection: Some(projection), .. }
+                                    if attempt.pricing_at.is_some_and(|stamp| stamp != projection.projected_at_unix_secs))
                             {
                                 result.invalid = true;
                             }

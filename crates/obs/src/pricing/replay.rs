@@ -1,3 +1,4 @@
+use super::physical_replay::{PhysicalPricingReplay, PhysicalTurnProof};
 use super::{PricingError, PricingPort, validate_projection_digest, validate_rate_card_digest};
 use crate::Ledger;
 use iteron_protocol::{
@@ -26,6 +27,8 @@ pub struct PricingReplay {
     active_rate_card: Option<String>,
     binding_epoch: u64,
     open_provider_turns: HashMap<(String, String, u32), OpenProviderTurn>,
+    physical: Option<PhysicalPricingReplay>,
+    pending_physical: Option<PhysicalTurnProof>,
     pending_turn: Option<(Usage, PricingRoute, CostProjectionIdentity, Option<String>)>,
     open_sub_runs: HashSet<String>,
     workflow_admissions: HashMap<(String, u32), String>,
@@ -83,6 +86,23 @@ impl PricingReplay {
         let kind = &event.kind;
         if !matches!(kind, EventKind::CostProjected { .. }) {
             self.pending_turn = None;
+            self.pending_physical = None;
+        }
+        // Allocate no physical matcher for historical/ordinary journals without a sealed intent.
+        if self.physical.is_none()
+            && matches!(kind, EventKind::EffectIntent { tool, arguments, .. }
+            if tool == "provider" && arguments.get("provider_pricing_at_unix_secs").is_some())
+        {
+            self.physical = Some(PhysicalPricingReplay::default());
+        }
+        if let Some(physical) = &mut self.physical {
+            physical.observe(
+                event,
+                tenant,
+                run_id,
+                self.selected_route.as_ref(),
+                self.active_rate_card.as_deref(),
+            )?;
         }
         match kind {
             EventKind::TurnStart => {
@@ -107,6 +127,12 @@ impl PricingReplay {
                     run_id.0.clone(),
                     event.turn.0,
                 ));
+                let physical = self
+                    .physical
+                    .as_mut()
+                    .and_then(|owner| owner.finish(tenant, run_id, event.turn.0, *usage));
+                // A physical terminal is insufficient without its actual logical TurnStart.
+                self.pending_physical = admitted_attempt.as_ref().and(physical);
                 self.pending_turn = admitted_attempt.and_then(|admission| {
                     (admission.binding_epoch == self.binding_epoch)
                         .then_some(admission)
@@ -183,6 +209,27 @@ impl PricingReplay {
                         .contains(&projection.projection_digest)
                 {
                     return Err(PricingError::DuplicateProjection);
+                }
+                if let Some(physical) = self.pending_physical.take() {
+                    let Some(bound) = physical.matching_binding(projection) else {
+                        return Err(PricingError::ProjectionIdentityMismatch);
+                    };
+                    let identity = projection
+                        .identity
+                        .as_ref()
+                        .ok_or(PricingError::MissingProjectionIdentity)?;
+                    self.consumed_projection_identities.insert(identity.clone());
+                    self.consumed_projection_digests
+                        .insert(projection.projection_digest.clone());
+                    // Digest integrity is distinct from an admitted trusted route/card binding.
+                    if bound && let Some(pricing) = &self.pricing {
+                        pricing.verify_projection_by_digest(projection)?;
+                        ledger
+                            .apply_cost_projection(projection)
+                            .map_err(|_| PricingError::WorkflowEvidenceMismatch)?;
+                    }
+                    self.pending_turn = None;
+                    return Ok(());
                 }
                 let pending = self.pending_turn.take();
                 let pending_matches = pending.as_ref().is_some_and(|(usage, route, _, _)| {
@@ -400,7 +447,6 @@ impl PricingReplay {
                 || identity.run_id != sub_run
                 || identity.attribution.as_ref() != Some(expected_attribution)
                 || identity.provider_attempt == 0
-                || identity.provider_attempt > metrics.provider_attempts
                 || !attempts.insert((identity.turn_id, identity.provider_attempt))
                 || !projection_digests.insert(projection.projection_digest.as_str())
             {

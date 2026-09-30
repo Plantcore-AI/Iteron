@@ -5,6 +5,7 @@
 //! an `Arc<dyn PricingPort>`, never the key bytes.
 
 mod codec;
+mod physical_replay;
 mod replay;
 
 use codec::{
@@ -552,5 +553,7 @@ pub fn projected_amount_microusd(rates: TokenRateCard, usage: Usage) -> Result<u
     u64::try_from(total).map_err(|_| PricingError::AmountOverflow)
 }
 
+#[cfg(test)]
+mod physical_replay_tests;
 #[cfg(test)]
 mod tests;
