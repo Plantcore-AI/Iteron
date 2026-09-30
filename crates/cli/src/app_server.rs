@@ -115,8 +115,6 @@ pub(crate) use queue_wiring::{ServerEnds, advertised_version};
 
 mod advisory_maintenance;
 mod agent_control;
-#[path = "app_server/backpressure.rs"]
-mod backpressure;
 mod client_artifacts;
 mod runtime_ingress;
 mod turn_publication;
@@ -135,7 +133,9 @@ mod thread_inspection;
 mod thread_lifecycle;
 pub(crate) mod thread_presentation;
 
-pub(crate) use backpressure::{AppServerQueuePolicy, AuthoritativeOverflow, CosmeticOverflow};
+pub(crate) use crate::queue_policy::{
+    AuthoritativeOverflow, CosmeticOverflow, FrontendQueuePolicy as AppServerQueuePolicy,
+};
 
 use self::control::{
     apply_control, apply_immediate_control, is_immediate_control, is_plantcore_admitted_control,
@@ -190,63 +190,11 @@ fn dispatch_lifecycle_hook(
     }
 }
 
-/// Submission-queue depth.
-///
-/// Sized for the burst a human can produce with a held key or a paste, not for a backlog: past this
-/// the honest answer is "busy", not a longer queue.
-pub(crate) const SQ_CAPACITY: usize = 256;
-
-/// Entries reserved for in-turn control. A paste or a burst of future turns may consume every
-/// data slot, but can never prevent an interrupt, force-cancel, drain, steer, or approval receipt
-/// from reaching the resident actor.
-const SQ_PRIORITY_CAPACITY: usize = 16;
+#[cfg(test)]
+use crate::queue_policy::{SQ_CAPACITY, SQ_CONTROL_RESERVE_BYTES, SQ_PRIORITY_CAPACITY};
+use crate::queue_policy::{SQ_BYTE_CAPACITY, SQ_ENTRY_OVERHEAD_BYTES, sq_control_reserve_bytes};
 #[cfg(test)]
 const SQ_DATA_CAPACITY: usize = SQ_CAPACITY - SQ_PRIORITY_CAPACITY;
-
-/// Conservative heap charge for the envelope, enum/segment storage, channel node and allocator
-/// bookkeeping of one submission, before counting its variable-length strings.
-///
-/// Small control operations use only this charge. Keeping a full queue's worth in reserve means
-/// the byte budget never reduces the existing 256-item control burst bound.
-const SQ_ENTRY_OVERHEAD_BYTES: usize = 1024;
-
-/// Bytes reserved for a full [`SQ_CAPACITY`] burst of small control operations.
-const SQ_CONTROL_RESERVE_BYTES: usize = SQ_CAPACITY * SQ_ENTRY_OVERHEAD_BYTES;
-
-fn sq_control_reserve_bytes() -> usize {
-    iteron_tunables::param_integer(
-        "cli.app_server.sq_control_reserve_bytes",
-        SQ_CONTROL_RESERVE_BYTES,
-    )
-}
-
-/// Total heap budget for submissions waiting on the in-process SQ.
-///
-/// This admits one maximum legal multimodal submission (1 MiB text plus 32 MiB of encoded image
-/// data), with a full control-queue reserve beside it. The item bound still applies, so a maximum
-/// payload plus controls can occupy at most 256 queue slots. Charging the actual text and encoded
-/// image lengths prevents 256 maximum payloads from multiplying into a multi-GiB queue.
-pub(crate) const SQ_BYTE_CAPACITY: usize = SQ_ENTRY_OVERHEAD_BYTES
-    + iteron_protocol::task::MAX_TASK_TEXT_BYTES
-    + iteron_protocol::input::MAX_TOTAL_IMAGE_BASE64_BYTES
-    + SQ_CONTROL_RESERVE_BYTES;
-
-fn sq_byte_capacity() -> usize {
-    let derived = iteron_tunables::param_integer(
-        "cli.app_server.sq_entry_overhead_bytes",
-        SQ_ENTRY_OVERHEAD_BYTES,
-    )
-    .saturating_add(iteron_protocol::task::MAX_TASK_TEXT_BYTES)
-    .saturating_add(iteron_protocol::input::MAX_TOTAL_IMAGE_BASE64_BYTES)
-    .saturating_add(sq_control_reserve_bytes());
-    iteron_tunables::param_integer("cli.app_server.sq_byte_capacity", derived)
-}
-
-/// Event-queue depth.
-///
-/// Streamed text arrives far faster than a terminal repaints, so this is the elastic that absorbs a
-/// burst between frames. It is a bound, not a buffer to be filled: see the drop policy above.
-pub(crate) const EQ_CAPACITY: usize = 1024;
 
 /// Where a submission goes once the server has classified it.
 ///

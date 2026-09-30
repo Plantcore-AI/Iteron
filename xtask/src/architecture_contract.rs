@@ -28,6 +28,9 @@ pub(crate) fn validate(root: &Path) -> Result<()> {
     validate_ticket_profile(root)?;
     validate_script_profile(root)?;
     validate_extracted_owners(root)?;
+    if root.join("crates/cli/src/queue_policy.rs").is_file() {
+        validate_runtime_direction(root)?;
+    }
     // The direct public module declaration activates this new contract for historical trusted
     // base comparisons too; old bases remain readable without pretending they contain it.
     let workflow = read(root, "crates/workflow/src/lib.rs", MAX_SOURCE_BYTES)?;
@@ -313,6 +316,7 @@ fn validate_extracted_owners(root: &Path) -> Result<()> {
         "crates/cli/src/runtime/deferred_batch_executor.rs",
         "crates/cli/src/runtime/deferred_tool_batch.rs",
         "crates/cli/src/runtime/ordered_tool_call.rs",
+        "crates/cli/src/queue_policy.rs",
         "crates/cli/src/runtime/deferred_tools.rs",
         "crates/cli/src/runtime/early_tool_gate.rs",
         "crates/cli/src/runtime/early_tool_executor.rs",
@@ -363,6 +367,92 @@ fn validate_extracted_owners(root: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Runtime source depends on shared contracts. A frontend adapter may depend on the runtime;
+/// the reverse import would make replacement of a transport or presentation require core edits.
+fn validate_runtime_direction(root: &Path) -> Result<()> {
+    let mut paths = vec![
+        "crates/cli/src/runtime.rs".to_owned(),
+        "crates/cli/src/queue_policy.rs".to_owned(),
+    ];
+    let mut directories = vec![
+        "crates/cli/src/runtime".to_owned(),
+        "crates/cli/src/runtime_tunables".to_owned(),
+    ];
+    while let Some(directory) = directories.pop() {
+        for entry in std::fs::read_dir(root.join(&directory))? {
+            let entry = entry?;
+            let kind = entry.file_type()?;
+            let relative = format!("{directory}/{}", entry.file_name().to_string_lossy());
+            if kind.is_dir() {
+                directories.push(relative);
+            } else if kind.is_file()
+                && relative.ends_with(".rs")
+                && !relative.ends_with("/tests.rs")
+                && !relative.ends_with("_tests.rs")
+                && !relative.contains("/tests/")
+            {
+                paths.push(relative);
+            }
+            if paths.len() + directories.len() > 4_096 {
+                bail!("runtime source inventory exceeds its bounded direction review");
+            }
+        }
+    }
+    for path in paths {
+        validate_runtime_source_direction(&path, &read(root, &path, MAX_SOURCE_BYTES)?)?;
+    }
+    Ok(())
+}
+
+fn validate_runtime_source_direction(relative: &str, source: &str) -> Result<()> {
+    let parsed = syn::parse_file(source)?;
+    let mut guard = FrontendDependencyGuard { violation: false };
+    guard.visit_file(&parsed);
+    if guard.violation {
+        bail!("{relative}: runtime cannot depend on App Server, TUI or headless adapters");
+    }
+    Ok(())
+}
+
+struct FrontendDependencyGuard {
+    violation: bool,
+}
+fn frontend_module(name: &syn::Ident) -> bool {
+    matches!(
+        name.to_string().as_str(),
+        "app_server" | "tui" | "headless" | "ratatui" | "crossterm"
+    )
+}
+impl<'ast> Visit<'ast> for FrontendDependencyGuard {
+    fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
+        if node.attrs.iter().any(|attribute| {
+            attribute.path().is_ident("cfg")
+                && attribute.parse_args::<syn::Meta>().is_ok_and(
+                    |meta| matches!(meta, syn::Meta::Path(path) if path.is_ident("test")),
+                )
+        }) {
+            return;
+        }
+        syn::visit::visit_item_mod(self, node);
+    }
+    fn visit_path(&mut self, path: &'ast syn::Path) {
+        self.violation |= path
+            .segments
+            .iter()
+            .any(|segment| frontend_module(&segment.ident));
+        syn::visit::visit_path(self, path);
+    }
+    fn visit_use_tree(&mut self, tree: &'ast syn::UseTree) {
+        self.violation |= match tree {
+            syn::UseTree::Path(path) => frontend_module(&path.ident),
+            syn::UseTree::Name(name) => frontend_module(&name.ident),
+            syn::UseTree::Rename(rename) => frontend_module(&rename.ident),
+            _ => false,
+        };
+        syn::visit::visit_use_tree(self, tree);
+    }
 }
 
 struct ExplicitImports {
@@ -651,6 +741,22 @@ mod tests {
             ("iteron-cli".into(), BTreeSet::new()),
         ]);
         assert!(validate_graph(&graph).is_err());
+    }
+
+    #[test]
+    fn runtime_frontend_imports_are_rejected_while_shared_contracts_are_allowed() {
+        for source in [
+            "use crate::app_server::QueuePolicy;",
+            "use crate::{app_server as transport};",
+            "fn f() { crate::tui::run(); }",
+            "type Socket = crate::headless::Connection;",
+        ] {
+            assert!(
+                validate_runtime_source_direction("runtime.rs", source).is_err(),
+                "{source}"
+            );
+        }
+        assert!(validate_runtime_source_direction("runtime.rs", "use crate::queue_policy::FrontendQueuePolicy; #[cfg(test)] mod tests { use crate::app_server::AppServer; }").is_ok());
     }
 
     #[test]

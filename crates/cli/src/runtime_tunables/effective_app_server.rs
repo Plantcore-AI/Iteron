@@ -1,21 +1,21 @@
 //! Decode the resident App Server's bounded queue owner from an immutable checkpoint.
 
 use super::effective_view::{EffectiveTunablesView, EffectiveViewError};
-use crate::app_server::{AppServerQueuePolicy, AuthoritativeOverflow, CosmeticOverflow};
+use crate::queue_policy::{AuthoritativeOverflow, CosmeticOverflow, FrontendQueuePolicy};
 use iteron_tunables::{ResolutionValue, RuntimeGetterId};
 use std::collections::BTreeMap;
 
 pub(crate) fn decode(
     view: &EffectiveTunablesView,
-) -> Result<AppServerQueuePolicy, EffectiveAppServerError> {
+) -> Result<FrontendQueuePolicy, EffectiveAppServerError> {
     view.with_getter(RuntimeGetterId::EffectiveAppServer, || decode_inner(view))
 }
 
 fn decode_inner(
     view: &EffectiveTunablesView,
-) -> Result<AppServerQueuePolicy, EffectiveAppServerError> {
+) -> Result<FrontendQueuePolicy, EffectiveAppServerError> {
     let fields = view.object("app_server_sq_eq_backpressure")?;
-    AppServerQueuePolicy::new(
+    FrontendQueuePolicy::new(
         usize_field(fields, "submission_entries")?,
         usize_field(fields, "submission_bytes")?,
         usize_field(fields, "event_entries")?,

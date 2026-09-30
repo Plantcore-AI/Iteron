@@ -18,14 +18,14 @@ pub use iteron_kernel::{diagnostics, effect_admission, effect_class, effect_jour
 mod tool_turn;
 use tool_turn::EarlyToolInFlight as PureToolInFlight;
 
+#[cfg(test)]
+mod browser_runtime_tests;
 mod early_tool_collection;
 mod early_tool_executor;
 mod effect_descriptor;
 mod effect_journal_owner;
 mod extension_control;
 mod tool_execution_journal;
-#[cfg(test)]
-mod browser_runtime_tests;
 
 mod kernel_effect_bridge;
 mod provider_stream_attempt;
@@ -126,6 +126,7 @@ mod persistent_provider_budget;
 mod plantcore;
 mod provider_effect_identity;
 pub(crate) use plantcore::{DispatchGate, ResumeActivation};
+mod ordered_tool_call;
 mod policy_evidence;
 pub(crate) mod policy_evidence_recorder;
 mod pricing;
@@ -221,7 +222,6 @@ use route_validation::{
 use sha2::{Digest, Sha256};
 pub use side_conversation::{SideAnswer, SideConversation, SideStatus};
 use std::time::{Duration, Instant};
-use tool_interrupt::{ToolInterruption, await_tool_or_interrupt, interrupted_tool_result};
 #[cfg(test)]
 use transcript::project_messages_from_events;
 use transcript::{merge_adjacent_user_message, reconcile_transcript};
@@ -1200,7 +1200,7 @@ pub struct Agent {
     /// same run checkpoint. The unpinned constructor starts fail-closed.
     execution_policy: crate::runtime_tunables::execution_policy::ExecutionRuntimePolicy,
     /// SQ/EQ capacities and overflow semantics decoded before the resident actor is wired.
-    app_server_queue_policy: crate::app_server::AppServerQueuePolicy,
+    app_server_queue_policy: crate::queue_policy::FrontendQueuePolicy,
     /// Executable MIME-to-inspector table decoded from the same immutable checkpoint.
     binary_media_policy: crate::image_input::BinaryMediaInspectionPolicy,
     /// Count, raw-byte, dimension, frame, and decoder-work limits pinned at run genesis.
@@ -4468,263 +4468,39 @@ impl Agent {
                     results[idx] = Some(managed.result);
                     continue;
                 }
-                let tu_ui = tu.clone(); // carry args for tool_end_ui (edit diff / bash exit_code) — this is where edits land
-                let registry_effect_id =
-                    effect_class::effect_id(turn_id, effect_class::EffectClass::RegistryTool, idx);
-                self.tool_lifecycle_event(
-                    "tool.call_proposed",
-                    turn_id,
-                    Some(registry_effect_id.clone()),
-                    LifecyclePayload::default(),
-                );
-                self.tool_lifecycle_event(
-                    "tool.policy_evaluated",
-                    turn_id,
-                    Some(registry_effect_id.clone()),
-                    LifecyclePayload {
-                        outcome_code: Some("admitted".into()),
-                        ..LifecyclePayload::default()
-                    },
-                );
                 let admitted = proposal.eligible;
                 let intent = proposal.admit(admitted);
-                self.note_tool_effect_capability(cap);
-                let effect = effects::BrokeredEffect {
-                    turn: turn_id,
-                    effect_id: registry_effect_id.clone(),
-                    tool_use_id: tu.id.clone(),
-                    kind: tu.name.clone(),
-                    capability: cap,
-                    audit_arguments: ui_approval_arguments(&tu.input),
-                    workspace: effect_workspace(&self.workspace),
-                    provider_route_attempt: None,
-                };
-                let queued_activity = self
-                    .activity
-                    .span(turn_activity::ActivityStage::ToolQueued, Some(turn_id));
-                let opened = {
-                    let Agent {
-                        rollout,
-                        effect_journal,
-                        ..
-                    } = self;
-                    effect_journal.open(rollout, effect)
-                };
-                let ticket = opened.map_err(|error| self.effect_boundary_failed(error))?;
-                queued_activity.complete();
-                self.tool_lifecycle_event(
-                    "tool.call_admitted",
-                    turn_id,
-                    Some(registry_effect_id.clone()),
-                    LifecyclePayload::default(),
-                );
-                self.tool_lifecycle_event(
-                    "tool.call_started",
-                    turn_id,
-                    Some(registry_effect_id.clone()),
-                    LifecyclePayload::default(),
-                );
-                let running_activity = self
-                    .activity
-                    .span(turn_activity::ActivityStage::ToolRunning, Some(turn_id));
-                let registry = &self.registry;
-                let spill_store = self.ordinary_tool_spill_store(&tu.name);
-                let interrupt = self.control.interrupt().cloned();
-                let force_cancel = self.control.force_cancel().clone();
-                let drain = self.control.drain().clone();
-                let settle_mcp_on_drain = mcp_dispatch_permit.is_some();
-                self.observe_process_tool_started(turn_id, registry_effect_id.clone(), &tu);
-                let tool_use_id = intent.call.id.clone();
-                let started = Instant::now();
-                let (execution, operator_interrupted) = match await_tool_or_interrupt(
-                    registry.run_admitted_intent_captured(intent),
-                    interrupt.as_deref(),
-                    Some(force_cancel.as_ref()),
-                    (!settle_mcp_on_drain).then_some(drain.as_ref()),
-                )
-                .await
-                {
-                    Ok(execution) => (execution, false),
-                    Err(interruption) => (
-                        iteron_tools::ToolExecution::Unknown(interrupted_tool_result(
-                            tool_use_id,
-                            started.elapsed().as_millis() as u64,
-                            interruption,
-                        ))
-                        .into(),
-                        true,
-                    ),
-                };
-                running_activity.complete();
-                let post_activity = self.activity.span(
-                    turn_activity::ActivityStage::ToolPostProcessing,
-                    Some(turn_id),
-                );
-                let mut execution = execution;
-                let raw_result = match &mut execution.execution {
-                    iteron_tools::ToolExecution::Definite(result)
-                    | iteron_tools::ToolExecution::Unknown(result) => result,
-                };
-                raw_result.tool_use_id = tu.id.clone();
-                let publication_error = self
-                    .tool_output_publication(&tu, ticket.intent_sequence())
-                    .publish_execution(&tu, &execution)
-                    .err();
-                let captured_images = std::mem::take(&mut execution.captured_images);
-                let mut managed = tool_output_spill::manage_execution(
-                    spill_store.as_deref(),
-                    execution.execution,
-                );
-                let projected = match &mut managed {
-                    tool_output_spill::ManagedToolExecution::Definite(result)
-                    | tool_output_spill::ManagedToolExecution::Unknown(result) => {
-                        result.project_visible(result_projection_budget.visible_bytes_for(&tu.name))
-                    }
-                };
-                if projected {
-                    let visible = match &managed {
-                        tool_output_spill::ManagedToolExecution::Definite(result)
-                        | tool_output_spill::ManagedToolExecution::Unknown(result) => {
-                            result.result.content.len()
-                        }
-                    };
-                    self.observe_tool_result_projection(turn_id, visible);
-                }
-                let (mut execution, mut result_spill_lease) =
-                    tool_output_spill::into_execution_parts(managed);
-                let result = match &mut execution {
-                    iteron_tools::ToolExecution::Definite(result)
-                    | iteron_tools::ToolExecution::Unknown(result) => result,
-                };
-                result.tool_use_id = tu.id.clone();
-                let image_terminal_recorded = if let iteron_tools::ToolExecution::Definite(result) =
-                    &execution
-                {
-                    if !result.is_error && !captured_images.is_empty() {
-                        let events = self.tool_events(turn_id);
-                        let receipt = self
-                            .tool_execution_journal()
-                            .known_result_receipt(ticket, &tu.name, result, 0, &events)?;
-                        image_projections.push(tool_images::PendingToolImageProjection {
-                            receipt,
-                            images: captured_images,
-                        });
-                        true
-                    } else {
-                        self.settle_kernel_effect_with_cause(
-                            ticket,
-                            effects::Settlement::Definite(EventKind::ToolDone {
-                                result: result.clone(),
-                                effect_id: Some(registry_effect_id.clone()),
-                                tool: Some(tu.name.clone()),
-                            }),
-                            durability::UnknownCause::Unobserved,
-                        )?;
-                        false
-                    }
-                } else {
-                    let cause = if operator_interrupted {
-                        durability::UnknownCause::OperatorCancelled
-                    } else {
-                        durability::UnknownCause::Unobserved
-                    };
-                    self.settle_kernel_effect_with_cause(ticket,effects::Settlement::Unknown("executor did not report an authoritative terminal; side-effect state is unknown and automatic retry is forbidden".into()),cause)?;
-                    false
-                };
-                if publication_error.is_some() {
-                    self.ui(UiEvent::Notice(
-                        artifact_publication::PUBLICATION_UNAVAILABLE.into(),
-                    ));
-                }
-                let r = match execution {
-                    iteron_tools::ToolExecution::Definite(result) => {
-                        if !image_terminal_recorded {
-                            self.observe_process_tool_terminal(
-                                turn_id,
-                                registry_effect_id.clone(),
-                                &tu_ui.name,
-                                &result,
-                                true,
-                            );
-                            self.tool_lifecycle_event(
-                                if result.is_error {
-                                    "tool.call_failed"
-                                } else {
-                                    "tool.call_completed"
-                                },
-                                turn_id,
-                                Some(registry_effect_id.clone()),
-                                LifecyclePayload {
-                                    duration_us: Some(result.latency_ms.saturating_mul(1_000)),
-                                    ..LifecyclePayload::default()
-                                },
-                            );
-                        }
-                        result
-                    }
-                    iteron_tools::ToolExecution::Unknown(result) => {
-                        self.observe_process_tool_terminal(
-                            turn_id,
-                            registry_effect_id.clone(),
-                            &tu_ui.name,
-                            &result,
-                            false,
-                        );
-                        if operator_interrupted {
-                            self.tool_lifecycle_event(
-                                "tool.call_cancelled",
-                                turn_id,
-                                Some(registry_effect_id.clone()),
-                                LifecyclePayload::default(),
-                            );
-                        }
-                        self.tool_lifecycle_event(
-                            "tool.call_unknown",
-                            turn_id,
-                            Some(registry_effect_id),
-                            LifecyclePayload {
-                                duration_us: Some(result.latency_ms.saturating_mul(1_000)),
-                                ..LifecyclePayload::default()
-                            },
-                        );
-                        self.ledger.tool(result.latency_ms, 0, true);
-                        tool_output_spill::cleanup_lease(
-                            spill_store.as_deref(),
-                            &mut result_spill_lease,
-                        )?;
-                        post_activity.complete();
-                        self.ui(tool_end_ui(&tu_ui, &result));
-                        if let Some(outcome) =
-                            self.collect_and_finish_requested_control(turn_id).await?
+                let ordered = self
+                    .ordered_tool_call(
+                        turn_id,
+                        &tu.name,
+                        mcp_dispatch_permit.is_some(),
+                        result_projection_budget,
+                    )
+                    .execute(ordered_tool_call::OrderedCallAdmission {
+                        index: idx,
+                        intent,
+                        capability: cap,
+                        action_signature: action_sig,
+                    })
+                    .await;
+                let completed = match ordered {
+                    Ok(completed) => completed,
+                    Err(error) => {
+                        if matches!(&error, KernelError::UnknownEffects { .. })
+                            && let Some(outcome) =
+                                self.collect_and_finish_requested_control(turn_id).await?
                         {
                             return Ok(outcome);
                         }
-                        return Err(KernelError::UnknownEffects { count: 1 });
+                        return Err(error);
                     }
                 };
-                if !image_terminal_recorded {
-                    self.ledger.tool(r.latency_ms, 0, r.is_error);
-                } // effecting: no overlap
-                any_error |= r.is_error;
-                // Remember a failure so an identical repeat is short-circuited (ADR-003 dedup).
-                if r.is_error {
-                    self.failed_actions.insert(action_sig, r.content.clone());
+                any_error |= completed.result.is_error;
+                results[idx] = Some(completed.result);
+                if let Some(projection) = completed.image_projection {
+                    image_projections.push(projection);
                 }
-                results[idx] = Some(r.clone());
-                // PostToolUse hook (observational): its exit code is ignored (a hook cannot undo a
-                // completed tool). It runs only AFTER the effect terminal is durable, so its own
-                // timeout/crash window cannot turn a completed tool into an unknown tool outcome.
-                // It now crosses the same boundary as the tool it observes (#16), so the hook's own
-                // intent/terminal pair is journalled after — never inside — the tool's.
-                let post_hook = {
-                    let ctx = serde_json::json!({"event":"PostToolUse","tool":r.tool_use_id,"is_error":r.is_error,"content":iteron_protocol::text::head(&r.content, 2000)}).to_string();
-                    self.brokered_hook(turn_id, HookEvent::PostToolUse, &ctx)
-                        .await
-                };
-                tool_output_spill::cleanup_lease(spill_store.as_deref(), &mut result_spill_lease)?;
-                post_activity.complete();
-                self.ui(tool_end_ui(&tu_ui, &r));
-                post_hook?;
             }
             self.ledger.phase_tools(tools_span.elapsed_ms());
 
@@ -5204,6 +4980,56 @@ impl Agent {
         }
         .execute(batch, results, any_error, image_projections)
         .await
+    }
+
+    /// Assemble the ordered effect owner from real disjoint state ports. No permission or
+    /// provider authority reaches its executor, and the external permit remains with this loop.
+    fn ordered_tool_call(
+        &mut self,
+        turn: TurnId,
+        tool: &str,
+        settle_on_drain: bool,
+        projection: context_runtime::TurnResultProjectionBudget,
+    ) -> ordered_tool_call::OrderedToolCall<'_> {
+        let events = self.tool_events(turn);
+        let publication = self.tool_output_publication_factory();
+        let spill = self.ordinary_tool_spill_store(tool);
+        let hooks = hook_execution::HookExecutionScope {
+            turn,
+            workspace: self.workspace.as_path(),
+            hooks: &self.hooks,
+            command_journal: self.hook_effect_journal.clone(),
+            interrupt: self.control.interrupt().cloned(),
+            drain: self.control.drain().clone(),
+            activity: self.activity.clone(),
+            emitter: self.lifecycle_emitter.clone(),
+            dispatcher: self.lifecycle_hooks.clone(),
+            correlation: self.lifecycle_correlation(Some(turn)),
+        };
+        ordered_tool_call::OrderedToolCall {
+            journal: tool_execution_journal::ToolExecutionJournal {
+                rollout: &mut self.rollout,
+                effects: &mut self.effect_journal,
+                ledger: &mut self.ledger,
+                failed_actions: &mut self.failed_actions,
+                record_failed: &mut self.record_failed,
+                diagnostics: &self.diagnostics,
+                #[cfg(test)]
+                fault: &mut self.fail_next_durable_append,
+            },
+            scope: ordered_tool_call::OrderedToolScope {
+                registry: &self.registry,
+                interrupt: self.control.interrupt().cloned(),
+                force_cancel: self.control.force_cancel().clone(),
+                drain: self.control.drain().clone(),
+                settle_on_drain,
+                spill,
+                projection,
+                publication,
+                hooks,
+                events,
+            },
+        }
     }
 
     async fn advance_turn(&mut self) -> Result<(), KernelError> {

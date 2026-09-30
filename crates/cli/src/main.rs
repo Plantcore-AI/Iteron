@@ -32,6 +32,7 @@ mod plugin_runtime;
 mod pricing;
 mod prompt_history;
 mod providers;
+mod queue_policy;
 mod recording_provider;
 mod render;
 // The published client-event vocabulary. Nothing in this binary consumes it yet: it is the

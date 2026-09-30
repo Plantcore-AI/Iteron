@@ -13,7 +13,7 @@ struct AppliedPinnedRuntime {
     execution: crate::runtime_tunables::execution_policy::ExecutionRuntimePolicy,
     verification_feedback: iteron_verify::VerificationFeedbackTailPolicy,
     content: crate::runtime_tunables::effective_content::EffectiveContentIdentities,
-    app_server_queue: crate::app_server::AppServerQueuePolicy,
+    app_server_queue: crate::queue_policy::FrontendQueuePolicy,
     binary_media: crate::image_input::BinaryMediaInspectionPolicy,
     multimodal_decode: crate::image_input::MultimodalDecodeEnvelope,
     effort_policy: crate::runtime_tunables::effective_core::EffortRuntimePolicy,
@@ -197,7 +197,7 @@ impl Agent {
             verification_policy: iteron_verify::VerificationRuntimePolicy::default(),
             execution_policy:
                 crate::runtime_tunables::execution_policy::ExecutionRuntimePolicy::fail_closed(),
-            app_server_queue_policy: crate::app_server::AppServerQueuePolicy::owner(),
+            app_server_queue_policy: crate::queue_policy::FrontendQueuePolicy::owner(),
             binary_media_policy: crate::image_input::BinaryMediaInspectionPolicy::owner(),
             multimodal_decode_envelope: crate::image_input::multimodal_decode_envelope(),
             effective_content: None,
@@ -522,7 +522,7 @@ impl Agent {
             .ok_or(KernelError::TunablesNotResolved)
     }
 
-    pub(crate) const fn app_server_queue_policy(&self) -> crate::app_server::AppServerQueuePolicy {
+    pub(crate) const fn app_server_queue_policy(&self) -> crate::queue_policy::FrontendQueuePolicy {
         self.app_server_queue_policy
     }
 

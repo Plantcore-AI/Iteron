@@ -1697,7 +1697,7 @@ pub(super) mod tests {
             .into_iter()
             .collect(),
         };
-        let queue = crate::app_server::AppServerQueuePolicy::owner();
+        let queue = crate::queue_policy::FrontendQueuePolicy::owner();
         let app_server_queue = ResolutionValue::Object {
             fields: [
                 (
@@ -1722,8 +1722,8 @@ pub(super) mod tests {
                     "cosmetic_overflow".into(),
                     ResolutionValue::Enum {
                         value: match queue.cosmetic_overflow() {
-                            crate::app_server::CosmeticOverflow::Drop => "drop",
-                            crate::app_server::CosmeticOverflow::Coalesce => "coalesce",
+                            crate::queue_policy::CosmeticOverflow::Drop => "drop",
+                            crate::queue_policy::CosmeticOverflow::Coalesce => "coalesce",
                         }
                         .into(),
                     },
@@ -1732,8 +1732,8 @@ pub(super) mod tests {
                     "authoritative_overflow".into(),
                     ResolutionValue::Enum {
                         value: match queue.authoritative_overflow() {
-                            crate::app_server::AuthoritativeOverflow::Wait => "wait",
-                            crate::app_server::AuthoritativeOverflow::Reject => "reject",
+                            crate::queue_policy::AuthoritativeOverflow::Wait => "wait",
+                            crate::queue_policy::AuthoritativeOverflow::Reject => "reject",
                         }
                         .into(),
                     },

@@ -609,7 +609,7 @@ pub(super) fn apply(
             ),
         ]),
     )?;
-    let queue = crate::app_server::AppServerQueuePolicy::owner();
+    let queue = crate::queue_policy::FrontendQueuePolicy::owner();
     attest_literal_owner(
         builder,
         report,
@@ -639,15 +639,15 @@ pub(super) fn apply(
             (
                 "cosmetic_overflow",
                 en(match queue.cosmetic_overflow() {
-                    crate::app_server::CosmeticOverflow::Drop => "drop",
-                    crate::app_server::CosmeticOverflow::Coalesce => "coalesce",
+                    crate::queue_policy::CosmeticOverflow::Drop => "drop",
+                    crate::queue_policy::CosmeticOverflow::Coalesce => "coalesce",
                 }),
             ),
             (
                 "authoritative_overflow",
                 en(match queue.authoritative_overflow() {
-                    crate::app_server::AuthoritativeOverflow::Wait => "wait",
-                    crate::app_server::AuthoritativeOverflow::Reject => "reject",
+                    crate::queue_policy::AuthoritativeOverflow::Wait => "wait",
+                    crate::queue_policy::AuthoritativeOverflow::Reject => "reject",
                 }),
             ),
         ]),
