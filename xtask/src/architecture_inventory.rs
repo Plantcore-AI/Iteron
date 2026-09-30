@@ -398,6 +398,24 @@ const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
+        path: "crates/cli/src/runtime/provider_selection.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "sole executable selection epoch, exact provider binding and authenticated pricing card",
+        ],
+        next_seams: &[
+            "durable barrier before live swap; opaque unpriced verified adoption; public proposals checked against private binding",
+        ],
+    },
+    Surface {
+        path: "crates/cli/src/runtime/provider_selection_journal.rs",
+        boundary: "cli-host",
+        responsibilities: &["closed ModelSelected and RateCardBound durable writer"],
+        next_seams: &[
+            "same Rollout, fault, latency and diagnostic ports; no provider dispatch or policy grant",
+        ],
+    },
+    Surface {
         path: "crates/cli/src/runtime/provider_route_turn.rs",
         boundary: "cli-host",
         responsibilities: &[
