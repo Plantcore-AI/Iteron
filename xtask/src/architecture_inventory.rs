@@ -335,6 +335,15 @@ const SURFACES: &[Surface] = &[
         next_seams: &["retries, durable intent and financial accounting remain separate owners"],
     },
     Surface {
+        path: "crates/cli/src/runtime/provider_output_request.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "actual adapter-attested physical request output bound",
+            "policy requested tokens distinct from serialized cap; hard unknown refusal",
+        ],
+        next_seams: &["immutable provider proof port only; no budget or route selection mutation"],
+    },
+    Surface {
         path: "crates/cli/src/runtime/provider_turn_evidence.rs",
         boundary: "cli-host",
         responsibilities: &[
