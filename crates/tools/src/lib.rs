@@ -30,6 +30,7 @@ mod memo;
 mod multi_file_patch;
 mod multi_file_patch_error;
 mod multi_file_patch_input;
+mod operation_effects;
 mod plantcore;
 mod process;
 mod repair_evidence;
@@ -64,6 +65,7 @@ pub use lsp::{
 pub use mcp_timing::{McpDispatchClock, McpEffectAttribution};
 pub use memo::PureMemoCachePolicy;
 use memo::{Lookup, Memo};
+pub use operation_effects::{EffectKnowledge, OperationEffects, is_trust_path};
 pub use plantcore::{PUBLISH_ARTIFACT, REQUEST_USER_INPUT};
 pub use process::{
     ChildProcessEnvironmentPolicy, InteractiveStdinWaitPolicy, MAX_BACKGROUND_JOBS,
@@ -870,11 +872,26 @@ impl Registry {
             .map(|t| t.spec.capability)
     }
 
+    /// Resolve operation effects from registered authority and actual arguments. A model's
+    /// declared write set is a scheduling hint and cannot narrow this host-owned result.
+    pub fn operation_effects(&self, call: &ToolUse) -> Option<OperationEffects> {
+        let registered = self.capability_of(&call.name)?;
+        let mut effects = OperationEffects::classify(call, registered);
+        if registered == Capability::ReversibleLocal {
+            for target in effects.targets.clone() {
+                if let Ok(resolved) = resolve_in_root(&self.root, &target) {
+                    effects.include_resolved_target(&resolved.to_string_lossy());
+                }
+            }
+        }
+        Some(effects)
+    }
+
     /// Classify a model-emitted call through the pure `core/tool_policy` slot.
     ///
-    /// Registry metadata is the only source of purity and capability. This method does not
-    /// validate arguments or call an executor; the returned intent remains deny-by-default until
-    /// the kernel's gate records and applies its admission decision.
+    /// Registry metadata pins purity and minimum capability. Host classification adds operation
+    /// requirements from the arguments and resolved paths. This does not execute the call; the
+    /// returned intent remains deny-by-default until the kernel gate admits every requirement.
     pub fn propose_intent(
         &self,
         policy: &dyn StrategySlot,
@@ -888,7 +905,10 @@ impl Registry {
             .find(|tool| tool.spec.name == call.name)
             .map(|tool| &tool.spec)
             .ok_or_else(|| ToolPolicyError::UnknownTool(call.name.clone()))?;
-        ToolPolicy::propose_with(
+        let effects = self
+            .operation_effects(&call)
+            .ok_or_else(|| ToolPolicyError::UnknownTool(call.name.clone()))?;
+        let mut proposal = ToolPolicy::propose_with(
             policy,
             &ToolPolicyObservation {
                 version: TOOL_POLICY_SLOT_VERSION,
@@ -901,7 +921,14 @@ impl Registry {
                 argument_trust,
             },
             ceiling,
-        )
+        )?;
+        if !effects.required.is_subset_of(ceiling) {
+            return Err(ToolPolicyError::NotEligible);
+        }
+        // The strategy can refuse the registered operation. Only this host classifier can add
+        // the *requirements* for its actual effects, all still bounded by the caller's ceiling.
+        proposal.eligible = effects.required.intersect(ceiling);
+        Ok(proposal)
     }
 
     /// Dispatch a pure tool only after the policy proposal and caller gate admitted its exact
@@ -1047,9 +1074,12 @@ impl Registry {
                 intent.call.name
             ));
         }
-        if !intent.admitted.contains(spec.capability) {
+        let effects = self
+            .operation_effects(&intent.call)
+            .ok_or_else(|| format!("unknown tool `{}`", intent.call.name))?;
+        if !effects.required.is_subset_of(intent.admitted) {
             return Err(format!(
-                "tool intent lacks registry capability admission for `{}`",
+                "tool intent lacks operation capability admission for `{}`",
                 intent.call.name
             ));
         }

@@ -1036,8 +1036,23 @@ pub fn confine_env_with_exact(cmd: &mut tokio::process::Command, exact: &[String
     for name in exact {
         cmd.env_remove(name);
     }
+    for name in SHELL_STARTUP_ENV_NAMES {
+        cmd.env_remove(name);
+    }
+    let configured_names: Vec<_> = cmd
+        .as_std()
+        .get_envs()
+        .filter_map(|(key, _)| {
+            key.to_str()
+                .filter(|key| is_secret_env_key(key) || is_shell_startup_env_key(key))
+                .map(str::to_owned)
+        })
+        .collect();
+    for name in configured_names {
+        cmd.env_remove(name);
+    }
     for (k, _) in std::env::vars() {
-        if is_secret_env_key(&k) {
+        if is_secret_env_key(&k) || is_shell_startup_env_key(&k) {
             cmd.env_remove(&k);
         }
     }
@@ -1064,6 +1079,7 @@ pub fn bounded_child_environment(
                 return false;
             };
             !is_secret_env_key(key)
+                && !is_shell_startup_env_key(key)
                 && !blocked_names.iter().any(|name| name == key)
                 && !sensitive_env_names.iter().any(|name| name == key)
         })
@@ -1088,10 +1104,42 @@ fn encoded_len(value: &OsStr) -> usize {
 pub(crate) fn apply_confinement_environment(cmd: &mut tokio::process::Command, conf: &Confinement) {
     if let Some(environment) = &conf.child_environment {
         cmd.env_clear();
-        cmd.envs(environment.iter().cloned());
+        cmd.envs(
+            environment
+                .iter()
+                .filter(|(key, _)| {
+                    key.to_str()
+                        .is_some_and(|key| !is_shell_startup_env_key(key))
+                })
+                .cloned(),
+        );
     } else {
         confine_env_with_exact(cmd, &conf.sensitive_env_names);
     }
+}
+
+// Startup scripts, imported functions and loader injection would execute an additional command
+// before the operator-approved text. An explicit script/loader invocation remains possible as
+// part of the visible, conservatively classified command; ambient execution is never that grant.
+const SHELL_STARTUP_ENV_NAMES: [&str; 11] = [
+    "BASH_ENV",
+    "ENV",
+    "SHELLOPTS",
+    "BASHOPTS",
+    "PROMPT_COMMAND",
+    "LD_PRELOAD",
+    "LD_AUDIT",
+    "LD_LIBRARY_PATH",
+    "DYLD_INSERT_LIBRARIES",
+    "DYLD_LIBRARY_PATH",
+    "DYLD_FALLBACK_LIBRARY_PATH",
+];
+
+fn is_shell_startup_env_key(key: &str) -> bool {
+    SHELL_STARTUP_ENV_NAMES
+        .iter()
+        .any(|name| key.eq_ignore_ascii_case(name))
+        || key.starts_with("BASH_FUNC_")
 }
 
 /// Default-deny environment for trusted-config helper processes (MCP servers and hooks). These

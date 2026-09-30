@@ -3,6 +3,9 @@
 Iteron classifies tools by capability, then applies a permission mode plus
 session rules. The model cannot grant itself a capability.
 
+The host also checks the actual operation. Every required capability must pass;
+an execution grant cannot stand in for an external or trust-changing grant.
+
 ## Capability classes
 
 These mode/rule decisions describe **gated** sessions (`--ask-permissions`). The
@@ -16,6 +19,31 @@ explicit denies, Plan and authority ceilings are not bypassed.
 | `code_executing` | shell, build, test | automatic under the trusted initial grant, sandboxed |
 | `trust_mutating` | declared writes to Git/CI/instruction/trust surfaces | always asks or denies |
 | `irreversible_external` | push, publish, send, external MCP effects | always asks or denies |
+
+### Operation requirements
+
+Structured edits retain local-write authority and additionally require
+`trust_mutating` when they target Git, CI, instruction, skill or agent-config
+surfaces, including `.agents` and `.codex`. Resolved symlink targets are checked
+again before dispatch. Targets beyond the bounded classifier are treated as
+potential trust changes.
+
+Arbitrary shell programs, scripts, substitutions and terminal input can have
+unknown effects. They require execution, local-write, trust-change and external
+authority. A small literal builtin command without expansion or redirection can
+use only execution authority when the actual interpreter is `/bin/bash` or
+`/bin/sh`. A custom interpreter retains the unknown classification. Use the
+structured observation tools for repository inspection.
+
+A blanket `bash` allow does not approve its extra effect classes. Their host
+rules are `bash:trust_mutating` and `bash:external`; process launch/input use the
+corresponding `process_start` and `process_write` prefixes. Dynamic trust writes
+use rules such as `write_file:trust_mutating`. Explicit operation-class denies
+also apply under dangerous bypass. Plan and immutable ceilings remain binding.
+
+Shell startup scripts, imported functions and dynamic-loader injection from
+ambient or configured child environment are removed. An explicit script launch
+is still evaluated as part of the visible command.
 
 ## Permission modes
 

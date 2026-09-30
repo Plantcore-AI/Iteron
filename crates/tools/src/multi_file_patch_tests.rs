@@ -229,7 +229,7 @@ async fn d3_02_g1_three_file_patch_commits_in_one_call() {
         .find(|spec| spec.name == "apply_patch")
         .unwrap();
     assert_eq!(spec.purity, Purity::Effecting);
-    assert_eq!(spec.capability, Capability::TrustMutating);
+    assert_eq!(spec.capability, Capability::ReversibleLocal);
     assert_eq!(
         spec.input_schema["properties"]["files"]["maxItems"],
         MAX_FILES

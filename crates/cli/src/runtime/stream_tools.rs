@@ -47,33 +47,15 @@ impl Agent {
         {
             return None;
         }
-        let base = proposal.eligible.iter().next()?;
-        let capability = effective_capability(&call.input, base);
+        let admission = self.tool_operation_admission(call, governing_trust);
+        let capability = admission.capability;
         if !matches!(
             capability,
             Capability::ReversibleLocal | Capability::CodeExecuting
         ) {
             return None;
         }
-        let verdict = if self.bypass_permissions && self.permission_mode != PermissionMode::Plan {
-            bypass_verdict(&self.permission_rules, &call.name, capability)
-        } else {
-            iteron_protocol::gate(
-                self.permission_mode,
-                &self.permission_rules,
-                &call.name,
-                capability,
-            )
-        };
-        (iteron_kernel::admission::constrain_under_authority(
-            verdict,
-            capability,
-            self.authority_ceiling,
-            self.policy_capabilities,
-            Some(governing_trust),
-            self.operator_authority(),
-        ) == Verdict::Auto)
-            .then_some(capability)
+        (admission.verdict == Verdict::Auto).then_some(capability)
     }
 }
 

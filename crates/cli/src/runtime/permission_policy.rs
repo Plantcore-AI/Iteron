@@ -4,24 +4,108 @@
 //! operator policy changes. It deliberately has no access to `Agent`: callers provide only the
 //! current snapshot and the durable log seam they intend to mutate.
 
+use iteron_kernel::admission::{OperatorAuthority, constrain_under_authority};
+use iteron_protocol::capability_set::CapabilitySet;
 use iteron_protocol::{
     Capability, Effort, Event, EventKind, PermissionMode, PermissionRules,
-    RuntimePolicyEventVersion, RuntimePolicySource, Seq, TurnId, Verdict,
+    RuntimePolicyEventVersion, RuntimePolicySource, Seq, Trust, TurnId, Verdict,
 };
 use iteron_record::Rollout;
+use iteron_tools::OperationEffects;
+
+/// Narrow input to the host's permission decision. No runtime state or executor is exposed.
+pub(super) struct OperationPolicy<'a> {
+    pub mode: PermissionMode,
+    pub rules: &'a PermissionRules,
+    pub bypass: bool,
+    pub task_ceiling: CapabilitySet,
+    pub policy_capabilities: CapabilitySet,
+    pub governing_trust: Trust,
+    pub authority: OperatorAuthority,
+}
+
+pub(super) struct OperationAdmission {
+    pub capability: Capability,
+    pub verdict: Verdict,
+    pub ceiling_blocks: bool,
+    pub taint_blocks: bool,
+}
+
+/// Every required class must pass. Code permission alone cannot authorize unknown external or
+/// trust effects, and an external permission cannot implicitly authorize code execution.
+pub(super) fn evaluate_operation(
+    tool: &str,
+    effects: &OperationEffects,
+    policy: OperationPolicy<'_>,
+) -> OperationAdmission {
+    let admitted = policy.task_ceiling.intersect(policy.policy_capabilities);
+    let ceiling_blocks = !effects.required.is_subset_of(admitted);
+    let taint_blocks = effects.required.iter().any(|cap| cap.is_egress())
+        && policy.governing_trust != Trust::Trusted
+        && policy.authority == OperatorAuthority::Constrained;
+    let mut result = OperationAdmission {
+        capability: effects
+            .required
+            .iter()
+            .next()
+            .unwrap_or(Capability::ReadOnly),
+        verdict: Verdict::Auto,
+        ceiling_blocks,
+        taint_blocks,
+    };
+    for capability in effects.required.iter() {
+        // A blanket interpreter/file-writer grant does not authorize extra trust/external
+        // effects. Their exact named class remains separately configurable and deniable.
+        let interpreter = matches!(tool, "bash" | "process_start" | "process_write");
+        let operation_name = if interpreter && capability == Capability::IrreversibleExternal {
+            format!("{tool}:external")
+        } else if capability == Capability::TrustMutating
+            && (interpreter || effects.required.contains(Capability::ReversibleLocal))
+        {
+            format!("{tool}:trust_mutating")
+        } else {
+            tool.to_owned()
+        };
+        let gate_verdict = if policy.rules.tool_rule(tool) == Some(Verdict::Deny) {
+            Verdict::Deny
+        } else if policy.bypass && policy.mode != PermissionMode::Plan {
+            bypass_verdict(policy.rules, &operation_name, capability)
+        } else {
+            iteron_protocol::gate(policy.mode, policy.rules, &operation_name, capability)
+        };
+        let verdict = constrain_under_authority(
+            gate_verdict,
+            capability,
+            policy.task_ceiling,
+            policy.policy_capabilities,
+            Some(policy.governing_trust),
+            policy.authority,
+        );
+        let rank = |value| match value {
+            Verdict::Auto => 0,
+            Verdict::Ask => 1,
+            Verdict::Deny => 2,
+        };
+        if rank(verdict) >= rank(result.verdict) {
+            result.capability = capability;
+            result.verdict = verdict;
+        }
+    }
+    if effects.required.is_empty() {
+        result.verdict = Verdict::Deny;
+    }
+    result
+}
 
 /// A path whose write is trust-mutating regardless of the writing tool's static class.
+#[cfg(test)]
 pub(super) fn is_trust_mutating_path(path: &str) -> bool {
     // Case-insensitive because macOS and Windows may resolve `.GIT/config` to `.git/config`.
-    let lower = path.trim_start_matches("./").to_ascii_lowercase();
-    lower
-        .split(['/', '\\'])
-        .any(|segment| matches!(segment, ".git" | ".github" | ".iteron" | ".claude"))
-        || lower.ends_with("claude.md")
-        || lower.ends_with("agents.md")
+    iteron_tools::is_trust_path(path)
 }
 
 /// Return the capability actually at stake for one structured tool call.
+#[cfg(test)]
 pub(super) fn effective_capability(input: &serde_json::Value, base: Capability) -> Capability {
     if base == Capability::ReversibleLocal
         && let Some(path) = input.get("path").and_then(|value| value.as_str())
@@ -111,6 +195,119 @@ pub(super) fn commit_permission_policy_transition(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use iteron_protocol::ToolUse;
+    use serde_json::json;
+
+    fn all() -> CapabilitySet {
+        CapabilitySet::from_iter_capabilities([
+            Capability::ReadOnly,
+            Capability::ReversibleLocal,
+            Capability::CodeExecuting,
+            Capability::TrustMutating,
+            Capability::IrreversibleExternal,
+        ])
+    }
+
+    fn operation(
+        command: &str,
+        rules: &PermissionRules,
+        ceiling: CapabilitySet,
+        bypass: bool,
+    ) -> OperationAdmission {
+        let effects = OperationEffects::classify(
+            &ToolUse {
+                id: "call".into(),
+                name: "bash".into(),
+                input: json!({"command":command}),
+            },
+            Capability::CodeExecuting,
+        );
+        evaluate_operation(
+            "bash",
+            &effects,
+            OperationPolicy {
+                mode: PermissionMode::Yolo,
+                rules,
+                bypass,
+                task_ceiling: ceiling,
+                policy_capabilities: all(),
+                governing_trust: Trust::Trusted,
+                authority: OperatorAuthority::Constrained,
+            },
+        )
+    }
+
+    #[test]
+    fn code_allow_and_interpreter_allow_do_not_approve_external_operations() {
+        let mut rules = PermissionRules::new();
+        rules.allow_cap(Capability::CodeExecuting);
+        rules.set_tool("bash", Verdict::Auto);
+        assert_eq!(
+            operation("printf ok", &rules, all(), false).verdict,
+            Verdict::Auto
+        );
+        assert_eq!(
+            operation("git push origin main", &rules, all(), false).verdict,
+            Verdict::Ask
+        );
+        assert_eq!(
+            operation("python unknown.py", &rules, all(), false).verdict,
+            Verdict::Ask
+        );
+    }
+
+    #[test]
+    fn every_required_class_holds_even_when_operator_bypass_is_explicit() {
+        let rules = PermissionRules::new();
+        let ceiling = CapabilitySet::only(Capability::CodeExecuting);
+        let refused = operation("curl https://example.invalid", &rules, ceiling, true);
+        assert_eq!(refused.verdict, Verdict::Deny);
+        assert!(refused.ceiling_blocks);
+        assert_eq!(
+            operation("curl https://example.invalid", &rules, all(), true).verdict,
+            Verdict::Auto
+        );
+        let mut deny = PermissionRules::new();
+        deny.set_cap(Capability::ReversibleLocal, Verdict::Deny);
+        assert_eq!(
+            operation("python unknown.py", &deny, all(), true).verdict,
+            Verdict::Deny
+        );
+        let mut exact = PermissionRules::new();
+        exact.set_tool("bash:external", Verdict::Deny);
+        assert_eq!(
+            operation("curl https://example.invalid", &exact, all(), true).verdict,
+            Verdict::Deny
+        );
+    }
+
+    #[test]
+    fn external_permission_does_not_implicitly_authorize_execution() {
+        let effects = OperationEffects::classify(
+            &ToolUse {
+                id: "call".into(),
+                name: "bash".into(),
+                input: json!({"command":"curl https://example.invalid"}),
+            },
+            Capability::CodeExecuting,
+        );
+        let mut rules = PermissionRules::new();
+        rules.set_cap(Capability::CodeExecuting, Verdict::Deny);
+        let result = evaluate_operation(
+            "bash",
+            &effects,
+            OperationPolicy {
+                mode: PermissionMode::Yolo,
+                rules: &rules,
+                bypass: true,
+                task_ceiling: all(),
+                policy_capabilities: all(),
+                governing_trust: Trust::Trusted,
+                authority: OperatorAuthority::Operator,
+            },
+        );
+        assert_eq!(result.verdict, Verdict::Deny);
+    }
 
     #[derive(Default)]
     struct FakePolicyLog {

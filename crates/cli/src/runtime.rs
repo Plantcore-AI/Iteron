@@ -195,6 +195,9 @@ mod investigation_convergence;
 mod kernel_error;
 pub(crate) mod lifecycle_hooks;
 mod mcp_control;
+mod operation_admission;
+#[cfg(test)]
+mod operation_admission_tests;
 mod operator_status;
 mod orchestration_route;
 mod permission_policy;
@@ -261,10 +264,9 @@ use iteron_tools::Registry;
 pub use kernel_error::KernelError;
 #[cfg(test)]
 use permission_policy::is_trust_mutating_path;
-use permission_policy::{
-    bypass_verdict, commit_effort_transition, commit_permission_policy_transition,
-    effective_capability,
-};
+#[cfg(test)]
+use permission_policy::{bypass_verdict, effective_capability};
+use permission_policy::{commit_effort_transition, commit_permission_policy_transition};
 use pricing::{
     ProviderAttemptGuard, SharedUsdBudget, legacy_usd_to_microusd_floor, usd_to_microusd_ceiling,
 };
@@ -4258,7 +4260,8 @@ impl Agent {
                                             },
                                         );
                                     }
-                                    let intent = proposal.admit(CapabilitySet::only(capability));
+                                    let admitted = proposal.eligible;
+                                    let intent = proposal.admit(admitted);
                                     let compatibility_context = serde_json::json!({
                                         "event": "PreToolUse",
                                         "tool": tu_ui.name,
@@ -5962,7 +5965,7 @@ impl Agent {
                 // model cannot influence. Auto runs; Deny refuses; Ask prompts the operator (or
                 // fails closed with no channel). This replaces the old bare allow_code bool with
                 // the four-mode lattice (R5 permission modes).
-                let Some(base_cap) = proposal.eligible.iter().next() else {
+                let Some(_) = proposal.eligible.iter().next() else {
                     let r = ToolResult {
                         tool_use_id: tu.id.clone(),
                         content: format!(
@@ -5979,38 +5982,12 @@ impl Agent {
                     any_error = true;
                     continue;
                 };
-                // Elevate a trust-mutating write (.git/CI/instruction/.iteron paths) so the gate
-                // cannot auto-approve it (code review: the carve-out was otherwise unreachable).
-                let cap = effective_capability(&tu.input, base_cap);
                 let governing_trust = self.governing_turn_trust(messages);
-                let admitted_capabilities =
-                    self.authority_ceiling.intersect(self.policy_capabilities);
-                let ceiling_blocks_capability = !admitted_capabilities.contains(cap);
-                let taint_blocks_egress = cap.is_egress() && governing_trust != Trust::Trusted;
-                let gate_verdict =
-                    if self.bypass_permissions && self.permission_mode != PermissionMode::Plan {
-                        // DANGEROUS opt-in: auto-approve everything (skip mode/taint/carve-out) so the
-                        // agent never prompts. Plan still hard-denies; an explicit `deny` rule on the
-                        // exact tool or its capability is still honored.
-                        bypass_verdict(&self.permission_rules, &tu.name, cap)
-                    } else {
-                        iteron_protocol::gate(
-                            self.permission_mode,
-                            &self.permission_rules,
-                            &tu.name,
-                            cap,
-                        )
-                    };
-                // Task, immutable-policy and trust constraints remain in force even when a
-                // separately recorded operator bypass replaces the final permission-mode gate.
-                let verdict = iteron_kernel::admission::constrain_under_authority(
-                    gate_verdict,
-                    cap,
-                    self.authority_ceiling,
-                    self.policy_capabilities,
-                    Some(governing_trust),
-                    self.operator_authority(),
-                );
+                let admission = self.tool_operation_admission(&tu, governing_trust);
+                let cap = admission.capability;
+                let ceiling_blocks_capability = admission.ceiling_blocks;
+                let taint_blocks_egress = admission.taint_blocks;
+                let verdict = admission.verdict;
                 // Observable tool lifecycle is strict and execution-independent:
                 // Proposed -> AwaitingHook -> AwaitingApproval -> Queued -> Running ->
                 // PostProcessing -> Settled. Run both operator and canonical gate hooks before an
@@ -6378,7 +6355,8 @@ impl Agent {
                         ..LifecyclePayload::default()
                     },
                 );
-                let intent = proposal.admit(CapabilitySet::only(base_cap));
+                let admitted = proposal.eligible;
+                let intent = proposal.admit(admitted);
                 self.note_tool_effect_capability(cap);
                 let effect = effects::BrokeredEffect {
                     turn: turn_id,
@@ -6909,32 +6887,13 @@ impl Agent {
                 Ok(proposal) => proposal.clone(),
                 Err(_) => break,
             };
-            let Some(base_capability) = proposal.eligible.iter().next() else {
+            let Some(_) = proposal.eligible.iter().next() else {
                 break;
             };
-            let capability = effective_capability(&call.input, base_capability);
-            let gate_verdict =
-                if self.bypass_permissions && self.permission_mode != PermissionMode::Plan {
-                    bypass_verdict(&self.permission_rules, &call.name, capability)
-                } else {
-                    iteron_protocol::gate(
-                        self.permission_mode,
-                        &self.permission_rules,
-                        &call.name,
-                        capability,
-                    )
-                };
-            // Only Auto. `Ask` needs the operator in sequence and `Deny` needs the loop's specific
-            // refusal text, so both end the group rather than being decided here a second time.
-            if iteron_kernel::admission::constrain_under_authority(
-                gate_verdict,
-                capability,
-                self.authority_ceiling,
-                self.policy_capabilities,
-                Some(governing_trust),
-                self.operator_authority(),
-            ) != Verdict::Auto
-            {
+            let admission = self.tool_operation_admission(call, governing_trust);
+            let capability = admission.capability;
+            // A group never consumes approval authority. Every effect class must already be Auto.
+            if admission.verdict != Verdict::Auto {
                 break;
             }
             // Only a DECLARED path can be proven not to collide. Unknown/empty write sets therefore
@@ -6967,7 +6926,10 @@ impl Agent {
             batch.push(AutoApprovedCall {
                 index: *index,
                 audit_arguments: ui_approval_arguments(&call.input),
-                intent: proposal.admit(CapabilitySet::only(base_capability)),
+                intent: {
+                    let admitted = proposal.eligible;
+                    proposal.admit(admitted)
+                },
                 capability,
                 call: call.clone(),
                 action_signature,
@@ -8425,8 +8387,19 @@ impl Agent {
             id,
             tool: tool.to_string(),
             capability: cap,
-            reason: "session policy requires an explicit operator decision before this effect"
-                .into(),
+            reason: self.registry.operation_effects(tool_use).map_or_else(
+                || {
+                    "session policy requires an explicit operator decision before this effect"
+                        .into()
+                },
+                |effects| {
+                    format!(
+                        "{}; required authority: {:?}",
+                        effects.reason,
+                        effects.required.iter().collect::<Vec<_>>()
+                    )
+                },
+            ),
             arguments: arguments.clone(),
             workspace: workspace.clone(),
         });

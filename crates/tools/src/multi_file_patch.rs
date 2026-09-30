@@ -117,9 +117,9 @@ pub(crate) fn register(registry: &mut Registry) -> Result<(), ToolError> {
                 "required": ["files"]
             }),
             purity: Purity::Effecting,
-            // Paths are nested, while the current dynamic elevation seam understands one
-            // top-level `path`. Fail closed until that seam accepts a bounded path set.
-            capability: Capability::TrustMutating,
+            // Host classification elevates the complete bounded nested path set when any
+            // target mutates trust. An ordinary source patch retains local write authority.
+            capability: Capability::ReversibleLocal,
         },
         move |call, root| {
             let confined = confined.clone();
