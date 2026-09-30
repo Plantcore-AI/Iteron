@@ -9,6 +9,7 @@ use tokio::sync::mpsc::Sender;
 /// Tool output count when no textual stream is available.
 const NO_TOOL_OUTPUT_BYTES: u64 = 0;
 
+#[derive(Clone)]
 pub(super) struct StreamToolEvents {
     pub(super) frontend: FrontendChannelHealth,
     pub(super) ui: Option<Sender<UiEvent>>,

@@ -28,9 +28,11 @@ mod extension_control;
 mod tool_execution_journal;
 
 mod approval_wait;
+mod control_ingress;
 mod control_terminal;
 mod kernel_effect_bridge;
 mod model_response;
+mod permission_transaction;
 mod provider_dispatch;
 mod provider_round;
 mod provider_stream_attempt;
@@ -48,6 +50,7 @@ mod submitted_turn_state;
 mod task_plan;
 mod terminal_record;
 mod terminal_runtime;
+mod tool_declaration_admission;
 mod turn_publication;
 #[cfg(test)]
 mod turn_publication_runtime_tests;
@@ -3397,288 +3400,23 @@ impl Agent {
                     any_error = true;
                     continue;
                 }
-                // Every effect has its own admission boundary. Once Drain/Interrupt is observed,
-                // materialize deterministic denied results for the rest of this model-declared
-                // batch so the transcript remains valid without another prompt or side effect.
-                let _ = self.collect_inbound_ops(turn_id);
-                let control = self.requested_control();
-                if control != InboundControl::None {
-                    let r = control_refusal(&tu, control);
-                    self.commit_refused_tool_result(turn_id, &tu.name, &r)?;
-                    self.ui(tool_end_ui(&tu, &r));
-                    results[idx] = Some(r);
-                    any_error = true;
-                    continue;
-                }
-                if self.run_deadline_exhausted() {
-                    let r = ToolResult {
-                        tool_use_id: tu.id.clone(),
-                        content: "refused: run wall deadline exhausted before this effecting tool"
-                            .into(),
-                        is_error: true,
-                        trust: Trust::Workspace,
-                        latency_ms: 0,
-                    };
-                    self.commit_refused_tool_result(turn_id, &tu.name, &r)?;
-                    self.ui(tool_end_ui(&tu, &r));
-                    results[idx] = Some(r);
-                    any_error = true;
-                    continue;
-                }
-                // Re-check the durable record BEFORE any side effect (code review): a mid-turn
-                // append may have failed while recording the pure results above. Running an
-                // effecting tool now would perform an un-recorded mutation (audit gap / forked
-                // chain). Refuse each remaining effecting tool with an error; the transcript
-                // stays valid and admission halts the run on the next iteration.
-                if self.record_failed {
-                    let r = ToolResult {
-                        tool_use_id: tu.id.clone(),
-                        content: "refused: the durable record failed mid-turn; halting before side effects (audit integrity, ADR-008).".into(),
-                        is_error: true,
-                        trust: Trust::Workspace,
-                        latency_ms: 0,
-                    };
-                    self.ui(tool_end_ui(&tu, &r));
-                    results[idx] = Some(r);
-                    any_error = true;
-                    continue;
-                }
-                let proposal = match proposal {
-                    Ok(proposal) => proposal,
-                    Err(error) => {
-                        let r = ToolResult {
-                            tool_use_id: tu.id.clone(),
-                            content: format!("tool policy refused `{}`: {error}", tu.name),
-                            is_error: true,
-                            trust: Trust::Trusted,
-                            latency_ms: 0,
-                        };
-                        self.commit_refused_tool_result(turn_id, &tu.name, &r)?;
-                        self.ui(tool_end_ui(&tu, &r));
-                        results[idx] = Some(r);
-                        any_error = true;
-                        continue;
-                    }
-                };
-                // Failed-action dedup (ADR-003): if this EXACT effecting call already failed this
-                // run, don't re-run it — feed the prior error back and tell the model to change
-                // approach. This kills the identical-failed-edit spiral without blocking a genuinely
-                // different retry (a modified input has a different signature).
-                let action_sig = format!("{}::{}", tu.name, tu.input);
-                if let Some(prior) = self.failed_actions.get(&action_sig) {
-                    let r = ToolResult {
-                        tool_use_id: tu.id.clone(),
-                        content: format!(
-                            "This exact `{}` call already failed earlier in this run and was not \
-                             re-run (ADR-003 dedup). Do NOT repeat it — change your approach. The \
-                             earlier error was:\n{}",
-                            tu.name,
-                            iteron_protocol::text::tail(prior, 800)
-                        ),
-                        is_error: true,
-                        trust: Trust::Workspace,
-                        latency_ms: 0,
-                    };
-                    self.commit_refused_tool_result(turn_id, &tu.name, &r)?;
-                    any_error = true;
-                    self.ui(tool_end_ui(&tu, &r));
-                    results[idx] = Some(r);
-                    continue;
-                }
-                // The capability gate (ADR-007 §3): a pure function of (mode, rules, tool, cap) the
-                // model cannot influence. Auto runs; Deny refuses; Ask prompts the operator (or
-                // fails closed with no channel). This replaces the old bare allow_code bool with
-                // the four-mode lattice (R5 permission modes).
-                let Some(_) = proposal.eligible.iter().next() else {
-                    let r = ToolResult {
-                        tool_use_id: tu.id.clone(),
-                        content: format!(
-                            "tool policy refused `{}`: no capability survived the run ceiling",
-                            tu.name
-                        ),
-                        is_error: true,
-                        trust: Trust::Trusted,
-                        latency_ms: 0,
-                    };
-                    self.commit_refused_tool_result(turn_id, &tu.name, &r)?;
-                    self.ui(tool_end_ui(&tu, &r));
-                    results[idx] = Some(r);
-                    any_error = true;
-                    continue;
-                };
-                let governing_trust = self.governing_turn_trust(messages);
-                let admission = self.tool_operation_admission(&tu, governing_trust);
-                let cap = admission.capability;
-                let ceiling_blocks_capability = admission.ceiling_blocks;
-                let taint_blocks_egress = admission.taint_blocks;
-                let verdict = admission.verdict;
-                // Observable tool lifecycle is strict and execution-independent:
-                // Proposed -> AwaitingHook -> AwaitingApproval -> Queued -> Running ->
-                // PostProcessing -> Settled. Run both operator and canonical gate hooks before an
-                // approval prompt so a denied hook never asks the operator to approve dead work.
-                self.activity
-                    .span(turn_activity::ActivityStage::ToolProposed, Some(turn_id))
-                    .complete();
-                let hook_activity = self
-                    .activity
-                    .span(turn_activity::ActivityStage::ToolHook, Some(turn_id));
+                let trust = self.governing_turn_trust(messages);
+                let (proposal, cap, action_sig) = match self
+                    .tool_declaration_admission(turn_id, trust)
+                    .run(&tu, proposal)
+                    .await?
                 {
-                    let ctx =
-                        serde_json::json!({"event":"PreToolUse","tool":tu.name,"input":tu.input})
-                            .to_string();
-                    // External MCP effects are brokered by the admitted gateway contract. The
-                    // fixed workspace hook only understands Iteron's built-in filesystem tools
-                    // and must not reinterpret an MCP tool name as an unprovable local path.
-                    if !self.registry.is_mcp_effect(&tu.name)
-                        && let HookDecision::Deny(reason) = self
-                            .brokered_hook(turn_id, HookEvent::PreToolUse, &ctx)
-                            .await?
-                    {
-                        hook_activity.complete();
-                        self.emit(
-                            turn_id,
-                            EventKind::Notice {
-                                text: format!(
-                                    "hook: PreToolUse DENIED `{}`: {}",
-                                    tu.name,
-                                    iteron_protocol::text::head(&reason, 200)
-                                ),
-                            },
-                        );
-                        let r = ToolResult {
-                            tool_use_id: tu.id.clone(),
-                            content: format!(
-                                "tool `{}` blocked by a PreToolUse hook: {reason}",
-                                tu.name
-                            ),
-                            is_error: true,
-                            trust: Trust::Workspace,
-                            latency_ms: 0,
-                        };
-                        self.commit_refused_tool_result(turn_id, &tu.name, &r)?;
+                    tool_declaration_admission::ToolAdmissionDecision::Permitted {
+                        proposal,
+                        capability,
+                        action_signature,
+                    } => (proposal, capability, action_signature),
+                    tool_declaration_admission::ToolAdmissionDecision::Refused(result) => {
+                        results[idx] = Some(result);
                         any_error = true;
-                        self.ui(tool_end_ui(&tu, &r));
-                        results[idx] = Some(r);
                         continue;
                     }
-                }
-                if let Some(reason) = self.admit_tool_lifecycle_gate(turn_id, &tu.name).await? {
-                    hook_activity.complete();
-                    let r = ToolResult {
-                        tool_use_id: tu.id.clone(),
-                        content: format!("tool `{}` blocked by lifecycle hook: {reason}", tu.name),
-                        is_error: true,
-                        trust: Trust::Workspace,
-                        latency_ms: 0,
-                    };
-                    self.commit_refused_tool_result(turn_id, &tu.name, &r)?;
-                    any_error = true;
-                    self.ui(tool_end_ui(&tu, &r));
-                    results[idx] = Some(r);
-                    continue;
-                }
-                hook_activity.complete();
-                let approval_projection_incomplete = verdict == Verdict::Ask
-                    && match if self.ordinary_extensions.is_some() {
-                        self.registry.ordinary_call_projection(&tu)
-                    } else {
-                        Ok(None)
-                    } {
-                        Ok(Some(physical)) => ui_approval_arguments(&physical.input),
-                        Ok(None) => ui_approval_arguments(&tu.input),
-                        Err(_) => serde_json::json!({"_truncated_for_ui":true}),
-                    }
-                    .get("_truncated_for_ui")
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(iteron_tunables::param_bool(
-                        "cli.runtime.ui_projection_truncated_when_unmarked",
-                        UI_PROJECTION_TRUNCATED_WHEN_UNMARKED,
-                    ));
-                let approved = match verdict {
-                    Verdict::Auto => true,
-                    Verdict::Deny => false,
-                    Verdict::Ask if approval_projection_incomplete => false,
-                    Verdict::Ask => self.await_approval(turn_id, &tu, cap).await?,
                 };
-                // An Ask blocks while the record path is live; a mid-approval append failure (or a
-                // failure while recording the pure results above) must still halt BEFORE this side
-                // effect (code review: the top-of-iteration record_failed check has a window that
-                // await_approval's own emits can open).
-                if approved && self.record_failed {
-                    let r = ToolResult {
-                        tool_use_id: tu.id.clone(),
-                        content: "refused: the durable record failed; halting before this side effect (audit integrity, ADR-008).".into(),
-                        is_error: true,
-                        trust: Trust::Workspace,
-                        latency_ms: 0,
-                    };
-                    self.ui(tool_end_ui(&tu, &r));
-                    results[idx] = Some(r);
-                    any_error = true;
-                    continue;
-                }
-                if !approved {
-                    let reason = if ceiling_blocks_capability {
-                        format!(
-                            "tool `{}` ({:?}) refused: the capability is outside the intersection \
-                             of the admitted task ceiling and selected immutable policy manifest",
-                            tu.name, cap
-                        )
-                    } else if taint_blocks_egress {
-                        format!(
-                            "tool `{}` ({:?}) refused: this turn's governing context trust is {:?}, \
-                             while external effects require Trusted context (ADR-007). Approval \
-                             cannot silently clear taint; use a fresh trusted-context phase until \
-                             scoped provenance escalation exists.",
-                            tu.name, cap, governing_trust
-                        )
-                    } else if approval_projection_incomplete {
-                        format!(
-                            "tool `{}` ({:?}) refused: the complete operation exceeds the bounded approval surface, so Iteron will not ask the operator to approve a hidden suffix",
-                            tu.name, cap
-                        )
-                    } else if self.permission_mode == PermissionMode::Plan {
-                        format!(
-                            "tool `{}` ({:?}) refused: you are in read-only PLAN mode. Do not edit or \
-                             run anything — investigate with read-only tools and write the plan as \
-                             text. The operator will switch out of plan mode to execute it.",
-                            tu.name, cap
-                        )
-                    } else {
-                        format!(
-                            "tool `{}` ({:?}) refused by the permission gate (mode={}). This \
-                             capability needs operator approval or an allow rule (ADR-007). Code, \
-                             when allowed, runs in an egress-off sandbox.",
-                            tu.name,
-                            cap,
-                            self.permission_mode.label()
-                        )
-                    };
-                    let r = ToolResult {
-                        tool_use_id: tu.id.clone(),
-                        content: reason,
-                        is_error: true,
-                        trust: Trust::Workspace,
-                        latency_ms: 0,
-                    };
-                    self.commit_refused_tool_result(turn_id, &tu.name, &r)?;
-                    self.ui(tool_end_ui(&tu, &r));
-                    results[idx] = Some(r);
-                    any_error = true;
-                    continue;
-                }
-                // A PreToolUse hook is an admitted external action of its own. Recheck control
-                // after it quiesces and immediately before the registry/subagent admission.
-                let _ = self.collect_inbound_ops(turn_id);
-                let control = self.requested_control();
-                if control != InboundControl::None {
-                    let r = control_refusal(&tu, control);
-                    self.commit_refused_tool_result(turn_id, &tu.name, &r)?;
-                    self.ui(tool_end_ui(&tu, &r));
-                    results[idx] = Some(r);
-                    any_error = true;
-                    continue;
-                }
                 let mcp_dispatch_permit = if self.is_plantcore_mcp_dispatch(&tu.name) {
                     match self.enter_plantcore_external_dispatch().await {
                         Ok(permit) => permit,
@@ -4303,6 +4041,55 @@ impl Agent {
 
     /// Assemble the ordered effect owner from real disjoint state ports. No permission or
     /// provider authority reaches its executor, and the external permit remains with this loop.
+    fn tool_declaration_admission(
+        &mut self,
+        turn: TurnId,
+        trust: Trust,
+    ) -> tool_declaration_admission::ToolDeclarationAdmission<'_> {
+        let events = self.tool_events(turn);
+        let authority = self.operator_authority();
+        tool_declaration_admission::ToolDeclarationAdmission {
+            journal: tool_execution_journal::ToolExecutionJournal {
+                rollout: &mut self.rollout,
+                effects: &mut self.effect_journal,
+                ledger: &mut self.ledger,
+                failed_actions: &mut self.failed_actions,
+                record_failed: &mut self.record_failed,
+                diagnostics: &self.diagnostics,
+                #[cfg(test)]
+                fault: &mut self.fail_next_durable_append,
+            },
+            inbox: &mut self.inbox,
+            control: &mut self.control,
+            force_cancel: self.force_cancel_seam.as_mut(),
+            approval_sequence: &mut self.approval_seq,
+            permission: permission_transaction::PermissionTransaction {
+                mode: &mut self.permission_mode,
+                rules: &mut self.permission_rules,
+                provenance: &mut self.runtime_policy_provenance,
+                effort: self.effort,
+                max_turns: self.budget.max_turns,
+            },
+            scope: tool_declaration_admission::ToolAdmissionScope {
+                turn,
+                registry: &self.registry,
+                workspace: &self.workspace,
+                hooks: &self.hooks,
+                hook_journal: self.hook_effect_journal.clone(),
+                trust,
+                authority,
+                ceiling: self.authority_ceiling,
+                policy_capabilities: self.policy_capabilities,
+                bypass: self.bypass_permissions,
+                ordinary_extensions: self.ordinary_extensions.is_some(),
+                interactive: self.interactive_approvals,
+                deadline: self.run_deadline,
+                activity: self.activity.clone(),
+                events,
+            },
+        }
+    }
+
     fn provider_dispatch_owner<'a>(
         &'a mut self,
         events: &'a provider_route_events::ProviderRouteEvents,

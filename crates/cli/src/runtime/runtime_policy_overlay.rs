@@ -150,6 +150,41 @@ impl RuntimePolicyProvenance {
             _ => {}
         }
     }
+    pub(super) fn publish(
+        &self,
+        effort: Effort,
+        mode: PermissionMode,
+        rules: &PermissionRules,
+        max_turns: u32,
+    ) -> Option<RuntimePolicyOverlaySnapshot> {
+        let provenance = self;
+        let snapshot = (|| {
+            let effort = provenance.effort?.value(effort);
+            let permission_mode = provenance.permission?.value(mode);
+            let max_turns = provenance.max_turns?.value(max_turns);
+            let max_usd_microusd = match (provenance.max_usd, provenance.max_usd_microusd) {
+                (Some(commit), Some(value)) => Some(commit.value(value)),
+                (None, None) => None,
+                _ => return None,
+            };
+            let sequence = effort
+                .sequence
+                .max(permission_mode.sequence)
+                .max(max_turns.sequence)
+                .max(max_usd_microusd.as_ref().map_or(0, |value| value.sequence));
+            Some(RuntimePolicyOverlaySnapshot {
+                sequence,
+                effort,
+                permission_mode,
+                permission_rule_count: rules.describe().len(),
+                permission_rules_digest_sha256: permission_rules_digest(rules),
+                max_turns,
+                max_usd_microusd,
+            })
+        })();
+        provenance.live.publish(snapshot.clone());
+        snapshot
+    }
 }
 
 impl Agent {
@@ -169,33 +204,12 @@ impl Agent {
     /// Exact live values plus durable provenance. `None` is honest for an unsealed/legacy test
     /// agent: a caller must not label genesis defaults as a verified runtime overlay.
     pub(crate) fn runtime_policy_overlay(&self) -> Option<RuntimePolicyOverlaySnapshot> {
-        let provenance = &self.runtime_policy_provenance;
-        let snapshot = (|| {
-            let effort = provenance.effort?.value(self.effort);
-            let permission_mode = provenance.permission?.value(self.permission_mode);
-            let max_turns = provenance.max_turns?.value(self.budget.max_turns);
-            let max_usd_microusd = match (provenance.max_usd, provenance.max_usd_microusd) {
-                (Some(commit), Some(value)) => Some(commit.value(value)),
-                (None, None) => None,
-                _ => return None,
-            };
-            let sequence = effort
-                .sequence
-                .max(permission_mode.sequence)
-                .max(max_turns.sequence)
-                .max(max_usd_microusd.as_ref().map_or(0, |value| value.sequence));
-            Some(RuntimePolicyOverlaySnapshot {
-                sequence,
-                effort,
-                permission_mode,
-                permission_rule_count: self.permission_rules.describe().len(),
-                permission_rules_digest_sha256: permission_rules_digest(&self.permission_rules),
-                max_turns,
-                max_usd_microusd,
-            })
-        })();
-        provenance.live.publish(snapshot.clone());
-        snapshot
+        self.runtime_policy_provenance.publish(
+            self.effort,
+            self.permission_mode,
+            &self.permission_rules,
+            self.budget.max_turns,
+        )
     }
 
     pub(crate) fn runtime_policy_overlay_handle(&self) -> RuntimePolicyOverlayHandle {

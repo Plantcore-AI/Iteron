@@ -41,7 +41,14 @@ pub(super) struct ApprovalJournal<'a> {
     pub(super) fault: &'a mut Option<super::DurableAppendFault>,
 }
 impl ApprovalJournal<'_> {
-    fn append(&mut self, turn: TurnId, kind: EventKind) -> Result<(), KernelError> {
+    pub(super) fn append(&mut self, turn: TurnId, kind: EventKind) -> Result<(), KernelError> {
+        self.append_receipt(turn, kind).map(|_| ())
+    }
+    pub(super) fn append_receipt(
+        &mut self,
+        turn: TurnId,
+        kind: EventKind,
+    ) -> Result<Seq, KernelError> {
         if *self.record_failed {
             return Err(KernelError::Record(RecordError::Io(std::io::Error::other(
                 "approval cannot continue after the durable record failed",
@@ -65,7 +72,7 @@ impl ApprovalJournal<'_> {
         self.ledger.record_fsync_latency_us(
             u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX),
         );
-        result.map(|_| ()).map_err(|error| self.failed(error))
+        result.map_err(|error| self.failed(error))
     }
     fn failed(&mut self, error: RecordError) -> KernelError {
         *self.record_failed = true;
@@ -216,8 +223,11 @@ impl ApprovalWait<'_> {
                 }
                 InboundControl::None => {}
             }
-            match tokio::time::timeout(request.poll.max(Duration::from_millis(1)), self.inbox.recv())
-                .await
+            match tokio::time::timeout(
+                request.poll.max(Duration::from_millis(1)),
+                self.inbox.recv(),
+            )
+            .await
             {
                 Ok(Some(envelope)) => {
                     if stale_product_epoch(self.inbox.product_turn(), &envelope) {

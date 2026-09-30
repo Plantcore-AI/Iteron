@@ -165,60 +165,22 @@ impl Agent {
         turn: TurnId,
         limit: usize,
     ) -> InboundControl {
-        let receipt = self.inbox.poll(&mut self.control, limit, false);
-        let control = receipt.control;
-        let control_submission_id = receipt.control_submission;
-        let unknown = receipt.unknown;
-        let version_mismatch = receipt.versions;
-        let stale_ids = receipt.stale;
-        self.reject_saturated_steers(receipt.saturated, turn);
-        self.reject_stale_product_submissions(stale_ids);
-        self.record_rejected_submissions(
-            turn,
-            unknown,
-            SubmissionRejectionReason::UnsupportedOperation,
-            UNSUPPORTED_SUBMISSION_NOTICE,
-        );
-        self.record_rejected_submissions(
-            turn,
-            version_mismatch,
-            SubmissionRejectionReason::ProtocolVersionMismatch,
-            VERSION_MISMATCH_SUBMISSION_NOTICE,
-        );
-        match control {
-            InboundControl::ForceCancel => {
-                let requested = self
-                    .force_cancel_seam
-                    .as_mut()
-                    .is_some_and(|seam| seam.request(turn));
-                self.lifecycle_event(
-                    "cancel.forced",
-                    Some(turn),
-                    LifecyclePayload {
-                        reason_code: Some(
-                            if requested {
-                                "process_reap_requested"
-                            } else {
-                                "process_reap_unwired"
-                            }
-                            .into(),
-                        ),
-                        ..LifecyclePayload::default()
-                    },
-                );
-            }
-            _ => {}
+        let events = self.tool_events(turn);
+        super::control_ingress::ControlIngress {
+            journal: super::approval_wait::ApprovalJournal {
+                rollout: &mut self.rollout,
+                ledger: &mut self.ledger,
+                record_failed: &mut self.record_failed,
+                diagnostics: &self.diagnostics,
+                #[cfg(test)]
+                fault: &mut self.fail_next_durable_append,
+            },
+            inbox: &mut self.inbox,
+            control: &mut self.control,
+            force_cancel: self.force_cancel_seam.as_mut(),
+            events,
         }
-        if let Some(id) = control_submission_id {
-            let kind = match control {
-                InboundControl::Interrupt => ControlSubmissionKind::Interrupt,
-                InboundControl::ForceCancel => ControlSubmissionKind::ForceCancel,
-                InboundControl::Drain => ControlSubmissionKind::Drain,
-                InboundControl::None => unreachable!("control id requires an applied control"),
-            };
-            self.ui(UiEvent::ControlSubmissionApplied { id, kind });
-        }
-        control
+        .poll(turn, limit)
     }
 
     fn reject_saturated_steers(&mut self, ids: Vec<SubmissionId>, turn: TurnId) {
