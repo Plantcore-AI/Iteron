@@ -2783,6 +2783,11 @@ pub struct Agent {
 }
 
 impl Agent {
+    pub(crate) fn persistent_agent_control_port(
+        &self,
+    ) -> Option<std::sync::Arc<dyn persistent_agents::AgentControlPort>> {
+        self.persistent_agents.clone()
+    }
     /// Selected total context ceiling used for prompt admission and compaction. Fresh composition
     /// defaults it from provider capability; a validated generic profile may narrow it without a
     /// provider-specific branch.
@@ -3819,6 +3824,31 @@ impl Agent {
                 settlement?;
                 return Err(error);
             }
+            if provider_refusal.is_none()
+                && let Some(mailbox) = &self.persistent_mailbox
+                && let Err(error) = mailbox.confirm_request(&req.messages)
+            {
+                // Mailbox inclusion must become durable before provider IO. An inclusion
+                // failure has known zero dispatch, even though the provider WAL is already open.
+                let settlement = match provider_ticket.take() {
+                    Some(ticket) => self.close_provider_intent_without_dispatch(
+                        turn_id,
+                        provider_ordinal,
+                        &active_provider_route,
+                        physical_attempt,
+                        ticket,
+                        "durable agent mailbox inclusion failed before dispatch",
+                    ),
+                    None => Ok(()),
+                };
+                drop(provider_route_permit.take());
+                drop(provider_dispatch_permit.take());
+                if let Some(budget) = &self.usd_budget {
+                    budget.settle_not_dispatched();
+                }
+                settlement?;
+                return Err(KernelError::AgentControl(error));
+            }
             let activity_sink = self.activity.clone();
             let mut connect_activity = None;
             let mut waiting_first_token_activity = None;
@@ -3967,13 +3997,6 @@ impl Agent {
             let mut retry_index = 0u32;
             let mut retry_jitter = iteron_sched::backoff::Jitter::new();
             let mut provider_active = Duration::ZERO;
-            if provider_refusal.is_none()
-                && let Some(mailbox) = &self.persistent_mailbox
-            {
-                mailbox
-                    .confirm_request(&req.messages)
-                    .map_err(KernelError::AgentControl)?;
-            }
             let provider_result = loop {
                 let provider_attempt_started = Instant::now();
                 let attempt_stream_item_base = stream_items;
