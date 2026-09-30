@@ -11,7 +11,8 @@ use iteron_kernel::diagnostics::{DiagnosticEmitter, KernelDiagnostic};
 use iteron_kernel::{effect_class, effects};
 use iteron_obs::Ledger;
 use iteron_protocol::{
-    Capability, Event, EventKind, LifecyclePayload, Seq, ToolResult, ToolUse, TurnId,
+    Capability, Event, EventKind, LifecyclePayload, RunId, Seq, TenantId, ToolResult, ToolUse,
+    TurnId,
 };
 use iteron_record::Rollout;
 use std::{path::Path, time::Instant};
@@ -25,6 +26,41 @@ pub(super) struct ToolExecutionJournal<'a> {
     pub(super) diagnostics: &'a DiagnosticEmitter,
     #[cfg(test)]
     pub(super) fault: &'a mut Option<DurableAppendFault>,
+}
+
+/// A physical ToolDone fact minted only after the actual validated append succeeds. There is no
+/// public constructor, deserializer or substitution of a predicted/tail sequence.
+pub(crate) struct ToolTerminalReceipt {
+    sequence: Seq,
+    turn: TurnId,
+    tenant: TenantId,
+    run: RunId,
+    tool: String,
+    tool_use_id: String,
+    successful: bool,
+}
+impl ToolTerminalReceipt {
+    pub(crate) fn sequence(&self) -> Seq {
+        self.sequence
+    }
+    pub(crate) fn turn(&self) -> TurnId {
+        self.turn
+    }
+    pub(crate) fn tenant(&self) -> &TenantId {
+        &self.tenant
+    }
+    pub(crate) fn run(&self) -> &RunId {
+        &self.run
+    }
+    pub(crate) fn tool(&self) -> &str {
+        &self.tool
+    }
+    pub(crate) fn tool_use_id(&self) -> &str {
+        &self.tool_use_id
+    }
+    pub(crate) fn successful(&self) -> bool {
+        self.successful
+    }
 }
 impl ToolExecutionJournal<'_> {
     pub(super) fn open_tool(
@@ -84,10 +120,46 @@ impl ToolExecutionJournal<'_> {
         overlapped_ms: u64,
         events: &StreamToolEvents,
     ) -> Result<(), KernelError> {
+        self.record_known_result(ticket, tool, result, overlapped_ms, events)
+            .map(|_| ())
+    }
+
+    pub(super) fn known_result_receipt(
+        &mut self,
+        ticket: effects::EffectTicket,
+        tool: &str,
+        result: &ToolResult,
+        overlapped_ms: u64,
+        events: &StreamToolEvents,
+    ) -> Result<ToolTerminalReceipt, KernelError> {
+        let (sequence, turn) =
+            self.record_known_result(ticket, tool, result, overlapped_ms, events)?;
+        Ok(ToolTerminalReceipt {
+            sequence,
+            turn,
+            tenant: self.rollout.tenant().clone(),
+            run: self.rollout.run_id().clone(),
+            tool: tool.to_owned(),
+            tool_use_id: result.tool_use_id.clone(),
+            successful: !result.is_error,
+        })
+    }
+
+    fn record_known_result(
+        &mut self,
+        ticket: effects::EffectTicket,
+        tool: &str,
+        result: &ToolResult,
+        overlapped_ms: u64,
+        events: &StreamToolEvents,
+    ) -> Result<(Seq, TurnId), KernelError> {
         #[cfg(test)]
         self.inject_tool_done_failure()?;
         let effect_id = ticket.effect_id().clone();
-        self.settle(
+        let turn = ticket.turn();
+        let started = Instant::now();
+        let committed = self.effects.settle_with_sequence(
+            self.rollout,
             ticket,
             effects::Settlement::Definite(EventKind::ToolDone {
                 result: result.clone(),
@@ -95,7 +167,9 @@ impl ToolExecutionJournal<'_> {
                 tool: Some(tool.to_owned()),
             }),
             UnknownCause::Unobserved,
-        )?;
+        );
+        self.measure(started);
+        let sequence = committed.map_err(|error| self.boundary_error(error))?;
         events.emit(
             if result.is_error {
                 "tool.call_failed"
@@ -111,7 +185,7 @@ impl ToolExecutionJournal<'_> {
         events.process_terminal(effect_id, tool, result, true);
         self.ledger
             .tool(result.latency_ms, overlapped_ms, result.is_error);
-        Ok(())
+        Ok((sequence, turn))
     }
     pub(super) fn refused_result(
         &mut self,

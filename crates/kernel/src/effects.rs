@@ -581,6 +581,19 @@ pub fn settle_effect<L>(
 where
     L: DurableEffectLog,
 {
+    settle_effect_with_sequence(log, ticket, settlement).map(|_| ())
+}
+
+/// Return the sequence produced by the actual confirmed terminal append. This is not a
+/// predicted next position or a tail lookup; all ticket validation precedes the same WAL barrier.
+pub fn settle_effect_with_sequence<L>(
+    log: &mut L,
+    ticket: EffectTicket,
+    settlement: Settlement,
+) -> Result<Seq, BrokerError>
+where
+    L: DurableEffectLog,
+{
     let EffectTicket {
         turn,
         intent_sequence: _,
@@ -645,12 +658,12 @@ where
         provider_route_attempt.as_ref(),
     )
     .map_err(BrokerError::Proposal)?;
-    log.append_effect(&Event {
+    let sequence = log.append_effect(&Event {
         seq: Seq::ZERO,
         turn,
         kind: terminal,
     })?;
-    Ok(())
+    Ok(sequence)
 }
 
 /// The registry-effect dispatch sequence, expressed as one instance of the universal

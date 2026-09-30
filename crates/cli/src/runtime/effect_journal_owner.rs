@@ -137,6 +137,17 @@ impl EffectJournalOwner {
         settlement: effects::Settlement,
         cause: UnknownCause,
     ) -> Result<(), effects::BrokerError> {
+        self.settle_with_sequence(rollout, ticket, settlement, cause)
+            .map(|_| ())
+    }
+
+    pub(super) fn settle_with_sequence(
+        &mut self,
+        rollout: &mut Rollout,
+        ticket: effects::EffectTicket,
+        settlement: effects::Settlement,
+        cause: UnknownCause,
+    ) -> Result<iteron_protocol::Seq, effects::BrokerError> {
         let blocks = matches!(&settlement, effects::Settlement::Unknown(_))
             && cause == UnknownCause::Unobserved;
         self.commit_settlement(rollout, ticket, settlement, blocks)
@@ -199,20 +210,20 @@ impl EffectJournalOwner {
         ticket: effects::EffectTicket,
         settlement: effects::Settlement,
         blocks: bool,
-    ) -> Result<(), effects::BrokerError> {
+    ) -> Result<iteron_protocol::Seq, effects::BrokerError> {
         let unknown = matches!(
             &settlement,
             effects::Settlement::Unknown(_)
                 | effects::Settlement::Definite(EventKind::EffectUnknown { .. })
         );
-        match effects::settle_effect(rollout, ticket, settlement) {
-            Ok(()) => {
+        match effects::settle_effect_with_sequence(rollout, ticket, settlement) {
+            Ok(sequence) => {
                 self.pending = self.pending.saturating_sub(1);
                 self.observation_unknown |= unknown;
                 if blocks {
                     self.unresolved = self.unresolved.saturating_add(1);
                 }
-                Ok(())
+                Ok(sequence)
             }
             Err(error) => {
                 self.barrier_failed |= matches!(&error, effects::BrokerError::Record(_));
