@@ -49,14 +49,8 @@ impl SubmittedTurnState {
             true
         }
     }
-    pub fn claim_context_recovery(
-        &mut self,
-        violation: &iteron_ctx::ContextBudgetViolation,
-    ) -> bool {
-        self.context_recovery.claim(violation)
-    }
-    pub fn settle_context_recovery(&mut self, recovered: bool) {
-        self.context_recovery.settle(recovered);
+    pub(super) fn context_recovery(&mut self) -> &mut ContextBudgetRecoveryGuard {
+        &mut self.context_recovery
     }
     pub fn recovered_tool(&self, id: &str) -> Option<&(ToolUse, ToolResult)> {
         self.recovered.get(id)

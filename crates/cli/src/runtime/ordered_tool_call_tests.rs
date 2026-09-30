@@ -13,7 +13,7 @@ impl Provider for NoProviderDispatch {
     async fn turn(
         &self,
         _: &TurnRequest,
-        _: tokio::sync::mpsc::Sender<StreamItem>,
+        _: &mut (dyn FnMut(StreamItem) + Send),
     ) -> Result<TurnResult, ProviderError> {
         panic!("an ordered registry owner has no provider dispatch authority")
     }
@@ -74,7 +74,10 @@ fn admission(call: ToolUse) -> OrderedCallAdmission {
 #[tokio::test]
 async fn real_native_write_and_one_confirmed_terminal_survive_reopen() {
     let (directory, mut agent, call) = fixture();
-    let inspection = agent.inspect_context_budget(&[], &iteron_ctx::ContextEstimate::default());
+    let estimate = agent
+        .context_estimator
+        .estimate_uncached("system", &[], &[]);
+    let inspection = agent.inspect_context_budget(&[], &estimate);
     let projection = agent.turn_result_projection_budget(inspection, std::slice::from_ref(&call));
     let completed = agent
         .ordered_tool_call(TurnId(0), &call.name, false, projection)
@@ -113,7 +116,10 @@ async fn actual_intent_refusal_prevents_native_io_and_terminal_refusal_preserves
     ] {
         let (directory, mut agent, call) = fixture();
         agent.fail_next_durable_append = Some(fault);
-        let inspection = agent.inspect_context_budget(&[], &iteron_ctx::ContextEstimate::default());
+        let estimate = agent
+            .context_estimator
+            .estimate_uncached("system", &[], &[]);
+        let inspection = agent.inspect_context_budget(&[], &estimate);
         let projection =
             agent.turn_result_projection_budget(inspection, std::slice::from_ref(&call));
         let result = agent
