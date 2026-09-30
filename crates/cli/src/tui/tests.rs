@@ -3,6 +3,48 @@ mod tests {
     use super::*;
 
     #[test]
+    fn artifact_panel_and_open_render_the_same_scrubbed_public_content() {
+        let (submissions, _receive) = tokio::sync::mpsc::channel(1);
+        let session = Session::for_test(submissions);
+        let thread_id = iteron_protocol::SessionId("artifact-thread".into());
+        session.client.seed_contract_identity_for_test(
+            thread_id.clone(),
+            iteron_protocol::RunId("run".into()),
+        );
+        const SECRET: &str = "ghp_AbCdEf1234567890AbCdEf1234567890";
+        session.client.observe_contract_event_for_test(
+            1,
+            &app_server::ServerEvent::Ui(UiEvent::ToolEnd {
+                id: "tool-1".into(),
+                ok: true,
+                exit_code: None,
+                output: format!("artifact result {SECRET}"),
+                diff: None,
+            }),
+        );
+        let listing = session.client.artifacts_v1(
+            iteron_protocol::client_artifact::ClientArtifactCommandV1::List { thread_id },
+        );
+        let id = listing["artifacts"][0]["artifact_id"].as_str().unwrap();
+        let mut app = App::new();
+        artifacts::render(&mut app, &session, "");
+        let panel = app.transcript.last().unwrap().to_text();
+        assert!(panel.contains("tool_output"));
+        assert!(panel.contains(&id[..12]), "artifact panel: {panel}");
+        let screen = render_text(&mut app, 180, 24);
+        assert!(screen.contains("thread artifacts"));
+        assert!(screen.contains("tool_output"));
+        artifacts::render(&mut app, &session, &id[..12]);
+        let content = app.transcript.last().unwrap().to_text();
+        assert!(content.contains("artifact result"));
+        assert!(content.contains("[REDACTED"));
+        assert!(!content.contains(SECRET));
+        let screen = render_text(&mut app, 120, 24);
+        assert!(screen.contains("artifact result"));
+        assert!(!screen.contains(SECRET));
+    }
+
+    #[test]
     fn agents_panel_renders_the_attached_catalog_after_the_filesystem_drifts() {
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

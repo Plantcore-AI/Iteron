@@ -569,6 +569,8 @@ pub(super) fn handle_sessions_command(
     app: &mut App,
     session: &mut Session,
     directory: &ProviderDirectory,
+    effects: &mut transcript_effect::Supervisor,
+    interrupt: &Arc<AtomicBool>,
     argument: &str,
 ) {
     let argument = argument.trim();
@@ -588,12 +590,6 @@ pub(super) fn handle_sessions_command(
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_default();
-    let current = session
-        .rollout_path()
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .unwrap_or_default()
-        .to_owned();
     let mut words = argument.splitn(3, char::is_whitespace);
     let action = words.next().unwrap_or_default();
     let run = words.next().unwrap_or_default();
@@ -604,114 +600,26 @@ pub(super) fn handle_sessions_command(
             start_adopt_session(app, session, directory, run.to_owned())
         }
         "preview" if !run.is_empty() => start_session_preview(app, runs, run.to_owned()),
-        "rename" if !run.is_empty() && !tail.is_empty() => match session_management::update(
-            &runs,
-            run,
-            session_management::Mutation::Rename(tail.to_owned()),
-        ) {
-            Ok(()) => {
-                if run == current {
-                    app.session_name = tail.split_whitespace().collect::<Vec<_>>().join(" ");
-                }
-                app.note(block::NoticeLevel::Ok, format!("renamed session {run}"));
-            }
-            Err(error) => app.note(block::NoticeLevel::Err, format!("rename refused: {error}")),
-        },
-        "pin" | "unpin" if !run.is_empty() => {
-            let value = action == "pin";
-            match session_management::update(
-                &runs,
-                run,
-                session_management::Mutation::Pin(value),
-            ) {
-                Ok(()) => app.note(
-                    block::NoticeLevel::Ok,
-                    format!("session {run} {}", if value { "pinned" } else { "unpinned" }),
-                ),
-                Err(error) => app.note(block::NoticeLevel::Err, format!("pin refused: {error}")),
-            }
-        }
-        "archive" | "unarchive" if !run.is_empty() => {
-            let value = action == "archive";
-            match session_management::update(
-                &runs,
-                run,
-                session_management::Mutation::Archive(value),
-            ) {
-                Ok(()) => app.note(
-                    block::NoticeLevel::Ok,
-                    format!(
-                        "session {run} {}",
-                        if value { "archived" } else { "restored" }
-                    ),
-                ),
-                Err(error) => app.note(
-                    block::NoticeLevel::Err,
-                    format!("archive refused: {error}"),
-                ),
-            }
-        }
-        "delete" if !run.is_empty() => {
-            if run == current {
-                app.note(
-                    block::NoticeLevel::Err,
-                    "cannot delete the live session; switch away first",
-                );
-                return;
-            }
-            let operation_id = format!(
-                "session.delete.{}.{}",
-                std::process::id(),
-                crate::erasure_now_unix_ms()
+        "rename" | "pin" | "unpin" | "archive" | "unarchive" | "delete" | "read" | "export" if !run.is_empty() => {
+            use iteron_protocol::thread_lifecycle::ThreadLifecycleCommandV1 as Command;
+            let run_id = iteron_protocol::RunId(run.to_owned());
+            let command = match action {
+                "rename" => Command::Rename { run_id, title: tail.to_owned() },
+                "pin" | "unpin" => Command::Pin { run_id, pinned: action == "pin" },
+                "archive" | "unarchive" => Command::Archive { run_id, archived: action == "archive" },
+                "delete" => Command::Delete { run_id, confirm_permanent_erasure: tail == "permanently" },
+                "export" => Command::Export { run_id },
+                _ => Command::Read { run_id },
+            };
+            command_dispatch::queue_command_control(
+                app, session, effects, interrupt,
+                app_server::Control::ThreadLifecycle(command),
+                transcript_effect::ControlKind::ThreadLifecycle,
             );
-            let request = iteron_record::erasure::authorize_local_erasure(&runs).and_then(|authority| {
-                Ok(iteron_protocol::ErasureRequest {
-                    operation_id: iteron_protocol::ErasureOperationId::new(operation_id.clone())?,
-                    authority_id: authority.id().clone(),
-                    requested_at_unix_ms: crate::erasure_now_unix_ms(),
-                    target: iteron_protocol::ErasureTarget::ExactSession {
-                        scope_id: iteron_protocol::ErasureScopeId::new(
-                            iteron_protocol::TenantId::default().0,
-                        )?,
-                        run_id: iteron_protocol::ErasureTargetId::new(run.to_owned())?,
-                    },
-                })
-            });
-            match request.and_then(|request| iteron_record::erasure::execute_erasure(&runs, request)) {
-                Ok(receipt) if receipt.state() == iteron_protocol::ErasureState::Verified => {
-                    let hook_journal = runs.join(format!("{run}.hooks.jsonl"));
-                    if std::fs::symlink_metadata(&hook_journal).is_ok() {
-                        let _ = std::fs::remove_file(hook_journal);
-                    }
-                    let _ = session_management::remove(&runs, run);
-                    session.record_lifecycle(
-                        "session.deleted",
-                        iteron_protocol::LifecyclePayload {
-                            outcome_code: Some("deleted".into()),
-                            reason_code: Some(operation_id),
-                            ..iteron_protocol::LifecyclePayload::default()
-                        },
-                    );
-                    app.note(block::NoticeLevel::Ok, format!("deleted session {run}"));
-                }
-                Ok(receipt) => app.note(
-                    block::NoticeLevel::Err,
-                    format!(
-                        "session delete refused: operation {} ended {:?} ({:?})",
-                        receipt.request().operation_id,
-                        receipt.state(),
-                        receipt.failure()
-                    ),
-                ),
-                Err(error) => app.note(
-                    block::NoticeLevel::Err,
-                    format!("session delete refused: {error}"),
-                ),
-            }
         }
         _ => app.note(
             block::NoticeLevel::Err,
-            "usage: /sessions [new|switch RUN|preview RUN|rename RUN TITLE|pin RUN|unpin RUN|archive RUN|unarchive RUN|delete RUN]",
+            "usage: /sessions [new|switch RUN|preview RUN|rename RUN TITLE|pin RUN|unpin RUN|archive RUN|unarchive RUN|delete RUN permanently|read RUN|export RUN]",
         ),
     }
 }

@@ -433,6 +433,7 @@ pub(super) async fn apply_control(
         return;
     }
     let reply = match request.control {
+        Control::ThreadLifecycle(command) => super::thread_lifecycle::apply(agent, command),
         Control::PlantcoreRunBootstrapV1(payload) => {
             if *started {
                 ControlReply::PlantcoreProtocolError(super::plantcore::PlantcoreProtocolError {
@@ -475,6 +476,30 @@ pub(super) async fn apply_control(
             Ok(_) => ControlReply::State(Box::new(snapshot_of(agent))),
             Err(error) => ControlReply::Refused(error.public_summary()),
         },
+        Control::SetToolRule { tool, verdict } => {
+            if tool.is_empty()
+                || tool.len() > 128
+                || !tool.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':')
+                })
+            {
+                ControlReply::Refused("tool rule name must be bounded literal text".into())
+            } else if agent.permission_rules().tool_rule(&tool).is_none()
+                && agent.permission_rules().tool_rules().len() >= 128
+            {
+                ControlReply::Refused("session tool rule limit reached".into())
+            } else {
+                let mut rules = agent.permission_rules().clone();
+                rules.set_tool(&tool, verdict);
+                match agent.transition_permission_rules(
+                    rules,
+                    iteron_protocol::RuntimePolicySource::Operator,
+                ) {
+                    Ok(_) => ControlReply::State(Box::new(snapshot_of(agent))),
+                    Err(error) => ControlReply::Refused(error.public_summary()),
+                }
+            }
+        }
         Control::SelectModel(selection) => {
             // One transaction, in the kernel's required order: the durable audit append happens
             // FIRST, so a failure leaves the old selection in force rather than a half-applied one.

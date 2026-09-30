@@ -130,6 +130,7 @@ struct Projection {
     approval_prompt_complete: Option<(SubmissionId, bool)>,
     assistant_scrubber: ProductStreamScrubber,
     reasoning_scrubber: ProductStreamScrubber,
+    artifacts: super::client_artifacts::ArtifactCatalog,
 }
 
 impl std::fmt::Debug for Projection {
@@ -190,6 +191,7 @@ impl ContractReader {
             {
                 return;
             }
+            projection.artifacts.bind_thread(&thread_id);
             projection.snapshot = Some(ThreadSnapshotV1 {
                 contract_version: PRODUCT_CONTRACT_VERSION,
                 thread_id,
@@ -298,6 +300,13 @@ impl ContractReader {
         terminal_spill_bytes: Option<usize>,
     ) {
         self.with_mut(|projection| projection.observe(seq, event, terminal_spill_bytes));
+    }
+
+    pub(super) fn artifacts_v1(
+        &self,
+        command: iteron_protocol::client_artifact::ClientArtifactCommandV1,
+    ) -> serde_json::Value {
+        self.with_mut(|projection| projection.artifacts.read(command))
     }
 
     pub(crate) fn snapshot(&self) -> Option<ThreadSnapshotV1> {
@@ -692,7 +701,27 @@ impl Projection {
                 }
                 self.approval_prompt_complete = None;
             }
-            ServerEvent::Ui(UiEvent::ToolEnd { id, ok, output, .. }) => {
+            ServerEvent::Ui(UiEvent::ToolEnd {
+                id,
+                ok,
+                output,
+                diff,
+                ..
+            }) => {
+                let redacted = iteron_record::redact::scrub(output);
+                self.artifacts.publish(
+                    seq,
+                    "tool_output",
+                    "text/plain; charset=utf-8",
+                    redacted.as_bytes(),
+                );
+                if let Some(diff) = diff
+                    && let Ok(value) = serde_json::to_value(diff)
+                    && let Ok(bytes) = serde_json::to_vec(&scrub_json(&value))
+                {
+                    self.artifacts
+                        .publish(seq, "file_diff", "application/json", &bytes);
+                }
                 if let Some((_, item_id)) =
                     self.tool_sources.iter().rfind(|(source, _)| source == id)
                 {
@@ -856,6 +885,18 @@ impl Projection {
                 }
                 self.flush_streams(seq);
                 let outcome = summary.terminal.outcome();
+                if matches!(outcome, Outcome::Done)
+                    && terminal_spill_bytes.is_none()
+                    && !summary.assistant_text.is_empty()
+                {
+                    let answer = iteron_record::redact::scrub(&summary.assistant_text);
+                    self.artifacts.publish(
+                        seq,
+                        "final_answer",
+                        "text/markdown; charset=utf-8",
+                        answer.as_bytes(),
+                    );
+                }
                 // `RunEnded` repairs cosmetic stream loss for the legacy EQ. Publish its exact
                 // final assistant text as a separate replacement channel before item closure.
                 // A spilled or oversized terminal is explicitly non-exact in this bounded view.

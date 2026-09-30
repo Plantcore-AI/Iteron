@@ -48,6 +48,9 @@ impl PlantcoreCommand {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum WireControl {
+    ArtifactsV1 {
+        command: iteron_protocol::client_artifact::ClientArtifactCommandV1,
+    },
     ProductV1 {
         command: ProductControlV1,
     },
@@ -69,6 +72,11 @@ pub(super) enum WireControl {
         capability: Capability,
         verdict: Verdict,
     },
+    SetToolRule {
+        #[serde(deserialize_with = "deserialize_command_id")]
+        tool: String,
+        verdict: Verdict,
+    },
     Compact {
         #[serde(default, deserialize_with = "deserialize_optional_focus")]
         focus: Option<String>,
@@ -77,7 +85,48 @@ pub(super) enum WireControl {
         #[serde(default)]
         set: Option<u32>,
     },
+    OperatorStatus,
+    ThreadLifecycleV1 {
+        command: iteron_protocol::thread_lifecycle::ThreadLifecycleCommandV1,
+    },
+    WorkflowsList,
+    WorkflowsCancel {
+        #[serde(deserialize_with = "deserialize_job_id")]
+        run_id: String,
+    },
+    WorkflowsResume {
+        #[serde(deserialize_with = "deserialize_job_id")]
+        run_id: String,
+    },
+    McpStatus,
+    McpCancel {
+        #[serde(deserialize_with = "deserialize_job_id")]
+        server: String,
+    },
+    McpRestart {
+        #[serde(deserialize_with = "deserialize_job_id")]
+        server: String,
+    },
+    McpStop {
+        #[serde(deserialize_with = "deserialize_job_id")]
+        server: String,
+    },
+    MemoryAdd {
+        #[serde(deserialize_with = "deserialize_command_text")]
+        text: String,
+    },
+    MemoryUpdate {
+        #[serde(deserialize_with = "deserialize_job_id")]
+        id: String,
+        #[serde(deserialize_with = "deserialize_command_text")]
+        text: String,
+    },
+    MemoryDelete {
+        #[serde(deserialize_with = "deserialize_job_id")]
+        id: String,
+    },
     JobsList,
+    JobsClean,
     JobsAttach {
         #[serde(deserialize_with = "deserialize_job_id")]
         job_id: String,
@@ -192,8 +241,33 @@ where
 }
 
 impl WireControl {
+    pub(super) fn is_read_only(&self) -> bool {
+        if matches!(self, Self::ArtifactsV1 { .. }) {
+            return true;
+        }
+        if let Self::ThreadLifecycleV1 { command } = self {
+            return command.is_read_only();
+        }
+        matches!(
+            self,
+            Self::ProductV1 {
+                command: ProductControlV1::ThreadRead { .. }
+                    | ProductControlV1::TerminalDiagnosticsRead { .. }
+                    | ProductControlV1::EventsRead { .. }
+            } | Self::OperatorStatus
+                | Self::WorkflowsList
+                | Self::McpStatus
+                | Self::JobsList
+                | Self::JobsAttach { .. }
+                | Self::TurnBudget { set: None }
+        )
+    }
+
     pub(super) fn into_app_server(self) -> Control {
         match self {
+            Self::ArtifactsV1 { .. } => {
+                unreachable!("artifact reads address the public resident projection")
+            }
             Self::ProductV1 { .. } => {
                 unreachable!("product controls are admitted by the versioned transport")
             }
@@ -210,9 +284,39 @@ impl WireControl {
                 capability,
                 verdict,
             },
+            Self::SetToolRule { tool, verdict } => Control::SetToolRule { tool, verdict },
             Self::Compact { focus } => Control::Compact { focus },
             Self::TurnBudget { set } => Control::TurnBudget { set },
+            Self::OperatorStatus => Control::OperatorStatus,
+            Self::ThreadLifecycleV1 { command } => Control::ThreadLifecycle(command),
+            Self::WorkflowsList => Control::Workflow(crate::app_server::WorkflowControl::Inventory),
+            Self::WorkflowsCancel { run_id } => {
+                Control::Workflow(crate::app_server::WorkflowControl::Cancel { run_id })
+            }
+            Self::WorkflowsResume { run_id } => {
+                Control::Workflow(crate::app_server::WorkflowControl::Resume { run_id })
+            }
+            Self::McpStatus => Control::Mcp(crate::app_server::McpControl::Status),
+            Self::McpCancel { server } => {
+                Control::Mcp(crate::app_server::McpControl::Cancel { server })
+            }
+            Self::McpRestart { server } => {
+                Control::Mcp(crate::app_server::McpControl::Restart { server })
+            }
+            Self::McpStop { server } => {
+                Control::Mcp(crate::app_server::McpControl::Stop { server })
+            }
+            Self::MemoryAdd { text } => {
+                Control::Memory(crate::app_server::MemoryControl::Add(text))
+            }
+            Self::MemoryUpdate { id, text } => {
+                Control::Memory(crate::app_server::MemoryControl::Update { id, text })
+            }
+            Self::MemoryDelete { id } => {
+                Control::Memory(crate::app_server::MemoryControl::Delete(id))
+            }
             Self::JobsList => Control::Job(JobControl::Inventory),
+            Self::JobsClean => Control::Job(JobControl::Clean),
             Self::JobsAttach {
                 job_id,
                 stdout_cursor,
@@ -392,6 +496,7 @@ pub(super) fn reply_value(reply: ControlReply) -> Value {
             "code": error.code,
             "message": error.message,
         }),
+        ControlReply::ThreadLifecycle(value) => value,
         ControlReply::State(snapshot) => json!({
             "type": "state",
             "state": snapshot_value(&snapshot),
@@ -442,15 +547,84 @@ pub(super) fn reply_value(reply: ControlReply) -> Value {
             "servers": reply.servers,
             "notice": reply.notice,
         }),
+        ControlReply::Workflows(reply) => json!({
+            "type": "workflows",
+            "runs": reply.runs.iter().map(|run| json!({
+                "run_id": run.run_id,
+                "name": run.name,
+                "status": match run.status {
+                    crate::workflow::SupervisedRunStatus::Running => "running",
+                    crate::workflow::SupervisedRunStatus::Cancelling => "cancelling",
+                    crate::workflow::SupervisedRunStatus::Settled => "settled",
+                    crate::workflow::SupervisedRunStatus::Failed => "failed",
+                },
+                "elapsed_ms": run.elapsed_ms,
+                "finished_agents": run.finished_agents,
+                "running_agents": run.running_agents,
+                "dropped_results": run.dropped_results,
+            })).collect::<Vec<_>>(),
+            "notice": reply.notice,
+        }),
+        ControlReply::OperatorStatus(reply) => operator_status_value(&reply),
         ControlReply::SideAnswer(_)
         | ControlReply::SideStatus { .. }
-        | ControlReply::Adopted { .. }
-        | ControlReply::Workflows(_)
-        | ControlReply::OperatorStatus(_) => json!({
+        | ControlReply::Adopted { .. } => json!({
             "type": "refused",
             "message": "this reply type is not available on the public control transport",
         }),
     }
+}
+
+fn operator_status_value(snapshot: &crate::app_server::OperatorStatusSnapshot) -> Value {
+    let budget = &snapshot.runtime.settled_budget;
+    let collaboration = snapshot.runtime.collaboration;
+    json!({
+        "type": "operator_status",
+        "policy_bundle": snapshot.runtime.policy_bundle,
+        "governor": snapshot.runtime.governor.as_ref().map(|governor| json!({
+            "max_in_flight_per_route": governor.max_in_flight_per_route,
+            "hedge_enabled": governor.hedge_enabled,
+            "routes": governor.routes.iter().map(|route| json!({
+                "route_id": route.route_id,
+                "in_flight": route.in_flight,
+                "quota_observed": route.quota_observed,
+                "quota_age_ms": route.quota_age_ms,
+                "requests_remaining": route.requests_remaining,
+                "tokens_remaining": route.tokens_remaining,
+                "reset_remaining_ms": route.reset_remaining_ms,
+            })).collect::<Vec<_>>(),
+        })),
+        "settled_budget": {
+            "ceiling": budget.ceiling,
+            "provider_attempts": budget.provider_attempts,
+            "provider_attempts_remaining": budget.provider_attempts_remaining,
+            "tokens_used": budget.tokens_used,
+            "tokens_remaining": budget.tokens_remaining,
+            "wall_remaining_ms": budget.wall_remaining_ms,
+            "tool_calls": budget.tool_calls,
+            "tool_errors": budget.tool_errors,
+        },
+        "collaboration": {
+            "session_spawn_limit": collaboration.session_spawn_limit,
+            "session_spawns_admitted": collaboration.session_spawns_admitted,
+            "session_spawns_remaining": collaboration.session_spawns_remaining,
+        },
+        "workflows": {
+            "retained": snapshot.workflows.retained,
+            "running": snapshot.workflows.running,
+            "cancelling": snapshot.workflows.cancelling,
+            "settled": snapshot.workflows.settled,
+            "failed": snapshot.workflows.failed,
+            "running_agents": snapshot.workflows.running_agents,
+        },
+        "processes": snapshot.processes,
+        "language_servers": match snapshot.language_servers {
+            crate::app_server::LanguageServerStatus::Unavailable => json!({"state":"unavailable"}),
+            crate::app_server::LanguageServerStatus::Busy => json!({"state":"busy"}),
+            crate::app_server::LanguageServerStatus::Available(health) => json!({"state":"available", "health":health}),
+        },
+        "mcp": snapshot.mcp,
+    })
 }
 
 fn snapshot_value(snapshot: &SessionSnapshot) -> Value {

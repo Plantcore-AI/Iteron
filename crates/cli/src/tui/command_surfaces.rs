@@ -683,6 +683,48 @@ pub(super) fn apply_transcript_effect_event(
                 transcript_effect::ControlKind::Memory,
                 Some(app_server::ControlReply::Memory(reply)),
             ) => command_dispatch::render_memory_reply(app, reply),
+            (
+                transcript_effect::ControlKind::ThreadLifecycle,
+                Some(app_server::ControlReply::ThreadLifecycle(value)),
+            ) => {
+                if value["type"] == "thread_history_v1" {
+                    if value["active"] == true
+                        && let Some(title) = value["title"].as_str()
+                    {
+                        app.session_name = ui_safe_text(title);
+                    }
+                    app.panel(
+                        "≡",
+                        "thread history",
+                        vec![
+                            kv("run", value["run_id"].as_str().unwrap_or("?")),
+                            kv("title", value["title"].as_str().unwrap_or("?")),
+                            kv("archived", &value["archived"].to_string()),
+                            kv("pinned", &value["pinned"].to_string()),
+                        ],
+                    );
+                } else if value["type"] == "thread_export_v1" {
+                    app.push(dim(), ui_safe_text(value["content"].as_str().unwrap_or("")));
+                } else {
+                    app.note(
+                        block::NoticeLevel::Ok,
+                        format!(
+                            "thread {} permanently erased",
+                            value["run_id"].as_str().unwrap_or("?")
+                        ),
+                    );
+                }
+            }
+            (
+                transcript_effect::ControlKind::ToolRule { tool, verdict },
+                Some(app_server::ControlReply::State(snapshot)),
+            ) => {
+                session.adopt(*snapshot);
+                app.note(
+                    block::NoticeLevel::Ok,
+                    format!("tool rule {tool}: {verdict:?}"),
+                );
+            }
             (kind, Some(app_server::ControlReply::Refused(reason))) => {
                 let action = kind.label();
                 let prefix = if control.cancellation_requested {

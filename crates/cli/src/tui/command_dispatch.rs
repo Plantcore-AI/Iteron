@@ -6,7 +6,7 @@ use super::*;
 /// segments than a screen holds, and the totals printed above the list stay readable only if the
 /// list itself stops.
 const LEDGER_SEGMENT_ROWS: usize = 24;
-fn queue_command_control(
+pub(super) fn queue_command_control(
     app: &mut App,
     session: &Session,
     effects: &mut transcript_effect::Supervisor,
@@ -432,7 +432,28 @@ pub(super) fn handle_registered_command(
                         "deny" => Some(Verdict::Deny),
                         _ => None,
                     };
-                    let cap = sub.next().and_then(parse_cap);
+                    let target = sub.next();
+                    if let (Some(verdict), Some(tool)) = (
+                        verdict,
+                        target.and_then(|target| target.strip_prefix("tool:")),
+                    ) {
+                        queue_command_control(
+                            app,
+                            session,
+                            transcript_effects,
+                            interrupt,
+                            app_server::Control::SetToolRule {
+                                tool: tool.to_owned(),
+                                verdict,
+                            },
+                            transcript_effect::ControlKind::ToolRule {
+                                tool: tool.to_owned(),
+                                verdict,
+                            },
+                        );
+                        return;
+                    }
+                    let cap = target.and_then(parse_cap);
                     match (verdict, cap) {
                         (Some(v), Some(c)) => {
                             queue_permission_capability(
@@ -709,7 +730,7 @@ pub(super) fn handle_registered_command(
             workspace_command::queue_diff(app, session.workspace().to_path_buf(), stat);
         }
         SlashCommand::Sessions => {
-            handle_sessions_command(app, session, directory, arg);
+            handle_sessions_command(app, session, directory, transcript_effects, interrupt, arg);
         }
         SlashCommand::Workflows => {
             queue_command_control(
@@ -721,6 +742,7 @@ pub(super) fn handle_registered_command(
                 transcript_effect::ControlKind::WorkflowsInventory,
             );
         }
+        SlashCommand::Artifacts => super::artifacts::render(app, session, arg),
         SlashCommand::Jobs => jobs::queue(app, session, transcript_effects, interrupt, arg),
         SlashCommand::Fork => {
             // Fork the CURRENT session at its tail into a new branch (shared past, divergent future).

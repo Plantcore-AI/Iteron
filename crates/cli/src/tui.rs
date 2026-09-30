@@ -17,6 +17,7 @@ mod app_picker;
 mod app_transcript;
 mod app_workflow;
 mod app_workflow_legacy;
+mod artifacts;
 #[cfg(target_os = "linux")]
 mod capability_fs;
 mod clipboard;
@@ -253,14 +254,6 @@ impl Session {
             .telemetry_health
             .as_ref()
             .map(|health| health.snapshot())
-    }
-
-    pub(crate) fn record_lifecycle(
-        &self,
-        event_name: &str,
-        payload: iteron_protocol::LifecyclePayload,
-    ) {
-        self.client.record_lifecycle(event_name, payload);
     }
 
     pub(crate) fn memory_workspace(&self) -> Option<&std::path::Path> {

@@ -53,6 +53,7 @@
 
 #[path = "app_server/backpressure.rs"]
 mod backpressure;
+mod client_artifacts;
 mod control;
 mod mcp_control;
 mod mcp_input;
@@ -60,6 +61,8 @@ mod operator_status;
 mod plantcore;
 mod product_contract;
 mod recording_fault;
+mod thread_lifecycle;
+pub(crate) mod thread_presentation;
 
 pub(crate) use backpressure::{AppServerQueuePolicy, AuthoritativeOverflow, CosmeticOverflow};
 
@@ -507,6 +510,7 @@ pub(crate) enum Control {
     PlantcoreRunBootstrapV1(Box<iteron_protocol::PlantcoreRunBootstrapV1>),
     /// `/status` — one content-free snapshot from the exact runtime-owned authorities.
     OperatorStatus,
+    ThreadLifecycle(iteron_protocol::thread_lifecycle::ThreadLifecycleCommandV1),
     /// `/effort`
     SetEffort(iteron_protocol::Effort),
     /// `/mode`
@@ -516,12 +520,20 @@ pub(crate) enum Control {
         capability: iteron_protocol::Capability,
         verdict: iteron_protocol::Verdict,
     },
+    SetToolRule {
+        tool: String,
+        verdict: iteron_protocol::Verdict,
+    },
     /// `/model` — one transaction: durable audit append, capability fields, rate-card rebind.
     SelectModel(Box<ModelSelection>),
     /// `/compact`
-    Compact { focus: Option<String> },
+    Compact {
+        focus: Option<String>,
+    },
     /// `/budget` — read the turn ceiling, or (with `set`) move it for this session.
-    TurnBudget { set: Option<u32> },
+    TurnBudget {
+        set: Option<u32>,
+    },
     /// `/side` — the operator's side conversation.
     Side(SideRequest),
     /// `/resume <run>` — adopt another recorded run into this live session.
@@ -654,6 +666,7 @@ pub(crate) enum ControlReply {
     PlantcoreProtocolError(plantcore::PlantcoreProtocolError),
     /// The current runtime state. Answers `Snapshot` and every successful mutation.
     State(Box<SessionSnapshot>),
+    ThreadLifecycle(serde_json::Value),
     /// `/status` — runtime policy identity plus live bounded owner health.
     OperatorStatus(Box<OperatorStatusSnapshot>),
     /// The runtime refused, with the operator-facing reason.
@@ -1052,16 +1065,6 @@ impl QueuedSubmission {
 }
 
 impl AppServerClient {
-    /// Record a frontend-owned local boundary (for example an explicit memory mutation). The
-    /// event is content-free and shares the same bounded stream as runtime events.
-    pub(crate) fn record_lifecycle(&self, event_name: &str, payload: LifecyclePayload) {
-        self.emit_lifecycle(
-            event_name,
-            iteron_obs::lifecycle::LifecycleCorrelation::default(),
-            payload,
-        );
-    }
-
     fn emit_lifecycle(
         &self,
         event_name: &str,
@@ -1229,6 +1232,11 @@ impl AppServerClient {
     }
 
     #[cfg(test)]
+    pub(crate) fn observe_contract_event_for_test(&self, seq: u64, event: &ServerEvent) {
+        self.contract.observe(seq, event);
+    }
+
+    #[cfg(test)]
     pub(crate) fn seed_contract_turn_for_test(
         &self,
         thread_id: SessionId,
@@ -1237,6 +1245,13 @@ impl AppServerClient {
     ) {
         self.contract.bind_identity(thread_id, run_id.clone());
         self.contract.begin_turn(run_id, turn_id, None);
+    }
+
+    pub(crate) fn artifacts_v1(
+        &self,
+        command: iteron_protocol::client_artifact::ClientArtifactCommandV1,
+    ) -> serde_json::Value {
+        self.contract.artifacts_v1(command)
     }
 
     /// The protocol version agreed during the handshake and stamped on every submission.

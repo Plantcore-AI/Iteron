@@ -174,6 +174,11 @@ pub(crate) enum ControlKind {
         set: Option<u32>,
     },
     Memory,
+    ThreadLifecycle,
+    ToolRule {
+        tool: String,
+        verdict: iteron_protocol::Verdict,
+    },
     WorkflowsInventory,
     Mcp,
     Jobs {
@@ -195,6 +200,8 @@ impl ControlKind {
             Self::OperatorStatus { .. } => "runtime status",
             Self::TurnBudget { .. } => "turn budget",
             Self::Memory => "memory control",
+            Self::ThreadLifecycle => "thread history control",
+            Self::ToolRule { .. } => "tool permission rule",
             Self::WorkflowsInventory => "workflow inventory",
             Self::Mcp => "MCP control",
             Self::Jobs { .. } => "job control",

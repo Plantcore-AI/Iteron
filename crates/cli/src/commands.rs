@@ -32,6 +32,7 @@ pub enum SlashCommand {
     Side,
     Workflows,
     Jobs,
+    Artifacts,
     Fork,
     Rewind,
     Resume,
@@ -93,6 +94,7 @@ impl SlashCommand {
             | Self::Sessions
             | Self::Workflows
             | Self::Jobs
+            | Self::Artifacts
             | Self::Fork
             | Self::Rewind
             | Self::Resume
@@ -218,7 +220,7 @@ pub const COMMANDS: &[Cmd] = &[
     Cmd {
         command: SlashCommand::Sessions,
         name: "sessions",
-        args: "[new|switch|preview|rename|pin|unpin|archive|unarchive|delete]",
+        args: "[new|switch|preview|read|export|rename|pin|unpin|archive|unarchive|delete]",
         help: "browse and manage recorded sessions in this repo",
     },
     Cmd {
@@ -238,6 +240,12 @@ pub const COMMANDS: &[Cmd] = &[
         name: "jobs",
         args: "[list|attach|refresh|detach|write|eof|stop]",
         help: "inspect and control background process jobs",
+    },
+    Cmd {
+        command: SlashCommand::Artifacts,
+        name: "artifacts",
+        args: "[HASH_PREFIX]",
+        help: "list or open bounded artifacts published by this thread",
     },
     Cmd {
         command: SlashCommand::Fork,

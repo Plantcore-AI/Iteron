@@ -139,6 +139,10 @@ pub use tunables_snapshot::{
     RunGenesisFixedAuthorityBindingV2, RunGenesisFixedAuthorityIdV2, RunGenesisTunableEntryV2,
     RunGenesisTunablesSnapshotV2, RunGenesisTunablesVersionV2, is_extension_server_binding_id,
 };
+pub mod client_artifact;
+pub mod client_negotiation;
+pub mod thread_lifecycle;
+
 pub use wire::{EqEnvelope, PROTOCOL_VERSION, ProtocolVersionError, SqEnvelope};
 
 /// Schema version for [`EventKind::TunablesSnapshot`].

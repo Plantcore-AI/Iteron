@@ -475,7 +475,6 @@ fn receive(reader: &mut BufReader<TcpStream>) -> Value {
     serde_json::from_str(&line).expect("server frame is JSON")
 }
 
-#[cfg(unix)]
 fn receive_result_within_timeout(reader: &mut BufReader<TcpStream>) -> Value {
     let deadline = Instant::now() + timeout();
     loop {
@@ -520,6 +519,150 @@ fn control(request_id: u64, protocol_version: u32, control: Value) -> Value {
         "request_id": request_id,
         "control": control,
     })
+}
+
+#[test]
+fn compatible_observer_cannot_mutate_or_upgrade_by_stamping_current_version() {
+    let scratch = Scratch::new("http://127.0.0.1:9/v1");
+    let (child, token, address) = spawn_core(&scratch);
+    let mut connection = connect(address);
+    let mut observer = hello(&token, PROTOCOL_VERSION - 1, 0);
+    observer["observation_only"] = json!(true);
+    send(&mut connection, observer);
+    let mut reader = BufReader::new(connection.try_clone().unwrap());
+    let accepted = receive(&mut reader);
+    assert_eq!(accepted["type"], "hello");
+    assert_eq!(accepted["client_access"], "observe");
+    let rollout = only_rollout(&scratch.runs());
+    let before = fs::read(&rollout).unwrap();
+    for version in [PROTOCOL_VERSION - 1, PROTOCOL_VERSION] {
+        send(
+            &mut connection,
+            control(1, version, json!({"type":"set_effort", "effort":"max"})),
+        );
+        assert_eq!(receive(&mut reader)["type"], "error");
+    }
+    send(
+        &mut connection,
+        json!({"type":"submit", "protocol_version":PROTOCOL_VERSION, "op":{"op":"user_input", "text":"must not run"}}),
+    );
+    assert_eq!(receive(&mut reader)["type"], "error");
+    assert_eq!(fs::read(&rollout).unwrap(), before);
+    send(
+        &mut connection,
+        control(2, PROTOCOL_VERSION - 1, json!({"type":"jobs_list"})),
+    );
+    let read = receive(&mut reader);
+    assert_eq!(read["type"], "control_reply");
+    assert_eq!(read["reply"]["type"], "jobs");
+    drop(reader);
+    drop(connection);
+    stop(child);
+}
+
+#[test]
+fn public_named_rules_and_owner_inventory_share_the_resident_control_plane() {
+    let scratch = Scratch::new("http://127.0.0.1:9/v1");
+    let (child, token, address) = spawn_core(&scratch);
+    let mut connection = connect(address);
+    send(&mut connection, hello(&token, PROTOCOL_VERSION, 0));
+    let mut reader = BufReader::new(connection.try_clone().unwrap());
+    assert_eq!(receive(&mut reader)["type"], "hello");
+    send(
+        &mut connection,
+        control(
+            1,
+            PROTOCOL_VERSION,
+            json!({"type":"set_tool_rule", "tool":"bash:external", "verdict":"deny"}),
+        ),
+    );
+    let reply = receive(&mut reader);
+    assert_eq!(reply["reply"]["type"], "state");
+    assert!(
+        reply["reply"]["state"]["permission_rules"]
+            .to_string()
+            .contains("bash:external")
+    );
+    for operation in ["operator_status", "workflows_list", "mcp_status"] {
+        send(
+            &mut connection,
+            control(2, PROTOCOL_VERSION, json!({"type":operation})),
+        );
+        let reply = receive(&mut reader);
+        assert_eq!(reply["type"], "control_reply");
+        assert_ne!(reply["reply"]["type"], "refused");
+    }
+    let records = fs::read_to_string(only_rollout(&scratch.runs())).unwrap();
+    assert!(records.contains("bash:external"));
+    drop(reader);
+    drop(connection);
+    stop(child);
+}
+
+#[test]
+fn public_artifact_ids_survive_tcp_projection_and_download_the_published_bytes() {
+    use base64::Engine;
+    use sha2::{Digest, Sha256};
+
+    let provider = PausedProvider::spawn();
+    let scratch = Scratch::new(&provider.api_root);
+    let (child, token, address) = spawn_core(&scratch);
+    let mut connection = connect(address);
+    send(&mut connection, hello(&token, PROTOCOL_VERSION, 0));
+    let mut reader = BufReader::new(connection.try_clone().unwrap());
+    let accepted = receive(&mut reader);
+    let thread_id = accepted["session_id"].as_str().unwrap().to_owned();
+    send(
+        &mut connection,
+        json!({"type":"submit", "protocol_version":PROTOCOL_VERSION, "op":{"op":"user_input", "text":"produce a bounded answer artifact"}}),
+    );
+    provider.request_seen.recv_timeout(timeout()).unwrap();
+    provider.release.send(()).unwrap();
+    let result = receive_result_within_timeout(&mut reader);
+    assert_eq!(result["result"]["outcome"], "done");
+    send(
+        &mut connection,
+        control(
+            91,
+            PROTOCOL_VERSION,
+            json!({"type":"artifacts_v1", "command":{"type":"list", "thread_id":thread_id}}),
+        ),
+    );
+    let listing = receive(&mut reader);
+    assert_eq!(listing["type"], "control_reply");
+    assert_eq!(listing["reply"]["type"], "artifacts_v1");
+    let artifact = &listing["reply"]["artifacts"][0];
+    let id = artifact["artifact_id"].as_str().unwrap();
+    assert_eq!(id.len(), 64);
+    assert_eq!(id, hex::encode(Sha256::digest(b"parity reply")));
+    send(
+        &mut connection,
+        control(
+            92,
+            PROTOCOL_VERSION,
+            json!({"type":"artifacts_v1", "command":{"type":"read", "thread_id":thread_id, "artifact_id":id, "offset":0, "max_bytes":64}}),
+        ),
+    );
+    let chunk = receive(&mut reader);
+    assert_eq!(chunk["reply"]["type"], "artifact_chunk_v1");
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(chunk["reply"]["content_base64"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(bytes, b"parity reply");
+    assert_eq!(chunk["reply"]["eof"], true);
+    send(
+        &mut connection,
+        control(
+            93,
+            PROTOCOL_VERSION,
+            json!({"type":"artifacts_v1", "command":{"type":"read", "thread_id":"another-workspace", "artifact_id":id, "offset":0, "max_bytes":64}}),
+        ),
+    );
+    assert_eq!(receive(&mut reader)["reply"]["type"], "artifact_refused_v1");
+    drop(reader);
+    drop(connection);
+    stop(child);
+    provider.finish();
 }
 
 fn assert_closed_without_frame(stream: TcpStream) {

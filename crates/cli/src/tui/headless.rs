@@ -901,27 +901,34 @@ async fn serve_connection(
         frame: hello,
         input_guard: hello_input_guard,
     } = parse_client_frame(hello).await?;
-    let (version, resume_from, requested_session_id, product_contract_version) = match hello {
-        ClientFrame::Hello {
-            bearer_token,
-            protocol_version,
-            resume_from,
-            session_id,
-            product_contract_version,
-        } if shared.auth_token.authorizes(&bearer_token) => (
-            protocol_version,
-            resume_from,
-            session_id,
-            product_contract_version,
-        ),
-        ClientFrame::Hello { .. } | ClientFrame::Submit { .. } | ClientFrame::Control { .. } => {
-            // Do not expose even the negotiated protocol version until the capability check has
-            // succeeded. Missing/malformed tokens fail during bounded parsing on the same path.
-            bail!("headless client authorization failed");
-        }
-    };
+    let (version, resume_from, requested_session_id, product_contract_version, observation_only) =
+        match hello {
+            ClientFrame::Hello {
+                bearer_token,
+                protocol_version,
+                resume_from,
+                session_id,
+                product_contract_version,
+                observation_only,
+            } if shared.auth_token.authorizes(&bearer_token) => (
+                protocol_version,
+                resume_from,
+                session_id,
+                product_contract_version,
+                observation_only,
+            ),
+            ClientFrame::Hello { .. }
+            | ClientFrame::Submit { .. }
+            | ClientFrame::Control { .. } => {
+                // Do not expose even the negotiated protocol version until the capability check has
+                // succeeded. Missing/malformed tokens fail during bounded parsing on the same path.
+                bail!("headless client authorization failed");
+            }
+        };
     drop(hello_input_guard);
-    if version != PROTOCOL_VERSION {
+    let negotiated =
+        iteron_protocol::client_negotiation::negotiate_client_v1(version, observation_only);
+    if negotiated.is_err() {
         send_frame(
             &mut writer,
             &shared.outbound_budget,
@@ -937,6 +944,7 @@ async fn serve_connection(
         .await?;
         return Ok(());
     }
+    let negotiated = negotiated.expect("negotiation refusal returned before client access");
     if product_contract_version.is_some_and(|version| version != PRODUCT_CONTRACT_VERSION) {
         send_frame(
             &mut writer,
@@ -1027,6 +1035,7 @@ async fn serve_connection(
             cursor,
             replay_source: if fallback { "rollout" } else { "ring" },
             product_contract_version,
+            client_access: observation_only.then_some(negotiated.access),
         },
     )
     .await?;
@@ -1119,7 +1128,7 @@ async fn serve_connection(
                         return Ok(());
                     }
                     ClientFrame::Submit { protocol_version, op } => {
-                        if protocol_version != PROTOCOL_VERSION {
+                        if !negotiated.accepts_submission(protocol_version) {
                             drop(op);
                             drop(input_guard);
                             send_frame(
@@ -1128,10 +1137,12 @@ async fn serve_connection(
                                 &shared.frame_preparers,
                                 &shared.fragment_encoders,
                                 error_frame(
-                                    "protocol_version_mismatch",
-                                    &format!(
-                                        "submission uses protocol version {protocol_version}; expected {PROTOCOL_VERSION}"
-                                    ),
+                                    if observation_only { "observer_authority" } else { "protocol_version_mismatch" },
+                                    if observation_only {
+                                        "this connection negotiated observation authority; submissions are unavailable"
+                                    } else {
+                                        "submission protocol version does not match the server"
+                                    },
                                 ),
                             )
                             .await?;
@@ -1222,7 +1233,7 @@ async fn serve_connection(
                         request_id,
                         control,
                     } => {
-                        if protocol_version != PROTOCOL_VERSION {
+                        if !negotiated.accepts_control(protocol_version, control.is_read_only()) {
                             drop(control);
                             drop(input_guard);
                             send_frame(
@@ -1231,10 +1242,12 @@ async fn serve_connection(
                                 &shared.frame_preparers,
                                 &shared.fragment_encoders,
                                 error_frame(
-                                    "protocol_version_mismatch",
-                                    &format!(
-                                        "control request uses protocol version {protocol_version}; expected {PROTOCOL_VERSION}"
-                                    ),
+                                    if observation_only { "observer_authority" } else { "protocol_version_mismatch" },
+                                    if observation_only {
+                                        "this connection accepts only read controls stamped with its negotiated client version"
+                                    } else {
+                                        "control request protocol version does not match the server"
+                                    },
                                 ),
                             )
                             .await?;
@@ -1242,6 +1255,19 @@ async fn serve_connection(
                         }
                         drop(input_guard);
                         match control {
+                            control::WireControl::ArtifactsV1 { command } => {
+                                send_frame(
+                                    &mut writer,
+                                    &shared.outbound_budget,
+                                    &shared.frame_preparers,
+                                    &shared.fragment_encoders,
+                                    ServerFrame::ControlReply {
+                                        protocol_version: PROTOCOL_VERSION,
+                                        request_id,
+                                        reply: shared.client.artifacts_v1(command),
+                                    },
+                                ).await?;
+                            }
                             control::WireControl::ProductV1 { command } => {
                                 let reply = if product_contract_version.is_none() {
                                     json!({

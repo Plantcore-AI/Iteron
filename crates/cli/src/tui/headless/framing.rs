@@ -96,6 +96,8 @@ pub(super) enum ServerFrame {
         replay_source: &'static str,
         #[serde(skip_serializing_if = "Option::is_none")]
         product_contract_version: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        client_access: Option<iteron_protocol::client_negotiation::ClientAccessV1>,
     },
     Event {
         protocol_version: u32,
@@ -927,6 +929,7 @@ mod tests {
             cursor: 4,
             replay_source: "ring",
             product_contract_version: None,
+            client_access: None,
         })
         .unwrap();
         assert!(legacy.get("product_contract_version").is_none());
@@ -938,6 +941,7 @@ mod tests {
             product_contract_version: Some(
                 iteron_protocol::product_contract::PRODUCT_CONTRACT_VERSION,
             ),
+            client_access: None,
         })
         .unwrap();
         assert_eq!(negotiated["product_contract_version"], 1);
