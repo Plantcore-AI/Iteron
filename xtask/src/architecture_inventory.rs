@@ -232,6 +232,34 @@ const SURFACES: &[Surface] = &[
         ],
         next_seams: &["no independently mutable graph or agent state"],
     },
+    Surface {
+        path: "crates/cli/src/runtime/frontend_events.rs",
+        boundary: "cli-host",
+        responsibilities: &["immutable frontend event/control-resolution contract"],
+        next_seams: &["never treat presentation values as execution authority"],
+    },
+    Surface {
+        path: "crates/cli/src/runtime/tool_presentation.rs",
+        boundary: "cli-host",
+        responsibilities: &["pure bounded tool/UI output and approval evidence projection"],
+        next_seams: &["canonical raw output belongs to publication/spill owners"],
+    },
+    Surface {
+        path: "crates/cli/src/runtime/stream_progress.rs",
+        boundary: "cli-host",
+        responsibilities: &["single output/thinking counter and coalesced emission owner"],
+        next_seams: &["immutable stream timing evidence"],
+    },
+    Surface {
+        path: "crates/cli/src/runtime/deferred_batch_executor.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "already-admitted physical tool futures and governor permits",
+            "cancellation, structural correlation and ordered execution receipts",
+            "raw publication before spill/model projection",
+        ],
+        next_seams: &["WAL admission/settlement stay with the journal owner"],
+    },
 ];
 
 #[derive(Serialize)]
