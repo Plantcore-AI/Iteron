@@ -603,23 +603,23 @@ async fn disconnected_command_observer_does_not_drop_admitted_graph_mutation() {
         })
         .await
         .unwrap();
-    // The current-thread runtime cannot poll the owned worker before this zero-length observer
-    // deadline. Dropping the observer leaves the admitted worker responsible for its WAL commit.
-    let timed_out = tokio::time::timeout(
-        Duration::ZERO,
-        session.command(Command::Replan {
-            workflow_id: "graph".into(),
-            request_id: "disconnected-request".into(),
-            plan: WorkflowReplanV1 {
-                expected_revision: 0,
-                changes: vec![Change::Add {
-                    node: node(1, agent, "detached-command", vec![]),
-                }],
-            },
-        }),
-    )
-    .await;
-    assert!(timed_out.is_err());
+    // Poll admission exactly once, then disconnect before the spawned worker is polled. This
+    // checks ownership directly without depending on timer granularity or elapsed wall time.
+    let mut observer = Box::pin(session.command(Command::Replan {
+        workflow_id: "graph".into(),
+        request_id: "disconnected-request".into(),
+        plan: WorkflowReplanV1 {
+            expected_revision: 0,
+            changes: vec![Change::Add {
+                node: node(1, agent, "detached-command", vec![]),
+            }],
+        },
+    }));
+    assert!(matches!(
+        futures_util::poll!(&mut observer),
+        std::task::Poll::Pending
+    ));
+    drop(observer);
     let complete = read_until(session.as_ref(), |reply| {
         reply.view.nodes.len() == 1 && matches!(reply.view.nodes[0].state, State::Succeeded { .. })
     })
