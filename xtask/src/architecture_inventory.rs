@@ -398,24 +398,6 @@ const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
-        path: "crates/cli/src/high_assurance/owner.rs",
-        boundary: "cli-host",
-        responsibilities: &[
-            "explicit bounded two independently enrolled Ed25519 human-signature authorization owner",
-        ],
-        next_seams: &[
-            "actual admission audit barrier; host same-Arc scope, finite verifier receipt budget; default host None zero calls",
-        ],
-    },
-    Surface {
-        path: "crates/cli/src/high_assurance/journal.rs",
-        boundary: "cli-host",
-        responsibilities: &["closed content-free dual-signature authorization audit barrier"],
-        next_seams: &[
-            "actual Rollout and diagnostic/latency ports; no permission widening or executor access",
-        ],
-    },
-    Surface {
         path: "crates/cli/src/runtime/provider_selection.rs",
         boundary: "cli-host",
         responsibilities: &[
