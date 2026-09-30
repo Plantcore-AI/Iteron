@@ -376,7 +376,14 @@ impl Agent {
                     field: "model_context_window",
                     reason: "positive USD admission requires a bounded model context window",
                 })?;
-        let output_bound = u64::from(request.max_tokens);
+        let output_bound = u64::from(
+            self.provider
+                .physical_output_token_ceiling(request.into())?
+                .ok_or(KernelError::InvalidRouteMetadata {
+                    field: "physical_output_token_ceiling",
+                    reason: "positive USD admission needs an adapter-attested physical output ceiling",
+                })?,
+        );
         let rates = signed.rate_card.rates;
         let thinking = if rates.thinking_microusd_per_million > rates.output_microusd_per_million {
             output_bound

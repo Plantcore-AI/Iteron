@@ -144,7 +144,7 @@ fn request_body(
         // stateless continuation contract therefore requires the encrypted reasoning item to be
         // requested, retained, and supplied as a later input item.
         "include": ["reasoning.encrypted_content"],
-        "max_output_tokens": request.max_tokens,
+        "max_output_tokens": crate::output_ceiling::requested(request.into())?,
         "stream": true,
         "store": false,
     });
@@ -1546,6 +1546,12 @@ fn incomplete_failure(
 
 #[async_trait::async_trait]
 impl Provider for OpenAiResponses {
+    fn physical_output_token_ceiling(
+        &self,
+        budget: crate::output_ceiling::ProviderOutputBudget<'_>,
+    ) -> Result<Option<u32>, ProviderError> {
+        crate::output_ceiling::requested(budget).map(Some)
+    }
     fn supports_image_input(&self) -> bool {
         self.error_profile == ErrorProfile::OpenAi && self.root.as_str() == DEFAULT_ROOT
     }

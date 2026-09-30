@@ -155,7 +155,7 @@ impl OpenAiCompat {
         let mut b = serde_json::json!({
             "model": req.model,
             "messages": messages,
-            "max_tokens": req.max_tokens,
+            "max_tokens": crate::output_ceiling::requested(req.into())?,
             "stream": true,
             "stream_options": {"include_usage": true},
         });
@@ -889,6 +889,12 @@ fn apply_unique_reported_usage(
 
 #[async_trait::async_trait]
 impl Provider for OpenAiCompat {
+    fn physical_output_token_ceiling(
+        &self,
+        budget: crate::output_ceiling::ProviderOutputBudget<'_>,
+    ) -> Result<Option<u32>, ProviderError> {
+        crate::output_ceiling::requested(budget).map(Some)
+    }
     fn control_capabilities(&self) -> ProviderControlCapabilities {
         let mut capabilities = ProviderControlCapabilities::default();
         if self.error_profile == ErrorProfile::OpenAi

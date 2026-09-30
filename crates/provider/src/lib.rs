@@ -22,6 +22,7 @@ mod governor;
 mod governor_policy;
 mod governor_snapshot;
 pub mod openai;
+pub mod output_ceiling;
 mod recording_transport;
 pub mod request_capture;
 pub mod responses;
@@ -1546,6 +1547,17 @@ pub trait Provider: Send + Sync {
         ProviderControlCapabilities::default()
     }
 
+    /// Prove the finite output cap actually serialized by this adapter after effort adaptation.
+    /// This method is pure; None means the adapter cannot attest its wire limit. Hard monetary
+    /// callers must retain an independent verified bound or refuse before dispatch. Wrappers
+    /// must forward the inner result rather than guessing from the semantic request field.
+    fn physical_output_token_ceiling(
+        &self,
+        _budget: output_ceiling::ProviderOutputBudget<'_>,
+    ) -> Result<Option<u32>, ProviderError> {
+        Ok(None)
+    }
+
     /// Report the adapter's actual control surface before the request is sent. Implementations
     /// must be conservative for unknown gateways/models; wire compatibility alone is not proof of
     /// effort support.
@@ -1777,6 +1789,13 @@ impl Provider for HealthReportingProvider {
 
     fn attempt_semantics(&self) -> ProviderAttemptSemantics {
         self.inner.attempt_semantics()
+    }
+
+    fn physical_output_token_ceiling(
+        &self,
+        budget: output_ceiling::ProviderOutputBudget<'_>,
+    ) -> Result<Option<u32>, ProviderError> {
+        self.inner.physical_output_token_ceiling(budget)
     }
 
     fn supports_image_input(&self) -> bool {

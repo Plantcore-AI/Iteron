@@ -90,6 +90,13 @@ impl Provider for ProviderFixture {
     fn provider_instance_id(&self) -> Option<&str> {
         Some("test-provider")
     }
+    fn physical_output_token_ceiling(
+        &self,
+        budget: iteron_provider::output_ceiling::ProviderOutputBudget<'_>,
+    ) -> Result<Option<u32>, ProviderError> {
+        // This actual fixture returns at most one output token and never expands the request.
+        Ok(Some(budget.requested_max_tokens))
+    }
     async fn turn(
         &self,
         request: &TurnRequest,

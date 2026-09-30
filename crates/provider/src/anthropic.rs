@@ -171,7 +171,7 @@ impl Anthropic {
 
         let mut body = serde_json::json!({
             "model": req.model,
-            "max_tokens": req.max_tokens,
+            "max_tokens": self.physical_output_ceiling(req.into())?,
             "system": system,
             "tools": req.tools.anthropic().as_ref(),
             "messages": messages,
@@ -182,26 +182,39 @@ impl Anthropic {
         if req.thinking_budget > 0 && capabilities.extended_thinking {
             body["thinking"] =
                 serde_json::json!({"type":"enabled","budget_tokens": req.thinking_budget});
-            let headroom = u32::try_from(iteron_tunables::param_i128(
-                "provider.anthropic.thinking_output_headroom_tokens",
-                i128::from(iteron_tunables::param_integer(
-                    "provider.anthropic.thinking_output_headroom_tokens",
-                    THINKING_OUTPUT_HEADROOM_TOKENS,
-                )),
-            ))
-            .unwrap_or(iteron_tunables::param_integer(
-                "provider.anthropic.thinking_output_headroom_tokens",
-                THINKING_OUTPUT_HEADROOM_TOKENS,
-            ));
-            let need = req.thinking_budget.saturating_add(headroom);
-            if req.max_tokens < need {
-                body["max_tokens"] = serde_json::json!(need);
-            }
         }
         if capabilities.semantic_effort {
             body["output_config"] = serde_json::json!({"effort": req.reasoning_effort.label()});
         }
         Ok(body)
+    }
+
+    fn physical_output_ceiling(
+        &self,
+        budget: crate::output_ceiling::ProviderOutputBudget<'_>,
+    ) -> Result<u32, ProviderError> {
+        let capabilities = anthropic_request_capabilities(
+            self.error_profile,
+            self.api_root.as_str(),
+            &self.static_metadata,
+            budget.model,
+        );
+        if !capabilities.extended_thinking || budget.thinking_budget == 0 {
+            return crate::output_ceiling::requested(budget);
+        }
+        let headroom = u32::try_from(iteron_tunables::param_i128(
+            "provider.anthropic.thinking_output_headroom_tokens",
+            i128::from(iteron_tunables::param_integer(
+                "provider.anthropic.thinking_output_headroom_tokens",
+                THINKING_OUTPUT_HEADROOM_TOKENS,
+            )),
+        ))
+        .map_err(|_| {
+            ProviderError::Configuration(
+                "physical thinking headroom is outside its finite u32 range".into(),
+            )
+        })?;
+        crate::output_ceiling::extended_thinking(budget, capabilities.extended_thinking, headroom)
     }
 }
 
@@ -743,6 +756,12 @@ fn split_frames(buf: &str) -> (Vec<SseFrame>, String) {
 
 #[async_trait::async_trait]
 impl Provider for Anthropic {
+    fn physical_output_token_ceiling(
+        &self,
+        budget: crate::output_ceiling::ProviderOutputBudget<'_>,
+    ) -> Result<Option<u32>, ProviderError> {
+        self.physical_output_ceiling(budget).map(Some)
+    }
     fn control_capabilities(&self) -> ProviderControlCapabilities {
         let mut capabilities = ProviderControlCapabilities::default();
         if self.prompt_cache {
@@ -1290,6 +1309,31 @@ mod tests {
                 requested: iteron_protocol::ReasoningEffort::Medium
             }
         );
+    }
+
+    #[test]
+    fn output_ceiling_proves_the_actual_body_limit_for_known_and_unknown_models() {
+        let provider =
+            Anthropic::with_root("key".into(), ApiRoot::parse(DEFAULT_API_ROOT).unwrap()).unwrap();
+        for model in ["claude-sonnet-4-5", "claude-opus-4-6", "unknown-model"] {
+            let request = request(model);
+            let proven = provider
+                .physical_output_token_ceiling((&request).into())
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                provider.body(&request).unwrap()["max_tokens"].as_u64(),
+                Some(u64::from(proven))
+            );
+        }
+        let mut overflowing = request("claude-sonnet-4-5");
+        overflowing.thinking_budget = u32::MAX;
+        assert!(
+            provider
+                .physical_output_token_ceiling((&overflowing).into())
+                .is_err()
+        );
+        assert!(provider.body(&overflowing).is_err());
     }
 
     #[test]
