@@ -888,6 +888,7 @@ impl Agent {
         // is leaving becomes resumable by another process the moment this returns.
         let previous = std::mem::replace(&mut self.rollout, rollout);
         self.turn_publications = staged.turn_publications;
+        self.workspace_checkpoints = workspace_checkpoint::WorkspaceCheckpointOwner::default();
 
         // Per-run state `set_resume` does not own. Every one of these describes the run being left.
         self.working_set = None;

@@ -16,12 +16,13 @@
 
 pub use iteron_kernel::{diagnostics, effect_admission, effect_class, effect_journal, effects};
 mod tool_turn;
-use tool_turn::{EarlyHookEffectTickets, EarlyToolInFlight as PureToolInFlight};
+use tool_turn::EarlyToolInFlight as PureToolInFlight;
 
+mod early_tool_collection;
 mod early_tool_executor;
 mod effect_descriptor;
 mod effect_journal_owner;
-use early_tool_executor::EarlyToolOutcome as EarlyPureToolOutcome;
+mod tool_execution_journal;
 
 mod kernel_effect_bridge;
 mod provider_stream_observer;
@@ -32,15 +33,17 @@ mod terminal_record;
 mod turn_publication;
 #[cfg(test)]
 mod turn_publication_runtime_tests;
+mod workspace_checkpoint;
+#[cfg(test)]
+mod workspace_checkpoint_tests;
 use effect_descriptor::{
     KernelEffect, effect_class_label, effect_done_terminal, effect_failed_terminal,
     effect_workspace,
 };
 use kernel_effect_bridge::broker_kernel_effect;
-mod early_tool_gate;
-use early_tool_gate::EarlyHookSummary;
 mod deferred_batch_executor;
 mod deferred_tool_batch;
+mod early_tool_gate;
 mod frontend_events;
 mod stream_progress;
 mod stream_tool_admission;
@@ -1003,6 +1006,7 @@ enum DurableAppendFault {
     UsdCeiling,
     TurnCeiling,
     RunTerminal,
+    Checkpoint,
     GenesisPolicyTail,
     AdoptProjection,
 }
@@ -1195,8 +1199,7 @@ pub struct Agent {
     verification_quarantine: std::collections::BTreeMap<String, u64>,
     /// Lazy replay guard for the typed quarantine receipts in the currently-owned rollout.
     verification_quarantine_restored: bool,
-    latest_workspace_checkpoint: Option<iteron_record::Snapshot>,
-    last_workspace_checkpoint_turn: Option<u32>,
+    workspace_checkpoints: workspace_checkpoint::WorkspaceCheckpointOwner,
     /// Did the operator ASK for orchestration in the words of this submission?
     ///
     /// Set from the operator-typed text only — never from rendered file attachments, whose bytes
@@ -3913,194 +3916,21 @@ impl Agent {
                 self.ui(tool_end_ui(&returned_tools[index], &result));
                 results[index] = Some(result);
             }
-            let mut completed_pure = Vec::new();
-            let mut early_unknown_count = 0;
-
-            // Streaming tools: await their already-running handles. Time from dispatch to stream end
-            // is the overlap we won (they ran during the decode tail).
-            for (idx, tu, mut handle, dispatched_at, mut hook_effect_tickets) in pure {
-                let effect_ticket = hook_effect_tickets.tool.take();
-                let was_effecting = effect_ticket.is_some();
-                let since_dispatch = dispatched_at.duration_since(stream_start);
-                let overlap_ms = stream_elapsed.saturating_sub(since_dispatch).as_millis() as u64;
-                let joined = match self.run_time_remaining() {
-                    Some(remaining) if remaining.is_zero() => {
-                        handle.abort();
-                        let _ = handle.await;
-                        None
-                    }
-                    Some(remaining) => match tokio::time::timeout(remaining, &mut handle).await {
-                        Ok(joined) => Some(joined),
-                        Err(_) => {
-                            handle.abort();
-                            let _ = handle.await;
-                            None
-                        }
+            let early_unknown_count = self
+                .early_tool_collection(turn_id)
+                .collect(
+                    pure,
+                    early_tool_collection::EarlyToolWindow {
+                        stream_start,
+                        stream_elapsed,
+                        hook_gates_reads,
+                        queued: queued_pure,
+                        projection: result_projection_budget,
                     },
-                    None => Some(handle.await),
-                };
-                let hook_summary = match joined.as_ref() {
-                    Some(Ok(EarlyPureToolOutcome::Completed { hook, .. })) => *hook,
-                    Some(Ok(EarlyPureToolOutcome::Refused { hook, .. })) => Some(*hook),
-                    Some(Err(_)) | None => None,
-                };
-                self.settle_early_pure_hook_effects(turn_id, hook_effect_tickets, hook_summary)?;
-                match joined {
-                    Some(Ok(EarlyPureToolOutcome::Completed {
-                        mut managed,
-                        spill_store,
-                        hook,
-                        effect_unknown,
-                        operator_interrupted,
-                        publication_error,
-                    })) => {
-                        if let Some(hook) = hook {
-                            self.observe_early_pure_hook(turn_id, hook, false);
-                        }
-                        // ADR-004 dispatched this read from inside the provider stream callback,
-                        // which holds no mutable borrow of the rollout. Pure reads have no
-                        // externally visible effect by construction, so their durable admission
-                        // may be written here after overlap but before the outcome is committed.
-                        if managed
-                            .project_visible(result_projection_budget.visible_bytes_for(&tu.name))
-                        {
-                            self.observe_tool_result_projection(
-                                turn_id,
-                                managed.result.content.len(),
-                            );
-                        }
-                        let ticket = match effect_ticket {
-                            Some(ticket) => ticket,
-                            None => {
-                                self.open_tool_call_effect(turn_id, idx, &tu, Capability::ReadOnly)?
-                            }
-                        };
-                        let r = &managed.result;
-                        if effect_unknown {
-                            let cause = if operator_interrupted {
-                                durability::UnknownCause::OperatorCancelled
-                            } else {
-                                durability::UnknownCause::Unobserved
-                            };
-                            self.settle_kernel_effect_with_cause(ticket, effects::Settlement::Unknown(
-                                "streaming tool did not report an authoritative terminal; automatic retry is forbidden".into(),
-                            ), cause)?;
-                            self.ledger
-                                .tool(r.latency_ms, overlap_ms.min(r.latency_ms), true);
-                            early_unknown_count += 1;
-                        } else {
-                            self.commit_admitted_tool_result(
-                                ticket,
-                                &tu.name,
-                                r,
-                                overlap_ms.min(r.latency_ms),
-                            )?;
-                            if was_effecting && r.is_error {
-                                self.failed_actions.insert(
-                                    format!("{}::{}", tu.name, tu.input),
-                                    r.content.clone(),
-                                );
-                            }
-                        }
-                        any_error |= r.is_error || effect_unknown;
-                        if managed.spilled {
-                            // Pure-tool memoization happens inside the registry, before this owner
-                            // sees the result. Invalidate it so the raw oversized value is not kept
-                            // alive after the private spill boundary replaces it.
-                            self.registry.invalidate_pure_cache();
-                        }
-                        if publication_error.is_some() {
-                            self.ui(UiEvent::Notice(
-                                artifact_publication::PUBLICATION_UNAVAILABLE.into(),
-                            ));
-                        }
-                        completed_pure.push((idx, tu, managed, spill_store));
-                    }
-                    Some(Ok(EarlyPureToolOutcome::Refused { reason, hook })) => {
-                        self.observe_early_pure_hook(turn_id, hook, true);
-                        let result = ToolResult {
-                            tool_use_id: tu.id.clone(),
-                            content: format!(
-                                "tool `{}` blocked by a tool gate hook: {reason}",
-                                tu.name
-                            ),
-                            is_error: true,
-                            trust: Trust::Workspace,
-                            latency_ms: 0,
-                        };
-                        if let Some(ticket) = effect_ticket {
-                            self.commit_admitted_tool_result(ticket, &tu.name, &result, 0)?;
-                        } else {
-                            self.commit_refused_tool_result(turn_id, &tu.name, &result)?;
-                        }
-                        self.ui(tool_end_ui(&tu, &result));
-                        results[idx] = Some(result);
-                        any_error = true;
-                    }
-                    Some(Err(_)) | None => {
-                        // The spawned pure-tool task panicked or was cancelled before it returned
-                        // an authoritative gate/tool outcome. A pure read has no external effect,
-                        // so refuse it rather than minting an admission after an unknown gate.
-                        let r = ToolResult {
-                            tool_use_id: tu.id.clone(),
-                            content: "tool task failed, was cancelled, or exceeded the run wall deadline before producing a result".into(),
-                            is_error: true,
-                            trust: Trust::Workspace,
-                            latency_ms: 0,
-                        };
-                        if let Some(ticket) = effect_ticket {
-                            self.settle_kernel_effect(
-                                ticket,
-                                effects::Settlement::Unknown(
-                                    "streaming tool task was lost before an authoritative terminal"
-                                        .into(),
-                                ),
-                            )?;
-                            self.ledger.tool(0, 0, true);
-                            early_unknown_count += 1;
-                        } else {
-                            self.commit_refused_tool_result(turn_id, &tu.name, &r)?;
-                        }
-                        if hook_gates_reads {
-                            self.lifecycle_event(
-                                "hook.failed",
-                                Some(turn_id),
-                                LifecyclePayload {
-                                    count: Some(0),
-                                    reason_code: Some("early_tool_task_lost".into()),
-                                    ..LifecyclePayload::default()
-                                },
-                            );
-                        }
-                        any_error = true;
-                        self.ui(tool_end_ui(&tu, &r));
-                        results[idx] = Some(r);
-                    }
-                }
-            }
-
-            self.ledger
-                .tool_inline_overflow(queued_pure.load(std::sync::atomic::Ordering::Relaxed));
-
-            // A read may finish while the provider is still streaming, but its observational
-            // PostToolUse hook remains ordered after the durable tool terminal. Run independent
-            // observers together, then publish ToolEnd in model-declared order. Keeping managed
-            // spill leases alive through the observer also preserves the same result visibility
-            // as the deferred-tool path.
-            let pure_post_inputs = completed_pure
-                .iter()
-                .map(|(_, call, managed, _)| (call.clone(), managed.result.clone()))
-                .collect::<Vec<_>>();
-            let pure_post_result = self
-                .observe_concurrent_post_tool_hooks(turn_id, &pure_post_inputs)
-                .await;
-            for (idx, call, mut managed, spill_store) in completed_pure {
-                let terminal_ui = tool_end_ui(&call, &managed.result);
-                tool_output_spill::cleanup_managed_result(spill_store.as_deref(), &mut managed)?;
-                self.ui(terminal_ui);
-                results[idx] = Some(managed.result);
-            }
-            pure_post_result?;
+                    &mut results,
+                    &mut any_error,
+                )
+                .await?;
             if early_unknown_count > 0 {
                 if let Some(outcome) = self.collect_and_finish_requested_control(turn_id).await? {
                     return Ok(outcome);
@@ -5280,73 +5110,44 @@ impl Agent {
         Ok(batch)
     }
 
-    /// Run every admitted call's blocking tool gates without turning hook configuration into a
-    /// session-wide serialization switch. Kernel effect intents are opened in model order before
-    /// any hook process starts; handler execution is concurrent but globally capped by the
-    /// semaphore shared by all `Hooks` clones; terminals and denials are then projected in model
-    /// order. A denied call is settled as a refused tool result and removed from the executor set.
-    fn observe_early_pure_hook(&self, turn: TurnId, report: EarlyHookSummary, blocked: bool) {
-        let event_id = if blocked {
-            "hook.blocked"
-        } else if report.timed_out > 0 {
-            "hook.timed_out"
-        } else if report.failed > 0 {
-            "hook.failed"
-        } else {
-            "hook.completed"
-        };
-        self.lifecycle_event(
-            event_id,
-            Some(turn),
-            LifecyclePayload {
-                count: Some(u64::from(report.completed)),
-                magnitude: Some(u64::from(report.timed_out)),
-                ..LifecyclePayload::default()
-            },
-        );
-    }
-
-    /// Close the universal effect tickets opened before an early hook task was spawned. A joined
-    /// task proves the hook process lifecycle ended; a lost task is explicitly unknown and is
-    /// never rewritten into a clean terminal merely because the protected tool was a pure read.
-    fn settle_early_pure_hook_effects(
+    /// Assemble real independent execution observations and physical settlement owners. The
+    /// coordinator retains handles itself and never receives mutable Agent state.
+    fn early_tool_collection(
         &mut self,
         turn: TurnId,
-        tickets: EarlyHookEffectTickets,
-        summary: Option<EarlyHookSummary>,
-    ) -> Result<(), KernelError> {
-        let class = effect_class::EffectClass::Hook;
-        if let Some((ordinal, ticket)) = tickets.compatibility {
-            let settlement = summary.map_or_else(
-                || {
-                    effects::Settlement::Unknown(
-                        "early compatibility hook task ended without an observable terminal".into(),
-                    )
-                },
-                |_| effects::Settlement::Definite(effect_done_terminal(turn, class, ordinal)),
-            );
-            self.settle_kernel_effect(ticket, settlement)?;
+    ) -> early_tool_collection::EarlyToolCollection<'_> {
+        let events = self.tool_events(turn);
+        let hooks = hook_execution::HookExecutionScope {
+            turn,
+            workspace: self.workspace.as_path(),
+            hooks: &self.hooks,
+            command_journal: self.hook_effect_journal.clone(),
+            interrupt: self.interrupt.clone(),
+            drain: self.drain.clone(),
+            activity: self.activity.clone(),
+            emitter: self.lifecycle_emitter.clone(),
+            dispatcher: self.lifecycle_hooks.clone(),
+            correlation: self.lifecycle_correlation(Some(turn)),
+        };
+        early_tool_collection::EarlyToolCollection {
+            journal: tool_execution_journal::ToolExecutionJournal {
+                rollout: &mut self.rollout,
+                effects: &mut self.effect_journal,
+                ledger: &mut self.ledger,
+                failed_actions: &mut self.failed_actions,
+                record_failed: &mut self.record_failed,
+                diagnostics: &self.diagnostics,
+                #[cfg(test)]
+                fault: &mut self.fail_next_durable_append,
+            },
+            scope: early_tool_collection::EarlyToolCollectionScope {
+                turn,
+                registry: &self.registry,
+                hooks,
+                events,
+                deadline: self.run_deadline,
+            },
         }
-        if let Some((ordinal, ticket)) = tickets.lifecycle {
-            let settlement = match summary {
-                None => effects::Settlement::Unknown(
-                    "early lifecycle hook task ended without an observable terminal".into(),
-                ),
-                Some(summary) if summary.lifecycle_dispatch_failed => {
-                    effects::Settlement::Definite(effect_failed_terminal(
-                        turn,
-                        class,
-                        ordinal,
-                        "lifecycle hook dispatch failed before a valid report",
-                    ))
-                }
-                Some(_) => {
-                    effects::Settlement::Definite(effect_done_terminal(turn, class, ordinal))
-                }
-            };
-            self.settle_kernel_effect(ticket, settlement)?;
-        }
-        Ok(())
     }
 
     async fn abort_early_pure_tools(
@@ -5354,36 +5155,7 @@ impl Agent {
         turn: TurnId,
         pure: &mut Vec<PureToolInFlight>,
     ) -> Result<(), KernelError> {
-        // Abort all tasks first, even if settling one ticket subsequently fails.
-        for (_, _, handle, _, _) in pure.iter() {
-            handle.abort();
-        }
-        let mut first_error = None;
-        for (_, _, handle, _, mut hook_effect_tickets) in pure.drain(..) {
-            let _ = handle.await;
-            if let Some(ticket) = hook_effect_tickets.tool.take() {
-                match self.settle_kernel_effect(
-                    ticket,
-                    effects::Settlement::Unknown(
-                        "provider stream stopped before the streaming tool terminal was collected"
-                            .into(),
-                    ),
-                ) {
-                    Ok(()) => self.ledger.tool(0, 0, true),
-                    Err(error) => {
-                        first_error.get_or_insert(error);
-                    }
-                }
-            }
-            if let Err(error) = self.settle_early_pure_hook_effects(turn, hook_effect_tickets, None)
-            {
-                first_error.get_or_insert(error);
-            }
-        }
-        match first_error {
-            Some(error) => Err(error),
-            None => Ok(()),
-        }
+        self.early_tool_collection(turn).abort_all(pure).await
     }
 
     async fn gate_concurrent_deferred_batch(
@@ -5413,17 +5185,6 @@ impl Agent {
             self.lifecycle_event("hook.blocked", Some(turn), LifecyclePayload::default());
         }
         Ok(admission.allowed)
-    }
-
-    /// Observe completed concurrent tools without serializing their independent PostToolUse hook
-    /// chains. Tool effects are already terminal before this method opens hook effects; UI ToolEnd
-    /// remains after all observers settle, preserving Proposed→…→PostProcessing→Settled ordering.
-    async fn observe_concurrent_post_tool_hooks(
-        &mut self,
-        turn: TurnId,
-        completed: &[(ToolUse, ToolResult)],
-    ) -> Result<(), KernelError> {
-        self.hook_execution(turn).post_tools(completed).await
     }
 
     /// Execute one auto-approved, non-overlapping group of deferred calls concurrently.
@@ -5480,7 +5241,7 @@ impl Agent {
             correlation: self.lifecycle_correlation(Some(turn_id)),
         };
         deferred_tool_batch::DeferredToolBatch {
-            journal: deferred_tool_batch::DeferredToolJournal {
+            journal: tool_execution_journal::ToolExecutionJournal {
                 rollout: &mut self.rollout,
                 effects: &mut self.effect_journal,
                 ledger: &mut self.ledger,
@@ -5565,45 +5326,9 @@ impl Agent {
         result: &ToolResult,
         reason_code: &'static str,
     ) -> Result<(), KernelError> {
-        debug_assert!(
-            result.is_error,
-            "a refused tool result is an error result; a success has an admission to name"
-        );
-        self.tool_lifecycle_event(
-            "tool.call_proposed",
-            turn,
-            None,
-            LifecyclePayload::default(),
-        );
-        self.emit_durable(
-            turn,
-            EventKind::ToolDone {
-                result: result.clone(),
-                effect_id: None,
-                tool: Some(tool.to_string()),
-            },
-        )?;
-        self.tool_lifecycle_event(
-            "tool.policy_evaluated",
-            turn,
-            None,
-            LifecyclePayload {
-                outcome_code: Some("rejected".into()),
-                ..LifecyclePayload::default()
-            },
-        );
-        self.tool_lifecycle_event(
-            "tool.call_failed",
-            turn,
-            None,
-            LifecyclePayload {
-                reason_code: Some(reason_code.into()),
-                duration_us: Some(result.latency_ms.saturating_mul(1_000)),
-                ..LifecyclePayload::default()
-            },
-        );
-        self.ledger.tool(result.latency_ms, 0, result.is_error);
-        Ok(())
+        let events = self.tool_events(turn);
+        self.tool_execution_journal()
+            .refused_result(turn, tool, result, reason_code, &events)
     }
 
     /// Admit one model-declared tool call that does **not** go through
@@ -5638,51 +5363,18 @@ impl Agent {
         call: &ToolUse,
         capability: Capability,
     ) -> Result<effects::EffectTicket, KernelError> {
-        self.note_tool_effect_capability(capability);
-        let effect_id =
-            effect_class::effect_id(turn, effect_class::EffectClass::RegistryTool, ordinal);
-        self.tool_lifecycle_event(
-            "tool.call_proposed",
-            turn,
-            Some(effect_id.clone()),
-            LifecyclePayload::default(),
-        );
-        self.tool_lifecycle_event(
-            "tool.policy_evaluated",
-            turn,
-            Some(effect_id.clone()),
-            LifecyclePayload {
-                outcome_code: Some("admitted".into()),
-                ..LifecyclePayload::default()
-            },
-        );
-        let opened = self.effect_journal.open_tool(
-            &mut self.rollout,
-            &self.workspace,
-            turn,
-            ordinal,
-            call,
-            capability,
-        );
-        match opened {
-            Ok(ticket) => {
-                self.tool_lifecycle_event(
-                    "tool.call_admitted",
-                    turn,
-                    Some(effect_id.clone()),
-                    LifecyclePayload::default(),
-                );
-                self.tool_lifecycle_event(
-                    "tool.call_started",
-                    turn,
-                    Some(effect_id.clone()),
-                    LifecyclePayload::default(),
-                );
-                self.observe_process_tool_started(turn, effect_id.clone(), call);
-                Ok(ticket)
-            }
-            Err(error) => Err(self.effect_boundary_failed(error)),
+        let events = self.tool_events(turn);
+        tool_execution_journal::ToolExecutionJournal {
+            rollout: &mut self.rollout,
+            effects: &mut self.effect_journal,
+            ledger: &mut self.ledger,
+            failed_actions: &mut self.failed_actions,
+            record_failed: &mut self.record_failed,
+            diagnostics: &self.diagnostics,
+            #[cfg(test)]
+            fault: &mut self.fail_next_durable_append,
         }
+        .open_tool(&self.workspace, turn, ordinal, call, capability, &events)
     }
 
     /// Settle an admitted tool call with its terminal `ToolDone` and project it into the live
@@ -5695,37 +5387,22 @@ impl Agent {
         result: &ToolResult,
         overlapped_ms: u64,
     ) -> Result<(), KernelError> {
-        #[cfg(test)]
-        if self.fail_next_durable_append == Some(DurableAppendFault::ToolDone) {
-            self.fail_next_durable_append = None;
-            self.record_failed = true;
-            self.diagnostic_record_append_failed();
-            drop(ticket);
-            return Err(KernelError::Record(iteron_record::RecordError::Io(
-                std::io::Error::other("injected durable append failure"),
-            )));
+        let events = self.tool_events(ticket.turn());
+        self.tool_execution_journal()
+            .known_result(ticket, tool, result, overlapped_ms, &events)
+    }
+
+    fn tool_execution_journal(&mut self) -> tool_execution_journal::ToolExecutionJournal<'_> {
+        tool_execution_journal::ToolExecutionJournal {
+            rollout: &mut self.rollout,
+            effects: &mut self.effect_journal,
+            ledger: &mut self.ledger,
+            failed_actions: &mut self.failed_actions,
+            record_failed: &mut self.record_failed,
+            diagnostics: &self.diagnostics,
+            #[cfg(test)]
+            fault: &mut self.fail_next_durable_append,
         }
-        let effect_id = ticket.effect_id().clone();
-        self.effect_journal
-            .settle_tool(&mut self.rollout, ticket, tool, result)
-            .map_err(|error| self.effect_boundary_failed(error))?;
-        self.tool_lifecycle_event(
-            if result.is_error {
-                "tool.call_failed"
-            } else {
-                "tool.call_completed"
-            },
-            TurnId(self.seq_turn),
-            Some(effect_id.clone()),
-            LifecyclePayload {
-                duration_us: Some(result.latency_ms.saturating_mul(1_000)),
-                ..LifecyclePayload::default()
-            },
-        );
-        self.observe_process_tool_terminal(TurnId(self.seq_turn), effect_id, tool, result, true);
-        self.ledger
-            .tool(result.latency_ms, overlapped_ms, result.is_error);
-        Ok(())
     }
 
     async fn finish_requested_control(
@@ -5887,110 +5564,30 @@ impl Agent {
 
     /// Persist the files visible at one terminal turn boundary.
     ///
-    /// Ordinary completed and interrupted turns checkpoint best-effort in Git workspaces. Drain
-    /// uses the same boundary as a required recovery point after active execution has quiesced.
+    /// Verification and interrupted recovery use this coordinator. Drain requires its confirmed
+    /// recovery point after active execution has quiesced; ordinary completion has no implicit copy.
     fn checkpoint_at_turn_end(&mut self, turn: TurnId, required: bool) -> Result<(), KernelError> {
-        if !iteron_record::checkpoint_supported(&self.workspace) {
-            if required {
-                return Err(KernelError::Record(iteron_record::RecordError::Io(
-                    std::io::Error::new(
-                        std::io::ErrorKind::InvalidInput,
-                        format!(
-                            "{} is not a git work tree; checkpoint requires one",
-                            self.workspace.display()
-                        ),
-                    ),
-                )));
-            }
-            return Ok(());
-        }
-        if self.runtime_state_dir.as_os_str().is_empty() {
-            return Err(KernelError::Record(iteron_record::RecordError::Io(
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "rollout has no runtime-state directory",
-                ),
-            )));
-        }
-        let rollout_path = self.rollout.path().canonicalize().map_err(|error| {
-            KernelError::Record(iteron_record::RecordError::Io(std::io::Error::new(
-                error.kind(),
-                format!("cannot validate active rollout before checkpoint: {error}"),
-            )))
-        })?;
-        if !rollout_path.starts_with(&self.runtime_state_dir) {
-            return Err(KernelError::Record(iteron_record::RecordError::Io(
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "active rollout is outside the invariant runtime-state directory",
-                ),
-            )));
-        }
-        // A checkpoint copies the workspace tree: a real, externally visible write, and before #16
-        // the only one in the kernel that recorded its marker *after* doing the work. It now crosses
-        // the boundary like every other effect, so a crash mid-copy leaves a durable intent that
-        // recovery reports rather than a snapshot nobody knows exists.
-        let class = effect_class::EffectClass::Checkpoint;
-        let ordinal = self.next_effect_ordinal(turn, class);
-        self.lifecycle_event(
-            "checkpoint.requested",
-            Some(turn),
-            LifecyclePayload::default(),
-        );
-        let checkpoint_activity = self
-            .activity
-            .span(turn_activity::ActivityStage::Checkpoint, Some(turn));
-        let ticket = self.open_kernel_effect(
+        let scope = workspace_checkpoint::CheckpointScope {
             turn,
-            class,
-            ordinal,
-            Capability::ReversibleLocal,
-            serde_json::json!({ "scope": "workspace-excluding-runtime-state" }),
-        )?;
-        // Ordering: the intent is already durable, so the next append is the `Checkpoint` event and
-        // `at` names its sequence, exactly as before. The effect terminal follows it.
-        let at = self.rollout.next_sequence();
-        let runtime_state_dir = &self.runtime_state_dir;
-        let snapshot = match iteron_record::checkpoint_excluding_runtime_state(
-            self.rollout.run_id(),
-            at,
-            &self.workspace,
-            runtime_state_dir,
-        ) {
-            Ok(snapshot) => snapshot,
-            Err(error) => {
-                // A refused snapshot is a proven non-event, not an unknown one: no tree_ref was
-                // produced and nothing downstream can observe a partial checkpoint.
-                let reason = error.to_string();
-                let settlement = effects::Settlement::Definite(effect_failed_terminal(
-                    turn, class, ordinal, &reason,
-                ));
-                self.settle_kernel_effect(ticket, settlement)?;
-                self.lifecycle_event("checkpoint.failed", Some(turn), LifecyclePayload::default());
-                checkpoint_activity.fail(iteron_protocol::ActivityDetailCode::Checkpoint);
-                return Err(error.into());
-            }
+            workspace: &self.workspace,
+            runtime_state: &self.runtime_state_dir,
+            activity: self.activity.clone(),
+            lifecycle: self.lifecycle_emitter.clone(),
+            hooks: self.lifecycle_hooks.clone(),
+            correlation: self.lifecycle_correlation(Some(turn)),
         };
-        self.latest_workspace_checkpoint = Some(snapshot.clone());
-        self.last_workspace_checkpoint_turn = Some(turn.0);
-        self.emit_durable(
-            turn,
-            EventKind::Checkpoint {
-                at: snapshot.at,
-                tree_ref: snapshot.tree_ref,
-            },
-        )?;
-        self.settle_kernel_effect(
-            ticket,
-            effects::Settlement::Definite(effect_done_terminal(turn, class, ordinal)),
-        )?;
-        self.lifecycle_event(
-            "checkpoint.created",
-            Some(turn),
-            LifecyclePayload::default(),
-        );
-        checkpoint_activity.complete();
-        Ok(())
+        workspace_checkpoint::WorkspaceCheckpoint {
+            owner: &mut self.workspace_checkpoints,
+            rollout: &mut self.rollout,
+            effects: &mut self.effect_journal,
+            ledger: &mut self.ledger,
+            record_failed: &mut self.record_failed,
+            diagnostics: &self.diagnostics,
+            #[cfg(test)]
+            fault: &mut self.fail_next_durable_append,
+            scope,
+        }
+        .create(required)
     }
 
     async fn finish_drained(&mut self, turn: TurnId) -> Result<Outcome, KernelError> {

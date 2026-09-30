@@ -115,7 +115,7 @@ impl Agent {
         // end-of-turn checkpoint is useful for resume, but taking it after a failing candidate and
         // calling that "rollback" would restore the failure to itself.
         self.checkpoint_at_turn_end(turn, true)?;
-        self.verification_rollback_point = self.latest_workspace_checkpoint.clone();
+        self.verification_rollback_point = self.workspace_checkpoints.latest().cloned();
         Ok(())
     }
 
@@ -133,8 +133,7 @@ impl Agent {
 
     pub(super) fn verification_checkpoint_interval_elapsed(&self, turn: TurnId) -> bool {
         let interval = self.verification_policy.checkpoint.minimum_turn_interval;
-        self.last_workspace_checkpoint_turn
-            .is_none_or(|previous| turn.0.saturating_sub(previous) >= interval)
+        self.workspace_checkpoints.interval_elapsed(turn, interval)
     }
 
     pub(super) fn verification_repair_completed(&self, turn: TurnId) {
@@ -822,8 +821,8 @@ impl Agent {
         // before the request is shown, so a crash cannot leave an unaccounted inventory read.
         self.checkpoint_at_turn_end(approval_turn, true)?;
         let approved_live_tree_ref = self
-            .latest_workspace_checkpoint
-            .as_ref()
+            .workspace_checkpoints
+            .latest()
             .ok_or_else(|| {
                 KernelError::ContextResolution(
                     "verification rollback approval could not bind the live workspace tree".into(),
@@ -886,8 +885,8 @@ impl Agent {
         // edits also require a fresh approval rather than risking an incomplete scope preview.
         self.checkpoint_at_turn_end(approval_turn, true)?;
         let revalidated_live_tree_ref = self
-            .latest_workspace_checkpoint
-            .as_ref()
+            .workspace_checkpoints
+            .latest()
             .ok_or_else(|| {
                 KernelError::ContextResolution(
                     "verification rollback could not revalidate the live workspace tree".into(),

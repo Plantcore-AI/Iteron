@@ -335,6 +335,15 @@ const SURFACES: &[Surface] = &[
         next_seams: &["readonly frontend facts; no terminal or ancestor scope inference"],
     },
     Surface {
+        path: "crates/cli/src/runtime/workspace_checkpoint.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "single confirmed workspace checkpoint and cadence state",
+            "actual scoped snapshot intent/event/terminal ordering through concrete journal ports",
+        ],
+        next_seams: &["failed snapshot publication retains previous confirmed rollback point"],
+    },
+    Surface {
         path: "crates/cli/src/runtime/provider_stream_observer.rs",
         boundary: "cli-host",
         responsibilities: &[
