@@ -362,6 +362,24 @@ const SURFACES: &[Surface] = &[
         ],
     },
     Surface {
+        path: "crates/cli/src/runtime/provider_attempt_journal.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "actual provider physical intent/terminal and downstream financial CAS adapter",
+        ],
+        next_seams: &[
+            "single effect owner and physical writer; terminal always precedes finance, no executor authority",
+        ],
+    },
+    Surface {
+        path: "crates/cli/src/runtime/provider_attempt_pump.rs",
+        boundary: "cli-host",
+        responsibilities: &["single observed physical attempt stream-to-terminal phase owner"],
+        next_seams: &[
+            "native stream/tool owner ports then physical terminal/controller/PlantCore/USD order; inclusion observer between phases",
+        ],
+    },
+    Surface {
         path: "crates/cli/src/runtime/provider_route_turn.rs",
         boundary: "cli-host",
         responsibilities: &[
