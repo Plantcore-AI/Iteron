@@ -784,7 +784,7 @@ impl Agent {
     /// crash-recovery continuation, so Ultracode may orchestrate it.
     pub async fn follow_up(&mut self, text: &str) -> Result<Outcome, KernelError> {
         self.stage_follow_up_transcript().await?;
-        self.verification_state.attempts = 0;
+        self.verification_state.reset_attempts();
         self.run(text).await
     }
 
@@ -795,7 +795,7 @@ impl Agent {
         text: &str,
     ) -> Result<Outcome, KernelError> {
         self.stage_follow_up_transcript().await?;
-        self.verification_state.attempts = 0;
+        self.verification_state.reset_attempts();
         self.run_with_images_mode(text, Vec::new(), false, None)
             .await
     }

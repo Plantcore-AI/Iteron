@@ -8212,10 +8212,14 @@ ant-api03-SuperSecretModelToken12345"
         }));
         agent
             .verification_state
-            .policy
+            .policy_for_test_mut()
             .checkpoint
             .before_verification = false;
-        agent.verification_state.policy.flaky.repeat_count = 1;
+        agent
+            .verification_state
+            .policy_for_test_mut()
+            .flaky
+            .repeat_count = 1;
         record_test_genesis(&mut agent, &ws);
 
         assert_eq!(
@@ -8312,10 +8316,14 @@ ant-api03-SuperSecretModelToken12345"
         }));
         agent
             .verification_state
-            .policy
+            .policy_for_test_mut()
             .checkpoint
             .before_verification = false;
-        agent.verification_state.policy.flaky.repeat_count = 1;
+        agent
+            .verification_state
+            .policy_for_test_mut()
+            .flaky
+            .repeat_count = 1;
         record_test_genesis(&mut agent, &ws);
 
         assert_eq!(
@@ -8332,7 +8340,8 @@ ant-api03-SuperSecretModelToken12345"
         );
         assert_eq!(verifier_calls.load(Ordering::SeqCst), 2);
         assert_eq!(
-            agent.verification_state.attempts, 1,
+            agent.verification_state.attempts(),
+            1,
             "only TestFailure consumes the bounded candidate-fix allowance"
         );
         assert_eq!(
@@ -9814,7 +9823,7 @@ ant-api03-SuperSecretModelToken12345"
         );
         agent
             .verification_state
-            .policy
+            .policy_for_test_mut()
             .checkpoint
             .before_verification = false;
         let (ui_tx, mut ui_rx) = tokio::sync::mpsc::channel(64);
@@ -10373,8 +10382,7 @@ ant-api03-SuperSecretModelToken12345"
             .expect("operator policy seals the pre-submission checkpoint");
         let checkpoint_seq = agent
             .verification_state
-            .rollback_point
-            .as_ref()
+            .rollback_snapshot()
             .expect("rollback point is retained")
             .at;
 
@@ -10684,7 +10692,7 @@ ant-api03-SuperSecretModelToken12345"
         )));
         agent
             .verification_state
-            .policy
+            .policy_for_test_mut()
             .checkpoint
             .before_verification = false;
 
@@ -10699,7 +10707,7 @@ ant-api03-SuperSecretModelToken12345"
             Outcome::Done,
             "a failing strong oracle must never produce success"
         );
-        assert_eq!(agent.verification_state.attempts, MAX_VERIFY_ATTEMPTS);
+        assert_eq!(agent.verification_state.attempts(), MAX_VERIFY_ATTEMPTS);
         assert_eq!(
             provider.turns.load(Ordering::SeqCst),
             MAX_VERIFY_ATTEMPTS as usize,
@@ -10749,7 +10757,7 @@ ant-api03-SuperSecretModelToken12345"
         agent.set_verification_policy(policy).unwrap();
         agent
             .verification_state
-            .policy
+            .policy_for_test_mut()
             .checkpoint
             .before_verification = false;
         agent.verify_oracle = Some(std::sync::Arc::new(FixedVerificationOracle::strong(
@@ -10760,7 +10768,7 @@ ant-api03-SuperSecretModelToken12345"
         let outcome = agent.run("honor the typed repair ceiling").await.unwrap();
 
         assert_eq!(outcome, Outcome::BudgetExhausted("verify_attempts"));
-        assert_eq!(agent.verification_state.attempts, 2);
+        assert_eq!(agent.verification_state.attempts(), 2);
         assert_eq!(
             provider.turns.load(Ordering::SeqCst),
             2,
@@ -10803,7 +10811,7 @@ ant-api03-SuperSecretModelToken12345"
         agent.set_verification_policy(policy).unwrap();
         agent
             .verification_state
-            .policy
+            .policy_for_test_mut()
             .checkpoint
             .before_verification = false;
         agent.verify_oracle = Some(std::sync::Arc::new(FixedVerificationOracle::strong(
@@ -10817,7 +10825,7 @@ ant-api03-SuperSecretModelToken12345"
             .unwrap();
 
         assert_eq!(outcome, Outcome::HarnessError);
-        assert_eq!(agent.verification_state.attempts, 0);
+        assert_eq!(agent.verification_state.attempts(), 0);
         assert_eq!(provider.turns.load(Ordering::SeqCst), 1);
         let _ = std::fs::remove_dir_all(&ws);
     }
@@ -10851,7 +10859,9 @@ ant-api03-SuperSecretModelToken12345"
         );
         agent.workspace = ws.clone();
         agent.verify_command = Some("exit 1".into());
-        agent.verification_state.attempts = MAX_VERIFY_ATTEMPTS;
+        agent
+            .verification_state
+            .set_attempts_for_test(MAX_VERIFY_ATTEMPTS);
 
         let outcome = agent
             .run("try to claim done after the ceiling")
@@ -10896,7 +10906,7 @@ ant-api03-SuperSecretModelToken12345"
         )));
         agent
             .verification_state
-            .policy
+            .policy_for_test_mut()
             .checkpoint
             .before_verification = false;
 
@@ -10904,7 +10914,7 @@ ant-api03-SuperSecretModelToken12345"
 
         assert_eq!(outcome, Outcome::HarnessError);
         assert_ne!(outcome, Outcome::BudgetExhausted("verify_attempts"));
-        assert_eq!(agent.verification_state.attempts, 0);
+        assert_eq!(agent.verification_state.attempts(), 0);
         assert_eq!(
             provider.turns.load(Ordering::SeqCst),
             1,
@@ -10959,15 +10969,19 @@ ant-api03-SuperSecretModelToken12345"
         );
         agent
             .verification_state
-            .policy
+            .policy_for_test_mut()
             .checkpoint
             .before_verification = false;
-        agent.verification_state.policy.flaky.repeat_count = 1;
+        agent
+            .verification_state
+            .policy_for_test_mut()
+            .flaky
+            .repeat_count = 1;
 
         let outcome = agent.run("finish only after checks").await.unwrap();
 
         assert_eq!(outcome, Outcome::HarnessError);
-        assert_eq!(agent.verification_state.attempts, 0);
+        assert_eq!(agent.verification_state.attempts(), 0);
         assert_eq!(provider.turns.load(Ordering::SeqCst), 1);
         let events = iteron_record::replay(&runs.join(format!("{run}.jsonl"))).unwrap();
         assert!(events.iter().any(|event| {
@@ -11051,7 +11065,7 @@ ant-api03-SuperSecretModelToken12345"
             began.elapsed() < Duration::from_millis(750),
             "a hung oracle must not overrun the absolute deadline by the one-second sandbox granularity"
         );
-        assert_eq!(agent.verification_state.attempts, 0);
+        assert_eq!(agent.verification_state.attempts(), 0);
         let _ = std::fs::remove_dir_all(&ws);
     }
 
@@ -11073,7 +11087,10 @@ ant-api03-SuperSecretModelToken12345"
             },
         );
         agent.workspace = ws.clone();
-        agent.verification_state.policy.verifier_timeout_secs = 1;
+        agent
+            .verification_state
+            .policy_for_test_mut()
+            .verifier_timeout_secs = 1;
         agent.run_deadline.bind_external(None);
         let oracle = std::sync::Arc::new(HangingVerificationOracle {
             started: std::sync::Arc::new(tokio::sync::Notify::new()),
@@ -11133,7 +11150,7 @@ ant-api03-SuperSecretModelToken12345"
         );
         agent
             .verification_state
-            .policy
+            .policy_for_test_mut()
             .checkpoint
             .before_verification = false;
 
@@ -11155,7 +11172,7 @@ ant-api03-SuperSecretModelToken12345"
         .unwrap();
 
         assert_eq!(outcome, Outcome::Interrupted);
-        assert_eq!(agent.verification_state.attempts, 0);
+        assert_eq!(agent.verification_state.attempts(), 0);
         assert_eq!(provider.turns.load(Ordering::SeqCst), 1);
         let path = runs.join(format!("{run}.jsonl"));
         let resume_messages = Agent::messages_from_rollout(&path).unwrap();
@@ -11192,13 +11209,13 @@ ant-api03-SuperSecretModelToken12345"
         )));
         resumed
             .verification_state
-            .policy
+            .policy_for_test_mut()
             .checkpoint
             .before_verification = false;
         resumed.set_resume(resume_messages).unwrap();
 
         assert_eq!(resumed.run("").await.unwrap(), Outcome::Done);
-        assert_eq!(resumed.verification_state.attempts, 0);
+        assert_eq!(resumed.verification_state.attempts(), 0);
         assert_eq!(resumed_provider.turns.load(Ordering::SeqCst), 1);
         let events = iteron_record::replay(&path).unwrap();
         let terminal_outcomes = events
@@ -12004,7 +12021,7 @@ ant-api03-SuperSecretModelToken12345"
         }));
         agent
             .verification_state
-            .policy
+            .policy_for_test_mut()
             .checkpoint
             .before_verification = false;
 

@@ -957,7 +957,8 @@ impl Agent {
         self.session_spawn_ledger = adopted_spawn_ledger;
         self.deferred_tool_eager_limit = effective_core.deferred_tool_eager_limit;
         self.execution_policy = effective_core.execution;
-        self.verification_state.policy = effective_core.verification;
+        self.verification_state
+            .install_resolved_policy(effective_core.verification)?;
         self.verify_command = effective_core.verify_command;
         self.compaction = effective_core.compaction;
         self.context_budget_policy =

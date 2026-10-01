@@ -341,7 +341,9 @@ impl Agent {
         agent.tool_output_spill = Some(applied.tool_output_spill);
         agent.context_estimator.pin_policy(applied.token_estimator);
         agent.execution_policy = applied.execution;
-        agent.verification_state.policy.feedback = applied.verification_feedback;
+        agent
+            .verification_state
+            .apply_feedback(applied.verification_feedback)?;
         agent.effective_content = Some(applied.content);
         agent.app_server_queue_policy = applied.app_server_queue;
         agent.binary_media_policy = applied.binary_media;
@@ -499,7 +501,8 @@ impl Agent {
         self.tool_output_spill = Some(applied.tool_output_spill);
         self.context_estimator.pin_policy(applied.token_estimator);
         self.execution_policy = applied.execution;
-        self.verification_state.policy.feedback = applied.verification_feedback;
+        self.verification_state
+            .apply_feedback(applied.verification_feedback)?;
         self.effective_content = Some(applied.content);
         self.app_server_queue_policy = applied.app_server_queue;
         self.binary_media_policy = applied.binary_media;
