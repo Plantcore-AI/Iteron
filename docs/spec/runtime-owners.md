@@ -98,6 +98,9 @@ observation; it does not grant permission or acquire mutable ownership of anothe
 | `request_admission_journal.rs` | Buffer the real model phase and account existing kernel tokens with fault/fsync/diagnostic and bounded UI evidence | Actual Rollout/Ledger → accepted phase projection |
 | `request_context_publication.rs` | Publish actual post-gate request source ledger and original bounded lifecycle evidence | Read-only source/estimator evidence → existing ContextLedgerStore/events |
 | `request_admission_assembly.rs` | Compose disjoint real writer and immutable current scope/configuration ports | Agent composition → concrete domain ports |
+| `execution_deadline.rs` | Privately retain finite live invocation/ancestor deadline leases, expose their actual minimum and retire released bounds | Trusted parent/child scope → exact live deadline snapshot |
+| `submission_invocation.rs` | Retain the actual encrypted image graph lease and invocation deadline through all physical work, release own clock before post-answer maintenance | Actual run/tenant/turn → private attachment graph + owned deadline |
+| `orchestration_lifetime.rs` | Own actual explicitly requested orchestration liveness; future/error drop cannot leak the old topology flag | Explicit invocation → non-cloneable live lease |
 
 ```mermaid
 flowchart LR
