@@ -2115,8 +2115,17 @@ impl Agent {
                             true
                         };
                         let compaction_result_turn = TurnId(self.seq_turn.saturating_sub(1));
-                        request_preparation
-                            .bind_execution_window(self.execution_context_window())?;
+                        let current_output_tokens = self.funded_provider_output_ceiling(
+                            iteron_provider::output_ceiling::ProviderOutputBudget {
+                                model: &self.model,
+                                requested_max_tokens,
+                                thinking_budget: self.effort_thinking_budget(self.effort),
+                            },
+                        )?;
+                        request_preparation.bind_route_budget(
+                            self.execution_context_window(),
+                            current_output_tokens,
+                        )?;
                         let candidate_accounting = self.request_accounting();
                         let reason = request_preparation.assess_summary(
                             &summary,
@@ -2200,7 +2209,15 @@ impl Agent {
                 self.remember_token_estimate_baseline(turn_id, request_preparation.baseline());
             }
 
-            request_preparation.bind_execution_window(self.execution_context_window())?;
+            let request_max_tokens = self.funded_provider_output_ceiling(
+                iteron_provider::output_ceiling::ProviderOutputBudget {
+                    model: &self.model,
+                    requested_max_tokens,
+                    thinking_budget: self.effort_thinking_budget(self.effort),
+                },
+            )?;
+            request_preparation
+                .bind_route_budget(self.execution_context_window(), request_max_tokens)?;
             let context_estimate = request_preparation.estimate();
             let context_budget_inspection = request_preparation.inspection();
 
