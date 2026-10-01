@@ -131,7 +131,7 @@ impl TranscriptAdmissionJournal<'_> {
     ) -> Result<Seq, KernelError> {
         self.append(turn, EventKind::MemoryReferenceAdmittedV1 { admission })
     }
-    fn append(&mut self, turn: TurnId, kind: EventKind) -> Result<Seq, KernelError> {
+    pub(super) fn append(&mut self, turn: TurnId, kind: EventKind) -> Result<Seq, KernelError> {
         if *self.record_failed {
             return Err(KernelError::Record(RecordError::Io(std::io::Error::other(
                 "transcript writer is unavailable",
@@ -144,6 +144,10 @@ impl TranscriptAdmissionJournal<'_> {
                 Some(DurableAppendFault::SteerMessage),
                 EventKind::Message { .. }
             ) | (Some(DurableAppendFault::Notice), EventKind::Notice { .. })
+                | (
+                    Some(DurableAppendFault::UsdCeiling),
+                    EventKind::UsdCeilingChanged { .. }
+                )
         ) {
             *self.fault = None;
             return Err(self.record_error(RecordError::Io(std::io::Error::other(

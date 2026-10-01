@@ -247,6 +247,8 @@ mod strategy_runtime;
 mod strong_verification;
 mod subagent_control;
 mod submission_invocation;
+mod invocation_funding;
+mod invocation_funding_assembly;
 mod task_plan_execution;
 pub mod telemetry;
 mod terminal_diagnostics;

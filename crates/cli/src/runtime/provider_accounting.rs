@@ -125,49 +125,8 @@ impl Agent {
     /// removes an already-established ceiling and a larger replacement never widens it. This keeps
     /// source compatibility for existing callers while making post-construction mutation safe.
     pub(super) fn synchronize_usd_budget(&mut self) -> Result<(), KernelError> {
-        let proposed = self.budget.max_usd.map(usd_to_microusd_ceiling);
-        let current = self
-            .usd_budget
-            .as_ref()
-            .map(|budget| budget.ceiling_microusd());
-        let target = match (current, proposed) {
-            (None, None) => return Ok(()),
-            (Some(current), None) => current,
-            (None, Some(proposed)) => proposed,
-            (Some(current), Some(proposed)) => current.min(proposed),
-        };
-        let persisted = self.usd_budget_persisted_microusd;
-        if persisted.is_none_or(|ceiling| target < ceiling) {
-            let source = if persisted.is_some() {
-                RuntimePolicySource::Operator
-            } else {
-                RuntimePolicySource::Startup
-            };
-            let kind = EventKind::UsdCeilingChanged {
-                version: RuntimePolicyEventVersion::V1,
-                source,
-                max_microusd: target,
-            };
-            let sequence = self.emit_durable_seq(TurnId(self.seq_turn), kind.clone())?;
-            self.usd_budget_persisted_microusd = Some(target);
-            self.observe_runtime_policy_commit(
-                &kind,
-                sequence,
-                RuntimePolicyObservation::LiveCommit,
-            );
-        }
-        let created = self.usd_budget.is_none();
-        if let Some(shared) = &self.usd_budget {
-            shared.tighten_microusd(target);
-        } else {
-            self.usd_budget = Some(std::sync::Arc::new(SharedUsdBudget::from_microusd(target)));
-        }
-        if created {
-            let scoped = replay_scoped_rollout(self.rollout.path())?;
-            self.restore_usd_budget_from_route_receipts(&scoped)?;
-        }
-        self.budget.max_usd = self.effective_max_usd();
-        Ok(())
+        let turn = TurnId(self.seq_turn);
+        self.invocation_funding().synchronize(turn)
     }
 
     /// Genesis stores the effective ceiling in `RunStart`; reconcile memory first, then mark it
