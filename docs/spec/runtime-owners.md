@@ -136,6 +136,7 @@ observation; it does not grant permission or acquire mutable ownership of anothe
 | `kernel_child_accounting.rs`, `obs/child_accounting.rs` | Preserve known child/tool terminals before separately observing real ledgers; exact pending facts survive restart and prevent unproven finite-budget admission | Known physical completion → exact accounting WAL pair → actual ledger fold |
 | `client_effects.rs`, `client_effects/`, `app_server/client_export.rs` | Retain native transcript publication, private content cleanup and actual session/read/concurrency leases outside frontend observers | Observed current run port → scoped host export → independent publication and cleanup receipts |
 | `app_server/client_shell.rs`, `client_effects/shell.rs` | Capture actual host permission/environment authority and retain submission/adoption custody through existing bounded operator shell execution | Strict current-run command → actual host policy → owned process-group cleanup observation |
+| `app_server/project_init.rs`, `client_effects/project_init.rs` | Capture existing scaffold write authority and retain bounded worker custody through create-only native publication | Strict current-run intent → real host scope → observed file publication or retained uncertainty |
 
 ```mermaid
 flowchart LR
@@ -171,5 +172,3 @@ raw-artifact, frontend and restart journeys.
 ### Provider discovery admission
 
 `providers/discovery.rs` owns dormant network work, the unique refresh task, first-paint admission, its activity phase and immutable settled entries. `ProviderDirectory` receives a typed settlement and delegates selected-provider construction. Private cache storage and retained cache/catalog values have separate owners. `client_inventory/catalog_host.rs` validates a discovery draft before installing a live executable directory; a rejected or abandoned draft retains the admitted directory, ends its actual pending state and exposes a bounded failure observation. Client snapshots cannot start discovery or mint route authority. The first-task gate consumes an actual successful first-frame receipt; failure leaves the task editable. Provider, native socket and first-frame fixtures are written; same-candidate execution remains pending.
-
-| `app_server/project_init.rs`, `client_effects/project_init.rs` | Capture existing scaffold write authority and retain bounded worker custody through create-only native publication | Strict current-run intent → real host scope → observed file publication or retained uncertainty |
