@@ -73,22 +73,23 @@ impl WorkflowPreparation {
                 normalize_workflow_script(source)
             }
             (None, Some(rel)) => {
-                let full = iteron_tools::resolve_in_root(&self.workspace, rel).map_err(|_| {
-                    "Workflow: scriptPath is unavailable within the admitted workspace".to_owned()
+                let path = std::path::Path::new(rel);
+                let relative = if path.is_absolute() {
+                    path.strip_prefix(&self.workspace).map_err(|_| {
+                        "Workflow: scriptPath is outside the admitted workspace".to_owned()
+                    })?
+                } else {
+                    path
+                };
+                let source = iteron_tools::read_contained_utf8(
+                    &self.workspace,
+                    relative,
+                    iteron_workflow::WORKFLOW_SUBMISSION_LIMITS.script_bytes,
+                )
+                .map_err(|_| {
+                    "Workflow: scriptPath is unavailable within the bounded admitted workspace"
+                        .to_owned()
                 })?;
-                let file = std::fs::File::open(full)
-                    .map_err(|_| "Workflow: scriptPath source is unavailable".to_owned())?;
-                let limit = iteron_workflow::WORKFLOW_SUBMISSION_LIMITS.script_bytes;
-                use std::io::Read;
-                let mut bytes = Vec::with_capacity(limit.min(8192));
-                file.take(limit as u64 + 1)
-                    .read_to_end(&mut bytes)
-                    .map_err(|_| "Workflow: scriptPath source read failed".to_owned())?;
-                if bytes.len() > limit {
-                    return Err("Workflow: scriptPath exceeds its bounded source ceiling".into());
-                }
-                let source = String::from_utf8(bytes)
-                    .map_err(|_| "Workflow: scriptPath is not UTF-8".to_owned())?;
                 normalize_workflow_script(&source)
             }
             _ => unreachable!("selector_count enforces one workflow source"),
