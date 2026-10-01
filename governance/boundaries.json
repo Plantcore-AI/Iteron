@@ -3166,6 +3166,14 @@
         },
         {
           "kind": "file",
+          "path": "crates/cli/src/runtime/coding_request_execution.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/coding_request_execution_tests.rs"
+        },
+        {
+          "kind": "file",
           "path": "crates/cli/src/runtime/tool_image_projection.rs"
         },
         {

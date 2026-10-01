@@ -22,6 +22,15 @@ struct Surface {
 
 const SURFACES: &[Surface] = &[
     Surface {
+        path: "crates/cli/src/runtime/coding_request_execution.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "retain actual working transcript, recovery and admission state across fallible host work",
+            "consume a single native request projection while preserving its original source",
+        ],
+        next_seams: &["same-candidate compiler, refusal and cancellation evidence remain required"],
+    },
+    Surface {
         path: "crates/cli/src/runtime/invocation_admission.rs",
         boundary: "cli-host",
         responsibilities: &[
