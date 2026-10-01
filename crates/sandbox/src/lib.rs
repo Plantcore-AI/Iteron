@@ -648,65 +648,18 @@ pub fn configure_process_group(command: &mut tokio::process::Command) {
     let _ = command;
 }
 
-#[cfg(unix)]
-fn signal_process_group(pid: Option<u32>, signal: libc::c_int) {
-    if let Some(pid) = pid.and_then(|pid| i32::try_from(pid).ok()) {
-        // SAFETY: the child was spawned with process_group(0), so `-pid` addresses the child's
-        // group and cannot target the harness's own process group.
-        unsafe {
-            libc::kill(-pid, signal);
-        }
-    }
-}
-
-/// Last-resort cleanup for cancellation-by-future-drop. Tokio's `kill_on_drop` targets the direct
-/// child only; a shell can already have launched background descendants in the dedicated process
-/// group. The normal timeout path below remains graceful. This guard is armed only while the
-/// collector owns a live group and force-kills that group if an upper runtime layer drops the
-/// collector in response to Ctrl-C/Esc.
-struct ProcessGroupDropGuard {
-    #[cfg(unix)]
-    pid: Option<u32>,
-    armed: bool,
-}
-
-impl ProcessGroupDropGuard {
-    fn new(pid: Option<u32>) -> Self {
-        // The pid is only stored on Unix; naming it with a leading underscore suppresses the
-        // unused-variable warning on Windows without duplicating the call site.
-        let _pid = pid;
-        Self {
-            #[cfg(unix)]
-            pid: _pid,
-            armed: true,
-        }
-    }
-
-    fn disarm(&mut self) {
-        self.armed = false;
-    }
-}
-
-impl Drop for ProcessGroupDropGuard {
-    fn drop(&mut self) {
-        #[cfg(unix)]
-        if self.armed {
-            signal_process_group(self.pid, libc::SIGKILL);
-        }
-    }
-}
-
 async fn terminate_with_grace(
     child: &mut tokio::process::Child,
+    group: &mut owned_process_cleanup::OwnedProcessGroup,
     observer: Option<&OutputObserver>,
 ) -> Option<std::process::ExitStatus> {
     let policy = process_signal_kill_escalation_policy();
     #[cfg(unix)]
     {
-        signal_process_group(child.id(), libc::SIGTERM);
+        group.signal_retained(libc::SIGTERM);
         match tokio::time::timeout(
             std::time::Duration::from_millis(policy.term_grace_milliseconds),
-            child.wait(),
+            group.wait_and_close(child),
         )
         .await
         {
@@ -718,15 +671,13 @@ async fn terminate_with_grace(
             }
             Err(_) => {}
         }
-        signal_process_group(child.id(), libc::SIGKILL);
     }
 
     // `start_kill` is the direct-child fallback on Unix and the only admitted primitive on other
     // platforms. The fixed reap ceiling prevents a hostile child from wedging shutdown forever.
-    let _ = child.start_kill();
     match tokio::time::timeout(
         std::time::Duration::from_secs(policy.post_kill_reap_seconds),
-        child.wait(),
+        group.kill_and_reap(child),
     )
     .await
     {
@@ -744,7 +695,8 @@ async fn terminate_with_grace(
 /// Ask the entire child process group to terminate, then force-kill and reap after a fixed grace.
 /// Helper processes such as hooks and stdio MCP servers must not wait without a ceiling.
 pub async fn terminate_process_group_and_reap(child: &mut tokio::process::Child) {
-    let _ = terminate_with_grace(child, None).await;
+    let mut group = owned_process_cleanup::OwnedProcessGroup::capture(child);
+    let _ = terminate_with_grace(child, &mut group, None).await;
 }
 
 /// Shared child collector for Seatbelt and bubblewrap. stdout and stderr are drained concurrently
@@ -757,7 +709,7 @@ pub(crate) async fn collect_child_output(
     conf: &Confinement,
 ) -> Result<RunOutput, SandboxError> {
     let owned_group = child.id();
-    let mut group_drop_guard = ProcessGroupDropGuard::new(owned_group);
+    let mut group_owner = owned_process_cleanup::OwnedProcessGroup::capture(&child);
     let mut out = BoundedCapture::with_limit(conf.max_output_bytes);
     let mut err = BoundedCapture::with_limit(conf.max_output_bytes);
     let observer = conf.output_observer.clone();
@@ -785,7 +737,7 @@ pub(crate) async fn collect_child_output(
                     observer.as_ref(),
                     OutputStream::Stderr,
                 ),
-                child.wait(),
+                group_owner.wait_and_close(&mut child),
             );
             stdout_result.map_err(|e| SandboxError::Spawn(format!("read stdout: {e}")))?;
             stderr_result.map_err(|e| SandboxError::Spawn(format!("read stderr: {e}")))?;
@@ -819,12 +771,13 @@ pub(crate) async fn collect_child_output(
                 if let Some(observer) = observer.as_ref() {
                     observer.finish_io_failure(None, false);
                 }
-                let _ = terminate_with_grace(&mut child, observer.as_ref()).await;
+                let _ = terminate_with_grace(&mut child, &mut group_owner, observer.as_ref()).await;
                 return Err(error);
             }
         },
         reason @ (CollectionStop::TimedOut | CollectionStop::Cancelled) => {
-            let status = terminate_with_grace(&mut child, observer.as_ref()).await;
+            let status =
+                terminate_with_grace(&mut child, &mut group_owner, observer.as_ref()).await;
             // The first drain futures were cancelled with the timeout, but their captures live
             // outside it. Resume both drains concurrently to retain buffered tail bytes and close
             // the pipes. This cleanup itself is bounded in case a hostile daemon escaped the group.
@@ -885,7 +838,6 @@ pub(crate) async fn collect_child_output(
     } else {
         false
     };
-    group_drop_guard.disarm();
     if let Some(observer) = observer {
         observer.inner.owned_group_cleanup_known.store(
             status_known && pipes_known && group_known,
