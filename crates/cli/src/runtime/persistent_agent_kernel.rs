@@ -38,6 +38,8 @@ pub(super) struct KernelPersistentRuntime {
     pricing: Option<Arc<dyn iteron_obs::PricingPort>>,
     readonly_ceiling: Option<iteron_protocol::Budget>,
     writer_ceiling: iteron_protocol::Budget,
+    // Own every inactive Main writer lock while this single host drives the cohort.
+    main_rollout_owners: Mutex<Vec<iteron_record::Rollout>>,
     #[cfg(test)]
     fixture: Option<Arc<dyn Fn(&mut Agent) + Send + Sync>>,
 }
@@ -73,6 +75,7 @@ impl KernelPersistentRuntime {
                 .child_ceiling
                 .map(|ceiling| ceiling.narrow_budget(context.budget.clone())),
             writer_ceiling: context.budget.clone(),
+            main_rollout_owners: Mutex::new(Vec::new()),
             spawner: Mutex::new(KernelSpawner::new(context)),
             residents: Mutex::new(BTreeMap::new()),
             control: OnceLock::new(),
@@ -624,20 +627,43 @@ impl Agent {
         {
             return Err(KernelError::AgentControl(ControllerError::Permission));
         }
-        self.require_complete_cohort_ancestry()?;
-        let directory = self.runtime_state_dir.join(format!(
-            "agents-{}",
-            self.subagent_run_id("controller", 0, 0).0
-        ));
-        provision_private_directory(&directory).map_err(KernelError::AgentControl)?;
+        let replay = self.capture_cohort_replay()?;
+        if replay.forked && replay.installation.is_none() {
+            return Err(KernelError::AgentControl(ControllerError::Invalid(
+                "fork cohort ancestry lacks a durable installation locator",
+            )));
+        }
+        let scope = self.provider_scope();
+        let expected_origin = replay
+            .installation
+            .as_ref()
+            .map(|installed| installed.origin.clone());
+        let directory = self.runtime_state_dir.join(match &expected_origin {
+            Some(origin) => origin.directory_component(),
+            None => format!("agents-{}", self.subagent_run_id("controller", 0, 0).0),
+        });
+        if expected_origin.is_none() {
+            provision_private_directory(&directory).map_err(KernelError::AgentControl)?;
+        }
+        // An inherited locator may only reopen an existing store, never create replacement genesis.
         let mut journal = AgentFileJournal::open(&directory)
             .map_err(|error| KernelError::AgentControl(ControllerError::Store(error)))?;
-        let scope = self.provider_scope();
         let snapshot = iteron_agents::AgentControllerJournal::load(&mut journal)
             .map_err(|error| KernelError::AgentControl(ControllerError::Store(error)))?;
+        if let Some(origin) = &expected_origin {
+            let durable = snapshot
+                .as_ref()
+                .ok_or(KernelError::AgentControl(ControllerError::RecoveryRequired))?;
+            if durable.cohort_origin() != Some(origin) || durable.config() != &config {
+                return Err(KernelError::AgentControl(ControllerError::RequestConflict));
+            }
+        }
+        let primary_scope = expected_origin
+            .as_ref()
+            .map_or_else(|| scope.clone(), |origin| origin.provider_scope());
         let existing = snapshot
             .as_ref()
-            .map(|snapshot| snapshot.provider_budget_baseline(&scope))
+            .map(|snapshot| snapshot.provider_budget_baseline(&primary_scope))
             .transpose()
             .map_err(KernelError::AgentControl)?
             .flatten();
@@ -650,25 +676,34 @@ impl Agent {
                 None => config.root_budget.cost_microusd,
             },
         };
-        let baseline =
-            self.physical_provider_history_baseline(existing.as_ref(), financial_room)?;
-        if config.root_budget.turns > self.budget.max_turns.saturating_sub(baseline.usage.turns)
-            || self.budget.max_tokens.is_some_and(|limit| {
-                config.root_budget.tokens > limit.saturating_sub(baseline.usage.tokens)
-            })
-            || config.root_budget.wall_ms > self.budget.max_wall_secs.saturating_mul(1000)
-            || self.budget.max_usd.is_some_and(|ceiling| {
-                config.root_budget.cost_microusd as f64 / 1_000_000.0
-                    > (ceiling - baseline.usage.cost_microusd as f64 / 1_000_000.0).max(0.0)
-            })
-            || (existing.is_none()
-                && self.run_deadline.is_some_and(|deadline| {
-                    config.root_budget.wall_ms as u128
-                        > deadline
-                            .saturating_duration_since(std::time::Instant::now())
-                            .as_millis()
-                }))
-            || config.root_budget.cost_microusd > baseline.financial_room_microusd
+        let baseline = match &expected_origin {
+            Some(_) => existing
+                .clone()
+                .ok_or(KernelError::AgentControl(ControllerError::RecoveryRequired))?,
+            None => self.physical_provider_history_baseline(existing.as_ref(), financial_room)?,
+        };
+        // Existing cohort genesis never refills or tightens from a branch projection. Its durable
+        // reservations govern all descendants; the current runtime/USD parents still enforce
+        // this invocation's independently narrowed ceilings at every physical dispatch.
+        if (expected_origin.is_none()
+            && (config.root_budget.turns
+                > self.budget.max_turns.saturating_sub(baseline.usage.turns)
+                || self.budget.max_tokens.is_some_and(|limit| {
+                    config.root_budget.tokens > limit.saturating_sub(baseline.usage.tokens)
+                })
+                || config.root_budget.wall_ms > self.budget.max_wall_secs.saturating_mul(1000)
+                || self.budget.max_usd.is_some_and(|ceiling| {
+                    config.root_budget.cost_microusd as f64 / 1_000_000.0
+                        > (ceiling - baseline.usage.cost_microusd as f64 / 1_000_000.0).max(0.0)
+                })
+                || (existing.is_none()
+                    && self.run_deadline.is_some_and(|deadline| {
+                        config.root_budget.wall_ms as u128
+                            > deadline
+                                .saturating_duration_since(std::time::Instant::now())
+                                .as_millis()
+                    }))
+                || config.root_budget.cost_microusd > baseline.financial_room_microusd))
             || parallel > config.max_agents
         {
             return Err(KernelError::AgentControl(ControllerError::Budget));
@@ -682,6 +717,10 @@ impl Agent {
             .route
             .clone();
         let mut context = self.kernel_spawner_context(&route, "persistent-agents");
+        if let Some(origin) = &expected_origin {
+            // Stable child runs retain the owning genesis namespace even while Main follows a fork.
+            context.parent_run_id = origin.run_id.0.clone();
+        }
         if config.root_budget.cost_microusd > 0 && context.pricing_port.is_none() {
             return Err(KernelError::InvalidRoute(
                 "persistent agents with positive financial ceilings require verified route pricing",
@@ -699,16 +738,47 @@ impl Agent {
             AgentController::open(journal, config).map_err(KernelError::AgentControl)?;
         let baseline_sequence = baseline.through_sequence;
         controller
-            .bind_provider_budget_baseline(&scope, baseline)
+            .bind_provider_budget_baseline(&primary_scope, baseline)
+            .map_err(KernelError::AgentControl)?;
+        let origin = match expected_origin {
+            Some(origin) => origin,
+            None => iteron_protocol::agent_cohort::AgentCohortOriginV1 {
+                version: iteron_protocol::agent_cohort::AGENT_COHORT_VERSION,
+                tenant: self.rollout.tenant().clone(),
+                run_id: self.rollout.run_id().clone(),
+                config_sha256: controller
+                    .snapshot()
+                    .cohort_config_sha256()
+                    .map_err(KernelError::AgentControl)?,
+            },
+        };
+        controller
+            .bind_cohort_origin(origin.clone())
             .map_err(KernelError::AgentControl)?;
         let root_id = controller.root_id();
+        runtime.pin_main_rollouts(&controller, &self.runtime_state_dir, self.rollout.run_id())?;
+        let root_path =
+            super::cold_cohort::main_rollout_path(&self.runtime_state_dir, &origin.run_id);
         runtime.restore_provider_evidence(
             &mut controller,
-            self.rollout.path(),
-            self.rollout.tenant(),
-            self.rollout.run_id(),
+            &root_path,
+            &origin.tenant,
+            &origin.run_id,
             baseline_sequence,
         )?;
+        if *self.rollout.run_id() != origin.run_id {
+            let existing_runs = controller.snapshot().cohort_main_runs();
+            let existing_run = existing_runs.iter().find(|run| run.scope_sha256 == scope);
+            let admission = replay.main_admission(
+                self.rollout.tenant(),
+                self.rollout.run_id(),
+                existing_run,
+            )?;
+            controller
+                .attach_cohort_main_run(admission)
+                .map_err(KernelError::AgentControl)?;
+        }
+        self.publish_cohort_installation(origin)?;
         let host: Arc<dyn AgentControlPort> = Arc::new(
             PersistentAgentHost::new(controller, runtime.clone(), parallel)
                 .map_err(KernelError::AgentControl)?,

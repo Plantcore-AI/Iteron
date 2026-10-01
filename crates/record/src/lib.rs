@@ -594,6 +594,12 @@ pub(crate) fn validate_event_bounds(event: &Event) -> Result<(), RecordError> {
         policy_bundle::validate_policy_bundle_snapshot(snapshot)?;
     }
     match &event.kind {
+        EventKind::AgentCohortInstalledV1 { installation } => {
+            installation
+                .validate()
+                .map_err(|reason| RecordError::InvalidEventSchema { reason })?;
+        }
+
         EventKind::AgentInputAdmittedV1 { admission } => admission
             .validate()
             .map_err(|reason| RecordError::InvalidEventSchema { reason })?,

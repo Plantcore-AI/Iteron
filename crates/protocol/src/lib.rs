@@ -21,6 +21,7 @@ pub use iteron_tunables::param_integer;
 pub mod activity;
 pub mod activity_control;
 pub mod advisory_maintenance;
+pub mod agent_cohort;
 pub mod agent_control;
 pub mod agent_input;
 pub mod artifact;

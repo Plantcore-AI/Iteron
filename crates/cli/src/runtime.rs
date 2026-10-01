@@ -117,6 +117,7 @@ mod file_submission;
 pub(crate) mod force_cancel;
 mod frontend;
 pub(crate) use frontend::FrontendChannelHealth;
+mod cold_cohort;
 mod hook_execution;
 pub mod hooks;
 mod inbound_control;
@@ -1078,6 +1079,8 @@ pub struct Agent {
     advisory_maintenance:
         std::sync::Mutex<Option<std::sync::Arc<advisory_maintenance::MaintenanceOwner>>>,
     persistent_agents: Option<std::sync::Arc<dyn persistent_agents::AgentControlPort>>,
+    cohort_installation: Option<iteron_protocol::agent_cohort::AgentCohortInstallationV1>,
+    cohort_replay_checked: bool,
     persistent_mailbox: Option<persistent_agents::LiveAgentMailbox>,
     client_inventory: Option<std::sync::Arc<crate::client_inventory::ClientInventoryOwner>>,
     plugin_management: Option<std::sync::Arc<crate::plugin_runtime::PluginManagementOwner>>,

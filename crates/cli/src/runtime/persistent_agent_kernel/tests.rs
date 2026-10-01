@@ -692,3 +692,6 @@ mod native_mailbox;
 
 #[path = "tests/agent_input_trust.rs"]
 mod agent_input_trust;
+
+#[path = "tests/cold_cohort.rs"]
+mod cold_cohort;

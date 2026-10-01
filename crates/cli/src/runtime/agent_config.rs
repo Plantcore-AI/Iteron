@@ -131,10 +131,13 @@ impl Agent {
             .and_then(super::force_cancel::ForceCancelSeam::for_process_control);
         let turn_publications =
             super::turn_publication::TurnPublicationOwner::for_rollout(&rollout);
+        let cohort_replay_checked = rollout.is_empty();
         Agent {
             task_plan: super::task_plan::TaskPlanOwner::default(),
             advisory_maintenance: std::sync::Mutex::new(None),
             persistent_agents: None,
+            cohort_installation: None,
+            cohort_replay_checked,
             persistent_mailbox: None,
             client_inventory: None,
             plugin_management: None,

@@ -66,7 +66,7 @@ async fn cold_fork_cannot_create_a_fresh_cohort_without_descendant_financial_anc
         result,
         Err(super::KernelError::AgentControl(
             iteron_agents::ControllerError::Invalid(
-                "fork cohort ancestry is unproven; resume the owning run"
+                "cohort runtime-state root differs from the actual rollout root"
             )
         ))
     ));

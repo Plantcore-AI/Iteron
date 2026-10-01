@@ -8,6 +8,7 @@ use iteron_agents::{
     AgentActor, AgentController, AgentControllerJournal, AgentProviderBudgetRequest,
     AgentProviderBudgetTerminal, ControllerError,
 };
+use iteron_protocol::agent_cohort::AgentCohortMainRunV1;
 use iteron_protocol::{
     ProviderRouteAttemptIdentity, ProviderRouteUsageTruth, RunId, TenantId, TurnId,
 };
@@ -17,6 +18,50 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 impl KernelPersistentRuntime {
+    pub(super) fn pin_main_rollouts<J: AgentControllerJournal>(
+        &self,
+        controller: &AgentController<J>,
+        state: &Path,
+        current_run: &RunId,
+    ) -> Result<(), KernelError> {
+        let origin = controller
+            .snapshot()
+            .cohort_origin()
+            .ok_or(KernelError::AgentControl(ControllerError::RecoveryRequired))?;
+        let mut runs = vec![origin.run_id.clone()];
+        runs.extend(
+            controller
+                .snapshot()
+                .cohort_main_runs()
+                .iter()
+                .map(|run| run.run_id.clone()),
+        );
+        let mut leases = self
+            .main_rollout_owners
+            .lock()
+            .map_err(|_| KernelError::AgentControl(ControllerError::Poisoned))?;
+        if !leases.is_empty() {
+            return Err(KernelError::AgentControl(ControllerError::RequestConflict));
+        }
+        for run in runs.iter().filter(|run| *run != current_run) {
+            // A shared derivative read lease is insufficient: retain the actual exclusive WAL
+            // writer lease so another process cannot execute the previous Main concurrently.
+            let owner = iteron_record::Rollout::open_existing(state, run, origin.tenant.clone())?;
+            let recovered =
+                super::super::cold_cohort::CohortReplay::load(owner.path(), &origin.tenant, run)?;
+            if recovered
+                .installation
+                .as_ref()
+                .map(|installed| &installed.origin)
+                != Some(origin)
+            {
+                return Err(KernelError::AgentControl(ControllerError::RequestConflict));
+            }
+            leases.push(owner);
+        }
+        Ok(())
+    }
+
     pub(super) fn restore_provider_evidence<J: AgentControllerJournal>(
         &self,
         controller: &mut AgentController<J>,
@@ -41,28 +86,62 @@ impl KernelPersistentRuntime {
                 .or_insert_with(Vec::new)
                 .push(request);
         }
-        let root_rows = own_rows(
-            replay_scoped_rollout(root_path)?,
-            tenant,
-            root_run,
+        let root_requests = pending.remove(&root).unwrap_or_default();
+        let aliases = controller.snapshot().cohort_main_runs();
+        let mut physical_roots: Vec<(
+            std::path::PathBuf,
+            RunId,
+            Option<u64>,
+            Option<AgentCohortMainRunV1>,
+        )> = vec![(
+            root_path.to_path_buf(),
+            root_run.clone(),
             Some(baseline_sequence),
-        )?;
-        reconcile(
-            controller,
-            &root_rows,
-            tenant,
-            root_run,
-            pending.remove(&root).unwrap_or_default(),
-            self.pricing.as_deref(),
-        )?;
-        let root_replay =
-            route_attempt_accounting::replay_route_charges(&root_rows, self.pricing.as_deref())?;
-        // A WAL intent can precede the controller reservation append. Unknown billing in that
-        // window has no durable reservation to guard IO, so refuse enable rather than invent zero.
-        require_budget_quarantine(controller, root_replay.ledger.is_unknown())?;
-        if let Some(pool) = &self.money {
-            pool.merge_recovered_charges(&root_replay.ledger)
-                .map_err(KernelError::PricingLedger)?;
+            None,
+        )];
+        for alias in aliases {
+            if alias.tenant != *tenant {
+                return Err(KernelError::AgentControl(ControllerError::RequestConflict));
+            }
+            physical_roots.push((
+                super::super::cold_cohort::main_rollout_path(&self.writer.state, &alias.run_id),
+                alias.run_id.clone(),
+                None,
+                Some(alias),
+            ));
+        }
+        let mut unmatched = root_requests;
+        for (path, run, after, alias) in physical_roots {
+            let replay = super::super::cold_cohort::CohortReplay::load(&path, tenant, &run)?;
+            if let Some(alias) = &alias {
+                replay.main_admission(tenant, &run, Some(alias))?;
+            }
+            let rows = own_rows(replay_scoped_rollout(&path)?, tenant, &run, after)?;
+            let scope = persistent_provider_budget::provider_scope_for(tenant, &run);
+            let (requests, remainder): (Vec<_>, Vec<_>) = unmatched
+                .into_iter()
+                .partition(|request| request.scope_sha256 == scope);
+            unmatched = remainder;
+            reconcile(
+                controller,
+                &rows,
+                tenant,
+                &run,
+                requests,
+                self.pricing.as_deref(),
+            )?;
+            let replay =
+                route_attempt_accounting::replay_route_charges(&rows, self.pricing.as_deref())?;
+            // A WAL intent may precede the controller reservation; absence of a controller
+            // receipt does not turn unobserved provider IO into a zero-cost baseline.
+            require_budget_quarantine(controller, replay.ledger.is_unknown())?;
+            if let Some(pool) = &self.money {
+                pool.merge_recovered_charges(&replay.ledger)
+                    .map_err(KernelError::PricingLedger)?;
+            }
+        }
+        if !unmatched.is_empty() {
+            return Err(KernelError::AgentControl(ControllerError::RequestConflict));
         }
         for view in views.iter().filter(|view| view.agent_id != root) {
             let requests = pending.remove(&view.agent_id).unwrap_or_default();

@@ -5,7 +5,6 @@ use std::sync::{Arc, Mutex};
 use iteron_agents::{AgentActor, AgentControllerConfig};
 use iteron_protocol::client_agent_control::ClientAgentControlV1;
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use tokio::sync::{Semaphore, oneshot};
 
 use super::ControlReply;
@@ -96,17 +95,12 @@ pub(super) fn enable(agent: &mut Agent, command: ClientAgentControlV1) -> Contro
     else {
         return ControlReply::Refused("not an agent enable request".into());
     };
-    let workspace = match agent.workspace.canonicalize() {
-        Ok(workspace) => workspace,
-        Err(_) => return ControlReply::Refused("agent workspace identity unavailable".into()),
-    };
-    let Ok(identity) =
-        serde_json::to_vec(&(agent.rollout.tenant(), agent.rollout.run_id(), workspace))
-    else {
-        return ControlReply::Refused("agent workspace identity cannot be serialized".into());
+    let workspace_scope = match agent.persistent_agent_workspace_scope() {
+        Ok(scope) => scope,
+        Err(error) => return ControlReply::Refused(error.public_summary()),
     };
     let config = AgentControllerConfig {
-        workspace_scope: format!("workspace-{}", hex::encode(Sha256::digest(identity))),
+        workspace_scope,
         root_capabilities: capabilities,
         root_budget: budget,
         max_agents: max_agents as usize,

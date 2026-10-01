@@ -841,6 +841,10 @@ impl ProviderRouteAttemptAccounting {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EventKind {
     /// Actual immutable ordinary SDK catalog published by the verified host before dispatch.
+    /// Authenticated host installation; no arbitrary journal path is carried in this locator.
+    AgentCohortInstalledV1 {
+        installation: crate::agent_cohort::AgentCohortInstallationV1,
+    },
     OrdinaryExtensionBindingsV1 {
         catalog_sha256: String,
         bindings: u32,

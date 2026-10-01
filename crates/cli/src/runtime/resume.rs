@@ -8,6 +8,7 @@ const NO_APPROVAL_SEQ: u64 = 0;
 /// validate identities, allocate bounded state, and append a monotone USD tightening to the target
 /// journal; applying it to the resident `Agent` is assignments only.
 struct StagedAdoptedResume {
+    cohort_installation: Option<iteron_protocol::agent_cohort::AgentCohortInstallationV1>,
     task_plan: super::task_plan::TaskPlanOwner,
     messages: Vec<Message>,
     redacted_tool_results: u32,
@@ -64,6 +65,13 @@ impl Agent {
             ));
         }
 
+        self.cohort_installation = super::cold_cohort::CohortReplay::load(
+            self.rollout.path(),
+            self.rollout.tenant(),
+            self.rollout.run_id(),
+        )?
+        .installation;
+        self.cohort_replay_checked = true;
         self.budget.validate().map_err(KernelError::InvalidBudget)?;
         // An explicit resume replaces the transcript outright; a working set left over from an
         // earlier run in this process must never outrank it on the next follow-up.
@@ -636,6 +644,10 @@ impl Agent {
                 .map(|scoped| &scoped.event),
         );
         Ok(StagedAdoptedResume {
+            cohort_installation: super::cold_cohort::installation_from_rows(
+                &scoped_events,
+                rollout.tenant(),
+            )?,
             task_plan: super::task_plan::TaskPlanOwner::recover(
                 scoped_events
                     .iter()
@@ -924,6 +936,8 @@ impl Agent {
         let previous = std::mem::replace(&mut self.rollout, rollout);
         self.turn_publications = staged.turn_publications;
         self.task_plan = staged.task_plan;
+        self.cohort_installation = staged.cohort_installation;
+        self.cohort_replay_checked = true;
         self.verification_tasks = staged.verification_tasks;
         self.workspace_checkpoints = workspace_checkpoint::WorkspaceCheckpointOwner::default();
 
