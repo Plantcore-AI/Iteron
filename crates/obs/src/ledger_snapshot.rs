@@ -20,6 +20,9 @@ impl Ledger {
             total = total.checked_add(text.len().checked_add(64)?)?;
             (total <= limit).then_some(())
         };
+        for effect in &self.pending_child_accounting {
+            add(&effect.0)?;
+        }
         for digest in &self.rate_card_digests {
             add(digest)?;
         }

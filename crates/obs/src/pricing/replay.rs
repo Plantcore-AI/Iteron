@@ -115,6 +115,12 @@ impl PricingReplay {
             )?;
         }
         match kind {
+            EventKind::ChildAccountingPendingV1 { effect_id } => ledger
+                .begin_child_accounting(effect_id)
+                .map_err(PricingError::InvalidField)?,
+            EventKind::ChildAccountingResolvedV1 { effect_id } => ledger
+                .resolve_child_accounting(effect_id)
+                .map_err(PricingError::InvalidField)?,
             EventKind::TurnStart => {
                 ledger.attempt();
                 self.open_provider_turns

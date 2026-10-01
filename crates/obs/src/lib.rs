@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
+mod child_accounting;
 mod ledger_snapshot;
 pub mod lifecycle;
 mod metrics;
@@ -273,6 +274,8 @@ pub struct Ledger {
     /// separate from provider attempts: a child may have crashed before dispatch, but it may also
     /// have spent money that the parent never received, so zero/Known is no longer provable.
     unresolved_child_attributions: u32,
+    pending_child_accounting: BTreeSet<iteron_protocol::EffectId>,
+    child_accounting_evidence_lost: bool,
     kernel_tax: KernelTax,
 }
 
@@ -451,6 +454,7 @@ impl Ledger {
         self.amount_overflowed |= child.amount_overflowed;
         self.legacy_unattributed |= child.legacy_unattributed;
         self.kernel_tax.add(child.kernel_tax);
+        self.merge_child_accounting(child);
         self.rate_card_digests
             .extend(child.rate_card_digests.iter().cloned());
         self.cost_projections
@@ -495,15 +499,15 @@ impl Ledger {
             && priced_turns == completed_turns
             && !self.amount_overflowed
             && !baseline.amount_overflowed
-            && self.unresolved_child_attributions == 0
-            && baseline.unresolved_child_attributions == 0)
-            .then(|| WorkflowCostEvidence {
-                amount_microusd: self
-                    .amount_microusd
-                    .saturating_sub(baseline.amount_microusd),
-                rate_card_digest: combined_rate_card_digest(&delta_rate_card_digests),
-                projections,
-            });
+            && self.child_accounting_complete()
+            && baseline.child_accounting_complete())
+        .then(|| WorkflowCostEvidence {
+            amount_microusd: self
+                .amount_microusd
+                .saturating_sub(baseline.amount_microusd),
+            rate_card_digest: combined_rate_card_digest(&delta_rate_card_digests),
+            projections,
+        });
         WorkflowMetrics {
             provider_attempts: self
                 .provider_attempts
@@ -620,12 +624,12 @@ impl Ledger {
         (self.turns > 0
             && self.priced_turns == self.turns
             && !self.amount_overflowed
-            && self.unresolved_child_attributions == 0)
-            .then(|| WorkflowCostEvidence {
-                amount_microusd: self.amount_microusd,
-                rate_card_digest: combined_rate_card_digest(&self.rate_card_digests),
-                projections: self.cost_projections.clone(),
-            })
+            && self.child_accounting_complete())
+        .then(|| WorkflowCostEvidence {
+            amount_microusd: self.amount_microusd,
+            rate_card_digest: combined_rate_card_digest(&self.rate_card_digests),
+            projections: self.cost_projections.clone(),
+        })
     }
 
     /// Record one tool execution. `overlapped_ms` is the portion that ran concurrently with
@@ -681,7 +685,7 @@ impl Ledger {
             CostState::Unknown {
                 reason: CostUnknownReason::AmountOverflow,
             }
-        } else if self.unresolved_child_attributions > 0 || self.provider_attempts != self.turns {
+        } else if !self.child_accounting_complete() || self.provider_attempts != self.turns {
             CostState::Unknown {
                 reason: CostUnknownReason::BillingEvidenceMissing,
             }

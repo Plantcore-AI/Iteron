@@ -35,14 +35,17 @@ impl Agent {
         self.budget.max_tokens.is_some_and(|ceiling| {
             // A dispatched response without authoritative usage cannot prove that any positive
             // remainder exists, so the optional hard ceiling fails closed.
-            self.ledger.provider_attempts > self.ledger.turns
+            !self.ledger.child_accounting_complete()
+                || self.ledger.provider_attempts > self.ledger.turns
                 || ledger_tokens(&self.ledger) >= ceiling
         })
     }
 
     pub(super) fn remaining_provider_tokens(&self) -> Option<u64> {
         self.budget.max_tokens.map(|ceiling| {
-            if self.ledger.provider_attempts > self.ledger.turns {
+            if !self.ledger.child_accounting_complete()
+                || self.ledger.provider_attempts > self.ledger.turns
+            {
                 0
             } else {
                 ceiling.saturating_sub(ledger_tokens(&self.ledger))
@@ -70,6 +73,14 @@ impl Agent {
         &mut self,
     ) -> Result<Option<&'static str>, KernelError> {
         self.budget.validate().map_err(KernelError::InvalidBudget)?;
+        if !self.ledger.child_accounting_complete()
+            && (self.budget.max_turns != Budget::UNLIMITED_TURNS
+                || self.budget.max_tokens.is_some())
+        {
+            return Err(KernelError::ContextResolution(
+                "child accounting is unavailable for finite budget admission".into(),
+            ));
+        }
         self.synchronize_usd_budget()?;
         self.close_usd_budget_on_unknown_cost();
         if self
@@ -89,7 +100,13 @@ impl Agent {
     }
 
     pub(super) fn remaining_inference_turns(&self) -> u32 {
-        self.budget.remaining_turns(self.ledger.provider_attempts)
+        if !self.ledger.child_accounting_complete()
+            && self.budget.max_turns != Budget::UNLIMITED_TURNS
+        {
+            0
+        } else {
+            self.budget.remaining_turns(self.ledger.provider_attempts)
+        }
     }
 
     /// The turn ceiling and what has already been charged against it, read as one pair so a

@@ -853,29 +853,48 @@ pub enum EventKind {
         plan: crate::task_plan::TaskPlanSnapshotV1,
     },
     /// A phase transition. The load-bearing telemetry.
-    Phase { phase: Phase },
+    Phase {
+        phase: Phase,
+    },
     /// A turn began.
     TurnStart,
     /// Content-free provider governor decision made before any physical route effect.
-    ProviderGovernorDecision { decision: ProviderGovernorDecision },
+    ProviderGovernorDecision {
+        decision: ProviderGovernorDecision,
+    },
     /// Exactly one bounded, content-free selection for one live harness-policy opportunity.
-    PolicyDecision { evidence: PolicyDecisionEvidence },
+    PolicyDecision {
+        evidence: PolicyDecisionEvidence,
+    },
     /// Terminal aggregate joined to the ordered policy opportunities in one turn or run.
-    PolicyOutcome { evidence: PolicyOutcomeEvidence },
+    PolicyOutcome {
+        evidence: PolicyOutcomeEvidence,
+    },
     /// A full transcript message was committed (append-only). Recording these makes the rollout
     /// a complete, resumable record of the conversation (ADR-006 (a)+(b): the decisions and the
     /// recorded outputs replay) and completes the audit trail (every message is on the record).
-    Message { message: Message },
+    Message {
+        message: Message,
+    },
     /// Compaction rewrote the working message set (a rare "cache bomb"). Recorded as a full
     /// snapshot so resume reconstructs the in-memory compacted state exactly rather than the
     /// pre-compaction history (code review: without this, resume diverges from what ran).
-    Compaction { messages: Vec<Message> },
+    Compaction {
+        messages: Vec<Message>,
+    },
     /// The model produced streamed text (surfaced incrementally to the operator).
-    Text { delta: String },
+    Text {
+        delta: String,
+    },
     /// The model's reasoning delta (extended thinking).
-    Thinking { delta: String },
+    Thinking {
+        delta: String,
+    },
     /// A tool_use block completed mid-stream — the dispatch point for pure tools (ADR-004).
-    ToolReady { tool: ToolUse, purity_pure: bool },
+    ToolReady {
+        tool: ToolUse,
+        purity_pure: bool,
+    },
     /// A tool finished. `latency_ms` is measured tau_wall contribution.
     ///
     /// # Why the completion names its own tool
@@ -1026,12 +1045,18 @@ pub enum EventKind {
     /// This is a purely additive top-level tag (abi.md §4.3(b)2), exactly like
     /// [`EventKind::EffectDone`]: every byte already on disk decodes unchanged, so
     /// `PROTOCOL_VERSION` MUST NOT bump for it.
-    ArtifactProduced { artifact: ArtifactRef },
+    ArtifactProduced {
+        artifact: ArtifactRef,
+    },
     /// A message for the operator (not part of the transcript).
-    Notice { text: String },
+    Notice {
+        text: String,
+    },
     /// A submission was decoded safely but is not understood by this build. The record contains
     /// only a closed typed reason; the unknown tag and payload are discarded by `Op::Unknown`.
-    SubmissionRejected { reason: SubmissionRejectionReason },
+    SubmissionRejected {
+        reason: SubmissionRejectionReason,
+    },
     /// A capability-gate decision (ADR-007 §3): the request (`verdict: Ask`) and then the
     /// resolution (`Auto` = approved, `Deny` = refused). Recording both makes the approval the
     /// replay decision-log — a deterministic replay reads the recorded verdict and does not
@@ -1120,10 +1145,14 @@ pub enum EventKind {
     /// Verified, versioned rate card bound to the exact selected provider/model route. The
     /// strategy-layer signature and content digest are durable provenance; no price lookup occurs
     /// in the kernel or during replay.
-    RateCardBound { rate_card: SignedRateCard },
+    RateCardBound {
+        rate_card: SignedRateCard,
+    },
     /// Signed fixed-point cost for the immediately preceding completed provider turn. Replay binds
     /// its usage to `TurnEnd` and reconstructs monetary state directly from this evidence.
-    CostProjected { projection: CostProjection },
+    CostProjected {
+        projection: CostProjection,
+    },
     /// Monotone fixed-point monetary policy. Writers append this before establishing or tightening
     /// a live ceiling; replay and forks take the minimum across the logical history. Absence is the
     /// legacy format, whose optional `RunStart.max_usd` remains authoritative.
@@ -1177,10 +1206,16 @@ pub enum EventKind {
         instructions: Option<DurableInstructionContext>,
     },
     /// A workspace checkpoint (files) keyed to a record `Seq` — the snapshot ledger in the rollout.
-    Checkpoint { at: Seq, tree_ref: String },
+    Checkpoint {
+        at: Seq,
+        tree_ref: String,
+    },
     /// A read-only subagent was spawned; links its child rollout to the parent (single-writer
     /// fan-out, ADR-001) for the `/sessions` tree view.
-    SubagentSpawned { sub_run: String, agent: String },
+    SubagentSpawned {
+        sub_run: String,
+        agent: String,
+    },
     /// Terminal attribution for a directly-dispatched read-only child. Ultracode children use the
     /// richer correlated `Workflow::ChildFinished` event instead; projections add exactly one of
     /// these terminal forms per spawned child.
@@ -1234,7 +1269,18 @@ pub enum EventKind {
         fact: crate::turn_publication::TurnPublicationFactV1,
     },
     /// The run ended.
-    Done { outcome: String },
+    Done {
+        outcome: String,
+    },
+    /// An actually completed child tool is waiting for exact ledger attribution. This receipt
+    /// does not make its already known physical effects unknown. The effect is the admitted
+    /// outer tool identity; the matching resolved receipt follows its real accounting events.
+    ChildAccountingPendingV1 {
+        effect_id: EffectId,
+    },
+    ChildAccountingResolvedV1 {
+        effect_id: EffectId,
+    },
     /// Forward-compatibility: an event kind this build does not recognize (written by a newer
     /// version). Deserializes here instead of failing the whole replay (R5-review Risk 6).
     #[serde(other)]

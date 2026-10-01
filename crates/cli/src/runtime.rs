@@ -199,6 +199,7 @@ pub(crate) use plantcore::{DispatchGate, ResumeActivation};
 mod controller_engine_scope;
 mod direct_child_execution;
 mod execution_deadline;
+mod kernel_child_accounting;
 mod kernel_dispatch_control;
 mod kernel_dispatch_journal;
 mod kernel_special_assembly;
@@ -2410,11 +2411,20 @@ impl Agent {
                             return Err(error);
                         }
                     };
-                    let result = match result {
+                    let (result, accounting_error) = match result {
                         kernel_special_execution::KernelSpecialResult::Completed(result)
-                        | kernel_special_execution::KernelSpecialResult::Refused(result) => result,
+                        | kernel_special_execution::KernelSpecialResult::Refused(result) => {
+                            (result, None)
+                        }
+                        kernel_special_execution::KernelSpecialResult::AccountingUnavailable {
+                            result,
+                            reason,
+                        } => (result, Some(reason)),
                     };
                     driver.settle_kernel(idx, result)?;
+                    if let Some(reason) = accounting_error {
+                        return Err(KernelError::ContextResolution(reason));
+                    }
                 }
                 self.ledger.phase_tools(tools_span.elapsed_ms());
                 let events = self.tool_events(turn_id);

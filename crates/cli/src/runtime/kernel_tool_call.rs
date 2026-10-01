@@ -37,6 +37,9 @@ pub(super) struct KernelToolCall {
     events: StreamToolEvents,
 }
 impl KernelToolCall {
+    pub(super) fn effect_id(&self) -> &iteron_protocol::EffectId {
+        self.ticket.effect_id()
+    }
     pub(super) fn begin(
         journal: &mut ToolExecutionJournal<'_>,
         scope: KernelToolOutputScope,

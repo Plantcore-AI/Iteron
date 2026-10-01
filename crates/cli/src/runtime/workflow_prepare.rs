@@ -44,18 +44,6 @@ impl Agent {
         turn: iteron_protocol::TurnId,
         input: serde_json::Value,
     ) -> Result<String, String> {
-        let preparation = self.kernel_workflow_preparation(turn);
-        let events = self.tool_events(turn);
-        let execution = super::workflow_execution::WorkflowExecution {
-            deadline: self.run_deadline.current(),
-            preparation,
-            launcher: self.workflow_launcher.clone(),
-            progress: super::workflow_execution::WorkflowProgressProjection {
-                sender: self.workflow_progress_tx.clone(),
-                frontend: self.frontend_saturation.clone(),
-                events: events.clone(),
-            },
-        };
         let projection = self.turn_result_projection_budget(
             super::context_runtime::ContextBudgetInspection::from_policy(
                 Default::default(),
@@ -63,22 +51,41 @@ impl Agent {
             ),
             &[],
         );
-        let (mut ports, _) = self.kernel_special_execution(
+        let (execution, output) = self.kernel_special_execution(
             turn,
             0,
-            super::kernel_special_execution::KernelSpecialKind::Plan,
+            super::kernel_special_execution::KernelSpecialKind::Workflow,
             projection,
         );
-        execution
+        let call = iteron_protocol::ToolUse {
+            id: "fixture-workflow".into(),
+            name: iteron_tools::WORKFLOW_TOOL.into(),
+            input,
+        };
+        let result = execution
             .run(
-                &input,
                 turn,
-                &mut ports.journal,
-                &mut ports.control,
-                &events,
+                0,
+                &call,
+                iteron_protocol::Capability::CodeExecuting,
+                output,
             )
             .await
-            .map_err(|error| error.public_summary())?
+            .map_err(|error| error.public_summary())?;
+        match result {
+            super::kernel_special_execution::KernelSpecialResult::Completed(result)
+            | super::kernel_special_execution::KernelSpecialResult::Refused(result) => {
+                if result.is_error {
+                    Err(result.content)
+                } else {
+                    Ok(result.content)
+                }
+            }
+            super::kernel_special_execution::KernelSpecialResult::AccountingUnavailable {
+                reason,
+                ..
+            } => Err(reason),
+        }
     }
 }
 
