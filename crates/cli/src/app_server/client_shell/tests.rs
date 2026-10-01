@@ -165,7 +165,7 @@ async fn actual_host_plan_and_authority_ceiling_refuse_before_marker_or_provider
 async fn lost_observer_keeps_actual_sq_and_adoption_exclusions_until_native_cancel_reaps() {
     let fixture = Fixture::new("lost-observer");
     let (cancel, cancelled) = watch::channel(false);
-    let reply = fixture.start("printf started > marker; sleep 30", Some(cancelled));
+    let reply = fixture.start("printf started > marker; exec sleep 30", Some(cancelled));
     tokio::time::timeout(std::time::Duration::from_secs(3), async {
         while !fixture.root.join("marker").exists() {
             tokio::task::yield_now().await;
@@ -221,6 +221,44 @@ async fn stale_thread_refuses_before_any_native_marker() {
     );
     assert!(matches!(receive.await.unwrap(), ControlReply::Refused(_)));
     assert!(!fixture.root.join("marker").exists());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn redirected_background_descendant_cannot_outlive_a_claimed_cleanup_receipt() {
+    let fixture = Fixture::new("background-no-pipes");
+    let ControlReply::OperatorShell(receipt) = fixture
+        .start("(sleep 0.5; printf escaped > late-marker) </dev/null >/dev/null 2>&1 & printf '%s' $$ > group-id", None)
+        .await
+        .unwrap()
+    else {
+        panic!("actual shell receipt expected");
+    };
+    let group: i32 = std::fs::read_to_string(fixture.root.join("group-id"))
+        .unwrap()
+        .parse()
+        .unwrap();
+    if receipt.cleanup == ShellCleanup::Reaped {
+        assert_eq!(unsafe { libc::kill(-group, 0) }, -1);
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ESRCH)
+        );
+        assert!(fixture.activity.client_effect_gate().try_write().is_ok());
+    } else {
+        assert_eq!(receipt.cleanup, ShellCleanup::Unobserved);
+        assert_eq!(receipt.outcome, ShellOutcome::OutcomeUnknown);
+        assert!(fixture.activity.client_effect_gate().try_write().is_err());
+        assert!(matches!(
+            fixture.handle.client.submit(Op::UserInput {
+                text: "must remain excluded".into()
+            }),
+            Err(SubmitError::Busy)
+        ));
+        assert!(!fixture.reader.shutdown_shell().await);
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(650)).await;
+    assert!(!fixture.root.join("late-marker").exists());
 }
 
 #[cfg(unix)]

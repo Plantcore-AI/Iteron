@@ -247,11 +247,11 @@ async fn execute(
     let mut group = OwnedProcessGroup::new(child.id());
     let Some(mut stdout) = child.stdout.take() else {
         group.terminate(&mut child).await;
-        return unobserved(cmd, "shell stdout pipe was unavailable".into(), &mut child);
+        return unobserved(cmd, "shell stdout pipe was unavailable".into(), &group);
     };
     let Some(mut stderr) = child.stderr.take() else {
         group.terminate(&mut child).await;
-        return unobserved(cmd, "shell stderr pipe was unavailable".into(), &mut child);
+        return unobserved(cmd, "shell stderr pipe was unavailable".into(), &group);
     };
 
     let mut out = Capture::default();
@@ -266,11 +266,7 @@ async fn execute(
                 tokio::join!(drain(&mut stdout, &mut out), drain(&mut stderr, &mut err));
             out_result?;
             err_result?;
-            let status = child.wait().await;
-            if status.is_ok() {
-                group.disarm();
-            }
-            status
+            group.wait_and_close(&mut child).await
         });
         tokio::pin!(running);
         tokio::select! {
@@ -297,7 +293,7 @@ async fn execute(
         return unobserved(
             cmd,
             "[cancelled by operator; dispatched shell effects may have occurred]".into(),
-            &mut child,
+            &group,
         );
     }
     let (status, timed_out) = match completed {
@@ -307,12 +303,16 @@ async fn execute(
             return unobserved(
                 cmd,
                 ui_safe_text(&format!("shell output failed after dispatch: {error}")),
-                &mut child,
+                &group,
             );
         }
         Some(Err(_)) => {
             group.terminate(&mut child).await;
             let status = child.try_wait().ok().flatten();
+            if status.is_some() {
+                group.pid = None;
+                group.observe_closed_group().await;
+            }
             let _ = tokio::time::timeout(
                 iteron_tunables::param_duration(
                     "cli.tui.inline_shell.post_kill_drain",
@@ -347,19 +347,26 @@ async fn execute(
             &format!("[timed out after {}ms]\n", deadline.as_millis()),
         );
     }
-    let ok = !timed_out && status.is_some_and(|status| status.success());
+    let cleanup_confirmed = group.cleanup_confirmed();
+    if !cleanup_confirmed {
+        body.insert_str(
+            0,
+            "[descendant cleanup remains unobserved; host admission retained]\n",
+        );
+    }
+    let ok = !timed_out && cleanup_confirmed && status.is_some_and(|status| status.success());
     ShellCompletion {
         source_run: None,
         command: display(cmd, 32 * 1024),
         body: display(&body, 256 * 1024),
         ok,
         code,
-        outcome: if timed_out {
+        outcome: if timed_out || !cleanup_confirmed {
             ShellOutcome::OutcomeUnknown
         } else {
             ShellOutcome::Completed
         },
-        cleanup: if status.is_some() {
+        cleanup: if group.cleanup_confirmed() {
             ShellCleanup::Reaped
         } else {
             ShellCleanup::Unobserved
@@ -378,7 +385,7 @@ fn display(text: &str, limit: usize) -> String {
     }
     format!("{}\n[display truncated]", &safe[..end])
 }
-fn unobserved(command: &str, body: String, child: &mut tokio::process::Child) -> ShellCompletion {
+fn unobserved(command: &str, body: String, group: &OwnedProcessGroup) -> ShellCompletion {
     ShellCompletion {
         source_run: None,
         command: display(command, 32 * 1024),
@@ -386,7 +393,7 @@ fn unobserved(command: &str, body: String, child: &mut tokio::process::Child) ->
         ok: false,
         code: NO_EXIT_CODE,
         outcome: ShellOutcome::OutcomeUnknown,
-        cleanup: if child.try_wait().ok().flatten().is_some() {
+        cleanup: if group.cleanup_confirmed() {
             ShellCleanup::Reaped
         } else {
             ShellCleanup::Unobserved
@@ -404,43 +411,124 @@ pub(crate) async fn run_fixture(
     execute(repo, command, &[], mode, rules, cancelled).await
 }
 
-/// Exact direct child stays unreaped until pipe completion. The group is armed only during that
-/// physical lifetime; confirmed wait disarms it synchronously before any further await.
+/// A retained unreaped leader protects group identity until the last signal. After actual reap,
+/// numeric group identity is observation-only: no later cleanup can signal a reused process group.
 struct OwnedProcessGroup {
     pid: Option<u32>,
+    #[cfg(unix)]
+    group: Option<i32>,
+    confirmed: bool,
 }
 impl OwnedProcessGroup {
     fn new(pid: Option<u32>) -> Self {
-        Self { pid }
+        Self {
+            pid,
+            #[cfg(unix)]
+            group: pid.and_then(|pid| i32::try_from(pid).ok()),
+            confirmed: false,
+        }
     }
-    fn disarm(&mut self) {
-        self.pid = None;
+    fn cleanup_confirmed(&self) -> bool {
+        self.confirmed
     }
-    async fn terminate(&mut self, child: &mut tokio::process::Child) {
+    fn signal_retained_group(&self) {
         #[cfg(unix)]
         if let Some(pid) = self.pid.and_then(|pid| i32::try_from(pid).ok()) {
-            // The child has not been reaped: this identity cannot name a newly reused group.
             unsafe {
                 libc::kill(-pid, libc::SIGKILL);
             }
         }
-        let _ = child.start_kill();
-        if matches!(
-            tokio::time::timeout(Duration::from_secs(1), child.wait()).await,
-            Ok(Ok(_))
-        ) {
-            self.disarm();
+    }
+    async fn wait_and_close(
+        &mut self,
+        child: &mut tokio::process::Child,
+    ) -> std::io::Result<std::process::ExitStatus> {
+        #[cfg(unix)]
+        {
+            let pid = self
+                .pid
+                .ok_or_else(|| std::io::Error::other("shell leader identity unavailable"))?;
+            loop {
+                // WNOWAIT observes exit without freeing the leader/group ID. Pipe EOF alone is
+                // not exit: redirected foreground work must still be allowed to finish.
+                let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+                let result = unsafe {
+                    libc::waitid(
+                        libc::P_PID,
+                        pid as libc::id_t,
+                        &mut info,
+                        libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                    )
+                };
+                if result != 0 {
+                    let error = std::io::Error::last_os_error();
+                    if error.raw_os_error() == Some(libc::EINTR) {
+                        continue;
+                    }
+                    // An unexpectedly reaped leader cannot authorize a raw numeric signal.
+                    if error.raw_os_error() == Some(libc::ECHILD) {
+                        self.pid = None;
+                    }
+                    return Err(error);
+                }
+                if unsafe { info.si_pid() } == pid as i32 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            // The leader is exited but still retained. Kill remaining members, including those
+            // that redirected all pipes, before consuming the exact leader wait receipt.
+            self.signal_retained_group();
         }
+        let status = match child.wait().await {
+            Ok(status) => status,
+            Err(error) => {
+                self.pid = None;
+                return Err(error);
+            }
+        };
+        self.pid = None;
+        self.observe_closed_group().await;
+        Ok(status)
+    }
+    async fn terminate(&mut self, child: &mut tokio::process::Child) {
+        self.signal_retained_group();
+        let _ = child.start_kill();
+        match tokio::time::timeout(Duration::from_secs(1), child.wait()).await {
+            Ok(Ok(_)) => {
+                self.pid = None;
+                self.observe_closed_group().await;
+            }
+            Ok(Err(_)) => self.pid = None,
+            Err(_) => {}
+        }
+    }
+    async fn observe_closed_group(&mut self) {
+        #[cfg(unix)]
+        if let Some(group) = self.group {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+            loop {
+                // Zero signal never kills a possibly reused group. Only ESRCH is absence proof;
+                // permission refusal, retained zombies and any other ambiguity keep custody.
+                if unsafe { libc::kill(-group, 0) } == -1
+                    && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+                {
+                    self.confirmed = true;
+                    return;
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+        // Windows has no owned JobObject here. Direct child exit never proves all descendants
+        // stopped; the actual host conservatively retains unresolved cleanup/adoption custody.
     }
 }
 impl Drop for OwnedProcessGroup {
     fn drop(&mut self) {
-        #[cfg(unix)]
-        if let Some(pid) = self.pid.and_then(|pid| i32::try_from(pid).ok()) {
-            unsafe {
-                libc::kill(-pid, libc::SIGKILL);
-            }
-        }
+        self.signal_retained_group();
     }
 }
 
@@ -463,7 +551,7 @@ mod tests {
         let work = tokio::spawn(async move {
             execute(
                 &directory,
-                "printf actual > marker; sleep 30",
+                "printf actual > marker; exec sleep 30",
                 &[],
                 PermissionMode::Default,
                 &PermissionRules::new(),
