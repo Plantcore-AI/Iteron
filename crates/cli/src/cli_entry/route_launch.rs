@@ -51,8 +51,8 @@ pub(crate) async fn admit(input: RouteLaunchInput<'_>) -> anyhow::Result<Admitte
     } = input;
     // One-shot/headless callers have no first-frame boundary, so settle an unresolved selected
     // route before constructing its provider. Interactive TUI discovery is deliberately left
-    // dormant here: `tui::run` draws first, then its existing provider-refresh task calls
-    // `settle()`, which is the sole signal that may start provider network I/O. Cached/static and
+    // dormant here: `tui::run` draws first, then sends the shared host first-frame command.
+    // The host admits and settles the sole retained discovery worker. Cached/static and
     // explicitly qualified routes can still construct immediately; an unproved route remains an
     // unavailable provider until the post-paint picker publishes verified evidence.
     if settle_catalogs
