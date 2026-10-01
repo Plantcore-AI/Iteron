@@ -152,6 +152,9 @@ impl CompletionSession<'_> {
         Ok(())
     }
     pub(super) fn notice(&mut self, text: &'static str) {
+        if *self.journal.transcript.record_failed {
+            return;
+        }
         #[cfg(test)]
         if *self.journal.transcript.fault == Some(super::DurableAppendFault::BestEffort) {
             *self.journal.transcript.fault = None;
