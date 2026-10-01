@@ -46,9 +46,13 @@ impl DirectChildExecution {
         control: &mut KernelDispatchControl<'_>,
         events: &StreamToolEvents,
         mut hooks: super::hook_execution::HookExecutionScope<'_>,
-    ) -> Result<Result<String, String>, KernelError> {
+    ) -> Result<super::kernel_child_accounting::KernelChildCompletion, KernelError> {
         if let DirectChildWork::Refused(reason) = &self.work {
-            return Ok(Err(reason.clone()));
+            return Ok(
+                super::kernel_child_accounting::KernelChildCompletion::no_child(
+                    Err(reason.clone()),
+                ),
+            );
         }
         let mut events = events.clone();
         if let DirectChildWork::Native { identity, .. } = &self.work {
@@ -63,20 +67,36 @@ impl DirectChildExecution {
             .await?
             .decision
         {
-            return Ok(Err(format!("subagent was not started: {reason}")));
+            return Ok(
+                super::kernel_child_accounting::KernelChildCompletion::no_child(Err(format!(
+                    "subagent was not started: {reason}"
+                ))),
+            );
         }
         let (mut native, controller, run) = match self.work {
-            DirectChildWork::Refused(reason) => return Ok(Err(reason)),
+            DirectChildWork::Refused(reason) => {
+                return Ok(
+                    super::kernel_child_accounting::KernelChildCompletion::no_child(Err(reason)),
+                );
+            }
             DirectChildWork::Native { context, identity } => {
                 let run = identity.run.clone();
                 if context.session_spawn_ledger.admit().is_err() {
-                    return Ok(Err(
-                        "subagent was not started: session spawn allowance exhausted".into(),
-                    ));
+                    return Ok(
+                        super::kernel_child_accounting::KernelChildCompletion::no_child(Err(
+                            "subagent was not started: session spawn allowance exhausted".into(),
+                        )),
+                    );
                 }
                 let mut child = match KernelSpawner::new(context).build_direct_child(&identity) {
                     Ok(child) => child,
-                    Err(reason) => return Ok(Err(reason)),
+                    Err(reason) => {
+                        return Ok(
+                            super::kernel_child_accounting::KernelChildCompletion::no_child(Err(
+                                reason,
+                            )),
+                        );
+                    }
                 };
                 child.inherit_force_cancel(control.force());
                 child.control.inherit_drain(control.drain());
@@ -133,12 +153,10 @@ impl DirectChildExecution {
             }
             let (result, terminal) =
                 native_terminal(outcome, &child.last_assistant_text, child.execution_policy);
-            if child.ledger.bounded_snapshot_bytes(1024 * 1024).is_none() {
-                return Err(KernelError::ContextResolution(
-                    "known native child ledger exceeds retained observation bound".into(),
-                ));
-            }
-            let receipt = (child.rollout.run_id().clone(), child.ledger.clone());
+            let receipt = (
+                child.rollout.run_id().clone(),
+                std::mem::take(&mut child.ledger),
+            );
             (result, terminal, Some(receipt))
         } else {
             let children = controller.as_ref().expect("controller work was selected");
@@ -169,11 +187,7 @@ impl DirectChildExecution {
                 )?;
                 return Err(KernelError::UnknownEffects { count: 1 });
             }
-            let receipts = children.completed_ledgers()?;
-            let receipt = receipts
-                .into_iter()
-                .next()
-                .map(|(_, value, _)| (value.run().clone(), value.ledger().clone()));
+            let receipt = None;
             let result = match outcome {
                 AgentOutcome::Text { text, .. } => Ok(text),
                 AgentOutcome::Null { reason } => {
@@ -201,17 +215,21 @@ impl DirectChildExecution {
             )),
         };
         journal.settle(ticket, settlement)?;
-        if let Some((run, ledger)) = receipt {
-            publish_direct_terminal(journal, &events, turn, run, ledger, &result, terminal)?;
-        } else if controller
-            .as_ref()
-            .is_none_or(|children| children.has_admissions())
-        {
-            return Err(KernelError::ContextResolution(
-                "known child terminal has no exact native ledger receipt".into(),
-            ));
-        }
-        Ok(result)
+        let accounting = match receipt {
+            Some((run, ledger)) => {
+                super::kernel_child_accounting::ChildAccountingSource::DirectNative {
+                    run,
+                    ledger,
+                    summary: result.clone(),
+                    outcome: terminal,
+                }
+            }
+            None => super::kernel_child_accounting::ChildAccountingSource::DirectController {
+                children: controller.expect("controller work was selected"),
+                summary: result.clone(),
+            },
+        };
+        Ok(super::kernel_child_accounting::KernelChildCompletion::with_child(result, accounting))
     }
 }
 fn native_terminal(
@@ -246,12 +264,12 @@ fn native_terminal(
         Err(error) => (Err(error.public_summary()), WorkflowChildOutcome::Failed),
     }
 }
-fn publish_direct_terminal(
+pub(super) fn publish_direct_terminal(
     journal: &mut KernelDispatchJournal<'_>,
     events: &StreamToolEvents,
     turn: TurnId,
     run: RunId,
-    ledger: Ledger,
+    ledger: &Ledger,
     result: &Result<String, String>,
     outcome: WorkflowChildOutcome,
 ) -> Result<(), KernelError> {
@@ -275,7 +293,7 @@ fn publish_direct_terminal(
                 .map_or(0, |text| u32::try_from(text.len()).unwrap_or(u32::MAX)),
         },
     )?;
-    journal.merge_child(&ledger);
+    journal.merge_child(ledger);
     let mut events = events.clone();
     events.correlation.subagent_id = Some(iteron_protocol::SubagentId(run.0));
     events.emit(

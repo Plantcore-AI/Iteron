@@ -52,6 +52,7 @@ pub(super) enum KernelDispatchWork {
 pub(super) enum KernelSpecialResult {
     Completed(ToolResult),
     Refused(ToolResult),
+    AccountingUnavailable { result: ToolResult, reason: String },
 }
 pub(super) struct KernelSpecialExecution<'a> {
     pub(super) work: KernelDispatchWork,
@@ -119,6 +120,8 @@ impl KernelSpecialExecution<'_> {
             call,
             capability,
         )?;
+        let mut accounting = None;
+        let effect = admitted.effect_id().clone();
         let result = match self.work {
             KernelDispatchWork::Plan => TaskPlanExecution {
                 owner: self.plan,
@@ -133,9 +136,8 @@ impl KernelSpecialExecution<'_> {
                     },
                     &events,
                 );
-                tool_result(
-                    call,
-                    work.run(
+                let completion = work
+                    .run(
                         turn,
                         index,
                         call.input
@@ -147,9 +149,10 @@ impl KernelSpecialExecution<'_> {
                         &events,
                         self.hooks.clone(),
                     )
-                    .await?,
-                    Trust::Untrusted,
-                )
+                    .await?;
+                let (result, source) = completion.into_parts();
+                accounting = source;
+                tool_result(call, result, Trust::Untrusted)
             }
             KernelDispatchWork::Workflow(work) => {
                 let ordinal = self.journal.next_ordinal(turn, EffectClass::Workflow);
@@ -178,6 +181,8 @@ impl KernelSpecialExecution<'_> {
                         return Err(error);
                     }
                 };
+                let (result, source) = result.into_parts();
+                accounting = source;
                 let settlement = match &result {
                     Ok(_) => effects::Settlement::Definite(effect_done_terminal(
                         turn,
@@ -208,7 +213,18 @@ impl KernelSpecialExecution<'_> {
                 result
             }
         };
+        if let Some(source) = &accounting {
+            source.begin(&mut self.journal, turn, &effect)?;
+        }
         let result = admitted.complete(&mut self.journal.tool(self.failed_actions), result)?;
+        if let Some(source) = accounting
+            && let Err(error) = source.publish(&mut self.journal, &events, turn, &effect)
+        {
+            return Ok(KernelSpecialResult::AccountingUnavailable {
+                result,
+                reason: error.public_summary(),
+            });
+        }
         Ok(KernelSpecialResult::Completed(result))
     }
 }

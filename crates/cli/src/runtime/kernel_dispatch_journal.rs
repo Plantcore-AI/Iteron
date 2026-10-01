@@ -35,6 +35,22 @@ pub(super) struct KernelDispatchJournal<'a> {
     pub(super) fault: &'a mut Option<super::DurableAppendFault>,
 }
 impl KernelDispatchJournal<'_> {
+    pub(super) fn begin_child_accounting(
+        &mut self,
+        effect: &iteron_protocol::EffectId,
+    ) -> Result<(), KernelError> {
+        self.ledger
+            .begin_child_accounting(effect)
+            .map_err(|reason| KernelError::ContextResolution(reason.into()))
+    }
+    pub(super) fn resolve_child_accounting(
+        &mut self,
+        effect: &iteron_protocol::EffectId,
+    ) -> Result<(), KernelError> {
+        self.ledger
+            .resolve_child_accounting(effect)
+            .map_err(|reason| KernelError::ContextResolution(reason.into()))
+    }
     pub(super) fn tenant(&self) -> &iteron_protocol::TenantId {
         self.rollout.tenant()
     }

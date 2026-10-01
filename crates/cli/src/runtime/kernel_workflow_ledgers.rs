@@ -41,6 +41,9 @@ pub(super) struct KernelWorkflowLedgers {
     bytes: usize,
 }
 impl KernelWorkflowLedgers {
+    pub(super) fn has_admissions(&self) -> bool {
+        !self.entries.is_empty()
+    }
     pub(super) fn begin(&mut self, ordinal: u64) -> Result<(), &'static str> {
         if self.entries.len() >= 1000 || self.entries.contains_key(&ordinal) {
             return Err("native workflow accounting capacity");

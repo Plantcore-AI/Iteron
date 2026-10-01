@@ -49,6 +49,23 @@ impl WorkflowExecution {
         journal: &mut KernelDispatchJournal<'_>,
         control: &mut KernelDispatchControl<'_>,
         events: &StreamToolEvents,
+    ) -> Result<super::kernel_child_accounting::KernelChildCompletion, KernelError> {
+        let mut accounting = None;
+        let result = self
+            .execute(input, turn, journal, control, events, &mut accounting)
+            .await?;
+        Ok(super::kernel_child_accounting::KernelChildCompletion::new(
+            result, accounting,
+        ))
+    }
+    async fn execute(
+        self,
+        input: &serde_json::Value,
+        turn: TurnId,
+        journal: &mut KernelDispatchJournal<'_>,
+        control: &mut KernelDispatchControl<'_>,
+        events: &StreamToolEvents,
+        accounting: &mut Option<super::kernel_child_accounting::ChildAccountingSource>,
     ) -> Result<Result<String, String>, KernelError> {
         if let Some(run) = workflow_run_id_arg(input, "collect") {
             return Ok(collected(self.owner().collect(&run)));
@@ -164,62 +181,13 @@ impl WorkflowExecution {
             return Err(KernelError::UnknownEffects { count: 1 });
         }
         lifetime.settled = true;
-        if let Some(children) = &controller {
-            for (claim, receipt, terminal) in children.completed_ledgers()? {
-                let task = u32::try_from(claim.node_id).map_err(|_| {
-                    KernelError::ContextResolution("actual task identity overflow".into())
-                })?;
-                publish_child(
-                    journal,
-                    turn,
-                    &run_id,
-                    task,
-                    receipt.run().0.clone(),
-                    receipt.ledger(),
-                    match terminal {
-                        iteron_agents::AgentWorkflowTerminal::Succeeded => {
-                            WorkflowChildOutcome::Done
-                        }
-                        iteron_agents::AgentWorkflowTerminal::Cancelled => {
-                            WorkflowChildOutcome::Interrupted
-                        }
-                        iteron_agents::AgentWorkflowTerminal::Failed
-                        | iteron_agents::AgentWorkflowTerminal::StoppedRecovery => {
-                            WorkflowChildOutcome::Failed
-                        }
-                    },
-                )?;
-            }
-        } else {
-            let receipts = native_ledgers
-                .lock()
-                .map_err(|_| {
-                    KernelError::ContextResolution(
-                        "native accounting observation unavailable".into(),
-                    )
-                })?
-                .take_known()
-                .map_err(|reason| KernelError::ContextResolution(reason.into()))?;
-            for receipt in receipts {
-                let task = u32::try_from(receipt.ordinal()).map_err(|_| {
-                    KernelError::ContextResolution("actual task identity overflow".into())
-                })?;
-                if receipt.tenant() != journal.tenant() {
-                    return Err(KernelError::ContextResolution(
-                        "native child tenant mismatch".into(),
-                    ));
-                }
-                publish_child(
-                    journal,
-                    turn,
-                    &run_id,
-                    task,
-                    receipt.run().0.clone(),
-                    receipt.ledger(),
-                    receipt.outcome(),
-                )?;
-            }
-        }
+        *accounting = Some(
+            super::kernel_child_accounting::ChildAccountingSource::Workflow {
+                run: run_id.clone(),
+                controller,
+                native: native_ledgers,
+            },
+        );
         let report = match report {
             Ok(report) => report,
             Err(error) => {
@@ -269,7 +237,7 @@ impl WorkflowExecution {
             })
     }
 }
-fn publish_child(
+pub(super) fn publish_child(
     journal: &mut KernelDispatchJournal<'_>,
     turn: TurnId,
     workflow: &str,

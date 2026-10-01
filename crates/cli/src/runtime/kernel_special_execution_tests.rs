@@ -87,6 +87,9 @@ async fn execute(
             .await?
         {
             KernelSpecialResult::Completed(result) | KernelSpecialResult::Refused(result) => result,
+            KernelSpecialResult::AccountingUnavailable { reason, .. } => {
+                return Err(KernelError::ContextResolution(reason));
+            }
         },
     )
 }
@@ -125,6 +128,44 @@ async fn actual_direct_constructor_keeps_native_identity_accounting_and_low_trus
     assert!(run.starts_with("direct-"));
     assert!(events.iter().any(|event|matches!(&event.kind,EventKind::ToolDone {result,effect_id:Some(_),..} if result.trust==Trust::Untrusted)));
     assert!(host.parent_effects_known());
+    let pending = events
+        .iter()
+        .position(|event| matches!(&event.kind, EventKind::ChildAccountingPendingV1 { .. }))
+        .unwrap();
+    let tool=events.iter().position(|event|matches!(&event.kind,EventKind::ToolDone {result,..} if result.tool_use_id=="actual-direct")).unwrap();
+    let accounted = events
+        .iter()
+        .position(|event| matches!(&event.kind, EventKind::SubagentFinishedV2 { .. }))
+        .unwrap();
+    let resolved = events
+        .iter()
+        .position(|event| matches!(&event.kind, EventKind::ChildAccountingResolvedV1 { .. }))
+        .unwrap();
+    assert!(pending < tool && tool < accounted && accounted < resolved);
+    let mut before = iteron_obs::Ledger::default();
+    let mut replay = iteron_obs::pricing::PricingReplay::default();
+    for event in &events[..=tool] {
+        replay
+            .observe(
+                event,
+                host.rollout.tenant(),
+                host.rollout.run_id(),
+                &mut before,
+            )
+            .unwrap();
+    }
+    assert!(!before.child_accounting_complete());
+    for event in &events[tool + 1..] {
+        replay
+            .observe(
+                event,
+                host.rollout.tenant(),
+                host.rollout.run_id(),
+                &mut before,
+            )
+            .unwrap();
+    }
+    assert!(before.child_accounting_complete());
 }
 #[tokio::test]
 async fn actual_plan_inspection_has_one_native_terminal_and_no_provider_io() {
