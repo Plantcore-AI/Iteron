@@ -83,7 +83,7 @@ fn fixture(label: &str, hook: Option<&str>) -> (Agent, Vec<AutoApprovedCall>, Ve
 #[tokio::test]
 async fn actual_expired_group_opens_no_tool_or_hook_intent() {
     let (mut agent, batch, calls) = fixture("batch-deadline-before", None);
-    agent.run_deadline = Some(Instant::now());
+    agent.run_deadline.bind_external(Some(Instant::now()));
     let projection = agent.turn_result_projection_budget(
         ContextBudgetInspection::from_policy(Default::default(), Default::default()),
         &calls,
@@ -113,7 +113,9 @@ async fn actual_hook_completion_after_deadline_cannot_start_group_tools() {
         "batch-deadline-after-hook",
         Some("sleep 0.2; printf actual-hook-completed"),
     );
-    agent.run_deadline = Some(Instant::now() + Duration::from_millis(100));
+    agent
+        .run_deadline
+        .bind_external(Some(Instant::now() + Duration::from_millis(100)));
     let projection = agent.turn_result_projection_budget(
         ContextBudgetInspection::from_policy(Default::default(), Default::default()),
         &calls,

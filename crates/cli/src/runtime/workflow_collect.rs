@@ -222,7 +222,7 @@ impl Agent {
             self.permission_rules.clone(),
         )
         .map_err(|error| error.public_summary())?;
-        sub.run_deadline = Some(child_deadline);
+        sub.run_deadline.bind_external(Some(child_deadline));
         let created_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| duration.as_secs())

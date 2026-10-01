@@ -283,7 +283,7 @@ impl Agent {
             policy_capabilities: all_capabilities,
             interactive_approvals: false,
             approval_seq: 0,
-            orchestrating: false,
+            orchestrating: super::orchestration_lifetime::OrchestrationLifetime::default(),
             delegation_depth: 0,
             side_conversations_opened: 0,
             failed_actions: super::failed_action_cache::FailedActionCache::default(),
@@ -291,7 +291,7 @@ impl Agent {
             hooks_runtime_installed: false,
             hook_effect_journal: None,
             telemetry: None,
-            run_deadline: None,
+            run_deadline: super::execution_deadline::ExecutionDeadlineOwner::default(),
             tunables_profile: None,
         }
     }

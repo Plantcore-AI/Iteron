@@ -13,7 +13,7 @@ pub(super) struct ParentTurnGuard {
     control: Arc<dyn AgentControlPort>,
     turn: ParentRuntimeTurn,
     old_interrupt: super::session_control::InterruptSignalBinding,
-    old_deadline: Option<Instant>,
+    deadline: Option<super::execution_deadline::DeadlineLease>,
     settled: bool,
 }
 impl Drop for ParentTurnGuard {
@@ -68,7 +68,6 @@ impl Agent {
         let turn = control
             .begin_parent_turn(source, signal.clone())
             .map_err(KernelError::AgentControl)?;
-        let old_deadline = self.run_deadline;
         let remaining = turn
             .view
             .budget
@@ -78,23 +77,22 @@ impl Agent {
         let deadline = Instant::now()
             .checked_add(Duration::from_millis(remaining))
             .unwrap_or_else(Instant::now);
-        self.run_deadline = Some(old_deadline.map_or(deadline, |existing| existing.min(deadline)));
-        if old_interrupt.flag().is_none() {
-            self.control.bind_interrupt(signal);
-        }
-        self.persistent_mailbox = Some(turn.mailbox.clone());
-        let guard = ParentTurnGuard {
+        let mut guard = ParentTurnGuard {
             control,
             turn,
             old_interrupt,
-            old_deadline,
+            deadline: None,
             settled: false,
         };
+        guard.deadline = Some(self.run_deadline.tighten(deadline)?);
+        if guard.old_interrupt.flag().is_none() {
+            self.control.bind_interrupt(signal);
+        }
+        self.persistent_mailbox = Some(guard.turn.mailbox.clone());
         if let Err(error) = persistent_agent_kernel::expire_restored(self, &guard.turn.mailbox) {
             self.persistent_mailbox = None;
             self.control
                 .restore_interrupt_binding(guard.old_interrupt.clone());
-            self.run_deadline = guard.old_deadline;
             return Err(error);
         }
         Ok(Some(guard))
@@ -208,7 +206,6 @@ impl Agent {
         self.persistent_mailbox = None;
         self.control
             .restore_interrupt_binding(guard.old_interrupt.clone());
-        self.run_deadline = guard.old_deadline;
         // The host retains this exact physical proof for bounded retry. Drop must never replace
         // a known terminal with an invented Unknown merely because its final append was refused.
         guard.settled = true;

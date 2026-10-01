@@ -222,7 +222,7 @@ impl Agent {
                 },
             ),
             interactive: self.interactive_approvals,
-            deadline: self.run_deadline,
+            deadline: self.run_deadline.current(),
             poll: iteron_tunables::param_duration(
                 "cli.runtime.inbound_drain_poll_interval",
                 super::INBOUND_DRAIN_POLL_INTERVAL,

@@ -65,7 +65,7 @@ impl Agent {
                 require_fallback_pricing: self.budget.max_usd.is_some_and(|ceiling| ceiling > 0.0),
                 output_proof_required,
                 context_tokens,
-                run_deadline: self.run_deadline,
+                run_deadline: self.run_deadline.current(),
                 #[cfg(test)]
                 pricing_now_unix_secs: self.pricing_now_unix_secs,
             },

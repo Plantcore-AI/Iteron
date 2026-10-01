@@ -698,7 +698,7 @@ impl Agent {
                         > (ceiling - baseline.usage.cost_microusd as f64 / 1_000_000.0).max(0.0)
                 })
                 || (existing.is_none()
-                    && self.run_deadline.is_some_and(|deadline| {
+                    && self.run_deadline.current().is_some_and(|deadline| {
                         config.root_budget.wall_ms as u128
                             > deadline
                                 .saturating_duration_since(std::time::Instant::now())
@@ -836,7 +836,7 @@ impl Agent {
             .remaining
             .wall_ms
             .min(self.budget.max_wall_secs.saturating_mul(1000));
-        if let Some(deadline) = self.run_deadline {
+        if let Some(deadline) = self.run_deadline.current() {
             limits.remaining.wall_ms = limits.remaining.wall_ms.min(
                 u64::try_from(
                     deadline

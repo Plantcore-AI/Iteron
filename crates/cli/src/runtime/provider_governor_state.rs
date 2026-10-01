@@ -335,7 +335,7 @@ impl Agent {
         super::provider_route_admission::ProviderRouteAdmission {
             governor: self.provider_governor.clone(),
             control: &self.control,
-            run_deadline: self.run_deadline,
+            run_deadline: self.run_deadline.current(),
             events,
             journal: super::provider_route_journal::ProviderRouteJournal {
                 rollout: &mut self.rollout,

@@ -71,9 +71,9 @@ mod turn_publication;
 #[cfg(test)]
 mod turn_publication_runtime_tests;
 mod workspace_checkpoint;
-pub(crate) mod workspace_rewind;
 #[cfg(test)]
 mod workspace_checkpoint_tests;
+pub(crate) mod workspace_rewind;
 use effect_descriptor::{
     KernelEffect, effect_class_label, effect_done_terminal, effect_failed_terminal,
     effect_workspace,
@@ -168,22 +168,24 @@ mod plantcore;
 mod plantcore;
 mod provider_effect_identity;
 pub(crate) use plantcore::{DispatchGate, ResumeActivation};
+mod execution_deadline;
 mod kernel_tool_assembly;
 mod kernel_tool_call;
 mod optional_tool_round;
+mod orchestration_lifetime;
 mod ordered_tool_call;
 mod policy_evidence;
 pub(crate) mod policy_evidence_recorder;
 mod pricing;
 mod private_attachments;
 mod provider_accounting;
-mod provider_logical_usage;
 mod provider_attempt_journal;
 mod provider_attempt_pump;
 mod provider_charge_evidence;
 mod provider_financial_context;
 mod provider_governor_state;
 mod provider_hedge;
+mod provider_logical_usage;
 mod provider_output_funding;
 mod provider_output_request;
 mod provider_route;
@@ -207,6 +209,7 @@ mod side_conversation;
 mod strategy_ports;
 mod strategy_runtime;
 mod subagent_control;
+mod submission_invocation;
 pub mod telemetry;
 mod terminal_diagnostics;
 mod tool_image_replay;
@@ -1479,7 +1482,7 @@ pub struct Agent {
     /// Monotonic counter minting `SubmissionId`s for approval requests (per-run, deterministic).
     approval_seq: u64,
     /// Re-entry guard scoped to the Ultracode admission wrapper.
-    orchestrating: bool,
+    orchestrating: orchestration_lifetime::OrchestrationLifetime,
     /// Explicit recursion admission state. Registry capability removal remains a second,
     /// independently tested barrier; neither relies on model instructions.
     delegation_depth: u8,
@@ -1505,7 +1508,7 @@ pub struct Agent {
     pub telemetry: Option<telemetry::TelemetrySink>,
     /// One absolute wall deadline shared by the writer loop, explicit workflows, compaction, and
     /// retries. `drive()` must never reset it after admission has already spent time.
-    run_deadline: Option<Instant>,
+    run_deadline: execution_deadline::ExecutionDeadlineOwner,
     /// The operator tunables profile this session resolved under, when one was supplied. Held only
     /// so a workflow this agent starts can apply the prompt artifacts it carries; it grants no
     /// authority and is never consulted for a permission, budget, or routing decision.
@@ -1666,49 +1669,32 @@ impl Agent {
         // component-budget recovery may rearm independently if later evidence grows past a
         // recoverable ceiling again.
         self.compaction_state.begin_submission();
-        let owns_deadline = self.run_deadline.is_none();
-        if owns_deadline {
-            self.run_deadline = Some(
-                Instant::now()
-                    .checked_add(Duration::from_secs(self.budget.max_wall_secs))
-                    .unwrap_or_else(Instant::now),
-            );
-        }
-        // Keep an encrypted Attachment reference alive from SQ admission through the durable user
-        // Message and every provider request spawned by this submission. The adapter hydrates the
-        // provider copy through the same tombstone gate and releases only its exact handles when
-        // this run returns; older file-attachment edges on the run are untouched.
-        let staged_images = private_attachments::InvocationImages::stage(
-            self.rollout.path().parent().ok_or_else(|| {
-                KernelError::ContextResolution("record store resolution failed".into())
-            })?,
-            self.rollout.tenant().clone(),
-            self.rollout.run_id().clone(),
-            TurnId(self.seq_turn),
+        let mut invocation = submission_invocation::SubmissionInvocation::stage(
+            submission_invocation::InvocationScope {
+                runs: self.rollout.path().parent().ok_or_else(|| {
+                    KernelError::ContextResolution("record store resolution failed".into())
+                })?,
+                tenant: self.rollout.tenant().clone(),
+                run: self.rollout.run_id().clone(),
+                turn: TurnId(self.seq_turn),
+                wall_secs: self.budget.max_wall_secs,
+            },
+            &mut self.run_deadline,
             &input_images,
-        )
-        .map_err(|_| {
-            KernelError::ContextResolution("private image attachment storage failed".into())
-        })?;
-        let input_images = staged_images.images();
+        )?;
+        let input_images = invocation.images();
         let orchestrate = allow_orchestration
             && (self.turn_orchestration_requested
                 || self.effort_orchestration(self.effort)
                     == iteron_protocol::OrchestrationMode::Orchestrated)
             && !task.trim().is_empty()
-            && !self.orchestrating;
+            && !self.orchestrating.active();
         let outcome = if orchestrate {
             self.run_orchestrated(task, input_images).await
         } else {
             self.drive_with_images(task, input_images).await
         };
-        if orchestrate {
-            // The guard is scoped to one top-level admission and must not leak into a follow-up.
-            self.orchestrating = false;
-        }
-        if owns_deadline {
-            self.run_deadline = None;
-        }
+        invocation.release_deadline();
         // Stop hook (R5, observational): is admitted once when an ordinary run finishes (`run` is the
         // top-level entry — run_orchestrated calls drive(), not run()). A drained terminal is the
         // exception: starting an arbitrary hook after its sync checkpoint would mutate state past
@@ -1781,19 +1767,12 @@ impl Agent {
         {
             return Err(KernelError::UnpricedUsdCeiling);
         }
-        let owns_deadline = self.run_deadline.is_none();
-        if owns_deadline {
-            self.run_deadline = Some(
-                Instant::now()
-                    .checked_add(Duration::from_secs(self.budget.max_wall_secs))
-                    .unwrap_or_else(Instant::now),
-            );
-        }
+        let deadline = self
+            .run_deadline
+            .begin_invocation(self.budget.max_wall_secs)?;
         // A leaf never orchestrates: run the single-agent bounded loop directly.
         let outcome = self.drive(task).await;
-        if owns_deadline {
-            self.run_deadline = None;
-        }
+        drop(deadline);
         if let Ok(o) = &outcome
             && *o != Outcome::Drained
         {
@@ -2261,8 +2240,8 @@ impl Agent {
                     hooks: self.hooks.clone(),
                     hook_journal: self.hook_effect_journal.clone(),
                     concurrency: self.scheduled_tool_concurrency()?,
-                    run_deadline: self.run_deadline,
-                    provider_deadline: self.run_deadline.unwrap_or_else(|| {
+                    run_deadline: self.run_deadline.current(),
+                    provider_deadline: self.run_deadline.current().unwrap_or_else(|| {
                         Instant::now()
                             .checked_add(Duration::from_secs(self.budget.max_wall_secs))
                             .unwrap_or_else(Instant::now)
@@ -3252,7 +3231,7 @@ impl Agent {
                 bypass: self.bypass_permissions,
                 ordinary_extensions: self.ordinary_extensions.is_some(),
                 interactive: self.interactive_approvals,
-                deadline: self.run_deadline,
+                deadline: self.run_deadline.current(),
                 activity: self.activity.clone(),
                 events,
             },

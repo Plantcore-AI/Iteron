@@ -3,6 +3,7 @@ use super::*;
 impl Agent {
     pub(super) fn run_time_remaining(&self) -> Option<Duration> {
         self.run_deadline
+            .current()
             .map(|deadline| deadline.saturating_duration_since(Instant::now()))
     }
 
@@ -14,7 +15,9 @@ impl Agent {
         let local = now
             .checked_add(Duration::from_secs(child_budget.max_wall_secs))
             .unwrap_or(now);
-        self.run_deadline.map_or(local, |parent| parent.min(local))
+        self.run_deadline
+            .current()
+            .map_or(local, |parent| parent.min(local))
     }
 
     pub(super) fn run_deadline_exhausted(&self) -> bool {

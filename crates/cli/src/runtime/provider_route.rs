@@ -254,7 +254,7 @@ impl Agent {
     /// stream. Journalling them inside the boundary would manufacture an unknown effect out of a
     /// request that never left the process.
     pub(super) fn provider_dispatch_refusal(&self) -> Option<KernelError> {
-        self.control.provider_refusal(self.run_deadline)
+        self.control.provider_refusal(self.run_deadline.current())
     }
 
     /// One paid inference request, across the effect boundary.
@@ -336,7 +336,7 @@ impl Agent {
                         route_turn.provider(),
                         route_turn.route_id(),
                         route_turn.request(),
-                        self.run_deadline.unwrap_or_else(|| {
+                        self.run_deadline.current().unwrap_or_else(|| {
                             Instant::now()
                                 .checked_add(Duration::from_secs(self.budget.max_wall_secs))
                                 .unwrap_or_else(Instant::now)
@@ -469,7 +469,7 @@ impl Agent {
                 );
                 let result = execute_admitted_provider_turn_observed(
                     route_turn.provider(),
-                    self.run_deadline.unwrap_or_else(|| {
+                    self.run_deadline.current().unwrap_or_else(|| {
                         Instant::now()
                             .checked_add(Duration::from_secs(self.budget.max_wall_secs))
                             .unwrap_or_else(Instant::now)
@@ -534,7 +534,7 @@ impl Agent {
                         .wait_retry(
                             super::provider_route_events::ProviderRetryWait {
                                 controls: &self.control,
-                                run_deadline: self.run_deadline,
+                                run_deadline: self.run_deadline.current(),
                                 ledger: &mut self.ledger,
                             },
                             super::provider_route_events::ProviderRetrySchedule {
@@ -622,7 +622,7 @@ impl Agent {
         self.control
             .wait_retry(
                 delay,
-                self.run_deadline,
+                self.run_deadline.current(),
                 iteron_tunables::param_duration(
                     "cli.runtime.provider_interrupt_poll_interval",
                     PROVIDER_INTERRUPT_POLL_INTERVAL,

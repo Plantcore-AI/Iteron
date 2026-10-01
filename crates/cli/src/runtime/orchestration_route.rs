@@ -8,7 +8,7 @@ impl Agent {
         task: &str,
         input_images: &[iteron_protocol::ImageContent],
     ) -> Result<Outcome, KernelError> {
-        self.orchestrating = true;
+        let _orchestration = self.orchestrating.enter()?;
         let input_images = self.admit_input_images(input_images)?;
         let messages = self.admit_submission(task)?;
         self.drive_admitted(messages, task, input_images).await

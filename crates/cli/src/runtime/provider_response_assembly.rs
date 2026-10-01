@@ -47,7 +47,7 @@ impl Agent {
                     registry: &self.registry,
                     hooks,
                     events,
-                    deadline: self.run_deadline,
+                    deadline: self.run_deadline.current(),
                 },
                 control: &self.control,
                 usd: self.usd_budget.clone(),

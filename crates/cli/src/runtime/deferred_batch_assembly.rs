@@ -84,7 +84,7 @@ impl Agent {
             inbox: &mut self.inbox,
             control: &mut self.control,
             force_cancel: self.force_cancel_seam.as_mut(),
-            deadline: self.run_deadline,
+            deadline: self.run_deadline.current(),
         }
     }
 }

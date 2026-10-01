@@ -45,7 +45,9 @@ fn agent(root: &Path) -> Agent {
     );
     agent.workspace = root.to_owned();
     agent.verification_policy.checkpoint.turn_boundary = false;
-    agent.run_deadline = Some(Instant::now() + Duration::from_secs(2));
+    agent
+        .run_deadline
+        .bind_external(Some(Instant::now() + Duration::from_secs(2)));
     agent
 }
 fn write() -> ToolUse {

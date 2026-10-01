@@ -6652,7 +6652,7 @@ mod gate_integration_tests {
     fn completed_turn_budget_check_includes_an_expired_wall_deadline() {
         let ws = temp_ws("completed-turn-wall-budget");
         let mut agent = agent_for(&ws);
-        agent.run_deadline = Some(Instant::now());
+        agent.run_deadline.bind_external(Some(Instant::now()));
 
         assert_eq!(
             agent.completed_turn_budget_exhaustion(),
@@ -9625,7 +9625,9 @@ ant-api03-SuperSecretModelToken12345"
         );
         // The ample parent runway keeps loaded-suite setup out of the assertion. The immutable
         // one-second child ceiling remains the tighter bound and must cancel the pending provider.
-        deadline_parent.run_deadline = Some(Instant::now() + Duration::from_secs(30));
+        deadline_parent
+            .run_deadline
+            .bind_external(Some(Instant::now() + Duration::from_secs(30)));
         let deadline_result = tokio::time::timeout(
             Duration::from_secs(15),
             deadline_parent.spawn_subagent("never complete", 0),
@@ -10993,7 +10995,9 @@ ant-api03-SuperSecretModelToken12345"
         });
         // A sub-second inherited deadline proves the outer bound does not inherit the sandbox's
         // old whole-second minimum.
-        agent.run_deadline = Some(Instant::now() + Duration::from_millis(60));
+        agent
+            .run_deadline
+            .bind_external(Some(Instant::now() + Duration::from_millis(60)));
 
         let began = Instant::now();
         let dispatch = agent.run_bounded_verify(oracle).await;
@@ -11037,7 +11041,7 @@ ant-api03-SuperSecretModelToken12345"
         );
         agent.workspace = ws.clone();
         agent.verification_policy.verifier_timeout_secs = 1;
-        agent.run_deadline = None;
+        agent.run_deadline.bind_external(None);
         let oracle = std::sync::Arc::new(HangingVerificationOracle {
             started: std::sync::Arc::new(tokio::sync::Notify::new()),
         });
@@ -11538,7 +11542,9 @@ ant-api03-SuperSecretModelToken12345"
         );
         agent.workspace = ws.clone();
         // Seed a parent/orchestration deadline to prove drive() does not reset it.
-        agent.run_deadline = Some(Instant::now() + Duration::from_millis(20));
+        agent
+            .run_deadline
+            .bind_external(Some(Instant::now() + Duration::from_millis(20)));
         let began = Instant::now();
         assert_eq!(
             agent.run("do not hang").await.unwrap(),
@@ -11585,7 +11591,9 @@ ant-api03-SuperSecretModelToken12345"
             .enable_plantcore_runtime(&plantcore_bootstrap_fixture())
             .unwrap();
         agent.seq_turn = 1;
-        agent.run_deadline = Some(Instant::now() + Duration::from_secs(1));
+        agent
+            .run_deadline
+            .bind_external(Some(Instant::now() + Duration::from_secs(1)));
 
         let began = Instant::now();
         assert_eq!(
@@ -18135,10 +18143,16 @@ ant-api03-SuperSecretModelToken12345"
             .unwrap();
         in_flight.pricing_now_unix_secs = Some(200);
         let usage_evidence = super::provider_logical_usage::tests::durable_evidence(
-            &mut in_flight, TurnId(0), UsageReport::complete(Usage {
-                input:1,output:1,..Usage::default()
-            }), attempt.projected_at_unix_secs(),
-        ).unwrap();
+            &mut in_flight,
+            TurnId(0),
+            UsageReport::complete(Usage {
+                input: 1,
+                output: 1,
+                ..Usage::default()
+            }),
+            attempt.projected_at_unix_secs(),
+        )
+        .unwrap();
         in_flight
             .complete_provider_turn(
                 TurnId(0),
@@ -18606,10 +18620,20 @@ ant-api03-SuperSecretModelToken12345"
             };
             agent.ledger.attempt();
             let usage_evidence = super::provider_logical_usage::tests::durable_evidence(
-                &mut agent, TurnId(0), report, unix_now_secs(),
-            ).unwrap();
+                &mut agent,
+                TurnId(0),
+                report,
+                unix_now_secs(),
+            )
+            .unwrap();
             agent
-                .record_provider_usage(TurnId(0), report, 5, &usage_evidence, StreamTiming::default())
+                .record_provider_usage(
+                    TurnId(0),
+                    report,
+                    5,
+                    &usage_evidence,
+                    StreamTiming::default(),
+                )
                 .unwrap();
 
             let events = iteron_record::replay(agent.rollout.path()).unwrap();
@@ -18732,8 +18756,12 @@ ant-api03-SuperSecretModelToken12345"
         };
         agent.ledger.attempt();
         let usage_evidence = super::provider_logical_usage::tests::durable_evidence(
-            &mut agent, TurnId(0), UsageReport::complete(usage), unix_now_secs(),
-        ).unwrap();
+            &mut agent,
+            TurnId(0),
+            UsageReport::complete(usage),
+            unix_now_secs(),
+        )
+        .unwrap();
         agent
             .complete_provider_turn(
                 TurnId(0),
@@ -18749,10 +18777,19 @@ ant-api03-SuperSecretModelToken12345"
         // counter so the next durable projection cannot be admitted to the ledger.
         agent.ledger.turns = 0;
         agent.ledger.attempt();
-        agent.usd_budget.as_ref().unwrap().reserve_provider_attempt(1_000).unwrap();
+        agent
+            .usd_budget
+            .as_ref()
+            .unwrap()
+            .reserve_provider_attempt(1_000)
+            .unwrap();
         let second_evidence = super::provider_logical_usage::tests::durable_evidence(
-            &mut agent, TurnId(1), UsageReport::complete(usage), unix_now_secs(),
-        ).unwrap();
+            &mut agent,
+            TurnId(1),
+            UsageReport::complete(usage),
+            unix_now_secs(),
+        )
+        .unwrap();
         assert!(matches!(
             agent.complete_provider_turn(
                 TurnId(1),
