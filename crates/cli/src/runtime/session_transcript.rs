@@ -110,6 +110,13 @@ impl TranscriptAdmissionJournal<'_> {
     pub(super) fn message(&mut self, turn: TurnId, message: Message) -> Result<Seq, KernelError> {
         self.append(turn, EventKind::Message { message })
     }
+    pub(super) fn tool_image(
+        &mut self,
+        turn: TurnId,
+        observation: iteron_protocol::tool_image::ToolImageObservationV1,
+    ) -> Result<Seq, KernelError> {
+        self.append(turn, EventKind::ToolImageObservedV1 { observation })
+    }
     pub(super) fn agent_input(
         &mut self,
         turn: TurnId,

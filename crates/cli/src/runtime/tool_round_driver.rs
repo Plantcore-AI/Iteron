@@ -22,18 +22,26 @@ enum ToolRoundPhase {
     Failed,
     Completed,
 }
-pub(super) struct ToolRoundDriver<'a> {
+pub(super) struct ToolRoundDriver {
     phase: ToolRoundPhase,
     early: Vec<EarlyToolInFlight>,
     window: Option<EarlyToolWindow>,
     deferred: VecDeque<DeferredToolCall>,
     selected_batch: Option<Vec<AutoApprovedCall>>,
     active: Option<usize>,
-    response: Option<ToolResponseOwner<'a>>,
+    response: Option<ToolResponseOwner>,
 }
-impl<'a> ToolRoundDriver<'a> {
+impl ToolRoundDriver {
+    #[cfg(test)]
     pub(super) fn retain(
-        declarations: &'a [ToolUse],
+        declarations: &[ToolUse],
+        work: ToolTurnWork,
+        window: EarlyToolWindow,
+    ) -> Result<(Self, Vec<UiEvent>), KernelError> {
+        Self::retain_owned(declarations.into(), work, window)
+    }
+    pub(super) fn retain_owned(
+        declarations: std::sync::Arc<[ToolUse]>,
         work: ToolTurnWork,
         window: EarlyToolWindow,
     ) -> Result<(Self, Vec<UiEvent>), KernelError> {
@@ -53,7 +61,7 @@ impl<'a> ToolRoundDriver<'a> {
         // Recovered physical receipts are immutable. They retain exact declaration IDs and never
         // enter the ordered/batch executor queue again.
         deferred.retain(|(index, ..)| !replayed.contains_key(index));
-        let mut response = ToolResponseOwner::new(declarations);
+        let mut response = ToolResponseOwner::retain(declarations);
         let events = response.replay(replayed)?;
         Ok((
             Self {
@@ -186,6 +194,9 @@ impl<'a> ToolRoundDriver<'a> {
         }
         self.response().validate_complete()
     }
+    pub(super) fn has_images(&self) -> bool {
+        self.response().has_images()
+    }
     pub(super) fn results(&self) -> &[Option<ToolResult>] {
         self.response().results()
     }
@@ -210,7 +221,7 @@ impl<'a> ToolRoundDriver<'a> {
             .expect("retained response owner")
             .into_parts()
     }
-    fn response(&self) -> &ToolResponseOwner<'a> {
+    fn response(&self) -> &ToolResponseOwner {
         self.response.as_ref().expect("retained response owner")
     }
     fn require(&self, phase: ToolRoundPhase) -> Result<(), KernelError> {

@@ -21,6 +21,7 @@ struct ObservedProvider {
     refuse_capture: bool,
     stream_failure_once: bool,
     tool_round: bool,
+    follow_up: bool,
 }
 #[async_trait::async_trait]
 impl Provider for ObservedProvider {
@@ -73,7 +74,7 @@ impl Provider for ObservedProvider {
             .dispatching()
             .map_err(|_| ProviderError::RequestCaptureRefusedBeforeDispatch)?;
         self.sent.fetch_add(1, Ordering::SeqCst);
-        if self.tool_round {
+        if self.tool_round && attempt < 2 {
             if attempt == 0 {
                 let calls = ["alpha", "beta"]
                     .into_iter()
@@ -113,6 +114,24 @@ impl Provider for ObservedProvider {
                 );
                 assert!(!result.is_error);
             }
+        }
+        if self.follow_up && attempt == 2 {
+            let mut results = 0;
+            let mut initial = 0;
+            let mut follow_up = 0;
+            for block in request.messages.iter().flat_map(|message| &message.content) {
+                match block {
+                    Block::ToolResult(_) => results += 1,
+                    Block::Text { text } if text == "read the two real files" => initial += 1,
+                    Block::Text { text }
+                        if text == "continue using the same settled observations" =>
+                    {
+                        follow_up += 1
+                    }
+                    _ => {}
+                }
+            }
+            assert_eq!((results, initial, follow_up), (2, 1, 1));
         }
         if attempt == 0 && self.stream_failure_once {
             on_item(StreamItem::TextDelta("observed partial output".into()));
@@ -329,5 +348,48 @@ async fn exhausted_semantic_recovery_preserves_exact_observed_prefix_before_erro
         !events
             .iter()
             .any(|event| matches!(&event.kind, EventKind::TurnEnd { .. }))
+    );
+}
+
+#[tokio::test]
+async fn coding_run_returns_the_actual_tool_transcript_to_a_follow_up_without_reexecution() {
+    let provider = Arc::new(ObservedProvider {
+        tool_round: true,
+        follow_up: true,
+        ..Default::default()
+    });
+    let mut owner = agent(provider.clone(), "coding-run-owned-follow-up");
+    owner.pure_overlap_enabled = false;
+    for name in ["alpha", "beta"] {
+        std::fs::write(
+            owner.workspace.join(format!("{name}.txt")),
+            format!("actual native {name} bytes"),
+        )
+        .unwrap();
+    }
+    assert_eq!(
+        owner.run("read the two real files").await.unwrap(),
+        Outcome::Done
+    );
+    owner.stage_follow_up_transcript().await.unwrap();
+    assert_eq!(
+        owner
+            .run("continue using the same settled observations")
+            .await
+            .unwrap(),
+        Outcome::Done
+    );
+    assert_eq!(provider.sent.load(Ordering::SeqCst), 3);
+    assert_eq!(owner.ledger.tool_calls, 2);
+    let path = owner.rollout.path().to_owned();
+    drop(owner);
+    let events = iteron_record::replay(&path).unwrap();
+    assert_eq!(events.iter().filter(|event| matches!(&event.kind, EventKind::ToolDone { tool: Some(tool), .. } if tool == "read_file")).count(), 2);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(&event.kind, EventKind::Done { .. }))
+            .count(),
+        2
     );
 }

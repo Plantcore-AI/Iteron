@@ -36,13 +36,13 @@ pub(super) enum ToolRoundProgress {
     Kernel(PermittedKernelCall),
     Complete,
 }
-pub(super) struct ToolRoundExecution<'a> {
-    round: ToolRoundDriver<'a>,
+pub(super) struct ToolRoundExecution {
+    round: ToolRoundDriver,
     phase: ExecutionPhase,
     pending: Option<PendingKernelCall>,
 }
-impl<'a> ToolRoundExecution<'a> {
-    pub(super) fn new(round: ToolRoundDriver<'a>) -> Self {
+impl ToolRoundExecution {
+    pub(super) fn new(round: ToolRoundDriver) -> Self {
         Self {
             round,
             phase: ExecutionPhase::Early,
@@ -166,7 +166,10 @@ impl<'a> ToolRoundExecution<'a> {
         self.phase = ExecutionPhase::Ordered;
         Ok(())
     }
-    pub(super) fn into_round(self) -> Result<ToolRoundDriver<'a>, KernelError> {
+    pub(super) fn has_images(&self) -> bool {
+        self.round.has_images()
+    }
+    pub(super) fn into_round(self) -> Result<ToolRoundDriver, KernelError> {
         if !matches!(self.phase, ExecutionPhase::Completed) || self.pending.is_some() {
             return Err(boundary());
         }

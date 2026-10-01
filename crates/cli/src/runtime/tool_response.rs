@@ -14,8 +14,8 @@ pub(super) struct ToolResponseSink<'a> {
     pub(super) images: &'a mut Vec<PendingToolImageProjection>,
 }
 
-pub(super) struct ToolResponseOwner<'a> {
-    declarations: &'a [ToolUse],
+pub(super) struct ToolResponseOwner {
+    declarations: std::sync::Arc<[ToolUse]>,
     results: Vec<Option<ToolResult>>,
     any_error: bool,
     images: Vec<PendingToolImageProjection>,
@@ -32,11 +32,17 @@ pub(super) struct ToolResponseMessage {
     blocks: Vec<Block>,
 }
 
-impl<'a> ToolResponseOwner<'a> {
-    pub(super) fn new(declarations: &'a [ToolUse]) -> Self {
+impl ToolResponseOwner {
+    #[cfg(test)]
+    pub(super) fn new(declarations: &[ToolUse]) -> Self {
+        Self::retain(declarations.into())
+    }
+
+    pub(super) fn retain(declarations: std::sync::Arc<[ToolUse]>) -> Self {
+        let count = declarations.len();
         Self {
             declarations,
-            results: (0..declarations.len()).map(|_| None).collect(),
+            results: (0..count).map(|_| None).collect(),
             any_error: false,
             images: Vec::new(),
         }
@@ -84,6 +90,9 @@ impl<'a> ToolResponseOwner<'a> {
         }
     }
 
+    pub(super) fn has_images(&self) -> bool {
+        !self.images.is_empty()
+    }
     pub(super) fn results(&self) -> &[Option<ToolResult>] {
         &self.results
     }

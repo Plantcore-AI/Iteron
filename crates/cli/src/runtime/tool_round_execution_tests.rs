@@ -11,11 +11,11 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, atomic::AtomicUsize};
 use std::time::{Duration, Instant};
 
-fn retained<'a>(
+fn retained(
     agent: &crate::runtime::Agent,
-    declarations: &'a [ToolUse],
+    declarations: &[ToolUse],
     projection: crate::runtime::context_runtime::TurnResultProjectionBudget,
-) -> ToolRoundExecution<'a> {
+) -> ToolRoundExecution {
     let deferred = declarations
         .iter()
         .enumerate()
