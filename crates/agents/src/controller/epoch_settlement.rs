@@ -6,6 +6,12 @@ use super::{
 };
 use iteron_protocol::agent_control::{AgentEpochV1, AgentIdV1, AgentStateV1, AgentUsageV1};
 
+#[derive(Debug, Clone, Copy)]
+pub struct AgentTerminalObservation {
+    pub effects_known: bool,
+    pub accounting_known: bool,
+}
+
 impl<J: AgentControllerJournal> AgentController<J> {
     pub fn finish_turn_with_terminal(
         &mut self,
@@ -16,7 +22,17 @@ impl<J: AgentControllerJournal> AgentController<J> {
         effects_known: bool,
         terminal: AgentWorkflowTerminal,
     ) -> Result<(), ControllerError> {
-        self.finish_turn_with_observation(id, epoch, summary, usage, effects_known, true, terminal)
+        self.finish_turn_with_observation(
+            id,
+            epoch,
+            summary,
+            usage,
+            AgentTerminalObservation {
+                effects_known,
+                accounting_known: true,
+            },
+            terminal,
+        )
     }
 
     /// Independent physical and accounting observations. Both must be confirmed for new budget
@@ -27,10 +43,13 @@ impl<J: AgentControllerJournal> AgentController<J> {
         epoch: AgentEpochV1,
         summary: &str,
         usage: AgentUsageV1,
-        effects_known: bool,
-        accounting_known: bool,
+        observation: AgentTerminalObservation,
         terminal: AgentWorkflowTerminal,
     ) -> Result<(), ControllerError> {
+        let AgentTerminalObservation {
+            effects_known,
+            accounting_known,
+        } = observation;
         self.check_live()?;
         if summary.len() > MAX_AGENT_TEXT_BYTES || summary.contains('\0') {
             return Err(ControllerError::Capacity);

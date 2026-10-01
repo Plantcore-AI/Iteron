@@ -1,7 +1,7 @@
 #![cfg(unix)]
 
 use iteron_agents::{
-    AgentActor, AgentController, AgentControllerConfig, AgentFileJournal,
+    AgentActor, AgentController, AgentControllerConfig, AgentFileJournal, AgentTerminalObservation,
     AgentWorkflowChildBinding, AgentWorkflowTerminal, ControllerError,
 };
 use iteron_protocol::agent_control::{
@@ -78,8 +78,10 @@ fn known_physical_terminal_survives_actual_restart_while_unknown_accounting_reta
                 cost_microusd: 0,
                 wall_ms: 1,
             },
-            true,
-            false,
+            AgentTerminalObservation {
+                effects_known: true,
+                accounting_known: false,
+            },
             AgentWorkflowTerminal::Failed,
         )
         .unwrap();
