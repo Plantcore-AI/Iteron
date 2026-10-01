@@ -53,6 +53,16 @@ use windows_sys::Win32::System::SystemServices::{
 };
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
+mod contained_read;
+/// Ordinary bounded local-NTFS source reading. No private ACL or write authority is requested.
+pub fn read_contained_regular_file(
+    root: &Path,
+    relative: &Path,
+    max_bytes: usize,
+) -> Result<Vec<u8>, WindowsStateError> {
+    contained_read::read(root, relative, max_bytes)
+}
+
 const HARD_MAX_BYTES: usize = 32 * 1_024 * 1_024;
 const MAX_SECURITY_BYTES: u32 = 64 * 1_024;
 const MAX_ACES: u16 = 128;
@@ -303,6 +313,15 @@ fn provision_directory_with_barrier(
 }
 
 fn pin_directory_chain(path: &Path) -> Result<Vec<File>, WindowsStateError> {
+    pin_directory_chain_mode(path, true)
+}
+fn pin_read_directory_chain(path: &Path) -> Result<Vec<File>, WindowsStateError> {
+    pin_directory_chain_mode(path, false)
+}
+fn pin_directory_chain_mode(
+    path: &Path,
+    writable_leaf: bool,
+) -> Result<Vec<File>, WindowsStateError> {
     let mut components = path.components();
     let Some(Component::Prefix(prefix)) = components.next() else {
         return Err(WindowsStateError::Unavailable);
@@ -313,14 +332,14 @@ fn pin_directory_chain(path: &Path) -> Result<Vec<File>, WindowsStateError> {
         return Err(WindowsStateError::Unavailable);
     }
     let root = PathBuf::from(prefix.as_os_str()).join(r"\");
-    let names = components.collect::<Vec<_>>();
+    let names = components.take(65).collect::<Vec<_>>();
     if names.len() > 64 {
         return Err(WindowsStateError::Unavailable);
     }
     let wide = wide_path(&root)?;
     // Only the final parent needs create/flush access. Earlier pinned ancestors need traversal
     // and attribute access; requesting write access to a drive root would need excess authority.
-    let writable = names.is_empty();
+    let writable = writable_leaf && names.is_empty();
     // SAFETY: terminated local drive root, fixed flags and non-inherited fresh handle output.
     let raw = unsafe {
         CreateFileW(
@@ -349,7 +368,7 @@ fn pin_directory_chain(path: &Path) -> Result<Vec<File>, WindowsStateError> {
             pinned.last().ok_or(WindowsStateError::Unavailable)?,
             name,
             None,
-            index + 1 == names.len(),
+            writable_leaf && index + 1 == names.len(),
         )?;
         pinned.push(file);
     }

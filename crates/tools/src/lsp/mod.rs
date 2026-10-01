@@ -6,7 +6,7 @@
 //! stay owner-held.
 
 #[cfg(unix)]
-mod capability;
+pub(crate) mod capability;
 mod input;
 mod multiplex;
 mod policy;

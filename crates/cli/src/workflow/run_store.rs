@@ -113,18 +113,43 @@ pub fn persist_result(
 }
 
 pub fn load_manifest(workflows_dir: &Path, run_id: &str) -> Option<RunManifest> {
-    let bytes = std::fs::read(run_dir(workflows_dir, run_id).join("run.json")).ok()?;
-    serde_json::from_slice(&bytes).ok()
+    if !valid_run_id(run_id) {
+        return None;
+    }
+    let text = iteron_tools::read_contained_utf8(
+        workflows_dir,
+        &PathBuf::from(run_id).join("run.json"),
+        256 * 1024,
+    )
+    .ok()?;
+    let manifest: RunManifest = serde_json::from_str(&text).ok()?;
+    (manifest.run_id == run_id).then_some(manifest)
 }
 
 pub fn load_result(workflows_dir: &Path, run_id: &str) -> Option<RunResult> {
-    let bytes = std::fs::read(run_dir(workflows_dir, run_id).join("result.json")).ok()?;
-    serde_json::from_slice(&bytes).ok()
+    if !valid_run_id(run_id) {
+        return None;
+    }
+    let text = iteron_tools::read_contained_utf8(
+        workflows_dir,
+        &PathBuf::from(run_id).join("result.json"),
+        8 * 1024 * 1024,
+    )
+    .ok()?;
+    serde_json::from_str(&text).ok()
 }
 
 /// The persisted script source for a prior run (so `resume`/`watch` need no `--script`).
 pub fn load_script(workflows_dir: &Path, run_id: &str) -> Option<String> {
-    std::fs::read_to_string(run_dir(workflows_dir, run_id).join("script.js")).ok()
+    if !valid_run_id(run_id) {
+        return None;
+    }
+    iteron_tools::read_contained_utf8(
+        workflows_dir,
+        &PathBuf::from(run_id).join("script.js"),
+        iteron_workflow::WORKFLOW_SUBMISSION_LIMITS.script_bytes,
+    )
+    .ok()
 }
 
 /// One row of `iteron workflow list` (also the durable summary the TUI can rehydrate).

@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
+mod contained_source;
+pub use contained_source::{ContainedSourceError, read_contained_utf8};
 mod captured_execution;
 mod ordinary_recipe;
 pub use ordinary_recipe::{MAX_ORDINARY_RECIPES, MAX_RECIPE_BYTES, ToolRecipeV1};
