@@ -642,12 +642,13 @@ impl Agent {
             Some(origin) => origin.directory_component(),
             None => format!("agents-{}", self.subagent_run_id("controller", 0, 0).0),
         });
-        if expected_origin.is_none() {
-            provision_private_directory(&directory).map_err(KernelError::AgentControl)?;
+        // Fresh installation uses the same fully pinned/barrier-confirmed namespace as the
+        // actual journal. An inherited locator opens existing-only and cannot create genesis.
+        let mut journal = match &expected_origin {
+            Some(_) => AgentFileJournal::open(&directory),
+            None => AgentFileJournal::provision(&directory),
         }
-        // An inherited locator may only reopen an existing store, never create replacement genesis.
-        let mut journal = AgentFileJournal::open(&directory)
-            .map_err(|error| KernelError::AgentControl(ControllerError::Store(error)))?;
+        .map_err(|error| KernelError::AgentControl(ControllerError::Store(error)))?;
         let snapshot = iteron_agents::AgentControllerJournal::load(&mut journal)
             .map_err(|error| KernelError::AgentControl(ControllerError::Store(error)))?;
         if let Some(origin) = &expected_origin {
@@ -709,8 +710,8 @@ impl Agent {
             return Err(KernelError::AgentControl(ControllerError::Budget));
         }
         let route = self
-            .selected_route
-            .as_ref()
+            .provider_selection
+            .selected()
             .ok_or(KernelError::InvalidRoute(
                 "persistent agents need a durable selected route",
             ))?
@@ -892,39 +893,6 @@ impl Agent {
         self.persistent_control()?
             .wait(AgentActor::Operator, revision, timeout_ms)
             .await
-    }
-}
-
-fn provision_private_directory(path: &std::path::Path) -> Result<(), ControllerError> {
-    #[cfg(windows)]
-    {
-        return iteron_support::durable_windows_state::provision_private_directory(path)
-            .map_err(|_| ControllerError::Permission);
-    }
-    #[cfg(not(windows))]
-    {
-        let mut builder = std::fs::DirBuilder::new();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::DirBuilderExt;
-            builder.mode(0o700);
-        }
-        match builder.create(path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(_) => {
-                return Err(ControllerError::Invalid(
-                    "private agent state directory could not be provisioned",
-                ));
-            }
-        }
-        let metadata = std::fs::symlink_metadata(path).map_err(|_| {
-            ControllerError::Invalid("private agent state directory is unavailable")
-        })?;
-        if !metadata.is_dir() || metadata.file_type().is_symlink() {
-            return Err(ControllerError::Permission);
-        }
-        Ok(())
     }
 }
 
