@@ -319,6 +319,7 @@ fn validate_legacy_profile(root: &Path) -> Result<()> {
         ("crates/cli/src/main.rs", "recording_provider"),
         ("crates/cli/src/app_server.rs", "plantcore"),
         ("crates/cli/src/app_server.rs", "recording_fault"),
+        ("crates/cli/src/tui/headless.rs", "commands"),
     ] {
         validate_legacy_declaration(&read(root, file, MAX_SOURCE_BYTES)?, name)?;
     }

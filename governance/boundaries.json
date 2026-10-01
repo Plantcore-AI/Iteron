@@ -634,6 +634,14 @@
         {
           "kind": "file",
           "path": "crates/record/src/session_maintenance.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/record/src/checkpoint/restore.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/record/src/checkpoint/restore/tests.rs"
         }
       ],
       "contracts": [
@@ -666,6 +674,10 @@
         {
           "kind": "file",
           "path": "crates/record/src/session_private_cache.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/record/src/session/bounded_reindex.rs"
         }
       ],
       "contracts": [
@@ -1224,6 +1236,14 @@
         {
           "kind": "tree",
           "path": "crates/agents/src/controller"
+        },
+        {
+          "kind": "file",
+          "path": "crates/agents/src/controller_directory.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/agents/src/controller_directory_tests.rs"
         }
       ],
       "contracts": [
@@ -1518,6 +1538,14 @@
         {
           "kind": "file",
           "path": "crates/tools/src/task_plan.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/tools/src/ordinary_recipe.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/tools/src/ordinary_recipe/tests.rs"
         }
       ],
       "contracts": [
@@ -2735,6 +2763,226 @@
         {
           "kind": "file",
           "path": "crates/cli/src/runtime/tool_response_tests.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/client_inventory/catalog_host.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/model_route.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/recording_provider_disabled.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/cold_cohort.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/cold_cohort_tests.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/compaction_assembly.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/compaction_journal.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/context_preparation_events.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/deferred_batch_admission.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/deferred_batch_admission_tests.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/deferred_batch_assembly.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/execution_deadline.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/kernel_tool_assembly.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/kernel_tool_call.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/kernel_tool_call_tests.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/legacy_provider_extension.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/memory_request_exposure.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/orchestration_lifetime.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/persistent_agent_kernel/tests/agent_input_trust.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/persistent_agent_kernel/tests/cold_cohort.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/persistent_agent_kernel/tests/output_funding.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/persistent_agent_kernel/tests/query_trust.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/persistent_agents/input_admission.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/persistent_agents/input_admission_tests.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/plantcore_disabled.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/provider_extension.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/provider_extension_assembly.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/provider_financial_source.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/provider_funding_assembly.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/provider_logical_usage.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/provider_logical_usage_tests.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/provider_output_funding.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/provider_output_funding_tests.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/provider_response_assembly.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/provider_response_recovery.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/provider_route_binding.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/provider_turn_assembly.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/provider_turn_driver.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/provider_turn_driver_tests.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/request_admission.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/request_admission_assembly.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/request_admission_journal.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/request_context_publication.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/request_recovery_driver.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/strong_verification.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/submission_invocation.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/tool_round_driver.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/verification_execution.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/verification_journal.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/verification_owner_tests.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/verification_policy_run.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/verification_rollback.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/verification_state.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/workspace_rewind.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/session_transcript.rs"
         }
       ],
       "contracts": [
