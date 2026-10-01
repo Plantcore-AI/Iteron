@@ -64,6 +64,7 @@ mod provider_stream_observer;
 mod provider_transport_attempt;
 mod provider_turn_assembly;
 mod provider_turn_driver;
+mod provider_turn_entry;
 mod provider_turn_evidence;
 mod provider_usage_journal;
 mod request_accounting;
@@ -72,6 +73,8 @@ mod request_admission_assembly;
 mod request_admission_journal;
 mod request_context_evidence;
 mod request_context_publication;
+mod request_cycle;
+mod request_cycle_assembly;
 mod request_inclusion;
 mod request_manifest;
 mod request_manifest_runtime;
@@ -1918,12 +1921,12 @@ impl Agent {
                     .finish(TurnId(self.seq_turn), Outcome::Interrupted)
                     .await;
             }
-            let mut agent_loop = agent_loop::AgentLoopGuard::begin(TurnId(self.seq_turn));
+            let agent_loop = agent_loop::AgentLoopGuard::begin(TurnId(self.seq_turn));
             // Steering is a real submission, not a post-run local queue. Admit it only here, at a
             // turn boundary, before the next request projection is built.
             self.admit_pending_steers(TurnId(self.seq_turn), messages)?;
             self.admit_parent_mailbox(TurnId(self.seq_turn), messages)?;
-            let mut turn_id = TurnId(self.seq_turn);
+            let turn_id = TurnId(self.seq_turn);
             self.observe_session_memory_activation(turn_id, relevance_task);
             let context_observation_started = Instant::now();
             self.lifecycle_event(
@@ -1941,96 +1944,23 @@ impl Agent {
             if let Some(outcome) = self.finish_requested_control(turn_id).await? {
                 return Ok(outcome);
             }
-            let effective_system = self.effective_system();
-            let tool_projection_posture = if investigation_convergence.enabled() {
-                context_runtime::ToolProjectionPosture {
-                    patch_trial: investigation_convergence.patch_trial_active(),
-                    candidate_change_required: investigation_convergence
-                        .candidate_change_required(),
-                    candidate_revision_required: investigation_convergence
-                        .candidate_revision_required(),
-                    candidate_owner_evidence_required: investigation_convergence
-                        .candidate_owner_evidence_required(),
-                    structural_repair_read_required: investigation_convergence
-                        .structural_repair_read_required(),
-                    behavior_counterexample_read_required: investigation_convergence
-                        .behavior_counterexample_read_required(),
-                    localized_closure_active: investigation_convergence.localized_closure_active(),
-                    candidate_review_active: investigation_convergence.candidate_review_active()
-                        || investigation_convergence.localization_plateau_active(),
-                    evidence_insufficient_terminal: investigation_convergence
-                        .evidence_insufficient_terminal(),
-                    candidate_handoff_terminal: investigation_convergence
-                        .candidate_handoff_terminal(),
-                }
-            } else {
-                context_runtime::ToolProjectionPosture::default()
-            };
-            let tool_specs = self.advertised_tool_specs_for_task_with_patch_trial(
+            let recipe = self.request_cycle_recipe(
+                turn_id,
+                messages,
+                input_images,
                 relevance_task,
-                tool_projection_posture,
-            );
-            // This is the checkpointed coding-request reservation. The provider's documented
-            // maximum is an external ceiling applied during composition, not the amount every
-            // ordinary tool turn should reserve by default.
-            let requested_max_tokens = self
-                .model_max_output_tokens
-                .unwrap_or(crate::runtime_tunables::core_facts::DEFAULT_REQUEST_OUTPUT_TOKENS);
-            let request_max_tokens = self.funded_provider_output_ceiling(
-                iteron_provider::output_ceiling::ProviderOutputBudget {
-                    model: &self.model,
-                    requested_max_tokens,
-                    thinking_budget: self.effort_thinking_budget(self.effort),
-                },
+                &investigation_convergence,
+                context_observation_started,
             )?;
-            // One context accounting pass per turn, shared by the kernel token ledger and the
-            // context-window admission check below (I-60). Recomputed only when compaction
-            // actually rewrote the transcript underneath it.
-            self.lifecycle_event(
-                "context.tokenizer.estimate_started",
-                Some(turn_id),
-                LifecyclePayload::default(),
-            );
-            let request_preparation = request_preparation::RequestPreparation::new(
-                request_preparation::RequestContent {
-                    system: effective_system,
-                    messages: &mut *messages,
-                    input_images: input_images.to_vec(),
-                    tools: tool_specs,
-                    max_tokens: request_max_tokens,
-                },
-                requested_max_tokens,
-                self.execution_context_window(),
-                self.request_accounting(),
-                &mut self.context_estimator,
-            );
-            self.lifecycle_event(
-                "context.tokenizer.estimate_completed",
-                Some(turn_id),
-                LifecyclePayload {
-                    magnitude: Some(
-                        u64::try_from(request_preparation.estimate().total_tokens)
-                            .unwrap_or(u64::MAX),
-                    ),
-                    ..LifecyclePayload::default()
-                },
-            );
-            let mut recovery = request_recovery_driver::RequestRecoveryDriver::new(
-                request_preparation,
+            let mut request_cycle = request_cycle::RequestCycle::new(
+                recipe,
                 submitted_turn.context_recovery(),
-                request_recovery_driver::RequestRecoveryScope {
-                    turn: turn_id,
-                    policy: self.compaction,
-                    compacted: self.compaction_state.compacted(),
-                    covered_on_verifier_error: iteron_tunables::param_bool(
-                        "cli.runtime.compaction_covered_on_verifier_error",
-                        COMPACTION_COVERED_ON_VERIFIER_ERROR,
-                    ),
-                    events: self.context_preparation_events(),
-                },
+                &mut self.context_estimator,
+                agent_loop,
             );
+            let requested_max_tokens = request_cycle.requested_output();
             loop {
-                match recovery.next()? {
+                match request_cycle.next_recovery()? {
                     request_recovery_driver::RequestRecoveryWork::Gate(payload) => {
                         let report = self
                             .brokered_lifecycle_gate(
@@ -2039,11 +1969,11 @@ impl Agent {
                                 payload,
                             )
                             .await?;
-                        recovery.gated(matches!(report.decision, HookDecision::Allow))?;
+                        request_cycle.gated(matches!(report.decision, HookDecision::Allow))?;
                     }
                     request_recovery_driver::RequestRecoveryWork::Summary(middle) => {
                         let result = self.summarize_compaction(middle, None).await;
-                        recovery.summary_completed(result, TurnId(self.seq_turn))?;
+                        request_cycle.summary_completed(result, TurnId(self.seq_turn))?;
                     }
                     request_recovery_driver::RequestRecoveryWork::ControlBarrier => {
                         let _ = self.collect_inbound_ops(TurnId(self.seq_turn));
@@ -2052,11 +1982,11 @@ impl Agent {
                         {
                             return Ok(outcome);
                         }
-                        recovery.control_checked(TurnId(self.seq_turn))?;
+                        request_cycle.control_checked(TurnId(self.seq_turn))?;
                     }
                     request_recovery_driver::RequestRecoveryWork::Coverage { middle, summary } => {
                         let result = self.verify_compaction_summary(middle, summary).await;
-                        recovery.coverage_completed(result, TurnId(self.seq_turn))?;
+                        request_cycle.coverage_completed(result, TurnId(self.seq_turn))?;
                     }
                     request_recovery_driver::RequestRecoveryWork::AssessAndCommit => {
                         let output = self.funded_provider_output_ceiling(
@@ -2069,7 +1999,7 @@ impl Agent {
                         let window = self.execution_context_window();
                         let accounting = self.request_accounting();
                         let (mut journal, scope, estimator, state) = self.compaction_commit_ports();
-                        if recovery.assess_and_commit(
+                        if request_cycle.assess_and_commit(
                             window,
                             output,
                             accounting,
@@ -2084,22 +2014,12 @@ impl Agent {
                     request_recovery_driver::RequestRecoveryWork::Complete => break,
                 }
             }
-            let request_preparation = recovery.into_preparation()?;
             // Summarization is itself an admitted provider turn. Once it quiesces, observe control
             // again before admitting the main-model request; otherwise Drain received during a
             // long summary could be followed by one additional provider turn.
             let _ = self.collect_inbound_ops(TurnId(self.seq_turn));
             if let Some(outcome) = self.finish_requested_control(TurnId(self.seq_turn)).await? {
                 return Ok(outcome);
-            }
-            let post_compaction_turn = TurnId(self.seq_turn);
-            if post_compaction_turn != turn_id {
-                // Internal summary/coverage attempts consume their own bounded turns. The main
-                // model admission that follows must therefore mint effects against the current
-                // turn rather than revisiting the pre-compaction identity.
-                turn_id = post_compaction_turn;
-                agent_loop = agent_loop::AgentLoopGuard::begin(turn_id);
-                self.observe_session_memory_activation(turn_id, relevance_task);
             }
             // Auxiliary physical work has settled. Bind this one undispatched request to
             // the current signed funding/native cap before its context and effect gates.
@@ -2110,15 +2030,17 @@ impl Agent {
                     thinking_budget: self.effort_thinking_budget(self.effort),
                 },
             )?;
-            let mut request_admission = request_admission::RequestAdmission::new(
-                request_preparation,
+            let turn_id = TurnId(self.seq_turn);
+            let (mut request_cycle, rebound) = request_cycle.bind_after_recovery(
                 turn_id,
                 self.execution_context_window(),
                 request_max_tokens,
             )?;
-            // Image-inclusive usage must not train later text-only request calibration.
+            if rebound.turn_changed {
+                self.observe_session_memory_activation(turn_id, relevance_task);
+            }
             if self.input_image_evidence.is_none() {
-                self.remember_token_estimate_baseline(turn_id, request_admission.baseline());
+                self.remember_token_estimate_baseline(turn_id, rebound.baseline);
             }
             if let Some(reason) = self.inference_budget_exhaustion()? {
                 return self.finish(turn_id, Outcome::BudgetExhausted(reason)).await;
@@ -2130,28 +2052,29 @@ impl Agent {
                 .activity
                 .span(turn_activity::ActivityStage::LocalPrepare, Some(turn_id));
             let (journal, events) = self.request_admission_ports(turn_id);
-            request_admission.validate(journal, &events, &mut agent_loop)?;
-            let payload = request_admission.request_gate()?;
+            request_cycle.validate(journal, &events)?;
+            let payload = request_cycle.request_gate()?;
             let report = self
                 .brokered_lifecycle_gate(turn_id, "context.segment.budget_requested", payload)
                 .await?;
-            request_admission.gate_completed(report.decision)?;
+            request_cycle.gate_completed(report.decision)?;
             if let Some(outcome) = self.collect_and_finish_requested_control(turn_id).await? {
                 return Ok(outcome);
             }
-            request_admission.control_passed()?;
-            self.admit_tool_image_context(request_admission.messages(), input_images)?;
-            let publication = self.request_context_publication(request_admission.messages());
-            let request_admission::AdmittedModelRequest {
-                request: req,
-                requested_max_tokens,
-                estimate: context_estimate,
-                inspection: context_budget_inspection,
-            } = request_admission.complete(
-                self.request_configuration(),
-                publication,
-                elapsed_us(context_observation_started),
-            )?;
+            request_cycle.control_passed()?;
+            self.admit_tool_image_context(request_cycle.messages(), input_images)?;
+            let publication = self.request_context_publication(request_cycle.messages());
+            let request_cycle::PreparedModelTurn {
+                turn: turn_id,
+                request:
+                    request_admission::AdmittedModelRequest {
+                        request: req,
+                        requested_max_tokens,
+                        estimate: context_estimate,
+                        inspection: context_budget_inspection,
+                    },
+                loop_state: mut agent_loop,
+            } = request_cycle.complete(self.request_configuration(), publication)?;
             let effort_application = self.provider.effort_application(&req);
             local_prepare_activity.complete();
 
@@ -2167,63 +2090,19 @@ impl Agent {
             self.ensure_policy_evidence()?;
             let admission = self.admit_provider_dispatch(turn_id, &req).await?;
             admission_activity.complete();
-            let usd_attempt = admission.attempt_guard;
-
             let argument_trust = self.governing_turn_trust(messages);
             let context_tokens = u64::try_from(context_estimate.total_tokens).unwrap_or(u64::MAX);
-            let financial = self.provider_financial_source();
-            let manifests = self.request_manifest_factory();
-            let start = provider_turn_driver::ProviderTurnStart {
-                route: provider_route_turn::ProviderRouteTurn::new(
-                    req,
-                    requested_max_tokens,
-                    self.provider.clone(),
-                    self.governed_route_id(),
-                    &self.fallback_provider_routes,
-                    self.retry_policy,
-                    iteron_provider::MAX_INTERACTIVE_RETRY_AFTER,
-                ),
-                route_permit: admission.primary_route_permit,
-                refusal: self.provider_dispatch_refusal(),
-                hedged: admission.use_hedge,
-                execution: provider_execution_scope::ProviderExecutionConfiguration {
+            let (start, usd_attempt) = self.provider_turn_start(
+                provider_turn_entry::ProviderTurnRequest {
                     turn: turn_id,
-                    strategy: self.compiled_policy_bundle.slots().tool_policy.clone(),
-                    trust: argument_trust,
-                    overlap: self.pure_overlap_enabled,
+                    request: req,
+                    requested_output: requested_max_tokens,
+                    argument_trust,
                     early_effects: !investigation_convergence.enabled()
-                        && self.verify_command.is_none()
-                        && !self.plantcore_runtime_enabled(),
-                    hooks: self.hooks.clone(),
-                    hook_journal: self.hook_effect_journal.clone(),
-                    concurrency: self.scheduled_tool_concurrency()?,
-                    run_deadline: self.run_deadline.current(),
-                    provider_deadline: self.run_deadline.current().unwrap_or_else(|| {
-                        Instant::now()
-                            .checked_add(Duration::from_secs(self.budget.max_wall_secs))
-                            .unwrap_or_else(Instant::now)
-                    }),
-                    interrupt: self.control.interrupt().cloned(),
-                    force_cancel: self.control.force_cancel().clone(),
-                    drain: self.control.drain().clone(),
-                    allow_in_flight_past_deadline: self.plantcore_runtime_enabled(),
-                    events: self.tool_events(turn_id),
+                        && self.verify_command.is_none(),
                 },
-                events: provider_route_events::ProviderRouteEvents {
-                    turn: turn_id,
-                    lifecycle: self.lifecycle_emitter.clone(),
-                    hooks: self.lifecycle_hooks.clone(),
-                    correlation: self.lifecycle_correlation(Some(turn_id)),
-                    activity: self.activity.clone(),
-                },
-                manifests,
-                financial,
-                prefix_limit: iteron_tunables::param_integer(
-                    "cli.runtime.interrupted_stream_max_bytes",
-                    INTERRUPTED_STREAM_MAX_BYTES,
-                )
-                .min(INTERRUPTED_STREAM_MAX_BYTES),
-            };
+                admission,
+            )?;
             let pricing_now = self.pricing_now();
             let (journal, environment, resident, plantcore, _, _) =
                 self.provider_turn_ports(context_tokens, argument_trust, &submitted_turn);
