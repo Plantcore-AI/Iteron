@@ -39,6 +39,7 @@ mod provider_dispatch;
 mod provider_execution_scope;
 mod provider_financial_source;
 mod provider_followup;
+mod provider_funding_assembly;
 mod provider_response_assembly;
 mod provider_response_recovery;
 mod provider_round;

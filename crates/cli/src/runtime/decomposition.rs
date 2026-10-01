@@ -65,7 +65,7 @@ impl Agent {
             Some(turn_id),
             LifecyclePayload::default(),
         );
-        let admission = self.admit_provider_dispatch(turn_id, &req).await?;
+        let (physical, admission) = self.admit_funded_provider_dispatch(turn_id, req).await?;
         let usd_attempt = admission.attempt_guard;
         let primary_route_permit = admission.primary_route_permit;
         let use_hedge = admission.use_hedge;
@@ -90,7 +90,13 @@ impl Agent {
             };
             let model_started = Instant::now();
             let response = self
-                .brokered_provider_turn(turn_id, &req, &mut sink, primary_route_permit, use_hedge)
+                .brokered_provider_turn(
+                    turn_id,
+                    physical,
+                    &mut sink,
+                    primary_route_permit,
+                    use_hedge,
+                )
                 .await;
             (response, model_started)
         };

@@ -57,7 +57,7 @@ impl Agent {
             return Err(KernelError::InferenceBudgetExhausted(reason));
         }
         let turn = TurnId(self.seq_turn);
-        let admission = self.admit_provider_dispatch(turn, &request).await?;
+        let (physical, admission) = self.admit_funded_provider_dispatch(turn, request).await?;
         let attempt = admission.attempt_guard;
         self.emit(
             turn,
@@ -69,7 +69,7 @@ impl Agent {
         let response = self
             .brokered_provider_turn(
                 turn,
-                &request,
+                physical,
                 &mut |_| {},
                 admission.primary_route_permit,
                 admission.use_hedge,

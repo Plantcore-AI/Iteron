@@ -278,28 +278,11 @@ impl Agent {
     pub(super) async fn brokered_provider_turn(
         &mut self,
         turn: TurnId,
-        request: &TurnRequest,
+        physical: super::provider_output_request::PhysicalProviderRequest,
         on_item: &mut (dyn FnMut(StreamItem) + Send),
         primary_route_permit: Option<iteron_provider::AttemptPermit>,
         use_hedge: bool,
     ) -> Result<iteron_provider::TurnResult, KernelError> {
-        let mut governed_request = request.clone();
-        governed_request.controls = self.provider_controls_for(self.provider.as_ref());
-        governed_request.cache_system = governed_request.controls.prompt_cache.breakpoint
-            != iteron_provider::CacheBreakpoint::None;
-        let physical = match super::provider_output_request::normalize(
-            self.provider.as_ref(),
-            governed_request,
-            self.provider_output_proof_required(),
-        ) {
-            Ok(physical) => physical,
-            Err(error) => {
-                if let Some(budget) = &self.usd_budget {
-                    budget.settle_not_dispatched();
-                }
-                return Err(error);
-            }
-        };
         let estimated_input = self.context_estimator.estimate_uncached(
             &physical.request.system,
             &physical.request.messages,
@@ -556,6 +539,18 @@ impl Agent {
                         )
                         .await?;
                     route_turn.retry_wait_completed();
+                    let financial = self.provider_financial_context();
+                    let funding =
+                        financial.output_funding(route_turn.route_id(), self.pricing_now())?;
+                    let mut request = route_turn.request().clone();
+                    request.max_tokens = route_turn.requested_max_tokens();
+                    let physical = super::provider_output_request::normalize_funded(
+                        route_turn.provider().as_ref(),
+                        request,
+                        self.provider_output_proof_required(),
+                        funding.as_ref(),
+                    )?;
+                    route_turn.rebind_followup(physical)?;
                 }
                 super::provider_route_turn::ProviderRouteNext::RetryCeiling { hint, ceiling } => {
                     self.admit_followup_after_route_attempt_set(monetary_followup_safe)?;
@@ -578,11 +573,8 @@ impl Agent {
                     let mut candidate_request = route_turn.request().clone();
                     candidate_request.model = candidate.route.model_id.clone();
                     candidate_request.max_tokens = route_turn.requested_max_tokens();
-                    let physical = super::provider_output_request::normalize(
-                        candidate.provider.as_ref(),
-                        candidate_request,
-                        self.provider_output_proof_required(),
-                    )?;
+                    let physical =
+                        self.quote_candidate_provider_request(candidate, candidate_request)?;
                     super::provider_route_turn::validate_fallback_request(
                         candidate,
                         &physical.request,

@@ -239,6 +239,37 @@ impl Agent {
         let mut cancellation = Vec::with_capacity(usize::from(total));
         let mut last_physical_attempt = None;
         for index in 0..total {
+            let financial = self.provider_financial_context();
+            let funding = match financial.output_funding(route_id, self.pricing_now()) {
+                Ok(funding) => funding,
+                Err(error) => {
+                    self.close_prepared_hedges_without_dispatch(
+                        turn,
+                        route_id,
+                        prepared,
+                        "hedge funding refused before dispatch",
+                    )?;
+                    return Err(error);
+                }
+            };
+            let funded = match super::provider_output_request::normalize_funded(
+                provider.as_ref(),
+                request.clone(),
+                self.provider_output_proof_required(),
+                funding.as_ref(),
+            ) {
+                Ok(physical) => physical,
+                Err(error) => {
+                    self.close_prepared_hedges_without_dispatch(
+                        turn,
+                        route_id,
+                        prepared,
+                        "hedge output envelope refused before dispatch",
+                    )?;
+                    return Err(error);
+                }
+            };
+            let request = &funded.request;
             let permit = if index == 0 && primary_admission_preacquired {
                 primary_permit.take()
             } else if index == 0 {
