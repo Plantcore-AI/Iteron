@@ -2661,7 +2661,7 @@ mod gate_integration_tests {
     /// Give direct `Agent::new` integration fixtures the same atomic genesis prefix as the CLI.
     /// Replay intentionally rejects a physical seq-0 application event: production always writes
     /// `RunStart` followed by the resolved V2 tunables checkpoint before accepting a submission.
-    fn record_test_genesis(agent: &mut Agent, workspace: &std::path::Path) {
+    pub(super) fn record_test_genesis(agent: &mut Agent, workspace: &std::path::Path) {
         record_test_genesis_with_tunable_edits(agent, workspace, []);
     }
 
@@ -13442,24 +13442,17 @@ ant-api03-SuperSecretModelToken12345"
             ui_rx.try_recv().is_err(),
             "failed append cannot claim Applied"
         );
-        assert_eq!(
-            agent
-                .admit_pending_steers(TurnId(0), &mut messages)
-                .unwrap(),
-            2
-        );
-        assert!(matches!(
-            ui_rx.try_recv(),
-            Ok(UiEvent::SteerSubmissionApplied {
-                id: SubmissionId(31)
-            })
-        ));
-        assert!(matches!(
-            ui_rx.try_recv(),
-            Ok(UiEvent::SteerSubmissionApplied {
-                id: SubmissionId(32)
-            })
-        ));
+        assert!(agent.record_failed);
+        assert!(agent.admit_pending_steers(TurnId(0), &mut messages).is_err());
+        assert_eq!(messages.len(), 1, "a failed writer cannot advance the model transcript");
+        assert!(ui_rx.try_recv().is_err());
+        let (unadmitted, visible) = agent.take_unadmitted_steers_with_client_count();
+        assert_eq!(visible, 2);
+        assert_eq!(unadmitted.len(), 2);
+        assert_eq!(unadmitted[0].submission_id, Some(SubmissionId(31)));
+        assert_eq!(unadmitted[0].text, "first");
+        assert_eq!(unadmitted[1].submission_id, Some(SubmissionId(32)));
+        assert_eq!(unadmitted[1].text, "second");
         assert!(ui_rx.try_recv().is_err());
         let _ = std::fs::remove_dir_all(ws);
     }

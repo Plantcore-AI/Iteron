@@ -30,6 +30,8 @@ mod extension_control;
 mod tool_execution_journal;
 
 mod approval_wait;
+mod completion_assembly;
+mod completion_session;
 mod control_ingress;
 mod control_terminal;
 mod kernel_effect_bridge;
@@ -66,11 +68,14 @@ mod request_manifest;
 mod request_manifest_runtime;
 mod request_preparation;
 mod run_finalization;
+mod steering_admission;
+mod steering_assembly;
 mod submitted_turn_state;
 mod task_plan;
 mod terminal_record;
 mod terminal_runtime;
 mod tool_declaration_admission;
+mod turn_completion;
 mod turn_publication;
 #[cfg(test)]
 mod turn_publication_runtime_tests;
@@ -2590,117 +2595,41 @@ impl Agent {
                     },
                 }
                 .decide(&turn_res.stop_reason);
-                if let Some(notice) = decision.notice() {
-                    self.emit(
-                        turn_id,
-                        EventKind::Notice {
-                            text: notice.durable.into(),
-                        },
-                    );
-                    self.ui(UiEvent::Notice(notice.visible.into()));
-                    if let Some((event, reason, outcome)) = notice.lifecycle {
-                        self.lifecycle_event(
-                            event,
-                            Some(turn_id),
-                            LifecyclePayload {
-                                reason_code: Some(reason.into()),
-                                outcome_code: outcome.map(str::to_owned),
-                                ..LifecyclePayload::default()
-                            },
-                        );
-                    }
-                }
-                match decision {
-                    model_response::ModelResponseDecision::Continue { guidance, .. } => {
-                        self.commit_message(turn_id, messages, Message::user_text(guidance))?;
+                let action = self
+                    .turn_completion(turn_id)
+                    .model(
+                        decision,
+                        messages,
+                        &mut candidate_workspace_baseline,
+                        &mut investigation_convergence,
+                        &mut agent_loop,
+                    )
+                    .await?;
+                match action {
+                    turn_completion::CompletionAction::Continue { applying_steer } => {
+                        if applying_steer {
+                            agent_loop.transition(AgentLoopState::ApplyingSteer)?;
+                        }
                         self.advance_turn().await?;
                         continue;
                     }
-                    model_response::ModelResponseDecision::Finish { outcome, .. } => {
+                    turn_completion::CompletionAction::Finish {
+                        outcome,
+                        publish_answer,
+                    } => {
+                        if publish_answer {
+                            self.publish_available_answer(turn_id, &turn_res.blocks)?;
+                        }
                         return self.finish(turn_id, outcome).await;
                     }
-                    model_response::ModelResponseDecision::Refused(error) => return Err(error),
-                    model_response::ModelResponseDecision::Candidate { .. } => {
-                        // A message typed while this turn was decoding wins over the model's claim
-                        // to be done: durably admit it, then build another turn. This is the
-                        // Claude/Codex steering contract at a safe point, never mid-effect.
-                        let steered = self.admit_pending_steers(turn_id, messages)?;
+                    turn_completion::CompletionAction::Drain => {
+                        return self.finish_drained(turn_id).await;
+                    }
+                    turn_completion::CompletionAction::RequestedControl => {
                         if let Some(outcome) = self.finish_requested_control(turn_id).await? {
                             return Ok(outcome);
                         }
-                        if steered > 0 {
-                            agent_loop.transition(AgentLoopState::ApplyingSteer)?;
-                            self.advance_turn().await?;
-                            continue;
-                        }
-                        // ---- verification gate (ADR-005): do not trust "done". If a test command
-                        // is configured, run it (strong oracle) ourselves; on failure, refuse the
-                        // claim and feed the failure back. Bounded so a wrong gate can't loop. ----
-                        if let Some(cmd) = self.verify_command.clone() {
-                            agent_loop.transition(AgentLoopState::Verifying)?;
-                            let candidate_state = candidate_workspace_baseline.diff_state().await;
-                            match self
-                                .run_strong_verification_gate(
-                                    turn_id,
-                                    &cmd,
-                                    candidate_state,
-                                    &mut investigation_convergence,
-                                )
-                                .await?
-                            {
-                                verification::VerificationGateDisposition::Passed => {}
-                                verification::VerificationGateDisposition::Retry(guidance) => {
-                                    self.commit_message(
-                                        turn_id,
-                                        messages,
-                                        Message::user_text(guidance),
-                                    )?;
-                                    self.advance_turn().await?;
-                                    continue;
-                                }
-                                verification::VerificationGateDisposition::Finish {
-                                    outcome,
-                                    guidance,
-                                } => {
-                                    if let Some(guidance) = guidance {
-                                        self.commit_message(
-                                            turn_id,
-                                            messages,
-                                            Message::user_text(guidance),
-                                        )?;
-                                    }
-                                    return self.finish(turn_id, outcome).await;
-                                }
-                                verification::VerificationGateDisposition::Drained => {
-                                    return self.finish_drained(turn_id).await;
-                                }
-                                verification::VerificationGateDisposition::Cancelled(guidance) => {
-                                    self.commit_message(
-                                        turn_id,
-                                        messages,
-                                        Message::user_text(guidance),
-                                    )?;
-                                    if let Some(outcome) =
-                                        self.finish_requested_control(turn_id).await?
-                                    {
-                                        return Ok(outcome);
-                                    }
-                                    return self.finish(turn_id, Outcome::Interrupted).await;
-                                }
-                            }
-                        }
-                        // Verification can be long-running. Re-check the ordered submission queue
-                        // before committing Done so guidance typed during the oracle is not lost.
-                        let steered = self.admit_pending_steers(turn_id, messages)?;
-                        if let Some(outcome) = self.finish_requested_control(turn_id).await? {
-                            return Ok(outcome);
-                        }
-                        if steered > 0 {
-                            self.advance_turn().await?;
-                            continue;
-                        }
-                        self.publish_available_answer(turn_id, &turn_res.blocks)?;
-                        return self.finish(turn_id, Outcome::Done).await;
+                        return self.finish(turn_id, Outcome::Interrupted).await;
                     }
                 }
             }
@@ -3048,88 +2977,46 @@ impl Agent {
                     },
                 );
             }
-            // A completed candidate-edit batch gives the configured independent gate strictly
-            // newer workspace evidence. Run it now: a cheap failure is better repair evidence than
-            // another provider review turn, while a pass can finish without a "done" round trip.
-            let automatic_verification = if optional_settlement.completed_change
+            let automatic_candidate = optional_settlement.completed_change
                 && matches!(
                     candidate_diff_state,
                     Some(investigation_convergence::CandidateDiffState::Changed(_))
-                ) {
-                if let Some(command) = self.verify_command.clone() {
-                    let candidate_state = candidate_workspace_baseline.diff_state().await;
-                    Some(
-                        self.run_strong_verification_gate(
-                            turn_id,
-                            &command,
-                            candidate_state,
-                            &mut investigation_convergence,
-                        )
-                        .await?,
-                    )
-                } else {
-                    None
+                );
+            let action = self
+                .turn_completion(turn_id)
+                .tools(
+                    message,
+                    automatic_candidate,
+                    messages,
+                    &mut candidate_workspace_baseline,
+                    &mut investigation_convergence,
+                )
+                .await?;
+            match action {
+                turn_completion::CompletionAction::Continue { applying_steer } => {
+                    if applying_steer {
+                        agent_loop.transition(AgentLoopState::ApplyingSteer)?;
+                    }
+                    self.advance_turn().await?;
+                    continue;
                 }
-            } else {
-                None
-            };
-            match &automatic_verification {
-                Some(verification::VerificationGateDisposition::Retry(guidance))
-                | Some(verification::VerificationGateDisposition::Cancelled(guidance)) => {
-                    message.guidance(guidance.clone());
+                turn_completion::CompletionAction::Finish {
+                    outcome,
+                    publish_answer,
+                } => {
+                    debug_assert!(!publish_answer, "a tool response cannot publish an answer");
+                    return self.finish(turn_id, outcome).await;
                 }
-                Some(verification::VerificationGateDisposition::Finish {
-                    guidance: Some(guidance),
-                    ..
-                }) => {
-                    message.guidance(guidance.clone());
+                turn_completion::CompletionAction::Drain => {
+                    return self.finish_drained(turn_id).await;
                 }
-                _ => {}
-            }
-            self.commit_message(turn_id, messages, message.into_message())?;
-
-            if let Some(disposition) = automatic_verification {
-                match disposition {
-                    verification::VerificationGateDisposition::Passed => {
-                        // Match the ordinary EndTurn gate: controls and steering admitted while
-                        // verification ran still win before success becomes durable.
-                        let steered = self.admit_pending_steers(turn_id, messages)?;
-                        if let Some(outcome) = self.finish_requested_control(turn_id).await? {
-                            return Ok(outcome);
-                        }
-                        if steered > 0 {
-                            self.advance_turn().await?;
-                            continue;
-                        }
-                        return self.finish(turn_id, Outcome::Done).await;
+                turn_completion::CompletionAction::RequestedControl => {
+                    if let Some(outcome) = self.finish_requested_control(turn_id).await? {
+                        return Ok(outcome);
                     }
-                    verification::VerificationGateDisposition::Retry(_) => {
-                        self.advance_turn().await?;
-                        continue;
-                    }
-                    verification::VerificationGateDisposition::Finish { outcome, .. } => {
-                        return self.finish(turn_id, outcome).await;
-                    }
-                    verification::VerificationGateDisposition::Drained => {
-                        return self.finish_drained(turn_id).await;
-                    }
-                    verification::VerificationGateDisposition::Cancelled(_) => {
-                        if let Some(outcome) = self.finish_requested_control(turn_id).await? {
-                            return Ok(outcome);
-                        }
-                        return self.finish(turn_id, Outcome::Interrupted).await;
-                    }
+                    return self.finish(turn_id, Outcome::Interrupted).await;
                 }
             }
-
-            if let Some(outcome) = self.collect_and_finish_requested_control(turn_id).await? {
-                return Ok(outcome);
-            }
-
-            if let Some(reason) = self.completed_turn_budget_exhaustion() {
-                return self.finish(turn_id, Outcome::BudgetExhausted(reason)).await;
-            }
-            self.advance_turn().await?;
         }
     }
 
