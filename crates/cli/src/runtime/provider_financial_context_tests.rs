@@ -208,3 +208,54 @@ fn output_funding_authenticates_current_signature_scope_time_and_known_wallet() 
     budget.mark_unknown();
     assert!(c.output_funding("provider:model", 2).is_err());
 }
+
+#[test]
+fn physical_price_admission_rechecks_expiry_but_never_requotes_an_owned_reservation() {
+    let budget = Arc::new(SharedUsdBudget::from_microusd(55));
+    let context = context("tenant", budget.clone());
+    budget.reserve_provider_attempt(55).unwrap();
+    assert_eq!(budget.remaining_microusd().unwrap(), 0);
+    assert!(
+        context
+            .validate_pricing_admission("provider:model", 2)
+            .is_ok()
+    );
+    assert!(
+        context
+            .validate_pricing_admission("provider:model", 100)
+            .is_err()
+    );
+    assert!(
+        context
+            .validate_pricing_admission("foreign:model", 2)
+            .is_err()
+    );
+    assert_eq!(budget.active_reservation_microusd(), Some(55));
+    assert_eq!(budget.remaining_microusd().unwrap(), 0);
+}
+
+#[test]
+fn ordinary_price_admission_has_no_signed_card_or_input_proof_requirement() {
+    let context = ProviderFinancialContext::new(
+        ProviderFinancialScope {
+            tenant: TenantId("tenant".into()),
+            run_id: RunId("run".into()),
+            attribution: None,
+        },
+        ProviderPricingEvidence {
+            port: None,
+            card: None,
+            context_window: None,
+            usage_bounds: iteron_provider::ProviderUsageBoundSemantics::IndependentClasses,
+        },
+        ProviderFinancialOwners {
+            usd: None,
+            cohort: Ok(None),
+        },
+    );
+    assert!(
+        context
+            .validate_pricing_admission("ordinary:unknown-model", 0)
+            .is_ok()
+    );
+}

@@ -79,6 +79,37 @@ impl ProviderFinancialContext {
             .map_err(|error| KernelError::AgentControl(error.clone()))
     }
 
+    /// Recheck exact signed admission evidence at the physical intent barrier. An already
+    /// reserved request must not be requoted or credited with another request's headroom here.
+    pub(super) fn validate_pricing_admission(
+        &self,
+        route_id: &str,
+        now: u64,
+    ) -> Result<(), KernelError> {
+        if self.cohort()?.is_none()
+            && self
+                .usd_budget
+                .as_ref()
+                .is_none_or(|owner| !owner.requires_pricing())
+        {
+            return Ok(());
+        }
+        let (Some(port), Some(card)) = (&self.pricing_port, &self.pricing) else {
+            return Err(KernelError::UnpricedUsdCeiling);
+        };
+        port.verify_rate_card(card)?;
+        if now < card.rate_card.issued_at_unix_secs
+            || now >= card.rate_card.expires_at_unix_secs
+            || format!(
+                "{}:{}",
+                card.rate_card.route.provider_id, card.rate_card.route.model_id
+            ) != route_id
+        {
+            return Err(KernelError::UnpricedUsdCeiling);
+        }
+        Ok(())
+    }
+
     /// Frozen signed prices and current independent monetary/controller headroom. This reads no
     /// config or model-supplied assertion; an Unknown owner prevents even an advisory selection.
     /// Quote only a NEW unreserved physical request. An already reserved hedge primary keeps
