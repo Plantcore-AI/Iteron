@@ -81,6 +81,32 @@ impl SessionTranscriptOwner {
 }
 
 impl TranscriptAdmissionJournal<'_> {
+    pub(super) fn turn_end(
+        &mut self,
+        turn: TurnId,
+        usage: iteron_protocol::Usage,
+        stream: super::stream_progress::StreamTiming,
+    ) -> Result<Seq, KernelError> {
+        self.append(
+            turn,
+            EventKind::TurnEnd {
+                usage,
+                ttft_ms: stream.ttft_ms,
+                decode_ms: stream.decode_ms,
+                stream_items: stream.stream_items,
+            },
+        )
+    }
+    pub(super) fn cost_projection(
+        &mut self,
+        turn: TurnId,
+        projection: iteron_protocol::CostProjection,
+    ) -> Result<Seq, KernelError> {
+        self.append(turn, EventKind::CostProjected { projection })
+    }
+    pub(super) fn notice(&mut self, turn: TurnId, text: String) -> Result<Seq, KernelError> {
+        self.append(turn, EventKind::Notice { text })
+    }
     pub(super) fn message(&mut self, turn: TurnId, message: Message) -> Result<Seq, KernelError> {
         self.append(turn, EventKind::Message { message })
     }
@@ -105,12 +131,16 @@ impl TranscriptAdmissionJournal<'_> {
             ))));
         }
         #[cfg(test)]
-        if *self.fault == Some(DurableAppendFault::SteerMessage)
-            && matches!(kind, EventKind::Message { .. })
-        {
+        if matches!(
+            (*self.fault, &kind),
+            (
+                Some(DurableAppendFault::SteerMessage),
+                EventKind::Message { .. }
+            ) | (Some(DurableAppendFault::Notice), EventKind::Notice { .. })
+        ) {
             *self.fault = None;
             return Err(self.record_error(RecordError::Io(std::io::Error::other(
-                "injected durable message append refusal",
+                "injected durable transcript append refusal",
             ))));
         }
         let mut event = Event {

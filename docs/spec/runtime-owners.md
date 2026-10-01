@@ -116,6 +116,10 @@ observation; it does not grant permission or acquire mutable ownership of anothe
 
 | `bundle_adapter/checkpoint.rs` | Own the actual immutable nine-slot objects, BootBundle, compiler receipt and runtime identities as one generation; Agent and KernelSpawnerContext retain one Arc | Complete compiler admission/adoption → borrowed strategy ports and shared child generation |
 
+| `provider_response_commit.rs` | Retain one accepted physical response and USD obligation through usage, existing observer barrier, actual context reconciliation and assistant Message commit | Accepted physical response → exact logical usage journal → SDK/frontend event → confirmed transcript |
+| `provider_usage_journal.rs` | Publish only the authenticated sealed physical projection with its exact usage; physical money is never charged again | Physical usage receipt → typed committed journal → logical token/cost ledger |
+| `context_usage_reconciliation.rs` | Replace only the matching bounded context slot and consume its exact calibration baseline using authoritative usage | Actual native usage → existing context/calibration owner |
+
 ```mermaid
 flowchart LR
     Journal[Journal admission owner] -->|already admitted ToolIntent| Batch[DeferredBatchExecutor]
