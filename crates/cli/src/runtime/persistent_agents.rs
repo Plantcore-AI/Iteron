@@ -64,6 +64,12 @@ impl AgentEngineRequest {
 /// decoded from command JSON. Queries are current observations and must not be memoized.
 #[async_trait]
 pub(crate) trait AgentControlPort: Send + Sync {
+    fn engine_child_ledger(
+        &self,
+        _claim: &iteron_agents::AgentWorkflowClaim,
+    ) -> Result<Option<super::child_ledger_evidence::AgentRuntimeLedger>, ControllerError> {
+        Ok(None)
+    }
     fn prepare_engine_child(
         &self,
         _actor: AgentActor,
@@ -187,6 +193,13 @@ pub(crate) struct AgentSettlement {
 
 #[async_trait]
 pub(crate) trait PersistentAgentRuntime: Send + Sync {
+    fn completed_ledger(
+        &self,
+        _id: AgentIdV1,
+        _epoch: AgentEpochV1,
+    ) -> Result<Option<super::child_ledger_evidence::AgentRuntimeLedger>, ControllerError> {
+        Ok(None)
+    }
     fn prepare_engine_child(
         &self,
         _request: &AgentEngineRequest,
@@ -768,6 +781,33 @@ impl<J: AgentControllerJournal + Send + 'static> PersistentAgentHost<J> {
 
 #[async_trait]
 impl<J: AgentControllerJournal + Send + 'static> AgentControlPort for PersistentAgentHost<J> {
+    fn engine_child_ledger(
+        &self,
+        claim: &iteron_agents::AgentWorkflowClaim,
+    ) -> Result<Option<super::child_ledger_evidence::AgentRuntimeLedger>, ControllerError> {
+        let completion = self
+            .shared
+            .controller
+            .lock()
+            .map_err(|_| ControllerError::Poisoned)?
+            .workflow_completion(claim)?;
+        let Some(done) = completion else {
+            return Ok(None);
+        };
+        if !done.effects_known {
+            return Err(ControllerError::RecoveryRequired);
+        }
+        let receipt = self
+            .shared
+            .runtime
+            .completed_ledger(done.agent_id, done.epoch)?;
+        if receipt.as_ref().is_some_and(|receipt| {
+            receipt.agent() != done.agent_id || receipt.epoch() != done.epoch
+        }) {
+            return Err(ControllerError::StaleEpoch);
+        }
+        Ok(receipt)
+    }
     fn prepare_engine_child(
         &self,
         actor: AgentActor,

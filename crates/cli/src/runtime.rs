@@ -151,6 +151,7 @@ mod file_submission;
 pub(crate) mod force_cancel;
 mod frontend;
 pub(crate) use frontend::FrontendChannelHealth;
+mod child_ledger_evidence;
 mod cold_cohort;
 mod hook_execution;
 pub mod hooks;

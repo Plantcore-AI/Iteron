@@ -32,6 +32,7 @@ mod recovery;
 pub(super) struct KernelPersistentRuntime {
     spawner: Mutex<KernelSpawner>,
     residents: Mutex<BTreeMap<AgentIdV1, Resident>>,
+    completed_ledgers: Mutex<super::child_ledger_evidence::CompletedChildLedgers>,
     control: OnceLock<Weak<dyn AgentControlPort>>,
     writer: PersistentWriterConfig,
     money: Option<Arc<SharedUsdBudget>>,
@@ -79,6 +80,7 @@ impl KernelPersistentRuntime {
             main_rollout_owners: Mutex::new(Vec::new()),
             spawner: Mutex::new(KernelSpawner::new(context)),
             residents: Mutex::new(BTreeMap::new()),
+            completed_ledgers: Mutex::new(Default::default()),
             control: OnceLock::new(),
             #[cfg(test)]
             fixture: None,
@@ -168,6 +170,17 @@ impl KernelPersistentRuntime {
 
 #[async_trait]
 impl PersistentAgentRuntime for KernelPersistentRuntime {
+    fn completed_ledger(
+        &self,
+        id: AgentIdV1,
+        epoch: AgentEpochV1,
+    ) -> Result<Option<super::child_ledger_evidence::AgentRuntimeLedger>, ControllerError> {
+        Ok(self
+            .completed_ledgers
+            .lock()
+            .map_err(|_| ControllerError::Poisoned)?
+            .read(id, epoch))
+    }
     fn prepare_engine_child(
         &self,
         request: &super::persistent_agents::AgentEngineRequest,
@@ -251,7 +264,7 @@ impl PersistentAgentRuntime for KernelPersistentRuntime {
     async fn execute(
         &self,
         view: AgentViewV1,
-        _: AgentEpochV1,
+        epoch: AgentEpochV1,
         initial: Vec<AgentMailboxMessage>,
         mailbox: LiveAgentMailbox,
     ) -> AgentSettlement {
@@ -521,24 +534,34 @@ impl PersistentAgentRuntime for KernelPersistentRuntime {
             }
             _ => iteron_agents::AgentWorkflowTerminal::Failed,
         };
+        let effects_known = cleaned
+            && processes_settled
+            && child.parent_effects_known()
+            && finalized
+            && writer_settled
+            && cost.is_some()
+            && !matches!(
+                result,
+                Err(KernelError::UnknownEffects { .. }
+                    | KernelError::Record(_)
+                    | KernelError::AgentControl(_))
+            );
+        if effects_known && let Ok(mut completed) = self.completed_ledgers.lock() {
+            let _ = completed.capture(
+                view.agent_id,
+                epoch,
+                child.rollout.tenant(),
+                child.rollout.run_id(),
+                &child.ledger,
+            );
+        }
         AgentSettlement {
             turns: child.attempts(),
             terminal,
             summary,
             tokens,
             cost_microusd: cost.unwrap_or(0),
-            effects_known: cleaned
-                && processes_settled
-                && child.parent_effects_known()
-                && finalized
-                && writer_settled
-                && cost.is_some()
-                && !matches!(
-                    result,
-                    Err(KernelError::UnknownEffects { .. }
-                        | KernelError::Record(_)
-                        | KernelError::AgentControl(_))
-                ),
+            effects_known,
         }
     }
 }
