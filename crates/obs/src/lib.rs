@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
+mod ledger_snapshot;
 pub mod lifecycle;
 mod metrics;
 pub mod otel;

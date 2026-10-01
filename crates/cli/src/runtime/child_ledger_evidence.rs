@@ -4,7 +4,9 @@ use iteron_agents::ControllerError;
 use iteron_obs::Ledger;
 use iteron_protocol::agent_control::{AgentEpochV1, AgentIdV1};
 use iteron_protocol::{RunId, TenantId};
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
+const MAX_RECEIPT_BYTES: usize = 1024 * 1024;
+const MAX_RETAINED_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Clone)]
 pub(super) struct AgentRuntimeLedger {
@@ -12,7 +14,8 @@ pub(super) struct AgentRuntimeLedger {
     epoch: AgentEpochV1,
     tenant: TenantId,
     run: RunId,
-    ledger: Ledger,
+    ledger: Arc<Ledger>,
+    retained_bytes: usize,
 }
 impl AgentRuntimeLedger {
     pub(super) fn agent(&self) -> AgentIdV1 {
@@ -34,6 +37,7 @@ impl AgentRuntimeLedger {
 #[derive(Default)]
 pub(super) struct CompletedChildLedgers {
     snapshots: BTreeMap<AgentIdV1, AgentRuntimeLedger>,
+    retained_bytes: usize,
 }
 impl CompletedChildLedgers {
     pub(super) fn capture(
@@ -47,8 +51,8 @@ impl CompletedChildLedgers {
         if agent.0 == 0
             || epoch.incarnation == 0
             || epoch.turn == 0
-            || run.0.is_empty()
-            || tenant.0.is_empty()
+            || !valid_scope(&run.0)
+            || !valid_scope(&tenant.0)
         {
             return Err(ControllerError::Invalid(
                 "invalid native child ledger scope",
@@ -64,6 +68,25 @@ impl CompletedChildLedgers {
                 return Err(ControllerError::StaleEpoch);
             }
         }
+        let retained_bytes = ledger
+            .bounded_snapshot_bytes(MAX_RECEIPT_BYTES)
+            .ok_or(ControllerError::Capacity)?
+            .checked_add(tenant.0.len())
+            .and_then(|value| value.checked_add(run.0.len()))
+            .ok_or(ControllerError::Capacity)?;
+        if retained_bytes > MAX_RECEIPT_BYTES {
+            return Err(ControllerError::Capacity);
+        }
+        let previous = self
+            .snapshots
+            .get(&agent)
+            .map_or(0, |receipt| receipt.retained_bytes);
+        let aggregate = self
+            .retained_bytes
+            .checked_sub(previous)
+            .and_then(|value| value.checked_add(retained_bytes))
+            .filter(|value| *value <= MAX_RETAINED_BYTES)
+            .ok_or(ControllerError::Capacity)?;
         self.snapshots.insert(
             agent,
             AgentRuntimeLedger {
@@ -71,9 +94,11 @@ impl CompletedChildLedgers {
                 epoch,
                 tenant: tenant.clone(),
                 run: run.clone(),
-                ledger: ledger.clone(),
+                ledger: Arc::new(ledger.clone()),
+                retained_bytes,
             },
         );
+        self.retained_bytes = aggregate;
         Ok(())
     }
     pub(super) fn read(&self, agent: AgentIdV1, epoch: AgentEpochV1) -> Option<AgentRuntimeLedger> {
@@ -82,6 +107,10 @@ impl CompletedChildLedgers {
             .filter(|receipt| receipt.epoch == epoch)
             .cloned()
     }
+}
+
+fn valid_scope(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 512 && !value.chars().any(char::is_control)
 }
 
 #[cfg(test)]
@@ -127,5 +156,28 @@ mod tests {
             )
             .unwrap();
         assert!(owner.read(AgentIdV1(2), epoch).is_none());
+    }
+    #[test]
+    fn malformed_scope_refuses_before_snapshot_clone() {
+        let mut owner = CompletedChildLedgers::default();
+        let epoch = AgentEpochV1 {
+            incarnation: 1,
+            turn: 1,
+        };
+        for run in ["x".repeat(513), "bad\nrun".into()] {
+            assert!(
+                owner
+                    .capture(
+                        AgentIdV1(2),
+                        epoch,
+                        &TenantId("tenant".into()),
+                        &RunId(run),
+                        &Ledger::new()
+                    )
+                    .is_err()
+            );
+        }
+        assert!(owner.snapshots.is_empty());
+        assert_eq!(owner.retained_bytes, 0);
     }
 }
