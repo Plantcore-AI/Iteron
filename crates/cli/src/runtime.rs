@@ -72,6 +72,8 @@ use effect_descriptor::{
     effect_workspace,
 };
 use kernel_effect_bridge::broker_kernel_effect;
+mod deferred_batch_admission;
+mod deferred_batch_assembly;
 mod deferred_batch_executor;
 mod deferred_tool_batch;
 mod early_tool_gate;
@@ -2910,12 +2912,9 @@ impl Agent {
                     .capture_before(optional_tool_round.paths())
                     .await;
             }
-            let batch = self.select_concurrent_deferred_batch(
-                &deferred,
-                argument_trust,
-                messages,
-                optional_tool_round.excluded(),
-            )?;
+            let batch = self
+                .deferred_batch_policy(messages)
+                .select(&deferred, optional_tool_round.excluded())?;
             if batch.len() > 1 {
                 let effecting_governor = iteron_sched::Governor::new(
                     self.execution_policy
@@ -2924,15 +2923,12 @@ impl Agent {
                 );
                 let sink = response.sink();
                 let execution = self
-                    .run_concurrent_deferred_batch(
+                    .deferred_batch_admission(
                         turn_id,
-                        batch,
                         &effecting_governor,
                         result_projection_budget,
-                        sink.results,
-                        sink.any_error,
-                        sink.images,
                     )
+                    .run(batch, sink.results, sink.any_error, sink.images)
                     .await;
                 if let Err(error) = execution {
                     if matches!(error, KernelError::UnknownEffects { .. })
@@ -3319,51 +3315,6 @@ impl Agent {
         }
     }
 
-    /// The LEADING run of deferred calls that may execute concurrently.
-    ///
-    /// Membership is a pure read of decisions already made elsewhere: the tool policy's proposal,
-    /// the frozen capability gate, the task ceiling, the turn's governing trust. The scan never
-    /// prompts, never runs a hook, never widens a capability, and STOPS at the first call it cannot
-    /// admit on those terms — so the group is always a prefix of the model's declared order and the
-    /// relative order of every effect in the turn is exactly what it was before.
-    ///
-    /// A call leaves the group (and ends it) when it would need something only sequence can give:
-    /// an operator prompt or a denial, a `PreToolUse` hook's opinion, an ADR-003 dedup replay, a
-    /// subagent/workflow fan-out that settles through its own boundary, or a write to a path
-    /// another member already claimed.
-    fn select_concurrent_deferred_batch(
-        &mut self,
-        deferred: &[(
-            usize,
-            ToolUse,
-            Result<iteron_tools::ToolPolicyProposal, iteron_tools::ToolPolicyError>,
-        )],
-        _argument_trust: Trust,
-        messages: &[Message],
-        excluded_indices: &std::collections::BTreeSet<usize>,
-    ) -> Result<Vec<AutoApprovedCall>, KernelError> {
-        deferred_tools::DeferredBatchPolicy {
-            registry: &self.registry,
-            operation: permission_policy::OperationPolicy {
-                mode: self.permission_mode,
-                rules: &self.permission_rules,
-                bypass: self.bypass_permissions,
-                task_ceiling: self.authority_ceiling,
-                policy_capabilities: self.policy_capabilities,
-                governing_trust: self.governing_turn_trust(messages),
-                authority: self.operator_authority(),
-            },
-            failed_actions: &self.failed_actions,
-            declared_set_required: self
-                .execution_policy
-                .effecting_tool_admission
-                .declared_set_required,
-            external_dispatch_gate: self.plantcore_dispatch_gate().is_some(),
-            plantcore_gateway_enabled: self.plantcore_runtime_enabled(),
-        }
-        .select(deferred, excluded_indices)
-    }
-
     /// Assemble real independent execution observations and physical settlement owners. The
     /// coordinator retains handles itself and never receives mutable Agent state.
     fn early_tool_collection(
@@ -3383,118 +3334,6 @@ impl Agent {
         pure: &mut Vec<PureToolInFlight>,
     ) -> Result<(), KernelError> {
         self.early_tool_collection(turn).abort_all(pure).await
-    }
-
-    async fn gate_concurrent_deferred_batch(
-        &mut self,
-        turn: TurnId,
-        batch: Vec<AutoApprovedCall>,
-        results: &mut [Option<ToolResult>],
-        any_error: &mut bool,
-    ) -> Result<Vec<AutoApprovedCall>, KernelError> {
-        let admission = self.hook_execution(turn).gate_batch(batch).await?;
-        for denied in admission.denied {
-            let admitted = denied.admitted;
-            let result = ToolResult {
-                tool_use_id: admitted.call.id.clone(),
-                content: format!(
-                    "tool `{}` blocked by a tool gate hook: {}",
-                    admitted.call.name, denied.reason
-                ),
-                is_error: true,
-                trust: Trust::Workspace,
-                latency_ms: 0,
-            };
-            self.commit_refused_tool_result(turn, &admitted.call.name, &result)?;
-            self.ui(tool_end_ui(&admitted.call, &result));
-            results[admitted.index] = Some(result);
-            *any_error = true;
-            self.lifecycle_event("hook.blocked", Some(turn), LifecyclePayload::default());
-        }
-        Ok(admission.allowed)
-    }
-
-    /// Execute one auto-approved, non-overlapping group of deferred calls concurrently.
-    ///
-    /// The boundary is unchanged; only its shape is. Every write-ahead intent is fsynced in tool
-    /// order BEFORE any executor starts, every terminal is appended in that same order after, and
-    /// each effect id is still `effect_id(turn, RegistryTool, idx)` — so a reader replaying the
-    /// journal sees the identical ordinals, correlated to the identical calls. What moves is the
-    /// executor phase, bounded by the same `Governor` the pure path uses. A group of four therefore
-    /// costs the slowest call instead of the sum of four.
-    ///
-    /// `run_admitted_intent` takes `&self`, so this needs no `spawn` and no `'static` bound: the
-    /// futures are polled together on this task, and the registry's memo invalidation stays the
-    /// single authoritative path it already was.
-    async fn run_concurrent_deferred_batch(
-        &mut self,
-        turn_id: TurnId,
-        batch: Vec<AutoApprovedCall>,
-        governor: &iteron_sched::Governor,
-        result_projection_budget: context_runtime::TurnResultProjectionBudget,
-        results: &mut [Option<ToolResult>],
-        any_error: &mut bool,
-        image_projections: &mut Vec<tool_images::PendingToolImageProjection>,
-    ) -> Result<(), KernelError> {
-        // The same three pre-effect questions the ordered loop asks, asked once for the whole
-        // group. If any is already true, nothing is opened and the loop below still owns every one
-        // of these calls — it materializes the same refusal it always did, in order.
-        let _ = self.collect_inbound_ops(turn_id);
-        if self.record_failed
-            || self.run_deadline_exhausted()
-            || self.requested_control() != InboundControl::None
-        {
-            return Ok(());
-        }
-
-        let batch = self
-            .gate_concurrent_deferred_batch(turn_id, batch, results, any_error)
-            .await?;
-        if batch.is_empty() {
-            return Ok(());
-        }
-
-        let events = self.tool_events(turn_id);
-        let publication = self.tool_output_publication_factory();
-        let hooks = hook_execution::HookExecutionScope {
-            turn: turn_id,
-            workspace: self.workspace.as_path(),
-            hooks: &self.hooks,
-            command_journal: self.hook_effect_journal.clone(),
-            interrupt: self.control.interrupt().cloned(),
-            drain: self.control.drain().clone(),
-            activity: self.activity.clone(),
-            emitter: self.lifecycle_emitter.clone(),
-            dispatcher: self.lifecycle_hooks.clone(),
-            correlation: self.lifecycle_correlation(Some(turn_id)),
-        };
-        deferred_tool_batch::DeferredToolBatch {
-            journal: tool_execution_journal::ToolExecutionJournal {
-                rollout: &mut self.rollout,
-                effects: &mut self.effect_journal,
-                ledger: &mut self.ledger,
-                failed_actions: &mut self.failed_actions,
-                record_failed: &mut self.record_failed,
-                diagnostics: &self.diagnostics,
-                #[cfg(test)]
-                fault: &mut self.fail_next_durable_append,
-            },
-            scope: deferred_tool_batch::DeferredToolScope {
-                turn: turn_id,
-                registry: &self.registry,
-                governor,
-                spill_owner: self.tool_output_spill.clone(),
-                interrupt: self.control.interrupt().cloned(),
-                force_cancel: self.control.force_cancel().clone(),
-                drain: self.control.drain().clone(),
-                projection: result_projection_budget,
-                publication,
-                hooks,
-                events,
-            },
-        }
-        .execute(batch, results, any_error, image_projections)
-        .await
     }
 
     /// Assemble the ordered effect owner from real disjoint state ports. No permission or
