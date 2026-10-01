@@ -18,6 +18,9 @@
 //! detects an altered parent prefix rather than trusting it. Unknown event kinds are tolerated
 //! on replay via `EventKind::Unknown` (R5-review Risk 6), so a cross-version scan does not fail.
 
+mod bounded_reindex;
+pub use bounded_reindex::{ReindexReceipt, reindex_bounded};
+
 #[path = "session_private_cache.rs"]
 pub(crate) mod private_cache;
 #[path = "tunables.rs"]

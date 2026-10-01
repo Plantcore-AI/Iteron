@@ -1,43 +1,27 @@
+#[cfg(test)]
+use super::session_management;
 use super::{
     App, PickAction, PickItem, ProviderDirectory, Session, app_server, block, command_dispatch,
-    session_management, start_adopt_session, start_fresh_session, transcript_effect, ui_safe_text,
+    start_adopt_session, start_fresh_session, transcript_effect, ui_safe_text,
 };
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, atomic::AtomicBool};
+#[cfg(test)]
 use std::time::Duration;
+#[cfg(test)]
+mod native_history_fixtures;
+use super::history_client::HistoryClient;
+use iteron_protocol::thread_lifecycle::ThreadLifecycleCommandV1;
+#[cfg(test)]
+pub(super) use native_history_fixtures::{
+    load_session_page, session_picker_items, spawn_session_page_load,
+};
 
 /// Characters kept from a session title in the picker row. A title longer than this wraps on a
 /// conventional terminal and pushes the sessions below it off the list.
 const PICKER_TITLE_MAX_CHARS: usize = 80;
 const SESSION_PICKER_PAGE_SIZE: usize = 25;
 const SESSION_PICKER_PREFETCH_DISTANCE: usize = 5;
-static SESSION_INDEX_REBUILDS: std::sync::OnceLock<
-    std::sync::Mutex<std::collections::HashMap<PathBuf, std::sync::Arc<SessionIndexRebuild>>>,
-> = std::sync::OnceLock::new();
-
-struct SessionIndexRebuild {
-    result: std::sync::Mutex<Option<Result<(), String>>>,
-    ready: std::sync::Condvar,
-}
-
-static SESSION_PAGE_LOADS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
-struct SessionPageLoadSlot;
-
-impl Drop for SessionPageLoadSlot {
-    fn drop(&mut self) {
-        SESSION_PAGE_LOADS.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
-    }
-}
-
-fn max_background_session_index_rebuilds() -> usize {
-    iteron_tunables::param_usize(
-        "cli.tui.session_picker.max_background_session_index_rebuilds",
-        8,
-    )
-    .clamp(1, 8)
-}
-
 pub(super) fn session_picker_page_size() -> usize {
     iteron_tunables::param_integer(
         "cli.tui.session_picker.session_picker_page_size",
@@ -56,7 +40,7 @@ pub(super) fn session_picker_prefetch_distance() -> usize {
 pub(super) struct SessionPickerBacking {
     pub(super) runs: PathBuf,
     pub(super) current_run: String,
-    pub(super) next_cursor: Option<iteron_record::SessionPageCursor>,
+    pub(super) next_cursor: Option<String>,
     pub(super) has_more: bool,
     pub(super) generation: u64,
 }
@@ -65,7 +49,7 @@ pub(super) struct SessionPageResult {
     pub(super) generation: u64,
     pub(super) runs: PathBuf,
     pub(super) current_run: String,
-    pub(super) next_cursor: Option<iteron_record::SessionPageCursor>,
+    pub(super) next_cursor: Option<String>,
     pub(super) has_more: bool,
     pub(super) replace: bool,
     pub(super) warning: Option<String>,
@@ -74,110 +58,6 @@ pub(super) struct SessionPageResult {
 
 pub(super) struct SessionPreview {
     pub(super) inspection: serde_json::Value,
-}
-
-pub(super) fn session_picker_items(
-    mut sessions: Vec<iteron_record::SessionMeta>,
-    current_run: &str,
-    runs: &Path,
-) -> Vec<PickItem> {
-    let mut decorated = sessions
-        .drain(..)
-        .map(|session| {
-            let view = session_management::load(runs, &session.run_id.0).unwrap_or_default();
-            (session, view)
-        })
-        .collect::<Vec<_>>();
-    decorated.sort_by(|(left, left_view), (right, right_view)| {
-        right_view
-            .pinned
-            .cmp(&left_view.pinned)
-            .then_with(|| left_view.archived.cmp(&right_view.archived))
-            .then_with(|| right.updated_at.cmp(&left.updated_at))
-            .then_with(|| {
-                right
-                    .updated_at_subsec_nanos
-                    .cmp(&left.updated_at_subsec_nanos)
-            })
-            .then_with(|| right.created_at.cmp(&left.created_at))
-            .then_with(|| left.run_id.0.cmp(&right.run_id.0))
-    });
-    decorated
-        .into_iter()
-        .map(|(session, view)| {
-            let cost = session
-                .cost_usd()
-                .map(|value| format!("${value:.4}"))
-                .unwrap_or_else(|| "cost unknown".into());
-            let route = match (
-                session.provider_id.trim().is_empty(),
-                session.model.trim().is_empty(),
-            ) {
-                (false, false) => format!("{}/{}", session.provider_id, session.model),
-                (false, true) => session.provider_id.clone(),
-                (true, false) => session.model.clone(),
-                (true, true) => "route unknown".into(),
-            };
-            let run_id = session.run_id.0;
-            let mut flags = Vec::new();
-            if view.pinned {
-                flags.push("pinned");
-            }
-            if view.archived {
-                flags.push("archived");
-            }
-            let flags = if flags.is_empty() {
-                String::new()
-            } else {
-                format!(" · {}", flags.join(" · "))
-            };
-            PickItem::flat(
-                view.title.unwrap_or(session.title),
-                format!(
-                    "run {run_id} · {} · {cost} · {route}{flags} · {} · recorded {}",
-                    block::plural(session.turns as usize, "turn"),
-                    ui_safe_text(&session.cwd.to_string_lossy()),
-                    super::session_inspection::recorded_outcome_label(
-                        session.last_outcome.as_ref()
-                    ),
-                ),
-                run_id == current_run,
-                PickAction::AdoptRun(run_id),
-            )
-        })
-        .collect()
-}
-
-pub(super) fn session_display_name(rollout_path: &Path) -> String {
-    let Some(runs) = rollout_path.parent() else {
-        return "New session".into();
-    };
-    let Some(run) = rollout_path.file_stem().and_then(|stem| stem.to_str()) else {
-        return "New session".into();
-    };
-    let renamed = session_management::load(runs, run)
-        .ok()
-        .and_then(|presentation| presentation.title)
-        .filter(|title| !title.trim().is_empty());
-    let recorded = || {
-        iteron_record::session::meta(runs, &iteron_protocol::RunId(run.to_owned()))
-            .ok()
-            .map(|metadata| metadata.title)
-            .filter(|title| !title.trim().is_empty())
-    };
-    let title = renamed
-        .or_else(recorded)
-        .unwrap_or_else(|| "New session".into());
-    title
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .chars()
-        .take(iteron_tunables::param_integer(
-            "cli.tui.session_picker.picker_title_max_chars",
-            PICKER_TITLE_MAX_CHARS,
-        ))
-        .collect()
 }
 
 pub(super) fn open_session_picker(app: &mut App, session: &Session) {
@@ -199,121 +79,16 @@ pub(super) fn open_session_picker(app: &mut App, session: &Session) {
         .and_then(|stem| stem.to_str())
         .unwrap_or_default();
     app.navigation.cancel_preview();
-    app.pickers.open_sessions(runs, current_run.to_owned());
-}
-
-pub(super) fn load_session_page(
-    runs: PathBuf,
-    current_run: String,
-    generation: u64,
-    cursor: Option<iteron_record::SessionPageCursor>,
-    page_size: usize,
-    first: bool,
-) -> SessionPageResult {
-    let tenant = iteron_protocol::TenantId::default();
-    let mut page = iteron_record::page(&runs, &tenant, None, cursor, Some(page_size));
-    let mut warning = None;
-    let mut replace = first;
-    if !page.index_ready {
-        if let Err(reason) = rebuild_session_index(&runs) {
-            return failed_session_page(runs, current_run, generation, &reason);
-        }
-        page = iteron_record::page(&runs, &tenant, None, None, Some(page_size));
-        replace = true;
-        if !page.index_ready {
-            return failed_session_page(
-                runs,
-                current_run,
-                generation,
-                "The session index could not be read after rebuilding. Close and reopen /resume to retry.",
-            );
-        }
-    } else if page.cursor_stale {
-        page = iteron_record::page(&runs, &tenant, None, None, Some(page_size));
-        replace = true;
-        warning = Some("session index changed; restarted from newest".into());
-    }
-    let items = session_picker_items(page.sessions, &current_run, &runs);
-    SessionPageResult {
-        generation,
-        runs,
-        current_run,
-        next_cursor: page.next_cursor,
-        has_more: page.has_more,
-        replace,
-        warning,
-        items,
-    }
-}
-
-/// One rebuild per directory. Its callers wait on blocking workers while the TUI stays live;
-/// completion reloads the page automatically, and every failure becomes a terminal picker row.
-fn rebuild_session_index(runs: &Path) -> Result<(), String> {
-    let key = runs.canonicalize().unwrap_or_else(|_| runs.to_path_buf());
-    let active = SESSION_INDEX_REBUILDS
-        .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
-    let (state, start) = {
-        let mut active = active
-            .lock()
-            .map_err(|_| "Session index worker is unavailable.")?;
-        if let Some(state) = active.get(&key) {
-            (state.clone(), false)
-        } else {
-            if active.len() >= max_background_session_index_rebuilds() {
-                return Err(
-                    "Session index workers are busy. Close and reopen /resume to retry.".into(),
-                );
-            }
-            let state = std::sync::Arc::new(SessionIndexRebuild {
-                result: std::sync::Mutex::new(None),
-                ready: std::sync::Condvar::new(),
-            });
-            active.insert(key.clone(), state.clone());
-            (state, true)
-        }
+    let Some(history) = HistoryClient::capture(session.client.clone(), session.control_sender())
+    else {
+        app.note(
+            block::NoticeLevel::Warn,
+            "history host scope is unavailable",
+        );
+        return;
     };
-    if start {
-        let thread_key = key.clone();
-        let worker_state = state.clone();
-        let spawned = std::thread::Builder::new()
-            .name("iteron-session-picker-reindex".into())
-            .spawn(move || {
-                let result = std::panic::catch_unwind(|| iteron_record::reindex(&thread_key))
-                    .map_err(|_| "Session index worker failed. Reopen /resume to retry.".to_string())
-                    .and_then(|result| result.map(|_| ()).map_err(|_| "Cannot rebuild the session index. Check the session directory is readable and writable, then reopen /resume.".to_string()));
-                if let Ok(mut slot) = worker_state.result.lock() {
-                    *slot = Some(result);
-                }
-                worker_state.ready.notify_all();
-                if let Some(active) = SESSION_INDEX_REBUILDS.get()
-                    && let Ok(mut active) = active.lock()
-                {
-                    active.remove(&thread_key);
-                }
-            });
-        if spawned.is_err() {
-            if let Ok(mut active) = active.lock() {
-                active.remove(&key);
-            }
-            if let Ok(mut result) = state.result.lock() {
-                *result = Some(Err(
-                    "Cannot start the session index worker. Reopen /resume to retry.".into(),
-                ));
-            }
-            state.ready.notify_all();
-        }
-    }
-    let result = state
-        .result
-        .lock()
-        .map_err(|_| "Session index worker failed.")?;
-    let (result, _) = state
-        .ready
-        .wait_timeout_while(result, Duration::from_secs(10), |result| result.is_none())
-        .map_err(|_| "Session index worker failed.")?;
-    result.clone().unwrap_or_else(|| Err(
-        "Session index rebuilding is taking longer than expected. Close and reopen /resume to retry.".into()
-    ))
+    app.pickers
+        .open_sessions(history, runs, current_run.to_owned());
 }
 
 pub(super) fn failed_session_page(
@@ -337,61 +112,167 @@ pub(super) fn failed_session_page(
     }
 }
 
-pub(super) fn spawn_session_page_load(
+pub(super) fn spawn_host_session_page_load(
+    history: HistoryClient,
     runs: PathBuf,
     current_run: String,
     generation: u64,
-    cursor: Option<iteron_record::SessionPageCursor>,
+    cursor: Option<String>,
     page_size: usize,
     first: bool,
 ) -> tokio::task::JoinHandle<SessionPageResult> {
     tokio::spawn(async move {
-        if SESSION_PAGE_LOADS
-            .fetch_update(
-                std::sync::atomic::Ordering::AcqRel,
-                std::sync::atomic::Ordering::Acquire,
-                |active| (active < max_background_session_index_rebuilds()).then_some(active + 1),
-            )
-            .is_err()
-        {
-            return failed_session_page(
-                runs,
-                current_run,
-                generation,
-                "Session loading is busy. Close and reopen /resume to retry.",
-            );
-        }
-        let slot = SessionPageLoadSlot;
-        let worker_runs = runs.clone();
-        let worker_run = current_run.clone();
-        let job = tokio::task::spawn_blocking(move || {
-            // Keep admission until physical work ends, even when its picker has closed or timed out.
-            let _slot = slot;
-            load_session_page(
-                worker_runs,
-                worker_run,
-                generation,
+        let load = async {
+            let list = |cursor| ThreadLifecycleCommandV1::List {
                 cursor,
-                page_size,
-                first,
-            )
-        });
-        match tokio::time::timeout(Duration::from_secs(15), job).await {
-            Ok(Ok(page)) => page,
-            Ok(Err(_)) => failed_session_page(
-                runs,
-                current_run,
+                limit: page_size.clamp(1, 64) as u16,
+            };
+            let mut page = history.request(list(cursor)).await?;
+            if page["type"] != "thread_list_v1" || !page["index_ready"].is_boolean() {
+                return Err("session list lacks a host observation".into());
+            }
+            let mut replace = first;
+            let mut warning = None;
+            if page["index_ready"] != true {
+                if page["rebuild_recommended"] != true {
+                    return Err("session index is temporarily unavailable; reopen to retry".into());
+                }
+                let repaired = history.repair_index().await?;
+                if repaired["type"] != "thread_reindexed_v1" {
+                    return Err("session index repair lacks a host receipt".into());
+                }
+                if repaired["unavailable"]
+                    .as_u64()
+                    .is_some_and(|count| count > 0)
+                {
+                    warning =
+                        Some("some records were unavailable to the verified index repair".into());
+                }
+                page = history.request(list(None)).await?;
+                replace = true;
+            } else if page["cursor_stale"] == true {
+                page = history.request(list(None)).await?;
+                replace = true;
+                warning = Some("session index changed; restarted from newest".into());
+            }
+            if page["type"] != "thread_list_v1" || page["index_ready"] != true {
+                return Err("session index is unavailable after host repair".into());
+            }
+            if page["next_cursor"]
+                .as_str()
+                .is_some_and(|cursor| cursor.len() > 1024)
+            {
+                return Err("session cursor exceeds its host bound".into());
+            }
+            let items = host_session_picker_items(&page, &current_run)?;
+            Ok(SessionPageResult {
                 generation,
-                "Session loading failed. Close and reopen /resume to retry.",
-            ),
-            Err(_) => failed_session_page(
-                runs,
-                current_run,
-                generation,
-                "Session loading timed out. Close and reopen /resume to retry.",
-            ),
+                runs: runs.clone(),
+                current_run: current_run.clone(),
+                next_cursor: page["next_cursor"].as_str().map(str::to_owned),
+                has_more: page["has_more"] == true,
+                replace,
+                warning,
+                items,
+            })
         }
+        .await;
+        load.unwrap_or_else(|reason: String| {
+            failed_session_page(runs, current_run, generation, &reason)
+        })
     })
+}
+fn host_session_picker_items(
+    page: &serde_json::Value,
+    current_run: &str,
+) -> Result<Vec<PickItem>, String> {
+    let rows = page["threads"]
+        .as_array()
+        .ok_or("host session page is unavailable")?;
+    if rows.len() > 64 {
+        return Err("host session page exceeds its display bound".into());
+    }
+    let mut items = Vec::new();
+    for row in rows {
+        let run = row["run_id"]
+            .as_str()
+            .ok_or("host session identity is unavailable")?;
+        ThreadLifecycleCommandV1::Read {
+            run_id: iteron_protocol::RunId(run.into()),
+        }
+        .validate()
+        .map_err(str::to_owned)?;
+        let title = row["title"].as_str().unwrap_or(run);
+        let provider = row["provider_id"].as_str().unwrap_or("route unknown");
+        let model = row["model"].as_str().unwrap_or("model unknown");
+        let workspace = row["workspace"].as_str().unwrap_or("workspace unavailable");
+        if title.len() > 1024
+            || provider.len() > 1024
+            || model.len() > 1024
+            || workspace.len() > 4096
+        {
+            return Err("host session display exceeds its text bound".into());
+        }
+        let cost = row["cost_usd"]
+            .as_f64()
+            .filter(|cost| cost.is_finite() && *cost >= 0.0)
+            .map_or_else(|| "cost unknown".into(), |cost| format!("${cost:.4}"));
+        let route = format!("{provider}/{model}");
+        let outcome = match row["recorded_outcome"].as_str() {
+            Some("done") => "done",
+            Some("drained") => "drained",
+            Some("budget_exhausted") => "budget exhausted",
+            Some("interrupted") => "interrupted",
+            Some("stuck") => "stuck",
+            Some("harness_error") => "harness error",
+            _ => "no terminal available",
+        };
+        let pinned = row["pinned"] == true;
+        let archived = row["archived"] == true;
+        let flags = format!(
+            "{}{}",
+            if row["pinned"] == true {
+                " · pinned"
+            } else {
+                ""
+            },
+            if row["archived"] == true {
+                " · archived"
+            } else {
+                ""
+            }
+        );
+        let turns = row["turns"].as_u64().unwrap_or(0);
+        let mut item = PickItem::flat(
+            ui_safe_text(title),
+            format!(
+                "run {run} · {turns} turns · {cost} · {}{flags} · {} · recorded {}",
+                ui_safe_text(&route),
+                ui_safe_text(workspace),
+                outcome
+            ),
+            run == current_run,
+            PickAction::AdoptRun(run.into()),
+        );
+        if item.hint.len() > 8192 {
+            return Err("host session display exceeds its text bound".into());
+        }
+        item.label = item
+            .label
+            .chars()
+            .take(
+                iteron_tunables::param_integer(
+                    "cli.tui.session_picker.picker_title_max_chars",
+                    PICKER_TITLE_MAX_CHARS,
+                )
+                .min(1024),
+            )
+            .collect();
+        items.push((pinned, archived, item));
+    }
+    // Stable sort preserves the host's chronology among equal actual presentation flags.
+    items.sort_by_key(|(pinned, archived, _)| (!pinned, *archived));
+    Ok(items.into_iter().map(|(_, _, item)| item).collect())
 }
 
 #[cfg(test)]
@@ -479,5 +360,26 @@ pub(super) fn handle_sessions_command(
             block::NoticeLevel::Err,
             "usage: /sessions [new|switch RUN|preview RUN|rename RUN TITLE|pin RUN|unpin RUN|archive RUN|unarchive RUN|delete RUN permanently|read RUN|export RUN|trace RUN [AFTER_SEQ]]",
         ),
+    }
+}
+
+#[cfg(test)]
+mod host_page_tests {
+    use super::host_session_picker_items;
+    use serde_json::json;
+    #[test]
+    fn real_flags_control_sort_and_unknown_cost_never_becomes_success() {
+        let page = json!({"threads":[
+            {"run_id":"spoof", "title":"Spoof · pinned", "provider_id":"fake · pinned", "pinned":false,"archived":false,"cost_usd":null,"recorded_outcome":"invented"},
+            {"run_id":"real","title":"Real", "pinned":true,"archived":false,"cost_usd":0.4,"recorded_outcome":"done"}
+        ]});
+        let items = host_session_picker_items(&page, "spoof").unwrap();
+        assert_eq!(items[0].label, "Real");
+        assert!(items[1].is_current);
+        assert!(items[1].hint.contains("cost unknown"));
+        assert!(items[1].hint.contains("no terminal available"));
+        assert!(items[0].hint.contains("recorded done"));
+        let large = json!({"threads":[{"run_id":"real","title":"x".repeat(1025)}]});
+        assert!(host_session_picker_items(&large, "").is_err());
     }
 }

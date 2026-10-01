@@ -8,10 +8,10 @@ use super::{
     dispatch_slash_command, draw, finish_attachment_effect, hyperlink, input_dispatch, keymap,
     local_job_wake, next_wake, notification, product_projection, prompt_history,
     report_stopped_workflows, restore_terminal, schedule_transcript_viewer_effect,
-    service_input_control, session_display_name, slash_command_body, startup,
-    submit_queued_model_input, submit_turn, terminal_input, theme, transcript_effect,
-    update_keymap_status, wait_for_forced_server_shutdown, wait_for_server_shutdown, wake_until,
-    workflow_region, workspace_command,
+    service_input_control, slash_command_body, startup, submit_queued_model_input, submit_turn,
+    terminal_input, theme, transcript_effect, update_keymap_status,
+    wait_for_forced_server_shutdown, wait_for_server_shutdown, wake_until, workflow_region,
+    workspace_command,
 };
 
 pub(crate) struct RunConfig {
@@ -85,37 +85,66 @@ pub async fn run(
         .map(std::path::Path::to_path_buf);
     let history_config_home = crate::config::config_home();
     let history_bootstrap_run = history_source_run.clone();
-    let title_rollout = facts.rollout_path.clone();
+    let title_client = super::history_client::HistoryClient::capture(
+        handle.client.clone(),
+        handle.control.clone(),
+    );
     let workflow_hydrate_dir = facts
         .rollout_path
         .parent()
         .map(|state_dir| state_dir.join("subagents").join("workflows"));
-    tokio::task::spawn_blocking(move || {
-        let hyperlink_policy = hyperlink::Policy::detect(&history_workspace);
-        let history_started = Instant::now();
-        let hydrated = prompt_history::bootstrap(
-            history_mode,
-            history_config_home,
-            &history_workspace,
-            history_runs_dir,
-            history_bootstrap_run,
-        );
-        let history_elapsed = history_started.elapsed();
-        let title_started = Instant::now();
-        let title = session_display_name(&title_rollout);
-        let title_elapsed = title_started.elapsed();
-        let mut workflow_monitor = workflow_region::WorkflowMonitor::default();
-        workflow_monitor.rehydrate(workflow_hydrate_dir.as_deref());
-        let workspace_dirty = cached_workspace_dirty(&history_workspace);
-        let _ = history_tx.blocking_send((
+    tokio::spawn(async move {
+        let native = tokio::task::spawn_blocking(move || {
+            let hyperlink_policy = hyperlink::Policy::detect(&history_workspace);
+            let history_started = Instant::now();
+            let hydrated = prompt_history::bootstrap(
+                history_mode,
+                history_config_home,
+                &history_workspace,
+                history_runs_dir,
+                history_bootstrap_run,
+            );
+            let history_elapsed = history_started.elapsed();
+            let mut workflow_monitor = workflow_region::WorkflowMonitor::default();
+            workflow_monitor.rehydrate(workflow_hydrate_dir.as_deref());
+            let workspace_dirty = cached_workspace_dirty(&history_workspace);
+            (
+                hydrated,
+                workflow_monitor,
+                workspace_dirty,
+                hyperlink_policy,
+                history_elapsed,
+            )
+        });
+        let title_read = async {
+            let started = Instant::now();
+            let title = match title_client {
+                Some(client) => client.title().await,
+                None => "New session".into(),
+            };
+            (title, started.elapsed())
+        };
+        let ((title, title_elapsed), native) = tokio::join!(title_read, native);
+        if let Ok((
             hydrated,
-            title,
             workflow_monitor,
             workspace_dirty,
             hyperlink_policy,
             history_elapsed,
-            title_elapsed,
-        ));
+        )) = native
+        {
+            let _ = history_tx
+                .send((
+                    hydrated,
+                    title,
+                    workflow_monitor,
+                    workspace_dirty,
+                    hyperlink_policy,
+                    history_elapsed,
+                    title_elapsed,
+                ))
+                .await;
+        }
     });
     let mut history_writer = prompt_history::Writer::new(None);
     let mut history_open = true;

@@ -58,6 +58,35 @@ fn tcp_navigation_uses_host_ids_checked_origin_and_reopened_physical_fork() {
     );
     provider.finish();
 
+    send(
+        &mut connection,
+        control(
+            899,
+            PROTOCOL_VERSION,
+            json!({"type":"thread_lifecycle_v1","command":{"type":"reindex","thread_id":thread,"run_id":origin}}),
+        ),
+    );
+    let repaired = matching_control(&mut reader, 899);
+    assert_eq!(repaired["type"], "thread_reindexed_v1");
+    assert!(repaired["indexed"].as_u64().unwrap() >= 1);
+    send(
+        &mut connection,
+        control(
+            900,
+            PROTOCOL_VERSION,
+            json!({"type":"thread_lifecycle_v1","command":{"type":"list","limit":25}}),
+        ),
+    );
+    let listed = matching_control(&mut reader, 900);
+    assert_eq!(listed["index_ready"], true);
+    assert!(
+        listed["threads"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["run_id"] == origin)
+    );
+
     let before = run_count(&scratch.runs());
     let foreign = navigate(
         &mut connection,

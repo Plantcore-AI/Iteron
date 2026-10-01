@@ -6,7 +6,7 @@ use super::command_surfaces::initial_picker_selection;
 use super::picker::{PickAction, PickItem, Picker, PickerEvent};
 use super::session_picker::{
     SessionPageResult, SessionPickerBacking, failed_session_page, session_picker_page_size,
-    session_picker_prefetch_distance, spawn_session_page_load,
+    session_picker_prefetch_distance, spawn_host_session_page_load,
 };
 use crate::semantic_text::is_unsafe_display_char;
 use crate::theme;
@@ -38,6 +38,7 @@ pub(super) struct PickerOwner {
     backing: Option<SessionPickerBacking>,
     generation: u64,
     omitted_rows: u64,
+    history: Option<super::history_client::HistoryClient>,
 }
 impl PickerOwner {
     pub(super) fn view(&self) -> Option<&Picker> {
@@ -57,6 +58,7 @@ impl PickerOwner {
             job.abort();
         }
         self.backing = None;
+        self.history = None;
         self.sessions = false;
         self.generation = self.generation.wrapping_add(1);
     }
@@ -69,7 +71,12 @@ impl PickerOwner {
         self.cancel_page();
         self.picker.take().and_then(|picker| picker.saved_theme)
     }
-    pub(super) fn open_sessions(&mut self, runs: PathBuf, current_run: String) {
+    pub(super) fn open_sessions(
+        &mut self,
+        history: super::history_client::HistoryClient,
+        runs: PathBuf,
+        current_run: String,
+    ) {
         let mut loading = PickItem::flat(
             "Loading sessions…",
             "reading your saved conversations",
@@ -86,7 +93,9 @@ impl PickerOwner {
             saved_theme: None,
         });
         self.sessions = true;
-        self.job = Some(spawn_session_page_load(
+        self.history = Some(history.clone());
+        self.job = Some(spawn_host_session_page_load(
+            history,
             runs,
             current_run,
             self.generation,
@@ -100,7 +109,20 @@ impl PickerOwner {
             return None;
         }
         let job = self.job.take()?;
-        Some(self.apply_page(job.await))
+        let result = job.await;
+        if self
+            .history
+            .as_ref()
+            .is_some_and(|history| !history.is_current())
+        {
+            self.cancel_page();
+            self.picker = None;
+            return Some(PickerPageUpdate {
+                changed: true,
+                warnings: vec!["selected session changed; reopen the history picker".into()],
+            });
+        }
+        Some(self.apply_page(result))
     }
     pub(super) fn apply_page(
         &mut self,
@@ -200,8 +222,12 @@ impl PickerOwner {
         let runs = backing.runs.clone();
         let current_run = backing.current_run.clone();
         let generation = backing.generation;
-        let cursor = backing.next_cursor;
-        self.job = Some(spawn_session_page_load(
+        let cursor = backing.next_cursor.clone();
+        let Some(history) = self.history.clone() else {
+            return;
+        };
+        self.job = Some(spawn_host_session_page_load(
+            history,
             runs,
             current_run,
             generation,

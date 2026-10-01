@@ -79,6 +79,7 @@ mod inline_shell;
 mod input_dispatch;
 mod input_lanes;
 use input_lanes::{PendingInput, SubmissionAdmission};
+mod history_client;
 mod inventory;
 mod jobs;
 mod keyboard_enhancement;
@@ -96,6 +97,7 @@ mod plugins;
 mod product_projection;
 mod session_adoption;
 mod session_inspection;
+#[cfg(test)]
 mod session_management;
 mod session_navigation;
 mod session_picker;
@@ -211,7 +213,6 @@ use session_picker::{
 };
 use session_picker::{
     SessionPreview, handle_sessions_command, maybe_prefetch_session_page, open_session_picker,
-    session_display_name,
 };
 #[cfg(test)]
 use std::collections::HashSet;

@@ -25,7 +25,9 @@ pub(super) async fn apply(agent: &mut Agent, command: ThreadLifecycleCommandV1) 
             if matches!(
                 command,
                 ThreadLifecycleCommandV1::Inspect { .. }
+                    | ThreadLifecycleCommandV1::Read { .. }
                     | ThreadLifecycleCommandV1::TraceRead { .. }
+                    | ThreadLifecycleCommandV1::Reindex { .. }
             ) =>
         {
             // An explicit bounded record inspection never blocks the session's async executor.
@@ -82,7 +84,7 @@ impl HistoryScope {
     }
 
     fn metadata(&self, run: &RunId) -> Result<iteron_record::SessionMeta, String> {
-        let meta = iteron_record::session::meta(&self.runs, run)
+        let meta = super::thread_inspection::metadata(&self.runs, run)
             .map_err(|_| "thread unavailable in this workspace".to_owned())?;
         if meta.tenant != self.tenant || !same_workspace(&meta.cwd, &self.workspace) {
             return Err("thread unavailable in this workspace".into());
@@ -92,6 +94,16 @@ impl HistoryScope {
 
     fn execute(&self, command: ThreadLifecycleCommandV1) -> Result<Value, String> {
         command.validate().map_err(str::to_owned)?;
+        if let ThreadLifecycleCommandV1::Reindex { thread_id, run_id } = &command {
+            if run_id != &self.current || thread_id.0 != format!("session-{}", self.current.0) {
+                return Err("session index repair belongs to a previous selected run".into());
+            }
+            let result = iteron_record::session::reindex_bounded(&self.runs)
+                .map_err(|_| "bounded host session index repair unavailable".to_owned())?;
+            return Ok(
+                json!({"type":"thread_reindexed_v1", "contract_version": THREAD_LIFECYCLE_VERSION, "indexed":result.indexed,"unavailable":result.unavailable,"source":"verified_record_owner"}),
+            );
+        }
         if let ThreadLifecycleCommandV1::List { cursor, limit } = command {
             return self.list(cursor.as_deref(), limit);
         }
@@ -112,7 +124,7 @@ impl HistoryScope {
             self.metadata(&run)?
         };
         match command {
-            ThreadLifecycleCommandV1::List { .. } => {
+            ThreadLifecycleCommandV1::List { .. } | ThreadLifecycleCommandV1::Reindex { .. } => {
                 unreachable!("list was dispatched before per-thread metadata access")
             }
             ThreadLifecycleCommandV1::Read { .. } => self.view(&meta),
@@ -202,6 +214,18 @@ impl HistoryScope {
             "pinned": view.pinned,
             "archived": view.archived,
             "turns": meta.turns,
+            "cost_usd": meta.cost_usd(),
+            "provider_id": iteron_record::redact::scrub(&meta.provider_id),
+            "model": iteron_record::redact::scrub(&meta.model),
+            "recorded_outcome": match meta.last_outcome.as_ref() {
+                Some(iteron_protocol::Outcome::Done) => Some("done"),
+                Some(iteron_protocol::Outcome::Drained) => Some("drained"),
+                Some(iteron_protocol::Outcome::BudgetExhausted(_)) => Some("budget_exhausted"),
+                Some(iteron_protocol::Outcome::Interrupted) => Some("interrupted"),
+                Some(iteron_protocol::Outcome::Stuck) => Some("stuck"),
+                Some(iteron_protocol::Outcome::HarnessError) => Some("harness_error"),
+                None => None,
+            },
             "created_at": meta.created_at,
             "updated_at": meta.updated_at,
             "active": meta.run_id == self.current,
@@ -391,6 +415,64 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn list_is_read_only_and_operator_repair_reports_verified_scope_and_unavailable_records() {
+        let fixture = Fixture::new();
+        drop(fixture.write("mine", "workspace", TenantId::default()));
+        drop(fixture.write("otherrepo", "other", TenantId::default()));
+        let scope = fixture.scope();
+        std::fs::write(
+            scope.runs.join("corrupt.jsonl"),
+            b"not a hash-chained event\n",
+        )
+        .unwrap();
+        let files = || {
+            let mut names = std::fs::read_dir(&scope.runs)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect::<Vec<_>>();
+            names.sort();
+            names
+        };
+        let before = files();
+        let _ = scope
+            .execute(ThreadLifecycleCommandV1::List {
+                cursor: None,
+                limit: 25,
+            })
+            .unwrap();
+        assert_eq!(files(), before, "List does not repair or create an index");
+        assert!(
+            scope
+                .execute(ThreadLifecycleCommandV1::Reindex {
+                    thread_id: iteron_protocol::SessionId("session-stale".into()),
+                    run_id: RunId("stale".into())
+                })
+                .is_err()
+        );
+        assert_eq!(files(), before, "stale repair refuses before index effects");
+        let receipt = scope
+            .execute(ThreadLifecycleCommandV1::Reindex {
+                thread_id: iteron_protocol::SessionId(format!("session-{}", scope.current.0)),
+                run_id: scope.current.clone(),
+            })
+            .unwrap();
+        assert_eq!(receipt["type"], "thread_reindexed_v1");
+        assert_eq!(receipt["indexed"], 2);
+        assert_eq!(receipt["unavailable"], 1);
+        let page = scope
+            .execute(ThreadLifecycleCommandV1::List {
+                cursor: None,
+                limit: 25,
+            })
+            .unwrap();
+        assert_eq!(page["index_ready"], true);
+        assert_eq!(page["threads"].as_array().unwrap().len(), 1);
+        assert_eq!(page["threads"][0]["run_id"], "mine");
+        assert!(page["threads"][0]["recorded_outcome"].is_null());
+        assert_eq!(page["threads"][0]["active"], false);
     }
 
     #[test]
