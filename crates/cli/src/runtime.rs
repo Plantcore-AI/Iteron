@@ -139,6 +139,7 @@ mod budget_control;
 pub use budget_control::TurnBudgetState;
 pub(crate) mod client_inventory;
 mod coding_provider_execution;
+mod coding_request_execution;
 mod coding_run_assembly;
 mod coding_run_driver;
 mod compaction;
@@ -1759,7 +1760,7 @@ impl Agent {
             .drive_admitted_loop(&mut driver, relevance_task, input_images)
             .await;
         self.transcript_state
-            .replace_working(Some(driver.into_messages()));
+            .replace_working(Some(driver.into_messages()?));
         outcome
     }
 
@@ -1823,30 +1824,17 @@ impl Agent {
             if let Some(outcome) = self.finish_requested_control(turn_id).await? {
                 return Ok(outcome);
             }
-            let coding_run_driver::CodingRequestInput {
-                messages,
-                convergence,
-                recovery,
-                loop_state,
-                error_streak,
-            } = driver.begin_request()?;
-            let recipe = self.request_cycle_recipe(
+            let seed = self.request_cycle_seed(
                 turn_id,
-                messages,
                 input_images,
                 relevance_task,
-                convergence,
+                driver.convergence(),
                 context_observation_started,
             )?;
-            let mut request_cycle = request_cycle::RequestCycle::new(
-                recipe,
-                recovery,
-                &mut self.context_estimator,
-                loop_state,
-            );
-            let requested_max_tokens = request_cycle.requested_output();
+            driver.prepare_request(seed, &mut self.context_estimator)?;
+            let requested_max_tokens = driver.request()?.requested_output()?;
             loop {
-                match request_cycle.next_recovery()? {
+                match driver.request_mut()?.next_recovery()? {
                     request_recovery_driver::RequestRecoveryWork::Gate(payload) => {
                         let report = self
                             .brokered_lifecycle_gate(
@@ -1855,11 +1843,15 @@ impl Agent {
                                 payload,
                             )
                             .await?;
-                        request_cycle.gated(matches!(report.decision, HookDecision::Allow))?;
+                        driver
+                            .request_mut()?
+                            .gated(matches!(report.decision, HookDecision::Allow))?;
                     }
                     request_recovery_driver::RequestRecoveryWork::Summary(middle) => {
                         let result = self.summarize_compaction(middle, None).await;
-                        request_cycle.summary_completed(result, TurnId(self.seq_turn))?;
+                        driver
+                            .request_mut()?
+                            .summary_completed(result, TurnId(self.seq_turn))?;
                     }
                     request_recovery_driver::RequestRecoveryWork::ControlBarrier => {
                         let _ = self.collect_inbound_ops(TurnId(self.seq_turn));
@@ -1868,11 +1860,15 @@ impl Agent {
                         {
                             return Ok(outcome);
                         }
-                        request_cycle.control_checked(TurnId(self.seq_turn))?;
+                        driver
+                            .request_mut()?
+                            .control_checked(TurnId(self.seq_turn))?;
                     }
                     request_recovery_driver::RequestRecoveryWork::Coverage { middle, summary } => {
                         let result = self.verify_compaction_summary(middle, summary).await;
-                        request_cycle.coverage_completed(result, TurnId(self.seq_turn))?;
+                        driver
+                            .request_mut()?
+                            .coverage_completed(result, TurnId(self.seq_turn))?;
                     }
                     request_recovery_driver::RequestRecoveryWork::AssessAndCommit => {
                         let output = self.funded_provider_output_ceiling(
@@ -1885,7 +1881,7 @@ impl Agent {
                         let window = self.execution_context_window();
                         let accounting = self.request_accounting();
                         let (mut journal, scope, estimator, state) = self.compaction_commit_ports();
-                        if request_cycle.assess_and_commit(
+                        if driver.request_mut()?.assess_and_commit(
                             window,
                             output,
                             accounting,
@@ -1917,7 +1913,7 @@ impl Agent {
                 },
             )?;
             let turn_id = TurnId(self.seq_turn);
-            let (mut request_cycle, rebound) = request_cycle.bind_after_recovery(
+            let rebound = driver.request_mut()?.bind(
                 turn_id,
                 self.execution_context_window(),
                 request_max_tokens,
@@ -1931,26 +1927,26 @@ impl Agent {
             if let Some(reason) = self.inference_budget_exhaustion()? {
                 return self.finish(turn_id, Outcome::BudgetExhausted(reason)).await;
             }
-            if error_streak >= self.budget.max_consecutive_tool_errors {
+            if driver.request()?.error_streak() >= self.budget.max_consecutive_tool_errors {
                 return self.finish(turn_id, Outcome::Stuck).await;
             }
             let local_prepare_activity = self
                 .activity
                 .span(turn_activity::ActivityStage::LocalPrepare, Some(turn_id));
             let (journal, events) = self.request_admission_ports(turn_id);
-            request_cycle.validate(journal, &events)?;
-            let payload = request_cycle.request_gate()?;
+            driver.request_mut()?.validate(journal, &events)?;
+            let payload = driver.request_mut()?.request_gate()?;
             let report = self
                 .brokered_lifecycle_gate(turn_id, "context.segment.budget_requested", payload)
                 .await?;
-            request_cycle.gate_completed(report.decision)?;
+            driver.request_mut()?.gate_completed(report.decision)?;
             if let Some(outcome) = self.collect_and_finish_requested_control(turn_id).await? {
                 return Ok(outcome);
             }
-            request_cycle.control_passed()?;
-            self.admit_tool_image_context(request_cycle.messages(), input_images)?;
-            let publication = self.request_context_publication(request_cycle.messages());
-            let prepared = request_cycle.complete(self.request_configuration(), publication)?;
+            driver.request_mut()?.control_passed()?;
+            self.admit_tool_image_context(driver.request()?.messages()?, input_images)?;
+            let publication = self.request_context_publication(driver.request()?.messages()?);
+            let prepared = driver.complete_request(self.request_configuration(), publication)?;
             let effort_application = self.provider.effort_application(&prepared.request.request);
             let request_admission::AdmittedModelRequest {
                 request: req,
