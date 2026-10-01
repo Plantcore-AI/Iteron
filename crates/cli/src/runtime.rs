@@ -158,6 +158,7 @@ mod provider_charge_evidence;
 mod provider_financial_context;
 mod provider_governor_state;
 mod provider_hedge;
+mod provider_output_funding;
 mod provider_output_request;
 mod provider_route;
 mod provider_route_admission;
@@ -2015,14 +2016,12 @@ impl Agent {
             let requested_max_tokens = self
                 .model_max_output_tokens
                 .unwrap_or(crate::runtime_tunables::core_facts::DEFAULT_REQUEST_OUTPUT_TOKENS);
-            let request_max_tokens = provider_output_request::ceiling(
-                self.provider.as_ref(),
+            let request_max_tokens = self.funded_provider_output_ceiling(
                 iteron_provider::output_ceiling::ProviderOutputBudget {
                     model: &self.model,
                     requested_max_tokens,
                     thinking_budget: self.effort_thinking_budget(self.effort),
                 },
-                self.provider_output_proof_required(),
             )?;
             // One context accounting pass per turn, shared by the kernel token ledger and the
             // context-window admission check below (I-60). Recomputed only when compaction

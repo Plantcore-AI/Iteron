@@ -52,6 +52,33 @@ impl Agent {
         )
     }
 
+    pub(super) fn funded_provider_output_ceiling(
+        &self,
+        budget: iteron_provider::output_ceiling::ProviderOutputBudget<'_>,
+    ) -> Result<u32, KernelError> {
+        if self.persistent_mailbox.is_none()
+            && self.persistent_agents.is_none()
+            && self
+                .usd_budget
+                .as_ref()
+                .is_none_or(|owner| !owner.requires_pricing())
+        {
+            return super::provider_output_request::ceiling(
+                self.provider.as_ref(),
+                budget,
+                self.provider_output_proof_required(),
+            );
+        }
+        let financial = self.provider_financial_context();
+        let funding = financial.output_funding(&self.governed_route_id(), self.pricing_now())?;
+        super::provider_output_request::ceiling_funded(
+            self.provider.as_ref(),
+            budget,
+            self.provider_output_proof_required(),
+            funding.as_ref(),
+        )
+    }
+
     pub(super) fn provider_scope(&self) -> String {
         provider_scope_for(self.rollout.tenant(), self.rollout.run_id())
     }

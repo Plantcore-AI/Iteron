@@ -16,6 +16,9 @@ pub(crate) struct RuntimeProviderBudgetAdmission {
 }
 
 pub(crate) trait RuntimeProviderBudgetPort: Send + Sync {
+    fn allowance(&self) -> Result<iteron_agents::AgentProviderBudgetAllowance, ControllerError> {
+        Err(ControllerError::Permission)
+    }
     fn bind(&self, scope: &str) -> Result<(), ControllerError>;
     fn reserve(&self, admission: RuntimeProviderBudgetAdmission) -> Result<(), ControllerError>;
     fn reservation(
@@ -49,6 +52,14 @@ impl<J> ProviderPort<J> {
     }
 }
 impl<J: AgentControllerJournal + Send + 'static> RuntimeProviderBudgetPort for ProviderPort<J> {
+    fn allowance(&self) -> Result<iteron_agents::AgentProviderBudgetAllowance, ControllerError> {
+        self.host
+            .shared
+            .controller
+            .lock()
+            .map_err(|_| ControllerError::Poisoned)?
+            .provider_budget_allowance(self.id, self.epoch)
+    }
     fn bind(&self, scope: &str) -> Result<(), ControllerError> {
         let mut controller = self
             .host

@@ -186,3 +186,25 @@ fn actual_agent_prompt_window_cannot_shrink_the_physical_financial_input_bound()
     drop(agent);
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn output_funding_authenticates_current_signature_scope_time_and_known_wallet() {
+    let budget = Arc::new(SharedUsdBudget::from_microusd(55));
+    let c = context("tenant", budget.clone());
+    let funding = c.output_funding("provider:model", 2).unwrap().unwrap();
+    assert_eq!(funding.input, 16);
+    assert_eq!(funding.cost_microusd, 55);
+    assert!(c.output_funding("foreign:model", 2).is_err());
+    assert!(c.output_funding("provider:model", 100).is_err());
+    let mut tampered = context("tenant", budget.clone());
+    tampered
+        .pricing
+        .as_mut()
+        .unwrap()
+        .rate_card
+        .rates
+        .input_microusd_per_million = 0;
+    assert!(tampered.output_funding("provider:model", 2).is_err());
+    budget.mark_unknown();
+    assert!(c.output_funding("provider:model", 2).is_err());
+}

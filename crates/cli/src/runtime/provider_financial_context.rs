@@ -79,6 +79,69 @@ impl ProviderFinancialContext {
             .map_err(|error| KernelError::AgentControl(error.clone()))
     }
 
+    /// Frozen signed prices and current independent monetary/controller headroom. This reads no
+    /// config or model-supplied assertion; an Unknown owner prevents even an advisory selection.
+    /// Quote only a NEW unreserved physical request. An already reserved hedge primary keeps
+    /// its exact admitted cap; this port never credits arbitrary callers with an active reserve.
+    pub(super) fn output_funding(
+        &self,
+        route_id: &str,
+        now: u64,
+    ) -> Result<Option<super::provider_output_funding::ProviderOutputFunding>, KernelError> {
+        let cohort = self.cohort()?;
+        let usd = self
+            .usd_budget
+            .as_ref()
+            .filter(|budget| budget.requires_pricing());
+        if cohort.is_none() && usd.is_none() {
+            return Ok(None);
+        }
+        let (Some(pricing), Some(card)) = (&self.pricing_port, &self.pricing) else {
+            return Err(KernelError::UnpricedUsdCeiling);
+        };
+        pricing.verify_rate_card(card)?;
+        if now < card.rate_card.issued_at_unix_secs
+            || now >= card.rate_card.expires_at_unix_secs
+            || format!(
+                "{}:{}",
+                card.rate_card.route.provider_id, card.rate_card.route.model_id
+            ) != route_id
+        {
+            return Err(KernelError::UnpricedUsdCeiling);
+        }
+        let input = self.context_window.filter(|input| *input > 0).ok_or(
+            KernelError::InvalidRouteMetadata {
+                field: "physical_input_token_ceiling",
+                reason: "output funding needs a proved physical input ceiling",
+            },
+        )?;
+        let allowance = cohort
+            .map(|port| port.allowance())
+            .transpose()
+            .map_err(KernelError::AgentControl)?;
+        if allowance.is_some_and(|allowance| allowance.turns == 0) {
+            return Err(KernelError::AgentControl(ControllerError::Budget));
+        }
+        let mut cost = usd
+            .map(|budget| budget.remaining_microusd())
+            .transpose()
+            .map_err(KernelError::PricingLedger)?;
+        if let Some(allowance) = allowance {
+            cost = Some(cost.map_or(allowance.cost_microusd, |room| {
+                room.min(allowance.cost_microusd)
+            }));
+        }
+        Ok(Some(
+            super::provider_output_funding::ProviderOutputFunding {
+                input,
+                semantics: self.usage_bounds,
+                rates: card.rate_card.rates,
+                tokens: allowance.map(|allowance| allowance.tokens),
+                cost_microusd: cost.ok_or(KernelError::UnpricedUsdCeiling)?,
+            },
+        ))
+    }
+
     /// Used only for a route refused before transport. A physical Unknown never calls this port.
     pub(super) fn settle_usd_not_dispatched(&self) {
         if let Some(budget) = &self.usd_budget {

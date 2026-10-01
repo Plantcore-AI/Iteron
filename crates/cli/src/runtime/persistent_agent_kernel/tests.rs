@@ -85,6 +85,7 @@ struct ProviderFixture {
     texts: Mutex<Vec<String>>,
     systems: Mutex<Vec<String>>,
     prepared: AtomicUsize,
+    serialized_caps: Mutex<Vec<u64>>,
     omit_native_user: bool,
     unsupported_capture: bool,
 }
@@ -161,6 +162,11 @@ impl Provider for ProviderFixture {
                     request,
                 })
                 .map_err(|_| ProviderError::RequestCaptureRefusedBeforeDispatch)?;
+            self.serialized_caps.lock().unwrap().push(
+                serde_json::from_slice::<serde_json::Value>(&body).unwrap()["max_tokens"]
+                    .as_u64()
+                    .unwrap(),
+            );
             self.prepared.fetch_add(1, Ordering::SeqCst);
             observer
                 .dispatching()
@@ -695,3 +701,6 @@ mod agent_input_trust;
 
 #[path = "tests/cold_cohort.rs"]
 mod cold_cohort;
+
+#[path = "tests/output_funding.rs"]
+mod output_funding;
