@@ -9,7 +9,7 @@ use iteron_protocol::client_inventory::{
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::providers::{ModelSelection, ProviderDirectory};
+use crate::providers::{ModelSelection, ProviderCatalogView, ProviderDirectory};
 
 const MAX_PROVIDERS: usize = 70;
 const MAX_MODELS: usize = 50_001;
@@ -30,6 +30,7 @@ impl CapturedClientInventory {
         directory: &ProviderDirectory,
         plugins: &[Value],
         selected: &ModelSelection,
+        view: &ProviderCatalogView,
     ) -> Result<Self, String> {
         if directory.entries().len() > MAX_PROVIDERS {
             return Err("provider inventory exceeds its hard bound".into());
@@ -57,7 +58,7 @@ impl CapturedClientInventory {
                         model_id: model.raw.id.clone(),
                     };
                     check_identity(&selection.model_id)?;
-                    models.push(model_record(&directory, &selection, false));
+                    models.push(model_record(view, &selection, false));
                 }
             }
         }
@@ -70,7 +71,7 @@ impl CapturedClientInventory {
             if models.len() >= MAX_MODELS {
                 return Err("selected model exceeds inventory bound".into());
             }
-            models.push(model_record(&directory, selected, true));
+            models.push(model_record(view, selected, true));
         }
         let plugins = plugins.to_vec();
         let bytes = serde_json::to_vec(&(&providers, &models, &plugins))
@@ -143,19 +144,15 @@ impl CapturedClientInventory {
     }
 }
 
-fn model_record(
-    directory: &ProviderDirectory,
-    selection: &ModelSelection,
-    explicit: bool,
-) -> Value {
-    let capabilities = directory.selection_capabilities(selection);
-    let (catalog, capability) = directory.selection_digests(selection);
-    let stale = directory
+fn model_record(view: &ProviderCatalogView, selection: &ModelSelection, explicit: bool) -> Value {
+    let capabilities = view.selection_capabilities(selection);
+    let (catalog, capability) = view.selection_digests(selection);
+    let stale = view
         .entry(&selection.provider_id)
         .is_none_or(|entry| entry.catalog_stale);
     json!({"provider_id":selection.provider_id,"model_id":selection.model_id,
         "catalog_digest_sha256":catalog,"capability_digest_sha256":capability,
-        "selectable":!stale && directory.validate_selection(selection, explicit).is_ok(),"explicit_selected_route":explicit,
+        "selectable":!stale && view.selection_available(selection),"explicit_selected_route":explicit,
         "context_window_tokens":capabilities.context_window_tokens,"max_output_tokens":capabilities.max_output_tokens,
         "tool_calling":capabilities.tool_calling,"semantic_effort":capabilities.semantic_effort,"image_input":capabilities.image_input,
         "capability_version":capabilities.version.as_deref().map(safe),"capability_source":capabilities.source.as_deref().map(safe)})

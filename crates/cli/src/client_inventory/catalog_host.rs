@@ -35,13 +35,14 @@ impl ClientInventoryOwner {
                     .map_err(|_| "verified plugin inventory serialization failed".to_owned())
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let captured = CapturedClientInventory::capture(directory, &plugins, selected)?;
-        let projection = ProviderCatalogView::capture(
-            &captured.directory,
+        let draft = ProviderCatalogView::capture(
+            directory,
             selected,
-            captured.digest.clone(),
+            String::new(),
             directory.discovery_pending(),
         )?;
+        let captured = CapturedClientInventory::capture(directory, &plugins, selected, &draft)?;
+        let projection = draft.with_inventory_digest(captured.digest.clone());
         let (projection, _) = tokio::sync::watch::channel(Arc::new(projection));
         Ok(Arc::new(Self {
             live_directory: Mutex::new(directory.clone()),
@@ -179,13 +180,15 @@ impl ClientInventoryOwner {
         self.publish_locked(&live)
     }
     fn publish_locked(&self, directory: &ProviderDirectory) -> Result<ProviderCatalogView, String> {
-        let captured = CapturedClientInventory::capture(directory, &self.plugins, &self.selected)?;
-        let view = ProviderCatalogView::capture(
-            &captured.directory,
+        let draft = ProviderCatalogView::capture(
+            directory,
             &self.selected,
-            captured.digest.clone(),
+            String::new(),
             directory.discovery_pending(),
         )?;
+        let captured =
+            CapturedClientInventory::capture(directory, &self.plugins, &self.selected, &draft)?;
+        let view = draft.with_inventory_digest(captured.digest.clone());
         let mut current = self
             .captured
             .write()

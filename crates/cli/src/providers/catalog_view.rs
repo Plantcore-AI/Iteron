@@ -158,20 +158,32 @@ impl ProviderCatalogView {
                 catalog_error: entry.catalog_error.as_deref().map(display),
                 catalog_stale: entry.catalog_stale,
             });
-            let models = entry
-                .catalog
-                .as_ref()
-                .into_iter()
-                .flat_map(|catalog| catalog.models.iter().map(|model| model.raw.id.as_str()));
-            for model in models
-                .chain((selected.provider_id == entry.id()).then_some(selected.model_id.as_str()))
-            {
+            let catalog_identity = super::selection_identity::CatalogIdentity::capture(entry);
+            let models = entry.catalog.as_ref().into_iter().flat_map(|catalog| {
+                catalog
+                    .models
+                    .iter()
+                    .map(|model| (model.raw.id.as_str(), Some(model)))
+            });
+            let selected_descriptor = entry.catalog.as_ref().and_then(|catalog| {
+                catalog
+                    .models
+                    .iter()
+                    .find(|model| model.raw.id == selected.model_id)
+            });
+            for (model, descriptor) in models.chain(
+                (selected.provider_id == entry.id())
+                    .then_some((selected.model_id.as_str(), selected_descriptor)),
+            ) {
                 identity(model)?;
                 let selection = ModelSelection {
                     provider_id: entry.id().into(),
                     model_id: model.into(),
                 };
-                let mut capabilities = directory.selection_capabilities(&selection);
+                let mut capabilities =
+                    directory.entry_selection_capabilities(entry, &selection, descriptor);
+                let digests =
+                    catalog_identity.for_model(entry, &selection, capabilities.clone(), descriptor);
                 capabilities.source = capabilities.source.as_deref().map(display);
                 capabilities.version = capabilities.version.as_deref().map(display);
                 capabilities.image_input_source =
@@ -182,13 +194,13 @@ impl ProviderCatalogView {
                     (selection.provider_id.clone(), selection.model_id.clone()),
                     CatalogRouteFacts {
                         capabilities,
-                        digests: directory.selection_digests(&selection),
+                        digests,
                         blocked: directory
                             .model_blocked_reason(entry.id(), model)
                             .as_deref()
                             .map(display),
                         validation: directory
-                            .validate_selection(&selection, true)
+                            .validate_entry_selection(entry, &selection, true, true, descriptor)
                             .map_err(|reason| display(&reason)),
                     },
                 );
@@ -200,6 +212,16 @@ impl ProviderCatalogView {
             inventory_digest,
             discovery_pending,
         })
+    }
+    /// Trusted host assembly consumes the admitted draft after hashing the matching inventory.
+    pub(crate) fn with_inventory_digest(mut self, digest: String) -> Self {
+        self.inventory_digest = digest;
+        self
+    }
+    pub(crate) fn selection_available(&self, selection: &ModelSelection) -> bool {
+        self.routes
+            .get(&(selection.provider_id.clone(), selection.model_id.clone()))
+            .is_some_and(|route| route.validation.is_ok())
     }
     pub(crate) fn inventory_digest(&self) -> &str {
         &self.inventory_digest
@@ -344,6 +366,14 @@ impl ProviderCatalogSubscription {
     }
     pub(crate) fn current(&self) -> ProviderCatalogView {
         self.0.borrow().as_ref().clone()
+    }
+    pub(crate) fn try_changed(
+        &mut self,
+    ) -> Result<Option<ProviderCatalogView>, tokio::sync::watch::error::RecvError> {
+        if !self.0.has_changed()? {
+            return Ok(None);
+        }
+        Ok(Some(self.0.borrow_and_update().as_ref().clone()))
     }
     pub(crate) async fn changed(
         &mut self,

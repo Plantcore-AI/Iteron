@@ -783,6 +783,23 @@ impl ProviderDirectory {
         let entry = self
             .entry(&selection.provider_id)
             .ok_or_else(|| format!("unknown provider `{}`", selection.provider_id))?;
+        let descriptor = entry.catalog.as_ref().and_then(|catalog| {
+            catalog
+                .models
+                .iter()
+                .find(|model| model.raw.id == selection.model_id)
+        });
+        self.validate_entry_selection(entry, selection, explicit, enforce_model_health, descriptor)
+    }
+
+    pub(super) fn validate_entry_selection(
+        &self,
+        entry: &ProviderEntry,
+        selection: &ModelSelection,
+        explicit: bool,
+        enforce_model_health: bool,
+        descriptor: Option<&ModelDescriptor>,
+    ) -> Result<(), String> {
         let explicit_catalog_fallback = explicit && entry.catalog_fallback_explicit;
         if let Some(reason) = self.account_blocked_reason(entry) {
             return Err(format!("{} is unavailable: {reason}", entry.display_name()));
@@ -803,20 +820,14 @@ impl ProviderDirectory {
                 entry.display_name()
             ));
         }
-        if let Some(catalog) = &entry.catalog
-            && !explicit_catalog_fallback
-        {
-            let model = catalog
-                .models
-                .iter()
-                .find(|model| model.raw.id == selection.model_id)
-                .ok_or_else(|| {
-                    format!(
-                        "model `{}` is not in {}'s current catalog",
-                        selection.model_id,
-                        entry.display_name()
-                    )
-                })?;
+        if entry.catalog.is_some() && !explicit_catalog_fallback {
+            let model = descriptor.ok_or_else(|| {
+                format!(
+                    "model `{}` is not in {}'s current catalog",
+                    selection.model_id,
+                    entry.display_name()
+                )
+            })?;
             if let Selectability::Disabled { reason } = model.selectability {
                 return Err(format!(
                     "model `{}` is unavailable: {reason}",
@@ -916,6 +927,21 @@ impl ProviderDirectory {
         let Some(entry) = self.entry(&selection.provider_id) else {
             return ModelCapabilities::unknown();
         };
+        let descriptor = entry.catalog.as_ref().and_then(|snapshot| {
+            snapshot
+                .models
+                .iter()
+                .find(|model| model.raw.id == selection.model_id)
+        });
+        self.entry_selection_capabilities(entry, selection, descriptor)
+    }
+
+    pub(super) fn entry_selection_capabilities(
+        &self,
+        entry: &ProviderEntry,
+        selection: &ModelSelection,
+        descriptor: Option<&ModelDescriptor>,
+    ) -> ModelCapabilities {
         let mut resolved = ModelCapabilities::unknown();
         let metadata = entry.instance.static_metadata();
         if let Some(capabilities) = metadata
@@ -936,16 +962,8 @@ impl ProviderDirectory {
         }
         if resolved.image_input.is_none()
             && entry.instance.error_profile() == ErrorProfile::Fireworks
-            && let Some(supported) = entry
-                .catalog
-                .as_ref()
+            && let Some(supported) = descriptor
                 .filter(|_| !entry.catalog_fallback_explicit)
-                .and_then(|snapshot| {
-                    snapshot
-                        .models
-                        .iter()
-                        .find(|model| model.raw.id == selection.model_id)
-                })
                 .and_then(|model| model.raw.supports_image_input)
         {
             resolved.image_input = Some(supported);

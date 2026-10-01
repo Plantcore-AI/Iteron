@@ -800,6 +800,86 @@ async fn deferred_discovery_accepts_zero_connections_until_post_paint_settle_sig
 }
 
 #[tokio::test]
+async fn host_first_frame_publishes_discovery_and_factory_from_the_same_admitted_inventory() {
+    use iteron_protocol::client_inventory::{
+        ClientInventoryKindV1, ClientInventoryQueryV1, ClientModelSelectionV1,
+    };
+    let body = serde_json::json!({"data":[{"id":"host-discovered-model"}]}).to_string();
+    let (api_root, accepts, server) = spawn_counting_json_server(body);
+    let directory = ProviderDirectory::discover_entries_eagerly(
+        vec![policy_entry("host-discovery", &api_root)],
+        None,
+        Some(&["host-discovery".into()]),
+    )
+    .await
+    .unwrap();
+    let selected = ModelSelection {
+        provider_id: "host-discovery".into(),
+        model_id: "host-discovered-model".into(),
+    };
+    let owner = crate::client_inventory::ClientInventoryOwner::capture(
+        &directory,
+        &crate::plugin_runtime::RuntimePlugins::default(),
+        &selected,
+    )
+    .unwrap();
+    let mut observer = owner.catalog_subscription();
+    let before = observer.current();
+    assert!(before.discovery_pending());
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        accepts.load(Ordering::SeqCst),
+        0,
+        "a readonly view does not start native discovery"
+    );
+    owner.first_frame().unwrap();
+    let after = tokio::time::timeout(Duration::from_secs(3), observer.changed())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!after.discovery_pending());
+    assert!(
+        before.discovery_pending(),
+        "published views remain immutable"
+    );
+    let page = owner
+        .read(&ClientInventoryQueryV1 {
+            kind: ClientInventoryKindV1::Models,
+            provider_id: None,
+            offset: 0,
+            limit: 25,
+        })
+        .unwrap();
+    assert_eq!(page["inventory_digest_sha256"], after.inventory_digest());
+    let (catalog, capability) = after.selection_digests(&selected);
+    let request = ClientModelSelectionV1 {
+        inventory_digest_sha256: after.inventory_digest().into(),
+        provider_id: selected.provider_id.clone(),
+        model_id: selected.model_id.clone(),
+        catalog_digest_sha256: catalog,
+        capability_digest_sha256: capability,
+    };
+    assert!(owner.resolve(&request).is_ok());
+    assert!(
+        owner
+            .session_directory()
+            .validate_selection(&selected, true)
+            .is_ok()
+    );
+    let mut old_request = request;
+    old_request.inventory_digest_sha256 = before.inventory_digest().into();
+    assert!(owner.resolve(&old_request).is_err());
+    owner.first_frame().unwrap();
+    server.join().unwrap();
+    assert_eq!(
+        accepts.load(Ordering::SeqCst),
+        1,
+        "all first-frame callers share the actual single refresh"
+    );
+    assert!(!format!("{after:?}").contains("test-key"));
+}
+
+#[tokio::test]
 async fn settle_publishes_the_catalogs_the_launch_deferred() {
     let routed = serde_json::json!({ "data": [{ "id": "routed-model" }] }).to_string();
     let (routed_root, routed_server) = spawn_json_server(routed);
