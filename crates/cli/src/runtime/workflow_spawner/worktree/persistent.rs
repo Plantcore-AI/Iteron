@@ -98,14 +98,19 @@ impl PersistentWriterWorktree {
         let patch = self.worktree.patch_path.clone();
         let head = self.worktree.base_head.clone();
         let baseline = self.baseline_tree.clone();
-        tokio::task::spawn_blocking(move || prepare_patch_against(&path, &patch, &head, &baseline))
-            .await
-            .map_err(|_| {
-                MergeFailure::new(
-                    MergeFailureKind::WorktreeState,
-                    "persistent patch did not settle",
-                )
-            })?
+        self.worktree.evidence.begin();
+        let result = tokio::task::spawn_blocking(move || {
+            prepare_patch_against(&path, &patch, &head, &baseline)
+        })
+        .await
+        .map_err(|_| {
+            MergeFailure::new(
+                MergeFailureKind::WorktreeState,
+                "persistent patch did not settle",
+            )
+        })?;
+        self.worktree.evidence.complete(&result);
+        result
     }
 
     pub(in crate::runtime) async fn verify(
@@ -127,6 +132,8 @@ impl PersistentWriterWorktree {
         let parent = self.worktree.parent.clone();
         let patch_path = self.worktree.patch_path.clone();
         let receipt = receipt.clone();
+        self.worktree.evidence.begin();
+        let evidence = self.worktree.evidence.clone();
         let next = tokio::task::spawn_blocking(move || {
             let patch = verified_patch_bytes(&patch_path, &receipt)?;
             validate_parent(&parent, &state, &witness)?;
@@ -165,6 +172,8 @@ impl PersistentWriterWorktree {
                         "parent refused the exact sealed writer patch",
                     ));
                 }
+                evidence.require_witness();
+                evidence.applying();
                 let apply = parent_capture_with_input(
                     &parent,
                     &witness,
@@ -183,6 +192,7 @@ impl PersistentWriterWorktree {
                 ..witness
             };
             validate_parent(&parent, &state, &next)?;
+            evidence.applied();
             Ok(next)
         })
         .await
@@ -191,9 +201,19 @@ impl PersistentWriterWorktree {
                 MergeFailureKind::ApplyFailed,
                 "persistent merge task did not settle",
             )
-        })??;
+        })?;
+        self.worktree.evidence.complete(&next);
+        let next = next?;
         self.worktree.cleanup().await?;
         Ok(next)
+    }
+
+    pub(in crate::runtime) fn settlement_proof(&self) -> WriterSettlementProof {
+        self.worktree.settlement_proof()
+    }
+
+    pub(in crate::runtime) fn confirm_workspace_witness(&self) {
+        self.worktree.evidence.confirm_witness();
     }
 
     pub(in crate::runtime) async fn discard(&mut self) -> Result<(), MergeFailure> {

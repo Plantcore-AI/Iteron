@@ -34,6 +34,7 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::sync::{Notify, mpsc, watch};
 
 pub mod bubblewrap;
+mod owned_process_cleanup;
 mod persistent;
 /// Pseudo-terminal transport for confined children. Unix-only: the whole module is `libc` ioctls,
 /// and the Windows equivalent is ConPTY (`CreatePseudoConsole`), a different API with different
@@ -244,6 +245,8 @@ struct OutputObserverInner {
     chunk_tx: mpsc::Sender<OutputChunk>,
     terminal_tx: watch::Sender<Option<OutputTerminal>>,
     terminal_published: AtomicBool,
+    owned_group_cleanup_known: AtomicBool,
+    observe_owned_group_cleanup: AtomicBool,
     dropped_chunks: AtomicU64,
     cancelled: AtomicBool,
     cancel_notify: Notify,
@@ -319,6 +322,8 @@ impl OutputObserver {
                 chunk_tx,
                 terminal_tx,
                 terminal_published: AtomicBool::new(false),
+                owned_group_cleanup_known: AtomicBool::new(false),
+                observe_owned_group_cleanup: AtomicBool::new(false),
                 dropped_chunks: AtomicU64::new(0),
                 cancelled: AtomicBool::new(false),
                 cancel_notify: Notify::new(),
@@ -334,6 +339,20 @@ impl OutputObserver {
                 terminal_delivered: false,
             },
         )
+    }
+
+    /// Request an actual bounded cleanup observation for this process group. Ordinary observers do not enable it.
+    pub fn with_owned_group_cleanup(self) -> Self {
+        self.inner
+            .observe_owned_group_cleanup
+            .store(true, Ordering::Release);
+        self
+    }
+
+    /// True only after the real collector observes leader reap, both EOFs and absence of its owned group.
+    /// This does not prove arbitrary escaped processes or remote side effects.
+    pub fn owned_group_cleanup_known(&self) -> bool {
+        self.inner.owned_group_cleanup_known.load(Ordering::Acquire)
     }
 
     /// Request cancellation of the observed command. The sandbox collector performs the same
@@ -737,7 +756,8 @@ pub(crate) async fn collect_child_output(
     mut stderr: tokio::process::ChildStderr,
     conf: &Confinement,
 ) -> Result<RunOutput, SandboxError> {
-    let mut group_drop_guard = ProcessGroupDropGuard::new(child.id());
+    let owned_group = child.id();
+    let mut group_drop_guard = ProcessGroupDropGuard::new(owned_group);
     let mut out = BoundedCapture::with_limit(conf.max_output_bytes);
     let mut err = BoundedCapture::with_limit(conf.max_output_bytes);
     let observer = conf.output_observer.clone();
@@ -788,10 +808,11 @@ pub(crate) async fn collect_child_output(
         }
     };
 
+    let mut pipes_known = false;
     let (timed_out, cancelled, status) = match completed {
         CollectionStop::Completed(status) => match status {
             Ok(status) => {
-                group_drop_guard.disarm();
+                pipes_known = true;
                 (false, false, Some(status))
             }
             Err(error) => {
@@ -799,23 +820,21 @@ pub(crate) async fn collect_child_output(
                     observer.finish_io_failure(None, false);
                 }
                 let _ = terminate_with_grace(&mut child, observer.as_ref()).await;
-                group_drop_guard.disarm();
                 return Err(error);
             }
         },
         reason @ (CollectionStop::TimedOut | CollectionStop::Cancelled) => {
             let status = terminate_with_grace(&mut child, observer.as_ref()).await;
-            group_drop_guard.disarm();
             // The first drain futures were cancelled with the timeout, but their captures live
             // outside it. Resume both drains concurrently to retain buffered tail bytes and close
             // the pipes. This cleanup itself is bounded in case a hostile daemon escaped the group.
-            let _ = tokio::time::timeout(
+            let drained = tokio::time::timeout(
                 std::time::Duration::from_secs(iteron_tunables::param_integer(
                     "sandbox.lib.post_kill_drain_secs",
                     POST_KILL_DRAIN_SECS,
                 )),
                 async {
-                    let _ = tokio::join!(
+                    tokio::join!(
                         drain_bounded(
                             &mut stdout,
                             &mut out,
@@ -830,10 +849,11 @@ pub(crate) async fn collect_child_output(
                             observer.as_ref(),
                             OutputStream::Stderr,
                         ),
-                    );
+                    )
                 },
             )
             .await;
+            pipes_known = matches!(drained, Ok((Ok(()), Ok(()))));
             (
                 matches!(reason, CollectionStop::TimedOut),
                 matches!(reason, CollectionStop::Cancelled),
@@ -844,6 +864,7 @@ pub(crate) async fn collect_child_output(
 
     let (stdout, stdout_truncated) = out.finish("stdout", conf.max_output_bytes);
     let (stderr, stderr_truncated) = err.finish("stderr", conf.max_output_bytes);
+    let status_known = status.is_some();
     let output = RunOutput {
         exit_code: status
             .and_then(|status| status.code())
@@ -854,7 +875,22 @@ pub(crate) async fn collect_child_output(
         stderr_truncated,
         timed_out,
     };
+    let group_known = if observer.as_ref().is_some_and(|observer| {
+        observer
+            .inner
+            .observe_owned_group_cleanup
+            .load(Ordering::Acquire)
+    }) {
+        owned_process_cleanup::confirm_owned_group_shutdown(owned_group).await
+    } else {
+        false
+    };
+    group_drop_guard.disarm();
     if let Some(observer) = observer {
+        observer.inner.owned_group_cleanup_known.store(
+            status_known && pipes_known && group_known,
+            Ordering::Release,
+        );
         observer.finish(&output, cancelled);
     }
     Ok(output)

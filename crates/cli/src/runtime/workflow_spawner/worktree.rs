@@ -8,6 +8,8 @@ use std::process::{Command, ExitStatus, Stdio};
 use iteron_verify::Oracle as _;
 use sha2::{Digest as _, Sha256};
 
+mod evidence;
+pub(in crate::runtime) use evidence::WriterSettlementProof;
 mod git_process;
 pub(in crate::runtime) mod persistent;
 
@@ -26,6 +28,7 @@ pub(in crate::runtime) enum MergeFailureKind {
     ParentAdvanced,
     WorktreeProvision,
     WorktreeState,
+    NativeProcessUncertain,
     PatchTooLarge,
     PatchReceiptMismatch,
     VerificationUnavailable,
@@ -44,6 +47,7 @@ impl MergeFailureKind {
             Self::ParentAdvanced => "parent_advanced",
             Self::WorktreeProvision => "worktree_provision_failed",
             Self::WorktreeState => "worktree_state_invalid",
+            Self::NativeProcessUncertain => "native_process_uncertain",
             Self::PatchTooLarge => "patch_too_large",
             Self::PatchReceiptMismatch => "patch_receipt_mismatch",
             Self::VerificationUnavailable => "verification_unavailable",
@@ -94,6 +98,7 @@ pub(in crate::runtime) struct WriterWorktree {
     patch_path: PathBuf,
     base_head: String,
     active: bool,
+    evidence: std::sync::Arc<evidence::WriterEvidence>,
 }
 
 impl WriterWorktree {
@@ -116,6 +121,10 @@ impl WriterWorktree {
         &self.path
     }
 
+    pub(in crate::runtime) fn settlement_proof(&self) -> WriterSettlementProof {
+        self.evidence.proof(!self.active)
+    }
+
     /// Stage the child's bounded registry edits and materialize a content-addressable patch before
     /// verification. Verification may create ignored build output, but may not alter tracked or
     /// non-ignored source after this point.
@@ -123,14 +132,18 @@ impl WriterWorktree {
         let path = self.path.clone();
         let patch_path = self.patch_path.clone();
         let base_head = self.base_head.clone();
-        tokio::task::spawn_blocking(move || prepare_patch_sync(&path, &patch_path, &base_head))
-            .await
-            .map_err(|_| {
-                MergeFailure::new(
-                    MergeFailureKind::WorktreeState,
-                    "patch preparation task did not complete",
-                )
-            })?
+        self.evidence.begin();
+        let result =
+            tokio::task::spawn_blocking(move || prepare_patch_sync(&path, &patch_path, &base_head))
+                .await
+                .map_err(|_| {
+                    MergeFailure::new(
+                        MergeFailureKind::WorktreeState,
+                        "patch preparation task did not complete",
+                    )
+                })?;
+        self.evidence.complete(&result);
+        result
     }
 
     pub(in crate::runtime) async fn verify(
@@ -151,13 +164,27 @@ impl WriterWorktree {
             self.path.clone(),
             command.to_owned(),
         )
-        .with_timeout_secs(iteron_tunables::param_integer(
-            "cli.runtime.workflow_spawner.worktree.verify_timeout_secs",
-            VERIFY_TIMEOUT_SECS,
-        ))
+        .with_timeout_secs(
+            iteron_tunables::param_integer(
+                "cli.runtime.workflow_spawner.worktree.verify_timeout_secs",
+                VERIFY_TIMEOUT_SECS,
+            )
+            .clamp(1, VERIFY_TIMEOUT_SECS),
+        )
         .with_sensitive_env_names(sensitive_env_names.to_vec())
         .with_output_tail_bytes(output_tail_bytes);
-        let verdict = oracle.evaluate().await;
+        let (cleanup_observer, _cleanup_events) =
+            iteron_sandbox::OutputObserver::bounded("isolated-writer-verification", 1, 4);
+        let cleanup_observer = cleanup_observer.with_owned_group_cleanup();
+        self.evidence.begin();
+        let verdict = oracle
+            .with_output_observer(cleanup_observer.clone())
+            .evaluate()
+            .await;
+        if !cleanup_observer.owned_group_cleanup_known() {
+            self.evidence.mark_unknown();
+        }
+        self.evidence.complete(&Ok::<(), MergeFailure>(()));
         if !verdict.passed() {
             return Err(MergeFailure::new(
                 MergeFailureKind::VerificationFailed,
@@ -167,7 +194,8 @@ impl WriterWorktree {
         let path = self.path.clone();
         let base_head = self.base_head.clone();
         let sealed_index_tree = receipt.sealed_index_tree.clone();
-        tokio::task::spawn_blocking(move || {
+        self.evidence.begin();
+        let result = tokio::task::spawn_blocking(move || {
             ensure_verification_did_not_mutate(&path, &base_head, &sealed_index_tree)
         })
         .await
@@ -176,7 +204,9 @@ impl WriterWorktree {
                 MergeFailureKind::VerificationMutatedWorkspace,
                 "verification mutation audit did not complete",
             )
-        })?
+        })?;
+        self.evidence.complete(&result);
+        result
     }
 
     /// Apply the prepared patch only after revalidating the parent HEAD and cleanliness while the
@@ -189,14 +219,20 @@ impl WriterWorktree {
         let patch_path = self.patch_path.clone();
         let base_head = self.base_head.clone();
         let receipt = receipt.clone();
-        tokio::task::spawn_blocking(move || merge_sync(&parent, &patch_path, &base_head, &receipt))
-            .await
-            .map_err(|_| {
-                MergeFailure::new(
-                    MergeFailureKind::ApplyFailed,
-                    "serialized merge task did not complete",
-                )
-            })??;
+        self.evidence.begin();
+        let evidence = self.evidence.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            merge_sync(&parent, &patch_path, &base_head, &receipt, &evidence)
+        })
+        .await
+        .map_err(|_| {
+            MergeFailure::new(
+                MergeFailureKind::ApplyFailed,
+                "serialized merge task did not complete",
+            )
+        })?;
+        self.evidence.complete(&result);
+        result?;
         self.cleanup().await
     }
 
@@ -211,14 +247,17 @@ impl WriterWorktree {
         let parent = self.parent.clone();
         let path = self.path.clone();
         let patch_path = self.patch_path.clone();
-        tokio::task::spawn_blocking(move || cleanup_sync(&parent, &path, &patch_path))
+        self.evidence.begin();
+        let result = tokio::task::spawn_blocking(move || cleanup_sync(&parent, &path, &patch_path))
             .await
             .map_err(|_| {
                 MergeFailure::new(
                     MergeFailureKind::CleanupFailed,
                     "worktree cleanup task did not complete",
                 )
-            })??;
+            })?;
+        self.evidence.complete(&result);
+        result?;
         self.active = false;
         Ok(())
     }
@@ -294,6 +333,7 @@ fn provision_at_head(
         path,
         base_head,
         active: true,
+        evidence: std::sync::Arc::new(evidence::WriterEvidence::default()),
     })
 }
 
@@ -410,6 +450,7 @@ fn merge_sync(
     patch_path: &Path,
     base_head: &str,
     receipt: &MergeReceipt,
+    evidence: &evidence::WriterEvidence,
 ) -> Result<(), MergeFailure> {
     let patch = verified_patch_bytes(patch_path, receipt)?;
     require_head(parent, base_head, MergeFailureKind::ParentAdvanced)?;
@@ -431,6 +472,7 @@ fn merge_sync(
             check.message(),
         ));
     }
+    evidence.applying();
     let apply = git_capture_with_input(
         parent,
         [
@@ -447,6 +489,7 @@ fn merge_sync(
             apply.message(),
         ));
     }
+    evidence.applied();
     Ok(())
 }
 
@@ -887,8 +930,14 @@ mod tests {
         )
         .expect("writer evidence is unchanged before the patch-file tamper");
         std::fs::write(&tampered.patch_path, "not the verified patch\n").unwrap();
-        let refused =
-            merge_sync(&parent, &tampered.patch_path, &tampered.base_head, &receipt).unwrap_err();
+        let refused = merge_sync(
+            &parent,
+            &tampered.patch_path,
+            &tampered.base_head,
+            &receipt,
+            &tampered.evidence,
+        )
+        .unwrap_err();
         assert_eq!(refused.kind, MergeFailureKind::PatchReceiptMismatch);
         assert!(
             refused
@@ -921,6 +970,7 @@ mod tests {
             &deterministic.patch_path,
             &deterministic.base_head,
             &receipt,
+            &deterministic.evidence,
         )
         .expect("the clean unchanged parent accepts the validated patch deterministically");
         assert_eq!(

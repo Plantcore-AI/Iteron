@@ -4,6 +4,7 @@ use super::persistent_agents::{
     AgentControlPort, AgentObservation, AgentSettlement, LiveAgentMailbox, PersistentAgentHost,
     PersistentAgentRuntime,
 };
+use super::persistent_writer_settlement::{PersistentWriterConfig, PersistentWriterSettlement};
 use super::pricing::SharedUsdBudget;
 use super::workflow_spawner::worktree::persistent::PersistentWriterWorktree;
 use super::workflow_spawner::{KernelSpawner, KernelSpawnerContext};
@@ -44,16 +45,6 @@ pub(super) struct KernelPersistentRuntime {
     main_rollout_owners: Mutex<Vec<iteron_record::Rollout>>,
     #[cfg(test)]
     fixture: Option<Arc<dyn Fn(&mut Agent) + Send + Sync>>,
-}
-
-struct PersistentWriterConfig {
-    parent: std::path::PathBuf,
-    state: std::path::PathBuf,
-    lock: Arc<tokio::sync::Mutex<()>>,
-    verify: Option<String>,
-    env: Vec<String>,
-    oracle_tail: usize,
-    admitted: bool,
 }
 
 impl KernelPersistentRuntime {
@@ -469,18 +460,27 @@ impl PersistentAgentRuntime for KernelPersistentRuntime {
         let cleaned = expire_unrequested(&mut child, &mailbox).is_ok();
         child.persistent_mailbox = None;
         let finalized = child.finalize_policy_run().is_ok();
-        let writer_settled = if let Some(worktree) = &mut worktree {
-            settle_writer(
-                worktree,
-                &self.writer,
-                matches!(&result, Ok(iteron_protocol::Outcome::Done)),
-                self.control.get().and_then(Weak::upgrade),
+        let writer_terminal = if let Some(worktree) = &mut worktree {
+            Some(
+                PersistentWriterSettlement {
+                    config: &self.writer,
+                    control: self.control.get().and_then(Weak::upgrade),
+                }
+                .run(
+                    worktree,
+                    matches!(&result, Ok(iteron_protocol::Outcome::Done)),
+                )
+                .await,
             )
-            .await
-            .is_ok()
         } else {
-            true
+            None
         };
+        let writer_known = writer_terminal
+            .as_ref()
+            .is_none_or(|terminal| terminal.proof.known());
+        let writer_succeeded = writer_terminal
+            .as_ref()
+            .is_none_or(|terminal| terminal.failure.is_none() && terminal.proof.known());
         let summary = match &result {
             Ok(outcome) => {
                 let answer = child
@@ -512,6 +512,11 @@ impl PersistentAgentRuntime for KernelPersistentRuntime {
             }
             Err(error) => error.public_summary(),
         };
+        let summary = writer_terminal
+            .as_ref()
+            .and_then(|terminal| terminal.failure.as_ref())
+            .cloned()
+            .unwrap_or(summary);
         let cost_after = known_cost(&child.ledger.cost_state());
         let tokens = total_tokens(child.ledger.usage).saturating_sub(tokens_before);
         let cost = child.physical_cost().or_else(|| {
@@ -526,7 +531,7 @@ impl PersistentAgentRuntime for KernelPersistentRuntime {
                 .flatten()
         });
         let terminal = match &result {
-            Ok(iteron_protocol::Outcome::Done) if writer_settled => {
+            Ok(iteron_protocol::Outcome::Done) if writer_succeeded => {
                 iteron_agents::AgentWorkflowTerminal::Succeeded
             }
             Ok(iteron_protocol::Outcome::Interrupted | iteron_protocol::Outcome::Drained) => {
@@ -538,7 +543,7 @@ impl PersistentAgentRuntime for KernelPersistentRuntime {
             && processes_settled
             && child.parent_effects_known()
             && finalized
-            && writer_settled
+            && writer_known
             && cost.is_some()
             && !matches!(
                 result,
@@ -585,38 +590,6 @@ fn unknown_settlement(summary: &str) -> AgentSettlement {
         effects_known: false,
         terminal: iteron_agents::AgentWorkflowTerminal::StoppedRecovery,
     }
-}
-async fn settle_writer(
-    worktree: &mut PersistentWriterWorktree,
-    config: &PersistentWriterConfig,
-    completed: bool,
-    control: Option<Arc<dyn AgentControlPort>>,
-) -> Result<(), ()> {
-    if !completed {
-        return worktree.discard().await.map_err(|_| ());
-    }
-    let receipt = worktree.prepare_patch().await.map_err(|_| ())?;
-    if receipt.patch_bytes == 0 {
-        return worktree.discard().await.map_err(|_| ());
-    }
-    worktree
-        .verify(
-            &receipt,
-            config.verify.as_deref(),
-            &config.env,
-            config.oracle_tail,
-        )
-        .await
-        .map_err(|_| ())?;
-    let control = control.ok_or(())?;
-    let witness = control.workspace_witness().map_err(|_| ())?.ok_or(())?;
-    let next = worktree
-        .merge(&receipt, witness.clone(), config.state.clone())
-        .await
-        .map_err(|_| ())?;
-    control
-        .record_workspace_witness(Some(&witness), next)
-        .map_err(|_| ())
 }
 
 fn total_tokens(usage: iteron_protocol::Usage) -> u64 {

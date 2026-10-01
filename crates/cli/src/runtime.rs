@@ -189,6 +189,7 @@ mod persistent_agent_kernel;
 pub(crate) mod persistent_agents;
 mod persistent_parent_turn;
 mod persistent_provider_budget;
+mod persistent_writer_settlement;
 #[cfg(feature = "legacy-plantcore")]
 mod plantcore;
 #[cfg(not(feature = "legacy-plantcore"))]

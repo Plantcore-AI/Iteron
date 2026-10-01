@@ -83,7 +83,7 @@ fn receive<T>(rx: &Receiver<T>, deadline: Instant) -> Result<T, MergeFailure> {
 
 fn unavailable() -> MergeFailure {
     MergeFailure::new(
-        MergeFailureKind::WorktreeState,
+        MergeFailureKind::NativeProcessUncertain,
         "native Git process or pipe did not reach a bounded terminal",
     )
 }

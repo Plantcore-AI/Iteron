@@ -70,6 +70,7 @@ pub(super) mod direct;
 mod native_route_tests;
 mod tunables;
 pub(super) mod worktree;
+mod writer_settlement;
 
 /// One terminal/journal-safe refusal line. This is the final choke point for child setup and
 /// runtime failures: redact credential shapes, render terminal controls visibly, and retain at

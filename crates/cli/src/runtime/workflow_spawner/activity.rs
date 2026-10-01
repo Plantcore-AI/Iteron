@@ -4,7 +4,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use iteron_protocol::Phase;
 use iteron_workflow::{AgentActivityReporter, AgentCall, AgentOutcome, AgentSpawner};
 
-use super::worktree::WriterWorktree;
+use super::worktree::{WriterSettlementProof, WriterWorktree};
+use super::writer_settlement::NativeWriterSettlement;
 use super::{KernelSpawner, safe_agent_refusal};
 use crate::runtime::{UiEvent, bounded_child_report, ui_workflow_label, usage_tokens};
 
@@ -118,10 +119,10 @@ impl KernelSpawner {
         let interrupt = Arc::new(AtomicBool::new(false));
         child.inherit_interrupt(interrupt.clone());
         let cancel = call.cancel.clone();
-        let cancel_bridge = tokio::spawn(async move {
+        let cancel_bridge = CancelBridge(tokio::spawn(async move {
             cancel.cancelled().await;
             interrupt.store(true, Ordering::SeqCst);
-        });
+        }));
 
         // `run_leaf` (not `run`): a leaf owns its context and tool loop but never orchestrates, so
         // its future is `Send + 'static` — exactly what lets the engine `tokio::spawn` this.
@@ -143,7 +144,7 @@ impl KernelSpawner {
         while let Ok(event) = ui_rx.try_recv() {
             live.observe(event, activity.as_ref());
         }
-        cancel_bridge.abort();
+        drop(cancel_bridge);
         let terminal = outcome
             .as_ref()
             .map(|outcome| (*outcome).clone())
@@ -198,15 +199,26 @@ impl KernelSpawner {
                 Err(summary)
             }
         };
-        if let Some(worktree) = writer_worktree.as_mut() {
-            self.settle_writer_worktree(worktree, child_done, &mut result)
-                .await;
-        }
+        let writer_proof = if let Some(worktree) = writer_worktree.as_mut() {
+            NativeWriterSettlement {
+                activity: &self.cx.activity,
+                command: self.cx.verify_command.as_deref(),
+                sensitive_env_names: &self.cx.sensitive_env_names,
+                output_tail_bytes: self.cx.verification_feedback.oracle_output_bytes,
+            }
+            .run(worktree, child_done, &mut result)
+            .await
+        } else {
+            WriterSettlementProof::KnownDiscarded
+        };
+        let terminal = if child_done && !matches!(&result, AgentOutcome::Text { .. }) {
+            Err("writer or child report settlement failed".to_owned())
+        } else {
+            terminal
+        };
         if let Some(observer) = &self.cx.kernel_workflow_ledgers {
             let processes = child.settle_persistent_owned_processes().await;
-            let writer_known =
-                writer_worktree.is_none() || matches!(&result, AgentOutcome::Text { .. });
-            let known = processes && writer_known && child.parent_effects_known();
+            let known = processes && writer_proof.known() && child.parent_effects_known();
             let outcome = match &terminal {
                 Ok(iteron_protocol::Outcome::Done) => iteron_protocol::WorkflowChildOutcome::Done,
                 Ok(iteron_protocol::Outcome::Interrupted) => {
@@ -239,112 +251,12 @@ impl KernelSpawner {
         }
         result
     }
+}
 
-    async fn settle_writer_worktree(
-        &self,
-        worktree: &mut WriterWorktree,
-        child_done: bool,
-        result: &mut AgentOutcome,
-    ) {
-        if !child_done || !matches!(result, AgentOutcome::Text { .. }) {
-            if let Err(error) = self.discard_writer_worktree(worktree).await {
-                *result = AgentOutcome::null(error.public_summary());
-            }
-            return;
-        }
-
-        let preparing = self.cx.activity.span(
-            crate::runtime::turn_activity::ActivityStage::PreparingPatch,
-            None,
-        );
-        let receipt = match worktree.prepare_patch().await {
-            Ok(receipt) => receipt,
-            Err(error) => {
-                preparing.fail(iteron_protocol::ActivityDetailCode::Checkpoint);
-                let _ = self.discard_writer_worktree(worktree).await;
-                *result = AgentOutcome::null(error.public_summary());
-                return;
-            }
-        };
-        preparing.complete();
-        if receipt.patch_bytes == 0 {
-            match self.discard_writer_worktree(worktree).await {
-                Ok(()) => {
-                    if let AgentOutcome::Text {
-                        last_tool_summary, ..
-                    } = result
-                    {
-                        *last_tool_summary = Some("isolated writer produced no patch".into());
-                    }
-                }
-                Err(error) => *result = AgentOutcome::null(error.public_summary()),
-            }
-            return;
-        }
-
-        let verification = self.cx.activity.span(
-            crate::runtime::turn_activity::ActivityStage::HostVerification,
-            None,
-        );
-        if let Err(error) = worktree
-            .verify(
-                &receipt,
-                self.cx.verify_command.as_deref(),
-                &self.cx.sensitive_env_names,
-                self.cx.verification_feedback.oracle_output_bytes,
-            )
-            .await
-        {
-            verification.fail(iteron_protocol::ActivityDetailCode::Verification);
-            let _ = self.discard_writer_worktree(worktree).await;
-            *result = AgentOutcome::null(error.public_summary());
-            return;
-        }
-        verification.complete();
-        let merging = self
-            .cx
-            .activity
-            .span(crate::runtime::turn_activity::ActivityStage::Merging, None);
-        match worktree.merge(&receipt).await {
-            Ok(()) => {
-                merging.complete();
-                if let AgentOutcome::Text {
-                    last_tool_summary, ..
-                } = result
-                {
-                    let digest = receipt
-                        .patch_digest_sha256
-                        .as_deref()
-                        .unwrap_or("sha256:unknown");
-                    *last_tool_summary = Some(format!(
-                        "verified + merged isolated patch · {} bytes · {digest}",
-                        receipt.patch_bytes
-                    ));
-                }
-            }
-            Err(error) => {
-                merging.fail(iteron_protocol::ActivityDetailCode::RecordCommit);
-                let _ = self.discard_writer_worktree(worktree).await;
-                *result = AgentOutcome::null(error.public_summary());
-            }
-        }
-    }
-
-    async fn discard_writer_worktree(
-        &self,
-        worktree: &mut WriterWorktree,
-    ) -> Result<(), super::worktree::MergeFailure> {
-        let discarding = self.cx.activity.span(
-            crate::runtime::turn_activity::ActivityStage::Discarding,
-            None,
-        );
-        let result = worktree.discard().await;
-        if result.is_ok() {
-            discarding.complete();
-        } else {
-            discarding.fail(iteron_protocol::ActivityDetailCode::WorkflowResultPersist);
-        }
-        result
+struct CancelBridge(tokio::task::JoinHandle<()>);
+impl Drop for CancelBridge {
+    fn drop(&mut self) {
+        self.0.abort();
     }
 }
 
