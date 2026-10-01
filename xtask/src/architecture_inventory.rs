@@ -938,6 +938,98 @@ const SURFACES: &[Surface] = &[
             "concrete hook/journal/ledger ports; denied calls return to the tool result owner",
         ],
     },
+    Surface {
+        path: "crates/cli/src/runtime/coding_run_driver.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "private working transcript and current submitted-turn/request/response/tool phases",
+            "retained physical provider obligation and exact pending kernel tool lease",
+        ],
+        next_seams: &[
+            "final coding coordinator and invocation admission/completion integration still in progress",
+        ],
+    },
+    Surface {
+        path: "crates/cli/src/runtime/coding_provider_execution.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "physical provider driver and USD obligation lifetime",
+            "bounded native hedge and completion handoff",
+        ],
+        next_seams: &["same-candidate native stream/cancellation/usage evidence remains pending"],
+    },
+    Surface {
+        path: "crates/cli/src/runtime/kernel_special_execution.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "exact Plan/direct-child/Workflow special declaration execution",
+            "known outer tool terminal before independent accounting observation",
+        ],
+        next_seams: &["storage uncertainty and accounting unavailability remain separate facts"],
+    },
+    Surface {
+        path: "crates/cli/src/runtime/kernel_child_accounting.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "real owned native ledger or controller receipt observation",
+            "exact pending/resolved WAL pair for finite budget admission",
+        ],
+        next_seams: &["same-candidate restart/fault/child attribution evidence remains pending"],
+    },
+    Surface {
+        path: "crates/cli/src/runtime/direct_child_execution.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "actual native or controller direct investigation",
+            "known child cleanup and physical terminal before returning accounting source",
+        ],
+        next_seams: &["current-parent native route binding and cleanup proof remain under review"],
+    },
+    Surface {
+        path: "crates/cli/src/runtime/workflow_execution.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "actual bounded native/controller workflow invocation",
+            "physical cleanup proof separate from subsequent ledger observation",
+        ],
+        next_seams: &["held script reads and native writer cleanup source remain in progress"],
+    },
+    Surface {
+        path: "crates/cli/src/runtime/workflow_preparation.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "bounded workflow specification and actual child source composition",
+            "writer-first parent turn/token allocations and inherited absolute deadline",
+        ],
+        next_seams: &["held script capability/FIFO source fix remains in progress"],
+    },
+    Surface {
+        path: "crates/cli/src/runtime/tool_image_projection.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "post-terminal raw captured pixel retention",
+            "authenticated private artifact and model observation projection",
+        ],
+        next_seams: &["missing vision retains all raw pixels without inventing model observations"],
+    },
+    Surface {
+        path: "crates/cli/src/app_server/client_export.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "strict operator transcript command and observed current run opaque port",
+            "actual Activity read lease and one detached physical export slot",
+        ],
+        next_seams: &["same-candidate TCP/observer/adoption/cancellation evidence pending"],
+    },
+    Surface {
+        path: "crates/cli/src/client_effects.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "shared native export custody independent of frontend observers",
+            "separate file publication, process cleanup and private content cleanup facts",
+        ],
+        next_seams: &["native Mac/Windows publication and bounded helper drain source in progress"],
+    },
 ];
 
 #[derive(Serialize)]
