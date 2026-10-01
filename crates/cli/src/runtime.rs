@@ -16,6 +16,7 @@
 
 pub use iteron_kernel::{diagnostics, effect_admission, effect_class, effect_journal, effects};
 mod tool_response;
+mod tool_round_driver;
 mod tool_turn;
 use tool_turn::EarlyToolInFlight as PureToolInFlight;
 
@@ -2859,33 +2860,22 @@ impl Agent {
             }
 
             let stream_start = provider_round.stream_started();
-            let tool_turn::ToolTurnWork {
-                early: pure,
-                mut deferred,
-                replayed: replayed_tool_results,
-            } = provider_round.into_tool_work()?;
-            let mut response = tool_response::ToolResponseOwner::new(&returned_tools);
-            // Recovered results bypass actual execution, preserving their exact declaration IDs.
-            deferred.retain(|(index, _, _)| !replayed_tool_results.contains_key(index));
-            for event in response.replay(replayed_tool_results)? {
+            let (mut tool_round, replayed_ui) = tool_round_driver::ToolRoundDriver::retain(
+                &returned_tools,
+                provider_round.into_tool_work()?,
+                early_tool_collection::EarlyToolWindow {
+                    stream_start,
+                    stream_elapsed,
+                    hook_gates_reads,
+                    queued: execution_scope.queued_reads(),
+                    projection: result_projection_budget,
+                },
+            )?;
+            for event in replayed_ui {
                 self.ui(event);
             }
-            let sink = response.sink();
-            let early_unknown_count = self
-                .early_tool_collection(turn_id)
-                .collect(
-                    pure,
-                    early_tool_collection::EarlyToolWindow {
-                        stream_start,
-                        stream_elapsed,
-                        hook_gates_reads,
-                        queued: execution_scope.queued_reads(),
-                        projection: result_projection_budget,
-                    },
-                    sink.results,
-                    sink.any_error,
-                    sink.images,
-                )
+            let early_unknown_count = tool_round
+                .collect_early(self.early_tool_collection(turn_id))
                 .await?;
             if early_unknown_count > 0 {
                 if let Some(outcome) = self.collect_and_finish_requested_control(turn_id).await? {
@@ -2896,39 +2886,26 @@ impl Agent {
                 });
             }
 
-            // Effecting tools: gated by capability, run in order, AFTER message_stop.
-            //
-            // "In order" was doing two jobs, and only one of them is load-bearing. A tool that must
-            // ask the operator, that a hook must see first, or that writes a file another call in
-            // this batch also writes, is correct only in order. Everything else a coding agent
-            // actually does — a bash line, a `git_status`, a `git_diff` — is Effecting merely
-            // because it is not provably a read, and four independent ones cost the SUM of their
-            // latencies plus four sandbox spawns for no reason. So the leading run of calls the
-            // gate auto-approves, with no declared write path in common, executes concurrently
-            // under the same governor the pure path uses; the loop below then owns every call that
-            // group did not take, in the order it always ran them.
             if optional_tool_round.tracked() {
                 candidate_workspace_baseline
                     .capture_before(optional_tool_round.paths())
                     .await;
             }
-            let batch = self
-                .deferred_batch_policy(messages)
-                .select(&deferred, optional_tool_round.excluded())?;
-            if batch.len() > 1 {
+            if tool_round.select_batch(
+                self.deferred_batch_policy(messages),
+                optional_tool_round.excluded(),
+            )? {
                 let effecting_governor = iteron_sched::Governor::new(
                     self.execution_policy
                         .effecting_tool_admission
                         .max_concurrency,
                 );
-                let sink = response.sink();
-                let execution = self
-                    .deferred_batch_admission(
+                let execution = tool_round
+                    .execute_batch(self.deferred_batch_admission(
                         turn_id,
                         &effecting_governor,
                         result_projection_budget,
-                    )
-                    .run(batch, sink.results, sink.any_error, sink.images)
+                    ))
                     .await;
                 if let Err(error) = execution {
                     if matches!(error, KernelError::UnknownEffects { .. })
@@ -2940,11 +2917,7 @@ impl Agent {
                     return Err(error);
                 }
             }
-            for (idx, tu, proposal) in deferred {
-                // Already settled by the concurrent group above, terminal and all.
-                if response.has_result(idx)? {
-                    continue;
-                }
+            while let Some((idx, tu, proposal)) = tool_round.next_declaration()? {
                 if let Some(reason) = optional_tool_round.refusal(idx) {
                     let r = ToolResult {
                         tool_use_id: tu.id.clone(),
@@ -2955,7 +2928,7 @@ impl Agent {
                     };
                     self.commit_refused_tool_result(turn_id, &tu.name, &r)?;
                     self.ui(tool_end_ui(&tu, &r));
-                    response.accept(idx, r)?;
+                    tool_round.accept(idx, r)?;
                     continue;
                 }
                 let trust = self.governing_turn_trust(messages);
@@ -2970,7 +2943,7 @@ impl Agent {
                         action_signature,
                     } => (proposal, capability, action_signature),
                     tool_declaration_admission::ToolAdmissionDecision::Refused(result) => {
-                        response.accept(idx, result)?;
+                        tool_round.accept(idx, result)?;
                         continue;
                     }
                 };
@@ -2995,7 +2968,7 @@ impl Agent {
                             };
                             self.commit_refused_tool_result(turn_id, &tu.name, &r)?;
                             self.ui(tool_end_ui(&tu, &r));
-                            response.accept(idx, r)?;
+                            tool_round.accept(idx, r)?;
                             continue;
                         }
                     }
@@ -3027,7 +3000,7 @@ impl Agent {
                         latency_ms: started.elapsed().as_millis() as u64,
                     };
                     let result = self.complete_kernel_tool_call(call, result)?;
-                    response.accept(idx, result)?;
+                    tool_round.accept(idx, result)?;
                     continue;
                 }
                 // Optional plan changes use the same permission, hook and control admission.
@@ -3036,7 +3009,7 @@ impl Agent {
                         self.kernel_tool_call(turn_id, idx, &tu, cap, result_projection_budget)?;
                     let result = self.execute_task_plan(turn_id, &tu)?;
                     let result = self.complete_kernel_tool_call(call, result)?;
-                    response.accept(idx, result)?;
+                    tool_round.accept(idx, result)?;
                     continue;
                 }
                 // Delegation spends provider budget and creates a child rollout. Its ordinary
@@ -3072,7 +3045,7 @@ impl Agent {
                         latency_ms: 0,
                     };
                     let result = self.complete_kernel_tool_call(call, r)?;
-                    response.accept(idx, result)?;
+                    tool_round.accept(idx, result)?;
                     continue;
                 }
                 // Intercept the in-turn `Workflow` tool (parallels `dispatch_agent` above): launch a
@@ -3098,7 +3071,7 @@ impl Agent {
                         };
                         self.commit_refused_tool_result(turn_id, &tu.name, &r)?;
                         self.ui(tool_end_ui(&tu, &r));
-                        response.accept(idx, r)?;
+                        tool_round.accept(idx, r)?;
                         continue;
                     }
                     // The workflow tool never reaches `Registry::run_effect`, so before #16 it was
@@ -3143,7 +3116,7 @@ impl Agent {
                         latency_ms: 0,
                     };
                     let result = self.complete_kernel_tool_call(call, r)?;
-                    response.accept(idx, result)?;
+                    tool_round.accept(idx, result)?;
                     continue;
                 }
                 let admitted = proposal.eligible;
@@ -3174,13 +3147,12 @@ impl Agent {
                         return Err(error);
                     }
                 };
-                response.accept(idx, completed.result)?;
-                response.retain_image(completed.image_projection);
+                tool_round.accept_ordered(idx, completed.result, completed.image_projection)?;
             }
             self.ledger.phase_tools(tools_span.elapsed_ms());
 
-            response.validate_complete()?;
-            submitted_turn.settle_tool_round(response.had_error());
+            tool_round.validate_complete()?;
+            submitted_turn.settle_tool_round(tool_round.had_error());
 
             let candidate_diff_state = if optional_tool_round.requires_diff(
                 investigation_convergence.candidate_review_active(),
@@ -3193,20 +3165,20 @@ impl Agent {
             let optional_settlement = optional_tool_round.settle(
                 &mut investigation_convergence,
                 &returned_tools,
-                response.results(),
-                response.had_error(),
+                tool_round.results(),
+                tool_round.had_error(),
                 candidate_diff_state,
             );
-            if response.schemas_changed() {
+            if tool_round.schemas_changed() {
                 self.advertised_tool_specs_cache = None;
             }
             if stream_recovered {
-                response.retain_recovery(&mut submitted_turn)?;
+                tool_round.retain_recovery(&mut submitted_turn)?;
             }
             let tool_response::ToolResponseParts {
                 mut message,
                 images,
-            } = response.into_parts()?;
+            } = tool_round.into_parts()?;
             for projection in images {
                 let projected =
                     self.project_captured_tool_images(&projection.receipt, &projection.images);
