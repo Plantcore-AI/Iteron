@@ -46,7 +46,7 @@ pub(crate) async fn drive(launch: FrontendLaunch) -> anyhow::Result<u8> {
         cli,
         one_shot,
         confine_execution,
-        selected_api_root,
+        selected_api_root: _selected_api_root,
         recording_app_server_fault,
         diagnostic_drain,
         config_warnings,
@@ -73,9 +73,17 @@ pub(crate) async fn drive(launch: FrontendLaunch) -> anyhow::Result<u8> {
         if let Some(fault) = recording_app_server_fault {
             fault.consume_marker()?;
         }
+        #[cfg(feature = "legacy-plantcore")]
         let attached = if *plantcore {
-            app_server::attach_plantcore(agent, false, true, selected_api_root.clone())?
+            app_server::attach_plantcore(agent, false, true, _selected_api_root.clone())?
         } else {
+            app_server::attach(agent, false, true)?
+        };
+        #[cfg(not(feature = "legacy-plantcore"))]
+        let attached = {
+            if *plantcore || recording_app_server_fault.is_some() {
+                anyhow::bail!("legacy resident transport is unavailable in standalone Iteron");
+            }
             app_server::attach(agent, false, true)?
         };
         tui::headless::serve(attached, *listen, *plantcore, recording_app_server_fault).await?;

@@ -29,30 +29,37 @@ pub(crate) enum LocalCommand {
         #[arg(long, default_value = "127.0.0.1:0")]
         listen: std::net::SocketAddr,
         /// Require one digest-verified PlantCore bootstrap before the first user input.
-        #[arg(long)]
+        #[cfg_attr(feature = "legacy-plantcore", arg(long))]
+        #[cfg_attr(not(feature = "legacy-plantcore"), arg(skip))]
         plantcore: bool,
         /// Install one case-local CA only for the selected recording Provider route.
-        #[arg(
-            long,
-            value_name = "ABSOLUTE_CA_PEM",
-            hide = true,
-            requires = "plantcore"
+        #[cfg_attr(
+            feature = "legacy-plantcore",
+            arg(
+                long,
+                value_name = "ABSOLUTE_CA_PEM",
+                hide = true,
+                requires = "plantcore"
+            )
         )]
+        #[cfg_attr(not(feature = "legacy-plantcore"), arg(skip))]
         recording_provider_ca_file: Option<PathBuf>,
         /// Arm the deterministic pre-dispatch harness fault used by release recording.
-        #[arg(
+        #[cfg_attr(feature = "legacy-plantcore", arg(
             long,
             hide = true,
             requires_all = ["plantcore", "recording_provider_ca_file"]
-        )]
+        ))]
+        #[cfg_attr(not(feature = "legacy-plantcore"), arg(skip))]
         recording_inject_harness_error: bool,
         /// Emit one fixed malformed App Server sequence for Worker parser release recording.
-        #[arg(
+        #[cfg_attr(feature = "legacy-plantcore", arg(
             long,
             hide = true,
             value_enum,
             requires_all = ["plantcore", "recording_provider_ca_file"]
-        )]
+        ))]
+        #[cfg_attr(not(feature = "legacy-plantcore"), arg(skip))]
         recording_app_server_fault: Option<app_server::RecordingAppServerFault>,
     },
     /// Run a bounded JavaScript workflow end-to-end, streaming progress to stdout.
@@ -582,4 +589,34 @@ pub(crate) struct Cli {
     /// it a gateway would silently receive the default provider's key.
     #[arg(long, value_name = "NAME")]
     pub(crate) key_env: Option<String>,
+}
+
+#[cfg(all(test, not(feature = "legacy-plantcore")))]
+mod standalone_tests {
+    use super::{Cli, LocalCommand};
+    use clap::Parser;
+
+    #[test]
+    fn actual_standalone_serve_parser_has_no_legacy_controls() {
+        let cli = Cli::try_parse_from(["iteron", "serve"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(LocalCommand::Serve {
+                plantcore: false,
+                recording_provider_ca_file: None,
+                recording_inject_harness_error: false,
+                recording_app_server_fault: None,
+                ..
+            })
+        ));
+        for option in [
+            "--plantcore",
+            "--recording-provider-ca-file",
+            "--recording-inject-harness-error",
+            "--recording-app-server-fault",
+        ] {
+            let error = Cli::try_parse_from(["iteron", "serve", option]).unwrap_err();
+            assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+        }
+    }
 }

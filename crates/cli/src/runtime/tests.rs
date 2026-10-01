@@ -4621,6 +4621,7 @@ mod gate_integration_tests {
         }
     }
 
+    #[cfg(feature = "legacy-plantcore")]
     fn plantcore_bootstrap_fixture() -> iteron_protocol::PlantcoreRunBootstrapV1 {
         let document: serde_json::Value = serde_json::from_str(include_str!(
             "../../../../contracts/plantcore/examples/app-server-v5-bootstrap.json"
@@ -11552,6 +11553,7 @@ ant-api03-SuperSecretModelToken12345"
     }
 
     #[tokio::test]
+    #[cfg(feature = "legacy-plantcore")]
     async fn plantcore_wall_deadline_waits_for_an_admitted_provider_turn() {
         let ws = temp_ws("plantcore-run-deadline");
         let rollout = Rollout::open(
@@ -15400,6 +15402,7 @@ ant-api03-SuperSecretModelToken12345"
     }
 
     #[tokio::test]
+    #[cfg(feature = "legacy-plantcore")]
     async fn plantcore_dispatch_gate_waits_for_provider_then_blocks_retry_until_resume() {
         struct PausableRetryProvider {
             started: tokio::sync::Notify,
@@ -15509,6 +15512,7 @@ ant-api03-SuperSecretModelToken12345"
     }
 
     #[tokio::test]
+    #[cfg(feature = "legacy-plantcore")]
     async fn plantcore_dispatch_gate_waits_for_mcp_then_drain_prevents_the_next_turn() {
         struct McpThenDone {
             calls: AtomicUsize,
@@ -20293,6 +20297,7 @@ ant-api03-SuperSecretModelToken12345"
     }
 
     #[tokio::test]
+    #[cfg(feature = "legacy-plantcore")]
     async fn sole_request_user_input_creates_the_typed_terminal_without_another_turn() {
         let ws = temp_ws("request-user-input-terminal");
         let run = iteron_protocol::RunId("run-1".into());
@@ -20353,6 +20358,7 @@ ant-api03-SuperSecretModelToken12345"
     }
 
     #[tokio::test]
+    #[cfg(feature = "legacy-plantcore")]
     async fn mixed_request_user_input_batch_executes_nothing_and_counts_one_error_turn() {
         let ws = temp_ws("request-user-input-mixed");
         let target = ws.join("protected.txt");

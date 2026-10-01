@@ -35,6 +35,10 @@ mod pricing;
 mod prompt_history;
 mod providers;
 mod queue_policy;
+#[cfg(feature = "legacy-plantcore")]
+mod recording_provider;
+#[cfg(not(feature = "legacy-plantcore"))]
+#[path = "recording_provider_disabled.rs"]
 mod recording_provider;
 mod render;
 mod session_transcript;
@@ -1529,6 +1533,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "legacy-plantcore")]
     fn plantcore_serve_does_not_read_project_config() {
         let base = std::env::temp_dir().join(format!(
             "iteron-plantcore-project-config-{}-{:?}",
@@ -1550,6 +1555,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "legacy-plantcore")]
     fn plantcore_provider_credentials_are_fixed_before_discovery() {
         let provider = |id: &str, credential: config::ProviderCredential| config::ProviderConfig {
             id: id.into(),
@@ -1609,6 +1615,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "legacy-plantcore")]
     fn plantcore_listener_accepts_only_ephemeral_ipv4_loopback() {
         assert!(validate_serve_listen("127.0.0.1:0".parse().unwrap(), true).is_ok());
         for address in ["127.0.0.1:43123", "[::1]:0", "0.0.0.0:0"] {

@@ -7,6 +7,7 @@ publish.workspace = true
 
 [features]
 default = []
+legacy-plantcore = []
 ticket-investigation = []
 script-workflows = ["iteron-workflow/script-workflows", "iteron-tools/script-workflows"]
 

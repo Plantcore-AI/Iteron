@@ -27,6 +27,7 @@ pub(crate) fn validate(root: &Path) -> Result<()> {
     validate_dependency_graph(root)?;
     validate_ticket_profile(root)?;
     validate_script_profile(root)?;
+    validate_legacy_profile(root)?;
     validate_extracted_owners(root)?;
     if root.join("crates/cli/src/queue_policy.rs").is_file() {
         validate_runtime_direction(root)?;
@@ -293,6 +294,94 @@ fn validate_feature_module(source: &str, name: &str, feature: &str) -> Result<()
     }
     if !found {
         bail!("feature {feature} has no module {name}");
+    }
+    Ok(())
+}
+
+fn validate_legacy_profile(root: &Path) -> Result<()> {
+    let manifest: toml::Value =
+        toml::from_str(&read(root, "crates/cli/Cargo.toml", MAX_MANIFEST_BYTES)?)?;
+    let Some(features) = manifest.get("features").and_then(toml::Value::as_table) else {
+        return Ok(());
+    };
+    if !features.contains_key("legacy-plantcore") {
+        return Ok(());
+    }
+    if !features
+        .get("default")
+        .and_then(toml::Value::as_array)
+        .is_some_and(Vec::is_empty)
+    {
+        bail!("standalone default must not enable legacy project integrations");
+    }
+    for (file, name) in [
+        ("crates/cli/src/runtime.rs", "plantcore"),
+        ("crates/cli/src/main.rs", "recording_provider"),
+        ("crates/cli/src/app_server.rs", "plantcore"),
+        ("crates/cli/src/app_server.rs", "recording_fault"),
+    ] {
+        validate_legacy_declaration(&read(root, file, MAX_SOURCE_BYTES)?, name)?;
+    }
+    Ok(())
+}
+
+fn validate_legacy_declaration(source: &str, name: &str) -> Result<()> {
+    let mut original = false;
+    let mut disabled = false;
+    for item in syn::parse_file(source)?.items {
+        let syn::Item::Mod(module) = item else {
+            continue;
+        };
+        if module.ident != name {
+            continue;
+        }
+        if module.content.is_some() {
+            bail!("legacy integration must live in a separate compiled module");
+        }
+        let shim = module.attrs.iter().any(|attribute| {
+            matches!(&attribute.meta, syn::Meta::NameValue(value)
+                if value.path.is_ident("path")
+                    && matches!(&value.value, syn::Expr::Lit(literal)
+                        if matches!(&literal.lit, syn::Lit::Str(path)
+                            if path.value().ends_with("_disabled.rs"))))
+        });
+        let cfgs = module
+            .attrs
+            .iter()
+            .filter(|attribute| attribute.path().is_ident("cfg"))
+            .map(|attribute| attribute.parse_args::<syn::Meta>())
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        for enabled in [false, true] {
+            for test in [false, true] {
+                for unix in [false, true] {
+                    let selected = cfgs
+                        .iter()
+                        .map(|cfg| eval_feature_cfg(cfg, "legacy-plantcore", enabled, test, unix))
+                        .collect::<Result<Vec<_>>>()?
+                        .into_iter()
+                        .all(|value| value);
+                    if selected != (enabled != shim) {
+                        bail!(
+                            "{name} legacy/default declarations do not isolate every platform/profile"
+                        );
+                    }
+                }
+            }
+        }
+        if shim {
+            if disabled {
+                bail!("duplicate standalone compatibility shim for {name}");
+            }
+            disabled = true;
+        } else {
+            if original {
+                bail!("duplicate legacy integration declaration for {name}");
+            }
+            original = true;
+        }
+    }
+    if !original || !disabled {
+        bail!("{name} needs separately gated legacy and standalone modules");
     }
     Ok(())
 }
@@ -966,5 +1055,38 @@ mod tests {
         );
         assert!(validate_ticket_declaration("#[cfg(any(test, feature = \"ticket-investigation\"))] mod investigation_convergence; #[cfg(not(any(test, feature = \"ticket-investigation\")))] #[path = \"runtime/general_turn_strategy.rs\"] mod investigation_convergence;").is_ok());
         assert!(validate_ticket_declaration("#[cfg(any(unix, feature = \"ticket-investigation\"))] mod investigation_convergence;").is_err());
+    }
+
+    #[test]
+    fn legacy_modules_are_absent_from_default_even_when_unit_tests_compile() {
+        let isolated = r#"
+            #[cfg(feature = "legacy-plantcore")]
+            mod plantcore;
+            #[cfg(not(feature = "legacy-plantcore"))]
+            #[path = "runtime/plantcore_disabled.rs"]
+            mod plantcore;
+        "#;
+        assert!(validate_legacy_declaration(isolated, "plantcore").is_ok());
+        assert!(
+            validate_legacy_declaration(
+                &isolated.replace(
+                    "cfg(feature = \"legacy-plantcore\")",
+                    "cfg(any(test, feature = \"legacy-plantcore\"))"
+                ),
+                "plantcore"
+            )
+            .is_err()
+        );
+        assert!(
+            validate_legacy_declaration(
+                &isolated.replace("#[cfg(feature = \"legacy-plantcore\")]", ""),
+                "plantcore"
+            )
+            .is_err()
+        );
+        assert!(
+            validate_legacy_declaration(&format!("{isolated}\nmod plantcore;"), "plantcore")
+                .is_err()
+        );
     }
 }
