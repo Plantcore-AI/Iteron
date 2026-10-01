@@ -24,7 +24,6 @@ use super::{clipboard, transcript_export};
 use crate::client_effects::worker;
 pub(super) use crate::client_effects::{ProcessRegistry, ReapOutcome, RegisteredChild};
 use crate::client_effects::{WorkerFailure, WorkerRun};
-pub(crate) use crate::client_effects::{worker_main, worker_requested};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Origin {

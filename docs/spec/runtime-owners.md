@@ -121,6 +121,9 @@ observation; it does not grant permission or acquire mutable ownership of anothe
 | `kernel_special_execution.rs`, `kernel_special_assembly.rs` | Select only the actual pending special call and compose disjoint journal, control, plan and child execution ports | Exact tool-round handoff → actual native special execution → known terminal or physical uncertainty |
 | `direct_child_execution.rs`, `workflow_execution.rs`, `workflow_preparation.rs` | Construct and run actual bounded native or controller children, retain cancellation and distinguish physical cleanup from accounting observation | Held native sources → actual children → terminal and owned ledger observation |
 | `workflow_spawner/agent_route_binding.rs` | Select only an unambiguous held native provider object with actual identity, capabilities and existing governor route | Bounded model proposal → actual native provider and narrowed executable caps |
+| `coding_run_driver.rs`, `coding_provider_execution.rs` | Retain private invocation messages, response/tool phases, provider obligation and exact pending kernel call | Real provider/tool execution ports → consumed completion decisions |
+| `kernel_child_accounting.rs`, `obs/child_accounting.rs` | Preserve known child/tool terminals before separately observing real ledgers; exact pending facts survive restart and prevent unproven finite-budget admission | Known physical completion → exact accounting WAL pair → actual ledger fold |
+| `client_effects.rs`, `client_effects/`, `app_server/client_export.rs` | Retain native transcript publication, private content cleanup and actual session/read/concurrency leases outside frontend observers | Observed current run port → scoped host export → independent publication and cleanup receipts |
 
 ```mermaid
 flowchart LR

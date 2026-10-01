@@ -3127,6 +3127,46 @@
         {
           "kind": "file",
           "path": "crates/cli/src/runtime/workflow_preparation.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/client_effects.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/cli/src/client_effects"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/app_server/client_export.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/cli/src/app_server/client_export"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/coding_provider_execution.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/coding_run_assembly.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/coding_run_driver.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/tool_image_projection.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/tool_image_projection_assembly.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/kernel_child_accounting.rs"
         }
       ],
       "contracts": [
