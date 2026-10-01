@@ -173,10 +173,8 @@ impl Agent {
             compaction: CompactionPolicy::default(),
             compaction_failure_policy:
                 crate::runtime_tunables::effective_core::CompactionFailurePolicy::RetainOriginal,
-            compaction_failed_closed: false,
+            compaction_state: super::compaction_journal::CompactionStateOwner::default(),
             compaction_summary_prompt: None,
-            compacted_in_run: false,
-            last_compaction_turn: None,
             context_estimator,
             token_calibration,
             token_estimate_baselines: std::collections::VecDeque::new(),

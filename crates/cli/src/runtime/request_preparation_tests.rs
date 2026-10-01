@@ -138,7 +138,7 @@ fn real_writer_refusal_keeps_original_transcript_and_candidate_unusable() {
     );
     assert!(matches!(receipt, Err(KernelError::Record(_))));
     assert!(agent.record_failed);
-    assert!(!agent.compacted_in_run);
+    assert!(!agent.compaction_state.compacted());
     assert_eq!(
         serde_json::to_value(&owner.request().messages).unwrap(),
         serde_json::to_value(&original).unwrap()

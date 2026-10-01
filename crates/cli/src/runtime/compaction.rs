@@ -1,19 +1,6 @@
 use super::*;
 
-/// Proof that the actual writer accepted and synced this compaction input. Retained record text
-/// still follows the ordinary mandatory redaction policy; this is not a raw-content export proof.
-pub(super) struct CompactionCommitReceipt {
-    sequence: Seq,
-    summarized: usize,
-    submitted_summary_sha256: [u8; 32],
-}
-impl CompactionCommitReceipt {
-    pub(super) fn matches(&self, summarized: usize, digest: &[u8; 32]) -> bool {
-        self.sequence != Seq::ZERO
-            && self.summarized == summarized
-            && &self.submitted_summary_sha256 == digest
-    }
-}
+pub(super) use super::compaction_journal::CompactionCommitReceipt;
 
 /// Coverage verdict recorded when the coverage check itself failed to complete: an unproven summary
 /// counts as uncovered, never as covered.
@@ -38,7 +25,7 @@ impl Agent {
         match self.compaction_failure_policy {
             crate::runtime_tunables::effective_core::CompactionFailurePolicy::RetainOriginal => {}
             crate::runtime_tunables::effective_core::CompactionFailurePolicy::FailClosed => {
-                self.compaction_failed_closed = true;
+                self.compaction_state.close();
             }
             crate::runtime_tunables::effective_core::CompactionFailurePolicy::TruncateBounded => {
                 let summary = format!(
@@ -259,143 +246,18 @@ impl Agent {
         reason_code: &'static str,
         coverage_verified: bool,
     ) -> Result<CompactionCommitReceipt, KernelError> {
-        self.ensure_record_healthy()?;
-        let rebuilt = iteron_ctx::CompactionPolicy::rebuild(plan, summary.to_owned());
-        let before = before_messages.len();
-        let after = rebuilt.len();
-        let tools = self.registry.specs();
-        let system = self.effective_system();
-        let before_estimate =
-            self.context_estimator
-                .estimate_uncached(&system, before_messages, &tools);
-        let after_estimate = self
-            .context_estimator
-            .estimate_uncached(&system, &rebuilt, &tools);
-        let trigger = self.compaction.effective_trigger_tokens(
-            self.execution_context_window(),
-            self.model_max_output_tokens
-                .unwrap_or(crate::runtime_tunables::core_facts::DEFAULT_REQUEST_OUTPUT_TOKENS),
-        );
-        let compaction = iteron_ctx::CompactionEvidence {
-            trigger_tokens: u64::try_from(trigger).unwrap_or(u64::MAX),
-            before_tokens: u64::try_from(before_estimate.total_tokens).unwrap_or(u64::MAX),
-            after_tokens: u64::try_from(after_estimate.total_tokens).unwrap_or(u64::MAX),
-            obligations_preserved: plan.obligations_preserved().saturating_add(
-                if coverage_verified {
-                    plan.obligations_lost()
-                } else {
-                    0
-                },
-            ),
-            obligations_lost: if coverage_verified {
-                0
-            } else {
-                plan.obligations_lost()
-            },
-            reason_code: reason_code.into(),
-        };
-        let mut ledger =
-            iteron_ctx::ContextLedger::new(turn, self.context_estimator.tokenizer_identity());
-        ledger.model_context_window = self.execution_context_window();
-        let output_reserve = self
-            .model_max_output_tokens
-            .unwrap_or(crate::runtime_tunables::core_facts::DEFAULT_REQUEST_OUTPUT_TOKENS);
-        ledger.usable_window = self
-            .execution_context_window()
-            .map(|window| window.saturating_sub(u64::from(output_reserve)));
-        ledger.output_reserved_tokens = u64::from(output_reserve);
-        ledger.record_transform(iteron_ctx::ContextTransformEvidence {
-            kind: iteron_ctx::ContextTransformKind::Compact,
-            policy_id: "core/compaction@1".into(),
-            input_segments: u32::try_from(before).unwrap_or(u32::MAX),
-            output_segments: u32::try_from(after).unwrap_or(u32::MAX),
-            input_bytes: before_messages.iter().fold(0u64, |total, message| {
-                total.saturating_add(
-                    u64::try_from(serde_json::to_vec(message).unwrap_or_default().len())
-                        .unwrap_or(u64::MAX),
-                )
-            }),
-            output_bytes: rebuilt.iter().fold(0u64, |total, message| {
-                total.saturating_add(
-                    u64::try_from(serde_json::to_vec(message).unwrap_or_default().len())
-                        .unwrap_or(u64::MAX),
-                )
-            }),
-            input_tokens: compaction.before_tokens,
-            output_tokens: compaction.after_tokens,
-            elapsed_us: 0,
-        });
-        ledger.compaction = Some(compaction.clone());
-        let sequence = self.emit_durable_seq(
+        let (mut journal, scope, estimator, state) = self.compaction_commit_ports();
+        journal.commit(
             turn,
-            EventKind::Compaction {
-                messages: iteron_ctx::compaction_seed(plan, summary),
-            },
-        )?;
-        self.context_ledgers.publish(ledger);
-        self.compacted_in_run = true;
-        self.last_compaction_turn = Some(u64::from(turn.0));
-        self.lifecycle_event(
-            "context.compaction.completed",
-            Some(turn),
-            LifecyclePayload {
-                count: Some(u64::try_from(before.saturating_sub(after)).unwrap_or(u64::MAX)),
-                magnitude: Some(u64::try_from(summary.len()).unwrap_or(u64::MAX)),
-                ..LifecyclePayload::default()
-            },
-        );
-        self.lifecycle_event(
-            "context.segment.removed",
-            Some(turn),
-            LifecyclePayload {
-                count: Some(u64::try_from(before.saturating_sub(after)).unwrap_or(u64::MAX)),
-                reason_code: Some("compaction_range".into()),
-                ..LifecyclePayload::default()
-            },
-        );
-        self.lifecycle_event(
-            "context.segment.updated",
-            Some(turn),
-            LifecyclePayload {
-                count: Some(1),
-                magnitude: Some(u64::try_from(summary.len()).unwrap_or(u64::MAX)),
-                reason_code: Some("compaction_summary".into()),
-                ..LifecyclePayload::default()
-            },
-        );
-        if compaction.obligations_preserved > 0 {
-            self.lifecycle_event(
-                "context.obligation.preserved",
-                Some(turn),
-                LifecyclePayload {
-                    count: Some(u64::from(compaction.obligations_preserved)),
-                    reason_code: Some(reason_code.into()),
-                    ..LifecyclePayload::default()
-                },
-            );
-        }
-        if compaction.obligations_lost > 0 {
-            self.lifecycle_event(
-                "context.obligation.lost",
-                Some(turn),
-                LifecyclePayload {
-                    count: Some(u64::from(compaction.obligations_lost)),
-                    reason_code: Some("obligation_preservation_bound".into()),
-                    ..LifecyclePayload::default()
-                },
-            );
-        }
-        self.emit(
-            turn,
-            EventKind::Notice {
-                text: format!("compacted {before} messages -> {after}"),
-            },
-        );
-        Ok(CompactionCommitReceipt {
-            sequence,
-            summarized: plan.to_summarize.len(),
-            submitted_summary_sha256: Sha256::digest(summary.as_bytes()).into(),
-        })
+            before_messages,
+            plan,
+            summary,
+            reason_code,
+            coverage_verified,
+            scope,
+            estimator,
+            state,
+        )
     }
 
     /// Compaction at the END of the turn, not inside it (#I-58). The operator already has their
@@ -407,14 +269,14 @@ impl Agent {
     /// did not ask for, and the emergency valve inside the turn loop still guarantees that
     /// whatever comes next can be admitted.
     pub(super) async fn settle_compaction(&mut self) {
-        if self.compacted_in_run
+        if self.compaction_state.compacted()
             || self.record_failed
             || !self.compaction.enabled
             || self.delegation_depth > 0
-            || !self
-                .compaction
-                .hysteresis
-                .cooldown_allows(u64::from(self.seq_turn), self.last_compaction_turn)
+            || !self.compaction.hysteresis.cooldown_allows(
+                u64::from(self.seq_turn),
+                self.compaction_state.last_committed_turn(),
+            )
         {
             return;
         }

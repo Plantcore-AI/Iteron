@@ -76,7 +76,7 @@ impl Agent {
         // An explicit resume replaces the transcript outright; a working set left over from an
         // earlier run in this process must never outrank it on the next follow-up.
         self.transcript_state.replace_working(None);
-        self.last_compaction_turn = None;
+        self.compaction_state.restore(None);
         // Redaction is applied on the RECORD path (ADR-008 §1). Resuming from that record can
         // therefore give the model masked tool output where the live turn saw the original bytes.
         // Emit only a bounded count through the injected port; neither transcript content nor a
@@ -264,10 +264,11 @@ impl Agent {
                     .map(|event| event.turn.0)
                     .max()
                     .map_or(0, |turn| turn.saturating_add(1));
-                self.last_compaction_turn = events.iter().rev().find_map(|event| {
-                    matches!(event.kind, EventKind::Compaction { .. })
-                        .then_some(u64::from(event.turn.0))
-                });
+                self.compaction_state
+                    .restore(events.iter().rev().find_map(|event| {
+                        matches!(event.kind, EventKind::Compaction { .. })
+                            .then_some(u64::from(event.turn.0))
+                    }));
                 self.approval_seq = events
                     .iter()
                     .filter_map(|event| match &event.kind {
@@ -1007,8 +1008,8 @@ impl Agent {
         self.verify_attempts = 0;
         self.verification_quarantine.clear();
         self.verification_quarantine_restored = false;
-        self.compacted_in_run = false;
-        self.last_compaction_turn = staged.last_compaction_turn;
+        self.compaction_state.begin_submission();
+        self.compaction_state.restore(staged.last_compaction_turn);
         self.control.reset_after_adoption();
         // At-most-once identities are per-journal. `guard_unresolved_effects` reseeds this from the
         // adopted record before the next turn dispatches anything; clearing it now means the window

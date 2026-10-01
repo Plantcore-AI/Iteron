@@ -107,8 +107,11 @@ pub(crate) mod bounded_verify;
 mod budget_control;
 pub(crate) mod client_inventory;
 mod compaction;
+mod compaction_assembly;
 mod compaction_coverage;
+mod compaction_journal;
 mod completion_semantics;
+mod context_preparation_events;
 mod context_runtime;
 mod decision_observability;
 mod decomposition;
@@ -116,6 +119,7 @@ mod deferred_tools;
 mod durability;
 mod failed_action_cache;
 mod maintenance_runtime;
+mod request_recovery_driver;
 #[cfg(test)]
 mod route_controls_tests;
 mod stream_tools;
@@ -1168,7 +1172,7 @@ pub struct Agent {
     composition_environment_context: Option<(String, Trust)>,
     pub compaction: CompactionPolicy,
     compaction_failure_policy: crate::runtime_tunables::effective_core::CompactionFailurePolicy,
-    compaction_failed_closed: bool,
+    compaction_state: compaction_journal::CompactionStateOwner,
     /// Operator replacement for the `prompt/compaction@v1` artifact — the instruction the
     /// summarizer runs under. `None` (the only state a run without a tunables profile can reach)
     /// leaves the compiled [`CompactionPolicy::summary_prompt`] in force, so the no-profile
@@ -1178,11 +1182,9 @@ pub struct Agent {
     /// this to avoid buying a second end-of-turn summary. A later component-budget overflow may
     /// still compact adaptively after a successful recovery; that bridge has its own fail-closed
     /// progress guard and remains bounded by the run's turn, wall, and cost ceilings.
-    compacted_in_run: bool,
     /// Last durable compaction turn. Routine compaction consults this session state so the
     /// resolved cooldown survives across submissions; emergency overflow handling remains a
     /// separate fail-safe.
-    last_compaction_turn: Option<u64>,
     /// Session-scoped context accounting (I-60). Keeps a per-message token estimate with a running
     /// total and one cached tool-schema estimate so a turn does not re-serialise the whole
     /// transcript once per consumer. Every path that rewrites an already-counted message instead of
@@ -1602,7 +1604,7 @@ impl Agent {
         allow_orchestration: bool,
         input_file_evidence: Option<file_submission::InputFileEvidence>,
     ) -> Result<Outcome, KernelError> {
-        if self.compaction_failed_closed {
+        if self.compaction_state.failed_closed() {
             return Err(KernelError::ContextResolution(
                 "the pinned compaction failure policy closed the run after an unproven summary"
                     .into(),
@@ -1655,7 +1657,7 @@ impl Agent {
         // Reset the routine-compaction marker for this top-level submission. A successful
         // component-budget recovery may rearm independently if later evidence grows past a
         // recoverable ceiling again.
-        self.compacted_in_run = false;
+        self.compaction_state.begin_submission();
         let owns_deadline = self.run_deadline.is_none();
         if owns_deadline {
             self.run_deadline = Some(
@@ -2045,7 +2047,7 @@ impl Agent {
                 Some(turn_id),
                 LifecyclePayload::default(),
             );
-            let mut request_preparation = request_preparation::RequestPreparation::new(
+            let request_preparation = request_preparation::RequestPreparation::new(
                 request_preparation::RequestContent {
                     system: effective_system,
                     messages: &mut *messages,
@@ -2069,126 +2071,76 @@ impl Agent {
                     ..LifecyclePayload::default()
                 },
             );
-            // The preparation owner holds the actual bounded candidate/decision. The host
-            // retains real provider IO, durable transcript commit and control safe points.
-            if let Some(payload) = request_preparation.recovery_request(
-                &self.compaction,
-                self.compacted_in_run,
+            let mut recovery = request_recovery_driver::RequestRecoveryDriver::new(
+                request_preparation,
                 submitted_turn.context_recovery(),
-            ) {
-                let report = self
-                    .brokered_lifecycle_gate(
-                        turn_id,
-                        context_runtime::ContextBudgetRecoveryStage::Considered.event_id(),
-                        payload,
-                    )
-                    .await?;
-                request_preparation.authorize_recovery(
-                    &self.compaction,
-                    matches!(report.decision, HookDecision::Allow),
-                );
-            }
-            if let Some(plan) = request_preparation.plan() {
-                self.lifecycle_event(
-                    context_runtime::ContextBudgetRecoveryStage::Started.event_id(),
-                    Some(turn_id),
-                    request_preparation.recovery_payload(Some(plan.to_summarize.len())),
-                );
-                match self.summarize_compaction(&plan.to_summarize, None).await {
-                    Ok(summary) => {
-                        // An actual summary quiesced. Drain must win before an existing optional
-                        // coverage request can admit another real physical provider attempt.
+                request_recovery_driver::RequestRecoveryScope {
+                    turn: turn_id,
+                    policy: self.compaction,
+                    compacted: self.compaction_state.compacted(),
+                    covered_on_verifier_error: iteron_tunables::param_bool(
+                        "cli.runtime.compaction_covered_on_verifier_error",
+                        COMPACTION_COVERED_ON_VERIFIER_ERROR,
+                    ),
+                    events: self.context_preparation_events(),
+                },
+            );
+            loop {
+                match recovery.next()? {
+                    request_recovery_driver::RequestRecoveryWork::Gate(payload) => {
+                        let report = self
+                            .brokered_lifecycle_gate(
+                                turn_id,
+                                context_runtime::ContextBudgetRecoveryStage::Considered.event_id(),
+                                payload,
+                            )
+                            .await?;
+                        recovery.gated(matches!(report.decision, HookDecision::Allow))?;
+                    }
+                    request_recovery_driver::RequestRecoveryWork::Summary(middle) => {
+                        let result = self.summarize_compaction(middle, None).await;
+                        recovery.summary_completed(result, TurnId(self.seq_turn))?;
+                    }
+                    request_recovery_driver::RequestRecoveryWork::ControlBarrier => {
                         let _ = self.collect_inbound_ops(TurnId(self.seq_turn));
                         if let Some(outcome) =
                             self.finish_requested_control(TurnId(self.seq_turn)).await?
                         {
                             return Ok(outcome);
                         }
-                        let covered = if self.compaction.coverage_check {
-                            self.verify_compaction_summary(
-                                &request_preparation.plan().expect("owned plan").to_summarize,
-                                &summary,
-                            )
-                            .await
-                            .unwrap_or(iteron_tunables::param_bool(
-                                "cli.runtime.compaction_covered_on_verifier_error",
-                                COMPACTION_COVERED_ON_VERIFIER_ERROR,
-                            ))
-                        } else {
-                            true
-                        };
-                        let compaction_result_turn = TurnId(self.seq_turn.saturating_sub(1));
-                        let current_output_tokens = self.funded_provider_output_ceiling(
+                        recovery.control_checked(TurnId(self.seq_turn))?;
+                    }
+                    request_recovery_driver::RequestRecoveryWork::Coverage { middle, summary } => {
+                        let result = self.verify_compaction_summary(middle, summary).await;
+                        recovery.coverage_completed(result, TurnId(self.seq_turn))?;
+                    }
+                    request_recovery_driver::RequestRecoveryWork::AssessAndCommit => {
+                        let output = self.funded_provider_output_ceiling(
                             iteron_provider::output_ceiling::ProviderOutputBudget {
                                 model: &self.model,
                                 requested_max_tokens,
                                 thinking_budget: self.effort_thinking_budget(self.effort),
                             },
                         )?;
-                        request_preparation.bind_route_budget(
-                            self.execution_context_window(),
-                            current_output_tokens,
-                        )?;
-                        let candidate_accounting = self.request_accounting();
-                        let reason = request_preparation.assess_summary(
-                            &summary,
-                            covered,
-                            &self.compaction,
-                            &self.context_estimator,
-                            candidate_accounting,
-                        )?;
-                        if let Some(reason) = reason {
-                            self.lifecycle_event(
-                                "context.compaction.failed",
-                                Some(compaction_result_turn),
-                                LifecyclePayload {
-                                    reason_code: Some(reason.into()),
-                                    ..LifecyclePayload::default()
-                                },
-                            );
-                            if let Some(error) = request_preparation.fatal_recovery_refusal(covered)
-                            {
-                                return Err(error);
-                            }
-                        } else {
-                            let receipt = self.record_compaction_committed(
-                                compaction_result_turn,
-                                &request_preparation.request().messages,
-                                request_preparation.plan().expect("owned accepted plan"),
-                                &summary,
-                                request_preparation.recovery_reason(),
-                                self.compaction.coverage_check && covered,
-                            )?;
-                            let recovery = request_preparation
-                                .commit_candidate(receipt, &mut self.context_estimator)?;
+                        let window = self.execution_context_window();
+                        let accounting = self.request_accounting();
+                        let (mut journal, scope, estimator, state) = self.compaction_commit_ports();
+                        if recovery.assess_and_commit(
+                            window,
+                            output,
+                            accounting,
+                            &mut journal,
+                            scope,
+                            estimator,
+                            state,
+                        )? {
                             self.input_file_evidence = None;
-                            if let Some((violation, after)) = recovery {
-                                self.emit_context_budget_recovery_event(
-                                    compaction_result_turn,
-                                    context_runtime::ContextBudgetRecoveryStage::Completed,
-                                    &violation,
-                                    after,
-                                );
-                            }
                         }
                     }
-                    Err(_) => self.lifecycle_event(
-                        "context.compaction.failed",
-                        Some(turn_id),
-                        LifecyclePayload::default(),
-                    ),
+                    request_recovery_driver::RequestRecoveryWork::Complete => break,
                 }
             }
-            if let Some((violation, after)) =
-                request_preparation.settle_recovery(submitted_turn.context_recovery())
-            {
-                self.emit_context_budget_recovery_event(
-                    TurnId(self.seq_turn.saturating_sub(1).max(turn_id.0)),
-                    context_runtime::ContextBudgetRecoveryStage::Failed,
-                    &violation,
-                    after,
-                );
-            }
+            let mut request_preparation = recovery.into_preparation()?;
             // Summarization is itself an admitted provider turn. Once it quiesces, observe control
             // again before admitting the main-model request; otherwise Drain received during a
             // long summary could be followed by one additional provider turn.
