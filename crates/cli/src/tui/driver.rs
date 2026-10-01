@@ -586,20 +586,10 @@ pub async fn run(
                     }
                     break;
                 } else if let Some(bash) = q.strip_prefix('!') {
-                    // The runtime is resident, so these are always the live values. The old fallback to
-                    // `(app.mode, PermissionRules::new())` ran `!bash` against DEFAULT-EMPTY rules
-                    // whenever the `Agent` was away in a run task — a real correctness gap that
-                    // inverting the ownership closes.
-                    let (mode, rules) = (
-                        session.permission_mode(),
-                        session.permission_rules().clone(),
-                    );
-                    let request = transcript_effect::Request::Shell {
-                        workspace: repo.clone(),
-                        command: bash.trim().to_owned(),
-                        sensitive_env_names: sensitive_env_names.clone(),
-                        mode,
-                        rules,
+                    let Some(request) = session.operator_shell_request(bash.trim().to_owned()) else {
+                        app.input_lanes.restore_next(item);
+                        app.note(block::NoticeLevel::Warn, "shell source is unavailable; queued input retained");
+                        break;
                     };
                     if transcript_effects.start(request).is_ok() {
                         app.note(

@@ -75,6 +75,7 @@ mod event_actions;
 mod event_projection;
 mod experiment_lab;
 pub(crate) mod hyperlink;
+#[cfg(test)]
 mod inline_shell;
 mod input_dispatch;
 mod input_lanes;

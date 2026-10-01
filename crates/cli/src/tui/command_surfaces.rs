@@ -407,6 +407,21 @@ pub(super) fn apply_transcript_effect_event(
     event: transcript_effect::Event,
 ) {
     if let Some(shell) = event.shell {
+        if shell
+            .source_run
+            .as_ref()
+            .is_some_and(|run| app.history.selected_run() != Some(run))
+        {
+            app.note(
+                block::NoticeLevel::Warn,
+                format!(
+                    "shell receipt belongs to prior run {}; current transcript was retained",
+                    shell.source_run.as_ref().expect("checked source").0
+                ),
+            );
+            return;
+        }
+
         app.push_shell_card(&shell.command, shell.body, shell.ok, shell.code);
         return;
     }

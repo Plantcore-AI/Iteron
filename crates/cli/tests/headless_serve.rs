@@ -1551,3 +1551,7 @@ fn a_cursor_older_than_the_live_ring_receives_rollout_fallback() {
 
 #[path = "headless_serve/artifact_journey.rs"]
 mod artifact_journey;
+
+#[cfg(unix)]
+#[path = "headless_serve/operator_shell_journey.rs"]
+mod operator_shell_journey;

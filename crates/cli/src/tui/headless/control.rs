@@ -73,6 +73,9 @@ pub(super) enum WireControl {
     ProviderCatalogV1 {
         command: super::provider_catalog::ProviderCatalogCommandV1,
     },
+    OperatorShellV1 {
+        command: crate::app_server::OperatorShellV1,
+    },
     TranscriptExportV1 {
         command: crate::app_server::TranscriptExportV1,
     },
@@ -347,6 +350,10 @@ impl WireControl {
             Self::InventoryV1 { query } => Control::Inventory(query),
             Self::SelectModelV1 { selection } => Control::SelectModelV1(selection),
             Self::ProviderCatalogV1 { command } => Control::ProviderCatalog(command.into_control()),
+            Self::OperatorShellV1 { command } => Control::OperatorShell {
+                command: Box::new(command),
+                cancel: None,
+            },
             Self::TranscriptExportV1 { command } => Control::TranscriptExport(Box::new(command)),
             Self::LiveWorkflowV1 { command } => Control::LiveWorkflow(command),
             Self::AgentsV1 { command } => Control::PersistentAgents(command),
@@ -595,6 +602,7 @@ pub(super) fn reply_value(reply: ControlReply) -> Value {
         ControlReply::ActivityCenter(value) => value,
         ControlReply::Inventory(value) => value,
         ControlReply::TranscriptExport(value) => value,
+        ControlReply::OperatorShell(value) => json!({"type":"operator_shell_v1","receipt":value}),
         ControlReply::ProviderCatalog(view) => {
             json!({"type":"provider_catalog_v1","inventory_digest_sha256":view.inventory_digest(),"discovery_pending":view.discovery_pending(),"discovery_error":view.discovery_error(),"providers":view.entries().len(),"source":"host_captured_inventory"})
         }

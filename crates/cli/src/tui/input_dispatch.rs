@@ -683,18 +683,16 @@ pub(super) async fn dispatch<B: ratatui::backend::Backend>(
                                 app.editor.insert_str(&line);
                             }
                         } else if !has_attachments && let Some(bash) = trimmed.strip_prefix('!') {
-                            let _ = app.editor.take_submit();
-                            let (mode, rules) = (
-                                session.permission_mode(),
-                                session.permission_rules().clone(),
-                            );
-                            let request = transcript_effect::Request::Shell {
-                                workspace: repo.clone(),
-                                command: bash.trim().to_owned(),
-                                sensitive_env_names: sensitive_env_names.clone(),
-                                mode,
-                                rules,
+                            let Some(request) =
+                                session.operator_shell_request(bash.trim().to_owned())
+                            else {
+                                app.note(
+                                    block::NoticeLevel::Warn,
+                                    "shell source is unavailable; draft retained",
+                                );
+                                return Ok(false);
                             };
+                            let _ = app.editor.take_submit();
                             if transcript_effects.start(request).is_ok() {
                                 app.note(
                                     block::NoticeLevel::Info,

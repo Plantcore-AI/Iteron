@@ -1026,6 +1026,7 @@ impl AppServer {
             .unwrap_or(SessionLifecycleState::Stopping);
         mcp_input::reject_all(&mut pending_mcp_inputs);
         events.record_lifecycle("session.stopping", None, None, LifecyclePayload::default());
+        let shell_cleanup_observed = events.contract.shutdown_shell().await;
         let stop_hook_shutdown_error = if let Some(observer) = stop_hooks.take() {
             match observer.shutdown().await {
                 Ok(observations) => {
@@ -1059,6 +1060,11 @@ impl AppServer {
                 ),
             )
             .await;
+        if !shell_cleanup_observed {
+            report.lines.push(
+                "operator shell cleanup remains unobserved; no successful join is claimed".into(),
+            );
+        }
         if let Some(reason) = stop_hook_shutdown_error {
             report.lines.push(reason);
         }

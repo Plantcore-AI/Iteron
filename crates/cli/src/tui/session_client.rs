@@ -40,6 +40,21 @@ impl Session {
         }
     }
 
+    pub(super) fn operator_shell_request(
+        &self,
+        command: String,
+    ) -> Option<super::transcript_effect::Request> {
+        let scope = self.client.thread_snapshot_v1()?;
+        Some(super::transcript_effect::Request::Shell {
+            sender: self.control.clone(),
+            command: app_server::OperatorShellV1 {
+                thread_id: scope.thread_id,
+                run_id: scope.run_id,
+                command,
+            },
+        })
+    }
+
     pub(super) fn answer_mcp_input(
         &self,
         response: app_server::McpInputResponse,

@@ -6,6 +6,7 @@
 //! `SIGKILL` if its parent dies. Reap confirmation is typed separately from an unknown result, so a
 //! kernel wait failure can never become a false joined-success claim.
 
+#[cfg(test)]
 use std::path::PathBuf;
 #[cfg(all(test, unix))]
 use std::process::Stdio;
@@ -124,7 +125,7 @@ pub(crate) struct Event {
     pub(crate) origin: Origin,
     pub(crate) outcome: Disposition,
     pub(crate) message: String,
-    pub(crate) shell: Option<super::inline_shell::ShellCompletion>,
+    pub(crate) shell: Option<crate::client_effects::shell::ShellCompletion>,
     pub(crate) control: Option<ControlCompletion>,
     final_slot: bool,
 }
@@ -150,11 +151,8 @@ pub(crate) enum Request {
         origin: Origin,
     },
     Shell {
-        workspace: PathBuf,
-        command: String,
-        sensitive_env_names: Vec<String>,
-        mode: iteron_protocol::PermissionMode,
-        rules: iteron_protocol::PermissionRules,
+        sender: tokio::sync::mpsc::Sender<crate::app_server::ControlRequest>,
+        command: crate::app_server::OperatorShellV1,
     },
     Control {
         sender: tokio::sync::mpsc::Sender<crate::app_server::ControlRequest>,
@@ -401,37 +399,59 @@ async fn run(
             }
         }
         Request::Shell {
-            workspace,
+            sender: host,
             command,
-            sensitive_env_names,
-            mode,
-            rules,
         } => {
-            let completion = super::inline_shell::run_bash_inline(
-                &workspace,
-                &command,
-                &sensitive_env_names,
-                mode,
-                &rules,
-                &mut cancelled,
-            )
-            .await;
-            let outcome = if completion.ok {
-                Disposition::Success
-            } else {
-                Disposition::KnownFailure
+            let (reply, response) = tokio::sync::oneshot::channel();
+            let control = crate::app_server::Control::OperatorShell {
+                command: Box::new(command),
+                cancel: Some(cancelled),
+            };
+            let completion =
+                match host.try_send(crate::app_server::ControlRequest { control, reply }) {
+                    Ok(()) => response.await.ok(),
+                    Err(_) => None,
+                };
+            let (shell, outcome, message) = match completion {
+                Some(crate::app_server::ControlReply::OperatorShell(shell)) => {
+                    let outcome = if shell.outcome
+                        == crate::client_effects::shell::ShellOutcome::OutcomeUnknown
+                    {
+                        Disposition::OutcomeUnknown
+                    } else if shell.ok {
+                        Disposition::Success
+                    } else {
+                        Disposition::KnownFailure
+                    };
+                    let message = match shell.outcome {
+                        crate::client_effects::shell::ShellOutcome::Completed => "shell completed",
+                        crate::client_effects::shell::ShellOutcome::NotStarted => {
+                            "shell not started"
+                        }
+                        crate::client_effects::shell::ShellOutcome::OutcomeUnknown => {
+                            "shell outcome unknown after dispatch"
+                        }
+                    };
+                    (Some(shell), outcome, message.to_owned())
+                }
+                Some(crate::app_server::ControlReply::Refused(reason)) => (
+                    None,
+                    Disposition::KnownFailure,
+                    format!("shell refused: {reason}"),
+                ),
+                _ => (
+                    None,
+                    Disposition::OutcomeUnknown,
+                    "shell receipt unavailable; host owns any admitted execution".into(),
+                ),
             };
             send(
                 &sender,
                 Event {
                     origin: Origin::Slash,
                     outcome,
-                    message: if completion.ok {
-                        "shell completed".into()
-                    } else {
-                        "shell stopped".into()
-                    },
-                    shell: Some(completion),
+                    message,
+                    shell,
                     control: None,
                     final_slot: true,
                 },

@@ -377,6 +377,11 @@ pub(crate) enum Control {
     Inventory(iteron_protocol::client_inventory::ClientInventoryQueryV1),
     ProviderCatalog(ProviderCatalogControl),
     TranscriptExport(Box<super::TranscriptExportV1>),
+    OperatorShell {
+        command: Box<super::OperatorShellV1>,
+        /// Local observer cancellation is never a deserialized public authority.
+        cancel: Option<tokio::sync::watch::Receiver<bool>>,
+    },
     SelectModelV1(iteron_protocol::client_inventory::ClientModelSelectionV1),
     /// `/effort`
     SetEffort(iteron_protocol::Effort),
@@ -531,6 +536,7 @@ pub(crate) enum ControlReply {
     Inventory(serde_json::Value),
     ProviderCatalog(Box<crate::providers::ProviderCatalogView>),
     TranscriptExport(serde_json::Value),
+    OperatorShell(crate::client_effects::shell::ShellCompletion),
     /// `/status` — runtime policy identity plus live bounded owner health.
     OperatorStatus(Box<OperatorStatusSnapshot>),
     /// The runtime refused, with the operator-facing reason.

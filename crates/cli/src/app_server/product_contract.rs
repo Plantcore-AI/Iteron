@@ -136,6 +136,8 @@ struct Projection {
     maintenance: Option<super::advisory_maintenance::MaintenanceBinding>,
     maintenance_gaps: u64,
     export: Option<super::client_export::ExportBinding>,
+    submission_exclusion: Option<Arc<super::session_factory::SubmissionExclusion>>,
+    shell: Option<Arc<super::client_shell::ShellService>>,
 }
 
 impl std::fmt::Debug for Projection {
@@ -209,6 +211,36 @@ impl ContractReader {
                 .publications
                 .recover(agent.rollout.run_id(), recovered);
         });
+    }
+
+    pub(super) async fn shutdown_shell(&self) -> bool {
+        let owner = self.with_mut(|projection| projection.shell.clone());
+        match owner {
+            Some(owner) => owner.shutdown().await,
+            None => true,
+        }
+    }
+    pub(super) fn bind_submission_exclusion(
+        &self,
+        exclusion: super::session_factory::SubmissionExclusion,
+    ) {
+        self.with_mut(|projection| projection.submission_exclusion = Some(Arc::new(exclusion)));
+    }
+    pub(super) fn shell_admission(
+        &self,
+    ) -> Option<(
+        Arc<super::session_factory::SubmissionExclusion>,
+        Arc<super::client_shell::ShellService>,
+    )> {
+        self.with_mut(|projection| {
+            Some((
+                projection.submission_exclusion.clone()?,
+                projection
+                    .shell
+                    .get_or_insert_with(|| Arc::new(super::client_shell::ShellService::default()))
+                    .clone(),
+            ))
+        })
     }
 
     pub(super) fn bind_export_owner(

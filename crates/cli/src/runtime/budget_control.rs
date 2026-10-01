@@ -185,6 +185,40 @@ impl Agent {
         self.set_inbound_control(rx);
     }
 
+    pub(crate) fn admit_operator_shell(&self, command: &str) -> bool {
+        let call = iteron_protocol::ToolUse {
+            id: "host-operator-shell".into(),
+            name: "bash".into(),
+            input: serde_json::json!({"command":command}),
+        };
+        let Some(effects) = self.registry.operation_effects(&call) else {
+            return false;
+        };
+        let decision = super::permission_policy::evaluate_operation(
+            "bash",
+            &effects,
+            super::permission_policy::OperationPolicy {
+                mode: self.permission_mode,
+                rules: &self.permission_rules,
+                bypass: self.bypass_permissions,
+                task_ceiling: self.authority_ceiling,
+                policy_capabilities: self.policy_capabilities,
+                governing_trust: iteron_protocol::Trust::Trusted,
+                authority: self.operator_authority(),
+            },
+        );
+        // The authenticated operator submitted this exact command. Explicit per-class/alias
+        // denies and immutable ceilings still win; no model approval or new verifier is added.
+        decision.verdict != iteron_protocol::Verdict::Deny
+            && !decision.ceiling_blocks
+            && !decision.taint_blocks
+    }
+
+    /// Read only the host's credential-variable deny-list. Values are never inspected.
+    pub(crate) fn operator_child_environment_names(&self) -> &[String] {
+        &self.sensitive_env_names
+    }
+
     /// Install trusted provider credential-variable names without ever inspecting their values.
     /// Child agents and the strong verification oracle inherit this deny-list.
     pub fn set_sensitive_env_names(&mut self, mut names: Vec<String>) {

@@ -46,7 +46,7 @@ impl SubmissionExclusion {
             priority_count,
         })
     }
-    fn try_exclude(&self) -> Result<SubmissionExclusionLease, String> {
+    pub(super) fn try_exclude(&self) -> Result<SubmissionExclusionLease, String> {
         let data = self
             .data
             .clone()
