@@ -3223,6 +3223,30 @@
         {
           "kind": "file",
           "path": "crates/cli/src/runtime/persistent_writer_settlement.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/coding_execution_journal.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/coding_provider_assembly.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/coding_provider_session.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/coding_request_assembly.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/coding_request_session.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/tool_image_admission.rs"
         }
       ],
       "contracts": [

@@ -22,6 +22,56 @@ struct Surface {
 
 const SURFACES: &[Surface] = &[
     Surface {
+        path: "crates/cli/src/runtime/coding_execution_journal.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "sequentially reborrow the sole actual invocation WAL, effects, ledger and terminal owners",
+        ],
+        next_seams: &["same-candidate compiler and native integrated evidence remain required"],
+    },
+    Surface {
+        path: "crates/cli/src/runtime/coding_provider_session.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "retain actual admitted provider obligation and resident native route slots through physical pump",
+            "return hedged dispatch as typed suspension after journal borrows end",
+        ],
+        next_seams: &["same-candidate compiler and native integrated evidence remain required"],
+    },
+    Surface {
+        path: "crates/cli/src/runtime/coding_request_session.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "run actual request gate, hook and ordered control polling before media and native projection",
+            "retain exact request source until admitted transcript and recovery handoff",
+        ],
+        next_seams: &["same-candidate compiler and native integrated evidence remain required"],
+    },
+    Surface {
+        path: "crates/cli/src/runtime/tool_image_admission.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "admit confirmed tool image receipts against actual route and pinned aggregate decoder budget",
+        ],
+        next_seams: &["same-candidate compiler and native integrated evidence remain required"],
+    },
+    Surface {
+        path: "crates/cli/src/app_server/project_init.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "capture existing project scaffold intent under actual host write authority and session scope",
+        ],
+        next_seams: &["same-candidate compiler and native integrated evidence remain required"],
+    },
+    Surface {
+        path: "crates/cli/src/client_effects/project_init.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "retain real bounded native initialization worker and create-only publication through physical completion",
+        ],
+        next_seams: &["same-candidate compiler and native integrated evidence remain required"],
+    },
+    Surface {
         path: "crates/cli/src/runtime/turn_advance.rs",
         boundary: "cli-host",
         responsibilities: &[
