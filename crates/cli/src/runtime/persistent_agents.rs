@@ -595,8 +595,10 @@ impl<J: AgentControllerJournal + Send + 'static> PersistentAgentHost<J> {
                 cost_microusd: result.cost_microusd,
                 wall_ms,
             },
-            result.effects_known,
-            result.accounting_known,
+            iteron_agents::AgentTerminalObservation {
+                effects_known: result.effects_known,
+                accounting_known: result.accounting_known,
+            },
             result.terminal,
         );
         self.notify(controller.revision());

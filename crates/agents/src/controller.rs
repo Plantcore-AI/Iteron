@@ -22,6 +22,7 @@ pub use engine_execution::{AgentEngineExecution, AgentEngineOrigin, AgentEngineP
 mod output_funding;
 pub use output_funding::AgentProviderBudgetAllowance;
 mod epoch_settlement;
+pub use epoch_settlement::AgentTerminalObservation;
 mod parent_turn;
 mod provider_budget;
 mod snapshot_validation;

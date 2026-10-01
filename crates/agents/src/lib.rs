@@ -34,9 +34,9 @@ pub use controller::{
     AgentActor, AgentController, AgentControllerConfig, AgentControllerJournal,
     AgentControllerSnapshot, AgentEngineExecution, AgentEngineOrigin, AgentEngineParentSource,
     AgentProviderBudgetAllowance, AgentProviderBudgetBaseline, AgentProviderBudgetRequest,
-    AgentProviderBudgetTerminal, AgentWorkflowChildBinding, AgentWorkflowChildLease,
-    AgentWorkflowClaim, AgentWorkflowCompletion, AgentWorkflowLease, AgentWorkflowTerminal,
-    AgentWorkspaceWitness,
+    AgentProviderBudgetTerminal, AgentTerminalObservation, AgentWorkflowChildBinding,
+    AgentWorkflowChildLease, AgentWorkflowClaim, AgentWorkflowCompletion, AgentWorkflowLease,
+    AgentWorkflowTerminal, AgentWorkspaceWitness,
 };
 pub use controller_error::{ControllerError, ControllerStoreError};
 pub use controller_file::AgentFileJournal;
