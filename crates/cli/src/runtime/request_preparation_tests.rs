@@ -104,6 +104,82 @@ fn config() -> RequestConfiguration {
 }
 
 #[test]
+fn actual_model_phase_writer_refusal_cannot_rearm_context_or_provider_admission() {
+    let (directory, mut agent, mut messages) = fixture();
+    agent.context_budget_policy.transcript_tokens = 1_000_000;
+    let preparation = preparation(&mut agent, &mut messages);
+    let mut owner = crate::runtime::request_admission::RequestAdmission::new(
+        preparation,
+        TurnId(7),
+        Some(1_000_000),
+        64,
+    )
+    .unwrap();
+    let mut loop_state = crate::runtime::agent_loop::AgentLoopGuard::begin(TurnId(7));
+    agent.fail_next_durable_append = Some(DurableAppendFault::BestEffort);
+    let (journal, events) = agent.request_admission_ports(TurnId(7));
+    assert!(matches!(
+        owner.validate(journal, &events, &mut loop_state),
+        Err(KernelError::Record(_))
+    ));
+    assert!(owner.request_gate().is_err());
+    assert!(owner.control_passed().is_err());
+    drop(owner);
+    let path = agent.rollout.path().to_owned();
+    drop(agent);
+    let events = iteron_record::replay(&path).unwrap();
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(&event.kind, EventKind::EffectIntent { .. }))
+    );
+    assert!(!events.iter().any(|event| matches!(
+        &event.kind,
+        EventKind::Phase {
+            phase: iteron_protocol::Phase::Model
+        }
+    )));
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn context_gate_denial_keeps_actual_request_undispatched_and_without_admitted_context() {
+    let (directory, mut agent, mut messages) = fixture();
+    agent.context_budget_policy.transcript_tokens = 1_000_000;
+    let preparation = preparation(&mut agent, &mut messages);
+    let mut owner = crate::runtime::request_admission::RequestAdmission::new(
+        preparation,
+        TurnId(7),
+        Some(1_000_000),
+        64,
+    )
+    .unwrap();
+    let mut loop_state = crate::runtime::agent_loop::AgentLoopGuard::begin(TurnId(7));
+    let (journal, events) = agent.request_admission_ports(TurnId(7));
+    owner.validate(journal, &events, &mut loop_state).unwrap();
+    owner.request_gate().unwrap();
+    assert!(matches!(
+        owner.gate_completed(crate::runtime::hooks::HookDecision::Deny(
+            "actual context gate denial".into()
+        )),
+        Err(KernelError::ContextResolution(_))
+    ));
+    assert!(owner.request_gate().is_err());
+    assert!(owner.control_passed().is_err());
+    assert!(agent.context_ledgers.snapshot().ledgers.is_empty());
+    drop(owner);
+    let path = agent.rollout.path().to_owned();
+    drop(agent);
+    assert!(
+        !iteron_record::replay(&path)
+            .unwrap()
+            .iter()
+            .any(|event| matches!(&event.kind, EventKind::EffectIntent { .. }))
+    );
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn real_writer_refusal_keeps_original_transcript_and_candidate_unusable() {
     let (directory, mut agent, mut messages) = fixture();
     let original = messages.clone();

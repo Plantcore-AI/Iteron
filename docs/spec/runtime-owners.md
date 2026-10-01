@@ -93,6 +93,11 @@ observation; it does not grant permission or acquire mutable ownership of anothe
 | `workflow/live_session/store.rs` | Private registry filesystem/CAS adapter | Pinned namespace → bounded byte publication; no mutable agent state |
 | `crates/workflow/src/live_scheduler/owner.rs` | Sole graph/revision/attempt owner | Directional controller and journal ports |
 | `crates/agents/src/controller.rs` | Sole durable identity/mailbox/epoch owner | Domain commands and immutable views; no scheduler/provider dependency |
+| `memory_request_exposure.rs` | Private bounded scheduled/activated/used/unused memory transitions, exact native prepared-factory proof and existing trace/lifecycle fold | Authentic request factory → private visibility owner → trace observer |
+| `request_admission.rs` | Own the actual final preparation through non-rearmable validation, executable context gate and actual control safe point, then consume it into one native request | RequestPreparation → phase journal + actual hook/control receipt → admitted request |
+| `request_admission_journal.rs` | Buffer the real model phase and account existing kernel tokens with fault/fsync/diagnostic and bounded UI evidence | Actual Rollout/Ledger → accepted phase projection |
+| `request_context_publication.rs` | Publish actual post-gate request source ledger and original bounded lifecycle evidence | Read-only source/estimator evidence → existing ContextLedgerStore/events |
+| `request_admission_assembly.rs` | Compose disjoint real writer and immutable current scope/configuration ports | Agent composition → concrete domain ports |
 
 ```mermaid
 flowchart LR
@@ -120,7 +125,6 @@ are unfinished architecture work; these extractions alone do not close the giant
 acceptance needs the integrated default/optional profiles and actual concurrent tool, cancellation,
 raw-artifact, frontend and restart journeys.
 
-<<<<<<< HEAD
 
 ### Optional task plans
 
@@ -129,8 +133,3 @@ raw-artifact, frontend and restart journeys.
 ### Provider discovery admission
 
 `providers/discovery.rs` owns dormant network work, the unique refresh task, first-paint admission, its activity phase and immutable settled entries. `ProviderDirectory` receives a typed settlement and delegates selected-provider construction; it cannot change the task phase or dispatch another refresh. The admitted native provider forwards physical output-cap and exact request-observation ports to its original adapter. Cache and catalog responsibilities remain separate pending breakdown.
-=======
-| `provider_funding_assembly.rs` | Quote a new auxiliary request from actual signed current/candidate financial evidence, then transfer that same physical request through existing admission; never re-quote an active reservation | FinancialSource/FinancialContext → native cap normalizer → original dispatch guard |
-
-| `memory_request_exposure.rs` | Private bounded scheduled/activated/used/unused memory transitions, exact native prepared-factory proof and existing trace/lifecycle fold | Authentic request factory → private visibility owner → trace observer |
->>>>>>> 7d127dd (refactor(runtime): own actual provider pump and memory exposure)
