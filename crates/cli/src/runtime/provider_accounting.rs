@@ -1,3 +1,5 @@
+use super::provider_attempt_journal::ProviderLogicalUsageEvidence;
+use super::provider_logical_usage::{LogicalUsageScope, exact_projection};
 use super::*;
 
 /// Wall-clock stamp reported when the host clock reads before the Unix epoch; accounting keeps an
@@ -99,35 +101,24 @@ impl Agent {
         turn: TurnId,
         usage: iteron_protocol::Usage,
         model_ms: u64,
-        projected_at_unix_secs: u64,
+        usage_evidence: &ProviderLogicalUsageEvidence,
         stream: StreamTiming,
         cache_creation_reported: bool,
     ) -> Result<(), KernelError> {
-        // A rate that is never charged cannot be misapplied, so an unreported cache-creation count
-        // only makes the turn unpriceable when the bound card actually bills for cache writes.
-        let unpriceable_cache_creation = !cache_creation_reported
-            && self.provider_selection.card().is_some_and(|signed| {
-                signed.rate_card.rates.cache_creation_microusd_per_million > 0
-            });
-        let projection_identity = CostProjectionIdentity {
-            tenant_id: self.rollout.tenant().0.clone(),
-            run_id: self.rollout.run_id().0.clone(),
-            turn_id: turn.0,
-            provider_attempt: self.ledger.provider_attempts,
-            attribution: self.projection_attribution.clone(),
-        };
-        let projection = match (
-            self.provider_selection.pricing_port(),
-            self.provider_selection.card(),
-        ) {
-            (Some(port), Some(rate_card)) if !unpriceable_cache_creation => Some(port.project(
-                rate_card,
-                projection_identity.clone(),
-                usage,
-                projected_at_unix_secs,
-            )),
-            _ => None,
-        };
+        let projection = exact_projection(
+            usage_evidence,
+            LogicalUsageScope {
+                tenant: self.rollout.tenant(),
+                run: self.rollout.run_id(),
+                turn,
+                attribution: &self.projection_attribution,
+            },
+            usage,
+            self.provider_selection
+                .pricing_port()
+                .map(|port| port.as_ref()),
+        )?;
+        let unpriceable_cache_creation = !cache_creation_reported;
         if let Err(error) = self.emit_durable(
             turn,
             EventKind::TurnEnd {
@@ -167,13 +158,6 @@ impl Agent {
             ));
         }
         self.ledger.turn(&usage, model_ms);
-        let projection = match projection.transpose() {
-            Ok(projection) => projection,
-            Err(error) => {
-                self.close_usd_if_physical_charge_is_unproved(turn);
-                return Err(error.into());
-            }
-        };
         if let Some(projection) = &projection {
             if let Err(error) = self.emit_durable(
                 turn,
@@ -190,16 +174,15 @@ impl Agent {
                     "signed projection lost its pricing authority",
                 ));
             };
-            let Some(rate_card) = self.provider_selection.card() else {
-                self.close_usd_if_physical_charge_is_unproved(turn);
-                return Err(KernelError::PricingLedger(
-                    "signed projection lost its bound rate card",
-                ));
-            };
-            match admit_verified_projection(
+            let identity = projection
+                .identity
+                .as_ref()
+                .ok_or(KernelError::PricingLedger(
+                    "physical terminal projection lost its authenticated identity",
+                ))?;
+            match iteron_obs::admit_verified_projection_by_digest(
                 port.as_ref(),
-                rate_card,
-                &projection_identity,
+                identity,
                 projection,
                 &mut self.ledger,
             ) {
@@ -232,7 +215,7 @@ impl Agent {
         turn: TurnId,
         report: UsageReport,
         model_ms: u64,
-        projected_at_unix_secs: u64,
+        usage_evidence: &ProviderLogicalUsageEvidence,
         stream: StreamTiming,
     ) -> Result<Option<iteron_protocol::Usage>, KernelError> {
         match report {
@@ -241,7 +224,7 @@ impl Agent {
                     turn,
                     usage,
                     model_ms,
-                    projected_at_unix_secs,
+                    usage_evidence,
                     stream,
                     report.cache_creation_reported(),
                 )?;

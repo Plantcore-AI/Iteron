@@ -121,7 +121,7 @@ impl Agent {
                     turn_id,
                     r.usage,
                     model_started.elapsed().as_millis() as u64,
-                    usd_attempt.projected_at_unix_secs(),
+                    &usage_evidence,
                     stream_timing,
                 )?;
                 self.emit_plantcore_turn_usage(turn_id)?;

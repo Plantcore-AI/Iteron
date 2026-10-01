@@ -18130,6 +18130,11 @@ ant-api03-SuperSecretModelToken12345"
             .begin_provider_attempt_after_intent(TurnId(0))
             .unwrap();
         in_flight.pricing_now_unix_secs = Some(200);
+        let usage_evidence = super::provider_logical_usage::tests::durable_evidence(
+            &mut in_flight, TurnId(0), UsageReport::complete(Usage {
+                input:1,output:1,..Usage::default()
+            }), attempt.projected_at_unix_secs(),
+        ).unwrap();
         in_flight
             .complete_provider_turn(
                 TurnId(0),
@@ -18139,7 +18144,7 @@ ant-api03-SuperSecretModelToken12345"
                     ..Usage::default()
                 },
                 0,
-                attempt.projected_at_unix_secs(),
+                &usage_evidence,
                 StreamTiming::default(),
                 true,
             )
@@ -18596,8 +18601,11 @@ ant-api03-SuperSecretModelToken12345"
                 UsageReport::cache_creation_unreported(usage)
             };
             agent.ledger.attempt();
+            let usage_evidence = super::provider_logical_usage::tests::durable_evidence(
+                &mut agent, TurnId(0), report, unix_now_secs(),
+            ).unwrap();
             agent
-                .record_provider_usage(TurnId(0), report, 5, 1_000, StreamTiming::default())
+                .record_provider_usage(TurnId(0), report, 5, &usage_evidence, StreamTiming::default())
                 .unwrap();
 
             let events = iteron_record::replay(agent.rollout.path()).unwrap();
@@ -18680,7 +18688,7 @@ ant-api03-SuperSecretModelToken12345"
     }
 
     #[test]
-    fn projection_admission_failure_closes_the_shared_usd_budget() {
+    fn logical_projection_failure_preserves_known_physical_charge_truth() {
         let ws = temp_ws("projection-ledger-failure");
         let rollout = Rollout::open(
             &ws.join(".iteron/runs"),
@@ -18719,12 +18727,15 @@ ant-api03-SuperSecretModelToken12345"
             ..Usage::default()
         };
         agent.ledger.attempt();
+        let usage_evidence = super::provider_logical_usage::tests::durable_evidence(
+            &mut agent, TurnId(0), UsageReport::complete(usage), unix_now_secs(),
+        ).unwrap();
         agent
             .complete_provider_turn(
                 TurnId(0),
                 usage,
                 0,
-                unix_now_secs(),
+                &usage_evidence,
                 StreamTiming::default(),
                 true,
             )
@@ -18734,20 +18745,24 @@ ant-api03-SuperSecretModelToken12345"
         // counter so the next durable projection cannot be admitted to the ledger.
         agent.ledger.turns = 0;
         agent.ledger.attempt();
+        agent.usd_budget.as_ref().unwrap().reserve_provider_attempt(1_000).unwrap();
+        let second_evidence = super::provider_logical_usage::tests::durable_evidence(
+            &mut agent, TurnId(1), UsageReport::complete(usage), unix_now_secs(),
+        ).unwrap();
         assert!(matches!(
             agent.complete_provider_turn(
                 TurnId(1),
                 usage,
                 0,
-                unix_now_secs(),
+                &second_evidence,
                 StreamTiming::default(),
                 true
             ),
             Err(KernelError::PricingLedger(_))
         ));
         assert!(
-            agent.usd_budget_exhausted(),
-            "completed usage without an admitted projection must close the shared ceiling"
+            !agent.usd_budget_exhausted(),
+            "a logical ledger failure must preserve already verified physical charge truth"
         );
         let _ = std::fs::remove_dir_all(&ws);
     }

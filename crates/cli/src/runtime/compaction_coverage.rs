@@ -85,7 +85,7 @@ impl Agent {
                     turn,
                     response.usage,
                     started.elapsed().as_millis() as u64,
-                    attempt.projected_at_unix_secs(),
+                    &usage_evidence,
                     StreamTiming::default(),
                 )?;
                 self.emit_plantcore_turn_usage(turn)?;

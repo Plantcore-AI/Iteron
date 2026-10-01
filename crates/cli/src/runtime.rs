@@ -165,6 +165,7 @@ pub(crate) mod policy_evidence_recorder;
 mod pricing;
 mod private_attachments;
 mod provider_accounting;
+mod provider_logical_usage;
 mod provider_attempt_journal;
 mod provider_attempt_pump;
 mod provider_charge_evidence;
@@ -2525,7 +2526,7 @@ impl Agent {
                 turn_id,
                 turn_res.usage,
                 model_ms,
-                usd_attempt.projected_at_unix_secs(),
+                &usage_evidence,
                 stream_timing,
             ) {
                 Ok(usage) => usage,
