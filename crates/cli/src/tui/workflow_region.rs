@@ -39,6 +39,7 @@
 //! [`WorkflowRun::live`] refuses them — because no event this session receives can ever belong to
 //! one, and a store that claimed otherwise would make the status row's live counter lie.
 
+#[cfg(test)]
 use super::workflow_rehydrate;
 
 /// Prior runs retained in the restart inventory. Sixteen keeps `/workflows` readable and, more
@@ -198,19 +199,20 @@ impl WorkflowMonitor {
     /// Returns how many rows were added. `None` for a session with no run directory (which still
     /// settles the flag — the path is session-constant, so retrying it every frame would only cost
     /// syscalls).
+    #[cfg(test)]
     pub(crate) fn rehydrate(&mut self, workflows_dir: Option<&std::path::Path>) -> usize {
+        self.observe_restored(workflows_dir.map_or_else(Vec::new, |dir| {
+            workflow_rehydrate::restore(dir, RESTORE_LIMIT)
+        }))
+    }
+
+    pub(crate) fn observe_restored(&mut self, rows: Vec<crate::workflow::RunListing>) -> usize {
         if self.rehydrated {
             return 0;
         }
         self.rehydrated = true;
-        let Some(dir) = workflows_dir else {
-            return 0;
-        };
         let mut added = 0;
-        for restored in workflow_rehydrate::restore(
-            dir,
-            iteron_tunables::param_integer("cli.tui.workflow_region.restore_limit", RESTORE_LIMIT),
-        ) {
+        for restored in rows.into_iter().take(RESTORE_LIMIT) {
             if self.position(&restored.run_id).is_some() {
                 continue;
             }

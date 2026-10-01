@@ -6,11 +6,11 @@ use super::{
     Terminal, TerminalOptions, VecDeque, Viewport, app_server, apply_server_event,
     apply_transcript_effect_event, block, cached_workspace_dirty, dispatch_slash_command, draw,
     finish_attachment_effect, hyperlink, input_dispatch, keymap, local_job_wake, next_wake,
-    notification, product_projection, prompt_history, report_stopped_workflows, restore_terminal,
+    notification, product_projection, report_stopped_workflows, restore_terminal,
     schedule_transcript_viewer_effect, service_input_control, slash_command_body, startup,
     submit_queued_model_input, submit_turn, terminal_input, theme, transcript_effect,
     update_keymap_status, wait_for_forced_server_shutdown, wait_for_server_shutdown, wake_until,
-    workflow_region, workspace_command,
+    workspace_command,
 };
 
 pub(crate) struct RunConfig {
@@ -79,46 +79,30 @@ pub async fn run(
     // History/content-store hydration is independent of input readiness. Resolve it on one bounded
     // worker and adopt the result only after the shell has painted; 10,000 sessions therefore cost
     // the first frame exactly the same as an empty store.
-    let history_source_run = prompt_history::source_run_from_rollout(&facts.rollout_path);
     let (history_tx, mut history_rx) = tokio::sync::mpsc::channel(1);
     let history_workspace = facts.workspace.clone();
-    let history_runs_dir = facts
-        .rollout_path
-        .parent()
-        .map(std::path::Path::to_path_buf);
-    let history_config_home = crate::config::config_home();
-    let history_bootstrap_run = history_source_run.clone();
+    let bootstrap_host = facts.client_bootstrap.clone();
     let title_client = super::history_client::HistoryClient::capture(
         handle.client.clone(),
         handle.control.clone(),
     );
-    let workflow_hydrate_dir = facts
-        .rollout_path
-        .parent()
-        .map(|state_dir| state_dir.join("subagents").join("workflows"));
     tokio::spawn(async move {
-        let native = tokio::task::spawn_blocking(move || {
-            let hyperlink_policy = hyperlink::Policy::detect(&history_workspace);
-            let history_started = Instant::now();
-            let hydrated = prompt_history::bootstrap(
-                history_mode,
-                history_config_home,
-                &history_workspace,
-                history_runs_dir,
-                history_bootstrap_run,
-            );
-            let history_elapsed = history_started.elapsed();
-            let mut workflow_monitor = workflow_region::WorkflowMonitor::default();
-            workflow_monitor.rehydrate(workflow_hydrate_dir.as_deref());
-            let workspace_dirty = cached_workspace_dirty(&history_workspace);
+        // Terminal URL policy and optional Git decoration are presentation-local device facts.
+        // Record/CAS hydration is performed only by the attached trusted host factory.
+        let decoration = tokio::task::spawn_blocking(move || {
             (
-                hydrated,
-                workflow_monitor,
-                workspace_dirty,
-                hyperlink_policy,
-                history_elapsed,
+                cached_workspace_dirty(&history_workspace),
+                hyperlink::Policy::detect(&history_workspace),
             )
         });
+        let hydration = async {
+            let started = Instant::now();
+            let result = match bootstrap_host {
+                Some(host) => host.hydrate(history_mode).await,
+                None => Err("session startup host is unavailable"),
+            };
+            (result, started.elapsed())
+        };
         let title_read = async {
             let started = Instant::now();
             let title = match title_client {
@@ -127,20 +111,13 @@ pub async fn run(
             };
             (title, started.elapsed())
         };
-        let ((title, title_elapsed), native) = tokio::join!(title_read, native);
-        if let Ok((
-            hydrated,
-            workflow_monitor,
-            workspace_dirty,
-            hyperlink_policy,
-            history_elapsed,
-        )) = native
-        {
+        let ((hydrated, history_elapsed), (title, title_elapsed), decoration) =
+            tokio::join!(hydration, title_read, decoration);
+        if let Ok((workspace_dirty, hyperlink_policy)) = decoration {
             let _ = history_tx
                 .send((
                     hydrated,
                     title,
-                    workflow_monitor,
                     workspace_dirty,
                     hyperlink_policy,
                     history_elapsed,
@@ -149,7 +126,7 @@ pub async fn run(
                 .await;
         }
     });
-    let mut history_writer = prompt_history::Writer::new(None);
+    let mut history_writer = app_server::PromptHistoryWriterPort::disabled();
     let mut history_open = true;
     let (mut active_keymap, initial_keymap_warning) =
         match keymap::Keymap::from_config(keymap_config.as_ref()) {
@@ -324,7 +301,7 @@ pub async fn run(
         .is_some_and(|task| !task.trim().is_empty());
     let mut startup_initial_finalized = !startup_waits_for_initial_answer;
     let mut startup_history_ready = false;
-    let mut first_task = initial_task;
+    let mut first_task = super::provider_catalog_client::InitialTaskGate::new(initial_task);
     let mut redraw = true;
 
     // Terminal input moves onto its own thread so the loop can wait on stdin AND the event queue at
@@ -390,10 +367,7 @@ pub async fn run(
     let tui_result: anyhow::Result<()> = async {
     loop {
         // Kick off the initial task once the terminal is up.
-        if !provider_first_frame_pending
-            && let Some(task) = first_task.take()
-            && !task.trim().is_empty()
-        {
+        if let Some(task) = first_task.take_ready() {
             startup.mark(startup::StartupPhase::InitialSubmission);
             submit_turn(&mut app, &session, &mut notifier, task);
             redraw = true;
@@ -747,7 +721,17 @@ pub async fn run(
             },
             ready = &mut provider_first_frame, if provider_first_frame_pending => {
                 provider_first_frame_pending=false;
-                match ready {Ok(Ok(())) => {},Ok(Err(reason)) => app.note(block::NoticeLevel::Warn,reason),Err(_) => app.note(block::NoticeLevel::Warn,"provider first-frame observer ended without a receipt")}
+                match ready {
+                    Ok(Ok(())) => first_task.confirm(),
+                    other => {
+                        let reason = match other { Ok(Err(reason)) => reason, _ => "provider first-frame observer ended without a receipt".into() };
+                        app.note(block::NoticeLevel::Warn, reason);
+                        if first_task.restore_unconfirmed(&mut app) {
+                            app.note(block::NoticeLevel::Warn,"initial task retained; submit it explicitly after checking provider status");
+                            startup_initial_finalized = true;
+                        }
+                    }
+                }
                 redraw=true;
             },
             hydrated = history_rx.recv(), if history_open => {
@@ -756,7 +740,6 @@ pub async fn run(
                 if let Some((
                     hydrated,
                     hydrated_title,
-                    hydrated_workflows,
                     workspace_dirty,
                     hyperlink_policy,
                     history_elapsed,
@@ -764,33 +747,27 @@ pub async fn run(
                 )) = hydrated {
                     startup.mark_duration(startup::StartupPhase::HistoryHydrate, history_elapsed);
                     startup.mark_duration(startup::StartupPhase::Title, title_elapsed);
-                    let current_draft = app.editor.text();
-                    let has_live_chips = app.editor.chip_count() > 0;
-                    if let Some(state) = hydrated.state {
-                        if has_live_chips {
-                            app.note(
-                                block::NoticeLevel::Info,
-                                "prompt history became ready after attachments were added; the live draft was preserved",
-                            );
-                        } else {
-                            app.editor.restore_persisted(state.history, state.draft);
-                            if !current_draft.is_empty() {
-                                app.editor.replace_text(&current_draft);
-                            }
-                            persisted_revision = app.editor.persistence_revision();
-                            persisted_history_len = app.editor.history_len();
-                        }
+                    if let Ok(hydrated) = hydrated {
+                    let current_scope=session.client.thread_snapshot_v1();
+                    let same_run=current_scope.as_ref().is_some_and(|scope|scope.run_id==hydrated.source_run);
+                    if let Some(state) = hydrated.state.filter(|_|same_run) {
+                        app.editor.observe_persisted_history(state.history,state.draft);
+                        persisted_revision = app.editor.persistence_revision();
+                        persisted_history_len = app.editor.history_len();
                     }
                     if let Some(warning) = hydrated.warning {
                         app.note(block::NoticeLevel::Warn, warning);
                     }
-                    history_writer = prompt_history::Writer::new(hydrated.store);
-                    if hydrated_title != "New session" && !hydrated_title.trim().is_empty() {
+                    history_writer = hydrated.writer;
+                    if !same_run {app.note(block::NoticeLevel::Info,"session changed while startup history was loading; live draft and session title were preserved");}
+                    if hydrated.workflows.incomplete || hydrated.workflows.omitted>0 {
+                        app.note(block::NoticeLevel::Info,format!("workflow history is a bounded persisted-sidecar observation; {} known rows omitted{}",hydrated.workflows.omitted,if hydrated.workflows.incomplete {"; additional unavailable rows may exist"} else {""}));
+                    }
+                    if same_run && hydrated_title != "New session" && !hydrated_title.trim().is_empty() {
                         app.session_name = hydrated_title;
                     }
-                    if app.workflow_monitor.live_count() == 0 {
-                        app.workflow_monitor = hydrated_workflows;
-                    }
+                    if same_run {app.workflow_monitor.observe_restored(hydrated.workflows.rows);}
+                    } else {app.note(block::NoticeLevel::Warn,"session startup hydration was unavailable; live draft was preserved");}
                     app.workspace_dirty = workspace_dirty;
                     app.hyperlink_policy = hyperlink_policy;
                     app.geometry.clear();
@@ -875,11 +852,7 @@ pub async fn run(
         let revision = app.editor.persistence_revision();
         let history_len = app.editor.history_len();
         if history_len != persisted_history_len || revision.wrapping_sub(persisted_revision) >= 32 {
-            if let Some(active_run) =
-                prompt_history::source_run_from_rollout(session.rollout_path())
-            {
-                history_writer.schedule(app.editor.persistence_state(), active_run);
-            }
+            let _ = history_writer.schedule(app.editor.persistence_state());
             persisted_revision = revision;
             persisted_history_len = history_len;
         }
@@ -912,18 +885,12 @@ pub async fn run(
         termination_exit = termination_rx.try_recv().ok();
     }
     let _ = term.show_cursor();
-    let active_run = prompt_history::source_run_from_rollout(session.rollout_path());
     let history_flushed = if force_quit_requested {
-        if let Some(active_run) = active_run {
-            history_writer.schedule(app.editor.persistence_state(), active_run);
-        }
+        let _ = history_writer.schedule(app.editor.persistence_state());
         drop(history_writer);
         true
-    } else if let Some(active_run) = active_run {
-        history_writer.finish_bounded(app.editor.persistence_state(), active_run)
     } else {
-        drop(history_writer);
-        true
+        history_writer.finish_bounded(app.editor.persistence_state())
     };
     if let Some(exit_code) = termination_exit {
         drop(session);
@@ -936,7 +903,7 @@ pub async fn run(
         restore_terminal(&guard.keyboard_restorer());
         if !history_flushed {
             eprintln!(
-                "prompt history is still finalizing in the background; shutdown did not wait past 250ms"
+                "prompt history is still finalizing in the background; shutdown did not wait past its two-second storage deadline"
             );
         }
         report_stopped_workflows(&stopped);
@@ -957,7 +924,7 @@ pub async fn run(
     drop(guard);
     if !history_flushed {
         eprintln!(
-            "prompt history is still finalizing in the background; terminal shutdown did not wait past 250ms"
+            "prompt history is still finalizing in the background; terminal shutdown did not wait past its two-second storage deadline"
         );
     }
     report_stopped_workflows(&stopped);

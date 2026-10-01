@@ -26,6 +26,8 @@ pub(crate) mod live_session;
 mod policy_checkpoint;
 mod progress;
 mod projection;
+mod restart_read;
+mod restored_inventory;
 mod run_store;
 mod summary;
 mod supervisor;
@@ -158,6 +160,8 @@ pub use progress::{
     DegradedAgentSink, FanoutProgressSink, FinishedAgent, PartialWork, PartialWorkSink,
     StdoutProgressSink, UiProgressSink, in_turn_progress_sink,
 };
+pub(crate) use restored_inventory::{RestoredWorkflowInventory, restored_inventory};
+#[cfg(test)]
 pub(crate) use run_store::load_run_listing;
 pub use run_store::{
     RunListing, RunManifest, RunResult, list_runs, load_manifest, load_result, load_script,

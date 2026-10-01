@@ -101,6 +101,40 @@ impl State {
             draft,
         }
     }
+    /// Capture the persistence window before cloning frontend data. Older/oversized history and
+    /// oversized drafts retain the existing store omission semantics; live editor data is intact.
+    pub(crate) fn capture(history: &[String], draft: impl Iterator<Item = char>) -> Self {
+        let entries = iteron_tunables::param_integer("cli.prompt_history.max_entries", MAX_ENTRIES)
+            .min(MAX_ENTRIES);
+        let entry_bytes =
+            iteron_tunables::param_integer("cli.prompt_history.max_entry_bytes", MAX_ENTRY_BYTES)
+                .min(MAX_ENTRY_BYTES);
+        let history_bytes =
+            iteron_tunables::param_integer("cli.prompt_history.max_state_bytes", MAX_STATE_BYTES)
+                .min(MAX_STATE_BYTES)
+                / 2;
+        let mut retained = Vec::new();
+        let mut bytes = 0usize;
+        for text in history.iter().rev() {
+            if text.len() > entry_bytes {
+                continue;
+            }
+            if retained.len() >= entries || bytes.saturating_add(text.len()) > history_bytes {
+                break;
+            }
+            bytes += text.len();
+            retained.push(text.clone());
+        }
+        retained.reverse();
+        let mut text = String::new();
+        for character in draft {
+            if text.len().saturating_add(character.len_utf8()) > entry_bytes {
+                return Self::new(retained, None);
+            }
+            text.push(character);
+        }
+        Self::new(retained, (!text.is_empty()).then_some(text))
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -377,7 +411,7 @@ pub(crate) struct Writer {
 
 enum WriterCommand {
     Save(State, RunId),
-    Finish(State, RunId, std::sync::mpsc::SyncSender<()>),
+    Finish(State, RunId, std::sync::mpsc::SyncSender<bool>),
 }
 
 impl Writer {
@@ -404,8 +438,8 @@ impl Writer {
                                     active_run = next_run;
                                 }
                                 Ok(WriterCommand::Finish(next, next_run, acknowledged)) => {
-                                    let _ = store.save(next, &next_run);
-                                    let _ = acknowledged.try_send(());
+                                    let stored = store.save(next, &next_run).is_ok();
+                                    let _ = acknowledged.try_send(stored);
                                     return;
                                 }
                                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
@@ -420,8 +454,8 @@ impl Writer {
                         }
                     }
                     WriterCommand::Finish(state, active_run, acknowledged) => {
-                        let _ = store.save(state, &active_run);
-                        let _ = acknowledged.try_send(());
+                        let stored = store.save(state, &active_run).is_ok();
+                        let _ = acknowledged.try_send(stored);
                         break;
                     }
                 }
@@ -440,7 +474,8 @@ impl Writer {
     }
 
     /// Request one final coalesced snapshot without allowing slow storage to hold terminal restore
-    /// indefinitely. `false` is visible shutdown debt; the worker is detached, never force-killed.
+    /// indefinitely. `false` reports storage refusal or unobserved completion; an unsettled worker
+    /// is detached, never force-killed. Acknowledgment alone cannot turn a failed save into success.
     pub(crate) fn finish_bounded(mut self, state: State, active_run: RunId) -> bool {
         let Some(sender) = self.sender.take() else {
             return true;
@@ -472,11 +507,13 @@ impl Writer {
         }
         drop(sender);
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-        let completed = ack.recv_timeout(remaining).is_ok();
-        if completed && let Some(task) = self.task.take() {
+        let observed = ack.recv_timeout(remaining).ok();
+        if observed.is_some()
+            && let Some(task) = self.task.take()
+        {
             let _ = task.join();
         }
-        completed
+        observed == Some(true)
     }
 }
 

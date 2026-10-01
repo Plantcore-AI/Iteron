@@ -229,6 +229,7 @@ impl Session {
                 tunables_checkpoint: None,
                 client_inventory_digest: None,
                 provider_catalog: None,
+                client_bootstrap: None,
             },
         }
     }

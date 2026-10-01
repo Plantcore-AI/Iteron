@@ -50,6 +50,7 @@ pub(crate) struct SessionFacts {
     pub(crate) tunables_checkpoint: Option<iteron_record::TunablesCheckpoint>,
     pub(crate) client_inventory_digest: Option<String>,
     pub(crate) provider_catalog: Option<crate::providers::ProviderCatalogSubscription>,
+    pub(crate) client_bootstrap: Option<Arc<super::ClientBootstrapFactory>>,
 }
 
 /// Everything a client needs to talk to a running App Server, and nothing more.
@@ -144,6 +145,8 @@ pub(super) fn attach_with_plantcore(
 
     // Attach needs three light frontend fields, not owned copies of every full JSON schema.
     let tool_specs = agent.registry.spec_snapshot();
+    let client_bootstrap = interactive_approvals
+        .then(|| super::ClientBootstrapFactory::capture(&agent, handle.client.contract.clone()));
     let facts = SessionFacts {
         session_id: lifecycle_session_id,
         context_ledgers: agent.context_ledgers.clone(),
@@ -174,6 +177,7 @@ pub(super) fn attach_with_plantcore(
         provider_catalog: agent
             .client_inventory_owner()
             .map(|owner| owner.catalog_subscription()),
+        client_bootstrap,
     };
     let initial_state = snapshot_of(&mut agent);
     if let Some(telemetry) = handle.lifecycle_otel.clone() {

@@ -24,6 +24,43 @@ pub(super) fn selection_request(
     Ok(request)
 }
 
+/// Automatic CLI input requires the actual host receipt. Failure returns its owned words to the
+/// editable composer; it cannot be released by a timeout, queue closure or arbitrary status text.
+pub(super) struct InitialTaskGate {
+    task: Option<String>,
+    confirmed: bool,
+}
+impl InitialTaskGate {
+    pub(super) fn new(task: Option<String>) -> Self {
+        Self {
+            task,
+            confirmed: false,
+        }
+    }
+    pub(super) fn confirm(&mut self) {
+        self.confirmed = true;
+    }
+    pub(super) fn take_ready(&mut self) -> Option<String> {
+        if self.confirmed {
+            self.task.take().filter(|task| !task.trim().is_empty())
+        } else {
+            None
+        }
+    }
+    pub(super) fn restore_unconfirmed(&mut self, app: &mut App) -> bool {
+        let Some(task) = self.task.take().filter(|task| !task.trim().is_empty()) else {
+            return false;
+        };
+        if app.editor.can_restore_owned_draft() {
+            app.editor.replace_text(&task);
+        } else {
+            app.editor.insert_str("\n");
+            app.editor.insert_str(&task);
+        }
+        true
+    }
+}
+
 pub(super) fn first_frame(
     sender: mpsc::Sender<ControlRequest>,
 ) -> oneshot::Receiver<Result<(), String>> {

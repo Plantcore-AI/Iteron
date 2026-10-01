@@ -172,41 +172,16 @@ const MAX_RECENT_JOURNAL_BYTES: u64 = 256 * 1024;
 /// frame must never publish a partial count from a killed writer or spend unbounded time on one
 /// historical journal.
 fn recent_journal_summary(workflows_dir: &Path, run_id: &str) -> Option<(bool, usize)> {
-    let path = run_dir(workflows_dir, run_id).join("journal.jsonl");
-    let len = match std::fs::metadata(&path) {
-        Ok(meta) => meta.len(),
+    let maximum = iteron_tunables::param_integer(
+        "cli.workflow.max_recent_journal_bytes",
+        MAX_RECENT_JOURNAL_BYTES,
+    )
+    .min(MAX_RECENT_JOURNAL_BYTES) as usize;
+    let bytes = match super::restart_read::read(workflows_dir, run_id, "journal.jsonl", maximum) {
+        Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Some((false, 0)),
         Err(_) => return None,
     };
-    if len
-        > iteron_tunables::param_integer(
-            "cli.workflow.max_recent_journal_bytes",
-            MAX_RECENT_JOURNAL_BYTES,
-        )
-    {
-        return None;
-    }
-    use std::io::Read as _;
-    let mut bytes = Vec::with_capacity(len as usize);
-    std::fs::File::open(path)
-        .ok()?
-        .take(
-            iteron_tunables::param_integer(
-                "cli.workflow.max_recent_journal_bytes",
-                MAX_RECENT_JOURNAL_BYTES,
-            )
-            .saturating_add(1),
-        )
-        .read_to_end(&mut bytes)
-        .ok()?;
-    if u64::try_from(bytes.len()).unwrap_or(u64::MAX)
-        > iteron_tunables::param_integer(
-            "cli.workflow.max_recent_journal_bytes",
-            MAX_RECENT_JOURNAL_BYTES,
-        )
-    {
-        return None;
-    }
     let text = String::from_utf8(bytes).ok()?;
     if !text.is_empty() && !text.ends_with('\n') {
         return None;
@@ -220,15 +195,24 @@ fn recent_journal_summary(workflows_dir: &Path, run_id: &str) -> Option<(bool, u
 /// Load one restart-safe listing through the same manifest/script/result readers used by
 /// `iteron workflow list|resume|watch`. A torn optional sidecar refuses this row, not its neighbours.
 pub(crate) fn load_run_listing(workflows_dir: &Path, run_id: String) -> Option<RunListing> {
-    let manifest = load_manifest(workflows_dir, &run_id)?;
-    // A restored row advertises the run id accepted by resume/watch, so the persisted script must
-    // be readable too. This calls their existing reader rather than inventing a TUI-side parser.
-    load_script(workflows_dir, &run_id)?;
-    let result_path = run_dir(workflows_dir, &run_id).join("result.json");
-    let result = load_result(workflows_dir, &run_id);
-    if result_path.exists() && result.is_none() {
+    let manifest: RunManifest = serde_json::from_slice(
+        &super::restart_read::read(workflows_dir, &run_id, "run.json", 64 * 1024).ok()?,
+    )
+    .ok()?;
+    if manifest.run_id != run_id {
         return None;
     }
+    // A restart row is resumable only when the actual finite stored script remains readable.
+    String::from_utf8(
+        super::restart_read::read(workflows_dir, &run_id, "script.js", 1024 * 1024).ok()?,
+    )
+    .ok()?;
+    let result = match super::restart_read::read(workflows_dir, &run_id, "result.json", 128 * 1024)
+    {
+        Ok(bytes) => Some(serde_json::from_slice::<RunResult>(&bytes).ok()?),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(_) => return None,
+    };
     let (has_journal, agents) = recent_journal_summary(workflows_dir, &run_id)?;
     Some(RunListing {
         run_id,

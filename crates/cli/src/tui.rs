@@ -119,6 +119,7 @@ mod tunables_view;
 mod turn_publication;
 mod workflow_panel_projection;
 mod workflow_region;
+#[cfg(test)]
 mod workflow_rehydrate;
 mod workflows_panel;
 mod workspace_command;
@@ -137,7 +138,7 @@ use crate::runtime::{UiEvent, WorkflowUiEvent};
 #[cfg(test)]
 use crate::runtime::{WorkflowAgentOutcomeUi, WorkflowPhaseUi, WorkflowRunOutcomeUi};
 use crate::semantic_text::{is_unsafe_display_char, ui_safe_json, ui_safe_text};
-use crate::{block, keymap, prompt_history, startup, surface, theme};
+use crate::{block, keymap, startup, surface, theme};
 #[cfg(test)]
 use attachment_owner::AttachmentEffectState;
 use attachment_owner::{

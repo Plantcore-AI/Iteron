@@ -194,3 +194,48 @@ fn native_immutable_catalog_renders_picker_without_provider_execution_authority(
     assert!(screen.contains("UI provider"), "{screen}");
     assert!(screen.contains("Model"), "{screen}");
 }
+
+#[tokio::test]
+async fn refused_real_first_frame_never_releases_automatic_input_and_preserves_live_paste() {
+    let (sender, mut host) = mpsc::channel(1);
+    let receipt = first_frame(sender);
+    let mut gate = InitialTaskGate::new(Some("exact CLI task".into()));
+    assert!(gate.take_ready().is_none());
+    host.recv()
+        .await
+        .unwrap()
+        .reply
+        .send(ControlReply::Refused("host not prepared".into()))
+        .unwrap();
+    assert!(receipt.await.unwrap().is_err());
+    assert!(gate.take_ready().is_none());
+    let mut app = App::new();
+    let paste = (0..40)
+        .map(|i| format!("operator line {i}\n"))
+        .collect::<String>();
+    app.editor.capture_paste(&paste).unwrap();
+    assert!(gate.restore_unconfirmed(&mut app));
+    assert_eq!(app.editor.pastes().len(), 1);
+    assert!(app.editor.text().contains("exact CLI task"));
+    assert!(gate.take_ready().is_none());
+    assert!(app.editor.take_submit().contains(&paste));
+}
+
+#[tokio::test]
+async fn actual_success_receipt_releases_initial_input_exactly_once() {
+    let (sender, mut host) = mpsc::channel(1);
+    let receipt = first_frame(sender);
+    let mut gate = InitialTaskGate::new(Some("exact CLI task".into()));
+    host.recv()
+        .await
+        .unwrap()
+        .reply
+        .send(ControlReply::ProviderCatalog(Box::new(view(
+            &"1".repeat(64),
+        ))))
+        .unwrap();
+    receipt.await.unwrap().unwrap();
+    gate.confirm();
+    assert_eq!(gate.take_ready().as_deref(), Some("exact CLI task"));
+    assert!(gate.take_ready().is_none());
+}

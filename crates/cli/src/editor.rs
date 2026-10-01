@@ -1117,6 +1117,33 @@ impl Editor {
         }
     }
 
+    /// Late host hydration cannot replace an operator draft, tag stores, live prompt history or
+    /// navigation. Only a pristine composer accepts the older persisted draft. Otherwise the
+    /// bounded recovered history is prepended while every current owned submission stays intact.
+    pub(crate) fn observe_persisted_history(
+        &mut self,
+        mut history: Vec<String>,
+        draft: Option<String>,
+    ) {
+        if self.persistence_revision == 0
+            && self.history.is_empty()
+            && self.can_restore_owned_draft()
+        {
+            self.restore_persisted(history, draft);
+            return;
+        }
+        let prefix = history.len();
+        history.append(&mut self.history);
+        self.history = history;
+        if let Some(position) = &mut self.hist_pos {
+            *position = position.saturating_add(prefix);
+        }
+        if let Some(search) = &mut self.reverse_search {
+            search.before = search.before.saturating_add(prefix);
+        }
+        self.mark_persistence_change();
+    }
+
     /// Replace composer text after a trusted external-editor round trip. Every tag-backed chip
     /// survives only when the returned text still names it, under the same invariant as keyboard
     /// deletion.
@@ -1132,10 +1159,7 @@ impl Editor {
 
     /// Text-only snapshot. Image bytes and paths never enter prompt history.
     pub fn persistence_state(&self) -> crate::prompt_history::State {
-        crate::prompt_history::State::new(
-            self.history.clone(),
-            (!self.buf.is_empty()).then(|| self.text()),
-        )
+        crate::prompt_history::State::capture(&self.history, self.buf.iter().copied())
     }
 
     pub fn persistence_revision(&self) -> u64 {
@@ -1582,6 +1606,30 @@ mod tests {
         assert_eq!(editor.text(), "recorded prompt");
         editor.history_next();
         assert_eq!(editor.text(), "typed before history is ready");
+    }
+
+    #[test]
+    fn late_host_history_preserves_actual_paste_media_and_newly_submitted_prompt() {
+        let mut editor = Editor::new();
+        editor.insert_str("new prompt");
+        assert_eq!(editor.take_submit(), "new prompt");
+        editor.insert_str("draft ");
+        let paste = big_paste();
+        editor.capture_paste(&paste).unwrap();
+        editor.attach_image_bytes("actual image", GIF).unwrap();
+        let before = editor.text();
+        editor.observe_persisted_history(
+            vec!["older actual prompt".into()],
+            Some("stale draft".into()),
+        );
+        assert_eq!(editor.text(), before);
+        assert_eq!(
+            editor.persistence_state().history,
+            ["older actual prompt", "new prompt"]
+        );
+        assert_eq!(editor.pastes().len(), 1);
+        assert_eq!(editor.attachments().len(), 1);
+        assert!(editor.take_submit().contains(&paste));
     }
 
     #[test]

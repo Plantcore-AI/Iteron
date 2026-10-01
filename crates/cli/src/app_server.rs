@@ -87,9 +87,9 @@ mod messages;
 use messages::event_heap_bytes;
 pub(crate) use messages::{
     AdoptRun, Control, ControlReply, ControlRequest, EventEnvelope, EventEnvelopeError, JobControl,
-    McpControl, McpControlReply, MemoryControl, MemoryControlReply, NavigatedSession, ServerEvent,
-    ProviderCatalogControl, SessionSnapshot, SideRequest, TerminalAuthority, TerminalSummary, WorkflowControl,
-    WorkflowControlReply, WorkspaceRewound,
+    McpControl, McpControlReply, MemoryControl, MemoryControlReply, NavigatedSession,
+    ProviderCatalogControl, ServerEvent, SessionSnapshot, SideRequest, TerminalAuthority,
+    TerminalSummary, WorkflowControl, WorkflowControlReply, WorkspaceRewound,
 };
 mod text_spill;
 mod turn_pump;
@@ -102,6 +102,8 @@ use queue_client::{
 };
 #[cfg(test)]
 use queue_client::{SubmissionSender, submission_weight};
+mod client_bootstrap;
+pub(crate) use client_bootstrap::{ClientBootstrapFactory, PromptHistoryWriterPort};
 mod session_attachment;
 mod session_hooks;
 mod session_services;
