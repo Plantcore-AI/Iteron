@@ -166,17 +166,16 @@ impl CodingRunDriver {
         self.require(RunPhase::Preparing)?;
         self.request.as_mut().ok_or_else(boundary)
     }
-    pub(super) fn complete_request(
+    pub(super) fn install_admitted_request(
         &mut self,
-        configuration: super::request_preparation::RequestConfiguration,
-        publication: super::request_context_publication::RequestContextPublication<'_>,
-    ) -> Result<PreparedModelTurn, KernelError> {
-        let (prepared, messages, recovery) =
-            self.request_mut()?.complete(configuration, publication)?;
+        messages: Vec<Message>,
+        recovery: super::context_runtime::ContextBudgetRecoveryGuard,
+    ) -> Result<(), KernelError> {
+        self.require(RunPhase::Preparing)?;
         self.messages = messages;
         self.submitted.replace_context_recovery(recovery);
         self.request = None;
-        Ok(prepared)
+        Ok(())
     }
     #[cfg(feature = "legacy-plantcore")]
     pub(super) fn error_streak(&self) -> u32 {
