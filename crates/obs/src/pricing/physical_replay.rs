@@ -30,9 +30,15 @@ struct PhysicalProjection {
     projection: CostProjection,
     bound: bool,
 }
+struct ModernRun {
+    first_turn: u32,
+    latest_turn: u32,
+}
 #[derive(Default)]
 pub(super) struct PhysicalPricingReplay {
     scopes: HashMap<Scope, OpenScope>,
+    // One bounded content-free frontier per actual run, not a tombstone for every old turn.
+    modern_runs: HashMap<(String, String), ModernRun>,
 }
 /// Owned only until the next event after TurnEnd. It never retains all run history.
 pub(super) struct PhysicalTurnProof {
@@ -86,6 +92,29 @@ impl PhysicalPricingReplay {
                         return Err(PricingError::ProjectionIdentityMismatch);
                     }
                 }
+                let run_key = (tenant.0.clone(), run.0.clone());
+                if !self.modern_runs.contains_key(&run_key) && self.modern_runs.len() >= MAX_SCOPES
+                {
+                    return Err(PricingError::InvalidField("physical_pricing_run_bound"));
+                }
+                let frontier = self.modern_runs.entry(run_key).or_insert(ModernRun {
+                    first_turn: event.turn.0,
+                    latest_turn: event.turn.0,
+                });
+                if event.turn.0 < frontier.latest_turn {
+                    return Err(PricingError::ProjectionIdentityMismatch);
+                }
+                frontier.latest_turn = event.turn.0;
+                // Missing-usage responses deliberately have no TurnEnd. A real newer stamped
+                // admission retires their fully closed physical proof, while the run frontier
+                // prevents an old/fabricated TurnEnd from using legacy counter matching.
+                self.scopes
+                    .retain(|(scope_tenant, scope_run, scope_turn), open| {
+                        scope_tenant != &tenant.0
+                            || scope_run != &run.0
+                            || *scope_turn >= event.turn.0
+                            || open.attempts.values().any(|attempt| !attempt.closed)
+                    });
                 let scope = (tenant.0.clone(), run.0.clone(), event.turn.0);
                 if !self.scopes.contains_key(&scope) && self.scopes.len() >= MAX_SCOPES {
                     return Err(PricingError::InvalidField("physical_pricing_scope_bound"));
@@ -217,11 +246,19 @@ impl PhysicalPricingReplay {
         turn: u32,
         usage: Usage,
     ) -> Option<PhysicalTurnProof> {
-        self.scopes
-            .remove(&(tenant.0.clone(), run.0.clone(), turn))
-            .map(|open| PhysicalTurnProof {
+        let scope = (tenant.0.clone(), run.0.clone(), turn);
+        if let Some(open) = self.scopes.remove(&scope) {
+            return Some(PhysicalTurnProof {
                 usage,
                 candidates: open.known,
+            });
+        }
+        self.modern_runs
+            .get(&(tenant.0.clone(), run.0.clone()))
+            .filter(|frontier| turn >= frontier.first_turn && turn <= frontier.latest_turn)
+            .map(|_| PhysicalTurnProof {
+                usage,
+                candidates: Vec::new(),
             })
     }
 }

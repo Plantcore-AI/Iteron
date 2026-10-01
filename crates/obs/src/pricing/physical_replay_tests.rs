@@ -408,3 +408,123 @@ fn child_terminal_physical_ordinal_is_not_a_logical_attempt_count() {
         }
     ));
 }
+
+#[test]
+fn closed_missing_usage_turns_retire_without_authorizing_legacy_fallback() {
+    use iteron_protocol::{ProviderRouteCostUnknownReason, ProviderRouteUsageUnknownReason};
+    let card = card("model", 1, 100);
+    let port = authority(std::slice::from_ref(&card));
+    let mut replay = PricingReplay::trusted(port.clone());
+    let mut ledger = Ledger::new();
+    for row in [
+        selection(&card),
+        EventKind::RateCardBound {
+            rate_card: card.clone(),
+        },
+    ] {
+        observe(&mut replay, &mut ledger, row).unwrap();
+    }
+    for turn in 0..1024 {
+        let id = EffectId(format!("turn-{turn}-physical-1"));
+        let route = identity(&card, 1);
+        let start = EventKind::EffectIntent {
+            id: id.clone(),
+            tool_use_id: id.0.clone(),
+            tool: "provider".into(),
+            capability: Capability::IrreversibleExternal,
+            arguments: serde_json::json!({"provider_pricing_at_unix_secs":10}),
+            workspace: "fixture".into(),
+            provider_route_attempt: Some(route.clone()),
+        };
+        let terminal = EventKind::EffectDone {
+            id,
+            tool: "provider".into(),
+            duration_ms: Some(1),
+            provider_route_attempt: Some(ProviderRouteAttemptAccounting {
+                version: route.version,
+                route_id: route.route_id,
+                physical_attempt: 1,
+                max_cost_reservation_microusd: route.max_cost_reservation_microusd,
+                usage: ProviderRouteUsageTruth::Unknown {
+                    reason: ProviderRouteUsageUnknownReason::ProviderOmitted,
+                },
+                cost: ProviderRouteCostTruth::Unknown {
+                    reason: ProviderRouteCostUnknownReason::UsageIncomplete,
+                },
+            }),
+        };
+        for kind in [
+            start,
+            EventKind::TurnStart,
+            terminal,
+            EventKind::Notice {
+                text: "authoritative usage omitted".into(),
+            },
+        ] {
+            replay
+                .observe(
+                    &Event {
+                        seq: Seq::ZERO,
+                        turn: TurnId(turn),
+                        kind,
+                    },
+                    &TenantId("tenant".into()),
+                    &RunId("run".into()),
+                    &mut ledger,
+                )
+                .unwrap();
+        }
+    }
+    assert_eq!(ledger.provider_attempts, 1024);
+    assert_eq!(ledger.turns, 0);
+    assert!(matches!(ledger.cost_state(), CostState::Unknown { .. }));
+    // Even with a valid signature and the legacy expected counter, an obsolete modern turn
+    // cannot acquire a monetary claim after its unknown terminal proof has been retired.
+    for kind in [EventKind::TurnStart, turn_end()] {
+        replay
+            .observe(
+                &Event {
+                    seq: Seq::ZERO,
+                    turn: TurnId(0),
+                    kind,
+                },
+                &TenantId("tenant".into()),
+                &RunId("run".into()),
+                &mut ledger,
+            )
+            .unwrap();
+    }
+    let forged = port
+        .project(
+            &card,
+            CostProjectionIdentity {
+                tenant_id: "tenant".into(),
+                run_id: "run".into(),
+                turn_id: 0,
+                provider_attempt: 1025,
+                attribution: None,
+            },
+            Usage {
+                input: 2,
+                output: 3,
+                ..Usage::default()
+            },
+            10,
+        )
+        .unwrap();
+    assert_eq!(
+        replay
+            .observe(
+                &Event {
+                    seq: Seq::ZERO,
+                    turn: TurnId(0),
+                    kind: EventKind::CostProjected { projection: forged }
+                },
+                &TenantId("tenant".into()),
+                &RunId("run".into()),
+                &mut ledger
+            )
+            .unwrap_err(),
+        PricingError::ProjectionIdentityMismatch
+    );
+}

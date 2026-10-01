@@ -95,6 +95,16 @@ impl PricingReplay {
         {
             self.physical = Some(PhysicalPricingReplay::default());
         }
+        if matches!(kind, EventKind::EffectIntent {tool,arguments,..}
+            if tool == "provider" && arguments.get("provider_pricing_at_unix_secs").is_some())
+        {
+            // An omitted usage report keeps the old logical start unmatched in the counters;
+            // its mutable matching slot need not survive a real subsequent turn admission.
+            self.open_provider_turns
+                .retain(|(old_tenant, old_run, old_turn), _| {
+                    old_tenant != &tenant.0 || old_run != &run_id.0 || *old_turn >= event.turn.0
+                });
+        }
         if let Some(physical) = &mut self.physical {
             physical.observe(
                 event,
