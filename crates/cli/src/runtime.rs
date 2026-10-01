@@ -151,6 +151,8 @@ mod persistent_provider_budget;
 mod plantcore;
 mod provider_effect_identity;
 pub(crate) use plantcore::{DispatchGate, ResumeActivation};
+mod kernel_tool_assembly;
+mod kernel_tool_call;
 mod optional_tool_round;
 mod ordered_tool_call;
 mod policy_evidence;
@@ -3005,7 +3007,8 @@ impl Agent {
                     None
                 };
                 if self.plantcore_runtime_enabled() && tu.name == iteron_tools::PUBLISH_ARTIFACT {
-                    let ticket = self.open_tool_call_effect(turn_id, idx, &tu, cap)?;
+                    let call =
+                        self.kernel_tool_call(turn_id, idx, &tu, cap, result_projection_budget)?;
                     let started = Instant::now();
                     let snapshot = self.snapshot_plantcore_artifact(tu.input.clone()).await;
                     let (content, is_error) = match snapshot {
@@ -3027,19 +3030,16 @@ impl Agent {
                         trust: Trust::Workspace,
                         latency_ms: started.elapsed().as_millis() as u64,
                     };
-                    self.commit_admitted_tool_result(ticket, &tu.name, &result, result.latency_ms)?;
-                    self.ledger.tool(result.latency_ms, 0, result.is_error);
-                    self.ui(tool_end_ui(&tu, &result));
+                    let result = self.complete_kernel_tool_call(call, result)?;
                     response.accept(idx, result)?;
                     continue;
                 }
                 // Optional plan changes use the same permission, hook and control admission.
                 if tu.name == iteron_tools::UPDATE_PLAN {
-                    let ticket = self.open_tool_call_effect(turn_id, idx, &tu, cap)?;
+                    let call =
+                        self.kernel_tool_call(turn_id, idx, &tu, cap, result_projection_budget)?;
                     let result = self.execute_task_plan(turn_id, &tu)?;
-                    self.commit_admitted_tool_result(ticket, &tu.name, &result, 0)?;
-                    self.ledger.tool(0, 0, result.is_error);
-                    self.ui(tool_end_ui(&tu, &result));
+                    let result = self.complete_kernel_tool_call(call, result)?;
                     response.accept(idx, result)?;
                     continue;
                 }
@@ -3062,7 +3062,8 @@ impl Agent {
                     // admits the *tool call* that asked for it, which is the fact the completion
                     // needs to name: before I-42 this branch committed a successful `ToolDone`
                     // with no effect id at all.
-                    let ticket = self.open_tool_call_effect(turn_id, idx, &tu, cap)?;
+                    let call =
+                        self.kernel_tool_call(turn_id, idx, &tu, cap, result_projection_budget)?;
                     let (content, is_error) = match self.spawn_subagent(&subtask, idx).await {
                         Ok(summary) => (summary, false),
                         Err(error) => (error, true),
@@ -3074,27 +3075,8 @@ impl Agent {
                         trust: Trust::Workspace,
                         latency_ms: 0,
                     };
-                    let spill_store = self.ordinary_tool_spill_store(&tu.name);
-                    let publication_error =
-                        self.publish_captured_result(&tu, ticket.intent_sequence(), &r, true);
-                    let mut managed = tool_output_spill::manage_result(spill_store.as_deref(), r);
-                    if managed.project_visible(result_projection_budget.visible_bytes_for(&tu.name))
-                    {
-                        self.observe_tool_result_projection(turn_id, managed.result.content.len());
-                    }
-                    self.commit_admitted_tool_result(ticket, &tu.name, &managed.result, 0)?;
-
-                    tool_output_spill::cleanup_managed_result(
-                        spill_store.as_deref(),
-                        &mut managed,
-                    )?;
-                    if publication_error.is_some() {
-                        self.ui(UiEvent::Notice(
-                            artifact_publication::PUBLICATION_UNAVAILABLE.into(),
-                        ));
-                    }
-                    self.ui(tool_end_ui(&tu, &managed.result));
-                    response.accept(idx, managed.result)?;
+                    let result = self.complete_kernel_tool_call(call, r)?;
+                    response.accept(idx, result)?;
                     continue;
                 }
                 // Intercept the in-turn `Workflow` tool (parallels `dispatch_agent` above): launch a
@@ -3132,7 +3114,8 @@ impl Agent {
                     // this branch commits still carried no effect id (I-42). The launch keeps its
                     // own `Workflow` effect — that is where the boundary's `duration_ms` for the
                     // fan-out is measured — and the tool call is admitted around it.
-                    let call_ticket = self.open_tool_call_effect(turn_id, idx, &tu, cap)?;
+                    let call =
+                        self.kernel_tool_call(turn_id, idx, &tu, cap, result_projection_budget)?;
                     let wf_class = effect_class::EffectClass::Workflow;
                     let wf_ordinal = self.next_effect_ordinal(turn_id, wf_class);
                     let ticket = self.open_kernel_effect(
@@ -3163,27 +3146,8 @@ impl Agent {
                         trust: Trust::Workspace,
                         latency_ms: 0,
                     };
-                    let spill_store = self.ordinary_tool_spill_store(&tu.name);
-                    let publication_error =
-                        self.publish_captured_result(&tu, call_ticket.intent_sequence(), &r, true);
-                    let mut managed = tool_output_spill::manage_result(spill_store.as_deref(), r);
-                    if managed.project_visible(result_projection_budget.visible_bytes_for(&tu.name))
-                    {
-                        self.observe_tool_result_projection(turn_id, managed.result.content.len());
-                    }
-                    self.commit_admitted_tool_result(call_ticket, &tu.name, &managed.result, 0)?;
-
-                    tool_output_spill::cleanup_managed_result(
-                        spill_store.as_deref(),
-                        &mut managed,
-                    )?;
-                    if publication_error.is_some() {
-                        self.ui(UiEvent::Notice(
-                            artifact_publication::PUBLICATION_UNAVAILABLE.into(),
-                        ));
-                    }
-                    self.ui(tool_end_ui(&tu, &managed.result));
-                    response.accept(idx, managed.result)?;
+                    let result = self.complete_kernel_tool_call(call, r)?;
+                    response.accept(idx, result)?;
                     continue;
                 }
                 let admitted = proposal.eligible;
@@ -3719,6 +3683,7 @@ impl Agent {
         self.effect_journal.note_tool_capability(capability);
     }
 
+    #[cfg(test)]
     fn open_tool_call_effect(
         &mut self,
         turn: TurnId,
@@ -3743,6 +3708,7 @@ impl Agent {
     /// Settle an admitted tool call with its terminal `ToolDone` and project it into the live
     /// ledger, in that order — the same shape [`effects::execute_registry_tool`] uses, so both
     /// halves of the tool surface produce one terminal vocabulary and one ordering.
+    #[cfg(test)]
     fn commit_admitted_tool_result(
         &mut self,
         ticket: effects::EffectTicket,
