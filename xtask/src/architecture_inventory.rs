@@ -22,6 +22,28 @@ struct Surface {
 
 const SURFACES: &[Surface] = &[
     Surface {
+        path: "crates/cli/src/app_server/model_preferences.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "retain actual selected-route preference write under submission and adoption custody",
+            "publish bounded run-scoped native write receipt independent of presentation observer",
+        ],
+        next_seams: &[
+            "same-candidate native custody, failure and frontend evidence remain required",
+        ],
+    },
+    Surface {
+        path: "crates/cli/src/config/preferences.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "capture existing user preference path and own bounded global config lock and atomic native write",
+            "distinguish pre-install refusal from installation uncertainty without repeating model selection",
+        ],
+        next_seams: &[
+            "same-candidate native custody, failure and frontend evidence remain required",
+        ],
+    },
+    Surface {
         path: "crates/cli/src/runtime/coding_execution_journal.rs",
         boundary: "cli-host",
         responsibilities: &[

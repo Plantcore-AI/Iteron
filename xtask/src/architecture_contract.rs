@@ -504,6 +504,8 @@ fn validate_extracted_owners(root: &Path) -> Result<()> {
         "crates/cli/src/runtime/coding_request_session.rs",
         "crates/cli/src/runtime/tool_image_admission.rs",
         "crates/cli/src/app_server/project_init.rs",
+        "crates/cli/src/app_server/model_preferences.rs",
+        "crates/cli/src/config/preferences.rs",
         "crates/cli/src/client_effects/project_init.rs",
         "crates/cli/src/runtime/coding_provider_execution.rs",
         "crates/cli/src/runtime/tool_image_projection.rs",
