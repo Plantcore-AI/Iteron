@@ -1392,6 +1392,32 @@ jobs:
                 native_conpty_rejects_version_skew_before_terminal_takeover \
                 -- --exact
           fi
+      - name: Verify native process and frontend physical owners
+        if: matrix.target != 'x86_64-unknown-linux-musl'
+        shell: bash
+        env:
+          CARGO_BUILD_JOBS: 4
+          RUST_TEST_THREADS: 4
+          ITERON_TEST_TIMEOUT_SCALE: 10
+        run: |
+          set -euo pipefail
+          target=${{ matrix.target }}
+          # These tests execute on the selected native host. Version compatibility and a
+          # compiled archive alone do not observe process custody or native filesystem barriers.
+          cargo +"$RUST_VERSION" test --locked -p iteron-sandbox --lib --target "$target"
+          cargo +"$RUST_VERSION" test --locked -p iteron-cli --bin iteron \
+            --target "$target" client_effects::
+          cargo +"$RUST_VERSION" test --locked -p iteron-cli --bin iteron \
+            --target "$target" app_server::model_preferences::
+          if [[ "$target" == x86_64-pc-windows-msvc ]]; then
+            cargo +"$RUST_VERSION" test --locked -p iteron-support \
+              --all-targets --target "$target"
+          else
+            # This physical restart fixture owns a Unix file journal; do not report
+            # an empty cfg-excluded Windows test binary as accounting evidence.
+            cargo +"$RUST_VERSION" test --locked -p iteron-agents \
+              --test persistent_accounting_terminal --target "$target"
+          fi
       - name: Generate and normalize the release payload SBOM
         shell: bash
         run: |
