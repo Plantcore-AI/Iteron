@@ -704,3 +704,6 @@ mod cold_cohort;
 
 #[path = "tests/output_funding.rs"]
 mod output_funding;
+
+#[path = "tests/query_trust.rs"]
+mod query_trust;

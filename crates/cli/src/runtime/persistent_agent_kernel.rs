@@ -922,7 +922,7 @@ fn register_agent_tools(
                     if starts != (name == "agent_task") { return Err(ControllerError::Permission) }
                     control.command(AgentActor::Agent(actor), request, command).and_then(|reply| serde_json::to_value(reply).map_err(|_| ControllerError::Invalid("agent reply serialization failed")))
                 });
-                tool_result(call.id, result)
+                tool_result(call.id, result, Trust::Workspace)
             })
         })?;
     }
@@ -942,7 +942,7 @@ fn register_agent_tools(
                     else { serde_json::to_value(control.message(AgentActor::Agent(actor),AgentMessageIdV1(id))?) }
                     .map_err(|_|ControllerError::Invalid("agent query serialization failed"))
                 })();
-                tool_result(call.id,result)
+                tool_result(call.id,result, Trust::Untrusted)
             })
         })?;
     }
@@ -953,7 +953,13 @@ fn register_agent_tools(
         purity: Purity::Effecting, capability: Capability::ReadOnly,
     }, move |call, _| {
         let control = control_for_list.clone();
-        Box::pin(async move { tool_result(call.id, control.upgrade().ok_or(ControllerError::Closed).and_then(|control| control.list(AgentActor::Agent(actor))).and_then(|views| serde_json::to_value(views).map_err(|_| ControllerError::Invalid("agent view serialization failed")))) })
+        Box::pin(async move {
+            let result = control.upgrade().ok_or(ControllerError::Closed)
+                .and_then(|control| control.list(AgentActor::Agent(actor)))
+                .and_then(|views| serde_json::to_value(views)
+                    .map_err(|_| ControllerError::Invalid("agent view serialization failed")));
+            tool_result(call.id, result, Trust::Untrusted)
+        })
     })?;
     let control_for_wait = Arc::downgrade(&control);
     registry.register_external(ToolSpec {
@@ -970,21 +976,27 @@ fn register_agent_tools(
                 },
                 None => Err(ControllerError::Invalid("agent wait arguments are invalid")),
             };
-            tool_result(call.id, result)
+            tool_result(call.id, result, Trust::Untrusted)
         })
     })
 }
 
-fn tool_result(id: String, result: Result<serde_json::Value, ControllerError>) -> ToolResult {
-    let (content, is_error) = match result {
-        Ok(value) => (value.to_string(), false),
-        Err(error) => (error.to_string(), true),
+fn tool_result(
+    id: String,
+    result: Result<serde_json::Value, ControllerError>,
+    success_trust: Trust,
+) -> ToolResult {
+    // Host receipt metadata and agent-authored payloads have different producers. Classify from
+    // the typed tool path; never recognize an authority prefix or inspect model-authored JSON.
+    let (content, is_error, trust) = match result {
+        Ok(value) => (value.to_string(), false, success_trust),
+        Err(error) => (error.to_string(), true, Trust::Workspace),
     };
     ToolResult {
         tool_use_id: id,
         content,
         is_error,
-        trust: Trust::Workspace,
+        trust,
         latency_ms: 0,
     }
 }
