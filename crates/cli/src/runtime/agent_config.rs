@@ -229,6 +229,7 @@ impl Agent {
                 DEFAULT_MAX_TOOL_CONCURRENCY,
             ),
             pure_overlap_enabled: iteron_tools::Registry::pure_overlap_owner(),
+            #[cfg(feature = "legacy-plantcore")]
             plantcore: super::plantcore::PlantcoreRuntime::default(),
             pure_tool_concurrency: iteron_tunables::param_integer(
                 "cli.runtime.default_max_tool_concurrency",

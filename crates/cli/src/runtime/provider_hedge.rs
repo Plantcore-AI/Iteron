@@ -5,6 +5,7 @@
 //! as an unknown external effect and makes aggregate usage incomplete; it is never misreported as
 //! a proven-unbilled request.
 
+use super::provider_extension::{self, ProviderDispatchGate, ProviderExtensionPermit};
 use super::*;
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use iteron_provider::{AttemptPermit, ProviderAdmission as Admission};
@@ -105,7 +106,7 @@ struct PreparedAttempt {
     attempt_cancel: Arc<AtomicBool>,
     ticket: effects::EffectTicket,
     permit: Option<AttemptPermit>,
-    dispatch_gate: Option<Arc<plantcore::DispatchGate>>,
+    dispatch_gate: Option<Arc<dyn ProviderDispatchGate>>,
     allow_in_flight_past_deadline: bool,
 }
 
@@ -127,7 +128,7 @@ enum AttemptTerminal {
         physical_attempt: u32,
         ticket: effects::EffectTicket,
         permit: Option<AttemptPermit>,
-        dispatch_permit: Option<plantcore::DispatchPermit>,
+        dispatch_permit: Option<ProviderExtensionPermit>,
         items: Vec<StreamItem>,
         rate_limit: Option<iteron_provider::RateLimitSnapshot>,
         result: Result<iteron_provider::TurnResult, KernelError>,
@@ -435,8 +436,8 @@ impl Agent {
                 attempt_cancel,
                 ticket,
                 permit,
-                dispatch_gate: self.plantcore_dispatch_gate(),
-                allow_in_flight_past_deadline: self.plantcore_runtime_enabled(),
+                dispatch_gate: self.provider_dispatch_gate(),
+                allow_in_flight_past_deadline: self.provider_extension_enabled(),
             });
         }
 
@@ -587,7 +588,7 @@ impl Agent {
                         },
                     )?;
                     monetary_followup_safe &= safe;
-                    self.observe_plantcore_provider_attempt(turn, &accounting)
+                    self.observe_provider_extension_attempt(turn, &accounting)
                         .map_err(|reason| KernelError::ContextResolution(reason.into()))?;
                     self.commit_provider_route_charge(turn, &accounting)?;
                     self.observe_governed_route_attempt(turn, route_id, &result, rate_limit)?;
@@ -718,7 +719,7 @@ impl Agent {
                 provider_route_attempt: Some(accounting.clone()),
             }),
         )?;
-        self.observe_plantcore_provider_attempt(turn, &accounting)
+        self.observe_provider_extension_attempt(turn, &accounting)
             .map_err(|reason| KernelError::ContextResolution(reason.into()))
     }
 
@@ -794,10 +795,10 @@ async fn run_attempt(
         };
     }
 
-    let dispatch_permit = match &attempt.dispatch_gate {
-        Some(gate) => match gate.enter().await {
-            Some(permit) => Some(permit),
-            None => {
+    let dispatch_permit =
+        match provider_extension::enter_owned_gate(attempt.dispatch_gate.as_ref()).await {
+            Ok(permit) => permit,
+            Err(()) => {
                 return AttemptTerminal::Suppressed {
                     index: attempt.index,
                     ordinal: attempt.ordinal,
@@ -806,9 +807,7 @@ async fn run_attempt(
                     permit: attempt.permit,
                 };
             }
-        },
-        None => None,
-    };
+        };
     if attempt.attempt_cancel.load(Ordering::Acquire)
         || attempt.drain.load(Ordering::Acquire)
         || attempt.force_cancel.load(Ordering::Acquire)

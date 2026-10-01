@@ -77,7 +77,7 @@ impl Agent {
         &self,
         provider: &dyn Provider,
     ) -> iteron_provider::ProviderRequestControls {
-        if self.plantcore_runtime_enabled() {
+        if self.provider_extension_enabled() {
             self.provider_controls
         } else {
             provider
@@ -108,7 +108,7 @@ impl Agent {
             });
         }
         let capabilities = self.provider.control_capabilities();
-        let executable = if self.plantcore_runtime_enabled() {
+        let executable = if self.provider_extension_enabled() {
             controls
         } else {
             capabilities.adapt_optional_cache_breakpoint(controls)

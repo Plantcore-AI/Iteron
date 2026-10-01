@@ -1,6 +1,7 @@
 //! Host assembly adapters. Actual physical charge state, signed receipt validation and replay
 //! belong to provider_charge_evidence; immutable admission/settlement to ProviderFinancialContext.
-use super::{Agent, KernelError, plantcore};
+use super::provider_extension::ProviderExtensionTerminal;
+use super::{Agent, KernelError};
 use iteron_protocol::{ProviderRouteAttemptAccounting, TurnId};
 
 pub(super) use super::provider_charge_evidence::{
@@ -36,10 +37,10 @@ impl Agent {
         &self,
         monetary_followup_safe: bool,
     ) -> Result<(), KernelError> {
-        if let Some(terminal) = self.plantcore_terminal() {
+        if let Some(terminal) = self.provider_extension_terminal() {
             return Err(KernelError::InferenceBudgetExhausted(match terminal {
-                plantcore::PlantcoreTerminal::Budget(reason) => reason,
-                plantcore::PlantcoreTerminal::UsageUnavailable => "usage_unavailable",
+                ProviderExtensionTerminal::Budget(reason) => reason,
+                ProviderExtensionTerminal::UsageUnavailable => "usage_unavailable",
             }));
         }
         if self

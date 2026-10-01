@@ -33,11 +33,15 @@ mod approval_wait;
 mod control_ingress;
 mod control_terminal;
 mod kernel_effect_bridge;
+#[cfg(feature = "legacy-plantcore")]
+mod legacy_provider_extension;
 mod memory_request_exposure;
 mod model_response;
 mod permission_transaction;
 mod provider_dispatch;
 mod provider_execution_scope;
+mod provider_extension;
+mod provider_extension_assembly;
 mod provider_financial_source;
 mod provider_followup;
 mod provider_funding_assembly;
@@ -1295,6 +1299,7 @@ pub struct Agent {
     /// on the same governor. The fixed default mirrors the workflow concurrency default.
     pub max_tool_concurrency: usize,
     pure_overlap_enabled: bool,
+    #[cfg(feature = "legacy-plantcore")]
     plantcore: plantcore::PlantcoreRuntime,
     pure_tool_concurrency: usize,
     /// One non-refilling child-spawn ceiling for the resident session. Workflow-local RunLimits

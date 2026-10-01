@@ -6,27 +6,6 @@ use std::sync::Arc;
 
 const UNAVAILABLE: &str = "legacy integration is unavailable in standalone Iteron";
 
-#[derive(Debug, Default)]
-pub(super) struct PlantcoreRuntime {
-    _private: (),
-}
-
-impl PlantcoreRuntime {
-    pub(super) fn terminal(&self) -> Option<PlantcoreTerminal> {
-        None
-    }
-    pub(super) async fn enter_external_dispatch(&self) -> Result<Option<DispatchPermit>, ()> {
-        Ok(None)
-    }
-    pub(super) fn observe_provider_attempt(
-        &mut self,
-        _turn: TurnId,
-        _accounting: &ProviderRouteAttemptAccounting,
-    ) -> Result<(), &'static str> {
-        Ok(())
-    }
-}
-
 // These inaccessible sentinels preserve the typed historical transport contract. They cannot
 // acquire a lease or admit a submission in a standalone build.
 #[derive(Debug)]

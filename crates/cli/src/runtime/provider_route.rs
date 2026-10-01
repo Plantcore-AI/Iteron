@@ -22,7 +22,7 @@ impl Agent {
         request: &TurnRequest,
     ) -> Result<(), KernelError> {
         let capabilities = self.provider.control_capabilities();
-        let controls = if self.plantcore_runtime_enabled() {
+        let controls = if self.provider_extension_enabled() {
             request.controls
         } else {
             capabilities.adapt_optional_cache_breakpoint(request.controls)
@@ -368,7 +368,7 @@ impl Agent {
                         .await?;
                     route_turn.assign_route_permit(permit);
                 }
-                let dispatch_permit = match self.enter_plantcore_external_dispatch().await {
+                let dispatch_permit = match self.enter_provider_extension_dispatch().await {
                     Ok(permit) => permit,
                     Err(()) => {
                         drop(route_turn.take_route_permit());
@@ -479,7 +479,7 @@ impl Agent {
                         force_cancel: self.control.force_cancel().clone(),
                         drain: self.control.drain().clone(),
                         attempt: None,
-                        allow_in_flight_past_deadline: self.plantcore_runtime_enabled(),
+                        allow_in_flight_past_deadline: self.provider_extension_enabled(),
                     },
                     route_turn.request(),
                     &mut guarded,
@@ -498,7 +498,7 @@ impl Agent {
                             result: &result,
                         },
                     )?;
-                self.observe_plantcore_provider_attempt(turn, &accounting)
+                self.observe_provider_extension_attempt(turn, &accounting)
                     .map_err(|reason| KernelError::ContextResolution(reason.into()))?;
                 self.commit_provider_route_charge(turn, &accounting)?;
                 self.ledger
