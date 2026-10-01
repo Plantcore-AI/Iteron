@@ -1,6 +1,6 @@
 //! Shared native client effects. Frontends render data and consume receipts; this owner retains
 //! physical process/content authority independently of the observer's lifetime.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) mod capability_fs;
 mod export;
 mod payload;
@@ -195,7 +195,15 @@ pub(crate) async fn export_transcript(
         }
         let payload = match payload::ManagedExportPayload::stage(&source, &body) {
             Ok(payload) => payload,
-            Err(reason) => return Err(ExportReceipt::unobserved(known(reason))),
+            Err(failure) => {
+                if failure.cleanup == ContentCleanup::NotStaged {
+                    custody.confirmed();
+                }
+                return Err(ExportReceipt {
+                    publication: known(failure.reason),
+                    private_content_cleanup: failure.cleanup,
+                });
+            }
         };
         let bytes = match payload.read() {
             Ok(bytes) => bytes,

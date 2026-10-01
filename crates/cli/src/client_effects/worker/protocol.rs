@@ -1,6 +1,6 @@
 //! Private, versioned, bounded stdin/stdout protocol for the export helper process.
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use std::io::Read as _;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -8,35 +8,48 @@ use std::path::{Path, PathBuf};
 use super::super::export as transcript_export;
 
 pub(super) const WORKER_ENV: &str = "ITERON_INTERNAL_TRANSCRIPT_EXPORT_V1";
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 const WORKER_MAGIC: &[u8; 8] = b"COREXP01";
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 const MAX_WORKSPACE_BYTES: usize = 16 * 1024;
 pub(super) const MAX_WORKER_RESPONSE_BYTES: usize = 32 * 1024;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 const WORKER_HEADER_BYTES: usize = WORKER_MAGIC.len() + 1 + 4 + 4 + 4;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 const MAX_WORKER_FRAME_BYTES: usize = WORKER_HEADER_BYTES
     + MAX_WORKSPACE_BYTES
     + 4 * 1024
     + transcript_export::MAX_TRANSCRIPT_EXPORT_BYTES;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub(super) fn encode_worker_request(
     workspace: &Path,
     requested: &str,
     collision: transcript_export::CollisionPolicy,
     body: &[u8],
 ) -> Result<Vec<u8>, String> {
-    use std::os::unix::ffi::OsStrExt as _;
-
-    let workspace = workspace.as_os_str().as_bytes();
+    #[cfg(unix)]
+    let workspace = {
+        use std::os::unix::ffi::OsStrExt as _;
+        workspace.as_os_str().as_bytes()
+    };
+    #[cfg(windows)]
+    let workspace = {
+        use std::os::windows::ffi::OsStrExt as _;
+        workspace
+            .as_os_str()
+            .encode_wide()
+            .take(MAX_WORKSPACE_BYTES / 2 + 1)
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>()
+    };
     if workspace.is_empty()
         || workspace.len()
             > iteron_tunables::param_integer(
                 "cli.tui.transcript_effect.worker.protocol.max_workspace_bytes",
                 MAX_WORKSPACE_BYTES,
             )
+            .min(MAX_WORKSPACE_BYTES)
     {
         return Err("export workspace path exceeds its 16 KiB bound".into());
     }
@@ -46,14 +59,8 @@ pub(super) fn encode_worker_request(
     let workspace_len = u32::try_from(workspace.len()).map_err(|_| "workspace path is too long")?;
     let requested_len = u32::try_from(requested.len()).map_err(|_| "export path is too long")?;
     let body_len = u32::try_from(body.len()).map_err(|_| "transcript body is too large")?;
-    let mut frame = Vec::with_capacity(
-        iteron_tunables::param_integer(
-            "cli.tui.transcript_effect.worker.protocol.worker_header_bytes",
-            WORKER_HEADER_BYTES,
-        ) + workspace.len()
-            + requested.len()
-            + body.len(),
-    );
+    let mut frame =
+        Vec::with_capacity(WORKER_HEADER_BYTES + workspace.len() + requested.len() + body.len());
     frame.extend_from_slice(WORKER_MAGIC);
     frame.push(match collision {
         transcript_export::CollisionPolicy::Refuse => 0,
@@ -62,7 +69,10 @@ pub(super) fn encode_worker_request(
     frame.extend_from_slice(&workspace_len.to_le_bytes());
     frame.extend_from_slice(&requested_len.to_le_bytes());
     frame.extend_from_slice(&body_len.to_le_bytes());
+    #[cfg(unix)]
     frame.extend_from_slice(workspace);
+    #[cfg(windows)]
+    frame.extend_from_slice(&workspace);
     frame.extend_from_slice(requested.as_bytes());
     frame.extend_from_slice(body);
     Ok(frame)
@@ -99,14 +109,14 @@ fn encode_worker_response(result: Result<&str, transcript_export::ExportError>) 
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg(any(target_os = "linux", test))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows, test))]
 pub(super) enum WorkerResponse {
     Published(PathBuf),
     KnownFailure(String),
     OutcomeUnknown(String),
 }
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows, test))]
 pub(super) fn decode_worker_response(
     workspace: &Path,
     response: &[u8],
@@ -183,14 +193,17 @@ pub(crate) fn worker_main() -> u8 {
 type WorkerRequest = (PathBuf, String, transcript_export::CollisionPolicy, Vec<u8>);
 
 fn worker_request_from_stdin() -> Result<WorkerRequest, String> {
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
-        Err("secure transcript export requires Linux anonymous-inode publication".into())
+        Err("secure transcript export is unsupported on this platform".into())
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     {
         use std::ffi::OsString;
+        #[cfg(unix)]
         use std::os::unix::ffi::OsStringExt as _;
+        #[cfg(windows)]
+        use std::os::windows::ffi::OsStringExt as _;
 
         let mut frame = Vec::new();
         std::io::stdin()
@@ -199,7 +212,9 @@ fn worker_request_from_stdin() -> Result<WorkerRequest, String> {
                 (iteron_tunables::param_integer(
                     "cli.tui.transcript_effect.worker.protocol.max_worker_frame_bytes",
                     MAX_WORKER_FRAME_BYTES,
-                ) + 1) as u64,
+                )
+                .min(MAX_WORKER_FRAME_BYTES)
+                    + 1) as u64,
             )
             .read_to_end(&mut frame)
             .map_err(|_| "export helper could not read its request".to_string())?;
@@ -208,11 +223,8 @@ fn worker_request_from_stdin() -> Result<WorkerRequest, String> {
                 "cli.tui.transcript_effect.worker.protocol.max_worker_frame_bytes",
                 MAX_WORKER_FRAME_BYTES,
             )
-            || frame.len()
-                < iteron_tunables::param_integer(
-                    "cli.tui.transcript_effect.worker.protocol.worker_header_bytes",
-                    WORKER_HEADER_BYTES,
-                )
+            .min(MAX_WORKER_FRAME_BYTES)
+            || frame.len() < WORKER_HEADER_BYTES
         {
             return Err("export helper request exceeds its bound or is truncated".into());
         }
@@ -242,6 +254,7 @@ fn worker_request_from_stdin() -> Result<WorkerRequest, String> {
                     "cli.tui.transcript_effect.worker.protocol.max_workspace_bytes",
                     MAX_WORKSPACE_BYTES,
                 )
+                .min(MAX_WORKSPACE_BYTES)
             || requested_len > 4 * 1024
             || body_len > transcript_export::MAX_TRANSCRIPT_EXPORT_BYTES
             || cursor
@@ -253,7 +266,19 @@ fn worker_request_from_stdin() -> Result<WorkerRequest, String> {
             return Err("export helper request has invalid lengths".into());
         }
         let workspace_end = cursor + workspace_len;
+        #[cfg(unix)]
         let workspace = PathBuf::from(OsString::from_vec(frame[cursor..workspace_end].to_vec()));
+        #[cfg(windows)]
+        let workspace = {
+            if workspace_len % 2 != 0 {
+                return Err("Windows export workspace has an invalid native encoding".into());
+            }
+            let units = frame[cursor..workspace_end]
+                .chunks_exact(2)
+                .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+                .collect::<Vec<_>>();
+            PathBuf::from(OsString::from_wide(&units))
+        };
         cursor = workspace_end;
         let requested_end = cursor + requested_len;
         let requested = std::str::from_utf8(&frame[cursor..requested_end])

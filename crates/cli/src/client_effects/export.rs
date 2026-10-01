@@ -7,23 +7,23 @@
 //! they provide an equivalent inode-relative, atomically published implementation.
 
 use std::fmt;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use std::path::Component;
 use std::path::{Path, PathBuf};
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use super::capability_fs;
 
 pub(crate) const MAX_TRANSCRIPT_EXPORT_BYTES: usize = 8 * 1024 * 1024;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 const MAX_EXPORT_PATH_BYTES: usize = 4 * 1024;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 const MAX_EXPORT_COMPONENTS: usize = 128;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 const MAX_VERSION_ATTEMPTS: usize = 100;
 /// Rebinding verdict when the identity check itself errors. Fail-closed: an unprovable match is
 /// reported as a changed path so the export refuses instead of publishing blind. Not a tunable.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 const REBIND_UNPROVEN: bool = false;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -37,7 +37,10 @@ pub(crate) enum CollisionPolicy {
 /// carried over the helper protocol; callers must never turn an uncertain post-publication
 /// durability result into an ordinary retryable failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos", windows)),
+    allow(dead_code)
+)]
 pub(super) enum ExportError {
     KnownFailure(String),
     OutcomeUnknown(String),
@@ -58,13 +61,13 @@ impl ExportError {
         Self::KnownFailure(message.into())
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     fn unknown(message: impl Into<String>) -> Self {
         Self::OutcomeUnknown(message.into())
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(super) fn export_bytes(
     workspace: &Path,
     requested: &str,
@@ -74,7 +77,7 @@ pub(super) fn export_bytes(
     export_bytes_with_hooks(workspace, requested, bytes, collision, || {}, || {})
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub(super) fn export_bytes(
     _workspace: &Path,
     _requested: &str,
@@ -82,11 +85,11 @@ pub(super) fn export_bytes(
     _collision: CollisionPolicy,
 ) -> Result<PathBuf, ExportError> {
     Err(ExportError::known(
-        "secure transcript export requires Linux anonymous-inode publication",
+        "secure transcript export is unsupported on this platform",
     ))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn parse_relative(requested: &str) -> Result<(Vec<String>, String), String> {
     if requested.is_empty()
         || requested.len()
@@ -129,7 +132,7 @@ fn parse_relative(requested: &str) -> Result<(Vec<String>, String), String> {
     Ok((components, leaf))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn versioned_leaf(leaf: &str, attempt: usize) -> String {
     if attempt == 1 {
         return leaf.to_string();
@@ -143,6 +146,22 @@ fn versioned_leaf(leaf: &str, attempt: usize) -> String {
         Some(extension) if !extension.is_empty() => format!("{stem}-{attempt}.{extension}"),
         _ => format!("{stem}-{attempt}"),
     }
+}
+
+#[cfg(target_os = "macos")]
+#[path = "export_macos.rs"]
+mod unix;
+#[cfg(windows)]
+#[path = "export_windows.rs"]
+mod windows;
+#[cfg(windows)]
+pub(super) fn export_bytes(
+    workspace: &Path,
+    requested: &str,
+    bytes: &[u8],
+    collision: CollisionPolicy,
+) -> Result<PathBuf, ExportError> {
+    windows::export_bytes(workspace, requested, bytes, collision)
 }
 
 #[cfg(target_os = "linux")]
@@ -262,7 +281,7 @@ mod unix {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn export_bytes_with_hooks<A, P>(
     workspace: &Path,
     requested: &str,
@@ -275,6 +294,11 @@ where
     A: FnOnce(),
     P: FnMut(),
 {
+    if bytes.len() > MAX_TRANSCRIPT_EXPORT_BYTES {
+        return Err(ExportError::known(
+            "transcript export exceeds its byte bound",
+        ));
+    }
     let (parents, leaf) = parse_relative(requested).map_err(ExportError::known)?;
     let root_binding = capability_fs::RootBinding::open(workspace)
         .map_err(|_| ExportError::known("workspace is unavailable or is a symlink"))?;
@@ -364,6 +388,71 @@ mod tests {
             "core-transcript-export-{label}-{}-{nonce}",
             std::process::id()
         ))
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    #[test]
+    fn native_full_output_versions_and_collision_preserve_the_original_bytes() {
+        let raw = scratch("native-parity");
+        std::fs::create_dir_all(raw.join("reports")).unwrap();
+        let root = std::fs::canonicalize(&raw).unwrap(); // fixture alias normalization only
+        let bytes = vec![b'q'; 300_000];
+        assert_eq!(
+            export_bytes(&root, "reports/session.md", &bytes, CollisionPolicy::Refuse).unwrap(),
+            root.join("reports/session.md")
+        );
+        assert!(matches!(
+            export_bytes(
+                &root,
+                "reports/session.md",
+                b"replacement",
+                CollisionPolicy::Refuse
+            ),
+            Err(ExportError::KnownFailure(_))
+        ));
+        let next = export_bytes(
+            &root,
+            "reports/session.md",
+            &bytes,
+            CollisionPolicy::Versioned,
+        )
+        .unwrap();
+        assert_eq!(next, root.join("reports/session-2.md"));
+        assert_eq!(std::fs::read(&next).unwrap(), bytes);
+        assert_eq!(
+            std::fs::read(root.join("reports/session.md")).unwrap(),
+            bytes
+        );
+        assert!(
+            export_bytes(&root, "../outside", b"unreachable", CollisionPolicy::Refuse).is_err()
+        );
+        std::fs::remove_dir_all(raw).unwrap();
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_clone_into_replaced_parent_preserves_unknown_and_actual_published_bytes() {
+        let raw = scratch("mac-parent-replaced");
+        std::fs::create_dir_all(raw.join("reports")).unwrap();
+        let root = std::fs::canonicalize(&raw).unwrap();
+        let old = root.join("detached-reports");
+        let result = export_bytes_with_hooks(
+            &root,
+            "reports/session.md",
+            b"actual bytes",
+            CollisionPolicy::Refuse,
+            || {},
+            || {
+                std::fs::rename(root.join("reports"), &old).unwrap();
+                std::fs::create_dir(root.join("reports")).unwrap();
+            },
+        );
+        assert!(matches!(result, Err(ExportError::OutcomeUnknown(_))));
+        assert!(!root.join("reports/session.md").exists());
+        assert_eq!(
+            std::fs::read(old.join("session.md")).unwrap(),
+            b"actual bytes"
+        );
+        std::fs::remove_dir_all(raw).unwrap();
     }
 
     #[cfg(target_os = "linux")]

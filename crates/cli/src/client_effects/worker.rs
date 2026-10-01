@@ -1,37 +1,39 @@
 //! Killable, bounded transcript-export helper process and private pipe protocol.
 
 use std::path::{Path, PathBuf};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use std::process::Stdio;
-#[cfg(any(target_os = "linux", test))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows, test))]
 use std::time::Duration;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
-#[cfg(any(target_os = "linux", all(test, unix)))]
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use super::ProcessRegistry;
 use super::export as transcript_export;
-#[cfg(any(target_os = "linux", all(test, unix)))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows, all(test, unix)))]
 use super::{ReapOutcome, RegisteredChild};
 
 mod protocol;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use protocol::encode_worker_request;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use protocol::{MAX_WORKER_RESPONSE_BYTES, WORKER_ENV};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use protocol::{WorkerResponse, decode_worker_response};
 pub(crate) use protocol::{worker_main, worker_requested};
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 const EXPORT_DEADLINE: Duration = Duration::from_secs(5);
-#[cfg(any(target_os = "linux", test))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows, test))]
 pub(crate) const REAP_DEADLINE: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos", windows)),
+    allow(dead_code)
+)]
 pub(crate) enum Cleanup {
     Reaped,
     AlreadyReaped,
@@ -49,7 +51,10 @@ impl std::fmt::Display for Cleanup {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos", windows)),
+    allow(dead_code)
+)]
 pub(crate) enum PostDispatchStage {
     Stdin,
     RequestWriteOrShutdown,
@@ -81,7 +86,10 @@ impl std::fmt::Display for PostDispatchStage {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos", windows)),
+    allow(dead_code)
+)]
 pub(crate) enum WorkerFailure {
     KnownFailure(String),
     OutcomeUnknown {
@@ -92,27 +100,30 @@ pub(crate) enum WorkerFailure {
 }
 
 #[derive(Debug)]
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos", windows)),
+    allow(dead_code)
+)]
 pub(crate) enum WorkerRun {
     Completed(Result<PathBuf, WorkerFailure>),
     Cancelled,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InjectedFault {
     None,
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     RequestWriteOrShutdown,
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     Wait,
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     Exit,
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     MissingResponse,
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     OversizeResponse,
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     MalformedResponse,
 }
 
@@ -136,7 +147,7 @@ impl InjectedFault {
 // gating the helper on unix left the Windows test build with a call to a function that had been
 // configured out. `cargo check --workspace` never saw it — it does not build test targets — so the
 // break only surfaced in the release leg, which does.
-#[cfg(any(target_os = "linux", test))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows, test))]
 pub(crate) async fn cancelled(receiver: &mut tokio::sync::watch::Receiver<bool>) {
     if *receiver.borrow() {
         return;
@@ -144,7 +155,7 @@ pub(crate) async fn cancelled(receiver: &mut tokio::sync::watch::Receiver<bool>)
     let _ = receiver.changed().await;
 }
 
-#[cfg(any(target_os = "linux", all(test, unix)))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows, all(test, unix)))]
 pub(crate) async fn kill_and_reap(child: &mut RegisteredChild) -> Cleanup {
     let _ = child.start_kill();
     match tokio::time::timeout(REAP_DEADLINE, child.wait()).await {
@@ -157,7 +168,7 @@ pub(crate) async fn kill_and_reap(child: &mut RegisteredChild) -> Cleanup {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 async fn outcome_unknown(
     child: &mut RegisteredChild,
     stage: PostDispatchStage,
@@ -171,7 +182,7 @@ async fn outcome_unknown(
     }))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub(crate) async fn run_export_worker(
     workspace: &Path,
     requested: &str,
@@ -192,7 +203,7 @@ pub(crate) async fn run_export_worker(
     .await
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 async fn run_export_worker_inner(
     workspace: &Path,
     requested: &str,
@@ -238,6 +249,7 @@ async fn run_export_worker_inner(
         .stderr(Stdio::null());
     // SAFETY: this closure runs after fork and before exec and invokes only async-signal-safe libc
     // syscalls. Rechecking the parent closes the race where it died immediately before `prctl`.
+    #[cfg(target_os = "linux")]
     unsafe {
         use std::os::unix::process::CommandExt as _;
 
@@ -313,7 +325,7 @@ async fn run_export_worker_inner(
     }
     drop(stdin);
 
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     if let Some(stage) = fault.stage() {
         return outcome_unknown(
             &mut child,
@@ -323,48 +335,10 @@ async fn run_export_worker_inner(
         .await;
     }
 
-    let status = tokio::select! {
-        _ = cancelled(cancelled_rx) => {
-            return outcome_unknown(&mut child, PostDispatchStage::Cancelled, "cancellation was requested after helper dispatch").await;
-        }
-        result = tokio::time::timeout_at(deadline, child.wait()) => match result {
-            Ok(Ok(status)) => status,
-            Ok(Err(_)) => {
-                return outcome_unknown(
-                    &mut child,
-                    PostDispatchStage::Wait,
-                    "the helper wait result was unavailable",
-                ).await;
-            }
-            Err(_) => {
-                return outcome_unknown(
-                    &mut child,
-                    PostDispatchStage::Deadline,
-                    "the helper exceeded the five-second deadline",
-                ).await;
-            }
-        }
+    let (_, response) = match settle_response(&mut child, stdout, cancelled_rx, deadline).await {
+        Ok(observed) => observed,
+        Err(outcome) => return outcome,
     };
-    if !status.success() {
-        return WorkerRun::Completed(Err(WorkerFailure::OutcomeUnknown {
-            stage: PostDispatchStage::Exit,
-            detail: format!("helper exited with {status}"),
-            cleanup: Cleanup::AlreadyReaped,
-        }));
-    }
-    let mut response = Vec::new();
-    if stdout
-        .take((MAX_WORKER_RESPONSE_BYTES + 1) as u64)
-        .read_to_end(&mut response)
-        .await
-        .is_err()
-    {
-        return WorkerRun::Completed(Err(WorkerFailure::OutcomeUnknown {
-            stage: PostDispatchStage::MalformedResponse,
-            detail: "helper response pipe could not be read".into(),
-            cleanup: Cleanup::AlreadyReaped,
-        }));
-    }
     if response.len() > MAX_WORKER_RESPONSE_BYTES {
         return WorkerRun::Completed(Err(WorkerFailure::OutcomeUnknown {
             stage: PostDispatchStage::OversizeResponse,
@@ -392,7 +366,61 @@ async fn run_export_worker_inner(
     })
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+async fn settle_response(
+    child: &mut RegisteredChild,
+    stdout: tokio::process::ChildStdout,
+    cancelled_rx: &mut tokio::sync::watch::Receiver<bool>,
+    deadline: tokio::time::Instant,
+) -> Result<(std::process::ExitStatus, Vec<u8>), WorkerRun> {
+    // Drain while waiting: a helper may block writing more than the native pipe capacity.
+    // Both operations share the original absolute deadline and cancellation/settlement path.
+    let (status, response) = tokio::select! {
+        _ = cancelled(cancelled_rx) => {
+            return Err(outcome_unknown(child, PostDispatchStage::Cancelled, "cancellation was requested after helper dispatch").await);
+        }
+        joined = tokio::time::timeout_at(deadline, async {
+            tokio::join!(child.wait(), async {
+                let mut response = Vec::new();
+                stdout.take((MAX_WORKER_RESPONSE_BYTES + 1) as u64).read_to_end(&mut response).await.map(|_| response)
+            })
+        }) => match joined {
+            Ok(pair) => pair,
+            Err(_) => return Err(outcome_unknown(child, PostDispatchStage::Deadline, "helper exit/response exceeded the five-second deadline").await),
+        }
+    };
+    let status = match status {
+        Ok(status) => status,
+        Err(_) => {
+            return Err(outcome_unknown(
+                child,
+                PostDispatchStage::Wait,
+                "the helper wait result was unavailable",
+            )
+            .await);
+        }
+    };
+    if !status.success() {
+        return Err(WorkerRun::Completed(Err(WorkerFailure::OutcomeUnknown {
+            stage: PostDispatchStage::Exit,
+            detail: format!("helper exited with {status}"),
+            cleanup: Cleanup::AlreadyReaped,
+        })));
+    }
+    let response = match response {
+        Ok(response) => response,
+        Err(_) => {
+            return Err(WorkerRun::Completed(Err(WorkerFailure::OutcomeUnknown {
+                stage: PostDispatchStage::MalformedResponse,
+                detail: "helper response pipe could not be read".into(),
+                cleanup: Cleanup::AlreadyReaped,
+            })));
+        }
+    };
+    Ok((status, response))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub(crate) async fn run_export_worker(
     _workspace: &Path,
     _requested: &str,
@@ -402,13 +430,74 @@ pub(crate) async fn run_export_worker(
     _processes: &super::ProcessRegistry,
 ) -> WorkerRun {
     WorkerRun::Completed(Err(WorkerFailure::KnownFailure(
-        "secure transcript export requires Linux anonymous-inode publication".into(),
+        "secure transcript export is unsupported on this platform".into(),
     )))
 }
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn real_four_kib_pipe_drains_a_larger_response_before_confirming_exit() {
+        use std::os::fd::AsRawFd as _;
+        let processes = ProcessRegistry::default();
+        let mut command = tokio::process::Command::new("/bin/sh");
+        command
+            .arg("-c")
+            .arg("i=0; while [ $i -lt 16384 ]; do printf x; i=$((i+1)); done")
+            .env_clear()
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        let mut child = processes.spawn(&mut command).unwrap();
+        let stdout = child.take_stdout().unwrap();
+        // SAFETY: actual owned pipe fd; shrink its kernel capacity below the actual response.
+        assert_eq!(
+            unsafe { libc::fcntl(stdout.as_raw_fd(), libc::F_SETPIPE_SZ, 4096) },
+            4096
+        );
+        let (_cancel, mut cancelled) = tokio::sync::watch::channel(false);
+        let (status, bytes) = settle_response(
+            &mut child,
+            stdout,
+            &mut cancelled,
+            tokio::time::Instant::now() + Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        assert!(status.success());
+        assert_eq!(bytes, vec![b'x'; 16384]);
+        assert!(processes.is_empty());
+    }
+    #[tokio::test]
+    async fn response_wait_is_bounded_and_cancelled_dispatch_never_becomes_known_failure() {
+        let processes = ProcessRegistry::default();
+        let mut command = tokio::process::Command::new("/bin/sleep");
+        command
+            .arg("30")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        let mut child = processes.spawn(&mut command).unwrap();
+        let stdout = child.take_stdout().unwrap();
+        let (_cancel, mut cancelled) = tokio::sync::watch::channel(true);
+        let result = settle_response(
+            &mut child,
+            stdout,
+            &mut cancelled,
+            tokio::time::Instant::now() + Duration::from_secs(5),
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(WorkerRun::Completed(Err(WorkerFailure::OutcomeUnknown {
+                stage: PostDispatchStage::Cancelled,
+                cleanup: Cleanup::Reaped | Cleanup::AlreadyReaped,
+                ..
+            })))
+        ));
+        assert!(processes.is_empty());
+    }
 
     #[tokio::test]
     async fn injected_pipeline_faults_classify_every_ambiguous_post_dispatch_stage_unknown() {

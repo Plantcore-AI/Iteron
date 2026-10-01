@@ -44,11 +44,31 @@ pub(super) struct ManagedExportPayload {
     cleanup_on_drop: bool,
 }
 
+#[derive(Debug)]
+pub(super) struct StageFailure {
+    pub(super) reason: &'static str,
+    pub(super) cleanup: super::ContentCleanup,
+}
+impl StageFailure {
+    fn not_staged(reason: &'static str) -> Self {
+        Self {
+            reason,
+            cleanup: super::ContentCleanup::NotStaged,
+        }
+    }
+    fn unobserved(reason: &'static str) -> Self {
+        Self {
+            reason,
+            cleanup: super::ContentCleanup::Unobserved,
+        }
+    }
+}
+
 impl ManagedExportPayload {
     pub(super) fn stage(
         source: &super::NativeExportScope,
         bytes: &[u8],
-    ) -> Result<Self, &'static str> {
+    ) -> Result<Self, StageFailure> {
         let runs_dir = &source.runs_dir;
         let tenant = source.tenant.clone();
         let run = source.run.clone();
@@ -56,7 +76,9 @@ impl ManagedExportPayload {
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
                 current.checked_add(1)
             })
-            .map_err(|_| "transcript export sequence space is exhausted")?;
+            .map_err(|_| {
+                StageFailure::not_staged("transcript export sequence space is exhausted")
+            })?;
         let seq = iteron_protocol::Seq(sequence);
         let store = iteron_record::PrivateContentDerivativeStore::open_registered(
             runs_dir,
@@ -67,9 +89,11 @@ impl ManagedExportPayload {
             iteron_record::PrivateContentRetention::Session,
             super::MAX_TRANSCRIPT_EXPORT_BYTES,
         )
-        .map_err(|_| "transcript export private store is unavailable")?;
+        .map_err(|_| StageFailure::not_staged("transcript export private store is unavailable"))?;
         let handle = retry_export_store_busy(|| store.put_derived_from_run(seq, bytes, &run))
-            .map_err(|_| "transcript export source lineage is unavailable")?;
+            .map_err(|_| {
+                StageFailure::unobserved("transcript export source lineage is unavailable")
+            })?;
         Ok(Self {
             store,
             seq,

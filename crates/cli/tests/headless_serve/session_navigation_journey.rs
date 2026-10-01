@@ -223,7 +223,7 @@ fn tcp_navigation_uses_host_ids_checked_origin_and_reopened_physical_fork() {
             .is_err(),
         "selected physical writer remains exclusively host owned"
     );
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     {
         let export = |run: &str, path: &str, collision: &str| json!({"type":"transcript_export_v1","command":{"thread_id":thread,"run_id":run,"text":"# Native client export\nexact rendered bytes\n","requested":path,"collision":collision}});
         send(
@@ -267,6 +267,10 @@ fn tcp_navigation_uses_host_ids_checked_origin_and_reopened_physical_fork() {
         assert_eq!(published["type"], "transcript_export_v1", "{published}");
         assert_eq!(published["receipt"]["status"], "published", "{published}");
         assert_eq!(published["receipt"]["path"], "client-transcript.md");
+        assert_eq!(
+            published["receipt"]["private_content_cleanup"], "released",
+            "{published}"
+        );
         assert_eq!(
             fs::read(scratch.repo().join("client-transcript.md")).unwrap(),
             b"# Native client export\nexact rendered bytes\n"

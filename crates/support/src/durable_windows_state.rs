@@ -62,6 +62,8 @@ pub fn read_contained_regular_file(
 ) -> Result<Vec<u8>, WindowsStateError> {
     contained_read::read(root, relative, max_bytes)
 }
+mod workspace_publication;
+pub use workspace_publication::{WindowsWorkspacePublisher, WorkspacePublishError};
 
 const HARD_MAX_BYTES: usize = 32 * 1_024 * 1_024;
 const MAX_SECURITY_BYTES: u32 = 64 * 1_024;
@@ -775,15 +777,8 @@ fn open_relative(
     )
 }
 
-fn open_file_relative(
-    directory: &File,
-    identity: &Identity,
-    name: &std::ffi::OsStr,
-    disposition: u32,
-    delete: bool,
-    share: u32,
-) -> Result<Option<File>, WindowsStateError> {
-    let mut units = name.encode_wide().collect::<Vec<_>>();
+fn filename_units(name: &std::ffi::OsStr) -> Result<Vec<u16>, WindowsStateError> {
+    let units = name.encode_wide().take(256).collect::<Vec<_>>();
     // A single Win32 filename; aliases/ADS/device syntax cannot escape its pinned parent.
     if units.is_empty()
         || units.len() > 255
@@ -809,6 +804,18 @@ fn open_file_relative(
     {
         return Err(WindowsStateError::Unavailable);
     }
+    Ok(units)
+}
+
+fn open_file_relative(
+    directory: &File,
+    identity: &Identity,
+    name: &std::ffi::OsStr,
+    disposition: u32,
+    delete: bool,
+    share: u32,
+) -> Result<Option<File>, WindowsStateError> {
+    let mut units = filename_units(name)?;
     let unicode = UNICODE_STRING {
         Length: (units.len() * 2) as u16,
         MaximumLength: (units.len() * 2) as u16,

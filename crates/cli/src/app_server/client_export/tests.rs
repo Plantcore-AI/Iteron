@@ -239,3 +239,55 @@ fn unknown_publication_retains_exact_scope_and_refuses_new_effects() {
         0
     );
 }
+
+#[tokio::test]
+async fn actual_store_open_refusal_is_not_staged_and_releases_adoption_admission() {
+    let fixture = Fixture::new("pre-stage-refusal");
+    let content = fixture.root.join(".content");
+    let saved = fixture.root.join(".preserved-content");
+    std::fs::rename(&content, &saved).unwrap();
+    std::fs::write(&content, b"not a directory").unwrap();
+    let (_cancel, cancelled) = tokio::sync::watch::channel(false);
+    let receipt = fixture
+        .binding
+        .clone()
+        .execute(
+            fixture.reader.clone(),
+            b"never staged".to_vec(),
+            "not-published.md".into(),
+            CollisionPolicy::Refuse,
+            cancelled,
+        )
+        .await;
+    assert!(matches!(
+        receipt.publication,
+        WorkerRun::Completed(Err(WorkerFailure::KnownFailure(_)))
+    ));
+    assert_eq!(
+        receipt.private_content_cleanup,
+        client_effects::ContentCleanup::NotStaged
+    );
+    assert!(!fixture.binding.service.quarantine.is_quarantined());
+    assert!(
+        fixture
+            .binding
+            .service
+            .gate
+            .clone()
+            .try_write_owned()
+            .is_ok()
+    );
+    assert_eq!(
+        fixture
+            .binding
+            .service
+            .capacity
+            .get()
+            .unwrap()
+            .available_permits(),
+        1
+    );
+    assert!(!fixture.root.join("not-published.md").exists());
+    std::fs::remove_file(content).unwrap();
+    std::fs::rename(saved, fixture.root.join(".content")).unwrap();
+}
