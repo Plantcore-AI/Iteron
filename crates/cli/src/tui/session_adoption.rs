@@ -151,6 +151,7 @@ pub(super) fn apply_navigated_session(
     app.completions.dismiss();
     app.close_picker_restore_theme();
     project_host_transcript(app, &fact.transcript);
+    app.history.bind_selected_run(&fact.run_id);
     session.adopt_run(
         adopted.rollout_path,
         tunables_checkpoint,
@@ -436,6 +437,7 @@ pub(super) fn bounded_prefix(text: &str, max_bytes: usize) -> String {
 /// paragraph from the previous run would render under the adopted run's identity.
 pub(super) fn clear_transcript_for_adoption(app: &mut App) {
     app.history.clear();
+    app.history.clear_selected_run_binding();
     app.permission_prompt.clear();
     app.mcp_form.clear();
     app.mark_transcript_changed();

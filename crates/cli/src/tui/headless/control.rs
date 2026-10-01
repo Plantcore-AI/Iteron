@@ -73,6 +73,9 @@ pub(super) enum WireControl {
     ProviderCatalogV1 {
         command: super::provider_catalog::ProviderCatalogCommandV1,
     },
+    TranscriptExportV1 {
+        command: crate::app_server::TranscriptExportV1,
+    },
     InventoryV1 {
         query: iteron_protocol::client_inventory::ClientInventoryQueryV1,
     },
@@ -344,6 +347,7 @@ impl WireControl {
             Self::InventoryV1 { query } => Control::Inventory(query),
             Self::SelectModelV1 { selection } => Control::SelectModelV1(selection),
             Self::ProviderCatalogV1 { command } => Control::ProviderCatalog(command.into_control()),
+            Self::TranscriptExportV1 { command } => Control::TranscriptExport(Box::new(command)),
             Self::LiveWorkflowV1 { command } => Control::LiveWorkflow(command),
             Self::AgentsV1 { command } => Control::PersistentAgents(command),
             Self::ArtifactsV1 { .. } => {
@@ -590,6 +594,7 @@ pub(super) fn reply_value(reply: ControlReply) -> Value {
         ControlReply::PluginManagement(value) => value,
         ControlReply::ActivityCenter(value) => value,
         ControlReply::Inventory(value) => value,
+        ControlReply::TranscriptExport(value) => value,
         ControlReply::ProviderCatalog(view) => {
             json!({"type":"provider_catalog_v1","inventory_digest_sha256":view.inventory_digest(),"discovery_pending":view.discovery_pending(),"discovery_error":view.discovery_error(),"providers":view.entries().len(),"source":"host_captured_inventory"})
         }
@@ -1303,5 +1308,31 @@ mod provider_catalog_reply_tests {
         assert_eq!(reply["source"], "host_captured_inventory");
         assert_eq!(reply["providers"], 0);
         assert!(reply.get("models").is_none());
+    }
+}
+
+#[cfg(test)]
+mod transcript_export_wire_tests {
+    use super::WireControl;
+    #[test]
+    fn export_is_operator_only_and_cannot_supply_a_native_source_locator() {
+        let command = serde_json::json!({"type":"transcript_export_v1","command":{"thread_id":"t","run_id":"r","text":"visible data","requested":"transcript.md","collision":"refuse"}});
+        assert!(
+            !serde_json::from_value::<WireControl>(command.clone())
+                .unwrap()
+                .is_read_only()
+        );
+        for name in [
+            "workspace",
+            "runs_dir",
+            "tenant",
+            "record_path",
+            "source_seq",
+            "actor",
+        ] {
+            let mut forged = command.clone();
+            forged["command"][name] = serde_json::json!("untrusted");
+            assert!(serde_json::from_value::<WireControl>(forged).is_err());
+        }
     }
 }

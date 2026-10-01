@@ -9,10 +9,10 @@ use std::time::Duration;
 #[cfg(target_os = "linux")]
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
-use super::super::transcript_export;
 #[cfg(any(target_os = "linux", all(test, unix)))]
 #[cfg(target_os = "linux")]
 use super::ProcessRegistry;
+use super::export as transcript_export;
 #[cfg(any(target_os = "linux", all(test, unix)))]
 use super::{ReapOutcome, RegisteredChild};
 
@@ -28,11 +28,11 @@ pub(crate) use protocol::{worker_main, worker_requested};
 #[cfg(target_os = "linux")]
 const EXPORT_DEADLINE: Duration = Duration::from_secs(5);
 #[cfg(any(target_os = "linux", test))]
-pub(super) const REAP_DEADLINE: Duration = Duration::from_secs(1);
+pub(crate) const REAP_DEADLINE: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-pub(super) enum Cleanup {
+pub(crate) enum Cleanup {
     Reaped,
     AlreadyReaped,
     OutcomeUnknown,
@@ -50,7 +50,7 @@ impl std::fmt::Display for Cleanup {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-pub(super) enum PostDispatchStage {
+pub(crate) enum PostDispatchStage {
     Stdin,
     RequestWriteOrShutdown,
     Wait,
@@ -60,6 +60,7 @@ pub(super) enum PostDispatchStage {
     MalformedResponse,
     HelperReported,
     Deadline,
+    Cancelled,
 }
 
 impl std::fmt::Display for PostDispatchStage {
@@ -74,13 +75,14 @@ impl std::fmt::Display for PostDispatchStage {
             Self::MalformedResponse => "malformed helper response",
             Self::HelperReported => "helper-reported durability",
             Self::Deadline => "helper deadline",
+            Self::Cancelled => "cancellation after dispatch",
         })
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-pub(super) enum WorkerFailure {
+pub(crate) enum WorkerFailure {
     KnownFailure(String),
     OutcomeUnknown {
         stage: PostDispatchStage,
@@ -91,7 +93,7 @@ pub(super) enum WorkerFailure {
 
 #[derive(Debug)]
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-pub(super) enum WorkerRun {
+pub(crate) enum WorkerRun {
     Completed(Result<PathBuf, WorkerFailure>),
     Cancelled,
 }
@@ -135,7 +137,7 @@ impl InjectedFault {
 // configured out. `cargo check --workspace` never saw it — it does not build test targets — so the
 // break only surfaced in the release leg, which does.
 #[cfg(any(target_os = "linux", test))]
-pub(super) async fn cancelled(receiver: &mut tokio::sync::watch::Receiver<bool>) {
+pub(crate) async fn cancelled(receiver: &mut tokio::sync::watch::Receiver<bool>) {
     if *receiver.borrow() {
         return;
     }
@@ -143,7 +145,7 @@ pub(super) async fn cancelled(receiver: &mut tokio::sync::watch::Receiver<bool>)
 }
 
 #[cfg(any(target_os = "linux", all(test, unix)))]
-pub(super) async fn kill_and_reap(child: &mut RegisteredChild) -> Cleanup {
+pub(crate) async fn kill_and_reap(child: &mut RegisteredChild) -> Cleanup {
     let _ = child.start_kill();
     match tokio::time::timeout(REAP_DEADLINE, child.wait()).await {
         Ok(Ok(_)) => Cleanup::Reaped,
@@ -170,7 +172,7 @@ async fn outcome_unknown(
 }
 
 #[cfg(target_os = "linux")]
-pub(super) async fn run_export_worker(
+pub(crate) async fn run_export_worker(
     workspace: &Path,
     requested: &str,
     collision: transcript_export::CollisionPolicy,
@@ -278,7 +280,8 @@ async fn run_export_worker_inner(
         + iteron_tunables::param_duration(
             "cli.tui.transcript_effect.worker.export_deadline",
             EXPORT_DEADLINE,
-        );
+        )
+        .min(EXPORT_DEADLINE);
     let write = async {
         stdin.write_all(&frame).await?;
         stdin.shutdown().await
@@ -286,8 +289,7 @@ async fn run_export_worker_inner(
     tokio::select! {
         _ = cancelled(cancelled_rx) => {
             drop(stdin);
-            let _ = kill_and_reap(&mut child).await;
-            return WorkerRun::Cancelled;
+            return outcome_unknown(&mut child, PostDispatchStage::Cancelled, "cancellation was requested after helper dispatch").await;
         }
         result = tokio::time::timeout_at(deadline, write) => match result {
             Ok(Ok(())) => {}
@@ -323,8 +325,7 @@ async fn run_export_worker_inner(
 
     let status = tokio::select! {
         _ = cancelled(cancelled_rx) => {
-            let _ = kill_and_reap(&mut child).await;
-            return WorkerRun::Cancelled;
+            return outcome_unknown(&mut child, PostDispatchStage::Cancelled, "cancellation was requested after helper dispatch").await;
         }
         result = tokio::time::timeout_at(deadline, child.wait()) => match result {
             Ok(Ok(status)) => status,
@@ -392,7 +393,7 @@ async fn run_export_worker_inner(
 }
 
 #[cfg(not(target_os = "linux"))]
-pub(super) async fn run_export_worker(
+pub(crate) async fn run_export_worker(
     _workspace: &Path,
     _requested: &str,
     _collision: transcript_export::CollisionPolicy,

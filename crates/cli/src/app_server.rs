@@ -103,7 +103,9 @@ use queue_client::{
 #[cfg(test)]
 use queue_client::{SubmissionSender, submission_weight};
 mod client_bootstrap;
+mod client_export;
 pub(crate) use client_bootstrap::{ClientBootstrapFactory, PromptHistoryWriterPort};
+pub(crate) use client_export::{TranscriptExportPort, TranscriptExportV1};
 mod session_attachment;
 mod session_hooks;
 mod session_services;

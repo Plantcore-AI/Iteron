@@ -5,6 +5,7 @@
 //! touching the kernel.
 
 mod app_server;
+mod client_effects;
 mod artifacts;
 mod block;
 mod cli_entry;

@@ -72,6 +72,9 @@ impl ActivitySurface {
         }
         Ok(lease)
     }
+    pub(super) fn client_effect_gate(&self) -> Arc<RwLock<()>> {
+        self.scope_gate.clone()
+    }
     pub(super) fn refresh(&self, agent: &Agent) {
         *self
             .binding

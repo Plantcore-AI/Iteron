@@ -14,6 +14,7 @@ pub(super) fn is_immediate_control(control: &Control) -> bool {
             | Control::OperatorStatus
             | Control::Inventory(_)
             | Control::ProviderCatalog(_)
+            | Control::TranscriptExport(_)
             | Control::LiveWorkflow(_)
             | Control::Workflow(WorkflowControl::Inventory | WorkflowControl::Cancel { .. })
             | Control::Job(_)
@@ -321,6 +322,9 @@ pub(super) async fn apply_immediate_control(
             operator_status
                 .activity
                 .dispatch(events.contract.clone(), command, request.reply);
+        }
+        Control::TranscriptExport(command) => {
+            super::client_export::dispatch(events.contract.clone(), *command, request.reply);
         }
         Control::Inventory(query) => {
             let _ = request.reply.send(operator_status.inventory.read(query));
@@ -665,6 +669,10 @@ pub(super) async fn apply_control(
         }
         Control::Inventory(query) => operator_status.inventory.read(query),
         Control::ProviderCatalog(command) => operator_status.inventory.catalog(command),
+        Control::TranscriptExport(command) => {
+            super::client_export::dispatch(events.contract.clone(), *command, request.reply);
+            return;
+        }
         Control::SelectModelV1(request) => match agent
             .client_inventory_owner()
             .ok_or("bootstrap inventory is unavailable".to_owned())

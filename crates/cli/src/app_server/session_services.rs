@@ -89,6 +89,9 @@ impl SessionServices {
             mcp_runtime.clone(),
             workflows.clone(),
         );
+        events
+            .contract
+            .bind_export_owner(agent, &operator_status.activity);
         let hook_cancel = agent.interrupt_handle();
         let drain_signal = agent.drain_handle();
 

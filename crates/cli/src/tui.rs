@@ -61,7 +61,7 @@ mod artifacts;
 mod assistant_stream;
 mod attachment_owner;
 #[cfg(target_os = "linux")]
-mod capability_fs;
+use crate::client_effects::capability_fs;
 mod clipboard;
 mod command_dispatch;
 mod command_surfaces;

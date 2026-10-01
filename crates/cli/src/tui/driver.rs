@@ -221,6 +221,9 @@ pub async fn run(
     if let Some(transcript) = initial_transcript.as_ref() {
         super::session_adoption::project_host_transcript(&mut app, transcript);
     }
+    if let Some(scope) = handle.client.thread_snapshot_v1() {
+        app.history.bind_selected_run(&scope.run_id);
+    }
     if let Some(warning) = initial_keymap_warning {
         app.note(block::NoticeLevel::Warn, warning);
     }
@@ -523,8 +526,7 @@ pub async fn run(
         if let Some(effect) = app.transcript_viewer.take_ready_effect() {
             schedule_transcript_viewer_effect(
                 &mut app,
-                session.workspace(),
-                session.rollout_path(),
+                &session,
                 &mut transcript_effects,
                 effect,
             );

@@ -35,25 +35,25 @@ struct ProcessRegistryInner {
 /// owner-drop remove the exact child under the same mutex, so there is no interval in which one
 /// path can reap a process and the other can signal a newly reused pid.
 #[derive(Clone, Default)]
-pub(in crate::tui) struct ProcessRegistry(Arc<ProcessRegistryInner>);
+pub(crate) struct ProcessRegistry(Arc<ProcessRegistryInner>);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::tui) enum ReapOutcome {
+pub(crate) enum ReapOutcome {
     Reaped,
     AlreadySettled,
     OutcomeUnknown,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::tui) struct CloseReport {
-    pub(in crate::tui) claimed: usize,
-    pub(in crate::tui) reaped: usize,
-    pub(in crate::tui) unknown: usize,
+pub(crate) struct CloseReport {
+    pub(crate) claimed: usize,
+    pub(crate) reaped: usize,
+    pub(crate) unknown: usize,
 }
 
 /// Non-cloneable authority for one child stored in [`ProcessRegistry`]. Dropping a live ticket
 /// signals and bounded-waits that exact stored `Child`; lack of exit evidence remains unknown.
-pub(in crate::tui) struct RegisteredChild {
+pub(crate) struct RegisteredChild {
     registry: ProcessRegistry,
     registration: u64,
     #[cfg(all(test, unix))]
@@ -69,7 +69,7 @@ impl ProcessRegistry {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    pub(in crate::tui) fn spawn(
+    pub(crate) fn spawn(
         &self,
         command: &mut tokio::process::Command,
     ) -> io::Result<RegisteredChild> {
@@ -154,7 +154,7 @@ impl ProcessRegistry {
     /// stable-identity kill attempt and no later cleanup path retains a numeric pid that could be
     /// reused. Concurrent ticket reapers are observed through a finite condition-variable barrier;
     /// the registry mutex is never held during an OS wait.
-    pub(in crate::tui) fn close_and_reap(&self) -> CloseReport {
+    pub(crate) fn close_and_reap(&self) -> CloseReport {
         let (children, prior_unknown_reaps) = {
             let mut state = self.lock();
             state.closing = true;
@@ -215,18 +215,18 @@ impl ProcessRegistry {
     }
 
     #[cfg(all(test, target_os = "linux"))]
-    pub(in crate::tui) fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.lock().children.is_empty()
     }
 }
 
 impl RegisteredChild {
     #[cfg(all(test, unix))]
-    pub(in crate::tui) fn id(&self) -> Option<u32> {
+    pub(crate) fn id(&self) -> Option<u32> {
         self.active.then_some(self.pid).flatten()
     }
 
-    pub(in crate::tui) fn take_stdin(&mut self) -> Option<tokio::process::ChildStdin> {
+    pub(crate) fn take_stdin(&mut self) -> Option<tokio::process::ChildStdin> {
         self.registry
             .lock()
             .children
@@ -235,7 +235,7 @@ impl RegisteredChild {
     }
 
     #[cfg(target_os = "linux")]
-    pub(in crate::tui) fn take_stdout(&mut self) -> Option<tokio::process::ChildStdout> {
+    pub(crate) fn take_stdout(&mut self) -> Option<tokio::process::ChildStdout> {
         self.registry
             .lock()
             .children
@@ -243,7 +243,7 @@ impl RegisteredChild {
             .and_then(|child| child.stdout.take())
     }
 
-    pub(in crate::tui) fn start_kill(&mut self) -> io::Result<()> {
+    pub(crate) fn start_kill(&mut self) -> io::Result<()> {
         let mut state = self.registry.lock();
         match state.children.get_mut(&self.registration) {
             Some(child) => child.start_kill(),
@@ -251,7 +251,7 @@ impl RegisteredChild {
         }
     }
 
-    pub(in crate::tui) async fn wait(&mut self) -> io::Result<ExitStatus> {
+    pub(crate) async fn wait(&mut self) -> io::Result<ExitStatus> {
         let registry = self.registry.clone();
         let registration = self.registration;
         let result = poll_fn(move |context| registry.poll_wait(registration, context)).await;
@@ -263,7 +263,7 @@ impl RegisteredChild {
 
     /// Emergency ownership transfer used after an async wait deadline or wait error. Only one of
     /// this method, normal wait completion, or supervisor close can take the stored child.
-    pub(in crate::tui) fn reap_sync(&mut self) -> ReapOutcome {
+    pub(crate) fn reap_sync(&mut self) -> ReapOutcome {
         if !self.active {
             return ReapOutcome::AlreadySettled;
         }

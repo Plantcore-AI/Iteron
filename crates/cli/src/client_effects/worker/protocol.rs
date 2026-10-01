@@ -5,7 +5,7 @@ use std::io::Read as _;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
-use super::super::super::transcript_export;
+use super::super::export as transcript_export;
 
 pub(super) const WORKER_ENV: &str = "ITERON_INTERNAL_TRANSCRIPT_EXPORT_V1";
 #[cfg(target_os = "linux")]

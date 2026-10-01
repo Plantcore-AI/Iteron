@@ -135,6 +135,7 @@ struct Projection {
     artifact_scope: Option<crate::artifacts::ArtifactReadScope>,
     maintenance: Option<super::advisory_maintenance::MaintenanceBinding>,
     maintenance_gaps: u64,
+    export: Option<super::client_export::ExportBinding>,
 }
 
 impl std::fmt::Debug for Projection {
@@ -191,6 +192,12 @@ impl ContractReader {
         let maintenance_port = agent.advisory_maintenance_port();
         self.with_mut(|projection| {
             projection.artifact_scope = scope;
+            if let Some(snapshot) = projection.snapshot.as_ref()
+                && let Some(binding) = projection.export.as_ref()
+                && !binding.matches_scope(&snapshot.thread_id, agent.rollout.run_id())
+            {
+                projection.export = binding.refreshed(agent, snapshot.thread_id.clone());
+            }
             projection.maintenance = projection.snapshot.as_ref().and_then(|snapshot| {
                 maintenance_port.map(|port| super::advisory_maintenance::MaintenanceBinding {
                     thread_id: snapshot.thread_id.clone(),
@@ -202,6 +209,19 @@ impl ContractReader {
                 .publications
                 .recover(agent.rollout.run_id(), recovered);
         });
+    }
+
+    pub(super) fn bind_export_owner(
+        &self,
+        agent: &crate::runtime::Agent,
+        activity: &super::activity_control::ActivitySurface,
+    ) {
+        let binding = super::client_export::ExportBinding::capture(agent, self, activity);
+        self.with_mut(|projection| projection.export = binding);
+    }
+
+    pub(super) fn export_binding(&self) -> Option<super::client_export::ExportBinding> {
+        self.with_mut(|projection| projection.export.clone())
     }
 
     fn with_mut<R>(&self, action: impl FnOnce(&mut Projection) -> R) -> R {

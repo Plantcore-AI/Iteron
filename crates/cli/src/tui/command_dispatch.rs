@@ -866,14 +866,7 @@ pub(super) fn handle_registered_command(
             } else {
                 (arg.trim(), transcript_export::CollisionPolicy::Refuse)
             };
-            schedule_slash_export(
-                app,
-                session.workspace(),
-                session.rollout_path(),
-                transcript_effects,
-                requested,
-                collision,
-            );
+            schedule_slash_export(app, session, transcript_effects, requested, collision);
         }
         SlashCommand::Init => {
             let dir = match ensure_real_workspace_dir(session.workspace(), ".iteron") {

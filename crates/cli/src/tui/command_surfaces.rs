@@ -262,7 +262,7 @@ pub(super) fn export_transcript(
     requested: &str,
 ) -> Result<PathBuf, String> {
     let bytes = transcript_export::body(blocks, selected_ids)?;
-    transcript_export::export_bytes(
+    crate::client_effects::export_fixture(
         workspace,
         requested,
         &bytes,
@@ -273,8 +273,7 @@ pub(super) fn export_transcript(
 
 pub(super) fn schedule_transcript_viewer_effect(
     app: &mut App,
-    workspace: &Path,
-    rollout_path: &Path,
+    session: &Session,
     supervisor: &mut transcript_effect::Supervisor,
     effect: transcript_viewer::Effect,
 ) {
@@ -317,9 +316,18 @@ pub(super) fn schedule_transcript_viewer_effect(
                 transcript_viewer::ExportScope::Filtered => "core-transcript-filtered.md",
                 transcript_viewer::ExportScope::All => "core-transcript.md",
             };
+            let Some(port) = app
+                .history
+                .selected_run()
+                .and_then(|run| session.client.transcript_export_port(run))
+            else {
+                app.transcript_viewer.set_notice(
+                    "selected transcript source is unavailable or changed; refresh before export",
+                );
+                return;
+            };
             transcript_effect::Request::Export {
-                workspace: workspace.to_path_buf(),
-                rollout_path: rollout_path.to_path_buf(),
+                port,
                 blocks: app.history.snapshot(),
                 selected_ids: ids,
                 requested: requested.into(),
@@ -351,8 +359,7 @@ pub(super) fn open_transcript_viewer(
 
 pub(super) fn schedule_slash_export(
     app: &mut App,
-    workspace: &Path,
-    rollout_path: &Path,
+    session: &Session,
     supervisor: &mut transcript_effect::Supervisor,
     requested: &str,
     collision: transcript_export::CollisionPolicy,
@@ -364,9 +371,19 @@ pub(super) fn schedule_slash_export(
         );
         return;
     }
+    let Some(port) = app
+        .history
+        .selected_run()
+        .and_then(|run| session.client.transcript_export_port(run))
+    else {
+        app.note(
+            block::NoticeLevel::Warn,
+            "selected transcript source is unavailable or changed; refresh before export",
+        );
+        return;
+    };
     let request = transcript_effect::Request::Export {
-        workspace: workspace.to_path_buf(),
-        rollout_path: rollout_path.to_path_buf(),
+        port,
         blocks: app.history.snapshot(),
         selected_ids: None,
         requested: requested.into(),

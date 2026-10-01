@@ -47,6 +47,19 @@ pub(crate) struct AppServerClient {
     pub(super) contract: product_contract::ContractReader,
 }
 
+impl AppServerClient {
+    pub(crate) fn transcript_export_port(
+        &self,
+        observed_run: &RunId,
+    ) -> Option<super::TranscriptExportPort> {
+        super::TranscriptExportPort::capture(
+            self.contract.export_binding()?,
+            self.contract.clone(),
+            observed_run,
+        )
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(super) enum SubmissionSender {
     /// Test-only bare wires keep the existing constructor usable by frontend submission tests.

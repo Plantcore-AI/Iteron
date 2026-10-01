@@ -223,6 +223,82 @@ fn tcp_navigation_uses_host_ids_checked_origin_and_reopened_physical_fork() {
             .is_err(),
         "selected physical writer remains exclusively host owned"
     );
+    #[cfg(target_os = "linux")]
+    {
+        let export = |run: &str, path: &str, collision: &str| json!({"type":"transcript_export_v1","command":{"thread_id":thread,"run_id":run,"text":"# Native client export\nexact rendered bytes\n","requested":path,"collision":collision}});
+        send(
+            &mut connection,
+            control(
+                907,
+                PROTOCOL_VERSION,
+                export(&origin, "stale-export.md", "refuse"),
+            ),
+        );
+        assert_eq!(matching_control(&mut reader, 907)["type"], "refused");
+        assert!(!scratch.repo().join("stale-export.md").exists());
+        send(
+            &mut observer,
+            control(
+                908,
+                PROTOCOL_VERSION,
+                export(&forked.run_id.0, "observer-export.md", "refuse"),
+            ),
+        );
+        assert_eq!(matching_control(&mut observed, 908)["type"], "refused");
+        assert!(!scratch.repo().join("observer-export.md").exists());
+        send(
+            &mut connection,
+            control(
+                909,
+                PROTOCOL_VERSION,
+                export(&forked.run_id.0, "../outside-export.md", "refuse"),
+            ),
+        );
+        assert_eq!(matching_control(&mut reader, 909)["type"], "refused");
+        send(
+            &mut connection,
+            control(
+                910,
+                PROTOCOL_VERSION,
+                export(&forked.run_id.0, "client-transcript.md", "refuse"),
+            ),
+        );
+        let published = matching_control(&mut reader, 910);
+        assert_eq!(published["type"], "transcript_export_v1", "{published}");
+        assert_eq!(published["receipt"]["status"], "published", "{published}");
+        assert_eq!(published["receipt"]["path"], "client-transcript.md");
+        assert_eq!(
+            fs::read(scratch.repo().join("client-transcript.md")).unwrap(),
+            b"# Native client export\nexact rendered bytes\n"
+        );
+        send(
+            &mut connection,
+            control(
+                911,
+                PROTOCOL_VERSION,
+                export(&forked.run_id.0, "client-transcript.md", "refuse"),
+            ),
+        );
+        assert_eq!(
+            matching_control(&mut reader, 911)["receipt"]["status"],
+            "not_published"
+        );
+        send(
+            &mut connection,
+            control(
+                912,
+                PROTOCOL_VERSION,
+                export(&forked.run_id.0, "client-transcript.md", "versioned"),
+            ),
+        );
+        let next = matching_control(&mut reader, 912);
+        assert_eq!(next["receipt"]["status"], "published", "{next}");
+        assert_eq!(next["receipt"]["path"], "client-transcript-2.md");
+        assert_eq!(
+            fs::read(scratch.repo().join("client-transcript-2.md")).unwrap(),
+            fs::read(scratch.repo().join("client-transcript.md")).unwrap()
+        );
+    }
     drop(reader);
     drop(connection);
     drop(observed);

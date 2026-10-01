@@ -202,13 +202,7 @@ pub(super) async fn dispatch<B: ratatui::backend::Backend>(
                     app.history.blocks(),
                     app.history.revision(),
                 ) {
-                    schedule_transcript_viewer_effect(
-                        app,
-                        session.workspace(),
-                        session.rollout_path(),
-                        transcript_effects,
-                        effect,
-                    );
+                    schedule_transcript_viewer_effect(app, session, transcript_effects, effect);
                 }
                 if !app.transcript_viewer.is_open() {
                     // Inline viewport cells may have been physically cleared/reflowed by a

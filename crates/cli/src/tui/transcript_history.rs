@@ -13,6 +13,7 @@ pub(super) struct TranscriptHistory {
     dirty_from: Option<usize>,
     next_id: u64,
     workflow_index: HashMap<String, u64>,
+    selected_run: Option<iteron_protocol::RunId>,
 }
 impl TranscriptHistory {
     pub(super) fn with_landing(kind: block::BlockKind) -> Self {
@@ -22,10 +23,20 @@ impl TranscriptHistory {
             dirty_from: Some(0),
             next_id: 1,
             workflow_index: HashMap::new(),
+            selected_run: None,
         }
     }
     pub(super) fn blocks(&self) -> &[Arc<block::Block>] {
         &self.blocks
+    }
+    pub(super) fn selected_run(&self) -> Option<&iteron_protocol::RunId> {
+        self.selected_run.as_ref()
+    }
+    pub(super) fn bind_selected_run(&mut self, run: &iteron_protocol::RunId) {
+        self.selected_run = Some(run.clone());
+    }
+    pub(super) fn clear_selected_run_binding(&mut self) {
+        self.selected_run = None;
     }
     pub(super) fn snapshot(&self) -> Vec<Arc<block::Block>> {
         self.blocks.clone()
@@ -244,6 +255,18 @@ mod tests {
     use crate::block;
     use std::collections::HashSet;
     use std::time::Instant;
+
+    #[test]
+    fn product_scope_observation_cannot_relabel_retained_transcript_source() {
+        let mut app = crate::tui::App::new();
+        let original = iteron_protocol::RunId("verified-visible-origin".into());
+        app.history.bind_selected_run(&original);
+        app.product
+            .select_run(&iteron_protocol::RunId("host-selected-new-run".into()));
+        assert_eq!(app.history.selected_run(), Some(&original));
+        crate::tui::session_adoption::clear_transcript_for_adoption(&mut app);
+        assert!(app.history.selected_run().is_none());
+    }
 
     #[test]
     fn owned_settlement_fold_and_answer_rewrite_leave_old_observer_snapshot_immutable() {

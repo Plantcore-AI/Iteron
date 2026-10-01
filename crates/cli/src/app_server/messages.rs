@@ -376,6 +376,7 @@ pub(crate) enum Control {
     LiveWorkflow(crate::workflow::live_session::LiveWorkflowCommandV1),
     Inventory(iteron_protocol::client_inventory::ClientInventoryQueryV1),
     ProviderCatalog(ProviderCatalogControl),
+    TranscriptExport(Box<super::TranscriptExportV1>),
     SelectModelV1(iteron_protocol::client_inventory::ClientModelSelectionV1),
     /// `/effort`
     SetEffort(iteron_protocol::Effort),
@@ -529,6 +530,7 @@ pub(crate) enum ControlReply {
     LiveWorkflow(Box<crate::workflow::live_session::LiveWorkflowReplyV1>),
     Inventory(serde_json::Value),
     ProviderCatalog(Box<crate::providers::ProviderCatalogView>),
+    TranscriptExport(serde_json::Value),
     /// `/status` — runtime policy identity plus live bounded owner health.
     OperatorStatus(Box<OperatorStatusSnapshot>),
     /// The runtime refused, with the operator-facing reason.

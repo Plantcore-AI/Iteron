@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, AtomicU64, Ordering},
+    atomic::{AtomicBool, Ordering},
 };
 #[cfg(test)]
 use std::time::Duration;
@@ -20,114 +20,11 @@ use crate::block;
 
 use super::{clipboard, transcript_export};
 
-mod worker;
-use worker::{WorkerFailure, WorkerRun};
-pub(crate) use worker::{worker_main, worker_requested};
-mod process;
-pub(super) use process::{ProcessRegistry, ReapOutcome, RegisteredChild};
-
-const EXPORT_SEQUENCE_BASE: u64 = (1_u64 << 63) | (1_u64 << 61);
-static NEXT_EXPORT_SEQUENCE: AtomicU64 = AtomicU64::new(EXPORT_SEQUENCE_BASE);
-const EXPORT_STORE_BUSY_RETRY_ATTEMPTS: usize = 401;
-const EXPORT_STORE_BUSY_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(5);
-
-fn retry_export_store_busy<T>(
-    mut operation: impl FnMut() -> Result<T, iteron_record::ContentStoreError>,
-) -> Result<T, iteron_record::ContentStoreError> {
-    for attempt in 0..iteron_tunables::param_integer(
-        "cli.tui.transcript_effect.export_store_busy_retry_attempts",
-        EXPORT_STORE_BUSY_RETRY_ATTEMPTS,
-    ) {
-        match operation() {
-            Err(iteron_record::ContentStoreError::Busy)
-                if attempt + 1
-                    < iteron_tunables::param_integer(
-                        "cli.tui.transcript_effect.export_store_busy_retry_attempts",
-                        EXPORT_STORE_BUSY_RETRY_ATTEMPTS,
-                    ) =>
-            {
-                std::thread::sleep(iteron_tunables::param_duration(
-                    "cli.tui.transcript_effect.export_store_busy_retry_delay",
-                    EXPORT_STORE_BUSY_RETRY_DELAY,
-                ));
-            }
-            result => return result,
-        }
-    }
-    unreachable!("the bounded transcript export store retry loop always returns")
-}
-
-/// One invocation-scoped transcript export rooted in the record private-content graph.
-///
-/// The UI first renders a bounded snapshot in memory, but the worker is never handed that copy.
-/// It receives bytes hydrated through this exact handle after every record source has been bound
-/// as durable lineage. The owner lease remains live through worker settlement, so revocation and
-/// export cannot race to produce a post-tombstone copy.
-struct ManagedExportPayload {
-    store: iteron_record::PrivateContentDerivativeStore,
-    seq: iteron_protocol::Seq,
-    handle: iteron_record::PrivateContentHandle,
-    cleanup_on_drop: bool,
-}
-
-impl ManagedExportPayload {
-    fn stage(rollout_path: &std::path::Path, bytes: &[u8]) -> Result<Self, &'static str> {
-        let runs_dir = rollout_path
-            .parent()
-            .ok_or("transcript export record store is unavailable")?;
-        let (tenant, run) = iteron_record::verified_rollout_identity(rollout_path)
-            .map_err(|_| "transcript export record lineage is unavailable")?;
-        let sequence = NEXT_EXPORT_SEQUENCE
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                current.checked_add(1)
-            })
-            .map_err(|_| "transcript export sequence space is exhausted")?;
-        let seq = iteron_protocol::Seq(sequence);
-        let store = iteron_record::PrivateContentDerivativeStore::open_registered(
-            runs_dir,
-            tenant,
-            run.clone(),
-            iteron_record::PrivateContentNamespace::Export,
-            iteron_record::PrivateContentClass::Export,
-            iteron_record::PrivateContentRetention::Session,
-            transcript_export::MAX_TRANSCRIPT_EXPORT_BYTES,
-        )
-        .map_err(|_| "transcript export private store is unavailable")?;
-        let handle = retry_export_store_busy(|| store.put_derived_from_run(seq, bytes, &run))
-            .map_err(|_| "transcript export source lineage is unavailable")?;
-        Ok(Self {
-            store,
-            seq,
-            handle,
-            cleanup_on_drop: true,
-        })
-    }
-
-    fn read(&self) -> Result<Vec<u8>, &'static str> {
-        self.store
-            .read_at(self.seq, &self.handle)
-            .map_err(|_| "transcript export content is revoked or unavailable")
-    }
-
-    #[cfg(test)]
-    fn abandon_for_recovery(
-        mut self,
-    ) -> (iteron_protocol::Seq, iteron_record::PrivateContentHandle) {
-        self.cleanup_on_drop = false;
-        (self.seq, self.handle.clone())
-    }
-}
-
-impl Drop for ManagedExportPayload {
-    fn drop(&mut self) {
-        if !self.cleanup_on_drop {
-            return;
-        }
-        // A failed release leaves the encrypted reference for exact-session recovery. It must not
-        // unlink one side of the graph or turn a cleanup failure into an untracked plaintext copy.
-        let _ = self.store.release(self.seq, &self.handle.digest);
-    }
-}
+#[cfg(test)]
+use crate::client_effects::worker;
+pub(super) use crate::client_effects::{ProcessRegistry, ReapOutcome, RegisteredChild};
+use crate::client_effects::{WorkerFailure, WorkerRun};
+pub(crate) use crate::client_effects::{worker_main, worker_requested};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Origin {
@@ -246,8 +143,7 @@ pub(crate) enum Request {
         origin: Origin,
     },
     Export {
-        workspace: PathBuf,
-        rollout_path: PathBuf,
+        port: crate::app_server::TranscriptExportPort,
         blocks: Vec<Arc<block::Block>>,
         selected_ids: Option<Vec<u64>>,
         requested: String,
@@ -473,8 +369,7 @@ async fn run(
             .await;
         }
         Request::Export {
-            workspace,
-            rollout_path,
+            port,
             blocks,
             selected_ids,
             requested,
@@ -489,7 +384,7 @@ async fn run(
                         Event {
                             origin,
                             outcome: Disposition::KnownFailure,
-                            message: format!("export failed before dispatch: {error}"),
+                            message: format!("export not published: {error}"),
                             shell: None,
                             control: None,
                             final_slot: true,
@@ -499,54 +394,10 @@ async fn run(
                     return;
                 }
             };
-            let payload = match ManagedExportPayload::stage(&rollout_path, &bytes) {
-                Ok(payload) => payload,
-                Err(error) => {
-                    send(
-                        &sender,
-                        Event {
-                            origin,
-                            outcome: Disposition::KnownFailure,
-                            message: format!("export failed before dispatch: {error}"),
-                            shell: None,
-                            control: None,
-                            final_slot: true,
-                        },
-                    )
-                    .await;
-                    return;
-                }
-            };
-            let bytes = match payload.read() {
-                Ok(bytes) => bytes,
-                Err(error) => {
-                    send(
-                        &sender,
-                        Event {
-                            origin,
-                            outcome: Disposition::KnownFailure,
-                            message: format!("export failed before dispatch: {error}"),
-                            shell: None,
-                            control: None,
-                            final_slot: true,
-                        },
-                    )
-                    .await;
-                    return;
-                }
-            };
-            if let Some(event) = export_event(
-                origin,
-                worker::run_export_worker(
-                    &workspace,
-                    &requested,
-                    collision,
-                    &bytes,
-                    &mut cancelled,
-                    &processes,
-                )
-                .await,
-            ) {
+            let receipt = port
+                .export_transcript(bytes, requested, collision, cancelled)
+                .await;
+            if let Some(event) = export_receipt_event(origin, receipt) {
                 send(&sender, event).await;
             }
         }
@@ -688,6 +539,19 @@ async fn run(
     }
 }
 
+fn export_receipt_event(
+    origin: Origin,
+    receipt: crate::client_effects::ExportReceipt,
+) -> Option<Event> {
+    let mut event = export_event(origin, receipt.publication)?;
+    if receipt.private_content_cleanup == crate::client_effects::ContentCleanup::Unobserved {
+        event.message.push_str(
+            "; private-content cleanup is unobserved; consult the current host before retrying",
+        );
+    }
+    Some(event)
+}
+
 fn export_event(origin: Origin, run: WorkerRun) -> Option<Event> {
     let (outcome, message) = match run {
         WorkerRun::Completed(Ok(path)) => (
@@ -696,7 +560,7 @@ fn export_event(origin: Origin, run: WorkerRun) -> Option<Event> {
         ),
         WorkerRun::Completed(Err(WorkerFailure::KnownFailure(error))) => (
             Disposition::KnownFailure,
-            format!("export failed before dispatch: {error}"),
+            format!("export not published: {error}"),
         ),
         WorkerRun::Completed(Err(WorkerFailure::OutcomeUnknown {
             stage,
@@ -706,7 +570,10 @@ fn export_event(origin: Origin, run: WorkerRun) -> Option<Event> {
             Disposition::OutcomeUnknown,
             format!("export outcome unknown after dispatch ({stage}: {detail}); {cleanup}"),
         ),
-        WorkerRun::Cancelled => return None,
+        WorkerRun::Cancelled => (
+            Disposition::KnownFailure,
+            "export cancelled before file dispatch".into(),
+        ),
     };
     Some(Event {
         origin,
@@ -764,80 +631,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn export_payload_is_lineaged_and_refuses_a_revoked_transcript_source() {
-        use iteron_protocol::{
-            ErasureAuthorityId, ErasureOperationId, ErasureRequest, ErasureScopeId, ErasureTarget,
-            Event as RecordEvent, EventKind, RunId, Seq, TenantId, TurnId,
-        };
-
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("wall clock after epoch")
-            .as_nanos();
-        let runs_dir = std::env::temp_dir().join(format!(
-            "core-private-export-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir(&runs_dir).expect("create export fixture");
-        let tenant = TenantId::default();
-        let run = RunId("private-export-source".into());
-        let mut rollout = iteron_record::Rollout::open(&runs_dir, &run, tenant.clone())
-            .expect("open source rollout");
-        rollout
-            .append(&RecordEvent {
-                seq: Seq::ZERO,
-                turn: TurnId(1),
-                kind: EventKind::Notice {
-                    text: "operator-visible transcript source".into(),
-                },
-            })
-            .expect("append transcript source");
-        let path = rollout.path().to_path_buf();
-        let sources =
-            iteron_record::content_store::private_content_sources_for_run(&runs_dir, &tenant, &run)
-                .expect("inventory source record fields");
-        assert_eq!(sources.len(), 1);
-
-        let payload = ManagedExportPayload::stage(&path, b"# bounded export\nprivate transcript")
-            .expect("stage lineaged export");
-        assert_eq!(
-            payload.read().expect("read through export gate"),
-            b"# bounded export\nprivate transcript"
-        );
-        let (seq, handle) = payload.abandon_for_recovery();
-        drop(rollout);
-
-        iteron_record::erasure::execute_erasure(
-            &runs_dir,
-            ErasureRequest {
-                operation_id: ErasureOperationId::new("revoke-export-source").unwrap(),
-                authority_id: ErasureAuthorityId::new("wire-value-is-not-authority").unwrap(),
-                target: ErasureTarget::ContentRevocation {
-                    scope_id: ErasureScopeId::new(tenant.0.clone()).unwrap(),
-                    content_digest: sources[0].digest.clone(),
-                },
-                requested_at_unix_ms: 1,
+    fn known_publication_is_not_rewritten_by_unobserved_content_cleanup() {
+        let event = export_receipt_event(
+            Origin::Slash,
+            crate::client_effects::ExportReceipt {
+                publication: WorkerRun::Completed(Ok(PathBuf::from("/actual/export.md"))),
+                private_content_cleanup: crate::client_effects::ContentCleanup::Unobserved,
             },
         )
-        .expect("revoke source and propagate to export");
-
-        let recovered = iteron_record::PrivateContentDerivativeStore::open_registered(
-            &runs_dir,
-            tenant,
-            run,
-            iteron_record::PrivateContentNamespace::Export,
-            iteron_record::PrivateContentClass::Export,
-            iteron_record::PrivateContentRetention::Session,
-            transcript_export::MAX_TRANSCRIPT_EXPORT_BYTES,
-        )
-        .expect("open recovered export owner");
-        assert!(matches!(
-            recovered.read_at(seq, &handle),
-            Err(iteron_record::ContentStoreError::Revoked { .. })
-                | Err(iteron_record::ContentStoreError::Unresolved { .. })
-        ));
-        drop(recovered);
-        std::fs::remove_dir_all(runs_dir).expect("remove export fixture");
+        .unwrap();
+        assert_eq!(event.outcome, Disposition::Success);
+        assert!(event.message.contains("/actual/export.md"));
+        assert!(event.message.contains("cleanup is unobserved"));
     }
 
     #[test]

@@ -56,7 +56,7 @@ fn open_dir(parent: &File, name: &OsStr) -> io::Result<File> {
     Ok(unsafe { File::from_raw_fd(fd) })
 }
 
-pub(super) fn traverse(root: &File, parents: &[String]) -> io::Result<File> {
+pub(crate) fn traverse(root: &File, parents: &[String]) -> io::Result<File> {
     let mut current = root.try_clone()?;
     for component in parents {
         current = open_dir(&current, OsStr::new(component))?;
@@ -66,7 +66,7 @@ pub(super) fn traverse(root: &File, parents: &[String]) -> io::Result<File> {
 
 /// Open a leaf without following it and without allowing a FIFO/device/socket to block the TUI.
 /// The returned descriptor is accepted only when `fstat` identifies the held inode as regular.
-pub(super) fn open_regular_nonblocking(parent: &File, leaf: &str) -> io::Result<File> {
+pub(crate) fn open_regular_nonblocking(parent: &File, leaf: &str) -> io::Result<File> {
     let leaf = c_string(OsStr::new(leaf))?;
     // SAFETY: the held parent descriptor and NUL-terminated leaf remain live for this call.
     let fd = unsafe {
@@ -96,14 +96,14 @@ pub(super) fn open_regular_nonblocking(parent: &File, leaf: &str) -> io::Result<
 /// Holding only the workspace descriptor is insufficient: an ancestor can be renamed, unlinked,
 /// or replaced while that descriptor remains valid. Start at the process's filesystem root,
 /// retain every directory capability in the chain, and reopen the entire chain for revalidation.
-pub(super) struct RootBinding {
+pub(crate) struct RootBinding {
     anchor: File,
     components: Vec<OsString>,
     chain: Vec<File>,
 }
 
 impl RootBinding {
-    pub(super) fn open(path: &Path) -> io::Result<Self> {
+    pub(crate) fn open(path: &Path) -> io::Result<Self> {
         let absolute = if path.is_absolute() {
             path.to_path_buf()
         } else {
@@ -114,6 +114,7 @@ impl RootBinding {
                 "cli.tui.capability_fs.max_capability_path_bytes",
                 MAX_CAPABILITY_PATH_BYTES,
             )
+            .min(MAX_CAPABILITY_PATH_BYTES)
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -133,6 +134,7 @@ impl RootBinding {
                             "cli.tui.capability_fs.max_capability_components",
                             MAX_CAPABILITY_COMPONENTS,
                         )
+                        .min(MAX_CAPABILITY_COMPONENTS)
                     {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidInput,
@@ -169,11 +171,11 @@ impl RootBinding {
         })
     }
 
-    pub(super) fn root(&self) -> &File {
+    pub(crate) fn root(&self) -> &File {
         self.chain.last().unwrap_or(&self.anchor)
     }
 
-    pub(super) fn still_bound(&self) -> bool {
+    pub(crate) fn still_bound(&self) -> bool {
         let Ok(mut current) = self.anchor.try_clone() else {
             return false;
         };
@@ -190,7 +192,7 @@ impl RootBinding {
     }
 }
 
-pub(super) fn same_file(left: &File, right: &File) -> io::Result<bool> {
+pub(crate) fn same_file(left: &File, right: &File) -> io::Result<bool> {
     let left = left.metadata()?;
     let right = right.metadata()?;
     Ok(left.dev() == right.dev() && left.ino() == right.ino())
