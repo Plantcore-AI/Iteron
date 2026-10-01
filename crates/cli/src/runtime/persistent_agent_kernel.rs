@@ -325,6 +325,17 @@ impl PersistentAgentRuntime for KernelPersistentRuntime {
         child.persistent_mailbox = Some(mailbox.clone());
         // Each accepted epoch owns fresh stop surfaces. Never clear the prior epoch's caller
         // signal: an inherited parent/sibling may still be quiescing behind its own terminal.
+        let _epoch_deadline = match mailbox.execution_deadline().and_then(|deadline| {
+            child
+                .run_deadline
+                .tighten(deadline)
+                .map_err(|_| ControllerError::Capacity)
+        }) {
+            Ok(lease) => lease,
+            Err(_) => {
+                return unknown_settlement("Persistent epoch deadline evidence is unavailable");
+            }
+        };
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         child.inherit_interrupt(stop.clone());
         child.inherit_force_cancel(Arc::new(std::sync::atomic::AtomicBool::new(false)));

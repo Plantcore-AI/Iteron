@@ -175,6 +175,14 @@ pub(crate) trait PersistentAgentRuntime: Send + Sync {
 }
 
 trait MailboxPort: Send + Sync {
+    fn admitted_deadline(
+        &self,
+        _id: AgentIdV1,
+        _epoch: AgentEpochV1,
+    ) -> Result<u64, ControllerError> {
+        Err(ControllerError::Permission)
+    }
+
     fn controller_port(&self) -> Result<Arc<dyn AgentControlPort>, ControllerError>;
     fn provider_budget_port(
         &self,
@@ -209,6 +217,20 @@ pub(crate) struct LiveAgentMailbox {
 }
 
 impl LiveAgentMailbox {
+    pub(super) fn execution_deadline(&self) -> Result<Instant, ControllerError> {
+        let deadline = self.port.admitted_deadline(self.id, self.epoch)?;
+        let now = u64::try_from(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|_| ControllerError::RecoveryRequired)?
+                .as_millis(),
+        )
+        .map_err(|_| ControllerError::Capacity)?;
+        Instant::now()
+            .checked_add(Duration::from_millis(deadline.saturating_sub(now)))
+            .ok_or(ControllerError::Capacity)
+    }
+
     pub(super) fn child_controller(
         &self,
     ) -> Result<(Arc<dyn AgentControlPort>, AgentIdV1), ControllerError> {
@@ -518,6 +540,17 @@ impl<J: AgentControllerJournal + Send + 'static> PersistentAgentHost<J> {
         initial: Vec<AgentMailboxMessage>,
         permit: tokio::sync::OwnedSemaphorePermit,
     ) {
+        self.start_execution_with_deadline(view, epoch, initial, permit, None);
+    }
+
+    fn start_execution_with_deadline(
+        &self,
+        mut view: AgentViewV1,
+        epoch: AgentEpochV1,
+        initial: Vec<AgentMailboxMessage>,
+        permit: tokio::sync::OwnedSemaphorePermit,
+        absolute_deadline: Option<u64>,
+    ) {
         let host = self.clone();
         let mailbox = LiveAgentMailbox {
             id: view.agent_id,
@@ -528,24 +561,60 @@ impl<J: AgentControllerJournal + Send + 'static> PersistentAgentHost<J> {
         };
         tokio::spawn(async move {
             let id = view.agent_id;
-            let wall =
-                Duration::from_millis(view.budget.wall_ms.saturating_sub(view.usage.wall_ms));
             let started = Instant::now();
-            let execution = std::panic::AssertUnwindSafe(
-                host.shared.runtime.execute(view, epoch, initial, mailbox),
-            )
-            .catch_unwind();
-            let result = match tokio::time::timeout(wall, execution).await {
-                Ok(Ok(result)) => result,
-                Ok(Err(_)) | Err(_) => AgentSettlement {
+            let deadline =
+                mailbox
+                    .execution_deadline()
+                    .ok()
+                    .and_then(|actual| match absolute_deadline {
+                        None => Some(actual),
+                        Some(bound) => {
+                            let now = u64::try_from(
+                                SystemTime::now()
+                                    .duration_since(UNIX_EPOCH)
+                                    .ok()?
+                                    .as_millis(),
+                            )
+                            .ok()?;
+                            let bound = Instant::now()
+                                .checked_add(Duration::from_millis(bound.saturating_sub(now)))?;
+                            Some(actual.min(bound))
+                        }
+                    });
+            let remaining = deadline.map(|bound| bound.saturating_duration_since(Instant::now()));
+            let result = if let Some(wall) = remaining.filter(|bound| !bound.is_zero()) {
+                view.budget.wall_ms = view
+                    .usage
+                    .wall_ms
+                    .saturating_add(u64::try_from(wall.as_millis()).unwrap_or(u64::MAX))
+                    .min(view.budget.wall_ms);
+                let execution = std::panic::AssertUnwindSafe(
+                    host.shared.runtime.execute(view, epoch, initial, mailbox),
+                )
+                .catch_unwind();
+                match tokio::time::timeout(wall, execution).await {
+                    Ok(Ok(result)) => result,
+                    Ok(Err(_)) | Err(_) => AgentSettlement {
+                        turns: 0,
+                        summary: "Agent deadline expired; physical effects require reconciliation"
+                            .into(),
+                        tokens: 0,
+                        cost_microusd: 0,
+                        effects_known: false,
+                        terminal: iteron_agents::AgentWorkflowTerminal::StoppedRecovery,
+                    },
+                }
+            } else {
+                AgentSettlement {
                     turns: 0,
-                    summary: "Agent deadline expired; physical effects require reconciliation"
-                        .into(),
+                    summary:
+                        "Agent absolute deadline expired or was unavailable before runtime dispatch"
+                            .into(),
                     tokens: 0,
                     cost_microusd: 0,
-                    effects_known: false,
-                    terminal: iteron_agents::AgentWorkflowTerminal::StoppedRecovery,
-                },
+                    effects_known: true,
+                    terminal: iteron_agents::AgentWorkflowTerminal::Failed,
+                }
             };
             let elapsed = u64::try_from(started.elapsed().as_millis())
                 .unwrap_or(u64::MAX)
@@ -877,6 +946,18 @@ impl<J: AgentControllerJournal + Send + 'static> AgentControlPort for Persistent
 }
 
 impl<J: AgentControllerJournal + Send + 'static> MailboxPort for PersistentAgentHost<J> {
+    fn admitted_deadline(
+        &self,
+        id: AgentIdV1,
+        epoch: AgentEpochV1,
+    ) -> Result<u64, ControllerError> {
+        self.shared
+            .controller
+            .lock()
+            .map_err(|_| ControllerError::Poisoned)?
+            .runtime_epoch_deadline(id, epoch)
+    }
+
     fn controller_port(&self) -> Result<Arc<dyn AgentControlPort>, ControllerError> {
         Ok(Arc::new(self.clone()))
     }

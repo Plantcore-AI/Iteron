@@ -42,6 +42,7 @@ impl<J: AgentControllerJournal + Send + 'static> WorkflowControllerPort for Pers
         task: ScheduledTaskV1,
     ) -> Result<AgentTurnLeaseV1, WorkflowDispatchError> {
         let claim = claim(task).map_err(error)?;
+        let deadline = claim.deadline_unix_ms;
         let now = u64::try_from(
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -84,7 +85,13 @@ impl<J: AgentControllerJournal + Send + 'static> WorkflowControllerPort for Pers
             turn: lease.epoch.turn,
         };
         if !lease.replayed {
-            self.start_execution(lease.agent, lease.epoch, lease.initial, permit)
+            self.start_execution_with_deadline(
+                lease.agent,
+                lease.epoch,
+                lease.initial,
+                permit,
+                Some(deadline),
+            )
         }
         Ok(result)
     }

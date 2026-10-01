@@ -25,6 +25,14 @@ impl<J> WeakMailbox<J> {
     }
 }
 impl<J: AgentControllerJournal + Send + 'static> MailboxPort for WeakMailbox<J> {
+    fn admitted_deadline(
+        &self,
+        id: AgentIdV1,
+        epoch: AgentEpochV1,
+    ) -> Result<u64, ControllerError> {
+        MailboxPort::admitted_deadline(&self.host()?, id, epoch)
+    }
+
     fn controller_port(&self) -> Result<Arc<dyn AgentControlPort>, ControllerError> {
         Ok(Arc::new(self.host()?))
     }
