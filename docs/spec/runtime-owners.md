@@ -114,6 +114,8 @@ observation; it does not grant permission or acquire mutable ownership of anothe
 | `tool_execution_session.rs` | Reborrow the same journal, permission, inbox, hooks and immutable authority through real collection and physical execution | Actual record/control/permission owners → existing physical admission/execution owners |
 | `tool_execution_assembly.rs` | Capture current trusted tool scope and optional real dispatch gate at each phase entry | Agent composition → concrete disjoint execution ports |
 
+| `bundle_adapter/checkpoint.rs` | Own the actual immutable nine-slot objects, BootBundle, compiler receipt and runtime identities as one generation; Agent and KernelSpawnerContext retain one Arc | Complete compiler admission/adoption → borrowed strategy ports and shared child generation |
+
 ```mermaid
 flowchart LR
     Journal[Journal admission owner] -->|already admitted ToolIntent| Batch[DeferredBatchExecutor]

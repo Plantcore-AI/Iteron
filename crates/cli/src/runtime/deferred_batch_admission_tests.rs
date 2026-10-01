@@ -62,7 +62,7 @@ fn fixture(label: &str, hook: Option<&str>) -> (Agent, Vec<AutoApprovedCall>, Ve
                 call.clone(),
                 crate::runtime::strategy_runtime::propose_tool(
                     &agent.registry,
-                    agent.tool_policy.as_ref(),
+                    agent.compiled_policy_bundle.slots().tool_policy.as_ref(),
                     call.clone(),
                     iteron_protocol::Trust::Workspace,
                 ),

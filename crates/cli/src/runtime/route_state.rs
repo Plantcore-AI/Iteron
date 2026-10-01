@@ -330,7 +330,7 @@ impl Agent {
             None,
         );
         match iteron_provider::catalog::ModelRouterStrategy::route_with(
-            self.model_router.as_ref(),
+            self.compiled_policy_bundle.slots().model_router.as_ref(),
             &observation,
             self.authority_ceiling,
         ) {

@@ -28,7 +28,10 @@ impl Agent {
             return self.drive_admitted(messages, task, input_images).await;
         }
         let leaves = self.decompose(task, class).await?;
-        if let Some(outcome) = self.collect_and_finish_requested_control(TurnId(self.seq_turn)).await? {
+        if let Some(outcome) = self
+            .collect_and_finish_requested_control(TurnId(self.seq_turn))
+            .await?
+        {
             return Ok(outcome);
         }
         if self.inference_budget_exhaustion()?.is_some() {
@@ -43,7 +46,7 @@ impl Agent {
         // The breadth the route reserved is the breadth that gets fanned. Without `plan_within` a
         // router that narrowed the fan would have been recorded and then ignored.
         let Some(plan) = iteron_agents::Decomposer::plan_within_with(
-            self.planner.as_ref(),
+            self.compiled_policy_bundle.slots().planner.as_ref(),
             class,
             leaves,
             route.max_leaves as usize,
@@ -226,8 +229,9 @@ impl Agent {
                     },
                 },
             )?;
-            if let Some(outcome) =
-                self.collect_and_finish_requested_control(TurnId(self.seq_turn)).await?
+            if let Some(outcome) = self
+                .collect_and_finish_requested_control(TurnId(self.seq_turn))
+                .await?
             {
                 return Ok(outcome);
             }
@@ -264,7 +268,10 @@ impl Agent {
             },
         )?;
         merge_adjacent_user_message(&mut messages, augmented);
-        if let Some(outcome) = self.collect_and_finish_requested_control(TurnId(self.seq_turn)).await? {
+        if let Some(outcome) = self
+            .collect_and_finish_requested_control(TurnId(self.seq_turn))
+            .await?
+        {
             return Ok(outcome);
         }
         self.drive_admitted(messages, task, input_images).await

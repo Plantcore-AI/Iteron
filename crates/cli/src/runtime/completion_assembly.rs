@@ -35,7 +35,7 @@ impl Agent {
                     runtime_state: &self.runtime_state_dir,
                     deadline: self.run_deadline.current(),
                     authority_ceiling: self.authority_ceiling,
-                    verifier: self.verifier.as_ref(),
+                    verifier: self.compiled_policy_bundle.slots().verifier.as_ref(),
                     preconfined: self.verify_preconfined,
                     sensitive_env_names: &self.sensitive_env_names,
                     interactive: self.interactive_approvals,

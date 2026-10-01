@@ -53,8 +53,11 @@ impl Agent {
             )?;
             return Ok(route);
         }
-        match iteron_agents::RouterStrategy::route_with(self.router.as_ref(), &observation, ceiling)
-        {
+        match iteron_agents::RouterStrategy::route_with(
+            self.compiled_policy_bundle.slots().router.as_ref(),
+            &observation,
+            ceiling,
+        ) {
             Ok(proposal) => {
                 let action = if proposal.route.fans_out() {
                     "fan_out"
@@ -143,7 +146,7 @@ impl Agent {
             }
         };
         match iteron_sched::SchedulerStrategy::plan_with(
-            self.scheduler.as_ref(),
+            self.compiled_policy_bundle.slots().scheduler.as_ref(),
             &observation,
             CapabilitySet::only(Capability::ReadOnly).intersect(self.authority_ceiling),
         ) {

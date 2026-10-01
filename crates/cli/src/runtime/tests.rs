@@ -12994,10 +12994,14 @@ ant-api03-SuperSecretModelToken12345"
         let calls = std::sync::Arc::new(AtomicUsize::new(0));
         let mut agent = agent_for(&ws);
         agent.memory_workspace = Some(ws.clone());
-        agent.memory_strategy = std::sync::Arc::new(RefusingMemorySlot {
-            slot: iteron_protocol::slot::SlotId(policy_evidence::MEMORY_SLOT.into()),
-            calls: calls.clone(),
-        });
+        agent.compiled_policy_bundle =
+            std::sync::Arc::new(agent.compiled_policy_bundle.with_fixture_slot(
+                crate::bundle_adapter::CoreSlot::Memory,
+                std::sync::Arc::new(RefusingMemorySlot {
+                    slot: iteron_protocol::slot::SlotId(policy_evidence::MEMORY_SLOT.into()),
+                    calls: calls.clone(),
+                }),
+            ));
         agent.policy_evidence = Some(
             policy_evidence_recorder::PolicyEvidenceRecorder::new(
                 iteron_protocol::RunId("t".into()),
@@ -13443,8 +13447,16 @@ ant-api03-SuperSecretModelToken12345"
             "failed append cannot claim Applied"
         );
         assert!(agent.record_failed);
-        assert!(agent.admit_pending_steers(TurnId(0), &mut messages).is_err());
-        assert_eq!(messages.len(), 1, "a failed writer cannot advance the model transcript");
+        assert!(
+            agent
+                .admit_pending_steers(TurnId(0), &mut messages)
+                .is_err()
+        );
+        assert_eq!(
+            messages.len(),
+            1,
+            "a failed writer cannot advance the model transcript"
+        );
         assert!(ui_rx.try_recv().is_err());
         let (unadmitted, visible) = agent.take_unadmitted_steers_with_client_count();
         assert_eq!(visible, 2);
@@ -21015,15 +21027,36 @@ mod slot_binding_tests {
 
     fn bound(agent: &Agent) -> Vec<(&'static str, &std::sync::Arc<dyn StrategySlot>)> {
         vec![
-            ("core/context", &agent.context_strategy),
-            ("core/tool_policy", &agent.tool_policy),
-            ("core/memory", &agent.memory_strategy),
-            ("core/router", &agent.router),
-            ("core/planner", &agent.planner),
-            ("core/collaboration", &agent.collaboration),
-            ("core/scheduler", &agent.scheduler),
-            ("core/verifier", &agent.verifier),
-            ("core/model_router", &agent.model_router),
+            (
+                "core/context",
+                &agent.compiled_policy_bundle.slots().context,
+            ),
+            (
+                "core/tool_policy",
+                &agent.compiled_policy_bundle.slots().tool_policy,
+            ),
+            ("core/memory", &agent.compiled_policy_bundle.slots().memory),
+            ("core/router", &agent.compiled_policy_bundle.slots().router),
+            (
+                "core/planner",
+                &agent.compiled_policy_bundle.slots().planner,
+            ),
+            (
+                "core/collaboration",
+                &agent.compiled_policy_bundle.slots().collaboration,
+            ),
+            (
+                "core/scheduler",
+                &agent.compiled_policy_bundle.slots().scheduler,
+            ),
+            (
+                "core/verifier",
+                &agent.compiled_policy_bundle.slots().verifier,
+            ),
+            (
+                "core/model_router",
+                &agent.compiled_policy_bundle.slots().model_router,
+            ),
         ]
     }
 

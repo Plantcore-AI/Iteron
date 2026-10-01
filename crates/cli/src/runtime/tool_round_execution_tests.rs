@@ -22,7 +22,7 @@ fn retained<'a>(
         .map(|(index, call)| {
             let proposal = crate::runtime::strategy_runtime::propose_tool(
                 &agent.registry,
-                agent.tool_policy.as_ref(),
+                agent.compiled_policy_bundle.slots().tool_policy.as_ref(),
                 call.clone(),
                 Trust::Workspace,
             );

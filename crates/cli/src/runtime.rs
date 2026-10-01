@@ -1373,31 +1373,11 @@ pub struct Agent {
     /// Content-free identity for an eval attempt whose context must not inherit user/project
     /// memory. Presence activates strict parent-store contamination checks.
     memory_benchmark_scope: Option<[u8; 32]>,
-    /// Pure context selection plus the injected world adapter. The default port is filesystem
-    /// backed; tests and the pre-#15 reducer seam may replace it with `iteron_ctx::PortStub`.
-    context_strategy: std::sync::Arc<dyn iteron_protocol::slot::StrategySlot>,
-    tool_policy: std::sync::Arc<dyn iteron_protocol::slot::StrategySlot>,
-    /// Pure `core/memory` selection inherited by every child and passed into the production
-    /// context port for each recall.
-    memory_strategy: std::sync::Arc<dyn iteron_protocol::slot::StrategySlot>,
-    /// Which handling path a submission takes (`core/router`). The built-in baseline is the
-    /// deterministic task-class heuristic; a pinned replacement is the ADR-011 classifier seam.
-    router: std::sync::Arc<dyn iteron_protocol::slot::StrategySlot>,
-    /// Selects and orders already-normalized fan leaves (`core/planner`).
-    planner: std::sync::Arc<dyn iteron_protocol::slot::StrategySlot>,
-    /// Narrows bounded fan execution width (`core/collaboration`).
-    collaboration: std::sync::Arc<dyn iteron_protocol::slot::StrategySlot>,
-    /// Narrows retry/concurrency decisions (`core/scheduler`).
-    scheduler: std::sync::Arc<dyn iteron_protocol::slot::StrategySlot>,
-    /// Trusted composition-root retry bounds. Physical attempts remain kernel-owned so every
-    /// dispatch has its own durable effect intent and terminal.
+    /// One immutable compiled generation owns all nine strategy objects, their BootBundle and
+    /// runtime identities. Invocation domains borrow it; child composition clones the same Arc.
+    compiled_policy_bundle: std::sync::Arc<crate::bundle_adapter::CompiledPolicyBundle>,
+    /// Trusted retry bounds; each physical dispatch retains its own durable intent and terminal.
     retry_policy: iteron_sched::BackoffPolicy,
-    /// Strengthens completion-gate plans (`core/verifier`).
-    verifier: std::sync::Arc<dyn iteron_protocol::slot::StrategySlot>,
-    /// Which already-resolved model route a delegated child may use (`core/model_router`). The
-    /// slot chooses only among route identities supplied by the caller; it cannot resolve or
-    /// conjure provider authority of its own.
-    model_router: std::sync::Arc<dyn iteron_protocol::slot::StrategySlot>,
     context_port: std::sync::Arc<dyn iteron_ctx::ContextPort>,
     /// Explicit operator home supplied by the composition root. The kernel never reads `HOME`.
     context_home_dir: Option<std::path::PathBuf>,
@@ -1407,12 +1387,6 @@ pub struct Agent {
     /// neither repository drift nor a nested worker can widen or replace it mid-run.
     agent_catalog: std::sync::Arc<iteron_agents::AgentCatalog>,
     agent_catalog_pinned: bool,
-    /// Immutable policy-bundle projection resolved once at process boot.
-    boot_bundle: std::sync::Arc<iteron_agents::BootBundle>,
-    /// The typed implementation checkpoint behind `boot_bundle`. This Arc owns the complete
-    /// nine-slot strategy generation, stable application receipt, and runtime identities used by
-    /// policy evidence. Children clone this exact Arc; no child reconstructs identity from config.
-    compiled_policy_bundle: std::sync::Arc<crate::bundle_adapter::CompiledPolicyBundle>,
     /// Run-local owner of durable, content-free evidence for the nine frozen policy slots.
     /// Lazily restored while this Agent holds the rollout writer, so tests that intentionally use
     /// the legacy unpinned constructor remain source-compatible while every production run is
@@ -2210,7 +2184,7 @@ impl Agent {
                 hedged: admission.use_hedge,
                 execution: provider_execution_scope::ProviderExecutionConfiguration {
                     turn: turn_id,
-                    strategy: self.tool_policy.clone(),
+                    strategy: self.compiled_policy_bundle.slots().tool_policy.clone(),
                     trust: argument_trust,
                     overlap: self.pure_overlap_enabled,
                     early_effects: !investigation_convergence.enabled()

@@ -25,6 +25,7 @@ use async_trait::async_trait;
 use iteron_agents::AgentCatalog;
 use iteron_obs::PricingPort;
 use iteron_protocol::capability_set::CapabilitySet;
+#[cfg(test)]
 use iteron_protocol::slot::StrategySlot;
 use iteron_protocol::{
     Budget, CostAttribution, Effort, Outcome, PermissionMode, PermissionRules, RunId, TenantId,
@@ -205,17 +206,6 @@ pub struct KernelSpawnerContext {
         crate::runtime_tunables::effective_mcp::EffectiveMcpSettings,
         crate::runtime_tunables::effective_mcp::McpCapabilityExposure,
     )>,
-    /// Pinned strategy/port set inherited by every child; child construction never falls back to
-    /// a different policy generation.
-    pub context_strategy: Arc<dyn StrategySlot>,
-    pub tool_policy: Arc<dyn StrategySlot>,
-    pub memory_strategy: Arc<dyn StrategySlot>,
-    /// `core/router`. A leaf child never orchestrates, so it never asks; it is inherited anyway so
-    /// a child is never constructed against a different policy generation than its parent.
-    pub router: Arc<dyn StrategySlot>,
-    pub planner: Arc<dyn StrategySlot>,
-    pub collaboration: Arc<dyn StrategySlot>,
-    pub scheduler: Arc<dyn StrategySlot>,
     pub retry_policy: iteron_sched::BackoffPolicy,
     /// Fail-closed single-writer/worktree/merge admission policy shared with tunable facts.
     pub writer_merge_policy: iteron_workflow::WriterMergePolicy,
@@ -226,10 +216,6 @@ pub struct KernelSpawnerContext {
     /// One merge/writer lane for the complete session lineage. The guard is held from worktree
     /// provisioning through child terminal, verification, merge, and cleanup.
     pub(super) writer_merge_lock: Arc<tokio::sync::Mutex<()>>,
-    pub verifier: Arc<dyn StrategySlot>,
-    /// `core/model_router`. The spawner supplies the parent's already-resolved route as evidence;
-    /// the slot may select it or refuse, but cannot invent an unbound provider route.
-    pub model_router: Arc<dyn StrategySlot>,
     pub context_port: Arc<dyn iteron_ctx::ContextPort>,
     pub deferred_tool_eager_limit: Option<usize>,
     pub context_budget_policy: iteron_ctx::ContextBudgetPolicy,
@@ -244,8 +230,6 @@ pub struct KernelSpawnerContext {
     /// inherits this same immutable set; it never performs filesystem discovery itself.
     pub agent_catalog: Arc<AgentCatalog>,
     pub(crate) plugin_management: Option<Arc<crate::plugin_runtime::PluginManagementOwner>>,
-    /// Policy projection pinned for the entire workflow lineage.
-    pub boot_bundle: Arc<iteron_agents::BootBundle>,
     /// Complete typed policy generation behind the projection. The spawner and every child retain
     /// the same Arc so policy identities and implementations cannot drift independently.
     pub(crate) compiled_policy_bundle: Arc<crate::bundle_adapter::CompiledPolicyBundle>,
@@ -287,17 +271,6 @@ impl KernelSpawnerContext {
         &mut self,
         compiled: Arc<crate::bundle_adapter::CompiledPolicyBundle>,
     ) {
-        let slots = compiled.slots();
-        self.context_strategy = slots.context.clone();
-        self.tool_policy = slots.tool_policy.clone();
-        self.memory_strategy = slots.memory.clone();
-        self.router = slots.router.clone();
-        self.planner = slots.planner.clone();
-        self.collaboration = slots.collaboration.clone();
-        self.scheduler = slots.scheduler.clone();
-        self.verifier = slots.verifier.clone();
-        self.model_router = slots.model_router.clone();
-        self.boot_bundle = compiled.boot_bundle();
         self.compiled_policy_bundle = compiled;
     }
 
@@ -404,20 +377,13 @@ impl KernelSpawnerContext {
             model_max_output_tokens: None,
             sensitive_env_names: Vec::new(),
             standalone_mcp_policy: None,
-            context_strategy: compiled_policy_bundle.slots().context.clone(),
-            tool_policy: compiled_policy_bundle.slots().tool_policy.clone(),
-            memory_strategy: compiled_policy_bundle.slots().memory.clone(),
-            router: compiled_policy_bundle.slots().router.clone(),
-            planner: compiled_policy_bundle.slots().planner.clone(),
-            collaboration: compiled_policy_bundle.slots().collaboration.clone(),
-            scheduler: compiled_policy_bundle.slots().scheduler.clone(),
+
             retry_policy: iteron_sched::BackoffPolicy::default(),
             writer_merge_policy: iteron_workflow::WriterMergePolicy::default(),
             verify_command: None,
             verification_feedback: iteron_verify::VerificationFeedbackTailPolicy::default(),
             writer_merge_lock: Arc::new(tokio::sync::Mutex::new(())),
-            verifier: compiled_policy_bundle.slots().verifier.clone(),
-            model_router: compiled_policy_bundle.slots().model_router.clone(),
+
             context_port: Arc::new(iteron_ctx::DefaultContextPort),
             deferred_tool_eager_limit: None,
             context_budget_policy: iteron_ctx::ContextBudgetPolicy::default(),
@@ -428,7 +394,7 @@ impl KernelSpawnerContext {
             dependency_skill_dirs: Vec::new(),
             agent_catalog: Arc::new(AgentCatalog::builtin_only()),
             plugin_management: None,
-            boot_bundle: compiled_policy_bundle.boot_bundle(),
+
             compiled_policy_bundle,
             permission_mode: PermissionMode::default(),
             permission_rules: PermissionRules::new(),
@@ -647,7 +613,7 @@ impl KernelSpawner {
             let _effective_tools = crate::bundle_adapter::narrow_child_registry(
                 &mut registry,
                 &agent_def.tools,
-                &cx.boot_bundle,
+                cx.compiled_policy_bundle.boot_bundle_ref(),
             );
             registry
         };
@@ -879,7 +845,7 @@ impl KernelSpawner {
             .begin_policy_decision(super::policy_evidence::MODEL_ROUTER_SLOT, None)
             .map_err(|error| safe_agent_refusal(&error.public_summary()))?;
         let routed = match iteron_provider::catalog::ModelRouterStrategy::route_with(
-            cx.model_router.as_ref(),
+            cx.compiled_policy_bundle.slots().model_router.as_ref(),
             &model_router_observation,
             cx.authority_ceiling,
         ) {

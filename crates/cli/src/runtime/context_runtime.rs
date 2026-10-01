@@ -977,8 +977,8 @@ impl Agent {
                 .as_deref()
                 .unwrap_or(&self.dependency_skill_dirs);
             let resolved = match strategy_runtime::resolve_live_context(
-                self.context_strategy.as_ref(),
-                self.memory_strategy.as_ref(),
+                self.compiled_policy_bundle.slots().context.as_ref(),
+                self.compiled_policy_bundle.slots().memory.as_ref(),
                 self.context_port.as_ref(),
                 strategy_runtime::LiveContextRequest {
                     workspace: &ws,

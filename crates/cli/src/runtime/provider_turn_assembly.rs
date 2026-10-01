@@ -58,7 +58,7 @@ impl Agent {
                 routes: &self.fallback_provider_routes,
                 governor: self.provider_governor.as_ref(),
                 control: &self.control,
-                router: self.model_router.as_ref(),
+                router: self.compiled_policy_bundle.slots().model_router.as_ref(),
                 authority: self.authority_ceiling,
                 controls: self.provider_controls,
                 strict_controls,
@@ -153,7 +153,7 @@ impl Agent {
             },
             scope: ProviderRouteBindingScope {
                 turn,
-                router: self.model_router.as_ref(),
+                router: self.compiled_policy_bundle.slots().model_router.as_ref(),
                 authority: self.authority_ceiling,
                 controls: self.provider_controls,
                 strict_controls,

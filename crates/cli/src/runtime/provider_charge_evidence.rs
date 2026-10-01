@@ -351,9 +351,13 @@ pub(super) fn replay_route_charges(
 
     let mut logical_winner_microusd = 0u64;
     for (tenant, run_id, turn, projection) in logical {
-        let sealed_turn = scoped_events.iter().any(|row| row.tenant == tenant && row.run_id == run_id
-            && row.event.turn == turn && matches!(&row.event.kind, EventKind::EffectIntent {tool,arguments,..}
-                if tool == "provider" && arguments.get("provider_pricing_at_unix_secs").is_some()));
+        let sealed_turn = scoped_events.iter().any(|row| {
+            row.tenant == tenant
+                && row.run_id == run_id
+                && row.event.turn == turn
+                && matches!(&row.event.kind, EventKind::EffectIntent {tool,arguments,..}
+                if tool == "provider" && arguments.get("provider_pricing_at_unix_secs").is_some())
+        });
         let matched = known.iter_mut().find(|known| {
             !known.matched_logical_winner
                 && known.tenant == tenant

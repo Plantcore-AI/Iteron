@@ -144,7 +144,7 @@ impl Agent {
         let _effective_tools = crate::bundle_adapter::narrow_child_registry(
             &mut registry,
             &iteron_agents::ToolFilter::All,
-            &self.boot_bundle,
+            &self.compiled_policy_bundle.boot_bundle_ref(),
         );
         let tunables_pin = self
             .tunables_pin_snapshot()

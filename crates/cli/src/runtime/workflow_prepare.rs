@@ -213,7 +213,7 @@ impl Agent {
             )
             .map_err(|error| error.public_summary())?;
         let selected_concurrency = match iteron_workflow::CollaborationStrategy::select_with(
-            self.collaboration.as_ref(),
+            self.compiled_policy_bundle.slots().collaboration.as_ref(),
             &collaboration_observation,
             CapabilitySet::only(Capability::ReadOnly).intersect(self.authority_ceiling),
         ) {
