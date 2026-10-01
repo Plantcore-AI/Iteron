@@ -294,6 +294,10 @@ pub async fn run(
         super::provider_catalog_client::first_frame(session.control_sender());
     let mut provider_first_frame_pending = true;
     let mut provider_catalog_open = true;
+    let mut provider_discovery_notice = super::provider_catalog_client::DiscoveryNotice::default();
+    if let Some(notice) = provider_discovery_notice.observe(&providers) {
+        app.note(block::NoticeLevel::Warn, notice);
+    }
     let mut events = handle.events;
     let mut last_event_seq = 0;
     let startup_waits_for_initial_answer = initial_task
@@ -375,7 +379,10 @@ pub async fn run(
 
         if provider_catalog_open {
             match provider_catalog.try_changed() {
-                Ok(Some(view)) => {providers=view;redraw=true;}
+                Ok(Some(view)) => {
+                    if let Some(notice)=provider_discovery_notice.observe(&view) {app.note(block::NoticeLevel::Warn,notice);}
+                    providers=view;redraw=true;
+                }
                 Ok(None) => {}
                 Err(_) => {provider_catalog_open=false;app.note(block::NoticeLevel::Warn,"provider catalog observation ended; retained snapshot remains in use");redraw=true;}
             }
@@ -800,7 +807,10 @@ pub async fn run(
                 None => input_open = false,
             },
             update = provider_catalog.changed(), if provider_catalog_open => {
-                match update {Ok(view) => {providers=view;redraw=true;},Err(_) => {provider_catalog_open=false;}}
+                match update {Ok(view) => {
+                    if let Some(notice)=provider_discovery_notice.observe(&view) {app.note(block::NoticeLevel::Warn,notice);}
+                    providers=view;redraw=true;
+                },Err(_) => {provider_catalog_open=false;}}
             },
             _ = async {
                 if let Some(notification) = viewer_work_notification {

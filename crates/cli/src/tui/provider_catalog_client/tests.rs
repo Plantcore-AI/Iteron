@@ -239,3 +239,32 @@ async fn actual_success_receipt_releases_initial_input_exactly_once() {
     assert_eq!(gate.take_ready().as_deref(), Some("exact CLI task"));
     assert!(gate.take_ready().is_none());
 }
+
+#[test]
+fn actual_host_failure_is_notified_once_until_it_changes_or_clears() {
+    let mut notices = DiscoveryNotice::default();
+    let healthy = view(&"1".repeat(64));
+    assert!(notices.observe(&healthy).is_none());
+    let failed = healthy
+        .clone()
+        .with_discovery_error(Some("actual discovery failed"));
+    assert!(
+        notices
+            .observe(&failed)
+            .unwrap()
+            .contains("actual discovery failed")
+    );
+    assert!(notices.observe(&failed).is_none());
+    let updated = view(&"2".repeat(64)).with_discovery_error(Some("actual discovery failed"));
+    assert!(
+        notices.observe(&updated).is_none(),
+        "unrelated identity updates are not new failures"
+    );
+    let changed = updated.with_discovery_error(Some("actual discovery abandoned"));
+    assert!(notices.observe(&changed).is_some());
+    assert!(notices.observe(&healthy).is_none());
+    assert!(
+        notices.observe(&failed).is_some(),
+        "a later real failure transition is visible"
+    );
+}

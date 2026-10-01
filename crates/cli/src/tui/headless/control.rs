@@ -591,7 +591,7 @@ pub(super) fn reply_value(reply: ControlReply) -> Value {
         ControlReply::ActivityCenter(value) => value,
         ControlReply::Inventory(value) => value,
         ControlReply::ProviderCatalog(view) => {
-            json!({"type":"provider_catalog_v1","inventory_digest_sha256":view.inventory_digest(),"discovery_pending":view.discovery_pending(),"providers":view.entries().len(),"source":"host_captured_inventory"})
+            json!({"type":"provider_catalog_v1","inventory_digest_sha256":view.inventory_digest(),"discovery_pending":view.discovery_pending(),"discovery_error":view.discovery_error(),"providers":view.entries().len(),"source":"host_captured_inventory"})
         }
         ControlReply::LiveWorkflow(value) => json!({
             "type": "live_workflow_v1",
@@ -1275,5 +1275,33 @@ mod workspace_rewind_wire_tests {
         let mut forged = base;
         forged["command"]["workspace"] = json!("/other-root");
         assert!(serde_json::from_value::<WireControl>(forged).is_err());
+    }
+}
+
+#[cfg(test)]
+mod provider_catalog_reply_tests {
+    use super::{ControlReply, reply_value};
+    use crate::providers::{ModelSelection, ProviderCatalogView, ProviderDirectory};
+
+    #[test]
+    fn failed_host_discovery_is_public_truth_without_a_full_catalog_payload() {
+        let directory = ProviderDirectory::inspect_local(&[]).unwrap();
+        let view = ProviderCatalogView::capture(
+            &directory,
+            &ModelSelection {
+                provider_id: "fixture".into(),
+                model_id: "m".into(),
+            },
+            "1".repeat(64),
+            false,
+        )
+        .unwrap()
+        .with_discovery_error(Some("actual catalog rejected"));
+        let reply = reply_value(ControlReply::ProviderCatalog(Box::new(view)));
+        assert_eq!(reply["discovery_pending"], false);
+        assert_eq!(reply["discovery_error"], "actual catalog rejected");
+        assert_eq!(reply["source"], "host_captured_inventory");
+        assert_eq!(reply["providers"], 0);
+        assert!(reply.get("models").is_none());
     }
 }

@@ -8,6 +8,25 @@ use iteron_protocol::client_inventory::ClientModelSelectionV1;
 use std::sync::{Arc, atomic::AtomicBool};
 use tokio::sync::{mpsc, oneshot};
 
+/// A host discovery failure is an observation, not a new instruction on every catalog redraw.
+/// Retain only its bounded display text; a cleared failure permits a later failure transition.
+#[derive(Default)]
+pub(super) struct DiscoveryNotice {
+    last_error: Option<String>,
+}
+impl DiscoveryNotice {
+    pub(super) fn observe(&mut self, view: &ProviderCatalogView) -> Option<String> {
+        let error = view.discovery_error();
+        if self.last_error.as_deref() == error {
+            return None;
+        }
+        self.last_error = error.map(str::to_owned);
+        error.map(|reason| {
+            format!("provider discovery unavailable: {reason}; retained catalog remains in use")
+        })
+    }
+}
+
 pub(super) fn selection_request(
     directory: &ProviderCatalogView,
     selection: &ModelSelection,
