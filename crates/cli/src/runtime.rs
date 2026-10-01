@@ -132,6 +132,9 @@ mod artifact_publication;
 pub(crate) mod bounded_verify;
 mod budget_control;
 pub(crate) mod client_inventory;
+mod coding_provider_execution;
+mod coding_run_assembly;
+mod coding_run_driver;
 mod compaction;
 mod compaction_assembly;
 mod compaction_coverage;
@@ -151,6 +154,8 @@ mod route_controls_tests;
 mod stream_tools;
 #[cfg(test)]
 mod stream_tools_tests;
+mod tool_image_projection;
+mod tool_image_projection_assembly;
 pub(crate) mod turn_activity;
 pub(crate) use failed_action_cache::FailedActionPolicy;
 mod candidate_workspace;
@@ -280,13 +285,17 @@ use iteron_obs::{
     CostState, Ledger, PhaseSpan, PricingPort, ProjectionAdmissionError, admit_verified_projection,
 };
 use iteron_protocol::capability_set::CapabilitySet;
+#[cfg(test)]
+use iteron_protocol::{AgentLoopState, StopReason};
+#[cfg(any(test, feature = "legacy-plantcore"))]
+use iteron_protocol::{Block, Role};
 use iteron_protocol::{
-    AgentLoopState, Block, Budget, Capability, CostAttribution, CostProjectionIdentity,
-    DurableEnvironmentContext, DurableInstructionContext, Effort, Event, EventKind,
-    LifecyclePayload, MAX_DURABLE_ENVIRONMENT_CONTEXT_BYTES, Message, Op, Outcome, PermissionMode,
-    PermissionRules, Phase, PricingRoute, Purity, Role, RuntimePolicyEventVersion,
-    RuntimePolicySource, RuntimePolicyState, Seq, SignedRateCard, SqEnvelope, StopReason,
-    SubmissionId, SubmissionRejectionReason, ToolResult, ToolUse, Trust, TurnId, Verdict,
+    Budget, Capability, CostAttribution, CostProjectionIdentity, DurableEnvironmentContext,
+    DurableInstructionContext, Effort, Event, EventKind, LifecyclePayload,
+    MAX_DURABLE_ENVIRONMENT_CONTEXT_BYTES, Message, Op, Outcome, PermissionMode, PermissionRules,
+    Phase, PricingRoute, Purity, RuntimePolicyEventVersion, RuntimePolicySource,
+    RuntimePolicyState, Seq, SignedRateCard, SqEnvelope, SubmissionId, SubmissionRejectionReason,
+    ToolResult, ToolUse, Trust, TurnId, Verdict,
 };
 #[cfg(test)]
 use iteron_provider::ProviderNotice;
@@ -1877,29 +1886,21 @@ impl Agent {
         relevance_task: &str,
         input_images: &[iteron_protocol::ImageContent],
     ) -> Result<Outcome, KernelError> {
-        let mut messages = messages;
+        let mut driver = coding_run_driver::CodingRunDriver::new(messages);
         let outcome = self
-            .drive_admitted_loop(&mut messages, relevance_task, input_images)
+            .drive_admitted_loop(&mut driver, relevance_task, input_images)
             .await;
-        self.transcript_state.replace_working(Some(messages));
+        self.transcript_state
+            .replace_working(Some(driver.into_messages()));
         outcome
     }
 
     async fn drive_admitted_loop(
         &mut self,
-        messages: &mut Vec<Message>,
+        driver: &mut coding_run_driver::CodingRunDriver,
         relevance_task: &str,
         input_images: &[iteron_protocol::ImageContent],
     ) -> Result<Outcome, KernelError> {
-        let mut submitted_turn = submitted_turn_state::SubmittedTurnState::default();
-        // The graph-governed repair workflow is retained for specialized workflows, not for
-        // ordinary coding turns. Its evidence gates and workspace identity reads must not shape
-        // the default model/tool loop.
-        let mut investigation_convergence =
-            investigation_convergence::InvestigationConvergence::for_general_run();
-        let mut candidate_workspace_baseline =
-            investigation_convergence::CandidateWorkspaceBaseline::default();
-
         // REC-INJECT: resolve + record the memory segment once, before the first request build,
         // using the task for relevance recall. effective_system() reads the cached result.
         self.resolve_injection_before_provider(relevance_task)
@@ -1931,11 +1932,11 @@ impl Agent {
                     .finish(TurnId(self.seq_turn), Outcome::Interrupted)
                     .await;
             }
-            let agent_loop = agent_loop::AgentLoopGuard::begin(TurnId(self.seq_turn));
+            driver.begin_iteration(TurnId(self.seq_turn))?;
             // Steering is a real submission, not a post-run local queue. Admit it only here, at a
             // turn boundary, before the next request projection is built.
-            self.admit_pending_steers(TurnId(self.seq_turn), messages)?;
-            self.admit_parent_mailbox(TurnId(self.seq_turn), messages)?;
+            self.admit_pending_steers(TurnId(self.seq_turn), driver.ingress()?)?;
+            self.admit_parent_mailbox(TurnId(self.seq_turn), driver.ingress()?)?;
             let turn_id = TurnId(self.seq_turn);
             self.observe_session_memory_activation(turn_id, relevance_task);
             let context_observation_started = Instant::now();
@@ -1954,19 +1955,26 @@ impl Agent {
             if let Some(outcome) = self.finish_requested_control(turn_id).await? {
                 return Ok(outcome);
             }
+            let coding_run_driver::CodingRequestInput {
+                messages,
+                convergence,
+                recovery,
+                loop_state,
+                error_streak,
+            } = driver.begin_request()?;
             let recipe = self.request_cycle_recipe(
                 turn_id,
                 messages,
                 input_images,
                 relevance_task,
-                &investigation_convergence,
+                convergence,
                 context_observation_started,
             )?;
             let mut request_cycle = request_cycle::RequestCycle::new(
                 recipe,
-                submitted_turn.context_recovery(),
+                recovery,
                 &mut self.context_estimator,
-                agent_loop,
+                loop_state,
             );
             let requested_max_tokens = request_cycle.requested_output();
             loop {
@@ -2055,7 +2063,7 @@ impl Agent {
             if let Some(reason) = self.inference_budget_exhaustion()? {
                 return self.finish(turn_id, Outcome::BudgetExhausted(reason)).await;
             }
-            if submitted_turn.error_streak() >= self.budget.max_consecutive_tool_errors {
+            if error_streak >= self.budget.max_consecutive_tool_errors {
                 return self.finish(turn_id, Outcome::Stuck).await;
             }
             let local_prepare_activity = self
@@ -2074,18 +2082,15 @@ impl Agent {
             request_cycle.control_passed()?;
             self.admit_tool_image_context(request_cycle.messages(), input_images)?;
             let publication = self.request_context_publication(request_cycle.messages());
-            let request_cycle::PreparedModelTurn {
-                turn: turn_id,
-                request:
-                    request_admission::AdmittedModelRequest {
-                        request: req,
-                        requested_max_tokens,
-                        estimate: context_estimate,
-                        inspection: context_budget_inspection,
-                    },
-                loop_state: mut agent_loop,
-            } = request_cycle.complete(self.request_configuration(), publication)?;
-            let effort_application = self.provider.effort_application(&req);
+            let prepared = request_cycle.complete(self.request_configuration(), publication)?;
+            let effort_application = self.provider.effort_application(&prepared.request.request);
+            let request_admission::AdmittedModelRequest {
+                request: req,
+                requested_max_tokens,
+                estimate: context_estimate,
+                inspection: context_budget_inspection,
+            } = driver.admitted(prepared, effort_application)?;
+            let turn_id = driver.evidence()?.turn;
             local_prepare_activity.complete();
 
             // The append is the provider-effect intent. It must be durable before any adapter is
@@ -2100,7 +2105,7 @@ impl Agent {
             self.ensure_policy_evidence()?;
             let admission = self.admit_provider_dispatch(turn_id, &req).await?;
             admission_activity.complete();
-            let argument_trust = self.governing_turn_trust(messages);
+            let argument_trust = self.governing_turn_trust(driver.messages());
             let context_tokens = u64::try_from(context_estimate.total_tokens).unwrap_or(u64::MAX);
             let (start, usd_attempt) = self.provider_turn_start(
                 provider_turn_entry::ProviderTurnRequest {
@@ -2108,55 +2113,55 @@ impl Agent {
                     request: req,
                     requested_output: requested_max_tokens,
                     argument_trust,
-                    early_effects: !investigation_convergence.enabled()
-                        && self.verify_command.is_none(),
+                    early_effects: driver.early_effects_allowed() && self.verify_command.is_none(),
                 },
                 admission,
             )?;
             let pricing_now = self.pricing_now();
-            let (journal, environment, resident, plantcore, _, _) =
-                self.provider_turn_ports(context_tokens, argument_trust, &submitted_turn);
-            let mut provider_drive = provider_turn_driver::ProviderTurnDriver::begin(
-                start,
-                journal,
-                environment,
-                &resident,
-                plantcore,
-                pricing_now,
-                &mut agent_loop,
-            )
-            .await?;
-            if provider_drive.refused() {
+            let execution = {
+                let (loop_state, submitted) = driver.provider_start()?;
+                let (journal, environment, resident, extension, _, _) =
+                    self.provider_turn_ports(context_tokens, argument_trust, submitted);
+                coding_provider_execution::CodingProviderExecution::begin(
+                    start,
+                    usd_attempt,
+                    journal,
+                    environment,
+                    &resident,
+                    extension,
+                    pricing_now,
+                    loop_state,
+                )
+                .await?
+            };
+            if execution.refused() {
                 self.observe_memory_provider_refusal(turn_id);
             }
-            let hook_gates_reads = provider_drive.hooks_gate_reads();
-            if hook_gates_reads {
+            if execution.hooks_gate_reads() {
                 self.effect_journal.note_workspace_mutation();
             }
+            driver.install_provider(execution)?;
             let mut hedge = None;
-            let provider_result = loop {
-                let (journal, environment, resident, plantcore, evidence, memory) =
-                    self.provider_turn_ports(context_tokens, argument_trust, &submitted_turn);
-                match provider_drive
+            loop {
+                let (execution, submitted) = driver.provider_execution()?;
+                let (journal, environment, resident, extension, evidence, memory) =
+                    self.provider_turn_ports(context_tokens, argument_trust, submitted);
+                match execution
                     .pump(
                         journal,
                         environment,
                         resident,
-                        plantcore,
+                        extension,
                         evidence,
                         memory,
                         hedge.take(),
                     )
                     .await?
                 {
-                    provider_turn_driver::ProviderPumpProgress::Completed(result) => break result,
-                    provider_turn_driver::ProviderPumpProgress::AwaitHedge => {
+                    coding_provider_execution::CodingProviderProgress::Complete => break,
+                    coding_provider_execution::CodingProviderProgress::Hedge => {
                         let started = Instant::now();
-                        let spec = provider_drive
-                            .hedge_spec()
-                            .ok_or(KernelError::InvalidRoute(
-                                "physical hedge handoff lost its retained provider request",
-                            ))?;
+                        let spec = execution.hedge_spec()?;
                         let dispatch = self
                             .execute_hedged_provider_turn(
                                 turn_id,
@@ -2174,9 +2179,8 @@ impl Agent {
                         hedge = Some((dispatch, started));
                     }
                 }
-            };
-            let mut completed = provider_drive.finish(provider_result)?;
-            if let Some(snapshot) = completed.round.take_quota() {
+            }
+            if let Some(snapshot) = driver.provider_execution()?.0.take_quota() {
                 self.last_rate_limit = Some(snapshot);
                 self.lifecycle_event(
                     "model.quota_updated",
@@ -2185,80 +2189,32 @@ impl Agent {
                 );
             }
             let (journal, scope) = self.provider_response_ports(turn_id);
-            let response =
-                provider_response_recovery::ProviderResponseRecoveryOwner::new(completed)
-                    .resolve(journal, scope, &mut submitted_turn, messages)
-                    .await?;
-            let accepted_response = match response {
-                provider_response_recovery::ProviderResponseResolution::Accepted(response) => {
-                    *response
+            if let Some(failure) = driver.resolve_provider(journal, scope).await? {
+                if failure.observe_physical_usage {
+                    self.emit_plantcore_turn_usage(turn_id)?;
                 }
-                provider_response_recovery::ProviderResponseResolution::Failed(failure) => {
-                    if failure.observe_physical_usage {
-                        self.emit_plantcore_turn_usage(turn_id)?;
-                    }
-                    if let Some(outcome) =
-                        self.collect_and_finish_requested_control(turn_id).await?
-                    {
-                        return Ok(outcome);
-                    }
-                    if let Some(terminal) = failure.terminal {
-                        return self.finish(turn_id, terminal).await;
-                    }
-                    return Err(failure.error);
+                if let Some(outcome) = self.collect_and_finish_requested_control(turn_id).await? {
+                    return Ok(outcome);
                 }
-            };
-            let mut response_commit = provider_response_commit::ProviderResponseCommit::new(
-                accepted_response,
-                usd_attempt,
-            );
-            response_commit
-                .record_usage(self.provider_commit_session(
-                    turn_id,
-                    context_estimate,
-                    context_budget_inspection,
-                    effort_application,
-                ))
+                if let Some(terminal) = failure.terminal {
+                    return self.finish(turn_id, terminal).await;
+                }
+                return Err(failure.error);
+            }
+            driver
+                .record_usage(self.coding_commit_session(driver.evidence()?))
                 .await?;
             if let Err(error) = self.emit_plantcore_turn_usage(turn_id) {
-                response_commit
-                    .abort(self.provider_commit_session(
-                        turn_id,
-                        context_estimate,
-                        context_budget_inspection,
-                        effort_application,
-                    ))
+                driver
+                    .abort_response(self.coding_commit_session(driver.evidence()?))
                     .await?;
                 return Err(error);
             }
-            let event = response_commit.reconcile(self.provider_commit_session(
-                turn_id,
-                context_estimate,
-                context_budget_inspection,
-                effort_application,
-            ))?;
+            let event = driver.reconcile(self.coding_commit_session(driver.evidence()?))?;
             self.ui(event);
-            response_commit
-                .commit_assistant(
-                    self.provider_commit_session(
-                        turn_id,
-                        context_estimate,
-                        context_budget_inspection,
-                        effort_application,
-                    ),
-                    messages,
-                )
+            driver
+                .commit_assistant(self.coding_commit_session(driver.evidence()?))
                 .await?;
-            let stream_elapsed = response_commit.stream_elapsed();
-            let provider_response_recovery::AcceptedProviderResponse {
-                round: mut provider_round,
-                execution: execution_scope,
-                result: turn_res,
-                recovered: stream_recovered,
-                tools: returned_tools,
-                ..
-            } = response_commit.complete()?;
-
             // Recording scenarios may hold this durable post-Provider boundary until their driver
             // observes the Control command. No tool from this response has been dispatched yet.
             if let Some(gate) = self.plantcore_dispatch_gate() {
@@ -2281,7 +2237,7 @@ impl Agent {
                 };
             }
 
-            let total_tools = provider_round.tools().call_count();
+            let total_tools = driver.response()?.round.tools().call_count();
             // A final model answer has no tool phase. Avoid a redundant durable phase append and
             // frontend transition on the common no-tool completion path; an explicit verifier
             // still keeps the phase boundary used by its timing and audit contract.
@@ -2294,26 +2250,23 @@ impl Agent {
                     },
                 );
             }
-            // ---- collect tool results in DETERMINISTIC tool_use order (ADR-006 R7) ----
-            let optional_tool_round = optional_tool_round::OptionalToolRound::prepare(
-                &investigation_convergence,
-                self.verify_command.is_some(),
-                &self.registry,
-                &self.workspace,
-                provider_round.tools(),
-                &returned_tools,
+            let result_projection_budget = self.turn_result_projection_budget(
+                context_budget_inspection,
+                &driver.response()?.tools,
             );
-            let result_projection_budget =
-                self.turn_result_projection_budget(context_budget_inspection, &returned_tools);
             if total_tools > 0 {
-                agent_loop.transition(AgentLoopState::AwaitingTool)?;
+                driver.mark_awaiting_tools()?;
             }
+            #[cfg(feature = "legacy-plantcore")]
             if self.plantcore_runtime_enabled()
-                && returned_tools
+                && driver
+                    .response()?
+                    .tools
                     .iter()
                     .any(|tool| tool.name == iteron_tools::REQUEST_USER_INPUT)
             {
-                self.abort_early_pure_tools(turn_id, &mut provider_round.take_early_for_cleanup())
+                let returned_tools = driver.response()?.tools.clone();
+                self.abort_early_pure_tools(turn_id, &mut driver.early_for_cleanup()?)
                     .await?;
                 let terminal = if total_tools == 1 {
                     let tool = &returned_tools[0];
@@ -2358,17 +2311,15 @@ impl Agent {
                             blocks.push(Block::ToolResult(result));
                         }
                         self.ledger.phase_tools(tools_span.elapsed_ms());
-                        self.commit_message(
+                        driver.record_legacy_refusal(
+                            &mut self.coding_transcript_journal(),
                             turn_id,
-                            messages,
                             Message {
                                 role: Role::User,
                                 content: blocks,
                             },
                         )?;
-                        submitted_turn.settle_tool_round(true);
-                        if submitted_turn.error_streak() >= self.budget.max_consecutive_tool_errors
-                        {
+                        if driver.error_streak() >= self.budget.max_consecutive_tool_errors {
                             return self.finish(turn_id, Outcome::Stuck).await;
                         }
                         if let Some(reason) = self.completed_turn_budget_exhaustion() {
@@ -2379,17 +2330,8 @@ impl Agent {
                     }
                 }
             }
-            if total_tools > 0
-                && matches!(
-                    turn_res.stop_reason,
-                    StopReason::EndTurn
-                        | StopReason::StopSequence
-                        | StopReason::Refusal
-                        | StopReason::PauseTurn
-                        | StopReason::Unknown(_)
-                )
-            {
-                self.abort_early_pure_tools(turn_id, &mut provider_round.take_early_for_cleanup())
+            if driver.malformed_tool_terminal()? {
+                self.abort_early_pure_tools(turn_id, &mut driver.early_for_cleanup()?)
                     .await?;
                 if let Some(outcome) = self.collect_and_finish_requested_control(turn_id).await? {
                     return Ok(outcome);
@@ -2399,200 +2341,100 @@ impl Agent {
                 )
                 .into());
             }
-            if total_tools == 0 {
+            let action = if total_tools == 0 {
                 self.ledger.phase_tools(tools_span.elapsed_ms());
                 if let Some(outcome) = self.collect_and_finish_requested_control(turn_id).await? {
                     return Ok(outcome);
                 }
-                let decision = model_response::ModelResponseInterpreter {
-                    submitted: &mut submitted_turn,
-                    convergence: &mut investigation_convergence,
-                    scope: model_response::ModelResponseScope {
-                        exhausted: self.completed_turn_budget_exhaustion(),
-                        interactive: self.interactive_approvals,
-                        configured_verifier: self.verify_command.is_some(),
-                        task: relevance_task,
-                        answer: &self.last_assistant_text,
-                        recovered_stream: stream_recovered,
-                    },
-                }
-                .decide(&turn_res.stop_reason);
-                let action = self
-                    .turn_completion(turn_id)
-                    .model(
-                        decision,
-                        messages,
-                        &mut candidate_workspace_baseline,
-                        &mut investigation_convergence,
-                        &mut agent_loop,
-                    )
-                    .await?;
-                match action {
-                    turn_completion::CompletionAction::Continue { applying_steer } => {
-                        if applying_steer {
-                            agent_loop.transition(AgentLoopState::ApplyingSteer)?;
-                        }
-                        self.advance_turn().await?;
-                        continue;
-                    }
-                    turn_completion::CompletionAction::Finish {
-                        outcome,
-                        publish_answer,
-                    } => {
-                        if publish_answer {
-                            self.publish_available_answer(turn_id, &turn_res.blocks)?;
-                        }
-                        return self.finish(turn_id, outcome).await;
-                    }
-                    turn_completion::CompletionAction::Drain => {
-                        return self.finish_drained(turn_id).await;
-                    }
-                    turn_completion::CompletionAction::RequestedControl => {
-                        if let Some(outcome) = self.finish_requested_control(turn_id).await? {
-                            return Ok(outcome);
-                        }
-                        return self.finish(turn_id, Outcome::Interrupted).await;
-                    }
-                }
-            }
-
-            let stream_start = provider_round.stream_started();
-            let (tool_round, replayed_ui) = tool_round_driver::ToolRoundDriver::retain(
-                &returned_tools,
-                provider_round.into_tool_work()?,
-                early_tool_collection::EarlyToolWindow {
-                    stream_start,
-                    stream_elapsed,
-                    hook_gates_reads,
-                    queued: execution_scope.queued_reads(),
-                    projection: result_projection_budget,
-                },
-            )?;
-            for event in replayed_ui {
-                self.ui(event);
-            }
-            let mut tool_execution = tool_round_execution::ToolRoundExecution::new(tool_round);
-            loop {
-                let progress = tool_execution
-                    .pump(
-                        self.tool_execution_session(turn_id, messages, result_projection_budget),
-                        &optional_tool_round,
-                        &mut candidate_workspace_baseline,
-                    )
-                    .await;
-                let special = match progress {
-                    Ok(tool_round_execution::ToolRoundProgress::Complete) => break,
-                    Ok(tool_round_execution::ToolRoundProgress::Kernel(call)) => call,
-                    Err(error) => {
-                        if matches!(&error, KernelError::UnknownEffects { .. })
-                            && let Some(outcome) =
-                                self.collect_and_finish_requested_control(turn_id).await?
-                        {
-                            return Ok(outcome);
-                        }
-                        return Err(error);
-                    }
+                let scope = model_response::ModelResponseScope {
+                    exhausted: self.completed_turn_budget_exhaustion(),
+                    interactive: self.interactive_approvals,
+                    configured_verifier: self.verify_command.is_some(),
+                    task: relevance_task,
+                    answer: &self.last_assistant_text,
+                    recovered_stream: false,
                 };
-                let tool_round_execution::PermittedKernelCall {
-                    kind,
-                    index: idx,
-                    call: tu,
-                    capability: cap,
-                } = special;
-                let (execution, output) =
-                    self.kernel_special_execution(turn_id, idx, kind, result_projection_budget);
-                let result = match execution.run(turn_id, idx, &tu, cap, output).await {
-                    Ok(result) => result,
-                    Err(error) => {
-                        if matches!(&error, KernelError::UnknownEffects { .. })
-                            && let Some(outcome) =
-                                self.collect_and_finish_requested_control(turn_id).await?
-                        {
-                            return Ok(outcome);
-                        }
-                        return Err(error);
-                    }
-                };
-                let result = match result {
-                    kernel_special_execution::KernelSpecialResult::Completed(result)
-                    | kernel_special_execution::KernelSpecialResult::Refused(result) => result,
-                };
-                tool_execution.settle_kernel(idx, result)?;
-            }
-            let tool_round = tool_execution.into_round()?;
-            self.ledger.phase_tools(tools_span.elapsed_ms());
-
-            tool_round.validate_complete()?;
-            submitted_turn.settle_tool_round(tool_round.had_error());
-
-            let candidate_diff_state = if optional_tool_round.requires_diff(
-                investigation_convergence.candidate_review_active(),
-                total_tools,
-            ) {
-                Some(candidate_workspace_baseline.diff_state().await)
+                let decision = driver.interpret_model(scope)?;
+                driver
+                    .complete_model(decision, self.turn_completion(turn_id))
+                    .await?
             } else {
-                None
-            };
-            let optional_settlement = optional_tool_round.settle(
-                &mut investigation_convergence,
-                &returned_tools,
-                tool_round.results(),
-                tool_round.had_error(),
-                candidate_diff_state,
-            );
-            if tool_round.schemas_changed() {
-                self.advertised_tool_specs_cache = None;
-            }
-            if stream_recovered {
-                tool_round.retain_recovery(&mut submitted_turn)?;
-            }
-            let tool_response::ToolResponseParts {
-                mut message,
-                images,
-            } = tool_round.into_parts()?;
-            for projection in images {
-                let projected =
-                    self.project_captured_tool_images(&projection.receipt, &projection.images);
-                if message.append_images(projected) {
-                    self.ui(UiEvent::Notice("Tool images exceed the model message image envelope; excess retained images remain unavailable in this request".into()));
+                let queued_reads = driver.response()?.execution.queued_reads();
+                let replayed_ui = driver.begin_tools(coding_run_driver::CodingToolScope {
+                    registry: &self.registry,
+                    workspace: &self.workspace,
+                    explicit_verification: self.verify_command.is_some(),
+                    queued_reads,
+                    projection: result_projection_budget,
+                })?;
+                for event in replayed_ui {
+                    self.ui(event);
                 }
-            }
-            if let Some(request) = optional_settlement.request {
-                message.guidance(format!(
-                    "{} [budget: {} provider turn(s) remain]",
-                    request.instruction,
-                    self.remaining_inference_turns()
-                ));
-                self.lifecycle_event(
-                    "context.segment.updated",
-                    Some(turn_id),
-                    LifecyclePayload {
-                        count: Some(u64::from(request.observations)),
-                        reason_code: Some(request.stage.reason_code().into()),
-                        ..LifecyclePayload::default()
-                    },
-                );
-            }
-            let automatic_candidate = optional_settlement.completed_change
-                && matches!(
-                    candidate_diff_state,
-                    Some(investigation_convergence::CandidateDiffState::Changed(_))
-                );
-            let action = self
-                .turn_completion(turn_id)
-                .tools(
-                    message,
-                    automatic_candidate,
-                    messages,
-                    &mut candidate_workspace_baseline,
-                    &mut investigation_convergence,
-                )
-                .await?;
+                loop {
+                    let session = self.tool_execution_session(
+                        turn_id,
+                        driver.messages(),
+                        result_projection_budget,
+                    );
+                    let progress = driver.pump_tools(session).await;
+                    let special = match progress {
+                        Ok(tool_round_execution::ToolRoundProgress::Complete) => break,
+                        Ok(tool_round_execution::ToolRoundProgress::Kernel(call)) => call,
+                        Err(error) => {
+                            if matches!(&error, KernelError::UnknownEffects { .. })
+                                && let Some(outcome) =
+                                    self.collect_and_finish_requested_control(turn_id).await?
+                            {
+                                return Ok(outcome);
+                            }
+                            return Err(error);
+                        }
+                    };
+                    let tool_round_execution::PermittedKernelCall {
+                        kind,
+                        index: idx,
+                        call: tu,
+                        capability: cap,
+                    } = special;
+                    let (execution, output) =
+                        self.kernel_special_execution(turn_id, idx, kind, result_projection_budget);
+                    let result = match execution.run(turn_id, idx, &tu, cap, output).await {
+                        Ok(result) => result,
+                        Err(error) => {
+                            if matches!(&error, KernelError::UnknownEffects { .. })
+                                && let Some(outcome) =
+                                    self.collect_and_finish_requested_control(turn_id).await?
+                            {
+                                return Ok(outcome);
+                            }
+                            return Err(error);
+                        }
+                    };
+                    let result = match result {
+                        kernel_special_execution::KernelSpecialResult::Completed(result)
+                        | kernel_special_execution::KernelSpecialResult::Refused(result) => result,
+                    };
+                    driver.settle_kernel(idx, result)?;
+                }
+                self.ledger.phase_tools(tools_span.elapsed_ms());
+                let events = self.tool_events(turn_id);
+                let remaining = self.remaining_inference_turns();
+                let images = if driver.has_tool_images()? {
+                    Some(self.tool_image_projection(turn_id))
+                } else {
+                    None
+                };
+                let (settled, schemas_changed) =
+                    driver.settle_tools(images, &events, remaining).await?;
+                if schemas_changed {
+                    self.advertised_tool_specs_cache = None;
+                }
+                driver
+                    .complete_tools(settled, self.turn_completion(turn_id))
+                    .await?
+            };
             match action {
-                turn_completion::CompletionAction::Continue { applying_steer } => {
-                    if applying_steer {
-                        agent_loop.transition(AgentLoopState::ApplyingSteer)?;
-                    }
+                turn_completion::CompletionAction::Continue { .. } => {
                     self.advance_turn().await?;
                     continue;
                 }
@@ -2600,7 +2442,9 @@ impl Agent {
                     outcome,
                     publish_answer,
                 } => {
-                    debug_assert!(!publish_answer, "a tool response cannot publish an answer");
+                    if publish_answer {
+                        self.publish_available_answer(turn_id, driver.answer_blocks()?)?;
+                    }
                     return self.finish(turn_id, outcome).await;
                 }
                 turn_completion::CompletionAction::Drain => {
