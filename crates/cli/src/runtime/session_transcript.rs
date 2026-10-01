@@ -131,12 +131,16 @@ impl TranscriptAdmissionJournal<'_> {
     ) -> Result<Seq, KernelError> {
         self.append(turn, EventKind::MemoryReferenceAdmittedV1 { admission })
     }
-    pub(super) fn append(&mut self, turn: TurnId, kind: EventKind) -> Result<Seq, KernelError> {
+    pub(super) fn ensure_healthy(&self) -> Result<(), KernelError> {
         if *self.record_failed {
             return Err(KernelError::Record(RecordError::Io(std::io::Error::other(
                 "transcript writer is unavailable",
             ))));
         }
+        Ok(())
+    }
+    pub(super) fn append(&mut self, turn: TurnId, kind: EventKind) -> Result<Seq, KernelError> {
+        self.ensure_healthy()?;
         #[cfg(test)]
         if matches!(
             (*self.fault, &kind),

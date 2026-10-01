@@ -199,6 +199,11 @@ pub(crate) use plantcore::{DispatchGate, ResumeActivation};
 mod controller_engine_scope;
 mod direct_child_execution;
 mod execution_deadline;
+mod invocation_admission;
+mod invocation_admission_assembly;
+mod invocation_cleanup;
+mod invocation_funding;
+mod invocation_funding_assembly;
 mod kernel_child_accounting;
 mod kernel_dispatch_control;
 mod kernel_dispatch_journal;
@@ -247,8 +252,6 @@ mod strategy_runtime;
 mod strong_verification;
 mod subagent_control;
 mod submission_invocation;
-mod invocation_funding;
-mod invocation_funding_assembly;
 mod task_plan_execution;
 pub mod telemetry;
 mod terminal_diagnostics;
@@ -1571,17 +1574,12 @@ impl Agent {
                 input_file_evidence,
             )
             .await;
-        if let Err(cleanup_error) =
-            self.cleanup_tool_output_spills(tool_output_spill::ToolOutputSpillCleanup::RunEnd)
-        {
-            outcome = Err(cleanup_error);
+        outcome = invocation_cleanup::InvocationCleanup {
+            tool: self.tool_output_spill.as_deref(),
+            mcp: self.mcp_runtime.as_ref(),
         }
-        if let Err(cleanup_error) = self
-            .cleanup_mcp_spills(iteron_mcp::McpSpillCleanup::RunEnd)
-            .await
-        {
-            outcome = Err(cleanup_error);
-        }
+        .settle(outcome)
+        .await;
         if let Err(error) = self.settle_failed_policy_turn(&outcome) {
             outcome = Err(error);
         }
@@ -1597,107 +1595,42 @@ impl Agent {
         allow_orchestration: bool,
         input_file_evidence: Option<file_submission::InputFileEvidence>,
     ) -> Result<Outcome, KernelError> {
-        if self.compaction_state.failed_closed() {
-            return Err(KernelError::ContextResolution(
-                "the pinned compaction failure policy closed the run after an unproven summary"
-                    .into(),
-            ));
-        }
-        self.input_file_evidence = input_file_evidence;
-        self.guard_unresolved_effects()?;
-        self.ensure_policy_evidence()?;
-        if self.seq_turn == u32::MAX {
-            return Err(KernelError::IdentityExhausted("turn"));
-        }
-        let _ = self.collect_inbound_ops(TurnId(self.seq_turn));
-        self.budget.validate().map_err(KernelError::InvalidBudget)?;
-        // Runtime policy changes are themselves durable state and must commit before any terminal
-        // safe point. This performs no provider admission; an already queued Drain/Interrupt still
-        // checkpoints/stops before inference while resume inherits the exact tightened ceiling.
-        self.synchronize_usd_budget()?;
-        self.close_usd_budget_on_unknown_cost();
+        let invocation = self.prepare_invocation(
+            invocation_admission::InvocationMode::Operator {
+                allow_orchestration,
+            },
+            input_file_evidence,
+        )?;
         if let Some(outcome) = self.finish_requested_control(TurnId(self.seq_turn)).await? {
-            if outcome != Outcome::Drained {
-                let ctx = serde_json::json!({"event":"Stop","outcome":format!("{outcome:?}")})
-                    .to_string();
-                self.queue_stop_hook(TurnId(self.seq_turn), &ctx);
+            if let Some(context) = invocation_admission::stop_context(&Ok(outcome.clone())) {
+                self.queue_stop_hook(TurnId(self.seq_turn), &context);
             }
             return Ok(outcome);
         }
         self.prepare_verification_rollback_point(TurnId(self.seq_turn))?;
-        // This trusted entry mode separates a new operator admission from a supervisor wakeup.
-        // Empty recovery and physical retry keep their previously recorded context decision.
-        if self.context_refresh_requested
-            || (allow_orchestration
-                && (!task.trim().is_empty()
-                    || !input_images.is_empty()
-                    || input_file_evidence.is_some()))
-        {
-            self.begin_user_memory_decision();
-        }
-        // A positive ceiling is admitted only with an active verified binding and wholly priced
-        // historical evidence. Unknown history cannot be repaired by pricing only future turns.
-        if self
-            .usd_budget
-            .as_ref()
-            .is_some_and(|budget| budget.requires_pricing())
-            && (self.provider_selection.pricing_port().is_none()
-                || self.provider_selection.card().is_none()
-                || matches!(self.ledger.cost_state(), CostState::Unknown { .. }))
-        {
-            return Err(KernelError::UnpricedUsdCeiling);
-        }
-        // Reset the routine-compaction marker for this top-level submission. A successful
-        // component-budget recovery may rearm independently if later evidence grows past a
-        // recoverable ceiling again.
-        self.compaction_state.begin_submission();
-        let mut invocation = submission_invocation::SubmissionInvocation::stage(
-            submission_invocation::InvocationScope {
-                runs: self.rollout.path().parent().ok_or_else(|| {
-                    KernelError::ContextResolution("record store resolution failed".into())
-                })?,
-                tenant: self.rollout.tenant().clone(),
-                run: self.rollout.run_id().clone(),
-                turn: TurnId(self.seq_turn),
-                wall_secs: self.budget.max_wall_secs,
-            },
-            &mut self.run_deadline,
-            &input_images,
-        )?;
-        let input_images = invocation.images();
-        let orchestrate = allow_orchestration
-            && (self.turn_orchestration_requested
+        let invocation =
+            self.stage_invocation(invocation, task, &input_images, input_file_evidence)?;
+        let orchestrate = invocation.may_orchestrate(
+            self.turn_orchestration_requested
                 || self.effort_orchestration(self.effort)
-                    == iteron_protocol::OrchestrationMode::Orchestrated)
-            && !task.trim().is_empty()
-            && !self.orchestrating.active();
+                    == iteron_protocol::OrchestrationMode::Orchestrated,
+            !task.trim().is_empty(),
+            self.orchestrating.active(),
+        );
         let outcome = if orchestrate {
-            self.run_orchestrated(task, input_images).await
+            self.run_orchestrated(task, invocation.images()).await
         } else {
-            self.drive_with_images(task, input_images).await
+            self.drive_with_images(task, invocation.images()).await
         };
-        invocation.release_deadline();
-        // Stop hook (R5, observational): is admitted once when an ordinary run finishes (`run` is the
-        // top-level entry — run_orchestrated calls drive(), not run()). A drained terminal is the
-        // exception: starting an arbitrary hook after its sync checkpoint would mutate state past
-        // the recovery boundary, so no new lifecycle effect is admitted after Drained.
-        if let Ok(o) = &outcome
-            && *o != Outcome::Drained
-        {
-            let ctx = serde_json::json!({"event":"Stop","outcome":format!("{o:?}")}).to_string();
-            self.queue_stop_hook(TurnId(self.seq_turn), &ctx);
+        let completed = invocation.complete(outcome)?;
+        if let Some(context) = completed.stop_context() {
+            self.queue_stop_hook(TurnId(self.seq_turn), &context);
         }
-        // The answer is already durable and already on the operator's screen; this is their
-        // thinking time, and it is where a summary belongs (#I-58). Before the cache refresh, so
-        // the per-run meta cache sees the compaction that just happened.
-        if matches!(&outcome, Ok(Outcome::Done)) {
+        if completed.compact() {
             self.settle_compaction().await;
         }
-        // Every exit from the admitted run loop is a session boundary, including provider,
-        // pricing, transcript, or tool errors after a durable TurnEnd. Keep cache failure
-        // best-effort so the append-only rollout remains the sole authoritative result.
         self.refresh_session_cache_metered();
-        outcome
+        completed.into_outcome()
     }
 
     /// A bounded run that NEVER orchestrates — the entry point for a read-only fan investigator.
@@ -1722,51 +1655,24 @@ impl Agent {
     }
 
     async fn run_leaf_inner(&mut self, task: &str) -> Result<Outcome, KernelError> {
-        self.guard_unresolved_effects()?;
-        self.ensure_policy_evidence()?;
-        if self.seq_turn == u32::MAX {
-            return Err(KernelError::IdentityExhausted("turn"));
-        }
-        let _ = self.collect_inbound_ops(TurnId(self.seq_turn));
-        self.budget.validate().map_err(KernelError::InvalidBudget)?;
-        self.synchronize_usd_budget()?;
-        self.close_usd_budget_on_unknown_cost();
+        let invocation =
+            self.prepare_invocation(invocation_admission::InvocationMode::Leaf, None)?;
         if let Some(outcome) = self.finish_requested_control(TurnId(self.seq_turn)).await? {
-            if outcome != Outcome::Drained {
-                let ctx = serde_json::json!({"event":"Stop","outcome":format!("{outcome:?}")})
-                    .to_string();
-                self.queue_stop_hook(TurnId(self.seq_turn), &ctx);
+            if let Some(context) = invocation_admission::stop_context(&Ok(outcome.clone())) {
+                self.queue_stop_hook(TurnId(self.seq_turn), &context);
             }
             return Ok(outcome);
         }
-        if self
-            .usd_budget
-            .as_ref()
-            .is_some_and(|budget| budget.requires_pricing())
-            && (self.provider_selection.pricing_port().is_none()
-                || self.provider_selection.card().is_none()
-                || matches!(self.ledger.cost_state(), CostState::Unknown { .. }))
-        {
-            return Err(KernelError::UnpricedUsdCeiling);
-        }
-        let deadline = self
-            .run_deadline
-            .begin_invocation(self.budget.max_wall_secs)?;
-        // A leaf never orchestrates: run the single-agent bounded loop directly.
+        let invocation = self.stage_invocation(invocation, task, &[], None)?;
         let outcome = self.drive(task).await;
-        drop(deadline);
-        if let Ok(o) = &outcome
-            && *o != Outcome::Drained
-        {
-            let ctx = serde_json::json!({"event":"Stop","outcome":format!("{o:?}")}).to_string();
-            self.queue_stop_hook(TurnId(self.seq_turn), &ctx);
+        let completed = invocation.complete(outcome)?;
+        if let Some(context) = completed.stop_context() {
+            self.queue_stop_hook(TurnId(self.seq_turn), &context);
         }
-        // Stop is now a session-owned observer, so leaf telemetry cannot wait for or claim its
-        // terminal. The hook-specific journal and AppServer lifecycle stream record that result.
         self.brokered_telemetry_export(TurnId(self.seq_turn))
             .await?;
         self.refresh_session_cache_metered();
-        outcome
+        completed.into_outcome()
     }
 
     fn settle_failed_policy_turn(

@@ -25,6 +25,7 @@ pub(super) struct InvocationFundingTransaction<'a> {
 }
 impl InvocationFundingTransaction<'_> {
     pub(super) fn synchronize(&mut self, turn: TurnId) -> Result<(), KernelError> {
+        self.journal.ensure_healthy()?;
         let proposed = self.budget.max_usd.map(usd_to_microusd_ceiling);
         let current = self.usd.as_ref().map(|budget| budget.ceiling_microusd());
         let target = match (current, proposed) {
@@ -54,20 +55,25 @@ impl InvocationFundingTransaction<'_> {
                 self.budget.max_turns,
             );
         }
-        let created = self.usd.is_none();
         if let Some(shared) = self.usd.as_ref() {
             shared.tighten_microusd(target);
         } else {
-            *self.usd = Some(Arc::new(SharedUsdBudget::from_microusd(target)));
-        }
-        if created {
-            let scoped = iteron_record::replay_scoped_rollout(self.journal.rollout.path())?;
+            // Installation follows recovery. A failed replay cannot leave an apparently funded
+            // empty shared object whose presence makes a later invocation skip physical history.
+            let shared = Arc::new(SharedUsdBudget::from_microusd(target));
+            let scoped = iteron_record::replay_scoped_rollout(self.journal.rollout.path())
+                .map_err(|error| {
+                    *self.journal.record_failed = true;
+                    self.journal
+                        .diagnostics
+                        .emit(iteron_kernel::diagnostics::KernelDiagnostic::RecordAppendFailed {});
+                    KernelError::Record(error)
+                })?;
             let replay = replay_route_charges(&scoped, self.pricing)?;
-            self.usd
-                .as_ref()
-                .expect("created above")
+            shared
                 .restore_provider_route_charges(&self.journal.ledger.cost_state(), replay)
                 .map_err(KernelError::PricingLedger)?;
+            *self.usd = Some(shared);
         }
         self.budget.max_usd = self.usd.as_ref().map(|budget| budget.ceiling_usd());
         Ok(())
@@ -81,3 +87,7 @@ impl InvocationFundingTransaction<'_> {
         }
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "invocation_funding_tests.rs"]
+mod tests;
