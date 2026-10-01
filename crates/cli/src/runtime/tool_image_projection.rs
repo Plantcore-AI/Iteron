@@ -67,16 +67,18 @@ impl ToolImageProjection<'_> {
             name: receipt.tool().into(),
             input: serde_json::Value::Null,
         };
-        let mut blocks = Vec::with_capacity(images.len());
+        // Retention is independent of model capability. Finish every bounded raw publication
+        // before model projection can refuse the route or one observation.
         for image in images {
-            // Private raw retention happens after the terminal even on a text-only model route;
-            // a missing vision route is reported explicitly, never a false image observation.
             store
                 .publish_tool_image(receipt.sequence().0, &call, image)
                 .map_err(|_| ())?;
-            if !self.vision {
-                return Err(());
-            }
+        }
+        if !self.vision {
+            return Err(());
+        }
+        let mut blocks = Vec::with_capacity(images.len());
+        for image in images {
             let source = image.observation().ok_or(())?;
             if (receipt.tool() == "desktop")
                 != (source.scope()
@@ -113,5 +115,125 @@ impl ToolImageProjection<'_> {
             blocks.push(Block::ToolImage(observation));
         }
         Ok(blocks)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::{gate_integration_tests, tool_execution_journal::ToolExecutionJournal};
+    use base64::Engine as _;
+    use iteron_protocol::client_artifact::ClientArtifactCommandV1;
+    use iteron_protocol::{Capability, EventKind, SessionId, ToolResult, ToolUse, TurnId};
+    use iteron_tools::CapturedToolImage;
+
+    fn captured(pixel: [u8; 3]) -> CapturedToolImage {
+        let mut bytes = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut bytes, 1, 1);
+            encoder.set_color(png::ColorType::Rgb);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().unwrap();
+            writer.write_image_data(&pixel).unwrap();
+        }
+        CapturedToolImage::png(bytes)
+            .unwrap()
+            .with_browser_observation("https://fixture.invalid/viewport".into(), 42)
+            .unwrap()
+    }
+
+    #[test]
+    fn text_only_route_retains_all_confirmed_pixels_without_a_model_observation() {
+        let workspace = gate_integration_tests::temp_ws("text-only-multiple-pixels");
+        let mut agent = gate_integration_tests::agent_for(&workspace);
+        gate_integration_tests::record_test_genesis(&mut agent, &workspace);
+        assert!(!agent.provider.supports_image_input());
+        let turn = TurnId(1);
+        let call = ToolUse {
+            id: "captured-two".into(),
+            name: "browser".into(),
+            input: serde_json::json!({"action":"screenshot"}),
+        };
+        let events = agent.tool_events(turn);
+        // Only the real effect journal may mint this fixture's terminal receipt. The PNGs are
+        // explicit captured-data fixtures; this does not claim a native browser execution.
+        let receipt = {
+            let mut journal = ToolExecutionJournal {
+                rollout: &mut agent.rollout,
+                effects: &mut agent.effect_journal,
+                ledger: &mut agent.ledger,
+                failed_actions: &mut agent.failed_actions,
+                record_failed: &mut agent.record_failed,
+                diagnostics: &agent.diagnostics,
+                fault: &mut agent.fail_next_durable_append,
+            };
+            let ticket = journal
+                .open_tool(
+                    &workspace,
+                    turn,
+                    0,
+                    &call,
+                    Capability::CodeExecuting,
+                    &events,
+                )
+                .unwrap();
+            let result = ToolResult {
+                tool_use_id: call.id.clone(),
+                content: "captured fixture pixels".into(),
+                trust: iteron_protocol::Trust::Untrusted,
+                is_error: false,
+                latency_ms: 1,
+            };
+            journal
+                .known_result_receipt(ticket, "browser", &result, 0, &events)
+                .unwrap()
+        };
+        let images = [captured([255, 0, 0]), captured([0, 255, 0])];
+        assert!(
+            agent
+                .project_captured_tool_images(&receipt, &images)
+                .is_empty()
+        );
+        let store = crate::artifacts::DurableArtifactStore::open(
+            agent.rollout.path().parent().unwrap(),
+            agent.rollout.tenant().clone(),
+            agent.rollout.run_id().clone(),
+            &workspace,
+        )
+        .unwrap();
+        let thread = SessionId(format!("session-{}", agent.rollout.run_id().0));
+        for image in &images {
+            let chunk = store
+                .read(
+                    &thread,
+                    ClientArtifactCommandV1::Read {
+                        thread_id: thread.clone(),
+                        artifact_id: image.sha256().into(),
+                        offset: 0,
+                        max_bytes: 65536,
+                    },
+                )
+                .unwrap();
+            assert_eq!(chunk["artifact"]["source_event_seq"], receipt.sequence().0);
+            assert_eq!(
+                base64::engine::general_purpose::STANDARD
+                    .decode(chunk["content_base64"].as_str().unwrap())
+                    .unwrap(),
+                image.bytes()
+            );
+            assert_eq!(chunk["eof"], true);
+        }
+        let replay = iteron_record::replay(agent.rollout.path()).unwrap();
+        assert_eq!(
+            replay
+                .iter()
+                .filter(|event| matches!(event.kind, EventKind::ToolDone { .. }))
+                .count(),
+            1
+        );
+        assert!(
+            !replay
+                .iter()
+                .any(|event| matches!(event.kind, EventKind::ToolImageObservedV1 { .. }))
+        );
     }
 }
