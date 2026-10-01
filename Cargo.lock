@@ -1656,6 +1656,7 @@ dependencies = [
  "iteron-lsp",
  "iteron-protocol",
  "iteron-sandbox",
+ "iteron-support",
  "iteron-tunables",
  "libc",
  "regex",

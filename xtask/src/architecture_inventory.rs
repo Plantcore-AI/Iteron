@@ -22,6 +22,78 @@ struct Surface {
 
 const SURFACES: &[Surface] = &[
     Surface {
+        path: "crates/cli/src/runtime/invocation_admission.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "actual invocation recovery, policy, control, media, memory reset and deadline lifetime",
+        ],
+        next_seams: &["same-candidate executed and native evidence remain required"],
+    },
+    Surface {
+        path: "crates/cli/src/runtime/invocation_funding.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "actual write-ahead monetary policy and signed physical charge recovery before installation",
+        ],
+        next_seams: &["same-candidate executed and native evidence remain required"],
+    },
+    Surface {
+        path: "crates/cli/src/runtime/invocation_cleanup.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "actual private tool and MCP output stores settle before parent terminal",
+        ],
+        next_seams: &["same-candidate executed and native evidence remain required"],
+    },
+    Surface {
+        path: "crates/cli/src/runtime/persistent_writer_settlement.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "actual resident writer discard, merge, and durable workspace witness settlement",
+        ],
+        next_seams: &["same-candidate executed and native evidence remain required"],
+    },
+    Surface {
+        path: "crates/tools/src/contained_source.rs",
+        boundary: "tools-core",
+        responsibilities: &[
+            "bounded retained regular source reads and real physical worker capacity",
+        ],
+        next_seams: &["same-candidate executed and native evidence remain required"],
+    },
+    Surface {
+        path: "crates/support/src/durable_windows_state/contained_read.rs",
+        boundary: "support-bundle",
+        responsibilities: &[
+            "ordinary readonly pinned local NTFS namespace and held regular source",
+        ],
+        next_seams: &["same-candidate executed and native evidence remain required"],
+    },
+    Surface {
+        path: "crates/support/src/durable_windows_state/workspace_publication.rs",
+        boundary: "support-bundle",
+        responsibilities: &[
+            "private exact Windows staged inode and create-only by-handle workspace publication",
+        ],
+        next_seams: &["same-candidate executed and native evidence remain required"],
+    },
+    Surface {
+        path: "crates/cli/src/client_effects/export_macos.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "anonymous same-volume source and create-only APFS descriptor clone publication",
+        ],
+        next_seams: &["same-candidate executed and native evidence remain required"],
+    },
+    Surface {
+        path: "crates/sandbox/src/owned_process_cleanup.rs",
+        boundary: "sandbox",
+        responsibilities: &[
+            "bounded native absence observation for the exact owned Unix process group",
+        ],
+        next_seams: &["same-candidate executed and native evidence remain required"],
+    },
+    Surface {
         path: "crates/cli/src/providers.rs",
         boundary: "cli-host",
         responsibilities: &[

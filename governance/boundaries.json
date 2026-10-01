@@ -1546,6 +1546,14 @@
         {
           "kind": "file",
           "path": "crates/tools/src/ordinary_recipe/tests.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/tools/src/contained_source.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/tools/src/contained_source"
         }
       ],
       "contracts": [
@@ -3167,6 +3175,34 @@
         {
           "kind": "file",
           "path": "crates/cli/src/runtime/kernel_child_accounting.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/invocation_funding.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/invocation_funding_assembly.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/invocation_funding_tests.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/invocation_admission.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/invocation_admission_assembly.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/invocation_cleanup.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/persistent_writer_settlement.rs"
         }
       ],
       "contracts": [
@@ -8396,6 +8432,7 @@
           "iteron-lsp",
           "iteron-protocol",
           "iteron-sandbox",
+          "iteron-support",
           "iteron-tunables"
         ],
         "dev": [],
