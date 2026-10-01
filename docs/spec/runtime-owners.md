@@ -130,6 +130,7 @@ observation; it does not grant permission or acquire mutable ownership of anothe
 | `agents/controller/epoch_settlement.rs` | Preserve physical completion independently of accounting completeness and retain incomplete reservations | Actual terminal observations → durable controller facts → combined scheduling admission |
 | `kernel_child_accounting.rs`, `obs/child_accounting.rs` | Preserve known child/tool terminals before separately observing real ledgers; exact pending facts survive restart and prevent unproven finite-budget admission | Known physical completion → exact accounting WAL pair → actual ledger fold |
 | `client_effects.rs`, `client_effects/`, `app_server/client_export.rs` | Retain native transcript publication, private content cleanup and actual session/read/concurrency leases outside frontend observers | Observed current run port → scoped host export → independent publication and cleanup receipts |
+| `app_server/client_shell.rs`, `client_effects/shell.rs` | Capture actual host permission/environment authority and retain submission/adoption custody through existing bounded operator shell execution | Strict current-run command → actual host policy → owned process-group cleanup observation |
 
 ```mermaid
 flowchart LR

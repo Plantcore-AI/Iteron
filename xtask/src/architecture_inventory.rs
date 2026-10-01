@@ -22,6 +22,24 @@ struct Surface {
 
 const SURFACES: &[Surface] = &[
     Surface {
+        path: "crates/cli/src/app_server/client_shell.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "capture actual idle host authority and scope for existing operator shell execution",
+            "retain real submission and adoption leases until native cleanup is observed",
+        ],
+        next_seams: &["native Windows job ownership and same-candidate execution remain required"],
+    },
+    Surface {
+        path: "crates/cli/src/client_effects/shell.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "own actual bounded shell process, cancellation, sanitized environment and output",
+            "prove cleanup only for its retained owned process group before releasing host custody",
+        ],
+        next_seams: &["native Windows job ownership and same-candidate execution remain required"],
+    },
+    Surface {
         path: "crates/cli/src/runtime/coding_request_execution.rs",
         boundary: "cli-host",
         responsibilities: &[

@@ -526,6 +526,8 @@ fn validate_extracted_owners(root: &Path) -> Result<()> {
         "crates/cli/src/client_effects/process.rs",
         "crates/cli/src/client_effects/worker.rs",
         "crates/cli/src/app_server/client_export.rs",
+        "crates/cli/src/app_server/client_shell.rs",
+        "crates/cli/src/client_effects/shell.rs",
         "crates/cli/src/runtime/session_transcript.rs",
         "crates/cli/src/runtime/provider_usage_reservation.rs",
         "crates/cli/src/runtime/persistent_agents/prepared_mailbox.rs",
