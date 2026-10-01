@@ -5,6 +5,11 @@ observation; it does not grant permission or acquire mutable ownership of anothe
 
 | Source | Owner/responsibility | Directional interface |
 | --- | --- | --- |
+| `providers/directory.rs` | Whole captured provider directory, private entries/health/deferred state | Exact current evidence → validated selection/build; frozen client snapshot cannot start discovery |
+| `providers/catalog_cache.rs` / `probe_cache.rs` | Independent private retained catalog/account evidence | Validated scoped candidates → bounded reuse/update; catalog visibility alone never proves account health |
+| `providers/cache_storage.rs` / `cache_writeback.rs` | Scope secret/private atomic namespace and consumed discovery writeback | Stores receive credential-bound digests; raw key bytes have no public/serde/debug surface |
+| `providers/instance_factory.rs` / `selection_identity.rs` | Immutable exact route construction and pure captured identity | Trusted operator configuration/capability evidence → explicit instance/catalog or digest, without network or writer authority |
+| `runtime/persistent_agents/prepared_mailbox.rs` | Same-mailbox sealed prepared native input inclusion | Exact host commitments and full native user-role fields → retained manifest → durable Consumed before IO; no claim of remote processing |
 | `runtime.rs` / `Agent` | Session composition and current journal/provider turn coordinator | Owns durable admission/settlement; calls execution and projection ports |
 | `runtime/tool_turn.rs` | Single mutable tool declaration/routing/failure/task-retention owner | Validated declaration → typed index and immutable policy draft; owned early/deferred/replayed work released once to physical settlement phase |
 | `runtime/tool_response.rs` | Single declaration-ordered tool-result and model-message envelope owner | Actual settled/replayed results and retained image projections → exact complete response set before recovery/optional verification; holes, substitutions and duplicate ordered results refuse without erasing physical terminal truth |

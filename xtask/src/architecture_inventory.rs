@@ -22,6 +22,231 @@ struct Surface {
 
 const SURFACES: &[Surface] = &[
     Surface {
+        path: "crates/cli/src/providers.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "provider value contracts, immutable bootstrap policy and physical discovery composition",
+        ],
+        next_seams: &[
+            "directory, retained caches, secret storage and exact instance construction stay independent",
+        ],
+    },
+    Surface {
+        path: "crates/cli/src/providers/directory.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "whole private captured catalog/health/deferred-selection owner",
+            "validated exact selection and physical adapter construction",
+        ],
+        next_seams: &[
+            "deferred physical work belongs to discovery; no frontend or writer authority",
+        ],
+    },
+    Surface {
+        path: "crates/cli/src/providers/catalog_cache.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "private retained credential-scoped catalog candidates and bounded validated lookup/update",
+        ],
+        next_seams: &["raw scope key and namespace publication stay behind storage ports"],
+    },
+    Surface {
+        path: "crates/cli/src/providers/probe_cache.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "private retained account evidence and bounded positive-reuse/failure-backoff decision",
+        ],
+        next_seams: &["account availability never follows catalog visibility alone"],
+    },
+    Surface {
+        path: "crates/cli/src/providers/cache_storage.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "installation-local scope key and checked private namespace atomic byte publication",
+        ],
+        next_seams: &["no formatting or serialization port for scope secret bytes"],
+    },
+    Surface {
+        path: "crates/cli/src/providers/cache_writeback.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "consumed actual discovery snapshot/probe observation writeback lifetime",
+        ],
+        next_seams: &["best-effort cache refusal never changes provider execution truth"],
+    },
+    Surface {
+        path: "crates/cli/src/providers/instance_factory.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "operator configuration to exact immutable provider routes and explicit model catalogs",
+        ],
+        next_seams: &["construction performs no physical discovery or validation request"],
+    },
+    Surface {
+        path: "crates/cli/src/providers/selection_identity.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "pure identity over actual captured entry, selected model and admitted capability evidence",
+        ],
+        next_seams: &["no mutable directory, provider transport or filesystem authority"],
+    },
+    Surface {
+        path: "crates/cli/src/runtime/provider_execution_scope.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "actual per-round governor, queue, gate and cancellation resources",
+            "physical pump and settled terminal/governor/permit ordering",
+        ],
+        next_seams: &["route selection and monetary journals remain distinct owners"],
+    },
+    Surface {
+        path: "crates/cli/src/runtime/provider_followup.rs",
+        boundary: "cli-host",
+        responsibilities: &["settled physical retry waits, bounded refusal and fallback proposals"],
+        next_seams: &[
+            "replacement proposals require independent durable selection and physical admission",
+        ],
+    },
+    Surface {
+        path: "crates/cli/src/runtime/tool_response.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "single declaration-ordered result/error/image working set",
+            "complete slot and identity check before transcript/recovery publication",
+        ],
+        next_seams: &["actual executors retain their independent physical effect truth"],
+    },
+    Surface {
+        path: "crates/cli/src/runtime/session_transcript.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "private restored and resident working transcript state",
+            "actual durable input receipt before consuming restored projection",
+        ],
+        next_seams: &[
+            "cold adoption requires independently verified replay; no new retry key behavior",
+        ],
+    },
+    Surface {
+        path: "crates/cli/src/runtime/provider_usage_reservation.rs",
+        boundary: "cli-host",
+        responsibilities: &["checked native mutually exclusive usage-partition monetary ceiling"],
+        next_seams: &[
+            "physical route bounds and shared price book supply authority, not prompt estimates",
+        ],
+    },
+    Surface {
+        path: "crates/cli/src/runtime/persistent_agents/prepared_mailbox.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "private exact host-rendered commitments to native full user-text inclusion",
+            "same mailbox durable Consumed after retained prepared manifest before transport",
+        ],
+        next_seams: &[
+            "prepared inclusion does not attest remote processing or successful transport",
+        ],
+    },
+    Surface {
+        path: "crates/cli/src/tui/attachment_owner.rs",
+        boundary: "cli-tui",
+        responsibilities: &[
+            "private attachment worker, cancellation generation, physical slot and progress",
+        ],
+        next_seams: &["immutable prepared attachment crosses existing composer admission"],
+    },
+    Surface {
+        path: "crates/cli/src/tui/session_navigation.rs",
+        boundary: "cli-tui",
+        responsibilities: &[
+            "private origin/generation and native inspection/adoption worker lifetime",
+        ],
+        next_seams: &[
+            "trusted host factory replacement is still developing; no completed frontend parity claim",
+        ],
+    },
+    Surface {
+        path: "crates/cli/src/runtime/provider_dispatch.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "consumed concrete physical admission journal and authenticated dispatch scope",
+            "actual intent, logical start and mailbox barriers before transport",
+        ],
+        next_seams: &["transport, route selection and monetary state retain independent owners"],
+    },
+    Surface {
+        path: "crates/cli/src/runtime/model_response.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "no-tool stop reason and existing invocation recovery decision",
+            "bounded continuation, candidate, terminal or typed refusal without execution authority",
+        ],
+        next_seams: &[
+            "actual answer publication and explicit operator verification remain host ports",
+        ],
+    },
+    Surface {
+        path: "crates/cli/src/runtime/approval_wait.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "actual approval wait over the single resident inbox without moving its receiver",
+            "deadline/control observations and physical policy verdict journal",
+        ],
+        next_seams: &["remembered policy changes remain a separate write-ahead transaction"],
+    },
+    Surface {
+        path: "crates/cli/src/runtime/control_terminal.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "requested control settlement and actual retained process cleanup receipt",
+            "confirmed terminal before cooperative control reset",
+        ],
+        next_seams: &["unknown or failed recording never becomes a successful cleanup claim"],
+    },
+    Surface {
+        path: "crates/cli/src/runtime/run_finalization.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "actual run finalization through physical terminal and bounded publication ports",
+            "single confirmed terminal receipt with downstream controller settlement",
+        ],
+        next_seams: &[
+            "physical cleanup proof remains with its owner; presentation loss cannot reverse terminal",
+        ],
+    },
+    Surface {
+        path: "crates/cli/src/tui/picker_owner.rs",
+        boundary: "cli-tui",
+        responsibilities: &[
+            "private picker query, tree, selection, cursor and page generation",
+            "unique physical page worker and bounded row window with explicit omitted count",
+        ],
+        next_seams: &[
+            "immutable view consumed by terminal renderer; stale worker cannot adopt a new scope",
+        ],
+    },
+    Surface {
+        path: "crates/cli/src/runtime/ordinary_extensions.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "single optional ordinary SDK host and same-owner read-only event/status ports",
+            "native metadata route resolution without provider invocation or selection authority",
+        ],
+        next_seams: &[
+            "public API and TUI read the same host instance; observer capacity remains bounded",
+        ],
+    },
+    Surface {
+        path: "crates/tools/src/desktop/mod.rs",
+        boundary: "tools-execution",
+        responsibilities: &[
+            "operator-selected native session, current view, quarantine and physical operation slot",
+            "actual application source and main display screenshot with distinct desktop scope",
+        ],
+        next_seams: &[
+            "native Mac2 platform gate remains separate from physical HTTP ownership fixtures",
+        ],
+    },
+    Surface {
         path: "crates/cli/src/providers/discovery.rs",
         boundary: "cli-host",
         responsibilities: &[
@@ -789,6 +1014,38 @@ fn hex_digest(bytes: &[u8]) -> String {
         .collect()
 }
 
+/// The same syntax-aware count feeds the inventory and the production owner gate. Tests may
+/// use private owner fixtures; optional product code remains part of the enforced owner budget.
+pub(crate) fn production_lines(source: &str) -> Result<usize> {
+    let parsed = syn::parse_file(source)?;
+    let physical_lines = source.lines().count();
+    let mut visitor = TestLines {
+        lines: BTreeSet::new(),
+        physical_lines,
+    };
+    visitor.visit_file(&parsed);
+    Ok(physical_lines - visitor.lines.len())
+}
+
+pub(crate) fn test_only_item(item: &syn::Item) -> bool {
+    let attributes = match item {
+        syn::Item::Const(i) => &i.attrs,
+        syn::Item::Enum(i) => &i.attrs,
+        syn::Item::Fn(i) => &i.attrs,
+        syn::Item::Impl(i) => &i.attrs,
+        syn::Item::Macro(i) => &i.attrs,
+        syn::Item::Mod(i) => &i.attrs,
+        syn::Item::Static(i) => &i.attrs,
+        syn::Item::Struct(i) => &i.attrs,
+        syn::Item::Trait(i) => &i.attrs,
+        syn::Item::TraitAlias(i) => &i.attrs,
+        syn::Item::Type(i) => &i.attrs,
+        syn::Item::Use(i) => &i.attrs,
+        _ => return false,
+    };
+    test_only(attributes)
+}
+
 struct TestLines {
     lines: BTreeSet<usize>,
     physical_lines: usize,
@@ -796,20 +1053,7 @@ struct TestLines {
 
 impl<'ast> Visit<'ast> for TestLines {
     fn visit_item(&mut self, item: &'ast syn::Item) {
-        let attributes = match item {
-            syn::Item::Const(i) => &i.attrs,
-            syn::Item::Enum(i) => &i.attrs,
-            syn::Item::Fn(i) => &i.attrs,
-            syn::Item::Impl(i) => &i.attrs,
-            syn::Item::Mod(i) => &i.attrs,
-            syn::Item::Static(i) => &i.attrs,
-            syn::Item::Struct(i) => &i.attrs,
-            syn::Item::Trait(i) => &i.attrs,
-            syn::Item::Type(i) => &i.attrs,
-            syn::Item::Use(i) => &i.attrs,
-            _ => return syn::visit::visit_item(self, item),
-        };
-        if test_only(attributes) {
+        if test_only_item(item) {
             self.include(item.span());
         } else {
             syn::visit::visit_item(self, item);

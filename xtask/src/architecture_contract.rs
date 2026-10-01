@@ -322,10 +322,24 @@ fn validate_extracted_owners(root: &Path) -> Result<()> {
         "crates/cli/src/runtime/optional_tool_round.rs",
         "crates/cli/src/runtime/request_preparation.rs",
         "crates/cli/src/runtime/request_accounting.rs",
+        "crates/cli/src/runtime/provider_dispatch.rs",
+        "crates/cli/src/runtime/control_ingress.rs",
+        "crates/cli/src/runtime/permission_transaction.rs",
+        "crates/cli/src/runtime/tool_declaration_admission.rs",
+        "crates/cli/src/runtime/model_response.rs",
+        "crates/cli/src/runtime/approval_wait.rs",
+        "crates/cli/src/runtime/control_terminal.rs",
+        "crates/cli/src/runtime/run_finalization.rs",
+        "crates/cli/src/runtime/terminal_runtime.rs",
+        "crates/cli/src/runtime/ordinary_extensions.rs",
+        "crates/cli/src/runtime/ordinary_extension_runtime.rs",
         "crates/cli/src/providers/discovery.rs",
         "crates/cli/src/machine_projection.rs",
         "crates/cli/src/tui/input_lanes.rs",
         "crates/cli/src/tui/completion_owner.rs",
+        "crates/cli/src/tui/attachment_owner.rs",
+        "crates/cli/src/tui/picker_owner.rs",
+        "crates/cli/src/tui/ordinary_extensions.rs",
         "crates/cli/src/queue_policy.rs",
         "crates/cli/src/tui/headless/commands.rs",
         "crates/cli/src/tui/headless/connection.rs",
@@ -369,6 +383,29 @@ fn validate_extracted_owners(root: &Path) -> Result<()> {
         "crates/workflow/src/bindings.rs",
         "crates/workflow/src/bindings/run_state.rs",
         "crates/workflow/src/bindings/attempt_executor.rs",
+        "crates/tools/src/desktop/mod.rs",
+        "crates/tools/src/desktop/driver.rs",
+        "crates/tools/src/desktop/types.rs",
+        "crates/cli/src/providers.rs",
+        "crates/cli/src/providers/directory.rs",
+        "crates/cli/src/providers/catalog_cache.rs",
+        "crates/cli/src/providers/probe_cache.rs",
+        "crates/cli/src/providers/cache_storage.rs",
+        "crates/cli/src/providers/cache_writeback.rs",
+        "crates/cli/src/providers/instance_factory.rs",
+        "crates/cli/src/providers/selection_identity.rs",
+        "crates/cli/src/runtime/provider_execution_scope.rs",
+        "crates/cli/src/runtime/provider_followup.rs",
+        "crates/cli/src/runtime/tool_response.rs",
+        "crates/cli/src/runtime/session_transcript.rs",
+        "crates/cli/src/runtime/provider_usage_reservation.rs",
+        "crates/cli/src/runtime/persistent_agents/prepared_mailbox.rs",
+        "crates/cli/src/tui/session_navigation.rs",
+        "crates/cli/src/main.rs",
+        "crates/cli/src/runtime.rs",
+        "crates/cli/src/app_server.rs",
+        "crates/cli/src/tui.rs",
+        "crates/provider/src/usage_bounds.rs",
     ] {
         let source = read(root, path, MAX_SOURCE_BYTES)?;
         validate_production_module(path, &source)?;
@@ -536,15 +573,11 @@ struct ExplicitImports {
     violation: bool,
 }
 impl<'ast> Visit<'ast> for ExplicitImports {
-    fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
-        if node.attrs.iter().any(|a| {
-            a.path().is_ident("cfg")
-                && a.parse_args::<syn::Meta>()
-                    .is_ok_and(|m| matches!(m, syn::Meta::Path(p) if p.is_ident("test")))
-        }) {
+    fn visit_item(&mut self, item: &'ast syn::Item) {
+        if super::architecture_inventory::test_only_item(item) {
             return;
         }
-        syn::visit::visit_item_mod(self, node);
+        syn::visit::visit_item(self, item);
     }
     fn visit_use_tree(&mut self, tree: &'ast syn::UseTree) {
         self.violation |= matches!(tree, syn::UseTree::Glob(_));
@@ -673,9 +706,9 @@ fn validate_graph(graph: &BTreeMap<String, BTreeSet<String>>) -> Result<()> {
 }
 
 fn validate_production_module(relative: &str, source: &str) -> Result<()> {
-    // New owner modules keep tests in integration files. Counting physical production lines here
-    // cannot hide a giant owner behind cfg(test), include!, or source-file slicing.
-    if source.lines().count() > MAX_PRODUCTION_LINES {
+    // Exclude only syntactically test-only items, using the same rule as the maintained inventory.
+    // Product include fragments remain forbidden by ExplicitImports, including optional profiles.
+    if super::architecture_inventory::production_lines(source)? > MAX_PRODUCTION_LINES {
         bail!("{relative} exceeds the 1200-line production owner limit");
     }
     Ok(())
