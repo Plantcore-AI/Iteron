@@ -528,3 +528,117 @@ fn closed_missing_usage_turns_retire_without_authorizing_legacy_fallback() {
         PricingError::ProjectionIdentityMismatch
     );
 }
+
+#[test]
+fn later_unsealed_turn_in_modern_run_cannot_acquire_legacy_counter_proof() {
+    let card = card("model", 1, 100);
+    let port = authority(std::slice::from_ref(&card));
+    let mut replay = PricingReplay::trusted(port.clone());
+    let mut ledger = Ledger::new();
+    let actual = projection(port.as_ref(), &card, 1, 10);
+    for kind in [
+        selection(&card),
+        EventKind::RateCardBound {
+            rate_card: card.clone(),
+        },
+        intent(&card, 1, 10),
+        EventKind::TurnStart,
+        terminal(&card, 1, actual.clone()),
+        turn_end(),
+        EventKind::CostProjected { projection: actual },
+    ] {
+        observe(&mut replay, &mut ledger, kind).unwrap();
+    }
+    let forged = port
+        .project(
+            &card,
+            CostProjectionIdentity {
+                tenant_id: "tenant".into(),
+                run_id: "run".into(),
+                turn_id: 8,
+                provider_attempt: 2,
+                attribution: None,
+            },
+            Usage {
+                input: 2,
+                output: 3,
+                ..Usage::default()
+            },
+            10,
+        )
+        .unwrap();
+    for kind in [EventKind::TurnStart, turn_end()] {
+        replay
+            .observe(
+                &Event {
+                    seq: Seq::ZERO,
+                    turn: TurnId(8),
+                    kind,
+                },
+                &TenantId("tenant".into()),
+                &RunId("run".into()),
+                &mut ledger,
+            )
+            .unwrap();
+    }
+    assert_eq!(ledger.provider_attempts, 2);
+    assert_eq!(
+        replay
+            .observe(
+                &Event {
+                    seq: Seq::ZERO,
+                    turn: TurnId(8),
+                    kind: EventKind::CostProjected { projection: forged }
+                },
+                &TenantId("tenant".into()),
+                &RunId("run".into()),
+                &mut ledger,
+            )
+            .unwrap_err(),
+        PricingError::ProjectionIdentityMismatch
+    );
+}
+
+#[test]
+fn logical_terminal_preserves_open_physical_admission_until_actual_terminal() {
+    use super::physical_replay::PhysicalPricingReplay;
+    let card = card("model", 1, 100);
+    let port = authority(std::slice::from_ref(&card));
+    let actual = projection(port.as_ref(), &card, 1, 10);
+    let tenant = TenantId("tenant".into());
+    let run = RunId("run".into());
+    let mut physical = PhysicalPricingReplay::default();
+    let digest = actual.rate_card_digest.as_str();
+    physical
+        .observe(
+            &Event {
+                seq: Seq::ZERO,
+                turn: TurnId(7),
+                kind: intent(&card, 1, 10),
+            },
+            &tenant,
+            &run,
+            Some(&card.rate_card.route),
+            Some(digest),
+        )
+        .unwrap();
+    let premature = physical.finish(&tenant, &run, 7, actual.usage).unwrap();
+    assert_eq!(premature.matching_binding(&actual), None);
+    // The real late terminal must still match its sealed intent. Forgetting the intent at the
+    // earlier logical terminal would leave no candidate and permanently lose its exact proof.
+    physical
+        .observe(
+            &Event {
+                seq: Seq::ZERO,
+                turn: TurnId(7),
+                kind: terminal(&card, 1, actual.clone()),
+            },
+            &tenant,
+            &run,
+            Some(&card.rate_card.route),
+            Some(digest),
+        )
+        .unwrap();
+    let completed = physical.finish(&tenant, &run, 7, actual.usage).unwrap();
+    assert_eq!(completed.matching_binding(&actual), Some(true));
+}

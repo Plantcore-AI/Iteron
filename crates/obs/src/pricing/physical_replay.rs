@@ -1,6 +1,7 @@
 //! Correlate a logical cost sample with an actual sealed physical admission and terminal.
 //! Legacy journals have no admission stamp; they retain the prior replay path. Once a sealed
-//! intent exists for a turn, missing/unknown/truncated terminal evidence cannot use that fallback.
+//! intent exists for a run, missing/unknown/truncated terminal evidence at or after its first
+//! modern turn cannot use that fallback. A logical terminal never retires an open physical intent.
 use super::{PricingError, validate_projection_digest, validate_route};
 use iteron_protocol::{
     CostProjection, Event, EventKind, PricingRoute, ProviderRouteAttemptIdentity,
@@ -247,6 +248,19 @@ impl PhysicalPricingReplay {
         usage: Usage,
     ) -> Option<PhysicalTurnProof> {
         let scope = (tenant.0.clone(), run.0.clone(), turn);
+        if self
+            .scopes
+            .get(&scope)
+            .is_some_and(|open| open.attempts.values().any(|attempt| !attempt.closed))
+        {
+            // TurnEnd is logical usage, not proof that every physical attempt stopped. Preserve
+            // unresolved admissions for their exact late terminal/recovery evidence and refuse
+            // to project even a known sibling as the whole logical result.
+            return Some(PhysicalTurnProof {
+                usage,
+                candidates: Vec::new(),
+            });
+        }
         if let Some(open) = self.scopes.remove(&scope) {
             return Some(PhysicalTurnProof {
                 usage,
@@ -255,7 +269,7 @@ impl PhysicalPricingReplay {
         }
         self.modern_runs
             .get(&(tenant.0.clone(), run.0.clone()))
-            .filter(|frontier| turn >= frontier.first_turn && turn <= frontier.latest_turn)
+            .filter(|frontier| turn >= frontier.first_turn)
             .map(|_| PhysicalTurnProof {
                 usage,
                 candidates: Vec::new(),
