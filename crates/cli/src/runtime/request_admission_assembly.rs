@@ -1,14 +1,19 @@
 //! Composition of frozen request evidence and actual disjoint observation writers. These ports
 //! borrow existing single owners; request admission never receives the resident Agent.
 use super::Agent;
+#[cfg(test)]
 use super::context_preparation_events::ContextPreparationEvents;
+#[cfg(test)]
 use super::request_admission_journal::RequestAdmissionJournal;
 use super::request_context_evidence::RequestContextScope;
 use super::request_context_publication::RequestContextPublication;
 use super::request_preparation::RequestConfiguration;
-use iteron_protocol::{Message, TurnId};
+use iteron_protocol::Message;
+#[cfg(test)]
+use iteron_protocol::TurnId;
 
 impl Agent {
+    #[cfg(test)]
     pub(super) fn request_admission_ports(
         &mut self,
         turn: TurnId,

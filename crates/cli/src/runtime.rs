@@ -138,14 +138,20 @@ pub(crate) mod bounded_verify;
 mod budget_control;
 pub use budget_control::TurnBudgetState;
 pub(crate) mod client_inventory;
+mod coding_execution_journal;
+mod coding_provider_assembly;
 mod coding_provider_execution;
+mod coding_provider_session;
+mod coding_request_assembly;
 mod coding_request_execution;
+mod coding_request_session;
 mod coding_run_assembly;
 mod coding_run_driver;
 mod compaction;
 mod compaction_assembly;
 mod compaction_coverage;
 mod compaction_journal;
+mod tool_image_admission;
 pub use compaction_journal::CompactionReport;
 mod completion_semantics;
 mod context_preparation_events;
@@ -1929,23 +1935,25 @@ impl Agent {
             if driver.request()?.error_streak() >= self.budget.max_consecutive_tool_errors {
                 return self.finish(turn_id, Outcome::Stuck).await;
             }
-            let local_prepare_activity = self
-                .activity
-                .span(turn_activity::ActivityStage::LocalPrepare, Some(turn_id));
-            let (journal, events) = self.request_admission_ports(turn_id);
-            driver.request_mut()?.validate(journal, &events)?;
-            let payload = driver.request_mut()?.request_gate()?;
-            let report = self
-                .brokered_lifecycle_gate(turn_id, "context.segment.budget_requested", payload)
-                .await?;
-            driver.request_mut()?.gate_completed(report.decision)?;
-            if let Some(outcome) = self.collect_and_finish_requested_control(turn_id).await? {
-                return Ok(outcome);
-            }
-            driver.request_mut()?.control_passed()?;
-            self.admit_tool_image_context(driver.request()?.messages()?, input_images)?;
-            let publication = self.request_context_publication(driver.request()?.messages()?);
-            let prepared = driver.complete_request(self.request_configuration(), publication)?;
+            let session =
+                self.coding_request_session(turn_id, driver.request()?.messages()?, input_images);
+            let prepared = match session.admit(turn_id, driver.request_mut()?).await? {
+                coding_request_session::CodingRequestResult::Admitted {
+                    prepared,
+                    messages,
+                    recovery,
+                } => {
+                    driver.install_admitted_request(messages, recovery)?;
+                    prepared
+                }
+                coding_request_session::CodingRequestResult::RequestedControl(control) => {
+                    debug_assert_ne!(control, InboundControl::None);
+                    if let Some(outcome) = self.finish_requested_control(turn_id).await? {
+                        return Ok(outcome);
+                    }
+                    return self.finish(turn_id, Outcome::Interrupted).await;
+                }
+            };
             let effort_application = self.provider.effort_application(&prepared.request.request);
             let request_admission::AdmittedModelRequest {
                 request: req,
@@ -1954,7 +1962,6 @@ impl Agent {
                 inspection: context_budget_inspection,
             } = driver.admitted(prepared, effort_application)?;
             let turn_id = driver.evidence()?.turn;
-            local_prepare_activity.complete();
 
             // The append is the provider-effect intent. It must be durable before any adapter is
             // entered; failure returns with zero network calls and leaves the in-memory ledger
@@ -1981,50 +1988,20 @@ impl Agent {
                 admission,
             )?;
             let pricing_now = self.pricing_now();
-            let execution = {
-                let (loop_state, submitted) = driver.provider_start()?;
-                let (journal, environment, resident, extension, _, _) =
-                    self.provider_turn_ports(context_tokens, argument_trust, submitted);
-                coding_provider_execution::CodingProviderExecution::begin(
-                    start,
-                    usd_attempt,
-                    journal,
-                    environment,
-                    &resident,
-                    extension,
-                    pricing_now,
-                    loop_state,
-                )
-                .await?
-            };
-            if execution.refused() {
-                self.observe_memory_provider_refusal(turn_id);
-            }
-            if execution.hooks_gate_reads() {
-                self.effect_journal.note_workspace_mutation();
-            }
-            driver.install_provider(execution)?;
+            self.coding_provider_session(context_tokens, argument_trust)
+                .begin(driver, start, usd_attempt, pricing_now)
+                .await?;
             let mut hedge = None;
             loop {
-                let (execution, submitted) = driver.provider_execution()?;
-                let (journal, environment, resident, extension, evidence, memory) =
-                    self.provider_turn_ports(context_tokens, argument_trust, submitted);
-                match execution
-                    .pump(
-                        journal,
-                        environment,
-                        resident,
-                        extension,
-                        evidence,
-                        memory,
-                        hedge.take(),
-                    )
+                match self
+                    .coding_provider_session(context_tokens, argument_trust)
+                    .pump(driver, hedge.take())
                     .await?
                 {
                     coding_provider_execution::CodingProviderProgress::Complete => break,
                     coding_provider_execution::CodingProviderProgress::Hedge => {
                         let started = Instant::now();
-                        let spec = execution.hedge_spec()?;
+                        let spec = driver.provider_execution()?.0.hedge_spec()?;
                         let dispatch = self
                             .execute_hedged_provider_turn(
                                 turn_id,
