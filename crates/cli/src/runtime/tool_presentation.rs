@@ -420,3 +420,7 @@ pub(super) fn ui_verification_rollback_arguments(
 #[cfg(test)]
 #[path = "tool_presentation_tests.rs"]
 mod tests;
+
+/// Whether an approval projection counts as truncated when the tool input carries no
+/// `_truncated_for_ui` marker. False: absence means the operator saw the whole argument.
+pub(super) const UI_PROJECTION_TRUNCATED_WHEN_UNMARKED: bool = false;

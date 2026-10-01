@@ -7,7 +7,6 @@ use super::provider_logical_usage::{LogicalUsageScope, exact_projection};
 use super::session_transcript::TranscriptAdmissionJournal;
 use super::stream_progress::StreamTiming;
 use super::stream_tool_events::StreamToolEvents;
-use super::{INCOMPLETE_USAGE_NOTICE, UNPRICEABLE_CACHE_CREATION_NOTICE};
 use iteron_obs::{PricingPort, ProjectionAdmissionError};
 use iteron_protocol::{CostAttribution, TurnId, Usage};
 use iteron_provider::UsageReport;
@@ -150,3 +149,10 @@ impl ProviderUsageJournal<'_> {
         }
     }
 }
+
+pub(super) const INCOMPLETE_USAGE_NOTICE: &str =
+    "provider completed the turn without an authoritative usage report; cost is unknown";
+/// I-52: the route reported usage but named no cache-creation count, and the bound card charges a
+/// cache-write rate. Pricing the missing count as a measured zero would report the turn as free.
+pub(super) const UNPRICEABLE_CACHE_CREATION_NOTICE: &str = "this route does not report cache-creation tokens \
+and the bound rate card charges for them; the turn is unpriced rather than priced as free";

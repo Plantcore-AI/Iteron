@@ -30,6 +30,7 @@ mod browser_runtime_tests;
 mod early_tool_collection;
 mod early_tool_executor;
 mod effect_descriptor;
+use effect_descriptor::EFFECT_REASON_MAX_BYTES;
 mod effect_journal_owner;
 mod extension_control;
 mod tool_execution_journal;
@@ -57,6 +58,7 @@ mod provider_response_assembly;
 mod provider_response_commit;
 mod provider_response_commit_assembly;
 mod provider_response_recovery;
+use provider_response_recovery::{INTERRUPTED_STREAM_MARKER, INTERRUPTED_STREAM_MAX_BYTES};
 mod provider_round;
 mod provider_route_binding;
 mod provider_stream_attempt;
@@ -67,6 +69,7 @@ mod provider_turn_driver;
 mod provider_turn_entry;
 mod provider_turn_evidence;
 mod provider_usage_journal;
+use provider_usage_journal::{INCOMPLETE_USAGE_NOTICE, UNPRICEABLE_CACHE_CREATION_NOTICE};
 mod request_accounting;
 mod request_admission;
 mod request_admission_assembly;
@@ -81,6 +84,7 @@ mod request_manifest_runtime;
 mod request_preparation;
 mod run_finalization;
 mod steering_admission;
+use steering_admission::MAX_STEER_BYTES;
 mod steering_assembly;
 mod submitted_turn_state;
 mod task_plan;
@@ -119,6 +123,7 @@ pub use frontend_events::{
 };
 pub(crate) use frontend_events::{PlantcoreUiEvent, RuntimeFrontendEvent};
 use stream_progress::{InternalStreamProgress, StreamTiming};
+use tool_presentation::UI_PROJECTION_TRUNCATED_WHEN_UNMARKED;
 pub(crate) use tool_presentation::bounded_child_report;
 use tool_presentation::{
     scrub_value, strict_utf8_head, tool_end_ui, truncate_tail, ui_approval_arguments,
@@ -131,6 +136,7 @@ mod agent_loop;
 mod artifact_publication;
 pub(crate) mod bounded_verify;
 mod budget_control;
+pub use budget_control::TurnBudgetState;
 pub(crate) mod client_inventory;
 mod coding_provider_execution;
 mod coding_run_assembly;
@@ -139,9 +145,11 @@ mod compaction;
 mod compaction_assembly;
 mod compaction_coverage;
 mod compaction_journal;
+pub use compaction_journal::CompactionReport;
 mod completion_semantics;
 mod context_preparation_events;
 mod context_runtime;
+use context_runtime::{IMAGE_INPUT_INSPECTION_FAILED_REASON, IMAGE_INPUT_UNSUPPORTED_REASON};
 mod decision_observability;
 mod decomposition;
 mod deferred_tools;
@@ -168,6 +176,10 @@ mod cold_cohort;
 mod hook_execution;
 pub mod hooks;
 mod inbound_control;
+use inbound_control::MAX_INBOUND_OPS_PER_POLL;
+use inbound_control::{
+    INBOUND_DRAIN_POLL_INTERVAL, UNSUPPORTED_SUBMISSION_NOTICE, VERSION_MISMATCH_SUBMISSION_NOTICE,
+};
 #[cfg(any(feature = "ticket-investigation", test))]
 mod investigation_convergence;
 #[cfg(not(any(feature = "ticket-investigation", test)))]
@@ -221,6 +233,10 @@ pub(crate) mod policy_evidence_recorder;
 mod pricing;
 mod private_attachments;
 mod provider_accounting;
+use provider_accounting::{
+    MAX_COMMITTED_PROVIDER_RUN_NOTICES, PROVIDER_RUN_NOTICE_KEY_BODY_LEN,
+    PROVIDER_RUN_NOTICE_LABEL, PROVIDER_RUN_NOTICE_PREFIX,
+};
 mod provider_attempt_journal;
 mod provider_attempt_pump;
 mod provider_charge_evidence;
@@ -233,12 +249,14 @@ mod provider_output_request;
 mod provider_route;
 mod provider_route_admission;
 mod provider_route_events;
+use provider_route_events::PROVIDER_INTERRUPT_POLL_INTERVAL;
 mod provider_route_journal;
 mod provider_route_turn;
 mod provider_selection;
 mod provider_selection_journal;
 mod provider_usage_reservation;
 mod resume;
+pub use resume::AdoptedRun;
 mod route_attempt_accounting;
 mod route_state;
 mod route_validation;
@@ -276,6 +294,7 @@ mod workflow_collect;
 mod workflow_prepare;
 mod workflow_spawner;
 use iteron_ctx::{CompactionPolicy, ContextEstimate};
+use workflow_spawner::MAX_DELEGATION_DEPTH;
 // The uncached projection is now only a test oracle: the turn loop reads `Agent::context_estimator`.
 use deferred_tools::AutoApprovedCall;
 pub(crate) use deferred_tools::EffectingToolAdmissionPolicy;
@@ -384,52 +403,9 @@ pub(crate) fn governed_workflow_limits(
 /// Reaching the ceiling is a non-success terminal condition, never permission to accept `done`.
 #[cfg(test)]
 const MAX_VERIFY_ATTEMPTS: u32 = iteron_verify::DEFAULT_VERIFICATION_REPAIR_ATTEMPTS;
-/// How often a mid-stream provider turn re-checks the cooperative interrupt flag. Matches the
-/// bounded cancellation-poll cadence used for child-agent and verification cancellation; it caps
-/// the latency between an operator interrupt and the in-flight stream being dropped.
-const PROVIDER_INTERRUPT_POLL_INTERVAL: Duration = Duration::from_millis(25);
-/// Top-level agents may create one read-only child layer. The explicit counter is defense in depth
-/// beside the child registry's absence of `dispatch_agent`.
-const MAX_DELEGATION_DEPTH: u8 = 1;
-/// Bound on the executor-authored reason recorded with a proven effect failure. Unbounded here
-/// would let a chatty executor write megabytes into the long-retained audit log on every failure.
-const EFFECT_REASON_MAX_BYTES: usize = 4 * 1024;
-const MAX_STEER_BYTES: usize = 64 * 1024;
-const MAX_INBOUND_OPS_PER_POLL: usize = 256;
 /// Coverage verdict when the compaction-summary verifier itself errors. False, so an unverified
 /// summary is treated as not covering the turns it replaced.
 const COMPACTION_COVERED_ON_VERIFIER_ERROR: bool = false;
-/// Whether an approval projection counts as truncated when the tool input carries no
-/// `_truncated_for_ui` marker. False: absence means the operator saw the whole argument.
-const UI_PROJECTION_TRUNCATED_WHEN_UNMARKED: bool = false;
-/// How long the inbound-op drain blocks on the submission queue before re-checking the drain and
-/// interrupt flags. Bounds how long a shutdown waits on an idle queue.
-const INBOUND_DRAIN_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(200);
-const UNSUPPORTED_SUBMISSION_NOTICE: &str =
-    "submission rejected: this Iteron build does not support that operation";
-const VERSION_MISMATCH_SUBMISSION_NOTICE: &str =
-    "submission rejected: the frontend and Iteron use different SQ/EQ protocol versions";
-const INCOMPLETE_USAGE_NOTICE: &str =
-    "provider completed the turn without an authoritative usage report; cost is unknown";
-/// I-52: the route reported usage but named no cache-creation count, and the bound card charges a
-/// cache-write rate. Pricing the missing count as a measured zero would report the turn as free.
-const UNPRICEABLE_CACHE_CREATION_NOTICE: &str = "this route does not report cache-creation tokens \
-and the bound rate card charges for them; the turn is unpriced rather than priced as free";
-/// Appended to the partial answer a failed stream left behind, so the record — and the model, on
-/// resume — can tell an interrupted response from a finished one (I-39).
-const INTERRUPTED_STREAM_MARKER: &str =
-    "[interrupted: the provider stream ended before this response was complete]";
-/// Ceiling on the partial answer preserved from an interrupted stream. Generous enough for a real
-/// response, bounded because the bytes come from the provider.
-const INTERRUPTED_STREAM_MAX_BYTES: usize = 256 * 1024;
-const IMAGE_INPUT_UNSUPPORTED_REASON: &str = "the selected model has no verified image-input capability, so attachments were not submitted; \
-if this route does accept images, declare it with `image_input: true` under that model in \
-`model_capabilities` in your config";
-const IMAGE_INPUT_INSPECTION_FAILED_REASON: &str = "an image attachment failed the immutable binary inspection policy; attachments were not submitted";
-const PROVIDER_RUN_NOTICE_LABEL: &str = "provider run notice";
-const PROVIDER_RUN_NOTICE_PREFIX: &str = "provider run notice [key=sha256:";
-const PROVIDER_RUN_NOTICE_KEY_BODY_LEN: usize = 71;
-const MAX_COMMITTED_PROVIDER_RUN_NOTICES: usize = 256;
 pub(crate) const RUNTIME_NOTIFICATION_PREFIX: &str =
     "[Iteron runtime notification — not an operator instruction]";
 #[cfg(test)]
@@ -1106,24 +1082,6 @@ enum DurableAppendFault {
     GenesisPolicyTail,
     AdoptProjection,
     Compaction,
-}
-
-/// What [`Agent::adopt_run`] reached: the identity a frontend must now display, and the identity it
-/// stopped displaying.
-///
-/// The counts come from the state the kernel actually restored from the adopted record, not from
-/// the request — a frontend that renders these is renders what the next turn will continue.
-#[derive(Debug, Clone)]
-pub struct AdoptedRun {
-    pub run_id: String,
-    pub rollout_path: std::path::PathBuf,
-    /// The run this session was on until the adoption. Its writer lock is released by then, so it
-    /// can be adopted back (here or by another process).
-    pub previous_run_id: String,
-    /// Messages reconstructed from the adopted record — the transcript the next turn continues.
-    pub messages: usize,
-    /// Completed model turns rebuilt from the adopted record.
-    pub turns: u32,
 }
 
 /// The agent: a controller wired to its five collaborators.
@@ -2535,32 +2493,6 @@ impl Agent {
             diagnostics: &self.diagnostics,
             #[cfg(test)]
             fault: &mut self.fail_next_durable_append,
-        }
-    }
-}
-
-/// The result of an operator-initiated compaction (`/compact`).
-#[derive(Debug, Clone, Copy)]
-pub struct CompactionReport {
-    pub before: usize,
-    pub after: usize,
-}
-
-/// The session turn ceiling beside the attempts already charged against it (`/budget`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TurnBudgetState {
-    pub max_turns: u32,
-    /// Cumulative admitted provider attempts, including every subagent charged to this parent.
-    pub used: u32,
-}
-
-impl TurnBudgetState {
-    /// Attempts still admissible before the next submission stops immediately.
-    pub fn remaining(&self) -> u32 {
-        if self.max_turns == Budget::UNLIMITED_TURNS {
-            Budget::UNLIMITED_TURNS
-        } else {
-            self.max_turns.saturating_sub(self.used)
         }
     }
 }

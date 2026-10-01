@@ -370,3 +370,14 @@ mod tests {
         );
     }
 }
+
+pub(super) const MAX_INBOUND_OPS_PER_POLL: usize = 256;
+
+/// How long the inbound-op drain blocks on the submission queue before re-checking the drain and
+/// interrupt flags. Bounds how long a shutdown waits on an idle queue.
+pub(super) const INBOUND_DRAIN_POLL_INTERVAL: std::time::Duration =
+    std::time::Duration::from_millis(200);
+pub(super) const UNSUPPORTED_SUBMISSION_NOTICE: &str =
+    "submission rejected: this Iteron build does not support that operation";
+pub(super) const VERSION_MISMATCH_SUBMISSION_NOTICE: &str =
+    "submission rejected: the frontend and Iteron use different SQ/EQ protocol versions";

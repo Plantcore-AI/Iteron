@@ -1,5 +1,4 @@
 //! Pure effect identity, audit projection and terminal vocabulary. No writer, executor or owner.
-use super::EFFECT_REASON_MAX_BYTES;
 use super::tool_presentation::strict_utf8_head;
 use iteron_kernel::effect_class;
 use iteron_protocol::{Capability, EventKind, TurnId};
@@ -85,3 +84,7 @@ pub(super) fn effect_workspace(workspace: &std::path::Path) -> String {
         rendered
     }
 }
+
+/// Bound on the executor-authored reason recorded with a proven effect failure. Unbounded here
+/// would let a chatty executor write megabytes into the long-retained audit log on every failure.
+pub(super) const EFFECT_REASON_MAX_BYTES: usize = 4 * 1024;

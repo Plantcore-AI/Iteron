@@ -1,7 +1,6 @@
 //! Concrete immutable provider lifecycle/activity ports and actual bounded retry wait. This
 //! adapter cannot admit requests, select routes, settle effects or change monetary ownership.
 use super::KernelError;
-use super::PROVIDER_INTERRUPT_POLL_INTERVAL;
 use super::lifecycle_hooks::LifecycleHookDispatcher;
 use super::provider_accounting::elapsed_us;
 use super::session_control::SessionControlState;
@@ -120,3 +119,8 @@ impl ProviderRouteEvents {
         result
     }
 }
+
+/// How often a mid-stream provider turn re-checks the cooperative interrupt flag. Matches the
+/// bounded cancellation-poll cadence used for child-agent and verification cancellation; it caps
+/// the latency between an operator interrupt and the in-flight stream being dropped.
+pub(super) const PROVIDER_INTERRUPT_POLL_INTERVAL: Duration = Duration::from_millis(25);

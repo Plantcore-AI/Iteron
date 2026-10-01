@@ -1532,3 +1532,21 @@ fn require_runtime_genesis_event(
         ))
     }
 }
+
+/// What [`Agent::adopt_run`] reached: the identity a frontend must now display, and the identity it
+/// stopped displaying.
+///
+/// The counts come from the state the kernel actually restored from the adopted record, not from
+/// the request — a frontend that renders these is renders what the next turn will continue.
+#[derive(Debug, Clone)]
+pub struct AdoptedRun {
+    pub run_id: String,
+    pub rollout_path: std::path::PathBuf,
+    /// The run this session was on until the adoption. Its writer lock is released by then, so it
+    /// can be adopted back (here or by another process).
+    pub previous_run_id: String,
+    /// Messages reconstructed from the adopted record — the transcript the next turn continues.
+    pub messages: usize,
+    /// Completed model turns rebuilt from the adopted record.
+    pub turns: u32,
+}

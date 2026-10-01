@@ -194,3 +194,22 @@ impl Agent {
         self.sensitive_env_names = names;
     }
 }
+
+/// The session turn ceiling beside the attempts already charged against it (`/budget`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TurnBudgetState {
+    pub max_turns: u32,
+    /// Cumulative admitted provider attempts, including every subagent charged to this parent.
+    pub used: u32,
+}
+
+impl TurnBudgetState {
+    /// Attempts still admissible before the next submission stops immediately.
+    pub fn remaining(&self) -> u32 {
+        if self.max_turns == Budget::UNLIMITED_TURNS {
+            Budget::UNLIMITED_TURNS
+        } else {
+            self.max_turns.saturating_sub(self.used)
+        }
+    }
+}

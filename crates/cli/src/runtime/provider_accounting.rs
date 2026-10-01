@@ -168,3 +168,8 @@ impl Agent {
         }
     }
 }
+
+pub(super) const PROVIDER_RUN_NOTICE_LABEL: &str = "provider run notice";
+pub(super) const PROVIDER_RUN_NOTICE_PREFIX: &str = "provider run notice [key=sha256:";
+pub(super) const PROVIDER_RUN_NOTICE_KEY_BODY_LEN: usize = 71;
+pub(super) const MAX_COMMITTED_PROVIDER_RUN_NOTICES: usize = 256;

@@ -15,10 +15,7 @@ use super::submitted_turn_state::SubmittedTurnState;
 use super::tool_execution_journal::ToolExecutionJournal;
 use super::tool_presentation::strict_utf8_head;
 use super::turn_publication::TurnPublicationOwner;
-use super::{
-    INTERRUPTED_STREAM_MARKER, INTERRUPTED_STREAM_MAX_BYTES, KernelError, Outcome,
-    PROVIDER_INTERRUPT_POLL_INTERVAL,
-};
+use super::{KernelError, Outcome, PROVIDER_INTERRUPT_POLL_INTERVAL};
 use iteron_kernel::diagnostics::KernelDiagnostic;
 use iteron_protocol::{Block, Event, EventKind, Message, Role, Seq, StopReason, ToolUse, TurnId};
 use iteron_provider::{ProviderError, TurnResult, UsageReport};
@@ -370,3 +367,11 @@ fn physical_terminal(
         _ => None,
     }
 }
+
+/// Appended to the partial answer a failed stream left behind, so the record — and the model, on
+/// resume — can tell an interrupted response from a finished one (I-39).
+pub(super) const INTERRUPTED_STREAM_MARKER: &str =
+    "[interrupted: the provider stream ended before this response was complete]";
+/// Ceiling on the partial answer preserved from an interrupted stream. Generous enough for a real
+/// response, bounded because the bytes come from the provider.
+pub(super) const INTERRUPTED_STREAM_MAX_BYTES: usize = 256 * 1024;

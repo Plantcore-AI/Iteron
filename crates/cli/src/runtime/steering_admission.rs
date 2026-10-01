@@ -168,3 +168,5 @@ impl SteeringAdmission<'_> {
         }
     }
 }
+
+pub(super) const MAX_STEER_BYTES: usize = 64 * 1024;

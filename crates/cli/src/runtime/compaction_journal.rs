@@ -308,3 +308,10 @@ impl CompactionCommitJournal<'_> {
         KernelError::Record(error)
     }
 }
+
+/// The result of an operator-initiated compaction (`/compact`).
+#[derive(Debug, Clone, Copy)]
+pub struct CompactionReport {
+    pub before: usize,
+    pub after: usize,
+}
