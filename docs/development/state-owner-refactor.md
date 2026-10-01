@@ -24,8 +24,32 @@ Public main `7ec48721747ab5067679518be9ccfe8455a293b4` has these physical counts
 | CLI workflow | 1,907 | 1,622 | submission, supervisor, progress projection, child assembly |
 | QuickJS bindings | 1,618 | 12 | script adapter, attempt dispatch, parallel group owner, ledger ports |
 
-All six exceed the 1,200 production-line target. Adding the live scheduler creates a new narrow
+At that baseline all six exceed the 1,200 production-line target. Adding the live scheduler creates a new narrow
 owner; it does not remove these existing responsibilities or close their refactoring work.
+
+## Current integrated source checkpoint
+
+The following AST source counts were captured on 2026-10-02 after the request-cycle, complete
+provider-response and host startup integrations. This is source inventory; final same-candidate
+compilation, native journeys and architecture acceptance remain pending.
+
+| Module | Production | Test |
+| --- | ---: | ---: |
+| CLI runtime | 2,307 | 617 |
+| App server | 407 | 17 |
+| Main | 1,123 | 828 |
+| TUI | 692 | 47 |
+| CLI workflow | 56 | 126 |
+| QuickJS bindings | 901 | 0 |
+
+The runtime still coordinates the coding-run driver and special kernel child/workflow work.
+Those remaining owners are in progress. The existing immutable compiled policy bundle now owns
+all nine strategy objects and its boot evidence as one generation; Agent and child construction
+retain only that shared generation. Request-cycle, provider-response and complete tool-round
+owners consume actual phases through concrete journal, control, permission and execution ports.
+The host owns startup history and retained workflow restart capabilities; frontends observe
+bounded state and receive an opaque prompt-history writer. Shared host transcript export is still
+in progress. Source module size alone does not establish those interfaces or product behavior.
 
 ## Executable architecture guard
 
