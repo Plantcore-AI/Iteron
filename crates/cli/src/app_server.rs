@@ -105,9 +105,9 @@ use queue_client::{SubmissionSender, submission_weight};
 mod session_attachment;
 mod session_hooks;
 mod session_services;
-pub(crate) use session_attachment::{
-    AppServerHandle, Attached, SessionFacts, ToolFact, attach, attach_plantcore,
-};
+#[cfg(feature = "legacy-plantcore")]
+pub(crate) use session_attachment::attach_plantcore;
+pub(crate) use session_attachment::{AppServerHandle, Attached, SessionFacts, ToolFact, attach};
 mod event_publisher;
 pub(crate) use event_publisher::EventPublisher;
 
@@ -130,8 +130,16 @@ mod mcp_control;
 mod mcp_input;
 mod model_control;
 mod operator_status;
+#[cfg(feature = "legacy-plantcore")]
+mod plantcore;
+#[cfg(not(feature = "legacy-plantcore"))]
+#[path = "app_server/plantcore_disabled.rs"]
 mod plantcore;
 mod product_contract;
+#[cfg(feature = "legacy-plantcore")]
+mod recording_fault;
+#[cfg(not(feature = "legacy-plantcore"))]
+#[path = "app_server/recording_fault_disabled.rs"]
 mod recording_fault;
 mod thread_inspection;
 mod thread_lifecycle;

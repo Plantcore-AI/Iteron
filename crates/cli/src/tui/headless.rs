@@ -6,6 +6,10 @@
 
 mod advisory_maintenance;
 mod auth;
+#[cfg(feature = "legacy-plantcore")]
+mod commands;
+#[cfg(not(feature = "legacy-plantcore"))]
+#[path = "headless/commands_disabled.rs"]
 mod commands;
 mod connection;
 mod control;
@@ -15,7 +19,7 @@ mod turn_publication;
 
 use self::auth::BearerToken;
 use self::commands::PlantcoreCommands;
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy-plantcore"))]
 use self::commands::{
     admit_plantcore_command, dispatch_gate_command_reply, replayed_plantcore_reply,
     submit_sq_plantcore_command,
@@ -23,7 +27,7 @@ use self::commands::{
 #[cfg(test)]
 use self::connection::session_identity_mismatch;
 use self::connection::{ConnectionServices, ConnectionSession};
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy-plantcore"))]
 use self::control::PlantcoreCommand;
 #[cfg(test)]
 use self::framing::send_encoded_frame;
@@ -446,6 +450,10 @@ impl Shared {
 }
 
 fn validate_listen(listen: SocketAddr, plantcore: bool) -> Result<()> {
+    #[cfg(not(feature = "legacy-plantcore"))]
+    if plantcore {
+        bail!("legacy integration is unavailable in standalone Iteron");
+    }
     let required_plantcore_listen = SocketAddr::from(([127, 0, 0, 1], 0));
     if plantcore && listen != required_plantcore_listen {
         bail!(
@@ -466,6 +474,10 @@ pub(crate) async fn serve(
     recording_fault: Option<crate::app_server::RecordingAppServerFault>,
 ) -> Result<()> {
     validate_listen(listen, plantcore)?;
+    #[cfg(not(feature = "legacy-plantcore"))]
+    if recording_fault.is_some() {
+        bail!("legacy recording faults are unavailable in standalone Iteron");
+    }
     // The managing parent writes one fresh token then closes the inherited pipe. Reading to EOF
     // before `bind` makes an absent, malformed, or overlong capability fail without exposing a
     // listening socket, and `take` bounds a parent that violates the close contract.
@@ -502,12 +514,18 @@ pub(crate) async fn serve(
     // frozen presentation replay cursor or appear without an explicit authenticated subscription.
     let (publications, _) = broadcast::channel(64);
     let (maintenance, _) = broadcast::channel(64);
+    #[cfg(feature = "legacy-plantcore")]
     let commands = PlantcoreCommands::new(
         handle.client.clone(),
         dispatch_gate.clone(),
         interrupt,
         drain,
     );
+    #[cfg(not(feature = "legacy-plantcore"))]
+    let commands = {
+        let _ = (interrupt, drain);
+        PlantcoreCommands::disabled()
+    };
     let shared = Arc::new(Shared {
         client: handle.client,
         control: handle.control.downgrade(),
@@ -845,10 +863,18 @@ mod boundary_tests {
     }
 
     #[test]
+    #[cfg(feature = "legacy-plantcore")]
     fn plantcore_listener_requires_ephemeral_ipv4_loopback() {
         assert!(validate_listen("127.0.0.1:0".parse().unwrap(), true).is_ok());
         assert!(validate_listen("127.0.0.1:4567".parse().unwrap(), true).is_err());
         assert!(validate_listen("[::1]:0".parse().unwrap(), true).is_err());
+    }
+
+    #[cfg(not(feature = "legacy-plantcore"))]
+    #[test]
+    fn standalone_listener_refuses_legacy_mode_before_binding_or_reading_auth() {
+        assert!(validate_listen(SocketAddr::from(([127, 0, 0, 1], 0)), true).is_err());
+        assert!(validate_listen(SocketAddr::from(([127, 0, 0, 1], 0)), false).is_ok());
     }
 
     #[test]
@@ -906,6 +932,7 @@ mod boundary_tests {
     }
 
     #[test]
+    #[cfg(feature = "legacy-plantcore")]
     fn repeated_plantcore_command_id_never_reapplies() {
         let mut recorded = std::collections::BTreeMap::new();
         let applications = Cell::new(0_u32);
@@ -947,6 +974,7 @@ mod boundary_tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "legacy-plantcore")]
     async fn dispatch_gate_commands_report_only_effective_safe_points() {
         let gate = crate::runtime::DispatchGate::new();
         let second_client_gate = gate.clone();
@@ -1017,6 +1045,7 @@ mod boundary_tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "legacy-plantcore")]
     async fn replayed_resume_does_not_reapply_its_activation() {
         let gate = crate::runtime::DispatchGate::new();
         gate.admit().unwrap();
@@ -1036,6 +1065,7 @@ mod boundary_tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "legacy-plantcore")]
     async fn plantcore_generic_submit_accepts_only_user_input_ops() {
         let rejected = [
             iteron_protocol::Op::ApprovalResponse {

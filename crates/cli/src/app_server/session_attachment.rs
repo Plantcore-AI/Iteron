@@ -97,6 +97,7 @@ pub(crate) fn attach(
     )
 }
 
+#[cfg(feature = "legacy-plantcore")]
 pub(crate) fn attach_plantcore(
     agent: Agent,
     interactive_approvals: bool,

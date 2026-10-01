@@ -527,10 +527,23 @@ pub(super) async fn send_encoded_frame<W: AsyncWrite + Unpin>(
     .await
 }
 
+#[cfg(not(feature = "legacy-plantcore"))]
+pub(super) async fn send_recording_fault<W: AsyncWrite + Unpin>(
+    _writer: &mut W,
+    _outbound_budget: &Arc<Semaphore>,
+    _frame_preparers: &Arc<Semaphore>,
+    _fragment_encoders: &Arc<Semaphore>,
+    _fault: crate::app_server::RecordingAppServerFault,
+    _next_live_seq: u64,
+) -> Result<()> {
+    bail!("legacy recording faults are unavailable in standalone Iteron")
+}
+
 /// Emit one fixed malformed sequence for the release recording Worker parser.
 ///
 /// The caller owns the one-shot admission gate. This seam accepts no bytes, paths, sizes, or
 /// ordinals from the environment or wire.
+#[cfg(feature = "legacy-plantcore")]
 pub(super) async fn send_recording_fault<W: AsyncWrite + Unpin>(
     writer: &mut W,
     outbound_budget: &Arc<Semaphore>,
@@ -980,6 +993,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "legacy-plantcore")]
     async fn recording_fault_wire(fault: crate::app_server::RecordingAppServerFault) -> Vec<Value> {
         let (mut writer, mut reader) = tokio::io::duplex(2 * MAX_SERVER_FRAME_BYTES);
         let budget = Arc::new(Semaphore::new(MAX_IN_FLIGHT_SERVER_BYTES));
@@ -998,6 +1012,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "legacy-plantcore")]
     async fn recording_faults_are_closed_fixed_sequences() {
         use crate::app_server::RecordingAppServerFault;
 

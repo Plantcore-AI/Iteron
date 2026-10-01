@@ -675,6 +675,14 @@ pub(super) async fn apply_control(
         Control::PersistentAgents(command) => super::agent_control::enable(agent, command),
         Control::ThreadLifecycle(command) => super::thread_lifecycle::apply(agent, command).await,
         Control::PlantcoreRunBootstrapV1(payload) => {
+            #[cfg(not(feature = "legacy-plantcore"))]
+            {
+                match plantcore.admit(*payload, agent, None) {
+                    Err(error) => ControlReply::PlantcoreProtocolError(error),
+                    Ok(_) => unreachable!("standalone bootstrap cannot be admitted"),
+                }
+            }
+            #[cfg(feature = "legacy-plantcore")]
             if *started {
                 ControlReply::PlantcoreProtocolError(super::plantcore::PlantcoreProtocolError {
                     code: "bootstrap_conflict",

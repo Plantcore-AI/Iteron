@@ -34,6 +34,7 @@ pub(super) enum PlantcoreCommand {
     ResumeDispatch,
 }
 
+#[cfg(feature = "legacy-plantcore")]
 impl PlantcoreCommand {
     pub(super) fn into_op(self) -> Option<iteron_protocol::Op> {
         match self {

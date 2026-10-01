@@ -1511,6 +1511,7 @@ impl iteron_provider::Provider for BlockingSteerProvider {
 }
 
 #[derive(Default)]
+#[cfg(feature = "legacy-plantcore")]
 struct ToolThenPauseProvider {
     calls: std::sync::atomic::AtomicUsize,
     first_started: tokio::sync::Notify,
@@ -1518,6 +1519,7 @@ struct ToolThenPauseProvider {
 }
 
 #[async_trait::async_trait]
+#[cfg(feature = "legacy-plantcore")]
 impl iteron_provider::Provider for ToolThenPauseProvider {
     async fn turn(
         &self,
@@ -1882,6 +1884,7 @@ fn temp_workspace(tag: &str) -> std::path::PathBuf {
     directory
 }
 
+#[cfg(feature = "legacy-plantcore")]
 fn enable_plantcore_fixture(agent: &mut Agent, gate: Arc<crate::runtime::DispatchGate>) {
     let document: serde_json::Value = serde_json::from_str(include_str!(
         "../../../contracts/plantcore/examples/app-server-v5-bootstrap.json"
@@ -2441,6 +2444,7 @@ async fn rejected_drain_does_not_raise_the_runtime_drain_signal() {
 }
 
 #[tokio::test]
+#[cfg(feature = "legacy-plantcore")]
 async fn plantcore_done_publishes_run_ended_from_plain_workspace() {
     let workspace = temp_workspace("plantcore-done-plain-workspace");
     let mut agent = agent_in(&workspace);
@@ -2502,6 +2506,7 @@ async fn plantcore_done_publishes_run_ended_from_plain_workspace() {
 }
 
 #[tokio::test]
+#[cfg(feature = "legacy-plantcore")]
 async fn plantcore_harness_error_stops_the_resident_session_after_run_ended() {
     let workspace = temp_workspace("plantcore-harness-error-exit");
     let mut agent = agent_in(&workspace);
@@ -2556,6 +2561,7 @@ async fn plantcore_harness_error_stops_the_resident_session_after_run_ended() {
 }
 
 #[tokio::test]
+#[cfg(feature = "legacy-plantcore")]
 async fn paused_next_provider_dispatch_drained_by_worker_publishes_run_ended() {
     let workspace = temp_workspace("paused-next-dispatch-drain");
     let rollout = iteron_record::Rollout::open(
