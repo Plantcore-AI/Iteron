@@ -22,6 +22,17 @@ struct Surface {
 
 const SURFACES: &[Surface] = &[
     Surface {
+        path: "crates/cli/src/runtime/turn_advance.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "retain a prepared turn transition only after real tool and MCP private-content cleanup",
+            "commit actual policy terminal before retiring evidence and advancing the checked sequence",
+        ],
+        next_seams: &[
+            "same-candidate cleanup, record refusal and integrated loop evidence remain required",
+        ],
+    },
+    Surface {
         path: "crates/cli/src/app_server/client_shell.rs",
         boundary: "cli-host",
         responsibilities: &[

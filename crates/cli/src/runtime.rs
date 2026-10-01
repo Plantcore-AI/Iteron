@@ -234,6 +234,8 @@ pub(crate) mod policy_evidence_recorder;
 mod pricing;
 mod private_attachments;
 mod provider_accounting;
+mod turn_advance;
+mod turn_advance_assembly;
 use provider_accounting::{
     MAX_COMMITTED_PROVIDER_RUN_NOTICES, PROVIDER_RUN_NOTICE_KEY_BODY_LEN,
     PROVIDER_RUN_NOTICE_LABEL, PROVIDER_RUN_NOTICE_PREFIX,
@@ -2349,32 +2351,6 @@ impl Agent {
         pure: &mut Vec<PureToolInFlight>,
     ) -> Result<(), KernelError> {
         self.early_tool_collection(turn).abort_all(pure).await
-    }
-
-    async fn advance_turn(&mut self) -> Result<(), KernelError> {
-        let tool_output_cleanup =
-            self.cleanup_tool_output_spills(tool_output_spill::ToolOutputSpillCleanup::TurnEnd);
-        let mcp_cleanup = self
-            .cleanup_mcp_spills(iteron_mcp::McpSpillCleanup::TurnEnd)
-            .await;
-        tool_output_cleanup?;
-        mcp_cleanup?;
-        let verifier = self.terminal_record.verifier();
-        self.append_policy_turn_outcome(
-            TurnId(self.seq_turn),
-            iteron_protocol::PolicyTerminalOutcome::Succeeded,
-            verifier,
-            None,
-        )?;
-        self.terminal_record.reset_verifier();
-        let next = self
-            .seq_turn
-            .checked_add(1)
-            .ok_or(KernelError::IdentityExhausted("turn"))?;
-        self.refresh_session_cache_metered();
-        self.failed_actions.finish_turn();
-        self.seq_turn = next;
-        Ok(())
     }
 
     /// Host-only physical-effect observation; owned-tool shutdown/reap proof is an additional

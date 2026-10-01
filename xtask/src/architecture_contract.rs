@@ -508,6 +508,8 @@ fn validate_extracted_owners(root: &Path) -> Result<()> {
         "crates/cli/src/runtime/invocation_admission.rs",
         "crates/cli/src/runtime/invocation_admission_assembly.rs",
         "crates/cli/src/runtime/invocation_cleanup.rs",
+        "crates/cli/src/runtime/turn_advance.rs",
+        "crates/cli/src/runtime/turn_advance_assembly.rs",
         "crates/cli/src/runtime/persistent_writer_settlement.rs",
         "crates/cli/src/runtime/workflow_spawner/writer_settlement.rs",
         "crates/cli/src/runtime/workflow_spawner/worktree/evidence.rs",
