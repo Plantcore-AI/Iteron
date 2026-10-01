@@ -642,6 +642,14 @@
         {
           "kind": "file",
           "path": "crates/record/src/checkpoint/restore/tests.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/record/src/native_child_context.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/record/src/native_child_context"
         }
       ],
       "contracts": [
@@ -3247,6 +3255,18 @@
         {
           "kind": "file",
           "path": "crates/cli/src/runtime/tool_image_admission.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/persistent_native_context.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/persistent_native_generations.rs"
+        },
+        {
+          "kind": "tree",
+          "path": "crates/cli/src/runtime/persistent_native_generations"
         }
       ],
       "contracts": [

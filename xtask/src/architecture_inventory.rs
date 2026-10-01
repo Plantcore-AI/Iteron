@@ -22,6 +22,47 @@ struct Surface {
 
 const SURFACES: &[Surface] = &[
     Surface {
+        path: "crates/cli/src/runtime/persistent_native_generations.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "retain bounded immutable actual native provider generations and exact resident bindings",
+            "quarantine failed refresh and reconstruct only from held routes plus exact verified publication",
+        ],
+        next_seams: &[
+            "same-candidate model switch, resident and native restart evidence remain required",
+        ],
+    },
+    Surface {
+        path: "crates/cli/src/runtime/workflow_spawner/native_policy_source.rs",
+        boundary: "cli-host",
+        responsibilities: &[
+            "retain original validated source policy independently of current operator model selection",
+        ],
+        next_seams: &[
+            "same-candidate model switch, resident and native restart evidence remain required",
+        ],
+    },
+    Surface {
+        path: "crates/agents/src/controller/native_spawn.rs",
+        boundary: "agent-controller",
+        responsibilities: &[
+            "bind ordinary child native lifetime in the actual durable Spawn transaction",
+        ],
+        next_seams: &[
+            "same-candidate model switch, resident and native restart evidence remain required",
+        ],
+    },
+    Surface {
+        path: "crates/record/src/native_child_context.rs",
+        boundary: "record-core",
+        responsibilities: &[
+            "select exact bounded native context publication through actual scoped physical hash chain",
+        ],
+        next_seams: &[
+            "same-candidate model switch, resident and native restart evidence remain required",
+        ],
+    },
+    Surface {
         path: "crates/cli/src/app_server/model_preferences.rs",
         boundary: "cli-host",
         responsibilities: &[
