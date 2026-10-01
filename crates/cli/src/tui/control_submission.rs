@@ -250,7 +250,7 @@ pub(super) fn request_drain(
     drain: &Arc<AtomicBool>,
     _checkpoint_supported: bool,
 ) {
-    if !app.running || app.draining {
+    if !app.run.running() || app.run.draining() {
         return;
     }
     if !matches!(session.submit_for_running_turn(Op::Drain), Some(Ok(_))) {
@@ -263,7 +263,7 @@ pub(super) fn request_drain(
     // The queue event is the durable ordering source; the shared flag lets an already-admitted
     // child and provider observe it within the bounded cancellation poll interval.
     drain.store(true, Ordering::Relaxed);
-    app.draining = true;
+    app.run.drain_accepted();
     app.status = "draining session…".into();
     if app.permission_prompt.read().is_some() {
         app.note(
@@ -283,7 +283,7 @@ pub(super) fn request_drain(
 /// Either surface alone is incomplete (headless clients have only SQ; an executing tool needs the
 /// flag immediately), so every keyboard path calls this one function.
 pub(super) fn request_interrupt(app: &mut App, session: &Session, interrupt: &Arc<AtomicBool>) {
-    if !app.running || app.force_cancelling {
+    if !app.run.running() || app.run.force_cancelling() {
         return;
     }
     if !matches!(session.submit_for_running_turn(Op::Interrupt), Some(Ok(_))) {
@@ -294,8 +294,7 @@ pub(super) fn request_interrupt(app: &mut App, session: &Session, interrupt: &Ar
         return;
     }
     interrupt.store(true, Ordering::SeqCst);
-    app.interrupting = true;
-    app.cancel_requested_at = Some(Instant::now());
+    app.run.interrupt_accepted(Instant::now());
     app.status = "interrupting turn…".into();
 }
 
@@ -305,7 +304,7 @@ pub(super) fn request_interrupt(app: &mut App, session: &Session, interrupt: &Ar
 /// used to make the queue driver submit its next prompt while the App Server still owned the old
 /// turn; the server correctly refused that second start, and the frontend had already popped it.
 pub(super) fn force_cancel_turn(app: &mut App, session: &Session) {
-    if !app.running || !app.interrupting || app.force_cancelling {
+    if !app.run.running() || !app.run.interrupting() || app.run.force_cancelling() {
         return;
     }
     // A second gesture targets the same still-running turn regardless of elapsed wall time. The
@@ -321,7 +320,7 @@ pub(super) fn force_cancel_turn(app: &mut App, session: &Session) {
         );
         return;
     }
-    app.force_cancelling = true;
+    app.run.stronger_cancel_accepted();
     app.status = "stronger cancellation requested · awaiting runtime acknowledgement…".into();
     app.note(
         block::NoticeLevel::Warn,
@@ -337,14 +336,14 @@ pub(super) fn cancel_local_effect_then_turn(
     session: &Session,
     interrupt: &Arc<AtomicBool>,
 ) {
-    if !app.running {
+    if !app.run.running() {
         app.note(
             block::NoticeLevel::Warn,
             "local transcript effect cancelled",
         );
         return;
     }
-    let escalated = app.interrupting;
+    let escalated = app.run.interrupting();
     if escalated {
         force_cancel_turn(app, session);
     } else {
@@ -375,7 +374,7 @@ pub(super) fn submit_turn(
     task: String,
 ) -> bool {
     if submit_operation(app, session, notifier, Op::UserInput { text: task.clone() }).is_some() {
-        app.retryable_task = Some(task);
+        app.run.retain_plain_text_retry(Some(task));
         true
     } else {
         false
@@ -446,20 +445,15 @@ pub(super) fn submit_operation(
             // the background. The first accepted prompt may therefore arrive while that opaque
             // fallback is still visible. Claim it once here; hydration below restores an existing
             // durable title for resumed runs and leaves this prompt-derived title on new runs.
-            if app.retryable_task.is_none()
+            if app.run.retry_text().is_none()
                 && let Some(title) = first_prompt_title.filter(|title| !title.is_empty())
             {
                 app.session_name = title;
             }
             notifier.begin_run();
-            app.running = true;
-            app.interrupting = false;
-            app.force_cancelling = false;
-            app.cancel_requested_at = None;
+            app.run.submission_accepted(submission_id, Instant::now());
             app.ctrl_c_quit_deadline = None;
-            app.draining = false;
             app.status = "running…".into();
-            app.run_started = Some(Instant::now());
             // A new run must not inherit provider authority. The request-sent activity starts the
             // clock; only the later accepted activity changes its semantic label.
             app.activity_observations.finish_provider_wait();

@@ -101,8 +101,8 @@ pub(super) fn render_hint(f: &mut Frame, area: Rect, density: surface::Density, 
         }
     } else if app.is_resume_handoff_draft() {
         "copy to a new terminal · enter keeps draft · esc clear"
-    } else if app.running && !text.is_empty() {
-        match cached_input_destination(true, app.interrupting, app.editor.draft_shape()) {
+    } else if app.run.running() && !text.is_empty() {
+        match cached_input_destination(true, app.run.interrupting(), app.editor.draft_shape()) {
             InputDestination::ImmediateCommand if density == surface::Density::Compact => {
                 "enter control · ctrl+j newline · esc stop"
             }
@@ -123,13 +123,13 @@ pub(super) fn render_hint(f: &mut Frame, area: Rect, density: surface::Density, 
             }
             InputDestination::StartTurn => unreachable!("the app is running"),
         }
-    } else if app.running && !app.input_lanes.queued().is_empty() {
+    } else if app.run.running() && !app.input_lanes.queued().is_empty() {
         if density == surface::Density::Compact {
             "type · esc stop · alt+↑ queued"
         } else {
             "type to steer · alt+↑ edit last queued · esc interrupt"
         }
-    } else if app.running {
+    } else if app.run.running() {
         if density == surface::Density::Compact {
             "type · esc stop · ctrl+j newline"
         } else {
@@ -142,7 +142,7 @@ pub(super) fn render_hint(f: &mut Frame, area: Rect, density: surface::Density, 
     } else {
         "/ commands · @ image/file · ctrl+v image · ! shell · ? help"
     };
-    let left = if !app.running && text.is_empty() && app.editor.has_recently_cleared() {
+    let left = if !app.run.running() && text.is_empty() && app.editor.has_recently_cleared() {
         format!("{left} · ctrl+z restore")
     } else {
         left.to_string()
@@ -297,7 +297,7 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
     let requested_workflow_rows = u16::try_from(workflow_rows.len())
         .unwrap_or(u16::MAX)
         .min(workflow_region_cap(f.area().height));
-    let fresh_landing = !app.running
+    let fresh_landing = !app.run.running()
         && app.permission_prompt.read().is_none()
         && app.history.blocks().len() == 1
         && matches!(
@@ -526,7 +526,7 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
                 app.assistant.layout(),
                 &app.theme,
                 inner_w,
-                app.running,
+                app.run.running(),
                 (app.spin / 4).is_multiple_of(2),
                 segment_start,
                 from,

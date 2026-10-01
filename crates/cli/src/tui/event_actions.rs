@@ -35,7 +35,7 @@ pub(super) fn apply_server_event<T: notification::NotificationTransport + ?Sized
         }
         app_server::ServerEvent::WorkflowRun(event) => app.workflow_run_ui_event(event),
         app_server::ServerEvent::Activity(event) => {
-            match app.activity_observations.observe(event, app.running) {
+            match app.activity_observations.observe(event, app.run.running()) {
                 super::activity_presentation::ActivityReaction::None => {}
                 super::activity_presentation::ActivityReaction::Status(status) => {
                     app.status = status.into()
@@ -68,46 +68,34 @@ pub(super) fn apply_server_event<T: notification::NotificationTransport + ?Sized
             state,
             reason_code,
         } => {
-            if state == iteron_protocol::SubmissionLifecycleState::Received
-                && let Some(pending) = app.pending_turn_receipt.as_ref()
-                && pending.id == id
-                && pending.clear_composer
-            {
-                if app.editor.persistence_revision() == pending.editor_revision {
-                    let _ = app.editor.take_submit();
-                } else {
-                    app.note(
-                        block::NoticeLevel::Info,
-                        "submission received; composer changed before its receipt, so the newer draft was preserved",
-                    );
+            match app.run.observe_receipt(id, state) {
+                super::run_presentation::ReceiptObservation::Received {
+                    editor_revision,
+                    clear_composer: true,
+                } => {
+                    if app.editor.persistence_revision() == editor_revision {
+                        let _ = app.editor.take_submit();
+                    } else {
+                        app.note(block::NoticeLevel::Info, "submission received; composer changed before its receipt, so the newer draft was preserved");
+                    }
                 }
-            }
-            if state == iteron_protocol::SubmissionLifecycleState::Applied
-                && app
-                    .pending_turn_receipt
-                    .as_ref()
-                    .is_some_and(|pending| pending.id == id)
-                && let Some(pending) = app.pending_turn_receipt.take()
-            {
-                app.push_user(pending.display_text);
+                super::run_presentation::ReceiptObservation::Applied { display_text } => {
+                    app.push_user(display_text)
+                }
+                super::run_presentation::ReceiptObservation::Refused => {
+                    app.activity_observations.retire_run_observations()
+                }
+                super::run_presentation::ReceiptObservation::Received {
+                    clear_composer: false,
+                    ..
+                }
+                | super::run_presentation::ReceiptObservation::None => {}
             }
             if matches!(
                 state,
                 iteron_protocol::SubmissionLifecycleState::Rejected
                     | iteron_protocol::SubmissionLifecycleState::Expired
             ) {
-                if app
-                    .pending_turn_receipt
-                    .as_ref()
-                    .is_some_and(|pending| pending.id == id)
-                {
-                    app.pending_turn_receipt = None;
-                    app.running = false;
-                    app.interrupting = false;
-                    app.force_cancelling = false;
-                    app.cancel_requested_at = None;
-                    app.draining = false;
-                }
                 app.note(
                     block::NoticeLevel::Warn,
                     format!(
@@ -133,13 +121,8 @@ pub(super) fn apply_server_event<T: notification::NotificationTransport + ?Sized
         ),
         app_server::ServerEvent::RunEnded { snapshot, summary } => {
             let completion_notification = notifier.run_completed();
-            app.running = false;
-            app.interrupting = false;
-            app.force_cancelling = false;
-            app.cancel_requested_at = None;
+            app.run.run_ended(Instant::now());
             app.ctrl_c_quit_deadline = None;
-            app.draining = false;
-            app.last_run_latency = app.run_started.take().map(|started| started.elapsed());
             app.activity_observations.retire_run_observations();
             app.flush_think();
             app.finish_text_boundary();
@@ -223,7 +206,7 @@ pub(super) fn apply_server_event<T: notification::NotificationTransport + ?Sized
                 .as_deref()
                 .is_some_and(crate::runtime::KernelError::is_public_record_failure);
             if record_failed {
-                app.retryable_task = None;
+                app.run.clear_retry();
             }
             let result = summary.current_result();
             let canonical_outcome = result
@@ -237,7 +220,7 @@ pub(super) fn apply_server_event<T: notification::NotificationTransport + ?Sized
             {
                 // Everything already streamed is on the record as an interrupted message, so a
                 // retry continues from evidence rather than from nothing (I-39).
-                let detail = if !record_failed && app.retryable_task.is_some() {
+                let detail = if !record_failed && app.run.retry_text().is_some() {
                     format!("{detail}\n\n{}", retry_hint())
                 } else {
                     detail
@@ -249,7 +232,7 @@ pub(super) fn apply_server_event<T: notification::NotificationTransport + ?Sized
                 });
             } else {
                 // The turn landed; there is nothing to re-send.
-                app.retryable_task = None;
+                app.run.clear_retry();
             }
             // A budget stop is not a failure and gets no error block, so without this the operator
             // saw only `idle · last: budget_exhausted` — true, and silent about the fact that the
@@ -268,7 +251,7 @@ pub(super) fn apply_server_event<T: notification::NotificationTransport + ?Sized
                 );
             }
             app.status = format!("idle · last: {canonical_outcome}");
-            app.last_result = Some(result);
+            app.run.observe_terminal_result(result);
             if let Some(trigger) = completion_notification {
                 notifier.emit_transport(writer, trigger);
             }

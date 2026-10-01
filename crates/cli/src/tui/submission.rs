@@ -2,8 +2,8 @@ use super::attachment_owner::{
     SubmissionPreparation, prepare_submission_attachments, resolved_image_paths,
 };
 use super::{
-    App, AttachmentFollowup, Op, PendingTurnReceipt, Session, block, file_input, image_input,
-    notification, paste_input, queue_bare_image_path, submit_operation,
+    App, AttachmentFollowup, Op, Session, block, file_input, image_input, notification,
+    paste_input, queue_bare_image_path, submit_operation,
 };
 
 pub(super) fn submit_composer(
@@ -287,7 +287,9 @@ pub(super) fn submit_staged_input(
     if let Some(submission_id) = submit_operation(app, session, notifier, op) {
         // Only the plain-text turn is offered back: re-sending staged attachments would re-read
         // files that may have changed since, which is a different request, not a retry (I-39).
-        app.retryable_task = (staged.is_empty() && staged_files.is_empty()).then(|| text.clone());
+        app.run.retain_plain_text_retry(
+            (staged.is_empty() && staged_files.is_empty()).then(|| text.clone()),
+        );
         let image_count = staged.len();
         let file_count = staged_files.len();
         let display_text = if text.is_empty() {
@@ -312,12 +314,8 @@ pub(super) fn submit_staged_input(
         } else {
             text
         };
-        app.pending_turn_receipt = Some(PendingTurnReceipt {
-            id: submission_id,
-            editor_revision,
-            clear_composer,
-            display_text,
-        });
+        app.run
+            .retain_receipt(submission_id, editor_revision, clear_composer, display_text);
         return true;
     }
     false

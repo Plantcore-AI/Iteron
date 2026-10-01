@@ -248,7 +248,7 @@ pub(super) async fn dispatch<B: ratatui::backend::Backend>(
             // Ctrl-D while active stops in-flight work immediately, checkpoints, and
             // returns a resumable Drained outcome.
             // Idle Ctrl-D retains shell-like quit/delete behavior below.
-            if k.code == KeyCode::Char('d') && ctrl && app.running {
+            if k.code == KeyCode::Char('d') && ctrl && app.run.running() {
                 request_drain(app, session, drain, drain_available);
                 return Ok(true);
             }
@@ -321,7 +321,7 @@ pub(super) async fn dispatch<B: ratatui::backend::Backend>(
             // While the kernel is blocked on a capability approval, y/n/a/Esc answer it and
             // arrows/Tab + Enter make it a real focusable control; nothing falls through to
             // the editor. This is the in-TUI approval UX (R5 §4.4).
-            if app.running && app.permission_prompt.read().is_some() {
+            if app.run.running() && app.permission_prompt.read().is_some() {
                 if k.code == KeyCode::Char('c') && ctrl {
                     // The runtime settles the prompt; requesting an interrupt is not an
                     // approval decision and cannot clear its pending authority early.
@@ -372,7 +372,7 @@ pub(super) async fn dispatch<B: ratatui::backend::Backend>(
 
             if let Some(action) = mapped_action {
                 match action {
-                    keymap::Action::ExternalEditor if !app.running => {
+                    keymap::Action::ExternalEditor if !app.run.running() => {
                         let original = app.editor.text();
                         match external_edit_round_trip(
                             term,
@@ -416,17 +416,17 @@ pub(super) async fn dispatch<B: ratatui::backend::Backend>(
                         app.toggle_last_fold();
                         return Ok(true);
                     }
-                    keymap::Action::RestoreDraft if !app.running => {
+                    keymap::Action::RestoreDraft if !app.run.running() => {
                         if app.editor.restore_recently_cleared() {
                             app.resume_handoff = None;
                             app.schedule_completion();
                         }
                         return Ok(true);
                     }
-                    keymap::Action::ReverseSearch if !app.running && !menu_open => {
+                    keymap::Action::ReverseSearch if !app.run.running() && !menu_open => {
                         if !shift
                             && app.editor.is_empty()
-                            && let Some(task) = app.retryable_task.clone()
+                            && let Some(task) = app.run.retry_text().map(str::to_owned)
                         {
                             submit_turn(app, session, notifier, task);
                         } else if !app.editor.reverse_search_previous() {
@@ -463,7 +463,7 @@ pub(super) async fn dispatch<B: ratatui::backend::Backend>(
             let mut refresh = false;
             match k.code {
                 KeyCode::Char('c') if ctrl => {
-                    if app.running {
+                    if app.run.running() {
                         match running_ctrl_c_action(
                             app.ctrl_c_quit_deadline,
                             Instant::now(),
@@ -486,7 +486,7 @@ pub(super) async fn dispatch<B: ratatui::backend::Backend>(
                                 if transcript_effects.is_active() {
                                     let _ = transcript_effects.cancel();
                                 }
-                                if app.interrupting {
+                                if app.run.interrupting() {
                                     force_cancel_turn(app, session);
                                 }
                                 app.force_quit_requested = true;
@@ -510,7 +510,7 @@ pub(super) async fn dispatch<B: ratatui::backend::Backend>(
                         app.quit = true;
                     }
                 }
-                KeyCode::Char('d') if ctrl && !app.running => {
+                KeyCode::Char('d') if ctrl && !app.run.running() => {
                     if !app.editor.has_submission() {
                         app.quit = true;
                     } else if app.editor.is_empty() {
@@ -520,7 +520,7 @@ pub(super) async fn dispatch<B: ratatui::backend::Backend>(
                         refresh = true;
                     }
                 }
-                KeyCode::BackTab if !app.running => {
+                KeyCode::BackTab if !app.run.running() => {
                     let next = session.permission_mode().next();
                     queue_permission_mode(app, session, transcript_effects, interrupt, next);
                 }
@@ -541,7 +541,7 @@ pub(super) async fn dispatch<B: ratatui::backend::Backend>(
                 }
                 KeyCode::Enter if menu_open => {
                     let submit = app.accept_completion_for_enter();
-                    if submit && !app.running {
+                    if submit && !app.run.running() {
                         // Consume this physical Enter exactly once: it submits the command,
                         // but the picker opened by that command does not see the same key.
                         let line = app.editor.take_submit();
@@ -567,11 +567,11 @@ pub(super) async fn dispatch<B: ratatui::backend::Backend>(
                     app.completions.dismiss();
                 }
                 // ---- input history (idle, no menu) ----
-                KeyCode::Up if !app.running => {
+                KeyCode::Up if !app.run.running() => {
                     app.editor.history_prev();
                     refresh = true;
                 }
-                KeyCode::Down if !app.running => {
+                KeyCode::Down if !app.run.running() => {
                     app.editor.history_next();
                     refresh = true;
                 }
@@ -612,14 +612,14 @@ pub(super) async fn dispatch<B: ratatui::backend::Backend>(
                     refresh = true;
                 }
                 // A queued (not yet delivered) follow-up is safe to take back for editing.
-                KeyCode::Up if alt && app.running => {
+                KeyCode::Up if alt && app.run.running() => {
                     refresh = reclaim_queued_key(app, k);
                 }
                 KeyCode::Delete => {
                     app.editor.delete();
                     refresh = true;
                 }
-                KeyCode::Backspace if alt && !app.running && app.editor.chip_count() > 0 => {
+                KeyCode::Backspace if alt && !app.run.running() && app.editor.chip_count() > 0 => {
                     let _ = app.editor.remove_last_attachment();
                     refresh = true;
                 }
@@ -634,26 +634,26 @@ pub(super) async fn dispatch<B: ratatui::backend::Backend>(
                 }
                 // Esc clears a non-empty line first (like a shell / the leading agent); quits only
                 // on an already-empty line — so typed-but-unsent input is never silently discarded.
-                KeyCode::Esc if !app.running && transcript_effects.is_active() => {
+                KeyCode::Esc if !app.run.running() && transcript_effects.is_active() => {
                     let _ = transcript_effects.cancel();
                     app.note(block::NoticeLevel::Warn, "cancelling local effect…");
                 }
-                KeyCode::Esc if !app.running && app.workspace_commands.is_busy() => {
+                KeyCode::Esc if !app.run.running() && app.workspace_commands.is_busy() => {
                     app.workspace_commands.cancel();
                     app.status =
                         "idle · cancelling workspace command before mutation if possible".into();
                 }
-                KeyCode::Esc if !app.running && app.navigation.adoption_busy() => {
+                KeyCode::Esc if !app.run.running() && app.navigation.adoption_busy() => {
                     app.navigation.cancel_adoption();
                     app.status = "idle · session loading cancelled".into();
                 }
-                KeyCode::Esc if !app.running && app.editor.has_submission() => {
+                KeyCode::Esc if !app.run.running() && app.editor.has_submission() => {
                     app.editor.clear_recoverable();
                     app.resume_handoff = None;
                     refresh = true;
                 }
-                KeyCode::Esc if !app.running => app.quit = true,
-                KeyCode::Enter if !app.running => {
+                KeyCode::Esc if !app.run.running() => app.quit = true,
+                KeyCode::Enter if !app.run.running() => {
                     if app.is_resume_handoff_draft() {
                         let command = app.editor.text();
                         app.note(
@@ -755,7 +755,7 @@ pub(super) async fn dispatch<B: ratatui::backend::Backend>(
                 // Enter while running: STEER at the next turn-atomic safe point. Slash/shell
                 // input remains a
                 // post-run frontend action; it must not be injected as model prose.
-                KeyCode::Enter if app.running && !app.editor.is_empty() => {
+                KeyCode::Enter if app.run.running() && !app.editor.is_empty() => {
                     // A draft carrying chips has exactly one honest destination. `Op::Steer`
                     // is text — the protocol is frozen, there is no image or file field on
                     // it — so steering this draft would mean sending the words and dropping
@@ -772,7 +772,7 @@ pub(super) async fn dispatch<B: ratatui::backend::Backend>(
                         queue_draft_with_chips(app);
                     } else {
                         let text = app.editor.take_submit();
-                        match input_destination(app.running, app.interrupting, &text) {
+                        match input_destination(app.run.running(), app.run.interrupting(), &text) {
                             InputDestination::ImmediateCommand => {
                                 let command = slash_command_body(&text)
                                     .expect("the destination admitted a slash command");
@@ -819,7 +819,7 @@ pub(super) async fn dispatch<B: ratatui::backend::Backend>(
                     app.completions.dismiss();
                 }
                 // Codex/Claude-style explicit queue: Tab defers the text until this run ends.
-                KeyCode::Tab if app.running && !app.editor.is_empty() => {
+                KeyCode::Tab if app.run.running() && !app.editor.is_empty() => {
                     if queue_bare_image_path(app, repo, AttachmentFollowup::QueueRunningDraft) {
                         return Ok(true);
                     }
@@ -834,11 +834,11 @@ pub(super) async fn dispatch<B: ratatui::backend::Backend>(
                     app.completions.dismiss();
                 }
                 // Esc while running interrupts at the next safe point (like the leading agent).
-                KeyCode::Esc if app.running => {
+                KeyCode::Esc if app.run.running() => {
                     if transcript_effects.is_active() {
                         let _ = transcript_effects.cancel();
                         cancel_local_effect_then_turn(app, session, interrupt);
-                    } else if app.interrupting {
+                    } else if app.run.interrupting() {
                         force_cancel_turn(app, session);
                     } else {
                         let pending = app
@@ -857,7 +857,7 @@ pub(super) async fn dispatch<B: ratatui::backend::Backend>(
                     }
                 }
                 KeyCode::Char('?')
-                    if !app.running && !app.editor.has_submission() && !menu_open =>
+                    if !app.run.running() && !app.editor.has_submission() && !menu_open =>
                 {
                     command_dispatch::show_help(app);
                 }
@@ -885,7 +885,7 @@ pub(super) async fn dispatch<B: ratatui::backend::Backend>(
 /// The exact Alt-Up branch used by physical input dispatch. A draft containing any text, paste
 /// or image/file chip keeps focus and cannot be replaced by a queued value.
 pub(super) fn reclaim_queued_key(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
-    app.running
+    app.run.running()
         && key.code == KeyCode::Up
         && key.modifiers.contains(KeyModifiers::ALT)
         && app.input_lanes.reclaim_latest(&mut app.editor)

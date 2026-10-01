@@ -455,8 +455,8 @@ pub(super) fn apply_vim_action(app: &mut App, action: keymap::VimAction) {
         keymap::VimAction::WordRight => app.editor.word_right(),
         keymap::VimAction::Delete => app.editor.delete(),
         keymap::VimAction::Clear => app.editor.clear_recoverable(),
-        keymap::VimAction::HistoryPrevious if !app.running => app.editor.history_prev(),
-        keymap::VimAction::HistoryNext if !app.running => app.editor.history_next(),
+        keymap::VimAction::HistoryPrevious if !app.run.running() => app.editor.history_prev(),
+        keymap::VimAction::HistoryNext if !app.run.running() => app.editor.history_next(),
         keymap::VimAction::HistoryPrevious | keymap::VimAction::HistoryNext => {}
         keymap::VimAction::EnterVisual => app.vim_anchor = Some(app.editor.cursor()),
         keymap::VimAction::LeaveVisual => app.vim_anchor = None,

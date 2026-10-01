@@ -173,7 +173,7 @@ pub(super) fn render_composer(f: &mut Frame, area: Rect, app: &mut App) {
     let is_bash = text.starts_with('!');
     let line_color = if app.permission_prompt.read().is_some() {
         app.theme.warn
-    } else if !text.is_empty() || attachment_count > 0 || app.running {
+    } else if !text.is_empty() || attachment_count > 0 || app.run.running() {
         app.theme.accent
     } else {
         app.theme.border
@@ -406,7 +406,7 @@ pub(super) fn render_composer(f: &mut Frame, area: Rect, app: &mut App) {
     let crow_u16 = u16::try_from(crow).unwrap_or(u16::MAX);
     let scroll_y = crow_u16.saturating_sub(text_area.height.saturating_sub(1));
     if text.is_empty() {
-        let placeholder = if app.running {
+        let placeholder = if app.run.running() {
             "steer the current run"
         } else {
             "ask about this codebase or describe a task"

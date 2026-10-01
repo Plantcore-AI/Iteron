@@ -274,7 +274,7 @@ pub(super) fn project_host_transcript(
 }
 
 fn adoption_draft_ready(app: &mut App) -> bool {
-    if app.running || app.permission_prompt.read().is_some() {
+    if app.run.running() || app.permission_prompt.read().is_some() {
         app.note(
             block::NoticeLevel::Warn,
             "finish the current turn before switching sessions",
@@ -446,8 +446,7 @@ pub(super) fn clear_transcript_for_adoption(app: &mut App) {
     app.geometry.clear();
     app.assistant.reset();
     app.activity_observations.retire_run_observations();
-    app.last_result = None;
-    app.retryable_task = None;
+    app.run.select_verified_run();
     app.resume_handoff = None;
     app.follow_latest();
 }

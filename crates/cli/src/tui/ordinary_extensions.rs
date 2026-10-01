@@ -252,6 +252,6 @@ mod tests {
         );
         let text = app.history.blocks().last().unwrap().to_text();
         assert!(text.contains("does not prove completion"));
-        assert!(!app.running);
+        assert!(!app.run.running());
     }
 }

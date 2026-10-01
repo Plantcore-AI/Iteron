@@ -47,6 +47,7 @@ use composer_render::{format_attachment_size, render_composer, render_pending_la
 use composer_render::approval_action_line;
 
 mod activity_presentation;
+mod run_presentation;
 use activity_presentation::PresentedActivity;
 mod activity_center;
 mod advisory_maintenance;
@@ -497,13 +498,6 @@ fn cached_input_destination(
     }
 }
 
-struct PendingTurnReceipt {
-    id: SubmissionId,
-    editor_revision: u64,
-    clear_composer: bool,
-    display_text: String,
-}
-
 /// How long a model request may go without a first token before the interface stops calling it
 /// ordinary, and before it stops calling it merely slow. Both sit well inside the 45s provider
 /// inactivity deadline, which is the point: the operator learns
@@ -637,17 +631,7 @@ struct App {
     editor: Editor,
     mcp_form: mcp_input::McpInputOwner,
     status: String,
-    /// The canonical current-version result object from the most recently terminalized run.
-    ///
-    /// TUI chrome is presentation, but it must consume the same terminal authority as one-shot and
-    /// headless. Keeping the object (rather than a Debug-formatted completion string) also gives
-    /// parity tests one typed seam to inspect without scraping terminal cells.
-    last_result: Option<serde_json::Value>,
-    running: bool,
-    interrupting: bool,
-    force_cancelling: bool,
-    cancel_requested_at: Option<Instant>,
-    draining: bool,
+    run: run_presentation::RunPresentation,
     viewport: conversation_viewport::ConversationViewport,
     /// True once the user asks to quit; a forced double-Ctrl-C may set it during an active run.
     quit: bool,
@@ -683,17 +667,8 @@ struct App {
     /// Exact restart command prepared by a session selection. It is display/copy state only: an
     /// unchanged handoff is never submitted to the model or executed inside this process.
     resume_handoff: Option<String>,
-    /// When the current run started (for the elapsed/spinner indicator).
-    run_started: Option<Instant>,
-    /// Cached after a terminal run boundary; rendering never asks the runtime or record store.
-    last_run_latency: Option<Duration>,
     /// Best-effort workspace dirtiness sampled after first paint on the hydration worker.
     workspace_dirty: Option<bool>,
-    /// The text of the last plain-text turn, retained only while a failed run offers to re-send
-    /// it. A mid-stream failure is not retried automatically — only 429/529 are, and a bare
-    /// transport error says nothing about whether the provider already billed the request — so
-    /// the operator is the idempotency key, and this makes saying yes one keystroke (I-39).
-    retryable_task: Option<String>,
     /// Currently-running tool calls, ordered by start time. This feeds the one-line activity shelf;
     /// full details remain in correlated transcript cards.
     spin: usize,
@@ -711,7 +686,6 @@ struct App {
     /// snapshot; every coordinate is re-clamped by the editor so a simultaneous resize is benign.
     /// Bounded frontend input ownership, separate from editor and transcript presentation.
     input_lanes: input_lanes::InputLanes,
-    pending_turn_receipt: Option<PendingTurnReceipt>,
     /// Ordinary TUI content follows the same bounded Product V1 cursor as headless clients.
     /// Legacy EQ remains for richer tool cards, metrics, and compatibility on older servers.
     product_stream_active: bool,

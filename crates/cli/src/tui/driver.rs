@@ -540,11 +540,11 @@ pub async fn run(
         // finishes. `apply_server_event` handles `RunEnded`; the only thing left here is the
         // follow-up queue, which is now gated on the run state the server reports rather than on
         // whether an `Option<Agent>` happens to be full.
-        if !app.running && !app.input_lanes.queued().is_empty() {
+        if !app.run.running() && !app.input_lanes.queued().is_empty() {
             // a joined blob mis-classified `/compact`+task). Commands execute inline; the first
             // PROSE item starts a run and we stop — the remaining items dispatch on the next
             // reclaim (a run is single-writer; we cannot start two at once).
-            while !app.input_lanes.queued().is_empty() && !app.running {
+            while !app.input_lanes.queued().is_empty() && !app.run.running() {
                 let item = app.input_lanes.pop_next().expect("queue checked non-empty");
                 // An item composed with chips is a submission, not a line of text: it goes out
                 // through the same staging the composer uses, so the images and files it was queued
@@ -607,7 +607,7 @@ pub async fn run(
 
         // Attention is a client concern: a quiet live run receives one fixed notification after
         // the bounded idle interval, then rearms only when another typed EQ event arrives.
-        if let Some(trigger) = notifier.poll_idle(app.running) {
+        if let Some(trigger) = notifier.poll_idle(app.run.running()) {
             notifier.emit_transport(&mut notification_writer, trigger);
         }
 
@@ -615,7 +615,7 @@ pub async fn run(
         // waiting state feel live, then 80 ms while streaming. Event-driven redraws remain
         // immediate; idle schedules no animation wake at all.
         let now = Instant::now();
-        let activity_animation = app.running || app.activity_observations.has_active();
+        let activity_animation = app.run.running() || app.activity_observations.has_active();
         let spinner_tick = if app.activity_observations.provider_wait().is_some() {
             iteron_tunables::param_duration(
                 "cli.tui.driver_support.first_token_spinner_tick",

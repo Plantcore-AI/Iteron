@@ -2030,7 +2030,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     #[test]
     fn run_wide_foreign_steers_do_not_resubmit_or_overflow_owned_input_and_chips() {
         let mut app = App::new();
-        app.running = true;
+        app.run.submission_accepted(SubmissionId(1), Instant::now());
         app.editor.insert_str("owned image draft");
         app.editor
             .attach_image_bytes("owned.png", &png_1x1())
@@ -2155,7 +2155,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("owned.txt"), "actual captured file content").unwrap();
         let mut app = App::new();
-        app.running = true;
+        app.run.submission_accepted(SubmissionId(1), Instant::now());
         app.editor.insert_str("restore this draft ");
         app.editor
             .capture_paste("original pasted lines\nsecond line")
@@ -2337,7 +2337,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         app.completions.dismiss();
         term.draw(|f| draw(f, &mut app)).unwrap();
         // running + a pending approval
-        app.running = true;
+        app.run.submission_accepted(SubmissionId(1), Instant::now());
         app.spin = 3;
         apply_event(
             &mut app,
@@ -2362,7 +2362,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         term.draw(|f| draw(f, &mut app)).unwrap();
         // CRITICAL regression: the completion menu OPEN on short terminals must not panic (the
         // popup rect must clamp to the frame). Sweep sizes below the popup height.
-        app.running = false;
+        app.run.run_ended(Instant::now());
         app.permission_prompt.clear();
         app.editor.clear();
         app.editor.insert_str("/"); // 25-command menu -> tall popup
@@ -2892,9 +2892,9 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     fn running_surface_shows_real_steer_and_queue_lanes() {
         for (width, height) in PRODUCT_SIZES {
             let mut app = App::new();
-            app.running = true;
+            app.run.submission_accepted(SubmissionId(1), Instant::now());
             app.status = "verifying".into();
-            app.run_started = Some(Instant::now());
+
             app.tools
                 .fixture_active("tool-1".into(), "Bash(cargo test -p iteron-cli)".into());
             app.track_steer("also cover narrow terminals".into(), SubmissionId(1));
@@ -2918,7 +2918,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     fn approval_is_a_blocking_decision_surface_with_reason() {
         for (width, height) in PRODUCT_SIZES {
             let mut app = App::new();
-            app.running = true;
+            app.run.submission_accepted(SubmissionId(1), Instant::now());
             apply_event(
                 &mut app,
                 UiEvent::ApprovalRequest {
@@ -2945,7 +2945,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     fn approval_keeps_actions_on_short_screens_and_never_offers_impossible_remember() {
         for height in [3, 4, 5] {
             let mut app = App::new();
-            app.running = true;
+            app.run.submission_accepted(SubmissionId(1), Instant::now());
             apply_event(
                 &mut app,
                 UiEvent::ApprovalRequest {
@@ -2972,7 +2972,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         for width in [3, 6, 8, 12, 20] {
             for height in [1, 2] {
                 let mut app = App::new();
-                app.running = true;
+                app.run.submission_accepted(SubmissionId(1), Instant::now());
                 apply_event(
                     &mut app,
                     UiEvent::ApprovalRequest {
@@ -2997,7 +2997,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     #[test]
     fn narrow_approval_keeps_canonical_order_or_uses_an_explicit_single_slot_pager() {
         let mut app = App::new();
-        app.running = true;
+        app.run.submission_accepted(SubmissionId(1), Instant::now());
         apply_event(
             &mut app,
             UiEvent::ApprovalRequest {
@@ -3052,7 +3052,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     #[test]
     fn runtime_approval_is_focusable_and_enter_defaults_to_deny() {
         let mut app = App::new();
-        app.running = true;
+        app.run.submission_accepted(SubmissionId(1), Instant::now());
         apply_event(
             &mut app,
             UiEvent::ApprovalRequest {
@@ -3111,7 +3111,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     #[test]
     fn runtime_approval_never_constructs_an_impossible_session_grant() {
         let mut app = App::new();
-        app.running = true;
+        app.run.submission_accepted(SubmissionId(1), Instant::now());
         apply_event(
             &mut app,
             UiEvent::ApprovalRequest {
@@ -3158,7 +3158,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     #[test]
     fn running_command_draft_truthfully_switches_composer_route() {
         let mut app = App::new();
-        app.running = true;
+        app.run.submission_accepted(SubmissionId(1), Instant::now());
         app.editor.insert_str("/model");
         let command = render_text(&mut app, 80, 16);
         assert!(command.contains("/model"));
@@ -3176,7 +3176,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert!(prose.contains("also inspect the tests"));
         assert!(prose.contains("enter steer"));
 
-        app.interrupting = true;
+        app.run.interrupt_accepted(Instant::now());
         let next_prompt = render_text(&mut app, 80, 16);
         assert!(next_prompt.contains("also inspect the tests"));
         assert!(next_prompt.contains("enter queues after this turn"));
@@ -3220,20 +3220,27 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     #[test]
     fn interrupt_keeps_the_composer_focused_and_enter_queues_the_next_prompt() {
         let mut app = App::new();
-        app.running = true;
-        app.interrupting = true;
-        app.cancel_requested_at = Some(Instant::now());
+        app.run.submission_accepted(SubmissionId(1), Instant::now());
+        app.run.interrupt_accepted(Instant::now());
+
         app.editor.insert_str("start the next task immediately");
 
         assert_eq!(
-            input_destination(app.running, app.interrupting, &app.editor.text()),
+            input_destination(
+                app.run.running(),
+                app.run.interrupting(),
+                &app.editor.text()
+            ),
             InputDestination::AfterTurn
         );
         let text = app.editor.take_submit();
         app.queue_after_turn(text).expect("next prompt is admitted");
 
-        assert!(app.running, "only RunEnded may declare the old turn idle");
-        assert!(app.interrupting);
+        assert!(
+            app.run.running(),
+            "only RunEnded may declare the old turn idle"
+        );
+        assert!(app.run.interrupting());
         assert!(app.editor.is_empty(), "the focused composer accepted Enter");
         assert_eq!(app.input_lanes.queued().len(), 1);
         assert_eq!(
@@ -3246,7 +3253,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     fn fused_interrupt_escape_and_first_character_interrupts_and_preserves_that_character() {
         let repo = std::env::temp_dir();
         let mut app = App::new();
-        app.running = true;
+        app.run.submission_accepted(SubmissionId(1), Instant::now());
 
         assert!(app.recover_running_escape_prefixed_char(
             KeyCode::Char('c'),
@@ -3255,10 +3262,11 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             true,
             true,
         ));
-        assert!(app.interrupting);
+        assert!(
+            !app.run.interrupting(),
+            "a recovered key is not host acceptance of an interrupt"
+        );
         assert_eq!(app.editor.text(), "c");
-
-        app.interrupting = false;
         assert!(!app.recover_running_escape_prefixed_char(
             KeyCode::Char('b'),
             KeyModifiers::ALT,
@@ -3797,7 +3805,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
         // Running keeps a real composer and teaches the steer/queue split instead of claiming Send.
         app.editor.clear();
-        app.running = true;
+        app.run.submission_accepted(SubmissionId(1), Instant::now());
         app.track_steer("also cover narrow terminals".into(), SubmissionId(1));
         let mut term3 = Terminal::new(TestBackend::new(100, 12)).unwrap();
         term3.draw(|f| draw(f, &mut app)).unwrap();
@@ -3853,7 +3861,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
     fn tui_terminal_result(summary: &app_server::TerminalSummary) -> (serde_json::Value, String) {
         let mut app = App::new();
-        app.running = true;
+        app.run.submission_accepted(SubmissionId(1), Instant::now());
         let (sq, _rx) = tokio::sync::mpsc::channel(1);
         let mut session = Session::for_test(sq);
         let event = app_server::ServerEvent::RunEnded {
@@ -3896,7 +3904,9 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         );
 
         (
-            app.last_result
+            app.run
+                .terminal_result()
+                .cloned()
                 .expect("RunEnded stores the canonical result"),
             app.status,
         )
@@ -4027,7 +4037,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     #[test]
     fn run_terminal_chrome_is_derived_from_the_canonical_current_result_object() {
         let mut app = App::new();
-        app.running = true;
+        app.run.submission_accepted(SubmissionId(1), Instant::now());
         let (sq, _rx) = tokio::sync::mpsc::channel(1);
         let mut session = Session::for_test(sq);
         let summary = app_server::TerminalSummary {
@@ -4097,7 +4107,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             None,
         );
 
-        assert_eq!(app.last_result.as_ref(), Some(&expected));
+        assert_eq!(app.run.terminal_result(), Some(&expected));
         assert_eq!(app.status, "idle · last: done");
         assert_eq!(
             notification_bytes, b"\x07",
@@ -4108,9 +4118,9 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     #[test]
     fn interrupted_run_ended_releases_input_and_preserves_the_next_prompt_for_dispatch() {
         let mut app = App::new();
-        app.running = true;
-        app.interrupting = true;
-        app.draining = true;
+        app.run.submission_accepted(SubmissionId(1), Instant::now());
+        app.run.interrupt_accepted(Instant::now());
+        app.run.drain_accepted();
         app.queue_after_turn("continue with the next task".into())
             .unwrap();
         let queued = app.input_lanes.queued().front().cloned().unwrap();
@@ -4167,9 +4177,9 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             None,
         );
 
-        assert!(!app.running, "RunEnded returns the composer to idle");
-        assert!(!app.interrupting);
-        assert!(!app.draining);
+        assert!(!app.run.running(), "RunEnded returns the composer to idle");
+        assert!(!app.run.interrupting());
+        assert!(!app.run.draining());
         assert!(!interrupt.load(Ordering::Relaxed));
         assert!(!drain.load(Ordering::Relaxed));
         assert_eq!(app.input_lanes.queued().front(), Some(&queued));
@@ -4180,8 +4190,9 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     fn record_failure_run_ended_never_offers_same_session_retry() {
         fn end_failed_run(error: String) -> App {
             let mut app = App::new();
-            app.running = true;
-            app.retryable_task = Some("retry this turn".into());
+            app.run.submission_accepted(SubmissionId(1), Instant::now());
+            app.run
+                .retain_plain_text_retry(Some("retry this turn".into()));
             let (sender, _receiver) = tokio::sync::mpsc::channel(1);
             let mut session = Session::for_test(sender);
             let event = app_server::ServerEvent::RunEnded {
@@ -4241,7 +4252,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         ))
         .public_summary();
         let mut app = end_failed_run(record_error);
-        assert!(app.retryable_task.is_none());
+        assert!(app.run.retry_text().is_none());
         let rendered = app
             .history
             .blocks()
@@ -4257,7 +4268,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         assert!(!screen.contains("sk-test-secret"), "{screen}");
 
         let ordinary = end_failed_run("provider: provider transport failed".into());
-        assert_eq!(ordinary.retryable_task.as_deref(), Some("retry this turn"));
+        assert_eq!(ordinary.run.retry_text(), Some("retry this turn"));
         assert!(
             ordinary
                 .history
@@ -4276,7 +4287,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     #[test]
     fn a_budget_stop_tells_the_operator_which_ceiling_and_how_to_clear_it() {
         let mut app = App::new();
-        app.running = true;
+        app.run.submission_accepted(SubmissionId(1), Instant::now());
         let (sq, _rx) = tokio::sync::mpsc::channel(1);
         let mut session = Session::for_test(sq);
         let event = app_server::ServerEvent::RunEnded {
@@ -4581,7 +4592,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
         app.editor.clear();
         app.editor.insert_str("/mod");
-        app.running = true;
+        app.run.submission_accepted(SubmissionId(1), Instant::now());
         app.refresh_completion(&repo);
         assert!(
             app.completions.is_open(),
@@ -5943,7 +5954,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             "accepted".into(),
         ));
 
-        assert!(accepted_app.running);
+        assert!(accepted_app.run.running());
         assert_eq!(accepted_app.session_name, "accepted");
         assert!(matches!(
             accepted_rx
@@ -5973,9 +5984,9 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             "refused".into(),
         ));
 
-        assert!(!busy_app.running);
+        assert!(!busy_app.run.running());
         assert_eq!(busy_app.session_name, "New session");
-        assert_eq!(busy_app.retryable_task, None);
+        assert_eq!(busy_app.run.retry_text(), None);
         assert_eq!(busy_notifier.run_completed(), None);
         assert!(
             busy_app
@@ -6003,7 +6014,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             submit_queued_model_input(&mut app, &busy_session, &mut notifier, item.clone())
                 .expect_err("a saturated SQ cannot consume the queue item");
         assert_eq!(*returned, item);
-        assert!(!app.running);
+        assert!(!app.run.running());
         assert!(
             app.history
                 .blocks()
@@ -6016,7 +6027,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         let accepted_session = Session::for_test(accepted_tx);
         submit_queued_model_input(&mut app, &accepted_session, &mut notifier, *returned)
             .expect("the preserved item is accepted exactly once when capacity returns");
-        assert!(app.running);
+        assert!(app.run.running());
         assert!(matches!(
             accepted_rx
                 .try_recv()
@@ -6072,7 +6083,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             app.editor.has_submission(),
             "local enqueue is not the runtime receipt that clears a draft"
         );
-        let submission_id = app.pending_turn_receipt.as_ref().unwrap().id;
+        let submission_id = app.run.pending_id().unwrap();
         apply_server_event(
             &mut app,
             &mut session,
@@ -6120,16 +6131,15 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
         submit_composer(&mut app, &session, &mut notifier);
 
-        assert!(app.running);
+        assert!(app.run.running());
         assert!(
             app.editor.has_submission(),
             "an SQ send is not yet the runtime's receipt"
         );
         let submission_id = app
-            .pending_turn_receipt
-            .as_ref()
-            .expect("accepted local enqueue owns a receipt")
-            .id;
+            .run
+            .pending_id()
+            .expect("accepted local enqueue owns a receipt");
         let mut notification_bytes = Vec::new();
         apply_server_event(
             &mut app,
@@ -6220,7 +6230,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
         let mut notifier = notification::TerminalNotifier::new(false);
         submit_composer(&mut app, &session, &mut notifier);
-        let submission_id = app.pending_turn_receipt.as_ref().unwrap().id;
+        let submission_id = app.run.pending_id().unwrap();
         assert!(app.editor.has_submission());
 
         let op = rx.try_recv().unwrap().into_current().unwrap();
@@ -6259,7 +6269,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     fn a_draft_composed_during_a_run_keeps_its_chips_and_is_queued_with_them() {
         let (gif, _) = distinct_gifs();
         let mut app = App::new();
-        app.running = true;
+        app.run.submission_accepted(SubmissionId(1), Instant::now());
         app.editor.insert_str("look at ");
         app.editor
             .attach_image_bytes("shot.png", gif)
@@ -6300,7 +6310,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     fn a_command_carrying_chips_is_refused_with_everything_left_intact() {
         let (gif, _) = distinct_gifs();
         let mut app = App::new();
-        app.running = true;
+        app.run.submission_accepted(SubmissionId(1), Instant::now());
         app.editor.insert_str("/model");
         app.editor
             .attach_image_bytes("shot.png", gif)
@@ -6664,7 +6674,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     fn a_queued_submission_sends_the_image_it_was_queued_with() {
         let (gif, _) = distinct_gifs();
         let mut app = App::new();
-        app.running = true;
+        app.run.submission_accepted(SubmissionId(1), Instant::now());
         app.editor.insert_str("describe ");
         app.editor
             .attach_image_bytes("shot.png", gif)
@@ -6929,7 +6939,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     #[test]
     fn a_stalled_provider_is_described_differently_from_a_slow_one_before_the_deadline() {
         let mut app = App::new();
-        app.running = true;
+        app.run.submission_accepted(SubmissionId(1), Instant::now());
         apply_event(&mut app, UiEvent::Phase(iteron_protocol::Phase::Model));
 
         // An ordinary wait says nothing at all; the phase label already covers it.
@@ -7305,7 +7315,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
         let mut app = App::new();
-        app.running = true;
+        app.run.submission_accepted(SubmissionId(1), Instant::now());
         app.status = "thinking".into();
         for _ in 0..4 {
             apply_event(
@@ -7321,7 +7331,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             );
         }
         app.effort = Effort::Ultracode;
-        app.run_started = Some(Instant::now());
+
         let mut term = Terminal::new(TestBackend::new(120, 12)).unwrap();
         term.draw(|f| draw(f, &mut app)).unwrap();
         let s = buffer_text(&term);
@@ -7348,8 +7358,8 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     #[test]
     fn interrupt_state_replaces_stale_phase_in_active_shelf() {
         let mut app = App::new();
-        app.running = true;
-        app.interrupting = true;
+        app.run.submission_accepted(SubmissionId(1), Instant::now());
+        app.run.interrupt_accepted(Instant::now());
         app.status = "verifying".into();
         let screen = render_text(&mut app, 80, 16);
         assert!(screen.contains("interrupt requested"));
@@ -7360,7 +7370,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     #[test]
     fn running_ctrl_d_requests_exactly_one_drain_without_requiring_git() {
         let mut app = App::new();
-        app.running = true;
+        app.run.submission_accepted(SubmissionId(1), Instant::now());
         let (tx, mut rx) = tokio::sync::mpsc::channel(4);
         let session = Session::for_test(tx);
         let drain = Arc::new(AtomicBool::new(false));
@@ -7368,7 +7378,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         request_drain(&mut app, &session, &drain, true);
         request_drain(&mut app, &session, &drain, true);
 
-        assert!(app.draining);
+        assert!(app.run.draining());
         assert!(drain.load(Ordering::Relaxed));
         assert!(app.status.contains("draining session"));
         assert!(matches!(
@@ -7389,14 +7399,14 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     #[test]
     fn running_ctrl_d_is_available_without_a_workspace_checkpoint() {
         let mut app = App::new();
-        app.running = true;
+        app.run.submission_accepted(SubmissionId(1), Instant::now());
         let (tx, mut rx) = tokio::sync::mpsc::channel(4);
         let session = Session::for_test(tx);
         let drain = Arc::new(AtomicBool::new(false));
 
         request_drain(&mut app, &session, &drain, false);
 
-        assert!(app.draining);
+        assert!(app.run.draining());
         assert!(drain.load(Ordering::Relaxed));
         assert!(matches!(
             rx.try_recv().unwrap().into_current().unwrap(),
@@ -7407,9 +7417,10 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     #[test]
     fn a_second_interrupt_force_cancels_without_draining_or_consuming_the_queue() {
         let mut app = App::new();
-        app.running = true;
-        app.interrupting = true;
-        app.cancel_requested_at = Some(Instant::now() - Duration::from_secs(30));
+        app.run.submission_accepted(SubmissionId(1), Instant::now());
+        app.run.interrupt_accepted(Instant::now());
+        app.run
+            .interrupt_accepted(Instant::now() - Duration::from_secs(30));
         app.queue_after_turn("the next prompt".into()).unwrap();
         let queued = app.input_lanes.queued().front().cloned().unwrap();
         let (tx, mut rx) = tokio::sync::mpsc::channel(4);
@@ -7417,10 +7428,10 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         force_cancel_turn(&mut app, &session);
         force_cancel_turn(&mut app, &session);
 
-        assert!(app.running, "RunEnded remains the only idle boundary");
-        assert!(app.interrupting);
-        assert!(app.force_cancelling);
-        assert!(!app.draining);
+        assert!(app.run.running(), "RunEnded remains the only idle boundary");
+        assert!(app.run.interrupting());
+        assert!(app.run.force_cancelling());
+        assert!(!app.run.draining());
         assert_eq!(app.input_lanes.queued().front(), Some(&queued));
         assert!(matches!(
             rx.try_recv()
@@ -7435,17 +7446,17 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     #[test]
     fn cooperative_then_force_cancel_is_one_target_even_with_a_local_effect() {
         let mut app = App::new();
-        app.running = true;
+        app.run.submission_accepted(SubmissionId(1), Instant::now());
         let interrupt = Arc::new(AtomicBool::new(false));
         let (tx, mut rx) = tokio::sync::mpsc::channel(4);
         let session = Session::for_test(tx);
 
         cancel_local_effect_then_turn(&mut app, &session, &interrupt);
         assert!(
-            app.running,
+            app.run.running(),
             "local cancellation cannot invent a run boundary"
         );
-        assert!(app.interrupting);
+        assert!(app.run.interrupting());
         assert!(interrupt.load(Ordering::SeqCst));
         assert!(matches!(
             rx.try_recv().unwrap().into_current().unwrap(),
@@ -7457,7 +7468,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         );
 
         cancel_local_effect_then_turn(&mut app, &session, &interrupt);
-        assert!(app.force_cancelling);
+        assert!(app.run.force_cancelling());
         assert!(matches!(
             rx.try_recv().unwrap().into_current().unwrap(),
             Op::ForceCancel
@@ -7574,7 +7585,7 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     #[test]
     fn approval_resolution_clears_only_its_prompt_and_renders_decision_not_tool_success() {
         let mut app = App::new();
-        app.running = true;
+        app.run.submission_accepted(SubmissionId(1), Instant::now());
         apply_event(
             &mut app,
             UiEvent::ApprovalRequest {
@@ -7748,7 +7759,7 @@ fn terminal_activity_boundaries_remain_visible_and_late_ids_do_not_resurrect() {
     }
 
     let mut app = App::new();
-    app.running = true;
+    app.run.submission_accepted(SubmissionId(1), Instant::now());
     let (tx, _rx) = tokio::sync::mpsc::channel(1);
     let mut session = Session::for_test(tx);
     let mut notifier = notification::TerminalNotifier::new(false);
@@ -7788,7 +7799,7 @@ fn terminal_activity_boundaries_remain_visible_and_late_ids_do_not_resurrect() {
     assert!(app.activity_observations.contains("turn-1-finalizing"));
 
     app.activity_observations.retire_run_observations();
-    app.running = false;
+    app.run.run_ended(Instant::now());
     apply_server_event(
         &mut app,
         &mut session,
@@ -7851,7 +7862,7 @@ fn request_sent_owns_ttft_origin_and_delayed_activity_keeps_protocol_age() {
         progress: None,
     };
     let mut app = App::new();
-    app.running = true;
+    app.run.submission_accepted(SubmissionId(1), Instant::now());
     let (tx, _rx) = tokio::sync::mpsc::channel(1);
     let mut session = Session::for_test(tx);
     let mut notifier = notification::TerminalNotifier::new(false);
@@ -7928,7 +7939,7 @@ fn ordinary_tui_projects_product_final_answer_and_renders_exact_terminal_text() 
         event,
     };
     let mut app = App::new();
-    app.running = true;
+    app.run.submission_accepted(SubmissionId(1), Instant::now());
     app.product_stream_active = true;
     let mut projection = product_projection::ProductProjection::default();
     projection.ingest_page(
@@ -8016,7 +8027,7 @@ fn product_cursor_gap_is_visible_and_cannot_certify_an_exact_terminal_answer() {
         event,
     };
     let mut app = App::new();
-    app.running = true;
+    app.run.submission_accepted(SubmissionId(1), Instant::now());
     let mut projection = product_projection::ProductProjection::default();
     projection.ingest_page(
         &mut app,
@@ -8092,7 +8103,7 @@ fn ordinary_tui_does_not_offer_approval_for_an_incomplete_product_prompt() {
     };
     let thread_id = iteron_protocol::SessionId("approval-thread".into());
     let mut app = App::new();
-    app.running = true;
+    app.run.submission_accepted(SubmissionId(1), Instant::now());
     app.product_stream_active = true;
     let mut projection = product_projection::ProductProjection::default();
     projection.ingest_page(

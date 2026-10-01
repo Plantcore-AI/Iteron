@@ -86,8 +86,8 @@ impl App {
     ) -> bool {
         if !standard_mode
             || !unbound
-            || !self.running
-            || self.interrupting
+            || !self.run.running()
+            || self.run.interrupting()
             || self.permission_prompt.read().is_some()
             || self.pickers.is_open()
             || !modifiers.contains(KeyModifiers::ALT)
@@ -104,7 +104,6 @@ impl App {
         if matches!(ch.to_ascii_lowercase(), 'b' | 'f') {
             return false;
         }
-        self.interrupting = true;
         self.editor.insert(ch);
         self.schedule_completion();
         true

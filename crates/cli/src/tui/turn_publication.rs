@@ -20,13 +20,13 @@ pub(super) fn apply(app: &mut App, session: &Session, event: TurnPublicationEven
     match event.fact {
         TurnPublicationFactV1::AnswerAvailable { .. } => {
             app.flush_text();
-            if app.running {
+            if app.run.running() {
                 app.status = "answer available · finalizing run record…".into();
             }
         }
         TurnPublicationFactV1::TurnFinalized { outcome, .. } => {
             app.flush_text();
-            if app.running {
+            if app.run.running() {
                 app.status = format!("{} · releasing turn…", outcome_label(outcome));
             }
         }

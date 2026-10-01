@@ -25,7 +25,7 @@ impl App {
     /// merely slow or long enough to describe as stalled. `None` once a token has arrived, when no
     /// model request is open, or while the wait is still ordinary (I-64).
     pub(super) fn first_token_stall(&self) -> Option<FirstTokenStall> {
-        if !self.running {
+        if !self.run.running() {
             return None;
         }
         let wait = self.activity_observations.provider_wait()?;

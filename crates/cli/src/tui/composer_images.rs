@@ -352,7 +352,7 @@ pub(super) fn bare_image_path_spans(text: &str) -> Vec<(usize, usize, PathBuf)> 
 /// that existed: the parser was asked the right question in isolation and answered correctly, while
 /// the lane that actually receives a drop fell through to "ordinary pasted text" and said nothing.
 ///
-/// A drop is a drop whether or not a run is in flight. This used to be gated on `!app.running`,
+/// A drop is a drop whether or not a run is in flight. This used to be gated on `!app.run.running()`,
 /// which meant dragging a screenshot onto a working agent silently produced a line of path text —
 /// the operator's evidence that the feature exists at all is the chip, and there was none. The
 /// draft that carries the chip is queued rather than steered (`Op::Steer` cannot hold an image), so
@@ -416,7 +416,7 @@ pub(super) fn handle_composer_paste(app: &mut App, workspace: &Path, pasted: &st
             // on the same terms; anything else is ordinary pasted text.
             // A dropped FILE is admitted on the same terms as a dropped image,
             // during a run as well: the chip lands on the draft and the draft is
-            // queued behind the turn. The `app.running` half of this match used to
+            // queued behind the turn. The `app.run.running()` half of this match used to
             // send it to the composer as raw path text instead.
             match file_input::parse_dropped_file_path(workspace, pasted) {
                 Some(dropped) => {

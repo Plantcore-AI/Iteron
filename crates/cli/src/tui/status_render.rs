@@ -145,14 +145,14 @@ pub(super) fn status_right_groups(app: &App, density: surface::Density) -> Vec<s
         groups.push(Group::single("dirty", Accent::Warning));
     }
     if density == surface::Density::Wide
-        && let Some(latency) = app.last_run_latency
+        && let Some(latency) = app.run.last_latency()
     {
         groups.push(Group::single(
             format!("last {}", fmt_mmss(latency)),
             Accent::Metadata,
         ));
     }
-    if app.running && !app.assistant.authority().is_empty() {
+    if app.run.running() && !app.assistant.authority().is_empty() {
         let approximate_tokens = app.assistant.approximate_tokens();
         groups.push(Group::single(
             format!("~{approximate_tokens} tok"),
@@ -288,12 +288,12 @@ pub(super) fn render_status(f: &mut Frame, area: Rect, density: surface::Density
     let warn = Style::default().fg(th.warn).add_modifier(Modifier::BOLD);
     let error = Style::default().fg(th.error).add_modifier(Modifier::BOLD);
 
-    let mut left = if app.draining {
+    let mut left = if app.run.draining() {
         vec![
             Span::styled("◆ ", warn),
             Span::styled("draining session", warn),
         ]
-    } else if app.force_cancelling {
+    } else if app.run.force_cancelling() {
         vec![
             Span::styled("◆ ", error),
             Span::styled("stronger cancellation requested", error),
@@ -303,10 +303,21 @@ pub(super) fn render_status(f: &mut Frame, area: Rect, density: surface::Density
             Span::styled("◆ ", warn),
             Span::styled("approval required", warn),
         ]
-    } else if app.interrupting {
+    } else if app.run.interrupting() {
         vec![
             Span::styled("◆ ", warn),
-            Span::styled("interrupt requested · stopping now", warn),
+            Span::styled(
+                app.run.stop_requested_at().map_or_else(
+                    || "interrupt requested · stopping now".into(),
+                    |at| {
+                        format!(
+                            "interrupt requested · stopping now · {}",
+                            fmt_mmss(at.elapsed())
+                        )
+                    },
+                ),
+                warn,
+            ),
         ]
     } else if !app.viewport.follows_tail() {
         let unread = if !app.viewport.has_unread() {
@@ -371,7 +382,7 @@ pub(super) fn render_status(f: &mut Frame, area: Rect, density: surface::Density
             Span::styled(format!("{} ", spinner()[app.spin % spinner().len()]), style),
             Span::styled(stall.label(), style),
         ]
-    } else if app.running {
+    } else if app.run.running() {
         let phase = match app.status.trim() {
             "" | "running…" => "working",
             other => other,
@@ -393,7 +404,7 @@ pub(super) fn render_status(f: &mut Frame, area: Rect, density: surface::Density
         if let Some(product_turn) = &app.product_turn_status {
             spans.push(Span::styled(format!(" · {product_turn}"), muted));
         }
-        if let Some(started) = app.run_started {
+        if let Some(started) = app.run.started() {
             spans.push(Span::styled(
                 format!(" · {}", fmt_mmss(started.elapsed())),
                 muted,
