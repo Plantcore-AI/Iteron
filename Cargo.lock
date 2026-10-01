@@ -1374,6 +1374,7 @@ dependencies = [
  "iteron-ctx",
  "iteron-eval",
  "iteron-evolve",
+ "iteron-extension-sdk",
  "iteron-kernel",
  "iteron-marketplace",
  "iteron-mcp",
@@ -1460,6 +1461,19 @@ dependencies = [
  "serde_json",
  "sha2",
  "thiserror 2.0.20",
+ "tokio",
+]
+
+[[package]]
+name = "iteron-extension-sdk"
+version = "0.0.26"
+dependencies = [
+ "iteron-obs",
+ "iteron-protocol",
+ "iteron-provider",
+ "iteron-tools",
+ "serde",
+ "serde_json",
  "tokio",
 ]
 
