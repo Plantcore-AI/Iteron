@@ -3083,6 +3083,50 @@
         {
           "kind": "file",
           "path": "crates/cli/src/runtime/turn_completion_tests.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/controller_engine_scope.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/direct_child_execution.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/kernel_dispatch_control.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/kernel_dispatch_journal.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/kernel_special_assembly.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/kernel_special_execution.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/kernel_special_execution_tests.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/kernel_workflow_ledgers.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/task_plan_execution.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/workflow_execution.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/workflow_preparation.rs"
         }
       ],
       "contracts": [

@@ -30,20 +30,21 @@ owner; it does not remove these existing responsibilities or close their refacto
 ## Current integrated source checkpoint
 
 The following AST source counts were captured on 2026-10-02 after the request-cycle, complete
-provider-response and host startup integrations. This is source inventory; final same-candidate
+provider-response, host startup and kernel special execution integrations. This is source inventory; final same-candidate
 compilation, native journeys and architecture acceptance remain pending.
 
 | Module | Production | Test |
 | --- | ---: | ---: |
-| CLI runtime | 2,307 | 617 |
+| CLI runtime | 2,189 | 617 |
 | App server | 407 | 17 |
 | Main | 1,123 | 828 |
 | TUI | 692 | 47 |
 | CLI workflow | 56 | 126 |
 | QuickJS bindings | 901 | 0 |
 
-The runtime still coordinates the coding-run driver and special kernel child/workflow work.
-Those remaining owners are in progress. The existing immutable compiled policy bundle now owns
+The runtime still coordinates the coding-run driver; its independent execution owner is in
+progress. Special kernel tools now use concrete Plan, child and workflow owners. Their physical
+terminal and accounting-observation separation still needs final source settlement and evidence. The existing immutable compiled policy bundle now owns
 all nine strategy objects and its boot evidence as one generation; Agent and child construction
 retain only that shared generation. Request-cycle, provider-response and complete tool-round
 owners consume actual phases through concrete journal, control, permission and execution ports.
