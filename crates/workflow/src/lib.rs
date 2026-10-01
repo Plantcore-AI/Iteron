@@ -86,7 +86,7 @@ pub use schema::{RETRY_MAX, SchemaValidator};
 pub use schema_retry::SchemaRetryPolicy;
 pub use spawner::{
     AGENT_SPAWNER_PORT_VERSION, AgentActivityReporter, AgentCall, AgentExecutionClass,
-    AgentOutcome, AgentSpawner,
+    AgentInvocationIdentity, AgentOutcome, AgentSpawner,
 };
 
 /// Default visible cleanup deadline advertised by owners of a background workflow run. The

@@ -45,6 +45,22 @@ pub struct AgentWorkflowLease {
     pub initial: Vec<AgentMailboxMessage>,
     pub replayed: bool,
 }
+/// Host binding for one actual engine call. The actor and spawn authority remain separate host
+/// arguments; this receipt never decodes sender/operator authority from workflow JSON.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentWorkflowChildBinding {
+    pub workflow_id: String,
+    pub node_id: u64,
+    pub attempt: u64,
+    pub input_digest: String,
+    pub deadline_unix_ms: u64,
+}
+#[derive(Debug, Clone)]
+pub struct AgentWorkflowChildLease {
+    pub claim: AgentWorkflowClaim,
+    pub lease: AgentWorkflowLease,
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentWorkflowTerminal {
@@ -73,6 +89,146 @@ pub(super) struct WorkflowReceipt {
     completion: Option<AgentWorkflowCompletion>,
 }
 impl<J: AgentControllerJournal> AgentController<J> {
+    /// Atomically reserve a genuine child, accept its source task and bind the engine attribution
+    /// to its first runtime epoch. No ordinary idle worker can race an intermediate queued spawn.
+    pub fn spawn_workflow_child(
+        &mut self,
+        actor: AgentActor,
+        request_id: &str,
+        spawn: AgentCommandV1,
+        binding: AgentWorkflowChildBinding,
+        now_unix_ms: u64,
+    ) -> Result<AgentWorkflowChildLease, ControllerError> {
+        self.check_live()?;
+        self.check_actor(actor)?;
+        spawn.validate().map_err(ControllerError::Invalid)?;
+        let AgentCommandV1::Spawn { task, budget, .. } = &spawn else {
+            return Err(ControllerError::Invalid("workflow child requires spawn"));
+        };
+        let mut claim = AgentWorkflowClaim {
+            workflow_id: binding.workflow_id.clone(),
+            node_id: binding.node_id,
+            attempt: binding.attempt,
+            input_digest: binding.input_digest.clone(),
+            assigned_agent: AgentIdV1(1),
+            task: task.clone(),
+            budget: *budget,
+            deadline_unix_ms: binding.deadline_unix_ms,
+        };
+        claim.validate()?;
+        if request_id.is_empty()
+            || request_id.len() > MAX_AGENT_REQUEST_ID_BYTES
+            || !request_id
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b':' | b'_' | b'-'))
+        {
+            return Err(ControllerError::Invalid(
+                "invalid workflow child request identity",
+            ));
+        }
+        let namespace = match actor {
+            AgentActor::Operator => "operator".into(),
+            AgentActor::Agent(id) => format!("agent:{}", id.0),
+        };
+        let request_key = format!("{namespace}:{request_id}");
+        let request_digest = digest(&(&spawn, &binding))?;
+        let claim_key = claim.key()?;
+        if let Some(prior) = self.snapshot.receipts.get(&request_key) {
+            if prior.digest != request_digest {
+                return Err(ControllerError::RequestConflict);
+            }
+            claim.assigned_agent = prior.reply.agent_id;
+            let receipt = self
+                .snapshot
+                .workflow_claims
+                .get(&claim_key)
+                .ok_or(ControllerError::RecoveryRequired)?;
+            if receipt.claim != claim {
+                return Err(ControllerError::RequestConflict);
+            }
+            return Ok(AgentWorkflowChildLease {
+                lease: AgentWorkflowLease {
+                    agent: self.inspect(actor, claim.assigned_agent)?,
+                    epoch: receipt.epoch,
+                    initial: Vec::new(),
+                    replayed: true,
+                },
+                claim,
+            });
+        }
+        if self.snapshot.workflow_claims.contains_key(&claim_key) {
+            return Err(ControllerError::RequestConflict);
+        }
+        if self.provider_budget_recovery_required() {
+            return Err(ControllerError::RecoveryRequired);
+        }
+        if now_unix_ms == 0
+            || claim.deadline_unix_ms <= now_unix_ms
+            || claim.budget.wall_ms > claim.deadline_unix_ms - now_unix_ms
+        {
+            return Err(ControllerError::Budget);
+        }
+        if self.snapshot.receipts.len() >= MAX_RECEIPTS
+            || self.snapshot.workflow_claims.len() >= MAX_RECEIPTS
+        {
+            return Err(ControllerError::Capacity);
+        }
+        let mut next = self.snapshot.clone();
+        let (agent_id, message) = self.prepare_child_spawn(&mut next, actor, spawn)?;
+        claim.assigned_agent = agent_id;
+        let record = next
+            .agents
+            .get_mut(&agent_id)
+            .ok_or(ControllerError::UnknownAgent)?;
+        let epoch = AgentEpochV1 {
+            incarnation: record.view.incarnation,
+            turn: record.next_turn,
+        };
+        record.next_turn = record
+            .next_turn
+            .checked_add(1)
+            .ok_or(ControllerError::Capacity)?;
+        record.turns_used = 1;
+        record.active_task = Some(message);
+        record.runtime_started_at_unix_ms = Some(now_unix_ms);
+        record.view.state = AgentStateV1::Running { epoch };
+        let initial = next.mailbox.deliver(agent_id, epoch, Some(message), true);
+        next.workflow_claims.insert(
+            claim_key,
+            WorkflowReceipt {
+                claim: claim.clone(),
+                epoch,
+                message,
+                completion: None,
+            },
+        );
+        next.revision = next_revision(next.revision)?;
+        next.receipts.insert(
+            request_key,
+            RequestReceipt {
+                digest: request_digest,
+                reply: AgentControlReplyV1 {
+                    version: AGENT_CONTROL_VERSION,
+                    revision: next.revision,
+                    agent_id,
+                    message_id: Some(message),
+                    state: AgentStateV1::Running { epoch },
+                    replayed: false,
+                },
+            },
+        );
+        self.commit(next)?;
+        Ok(AgentWorkflowChildLease {
+            lease: AgentWorkflowLease {
+                agent: self.inspect(actor, agent_id)?,
+                epoch,
+                initial,
+                replayed: false,
+            },
+            claim,
+        })
+    }
+
     pub fn claim_workflow_task(
         &mut self,
         claim: AgentWorkflowClaim,

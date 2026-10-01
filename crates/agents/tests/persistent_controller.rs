@@ -609,3 +609,154 @@ fn workflow_claim_binds_exact_agent_epoch_and_typed_terminal_atomically() {
         Err(ControllerError::RecoveryRequired)
     ));
 }
+
+fn engine_binding() -> iteron_agents::AgentWorkflowChildBinding {
+    iteron_agents::AgentWorkflowChildBinding {
+        workflow_id: "actual-engine-run".into(),
+        node_id: 2,
+        attempt: 7,
+        input_digest: "a".repeat(64),
+        deadline_unix_ms: 61_000,
+    }
+}
+
+#[test]
+fn engine_child_spawn_task_and_epoch_publish_as_one_reserved_snapshot() {
+    let store = Store::default();
+    let mut controller = AgentController::open(store.clone(), config(8)).unwrap();
+    let before = controller.revision();
+    let admitted = controller
+        .spawn_workflow_child(
+            AgentActor::Agent(AgentIdV1(1)),
+            "engine-exact",
+            spawn(AgentIdV1(1), "child", vec![]),
+            engine_binding(),
+            1000,
+        )
+        .unwrap();
+    assert_eq!(controller.revision(), before + 1);
+    assert_eq!(admitted.lease.initial.len(), 1);
+    assert_eq!(
+        admitted.lease.agent.state,
+        AgentStateV1::Running {
+            epoch: admitted.lease.epoch
+        }
+    );
+    assert_eq!(
+        admitted.lease.initial[0].text.as_deref(),
+        Some("Investigate child")
+    );
+    assert_eq!(
+        controller
+            .inspect(AgentActor::Operator, AgentIdV1(1))
+            .unwrap()
+            .reserved
+            .turns,
+        4
+    );
+    assert_eq!(
+        controller
+            .begin_turn(admitted.claim.assigned_agent)
+            .unwrap(),
+        None
+    );
+    let repeated = controller
+        .spawn_workflow_child(
+            AgentActor::Agent(AgentIdV1(1)),
+            "engine-exact",
+            spawn(AgentIdV1(1), "child", vec![]),
+            engine_binding(),
+            2000,
+        )
+        .unwrap();
+    assert!(repeated.lease.replayed);
+    assert!(repeated.lease.initial.is_empty());
+    assert_eq!(repeated.lease.epoch, admitted.lease.epoch);
+    assert_eq!(controller.revision(), before + 1);
+    controller
+        .finish_turn_with_terminal(
+            admitted.claim.assigned_agent,
+            admitted.lease.epoch,
+            "actual resident summary",
+            iteron_protocol::agent_control::AgentUsageV1 {
+                turns: 1,
+                tokens: 10,
+                cost_microusd: 3,
+                wall_ms: 10,
+            },
+            true,
+            iteron_agents::AgentWorkflowTerminal::Succeeded,
+        )
+        .unwrap();
+    let completion = controller
+        .workflow_completion(&admitted.claim)
+        .unwrap()
+        .unwrap();
+    assert_eq!(completion.epoch, admitted.lease.epoch);
+    assert!(completion.effects_known);
+    assert_eq!(
+        completion.terminal,
+        iteron_agents::AgentWorkflowTerminal::Succeeded
+    );
+    let mut different = admitted.claim.clone();
+    different.attempt += 1;
+    assert!(controller.workflow_completion(&different).is_err());
+    // Reopen preserves the actual claim, task receipt, reservation and completed terminal.
+    let reopened = AgentController::open(store, config(8)).unwrap();
+    assert_eq!(
+        reopened.workflow_completion(&admitted.claim).unwrap(),
+        Some(completion)
+    );
+}
+
+#[test]
+fn engine_child_failed_or_uncertain_commit_never_exposes_unclaimed_idle_task() {
+    let store = Store::default();
+    let mut controller = AgentController::open(store.clone(), config(8)).unwrap();
+    let before = controller.revision();
+    store.0.lock().unwrap().failure = Some((ControllerStoreError::Unavailable, false));
+    assert!(
+        controller
+            .spawn_workflow_child(
+                AgentActor::Agent(AgentIdV1(1)),
+                "engine-refusal",
+                spawn(AgentIdV1(1), "child", vec![]),
+                engine_binding(),
+                1000
+            )
+            .is_err()
+    );
+    assert_eq!(controller.revision(), before);
+    assert_eq!(controller.list(AgentActor::Operator).unwrap().len(), 1);
+    assert_eq!(
+        controller
+            .inspect(AgentActor::Operator, AgentIdV1(1))
+            .unwrap()
+            .reserved
+            .turns,
+        0
+    );
+    store.0.lock().unwrap().failure = Some((ControllerStoreError::OutcomeUnknown, true));
+    assert!(
+        controller
+            .spawn_workflow_child(
+                AgentActor::Agent(AgentIdV1(1)),
+                "engine-unknown",
+                spawn(AgentIdV1(1), "child", vec![]),
+                engine_binding(),
+                1000
+            )
+            .is_err()
+    );
+    drop(controller);
+    let mut reopened = AgentController::open(store, config(8)).unwrap();
+    let child = reopened
+        .inspect(AgentActor::Operator, AgentIdV1(2))
+        .unwrap();
+    assert!(matches!(child.state, AgentStateV1::RecoveryRequired { .. }));
+    assert_eq!(child.queued_messages, 0);
+    assert_eq!(
+        reopened.begin_turn(child.agent_id).unwrap_err(),
+        ControllerError::RecoveryRequired
+    );
+}
