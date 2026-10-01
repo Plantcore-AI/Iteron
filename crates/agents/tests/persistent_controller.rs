@@ -760,3 +760,49 @@ fn engine_child_failed_or_uncertain_commit_never_exposes_unclaimed_idle_task() {
         ControllerError::RecoveryRequired
     );
 }
+
+#[test]
+fn engine_wall_clamp_preserves_original_request_identity_and_absolute_bound() {
+    let mut controller = AgentController::open(Store::default(), config(8)).unwrap();
+    let admitted = controller
+        .spawn_workflow_child(
+            AgentActor::Agent(AgentIdV1(1)),
+            "engine-clamped",
+            spawn(AgentIdV1(1), "child", vec![]),
+            engine_binding(),
+            60000,
+        )
+        .unwrap();
+    assert_eq!(admitted.claim.budget.wall_ms, 1000);
+    assert_eq!(admitted.lease.agent.budget.wall_ms, 1000);
+    assert_eq!(
+        controller
+            .runtime_epoch_deadline(admitted.claim.assigned_agent, admitted.lease.epoch)
+            .unwrap(),
+        61000
+    );
+    let repeated = controller
+        .spawn_workflow_child(
+            AgentActor::Agent(AgentIdV1(1)),
+            "engine-clamped",
+            spawn(AgentIdV1(1), "child", vec![]),
+            engine_binding(),
+            62000,
+        )
+        .unwrap();
+    assert!(repeated.lease.replayed);
+    assert_eq!(repeated.claim, admitted.claim);
+    let mut changed = engine_binding();
+    changed.deadline_unix_ms += 1;
+    assert_eq!(
+        controller
+            .existing_workflow_child(
+                AgentActor::Agent(AgentIdV1(1)),
+                "engine-clamped",
+                &spawn(AgentIdV1(1), "child", vec![]),
+                &changed
+            )
+            .unwrap_err(),
+        ControllerError::RequestConflict
+    );
+}

@@ -101,60 +101,10 @@ impl<J: AgentControllerJournal> AgentController<J> {
     ) -> Result<AgentWorkflowChildLease, ControllerError> {
         self.check_live()?;
         self.check_actor(actor)?;
-        spawn.validate().map_err(ControllerError::Invalid)?;
-        let AgentCommandV1::Spawn { task, budget, .. } = &spawn else {
-            return Err(ControllerError::Invalid("workflow child requires spawn"));
-        };
-        let mut claim = AgentWorkflowClaim {
-            workflow_id: binding.workflow_id.clone(),
-            node_id: binding.node_id,
-            attempt: binding.attempt,
-            input_digest: binding.input_digest.clone(),
-            assigned_agent: AgentIdV1(1),
-            task: task.clone(),
-            budget: *budget,
-            deadline_unix_ms: binding.deadline_unix_ms,
-        };
-        claim.validate()?;
-        if request_id.is_empty()
-            || request_id.len() > MAX_AGENT_REQUEST_ID_BYTES
-            || !request_id
-                .bytes()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b':' | b'_' | b'-'))
-        {
-            return Err(ControllerError::Invalid(
-                "invalid workflow child request identity",
-            ));
-        }
-        let namespace = match actor {
-            AgentActor::Operator => "operator".into(),
-            AgentActor::Agent(id) => format!("agent:{}", id.0),
-        };
-        let request_key = format!("{namespace}:{request_id}");
-        let request_digest = digest(&(&spawn, &binding))?;
-        let claim_key = claim.key()?;
-        if let Some(prior) = self.snapshot.receipts.get(&request_key) {
-            if prior.digest != request_digest {
-                return Err(ControllerError::RequestConflict);
-            }
-            claim.assigned_agent = prior.reply.agent_id;
-            let receipt = self
-                .snapshot
-                .workflow_claims
-                .get(&claim_key)
-                .ok_or(ControllerError::RecoveryRequired)?;
-            if receipt.claim != claim {
-                return Err(ControllerError::RequestConflict);
-            }
-            return Ok(AgentWorkflowChildLease {
-                lease: AgentWorkflowLease {
-                    agent: self.inspect(actor, claim.assigned_agent)?,
-                    epoch: receipt.epoch,
-                    initial: Vec::new(),
-                    replayed: true,
-                },
-                claim,
-            });
+        let (mut claim, request_key, request_digest, claim_key) =
+            self.engine_child_identity(actor, request_id, &spawn, &binding)?;
+        if let Some(prior) = self.existing_workflow_child(actor, request_id, &spawn, &binding)? {
+            return Ok(prior);
         }
         if self.snapshot.workflow_claims.contains_key(&claim_key) {
             return Err(ControllerError::RequestConflict);
@@ -162,12 +112,16 @@ impl<J: AgentControllerJournal> AgentController<J> {
         if self.provider_budget_recovery_required() {
             return Err(ControllerError::RecoveryRequired);
         }
-        if now_unix_ms == 0
-            || claim.deadline_unix_ms <= now_unix_ms
-            || claim.budget.wall_ms > claim.deadline_unix_ms - now_unix_ms
-        {
+        if now_unix_ms == 0 || claim.deadline_unix_ms <= now_unix_ms {
             return Err(ControllerError::Budget);
         }
+        // Request identity binds the original bounded wall declaration and absolute deadline.
+        // Only executable admission is clamped to the actual remaining window; retrying the
+        // already durable request cannot change its digest or receive a fresh clock refill.
+        claim.budget.wall_ms = claim
+            .budget
+            .wall_ms
+            .min(claim.deadline_unix_ms - now_unix_ms);
         if self.snapshot.receipts.len() >= MAX_RECEIPTS
             || self.snapshot.workflow_claims.len() >= MAX_RECEIPTS
         {
@@ -218,9 +172,11 @@ impl<J: AgentControllerJournal> AgentController<J> {
             },
         );
         self.commit(next)?;
+        let mut agent = self.inspect(actor, agent_id)?;
+        agent.budget.wall_ms = claim.budget.wall_ms;
         Ok(AgentWorkflowChildLease {
             lease: AgentWorkflowLease {
-                agent: self.inspect(actor, agent_id)?,
+                agent,
                 epoch,
                 initial,
                 replayed: false,
@@ -229,6 +185,128 @@ impl<J: AgentControllerJournal> AgentController<J> {
         })
     }
 
+    fn engine_child_identity(
+        &self,
+        actor: AgentActor,
+        request_id: &str,
+        spawn: &AgentCommandV1,
+        binding: &AgentWorkflowChildBinding,
+    ) -> Result<(AgentWorkflowClaim, String, String, String), ControllerError> {
+        spawn.validate().map_err(ControllerError::Invalid)?;
+        let AgentCommandV1::Spawn { task, budget, .. } = &spawn else {
+            return Err(ControllerError::Invalid("workflow child requires spawn"));
+        };
+        let claim = AgentWorkflowClaim {
+            workflow_id: binding.workflow_id.clone(),
+            node_id: binding.node_id,
+            attempt: binding.attempt,
+            input_digest: binding.input_digest.clone(),
+            assigned_agent: AgentIdV1(1),
+            task: task.clone(),
+            budget: *budget,
+            deadline_unix_ms: binding.deadline_unix_ms,
+        };
+        claim.validate()?;
+        if request_id.is_empty()
+            || request_id.len() > MAX_AGENT_REQUEST_ID_BYTES
+            || !request_id
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b':' | b'_' | b'-'))
+        {
+            return Err(ControllerError::Invalid(
+                "invalid workflow child request identity",
+            ));
+        }
+        let namespace = match actor {
+            AgentActor::Operator => "operator".into(),
+            AgentActor::Agent(id) => format!("agent:{}", id.0),
+        };
+        let request_key = format!("{namespace}:{request_id}");
+        let request_digest = digest(&(spawn, binding))?;
+        let claim_key = claim.key()?;
+        Ok((claim, request_key, request_digest, claim_key))
+    }
+    pub fn existing_workflow_child(
+        &self,
+        actor: AgentActor,
+        request_id: &str,
+        spawn: &AgentCommandV1,
+        binding: &AgentWorkflowChildBinding,
+    ) -> Result<Option<AgentWorkflowChildLease>, ControllerError> {
+        self.check_live()?;
+        self.check_actor(actor)?;
+        let (mut claim, request_key, request_digest, claim_key) =
+            self.engine_child_identity(actor, request_id, spawn, binding)?;
+        if let Some(prior) = self.snapshot.receipts.get(&request_key) {
+            if prior.digest != request_digest {
+                return Err(ControllerError::RequestConflict);
+            }
+            claim.assigned_agent = prior.reply.agent_id;
+            let receipt = self
+                .snapshot
+                .workflow_claims
+                .get(&claim_key)
+                .ok_or(ControllerError::RecoveryRequired)?;
+            if receipt.claim.budget.wall_ms == 0
+                || receipt.claim.budget.wall_ms > claim.budget.wall_ms
+            {
+                return Err(ControllerError::RequestConflict);
+            }
+            // The verified original request digest above binds requested wall. Its actual
+            // admitted claim retains the smaller deadline clamp instead of requoting now.
+            claim.budget.wall_ms = receipt.claim.budget.wall_ms;
+            if receipt.claim != claim {
+                return Err(ControllerError::RequestConflict);
+            }
+            return Ok(Some(AgentWorkflowChildLease {
+                lease: AgentWorkflowLease {
+                    agent: self.inspect(actor, claim.assigned_agent)?,
+                    epoch: receipt.epoch,
+                    initial: Vec::new(),
+                    replayed: true,
+                },
+                claim,
+            }));
+        }
+        Ok(None)
+    }
+    /// Actual absolute epoch ceiling. Caller cannot supply a replacement runtime clock anchor.
+    pub fn runtime_epoch_deadline(
+        &self,
+        id: AgentIdV1,
+        epoch: AgentEpochV1,
+    ) -> Result<u64, ControllerError> {
+        self.check_live()?;
+        let record = self
+            .snapshot
+            .agents
+            .get(&id)
+            .ok_or(ControllerError::UnknownAgent)?;
+        if record.view.state.epoch() != Some(epoch) {
+            return Err(ControllerError::StaleEpoch);
+        }
+        let start = record
+            .runtime_started_at_unix_ms
+            .ok_or(ControllerError::RecoveryRequired)?;
+        let lifetime = start
+            .checked_add(
+                record
+                    .view
+                    .budget
+                    .wall_ms
+                    .saturating_sub(record.wall_used_ms),
+            )
+            .ok_or(ControllerError::Capacity)?;
+        Ok(self
+            .snapshot
+            .workflow_claims
+            .values()
+            .filter(|receipt| receipt.claim.assigned_agent == id && receipt.epoch == epoch)
+            .map(|receipt| receipt.claim.deadline_unix_ms)
+            .chain(std::iter::once(lifetime))
+            .min()
+            .ok_or(ControllerError::RecoveryRequired)?)
+    }
     pub fn claim_workflow_task(
         &mut self,
         claim: AgentWorkflowClaim,

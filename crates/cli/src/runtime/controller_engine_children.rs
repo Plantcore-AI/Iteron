@@ -33,6 +33,7 @@ pub(super) struct ControllerEngineChildren {
     effort: Effort,
     budget: AgentBudgetV1,
     deadline: Instant,
+    deadline_unix_ms: u64,
     spawn_ledger: Arc<SessionSpawnLedger>,
     claims: Mutex<Vec<AgentWorkflowClaim>>,
     unresolved: Arc<AtomicBool>,
@@ -64,6 +65,22 @@ impl ControllerEngineChildren {
         {
             return Err(ControllerError::Permission);
         }
+        let now = u64::try_from(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|_| ControllerError::Invalid("engine child clock is before epoch"))?
+                .as_millis(),
+        )
+        .map_err(|_| ControllerError::Capacity)?;
+        let remaining = u64::try_from(
+            deadline
+                .saturating_duration_since(Instant::now())
+                .as_millis(),
+        )
+        .map_err(|_| ControllerError::Capacity)?;
+        let deadline_unix_ms = now
+            .checked_add(remaining)
+            .ok_or(ControllerError::Capacity)?;
         Ok(Self {
             control,
             parent,
@@ -72,6 +89,7 @@ impl ControllerEngineChildren {
             effort,
             budget,
             deadline,
+            deadline_unix_ms,
             spawn_ledger,
             claims: Mutex::new(Vec::new()),
             unresolved: Arc::new(AtomicBool::new(false)),
@@ -148,27 +166,9 @@ impl ControllerEngineChildren {
                     .as_millis(),
             )
             .unwrap_or(u64::MAX);
-            let mut budget = self.budget;
-            budget.wall_ms = budget.wall_ms.min(remaining_wall);
-            if budget.validate().is_err() {
+            let budget = self.budget;
+            if remaining_wall == 0 || budget.validate().is_err() {
                 return AgentOutcome::null("engine child wall envelope expired before admission");
-            }
-            let now = match SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .ok()
-                .and_then(|value| u64::try_from(value.as_millis()).ok())
-            {
-                Some(value) => value,
-                None => return AgentOutcome::null("engine child clock is unavailable"),
-            };
-            // This deadline is the actual currently inherited parent bound; one millisecond of clock
-            // conversion slack is subtracted from the node's executable wall budget, never added.
-            let Some(deadline_unix_ms) = now.checked_add(remaining_wall) else {
-                return AgentOutcome::null("engine child deadline exceeds the host envelope");
-            };
-            budget.wall_ms = budget.wall_ms.saturating_sub(1);
-            if budget.validate().is_err() {
-                return AgentOutcome::null("engine child has no remaining wall admission");
             }
             let input_digest = format!("{:x}", Sha256::digest(call.prompt.as_bytes()));
             let binding = AgentWorkflowChildBinding {
@@ -176,7 +176,7 @@ impl ControllerEngineChildren {
                 node_id: node,
                 attempt,
                 input_digest,
-                deadline_unix_ms,
+                deadline_unix_ms: self.deadline_unix_ms,
             };
             let request_id = format!(
                 "engine:{}:{node}:{attempt}",

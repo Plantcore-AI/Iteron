@@ -24,6 +24,7 @@ pub struct AgentInvocationIdentity {
     attempt: u64,
 }
 impl AgentInvocationIdentity {
+    #[cfg(feature = "script-workflows")]
     pub(crate) fn admitted(index: usize, attempt: crate::task_dag::AttemptId) -> Option<Self> {
         Some(Self {
             index: u64::try_from(index).ok()?.checked_add(1)?,

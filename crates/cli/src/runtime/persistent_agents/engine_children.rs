@@ -29,6 +29,11 @@ impl<J: AgentControllerJournal + Send + 'static> PersistentAgentHost<J> {
                 .controller
                 .lock()
                 .map_err(|_| ControllerError::Poisoned)?;
+            if let Some(existing) =
+                controller.existing_workflow_child(actor, request_id, &spawn, &binding)?
+            {
+                return Ok(existing);
+            }
             let permit = self
                 .shared
                 .permits
@@ -41,13 +46,18 @@ impl<J: AgentControllerJournal + Send + 'static> PersistentAgentHost<J> {
             (admitted, permit)
         };
         if !admission.lease.replayed {
-            self.start_execution(
+            self.start_execution_with_deadline(
                 admission.lease.agent.clone(),
                 admission.lease.epoch,
                 admission.lease.initial.clone(),
                 permit,
+                Some(admission.claim.deadline_unix_ms),
             );
         }
         Ok(admission)
     }
 }
+
+#[cfg(test)]
+#[path = "engine_children_tests.rs"]
+mod tests;
