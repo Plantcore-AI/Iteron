@@ -15,8 +15,13 @@
 //! tiering of ADR-007, with the full sandbox/policy as the next crates.
 
 pub use iteron_kernel::{diagnostics, effect_admission, effect_class, effect_journal, effects};
+mod tool_execution_assembly;
+mod tool_execution_session;
+#[cfg(test)]
+mod tool_execution_test_ports;
 mod tool_response;
 mod tool_round_driver;
+mod tool_round_execution;
 mod tool_turn;
 use tool_turn::EarlyToolInFlight as PureToolInFlight;
 
@@ -89,6 +94,7 @@ use effect_descriptor::{
 };
 use kernel_effect_bridge::broker_kernel_effect;
 mod deferred_batch_admission;
+#[cfg(test)]
 mod deferred_batch_assembly;
 mod deferred_batch_executor;
 mod deferred_tool_batch;
@@ -2635,7 +2641,7 @@ impl Agent {
             }
 
             let stream_start = provider_round.stream_started();
-            let (mut tool_round, replayed_ui) = tool_round_driver::ToolRoundDriver::retain(
+            let (tool_round, replayed_ui) = tool_round_driver::ToolRoundDriver::retain(
                 &returned_tools,
                 provider_round.into_tool_work()?,
                 early_tool_collection::EarlyToolWindow {
@@ -2649,107 +2655,34 @@ impl Agent {
             for event in replayed_ui {
                 self.ui(event);
             }
-            let early_unknown_count = tool_round
-                .collect_early(self.early_tool_collection(turn_id))
-                .await?;
-            if early_unknown_count > 0 {
-                if let Some(outcome) = self.collect_and_finish_requested_control(turn_id).await? {
-                    return Ok(outcome);
-                }
-                return Err(KernelError::UnknownEffects {
-                    count: early_unknown_count,
-                });
-            }
-
-            if optional_tool_round.tracked() {
-                candidate_workspace_baseline
-                    .capture_before(optional_tool_round.paths())
+            let mut tool_execution = tool_round_execution::ToolRoundExecution::new(tool_round);
+            loop {
+                let progress = tool_execution
+                    .pump(
+                        self.tool_execution_session(turn_id, messages, result_projection_budget),
+                        &optional_tool_round,
+                        &mut candidate_workspace_baseline,
+                    )
                     .await;
-            }
-            if tool_round.select_batch(
-                self.deferred_batch_policy(messages),
-                optional_tool_round.excluded(),
-            )? {
-                let effecting_governor = iteron_sched::Governor::new(
-                    self.execution_policy
-                        .effecting_tool_admission
-                        .max_concurrency,
-                );
-                let execution = tool_round
-                    .execute_batch(self.deferred_batch_admission(
-                        turn_id,
-                        &effecting_governor,
-                        result_projection_budget,
-                    ))
-                    .await;
-                if let Err(error) = execution {
-                    if matches!(error, KernelError::UnknownEffects { .. })
-                        && let Some(outcome) =
-                            self.collect_and_finish_requested_control(turn_id).await?
-                    {
-                        return Ok(outcome);
-                    }
-                    return Err(error);
-                }
-            }
-            while let Some((idx, tu, proposal)) = tool_round.next_declaration()? {
-                if let Some(reason) = optional_tool_round.refusal(idx) {
-                    let r = ToolResult {
-                        tool_use_id: tu.id.clone(),
-                        content: reason.into(),
-                        is_error: true,
-                        trust: Trust::Workspace,
-                        latency_ms: 0,
-                    };
-                    self.commit_refused_tool_result(turn_id, &tu.name, &r)?;
-                    self.ui(tool_end_ui(&tu, &r));
-                    tool_round.accept(idx, r)?;
-                    continue;
-                }
-                let trust = self.governing_turn_trust(messages);
-                let (proposal, cap, action_sig) = match self
-                    .tool_declaration_admission(turn_id, trust)
-                    .run(&tu, proposal)
-                    .await?
-                {
-                    tool_declaration_admission::ToolAdmissionDecision::Permitted {
-                        proposal,
-                        capability,
-                        action_signature,
-                    } => (proposal, capability, action_signature),
-                    tool_declaration_admission::ToolAdmissionDecision::Refused(result) => {
-                        tool_round.accept(idx, result)?;
-                        continue;
-                    }
-                };
-                let mcp_dispatch_permit = if self.is_plantcore_mcp_dispatch(&tu.name) {
-                    match self.enter_plantcore_external_dispatch().await {
-                        Ok(permit) => permit,
-                        Err(()) => {
-                            let _ = self.collect_inbound_ops(turn_id);
-                            let control = self.requested_control();
-                            let r = if control == InboundControl::None {
-                                ToolResult {
-                                    tool_use_id: tu.id.clone(),
-                                    content:
-                                        "MCP dispatch refused because the resident Run is terminal"
-                                            .into(),
-                                    is_error: true,
-                                    trust: Trust::Workspace,
-                                    latency_ms: 0,
-                                }
-                            } else {
-                                control_refusal(&tu, control)
-                            };
-                            self.commit_refused_tool_result(turn_id, &tu.name, &r)?;
-                            self.ui(tool_end_ui(&tu, &r));
-                            tool_round.accept(idx, r)?;
-                            continue;
+                let special = match progress {
+                    Ok(tool_round_execution::ToolRoundProgress::Complete) => break,
+                    Ok(tool_round_execution::ToolRoundProgress::Kernel(call)) => call,
+                    Err(error) => {
+                        if matches!(&error, KernelError::UnknownEffects { .. })
+                            && let Some(outcome) =
+                                self.collect_and_finish_requested_control(turn_id).await?
+                        {
+                            return Ok(outcome);
                         }
+                        return Err(error);
                     }
-                } else {
-                    None
                 };
+                let tool_round_execution::PermittedKernelCall {
+                    kind: _,
+                    index: idx,
+                    call: tu,
+                    capability: cap,
+                } = special;
                 if self.plantcore_runtime_enabled() && tu.name == iteron_tools::PUBLISH_ARTIFACT {
                     let call =
                         self.kernel_tool_call(turn_id, idx, &tu, cap, result_projection_budget)?;
@@ -2775,7 +2708,7 @@ impl Agent {
                         latency_ms: started.elapsed().as_millis() as u64,
                     };
                     let result = self.complete_kernel_tool_call(call, result)?;
-                    tool_round.accept(idx, result)?;
+                    tool_execution.settle_kernel(idx, result)?;
                     continue;
                 }
                 // Optional plan changes use the same permission, hook and control admission.
@@ -2784,7 +2717,7 @@ impl Agent {
                         self.kernel_tool_call(turn_id, idx, &tu, cap, result_projection_budget)?;
                     let result = self.execute_task_plan(turn_id, &tu)?;
                     let result = self.complete_kernel_tool_call(call, result)?;
-                    tool_round.accept(idx, result)?;
+                    tool_execution.settle_kernel(idx, result)?;
                     continue;
                 }
                 // Delegation spends provider budget and creates a child rollout. Its ordinary
@@ -2820,7 +2753,7 @@ impl Agent {
                         latency_ms: 0,
                     };
                     let result = self.complete_kernel_tool_call(call, r)?;
-                    tool_round.accept(idx, result)?;
+                    tool_execution.settle_kernel(idx, result)?;
                     continue;
                 }
                 // Intercept the in-turn `Workflow` tool (parallels `dispatch_agent` above): launch a
@@ -2846,7 +2779,7 @@ impl Agent {
                         };
                         self.commit_refused_tool_result(turn_id, &tu.name, &r)?;
                         self.ui(tool_end_ui(&tu, &r));
-                        tool_round.accept(idx, r)?;
+                        tool_execution.settle_kernel(idx, r)?;
                         continue;
                     }
                     // The workflow tool never reaches `Registry::run_effect`, so before #16 it was
@@ -2891,39 +2824,14 @@ impl Agent {
                         latency_ms: 0,
                     };
                     let result = self.complete_kernel_tool_call(call, r)?;
-                    tool_round.accept(idx, result)?;
+                    tool_execution.settle_kernel(idx, result)?;
                     continue;
                 }
-                let admitted = proposal.eligible;
-                let intent = proposal.admit(admitted);
-                let ordered = self
-                    .ordered_tool_call(
-                        turn_id,
-                        &tu.name,
-                        mcp_dispatch_permit.is_some(),
-                        result_projection_budget,
-                    )
-                    .execute(ordered_tool_call::OrderedCallAdmission {
-                        index: idx,
-                        intent,
-                        capability: cap,
-                        action_signature: action_sig,
-                    })
-                    .await;
-                let completed = match ordered {
-                    Ok(completed) => completed,
-                    Err(error) => {
-                        if matches!(&error, KernelError::UnknownEffects { .. })
-                            && let Some(outcome) =
-                                self.collect_and_finish_requested_control(turn_id).await?
-                        {
-                            return Ok(outcome);
-                        }
-                        return Err(error);
-                    }
-                };
-                tool_round.accept_ordered(idx, completed.result, completed.image_projection)?;
+                return Err(KernelError::EffectBoundary(
+                    "special tool handoff lost its actual executable kind".into(),
+                ));
             }
+            let tool_round = tool_execution.into_round()?;
             self.ledger.phase_tools(tools_span.elapsed_ms());
 
             tool_round.validate_complete()?;
@@ -3039,105 +2947,6 @@ impl Agent {
         pure: &mut Vec<PureToolInFlight>,
     ) -> Result<(), KernelError> {
         self.early_tool_collection(turn).abort_all(pure).await
-    }
-
-    /// Assemble the ordered effect owner from real disjoint state ports. No permission or
-    /// provider authority reaches its executor, and the external permit remains with this loop.
-    fn tool_declaration_admission(
-        &mut self,
-        turn: TurnId,
-        trust: Trust,
-    ) -> tool_declaration_admission::ToolDeclarationAdmission<'_> {
-        let events = self.tool_events(turn);
-        let authority = self.operator_authority();
-        tool_declaration_admission::ToolDeclarationAdmission {
-            journal: tool_execution_journal::ToolExecutionJournal {
-                rollout: &mut self.rollout,
-                effects: &mut self.effect_journal,
-                ledger: &mut self.ledger,
-                failed_actions: &mut self.failed_actions,
-                record_failed: &mut self.record_failed,
-                diagnostics: &self.diagnostics,
-                #[cfg(test)]
-                fault: &mut self.fail_next_durable_append,
-            },
-            inbox: &mut self.inbox,
-            control: &mut self.control,
-            force_cancel: self.force_cancel_seam.as_mut(),
-            approval_sequence: &mut self.approval_seq,
-            permission: permission_transaction::PermissionTransaction {
-                mode: &mut self.permission_mode,
-                rules: &mut self.permission_rules,
-                provenance: &mut self.runtime_policy_provenance,
-                effort: self.effort,
-                max_turns: self.budget.max_turns,
-            },
-            scope: tool_declaration_admission::ToolAdmissionScope {
-                turn,
-                registry: &self.registry,
-                workspace: &self.workspace,
-                hooks: &self.hooks,
-                hook_journal: self.hook_effect_journal.clone(),
-                trust,
-                authority,
-                ceiling: self.authority_ceiling,
-                policy_capabilities: self.policy_capabilities,
-                bypass: self.bypass_permissions,
-                ordinary_extensions: self.ordinary_extensions.is_some(),
-                interactive: self.interactive_approvals,
-                deadline: self.run_deadline.current(),
-                activity: self.activity.clone(),
-                events,
-            },
-        }
-    }
-
-    fn ordered_tool_call(
-        &mut self,
-        turn: TurnId,
-        tool: &str,
-        settle_on_drain: bool,
-        projection: context_runtime::TurnResultProjectionBudget,
-    ) -> ordered_tool_call::OrderedToolCall<'_> {
-        let events = self.tool_events(turn);
-        let publication = self.tool_output_publication_factory();
-        let spill = self.ordinary_tool_spill_store(tool);
-        let hooks = hook_execution::HookExecutionScope {
-            turn,
-            workspace: self.workspace.as_path(),
-            hooks: &self.hooks,
-            command_journal: self.hook_effect_journal.clone(),
-            interrupt: self.control.interrupt().cloned(),
-            drain: self.control.drain().clone(),
-            activity: self.activity.clone(),
-            emitter: self.lifecycle_emitter.clone(),
-            dispatcher: self.lifecycle_hooks.clone(),
-            correlation: self.lifecycle_correlation(Some(turn)),
-        };
-        ordered_tool_call::OrderedToolCall {
-            journal: tool_execution_journal::ToolExecutionJournal {
-                rollout: &mut self.rollout,
-                effects: &mut self.effect_journal,
-                ledger: &mut self.ledger,
-                failed_actions: &mut self.failed_actions,
-                record_failed: &mut self.record_failed,
-                diagnostics: &self.diagnostics,
-                #[cfg(test)]
-                fault: &mut self.fail_next_durable_append,
-            },
-            scope: ordered_tool_call::OrderedToolScope {
-                registry: &self.registry,
-                interrupt: self.control.interrupt().cloned(),
-                force_cancel: self.control.force_cancel().clone(),
-                drain: self.control.drain().clone(),
-                settle_on_drain,
-                spill,
-                projection,
-                publication,
-                hooks,
-                events,
-            },
-        }
     }
 
     async fn advance_turn(&mut self) -> Result<(), KernelError> {
