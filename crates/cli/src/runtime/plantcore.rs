@@ -36,6 +36,10 @@ pub(super) struct PlantcoreRuntime {
 }
 
 impl PlantcoreRuntime {
+    pub(super) fn terminal(&self) -> Option<PlantcoreTerminal> {
+        self.pending_terminal
+    }
+
     pub(super) async fn enter_external_dispatch(&self) -> Result<Option<DispatchPermit>, ()> {
         match self.dispatch_gate.as_ref() {
             Some(gate) => gate.enter().await.map(Some).ok_or(()),
@@ -487,7 +491,7 @@ impl Agent {
     }
 
     pub(super) fn plantcore_terminal(&self) -> Option<PlantcoreTerminal> {
-        self.plantcore.pending_terminal
+        self.plantcore.terminal()
     }
 
     pub(crate) fn plantcore_usage_unavailable(&self) -> bool {

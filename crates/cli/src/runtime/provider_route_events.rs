@@ -11,6 +11,7 @@ use iteron_obs::lifecycle::{LifecycleCorrelation, LifecycleEmitter};
 use iteron_protocol::{LifecyclePayload, TurnId};
 use std::time::{Duration, Instant};
 
+#[derive(Clone)]
 pub(super) struct ProviderRouteEvents {
     pub(super) turn: TurnId,
     pub(super) lifecycle: Option<LifecycleEmitter>,

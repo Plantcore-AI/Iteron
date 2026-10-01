@@ -47,6 +47,19 @@ impl GovernedProviderRoute {
         format!("{}:{}", self.route.provider_id, self.route.model_id)
     }
 
+    pub(super) fn objective_evidence(&self) -> super::provider_dispatch::ProviderObjectiveEvidence {
+        super::provider_dispatch::ProviderObjectiveEvidence {
+            score: self
+                .objective_rank
+                .as_ref()
+                .map(|rank| rank.score_millionths),
+            digest: self
+                .objective_rank
+                .as_ref()
+                .map(|rank| rank.evidence_digest_sha256.clone()),
+        }
+    }
+
     pub(super) fn admits_request(&self, request: &TurnRequest) -> bool {
         self.objective_rank.is_some()
             && (request.input_images.is_empty() || self.image_input == Some(true))

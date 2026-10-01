@@ -26,29 +26,25 @@ impl Agent {
         port.transpose()
     }
 
+    pub(super) fn provider_financial_source(
+        &self,
+    ) -> super::provider_financial_source::ProviderFinancialSource {
+        super::provider_financial_source::ProviderFinancialSource {
+            tenant: self.rollout.tenant().clone(),
+            run: self.rollout.run_id().clone(),
+            attribution: self.projection_attribution.clone(),
+            usd: self.usd_budget.clone(),
+            cohort: self.persistent_provider_port_evidence(),
+        }
+    }
+
     pub(super) fn provider_financial_context(
         &self,
     ) -> super::provider_financial_context::ProviderFinancialContext {
-        use super::provider_financial_context::{
-            ProviderFinancialContext, ProviderFinancialOwners, ProviderFinancialScope,
-            ProviderPricingEvidence,
-        };
-        ProviderFinancialContext::new(
-            ProviderFinancialScope {
-                tenant: self.rollout.tenant().clone(),
-                run_id: self.rollout.run_id().clone(),
-                attribution: self.projection_attribution.clone(),
-            },
-            ProviderPricingEvidence {
-                port: self.provider_selection.pricing_port().cloned(),
-                card: self.provider_selection.card().cloned(),
-                context_window: self.provider.physical_input_token_ceiling(&self.model),
-                usage_bounds: self.provider.usage_bound_semantics(),
-            },
-            ProviderFinancialOwners {
-                usd: self.usd_budget.clone(),
-                cohort: self.persistent_provider_port_evidence(),
-            },
+        self.provider_financial_source().selected(
+            &self.provider_selection,
+            self.provider.as_ref(),
+            &self.model,
         )
     }
 
