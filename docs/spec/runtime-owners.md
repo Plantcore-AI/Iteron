@@ -105,6 +105,11 @@ observation; it does not grant permission or acquire mutable ownership of anothe
 | `provider_extension_assembly.rs` | Compose no adapter in standalone builds and capture an owned optional gate only from installed feature authority | Trusted composition → optional borrowed extension / immutable owned gate |
 | `legacy_provider_extension.rs` | Compile-only historical adapter; preserve actual permit Drop and physical observation without product types in provider owners | Explicit feature → project-neutral port |
 
+| `steering_admission.rs` | Consume the actual bounded inbox only after low-trust evidence and the Message receipt commit; preserve exact pending sources on a refused writer | Host-resolved source → real transcript journal → exact client receipt |
+| `completion_session.rs` | Compose concrete record/control/steering ports and, only for existing explicit verification, the actual gate ports | Transcript + control safe point → existing optional verification |
+| `turn_completion.rs` | Consume one actual model or declaration-complete tool response through steering, guidance and completion decisions | Model decision / tool response → typed action → independent host terminal |
+| `completion_assembly.rs`, `steering_assembly.rs` | Capture disjoint actual scope/state/writer ports; no Agent retained by a domain | Trusted composition → one consumed completion lifetime |
+
 ```mermaid
 flowchart LR
     Journal[Journal admission owner] -->|already admitted ToolIntent| Batch[DeferredBatchExecutor]
@@ -139,3 +144,4 @@ raw-artifact, frontend and restart journeys.
 ### Provider discovery admission
 
 `providers/discovery.rs` owns dormant network work, the unique refresh task, first-paint admission, its activity phase and immutable settled entries. `ProviderDirectory` receives a typed settlement and delegates selected-provider construction; it cannot change the task phase or dispatch another refresh. The admitted native provider forwards physical output-cap and exact request-observation ports to its original adapter. Cache and catalog responsibilities remain separate pending breakdown.
+

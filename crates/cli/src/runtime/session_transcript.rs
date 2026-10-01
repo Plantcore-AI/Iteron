@@ -81,14 +81,33 @@ impl SessionTranscriptOwner {
 }
 
 impl TranscriptAdmissionJournal<'_> {
-    fn message(&mut self, turn: TurnId, message: Message) -> Result<Seq, KernelError> {
+    pub(super) fn message(&mut self, turn: TurnId, message: Message) -> Result<Seq, KernelError> {
+        self.append(turn, EventKind::Message { message })
+    }
+    pub(super) fn agent_input(
+        &mut self,
+        turn: TurnId,
+        admission: iteron_protocol::agent_input::AgentInputAdmissionV1,
+    ) -> Result<Seq, KernelError> {
+        self.append(turn, EventKind::AgentInputAdmittedV1 { admission })
+    }
+    pub(super) fn memory_reference(
+        &mut self,
+        turn: TurnId,
+        admission: iteron_protocol::memory_reference::MemoryReferenceAdmissionV1,
+    ) -> Result<Seq, KernelError> {
+        self.append(turn, EventKind::MemoryReferenceAdmittedV1 { admission })
+    }
+    fn append(&mut self, turn: TurnId, kind: EventKind) -> Result<Seq, KernelError> {
         if *self.record_failed {
             return Err(KernelError::Record(RecordError::Io(std::io::Error::other(
                 "transcript writer is unavailable",
             ))));
         }
         #[cfg(test)]
-        if *self.fault == Some(DurableAppendFault::SteerMessage) {
+        if *self.fault == Some(DurableAppendFault::SteerMessage)
+            && matches!(kind, EventKind::Message { .. })
+        {
             *self.fault = None;
             return Err(self.record_error(RecordError::Io(std::io::Error::other(
                 "injected durable message append refusal",
@@ -97,7 +116,7 @@ impl TranscriptAdmissionJournal<'_> {
         let mut event = Event {
             seq: Seq::ZERO,
             turn,
-            kind: EventKind::Message { message },
+            kind,
         };
         let started = Instant::now();
         let committed = self.rollout.append(&event);

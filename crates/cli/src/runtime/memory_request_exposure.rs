@@ -11,6 +11,22 @@ pub(super) struct MemoryVisibilityOwner {
     entries: VecDeque<MemoryVisibilityEvidence>,
 }
 impl MemoryVisibilityOwner {
+    pub(super) fn schedule_reference(
+        &mut self,
+        destination_turn: TurnId,
+        source_turn: TurnId,
+        body_digest: [u8; 32],
+    ) {
+        let mut head = [0u8; 8];
+        head.copy_from_slice(&body_digest[..8]);
+        self.schedule(MemoryVisibilityEvidence {
+            fact_id: iteron_ctx::MemoryFactId(u64::from_be_bytes(head)),
+            fact_digest_sha256: body_digest,
+            source_turn,
+            destination_turn,
+            state: MemoryVisibilityState::Scheduled,
+        });
+    }
     pub(super) fn schedule(&mut self, evidence: MemoryVisibilityEvidence) {
         if self.entries.len() == iteron_ctx::MAX_MEMORY_TRACE_VISIBILITY {
             self.entries.pop_front();
