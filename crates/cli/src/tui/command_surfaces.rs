@@ -521,14 +521,6 @@ pub(super) fn apply_transcript_effect_event(
                     clear_last_turn_telemetry_from(app, &snapshot);
                 }
                 session.adopt(*snapshot);
-                let persisted_provider = applied.provider_id.clone();
-                let persisted_model = applied.model_id.clone();
-                std::mem::drop(tokio::task::spawn_blocking(move || {
-                    crate::config::update_user_config(move |config| {
-                        crate::config::apply_setting(config, "provider", &persisted_provider)?;
-                        crate::config::apply_setting(config, "model", &persisted_model)
-                    })
-                }));
                 app.note(
                     block::NoticeLevel::Ok,
                     format!(
@@ -705,9 +697,7 @@ pub(super) fn apply_transcript_effect_event(
                 let mut rows = Vec::new();
                 for entry in receipt.entries {
                     let status = match entry.status {
-                        crate::client_effects::project_init::InitStatus::Created => {
-                            "created and native publication confirmed"
-                        }
+                        crate::client_effects::project_init::InitStatus::Created => "created",
                         crate::client_effects::project_init::InitStatus::Existing => {
                             "already exists; preserved"
                         }
@@ -715,7 +705,7 @@ pub(super) fn apply_transcript_effect_event(
                             "not published"
                         }
                         crate::client_effects::project_init::InitStatus::PublicationUnknown => {
-                            "publication unknown; host admission retained"
+                            "result unknown; do not retry yet"
                         }
                     };
                     rows.push(kv(entry.name, status));

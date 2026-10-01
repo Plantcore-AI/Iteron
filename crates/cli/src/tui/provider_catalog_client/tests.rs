@@ -83,7 +83,7 @@ async fn real_retry_receipt_precedes_selection_with_new_host_digest() {
     );
     let selected = host.recv().await.unwrap();
     match selected.control {
-        Control::SelectModelV1(request) => {
+        Control::SelectModelDefaultV1(request) => {
             assert_eq!(request.inventory_digest_sha256, "2".repeat(64));
             assert_eq!(request.provider_id, "ui-provider");
             assert_eq!(request.model_id, "m");

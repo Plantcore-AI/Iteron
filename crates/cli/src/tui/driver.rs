@@ -353,6 +353,7 @@ pub async fn run(
     let mut eq_open = true;
     let mut last_spin = Instant::now();
     let mut next_frame_at = Instant::now();
+    let mut model_preference_revision = 0;
     let mut persisted_revision = app.editor.persistence_revision();
     let mut persisted_history_len = app.editor.history_len();
     let mut transcript_effects = transcript_effect::Supervisor::default();
@@ -373,6 +374,11 @@ pub async fn run(
     // return; relying on `Drop` would only abort the async shell and could orphan a helper process.
     let tui_result: anyhow::Result<()> = async {
     loop {
+        if let Some(receipt)=session.client.model_preference_after(model_preference_revision) {
+            model_preference_revision=receipt.revision;
+            event_actions::show_model_preference(&mut app,receipt);
+            redraw=true;
+        }
         // Kick off the initial task once the terminal is up.
         if let Some(task) = first_task.take_ready() {
             startup.mark(startup::StartupPhase::InitialSubmission);

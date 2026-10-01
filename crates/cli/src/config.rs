@@ -8,6 +8,7 @@
 //! JSON, not TOML, to avoid a dependency (serde_json is already in the tree — zero-dependency
 //! first). Every field is optional; a missing file is not an error (defaults apply).
 
+pub(crate) mod preferences;
 mod provider_governor;
 mod retry;
 mod schema;

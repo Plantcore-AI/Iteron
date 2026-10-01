@@ -12,6 +12,7 @@ pub(super) fn is_immediate_control(control: &Control) -> bool {
             | Control::PluginManagement(_)
             | Control::ActivityCenter(_)
             | Control::OperatorStatus
+            | Control::ModelPreferenceRead(_)
             | Control::Inventory(_)
             | Control::ProviderCatalog(_)
             | Control::TranscriptExport(_)
@@ -302,6 +303,11 @@ pub(super) async fn apply_immediate_control(
     request: ControlRequest,
 ) {
     match request.control {
+        Control::ModelPreferenceRead(command) => {
+            let _ = request
+                .reply
+                .send(super::model_preferences::read(&events.contract, command));
+        }
         Control::OrdinaryExtensions(command) => {
             operator_status.ordinary_extensions.dispatch(
                 &operator_status.activity,
@@ -692,6 +698,31 @@ pub(super) async fn apply_control(
                 cancel,
                 request.reply,
             );
+            return;
+        }
+        Control::ModelPreferenceRead(command) => {
+            super::model_preferences::read(&events.contract, command)
+        }
+        Control::SelectModelDefaultV1(selection_request) => {
+            let selected = agent
+                .client_inventory_owner()
+                .ok_or("bootstrap inventory is unavailable".to_owned())
+                .and_then(|owner| owner.resolve(&selection_request));
+            match selected {
+                Ok(selection) => {
+                    super::model_preferences::select_default(
+                        agent,
+                        events,
+                        &operator_status.activity,
+                        selection,
+                        request.reply,
+                    )
+                    .await
+                }
+                Err(reason) => {
+                    let _ = request.reply.send(ControlReply::Refused(reason));
+                }
+            }
             return;
         }
         Control::SelectModelV1(request) => match agent

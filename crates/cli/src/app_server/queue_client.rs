@@ -302,6 +302,9 @@ impl AppServerClient {
     }
 
     /// The same bounded Thread/Turn/Item projection used by the interactive and headless clients.
+    pub(crate) fn model_preference_after(&self, revision: u64) -> Option<super::PreferenceReceipt> {
+        self.contract.model_preference_after(revision)
+    }
     pub(crate) fn thread_snapshot_v1(
         &self,
     ) -> Option<iteron_protocol::product_contract::ThreadSnapshotV1> {

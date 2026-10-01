@@ -53,7 +53,18 @@ pub(super) async fn apply(
                     }
                     ControlReply::State(Box::new(snapshot_of(agent)))
                 }
-                Err(error) => ControlReply::Refused(error.public_summary()),
+                Err(error) => {
+                    // ModelSelected is already committed. RateCardBound failure retains the
+                    // actual journal poison and admission refusal, but cannot restore the old
+                    // route or make presentation repeat the committed model transaction.
+                    let _ = events
+                        .publish(ServerEvent::Notice(format!(
+                            "model selected; rate-card binding failed: {}",
+                            error.public_summary()
+                        )))
+                        .await;
+                    ControlReply::State(Box::new(snapshot_of(agent)))
+                }
             }
         }
         Err(error) => ControlReply::Refused(format!(

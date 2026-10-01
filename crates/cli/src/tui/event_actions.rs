@@ -1,5 +1,32 @@
 use super::*;
 
+pub(super) fn show_model_preference(app: &mut App, receipt: app_server::PreferenceReceipt) {
+    use crate::config::preferences::PreferenceWriteStatus;
+    let route = format!(
+        "{}:{}",
+        receipt.provider_id.chars().take(120).collect::<String>(),
+        receipt.model_id.chars().take(120).collect::<String>()
+    );
+    let (level, message) = match receipt.status {
+        PreferenceWriteStatus::Pending => {
+            (block::NoticeLevel::Info, format!("saving default {route}…"))
+        }
+        PreferenceWriteStatus::Installed => (
+            block::NoticeLevel::Ok,
+            format!("default {route} saved for the next session"),
+        ),
+        PreferenceWriteStatus::NotInstalled => (
+            block::NoticeLevel::Warn,
+            format!("default {route} was not saved; this session's selection is unchanged"),
+        ),
+        PreferenceWriteStatus::InstallationUnknown => (
+            block::NoticeLevel::Warn,
+            format!("saving default {route} is unconfirmed; this session's selection is unchanged"),
+        ),
+    };
+    app.note(level, message);
+}
+
 /// Apply one EQ envelope.
 ///
 /// The frontend's whole view of the runtime arrives through here. `RunEnded` carries what the
@@ -398,7 +425,7 @@ pub(super) fn queue_model_selection(
     let capabilities = directory.selection_capabilities(&selection);
     let request = transcript_effect::Request::Control {
         sender: session.control_sender(),
-        control: app_server::Control::SelectModelV1(selection_request),
+        control: app_server::Control::SelectModelDefaultV1(selection_request),
         interrupt: interrupt.clone(),
         kind: transcript_effect::ControlKind::Model {
             selection,

@@ -384,6 +384,8 @@ pub(crate) enum Control {
         cancel: Option<tokio::sync::watch::Receiver<bool>>,
     },
     SelectModelV1(iteron_protocol::client_inventory::ClientModelSelectionV1),
+    SelectModelDefaultV1(iteron_protocol::client_inventory::ClientModelSelectionV1),
+    ModelPreferenceRead(super::ModelPreferenceReadV1),
     /// `/effort`
     SetEffort(iteron_protocol::Effort),
     /// `/mode`
@@ -539,6 +541,7 @@ pub(crate) enum ControlReply {
     TranscriptExport(serde_json::Value),
     OperatorShell(crate::client_effects::shell::ShellCompletion),
     ProjectInit(crate::client_effects::project_init::ProjectInitReceipt),
+    ModelPreference(Option<super::PreferenceReceipt>),
     /// `/status` — runtime policy identity plus live bounded owner health.
     OperatorStatus(Box<OperatorStatusSnapshot>),
     /// The runtime refused, with the operator-facing reason.

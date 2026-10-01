@@ -219,6 +219,17 @@ impl Agent {
             && !decision.taint_blocks
     }
 
+    pub(crate) fn operator_selected_model_default(&self) -> Option<(String, String)> {
+        self.provider_selection
+            .validate_live(&self.provider, &self.model)
+            .ok()?;
+        let selected = self.provider_selection.selected()?;
+        Some((
+            selected.route.provider_id.clone(),
+            selected.route.model_id.clone(),
+        ))
+    }
+
     /// Read only the host's credential-variable deny-list. Values are never inspected.
     pub(crate) fn operator_child_environment_names(&self) -> &[String] {
         &self.sensitive_env_names

@@ -139,6 +139,7 @@ struct Projection {
     submission_exclusion: Option<Arc<super::session_factory::SubmissionExclusion>>,
     shell: Option<Arc<super::client_shell::ShellService>>,
     project_init: Option<Arc<super::project_init::ProjectInitService>>,
+    model_preferences: Option<Arc<super::model_preferences::PreferenceService>>,
 }
 
 impl std::fmt::Debug for Projection {
@@ -226,6 +227,62 @@ impl ContractReader {
         exclusion: super::session_factory::SubmissionExclusion,
     ) {
         self.with_mut(|projection| projection.submission_exclusion = Some(Arc::new(exclusion)));
+    }
+    pub(super) fn preference_admission(
+        &self,
+    ) -> Option<(
+        Arc<super::session_factory::SubmissionExclusion>,
+        Arc<super::model_preferences::PreferenceService>,
+    )> {
+        self.with_mut(|projection| {
+            Some((
+                projection.submission_exclusion.clone()?,
+                projection
+                    .model_preferences
+                    .get_or_insert_with(|| {
+                        Arc::new(super::model_preferences::PreferenceService::default())
+                    })
+                    .clone(),
+            ))
+        })
+    }
+    pub(crate) fn model_preference_after(
+        &self,
+        revision: u64,
+    ) -> Option<super::model_preferences::PreferenceReceipt> {
+        self.with_mut(|projection| {
+            let current = projection.snapshot.as_ref()?;
+            let receipt = projection.model_preferences.as_ref()?.after(revision)?;
+            (receipt.thread_id == current.thread_id && receipt.run_id == current.run_id)
+                .then_some(receipt)
+        })
+    }
+    pub(super) fn model_preference_scoped(
+        &self,
+        thread: &SessionId,
+        run: &RunId,
+        after: u64,
+    ) -> Result<Option<super::PreferenceReceipt>, &'static str> {
+        self.with_mut(|projection| {
+            if projection
+                .snapshot
+                .as_ref()
+                .is_none_or(|scope| &scope.thread_id != thread || &scope.run_id != run)
+            {
+                return Err("model preference observation belongs to a previous thread/run");
+            }
+            let receipt = projection
+                .model_preferences
+                .as_ref()
+                .and_then(|owner| owner.after(after));
+            Ok(receipt.filter(|receipt| &receipt.thread_id == thread && &receipt.run_id == run))
+        })
+    }
+    pub(super) async fn shutdown_model_preferences(&self) -> bool {
+        match self.with_mut(|projection| projection.model_preferences.clone()) {
+            Some(owner) => owner.shutdown().await,
+            None => true,
+        }
     }
     pub(super) fn project_init_admission(
         &self,
