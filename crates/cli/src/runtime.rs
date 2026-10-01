@@ -404,9 +404,6 @@ pub(crate) fn governed_workflow_limits(
 /// Reaching the ceiling is a non-success terminal condition, never permission to accept `done`.
 #[cfg(test)]
 const MAX_VERIFY_ATTEMPTS: u32 = iteron_verify::DEFAULT_VERIFICATION_REPAIR_ATTEMPTS;
-/// Coverage verdict when the compaction-summary verifier itself errors. False, so an unverified
-/// summary is treated as not covering the turns it replaced.
-const COMPACTION_COVERED_ON_VERIFIER_ERROR: bool = false;
 pub(crate) const RUNTIME_NOTIFICATION_PREFIX: &str =
     "[Iteron runtime notification — not an operator instruction]";
 #[cfg(test)]

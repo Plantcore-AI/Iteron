@@ -2,10 +2,6 @@ use super::*;
 
 pub(super) use super::compaction_journal::CompactionCommitReceipt;
 
-/// Coverage verdict recorded when the coverage check itself failed to complete: an unproven summary
-/// counts as uncovered, never as covered.
-const COVERAGE_UNPROVEN: bool = false;
-
 impl Agent {
     fn apply_automatic_compaction_failure(
         &mut self,
@@ -401,10 +397,7 @@ impl Agent {
                 let covered = if self.compaction.coverage_check {
                     self.verify_compaction_summary(&plan.to_summarize, &summary)
                         .await
-                        .unwrap_or(iteron_tunables::param_bool(
-                            "cli.runtime.compaction.coverage_unproven",
-                            COVERAGE_UNPROVEN,
-                        ))
+                        .unwrap_or(false)
                 } else {
                     true
                 };
