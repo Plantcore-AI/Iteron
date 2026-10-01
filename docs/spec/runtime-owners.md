@@ -120,6 +120,10 @@ observation; it does not grant permission or acquire mutable ownership of anothe
 | `provider_usage_journal.rs` | Publish only the authenticated sealed physical projection with its exact usage; physical money is never charged again | Physical usage receipt → typed committed journal → logical token/cost ledger |
 | `context_usage_reconciliation.rs` | Replace only the matching bounded context slot and consume its exact calibration baseline using authoritative usage | Actual native usage → existing context/calibration owner |
 
+| `request_cycle.rs` | Keep the actual recovery candidate, requested policy, observation clock and loop state together; consume the recovery borrow before native admission | Confirmed recovery/control → current signed cap/turn → closed native request + exact loop guard |
+| `request_cycle_assembly.rs` | Freeze actual system/tool projection and trusted current physical bounds; ordinary runs add no investigation state | Current provider/context/compiled policy evidence → request recipe |
+| `provider_turn_entry.rs` | Transfer the actual admitted governor/USD obligations with immutable current execution scope to the model-turn owner | Native request + actual dispatch admission → ProviderTurnDriver seed |
+
 ```mermaid
 flowchart LR
     Journal[Journal admission owner] -->|already admitted ToolIntent| Batch[DeferredBatchExecutor]
