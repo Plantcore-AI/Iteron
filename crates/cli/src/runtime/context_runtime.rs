@@ -1,6 +1,12 @@
 use super::*;
 use iteron_protocol::advisory_maintenance::MaintenanceKindV1;
 
+#[derive(Default)]
+pub(super) struct RecordedContextHistory {
+    injection: Option<(String, Trust, Option<DurableInstructionContext>)>,
+    genesis_environment: Option<DurableEnvironmentContext>,
+}
+
 const TOKEN_CALIBRATION_FILE: &str = "token-calibration-v1.json";
 const TOKEN_CALIBRATION_MAX_BYTES: u64 = 64 * 1024;
 

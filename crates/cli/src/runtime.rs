@@ -494,12 +494,6 @@ struct OrchestrationAllocation {
     writer_wall_reserved_secs: u64,
 }
 
-#[derive(Default)]
-struct RecordedContextHistory {
-    injection: Option<(String, Trust, Option<DurableInstructionContext>)>,
-    genesis_environment: Option<DurableEnvironmentContext>,
-}
-
 #[cfg(test)]
 fn workflow_class_label(class: iteron_agents::TaskClass) -> &'static str {
     match class {
