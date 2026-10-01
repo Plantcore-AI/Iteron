@@ -1,11 +1,11 @@
 //! Actual streamed response/declaration and physical pump lifetime for one model round. Route
 //! strategy, finance, controller and WAL owners cross this coordinator only through typed ports.
 use super::KernelError;
-use super::plantcore::PlantcoreRuntime;
 use super::provider_attempt_journal::ProviderAttemptJournal;
 use super::provider_attempt_pump::{
     ProviderAttemptCompletion, ProviderAttemptPump, ProviderAttemptTransport,
 };
+use super::provider_extension::ProviderExtensionPort;
 use super::provider_governor_state::GovernedProviderRoute;
 use super::provider_hedge::HedgedProviderDispatch;
 use super::provider_route_events::ProviderRouteEvents;
@@ -93,14 +93,14 @@ impl ProviderRoundOwner {
         route: &mut ProviderRouteTurn,
         journal: ProviderAttemptJournal<'_>,
         events: &ProviderRouteEvents,
-        plantcore: &mut PlantcoreRuntime,
+        extension: ProviderExtensionPort<'_>,
     ) -> Result<ProviderAttemptCompletion, KernelError> {
         self.require(RoundPhase::PendingTerminal)?;
         let attempt = self.pending.take().expect("owned pending physical pump");
         // Failure remains terminally closed. This owner cannot dispatch a replacement for an
         // unavailable WAL/controller settlement or reconstruct the consumed ticket.
         self.phase = RoundPhase::Failed;
-        let observed = attempt.settle(route, journal, events, plantcore)?;
+        let observed = attempt.settle(route, journal, events, extension)?;
         self.phase = RoundPhase::TerminalObserved;
         Ok(observed)
     }

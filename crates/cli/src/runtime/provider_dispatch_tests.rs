@@ -3,7 +3,6 @@ use super::{
     ProviderObjectiveEvidence,
 };
 use crate::runtime::effect_journal_owner::EffectJournalOwner;
-use crate::runtime::plantcore::PlantcoreRuntime;
 use crate::runtime::provider_attempt_journal::ProviderAttemptJournal;
 use crate::runtime::provider_financial_context::{
     ProviderFinancialContext, ProviderFinancialOwners, ProviderFinancialScope,
@@ -36,6 +35,94 @@ impl Provider for AdmissionOnlyProvider {
     ) -> Result<TurnResult, ProviderError> {
         panic!("admission owner must not execute a provider request");
     }
+}
+
+struct ExtensionLease(Arc<std::sync::atomic::AtomicUsize>);
+impl Drop for ExtensionLease {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
+}
+struct AdmissionExtension {
+    refuse: bool,
+    active: Arc<std::sync::atomic::AtomicUsize>,
+}
+#[async_trait::async_trait]
+impl crate::runtime::provider_extension::ProviderDispatchGate for AdmissionExtension {
+    async fn enter_dispatch(
+        &self,
+    ) -> Result<Option<crate::runtime::provider_extension::ProviderExtensionPermit>, ()> {
+        if self.refuse {
+            return Err(());
+        }
+        self.active
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        Ok(Some(
+            crate::runtime::provider_extension::ProviderExtensionPermit::retain(ExtensionLease(
+                self.active.clone(),
+            )),
+        ))
+    }
+}
+impl crate::runtime::provider_extension::ProviderDispatchExtension for AdmissionExtension {
+    fn terminal(&self) -> Option<crate::runtime::provider_extension::ProviderExtensionTerminal> {
+        None
+    }
+    fn observe_physical_attempt(
+        &mut self,
+        _: TurnId,
+        _: &iteron_protocol::ProviderRouteAttemptAccounting,
+    ) -> Result<(), &'static str> {
+        panic!("admission fixtures must not invent a physical terminal");
+    }
+}
+
+#[tokio::test]
+async fn extension_refusal_precedes_real_provider_intent() {
+    let mut host = Harness::new();
+    let extension = AdmissionExtension {
+        refuse: true,
+        active: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    };
+    let mut owner = host.owner();
+    owner.scope.extension = Some(&extension);
+    let refused = owner
+        .initial(&mut route(), None, false, objective())
+        .await
+        .unwrap();
+    assert!(matches!(
+        refused,
+        Some(KernelError::Provider(ProviderError::Interrupted))
+    ));
+    assert!(host.rows().iter().all(|row| !matches!(
+        row.kind,
+        EventKind::EffectIntent { .. } | EventKind::TurnStart
+    )));
+}
+
+#[tokio::test]
+async fn real_intent_refusal_releases_the_adapter_owned_lease() {
+    let mut host = Harness::new();
+    host.fault = Some(DurableAppendFault::EffectIntent);
+    let active = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let extension = AdmissionExtension {
+        refuse: false,
+        active: active.clone(),
+    };
+    let mut owner = host.owner();
+    owner.scope.extension = Some(&extension);
+    assert!(
+        owner
+            .initial(&mut route(), None, false, objective())
+            .await
+            .is_err()
+    );
+    assert_eq!(active.load(std::sync::atomic::Ordering::Acquire), 0);
+    assert!(
+        host.rows()
+            .iter()
+            .all(|row| !matches!(row.kind, EventKind::EffectIntent { .. }))
+    );
 }
 fn route() -> ProviderRouteTurn {
     ProviderRouteTurn::new(
@@ -79,7 +166,6 @@ struct Harness {
     diagnostics: DiagnosticEmitter,
     terminal: TerminalRecordOwner,
     publications: TurnPublicationOwner,
-    plantcore: PlantcoreRuntime,
     controls: SessionControlState,
     events: ProviderRouteEvents,
 }
@@ -108,7 +194,6 @@ impl Harness {
             diagnostics: DiagnosticEmitter::default(),
             terminal: TerminalRecordOwner::default(),
             publications,
-            plantcore: PlantcoreRuntime::default(),
             controls: SessionControlState::default(),
             events: ProviderRouteEvents {
                 turn: TurnId(1),
@@ -155,7 +240,7 @@ impl Harness {
             },
             scope: ProviderDispatchScope {
                 workspace: &self.workspace,
-                plantcore: &self.plantcore,
+                extension: None,
                 events: &self.events,
                 control: &self.controls,
                 deadline: None,

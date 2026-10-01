@@ -6,7 +6,6 @@ use super::DurableAppendFault;
 use super::KernelError;
 use super::effect_journal_owner::EffectJournalOwner;
 use super::memory_request_exposure::MemoryRequestExposure;
-use super::plantcore::PlantcoreRuntime;
 use super::policy_evidence_recorder::PolicyEvidenceRecorder;
 use super::provider_attempt_journal::{ProviderAttemptJournal, ProviderLogicalUsageEvidence};
 use super::provider_dispatch::{
@@ -17,6 +16,7 @@ use super::provider_execution_scope::{
     ProviderExecutionConfiguration, ProviderExecutionEvidence, ProviderExecutionJournal,
     ProviderExecutionScope,
 };
+use super::provider_extension::{ProviderExtensionPort, ProviderExtensionTerminal};
 use super::provider_financial_source::ProviderFinancialSource;
 use super::provider_followup::{
     ProviderFollowupDecision, ProviderFollowupOwner, ProviderFollowupScope,
@@ -152,7 +152,7 @@ impl ProviderTurnDriver {
         mut journal: ProviderTurnJournal<'_>,
         environment: ProviderTurnEnvironment<'_>,
         mut resident: ProviderTurnResident<'_>,
-        plantcore: &mut PlantcoreRuntime,
+        mut extension: ProviderExtensionPort<'_>,
         evidence: ProviderExecutionEvidence<'_>,
         mut memory: MemoryRequestExposure<'_>,
         mut hedge: Option<(HedgedProviderDispatch, Instant)>,
@@ -178,7 +178,7 @@ impl ProviderTurnDriver {
                     journal.reborrow(),
                     environment.clone(),
                     resident.reborrow(),
-                    plantcore,
+                    extension.reborrow(),
                     environment.current_pricing_now(),
                 )
                 .await?
@@ -196,7 +196,7 @@ impl ProviderTurnDriver {
         mut journal: ProviderTurnJournal<'_>,
         environment: ProviderTurnEnvironment<'_>,
         resident: &ProviderTurnResident<'_>,
-        plantcore: &PlantcoreRuntime,
+        extension: ProviderExtensionPort<'_>,
         pricing_now: u64,
         loop_state: &mut super::agent_loop::AgentLoopGuard,
     ) -> Result<Self, KernelError> {
@@ -213,7 +213,7 @@ impl ProviderTurnDriver {
                 pricing_now,
                 &environment,
                 &start.events,
-                plantcore,
+                extension.as_read(),
             )
             .initial(&mut start.route, start.refusal, start.hedged, objective)
             .await?;
@@ -342,7 +342,7 @@ impl ProviderTurnDriver {
         mut journal: ProviderTurnJournal<'_>,
         environment: ProviderTurnEnvironment<'_>,
         resident: ProviderTurnResident<'_>,
-        plantcore: &mut PlantcoreRuntime,
+        mut extension: ProviderExtensionPort<'_>,
         pricing_now: u64,
     ) -> Result<Option<Result<TurnResult, KernelError>>, KernelError> {
         let financial = self.financial.selected(
@@ -357,7 +357,7 @@ impl ProviderTurnDriver {
             financial,
             pricing_now,
             &self.events,
-            plantcore,
+            extension.reborrow(),
             environment.governor.cloned(),
             environment.control,
         )?;
@@ -374,7 +374,7 @@ impl ProviderTurnDriver {
                 events: &self.events,
                 run_deadline: environment.run_deadline,
                 usd: self.financial.usd.clone(),
-                plantcore_terminal: plantcore.terminal(),
+                extension_terminal: extension.terminal(),
                 output_proof_required: environment.output_proof_required,
                 context_tokens: environment.context_tokens,
                 financial: &self.financial,
@@ -436,7 +436,9 @@ impl ProviderTurnDriver {
                     controls,
                 );
                 failover.complete();
-                if let Err(error) = followup_budget(plantcore, self.financial.usd.as_ref()) {
+                if let Err(error) =
+                    followup_budget(extension.terminal(), self.financial.usd.as_ref())
+                {
                     return Ok(Some(Err(error)));
                 }
             }
@@ -464,7 +466,7 @@ impl ProviderTurnDriver {
                     pricing_now,
                     &environment,
                     &self.events,
-                    plantcore,
+                    extension.as_read(),
                 )
                 .followup(&mut self.route, false, objective)
                 .await
@@ -515,13 +517,13 @@ impl ProviderTurnResident<'_> {
 }
 
 fn followup_budget(
-    plantcore: &PlantcoreRuntime,
+    terminal: Option<ProviderExtensionTerminal>,
     usd: Option<&Arc<super::pricing::SharedUsdBudget>>,
 ) -> Result<(), KernelError> {
-    if let Some(terminal) = plantcore.terminal() {
+    if let Some(terminal) = terminal {
         return Err(KernelError::InferenceBudgetExhausted(match terminal {
-            super::plantcore::PlantcoreTerminal::Budget(reason) => reason,
-            super::plantcore::PlantcoreTerminal::UsageUnavailable => "usage_unavailable",
+            ProviderExtensionTerminal::Budget(reason) => reason,
+            ProviderExtensionTerminal::UsageUnavailable => "usage_unavailable",
         }));
     }
     if usd.is_some_and(|usd| usd.exhausted()) {
@@ -595,7 +597,7 @@ impl ProviderTurnJournal<'_> {
         pricing_now: u64,
         environment: &'a ProviderTurnEnvironment<'_>,
         events: &'a ProviderRouteEvents,
-        plantcore: &'a PlantcoreRuntime,
+        extension: Option<&'a dyn super::provider_extension::ProviderDispatchExtension>,
     ) -> ProviderDispatchOwner<'a> {
         ProviderDispatchOwner {
             journal: ProviderAdmissionJournal {
@@ -616,7 +618,7 @@ impl ProviderTurnJournal<'_> {
             },
             scope: ProviderDispatchScope {
                 workspace: environment.workspace,
-                plantcore,
+                extension,
                 events,
                 control: environment.control,
                 deadline: environment.run_deadline,

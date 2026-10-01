@@ -1,8 +1,8 @@
 //! Settled-round retry waits and fallback proposals. A proposal still requires the independent
 //! durable selection and fresh physical admission owners before any replacement transport.
 use super::KernelError;
-use super::plantcore::PlantcoreTerminal;
 use super::pricing::SharedUsdBudget;
+use super::provider_extension::ProviderExtensionTerminal;
 use super::provider_financial_source::ProviderFinancialSource;
 use super::provider_governor_state::GovernedProviderRoute;
 use super::provider_output_request::{self, PhysicalProviderRequest};
@@ -25,7 +25,7 @@ pub(super) struct ProviderFollowupScope<'a> {
     pub(super) events: &'a ProviderRouteEvents,
     pub(super) run_deadline: Option<Instant>,
     pub(super) usd: Option<Arc<SharedUsdBudget>>,
-    pub(super) plantcore_terminal: Option<PlantcoreTerminal>,
+    pub(super) extension_terminal: Option<ProviderExtensionTerminal>,
     pub(super) output_proof_required: bool,
     pub(super) context_tokens: u64,
     pub(super) financial: &'a ProviderFinancialSource,
@@ -178,10 +178,10 @@ impl ProviderFollowupOwner<'_> {
     }
 
     fn admit_followup(&self, monetary_followup_safe: bool) -> Result<(), KernelError> {
-        if let Some(terminal) = self.scope.plantcore_terminal {
+        if let Some(terminal) = self.scope.extension_terminal {
             return Err(KernelError::InferenceBudgetExhausted(match terminal {
-                PlantcoreTerminal::Budget(reason) => reason,
-                PlantcoreTerminal::UsageUnavailable => "usage_unavailable",
+                ProviderExtensionTerminal::Budget(reason) => reason,
+                ProviderExtensionTerminal::UsageUnavailable => "usage_unavailable",
             }));
         }
         if let Some(usd) = &self.scope.usd {

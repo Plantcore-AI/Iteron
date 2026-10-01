@@ -23,11 +23,11 @@ impl Agent {
         ProviderTurnJournal<'a>,
         ProviderTurnEnvironment<'a>,
         ProviderTurnResident<'a>,
-        &'a mut super::plantcore::PlantcoreRuntime,
+        super::provider_extension::ProviderExtensionPort<'a>,
         ProviderExecutionEvidence<'a>,
         super::memory_request_exposure::MemoryRequestExposure<'a>,
     ) {
-        let strict_controls = self.plantcore_runtime_enabled();
+        let strict_controls = self.provider_extension_enabled();
         let output_proof_required = self.provider_output_proof_required();
         let authority = self.operator_authority();
         let requested_control = self.requested_control() != super::InboundControl::None;
@@ -76,7 +76,16 @@ impl Agent {
                 context_window: &mut self.model_context_window,
                 max_output: &mut self.model_max_output_tokens,
             },
-            &mut self.plantcore,
+            {
+                #[cfg(feature = "legacy-plantcore")]
+                {
+                    super::provider_extension::ProviderExtensionPort::installed(&mut self.plantcore)
+                }
+                #[cfg(not(feature = "legacy-plantcore"))]
+                {
+                    super::provider_extension::ProviderExtensionPort::none()
+                }
+            },
             ProviderExecutionEvidence {
                 workspace: &self.workspace,
                 registry: &self.registry,
@@ -126,7 +135,7 @@ impl Agent {
         turn: TurnId,
     ) -> Result<ProviderRouteBindingOwner<'_>, KernelError> {
         self.ensure_policy_evidence()?;
-        let strict_controls = self.plantcore_runtime_enabled();
+        let strict_controls = self.provider_extension_enabled();
         Ok(ProviderRouteBindingOwner {
             selected: &mut self.provider_selection,
             provider: &mut self.provider,

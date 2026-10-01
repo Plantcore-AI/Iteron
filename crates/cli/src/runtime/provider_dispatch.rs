@@ -6,9 +6,9 @@
 use super::DurableAppendFault;
 use super::KernelError;
 use super::effect_journal_owner::UnknownCause;
-use super::plantcore::PlantcoreRuntime;
 use super::policy_evidence_recorder::PolicyEvidenceRecorder;
 use super::provider_attempt_journal::{ProviderAttemptJournal, ProviderIntent};
+use super::provider_extension::{self, ProviderDispatchExtension};
 use super::provider_route_events::ProviderRouteEvents;
 use super::provider_route_turn::ProviderRouteTurn;
 use super::session_control::SessionControlState;
@@ -35,7 +35,7 @@ pub(super) struct ProviderAdmissionJournal<'a> {
 }
 pub(super) struct ProviderDispatchScope<'a> {
     pub(super) workspace: &'a Path,
-    pub(super) plantcore: &'a PlantcoreRuntime,
+    pub(super) extension: Option<&'a dyn ProviderDispatchExtension>,
     pub(super) events: &'a ProviderRouteEvents,
     pub(super) control: &'a SessionControlState,
     pub(super) deadline: Option<Instant>,
@@ -67,7 +67,7 @@ impl ProviderDispatchOwner<'_> {
             ));
         }
         if refusal.is_none() && !hedged {
-            match self.scope.plantcore.enter_external_dispatch().await {
+            match provider_extension::enter_dispatch(self.scope.extension).await {
                 Ok(permit) => route.assign_dispatch_permit(permit),
                 Err(()) => refusal = Some(iteron_provider::ProviderError::Interrupted.into()),
             }
@@ -122,7 +122,7 @@ impl ProviderDispatchOwner<'_> {
         if hedged {
             return Ok(());
         }
-        match self.scope.plantcore.enter_external_dispatch().await {
+        match provider_extension::enter_dispatch(self.scope.extension).await {
             Ok(permit) => route.assign_dispatch_permit(permit),
             Err(()) => {
                 self.release_zero(route);

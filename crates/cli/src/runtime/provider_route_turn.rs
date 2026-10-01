@@ -1,7 +1,7 @@
 //! Actual logical provider route/retry state owner. A settled attempt yields a typed next step;
 //! the physical journal, signed budget and durable route selection remain separate authorities.
 use super::KernelError;
-use super::plantcore::DispatchPermit;
+use super::provider_extension::ProviderExtensionPermit;
 use super::provider_governor_state::{GovernedProviderRoute, next_admitted_fallback_index};
 use super::provider_route::retryable_before_semantic_output_provider_error;
 use iteron_kernel::effects::EffectTicket;
@@ -40,7 +40,7 @@ pub(super) struct ProviderRouteTurn {
     transition: Option<&'static str>,
     ticket: Option<EffectTicket>,
     route_permit: Option<AttemptPermit>,
-    dispatch_permit: Option<DispatchPermit>,
+    dispatch_permit: Option<ProviderExtensionPermit>,
     active: Duration,
     first_attempt: bool,
 }
@@ -138,10 +138,10 @@ impl ProviderRouteTurn {
     pub(super) fn take_route_permit(&mut self) -> Option<AttemptPermit> {
         self.route_permit.take()
     }
-    pub(super) fn assign_dispatch_permit(&mut self, permit: Option<DispatchPermit>) {
+    pub(super) fn assign_dispatch_permit(&mut self, permit: Option<ProviderExtensionPermit>) {
         self.dispatch_permit = permit;
     }
-    pub(super) fn take_dispatch_permit(&mut self) -> Option<DispatchPermit> {
+    pub(super) fn take_dispatch_permit(&mut self) -> Option<ProviderExtensionPermit> {
         self.dispatch_permit.take()
     }
     pub(super) fn observe_hedged_identity(

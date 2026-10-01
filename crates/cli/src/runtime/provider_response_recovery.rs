@@ -3,9 +3,9 @@
 #[cfg(test)]
 use super::DurableAppendFault;
 use super::early_tool_collection::{EarlyToolCollection, EarlyToolCollectionScope};
-use super::plantcore::PlantcoreTerminal;
 use super::pricing::SharedUsdBudget;
 use super::provider_attempt_journal::ProviderLogicalUsageEvidence;
+use super::provider_extension::ProviderExtensionTerminal;
 use super::provider_round::ProviderRoundOwner;
 use super::provider_route;
 use super::provider_route_turn::ProviderRouteTurn;
@@ -35,8 +35,8 @@ pub(super) struct ProviderResponseScope<'a> {
     pub(super) early: EarlyToolCollectionScope<'a>,
     pub(super) control: &'a SessionControlState,
     pub(super) usd: Option<Arc<SharedUsdBudget>>,
-    pub(super) plantcore: bool,
-    pub(super) terminal: Option<PlantcoreTerminal>,
+    pub(super) extension_governed: bool,
+    pub(super) terminal: Option<ProviderExtensionTerminal>,
     pub(super) retry: BackoffPolicy,
 }
 
@@ -91,7 +91,7 @@ impl ProviderResponseRecoveryOwner {
         let result = match result {
             Ok(result) => result,
             Err(ref error)
-                if !scope.plantcore
+                if !scope.extension_governed
                     && !round.tools().has_contract_error()
                     && !retry_exhausted
                     && submitted.stream_recoveries().saturating_add(1)
@@ -215,8 +215,8 @@ impl ProviderResponseJournal<'_> {
     ) -> Result<(), KernelError> {
         if let Some(terminal) = scope.terminal {
             return Err(KernelError::InferenceBudgetExhausted(match terminal {
-                PlantcoreTerminal::Budget(reason) => reason,
-                PlantcoreTerminal::UsageUnavailable => "usage_unavailable",
+                ProviderExtensionTerminal::Budget(reason) => reason,
+                ProviderExtensionTerminal::UsageUnavailable => "usage_unavailable",
             }));
         }
         if let Some(usd) = &scope.usd {
@@ -351,11 +351,14 @@ impl ProviderResponseJournal<'_> {
         KernelError::Record(error)
     }
 }
-fn physical_terminal(error: &KernelError, plantcore: Option<PlantcoreTerminal>) -> Option<Outcome> {
-    if let Some(terminal) = plantcore {
+fn physical_terminal(
+    error: &KernelError,
+    extension: Option<ProviderExtensionTerminal>,
+) -> Option<Outcome> {
+    if let Some(terminal) = extension {
         return Some(match terminal {
-            PlantcoreTerminal::Budget(reason) => Outcome::BudgetExhausted(reason),
-            PlantcoreTerminal::UsageUnavailable => Outcome::HarnessError,
+            ProviderExtensionTerminal::Budget(reason) => Outcome::BudgetExhausted(reason),
+            ProviderExtensionTerminal::UsageUnavailable => Outcome::HarnessError,
         });
     }
     match error {

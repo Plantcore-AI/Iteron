@@ -2,10 +2,10 @@
 //! come from the real stream pump; terminal sync, controller settlement and USD charge follow in
 //! order through concrete domain ports. Host inclusion observation is between these two phases.
 use super::KernelError;
-use super::plantcore::PlantcoreRuntime;
 use super::provider_attempt_journal::{
     ProviderAttemptJournal, ProviderLogicalUsageEvidence, ProviderObservedAttempt,
 };
+use super::provider_extension::ProviderExtensionPort;
 use super::provider_hedge::HedgedProviderDispatch;
 use super::provider_route_events::ProviderRouteEvents;
 use super::provider_route_turn::ProviderRouteTurn;
@@ -92,7 +92,7 @@ impl ProviderAttemptPump {
         route: &mut ProviderRouteTurn,
         mut journal: ProviderAttemptJournal<'_>,
         events: &ProviderRouteEvents,
-        plantcore: &mut PlantcoreRuntime,
+        mut extension: ProviderExtensionPort<'_>,
     ) -> Result<ProviderAttemptCompletion, KernelError> {
         let turn = events.turn;
         let single_dispatched = route.ticket().is_some();
@@ -115,8 +115,8 @@ impl ProviderAttemptPump {
                 },
             )?;
             monetary_followup_safe = safe;
-            plantcore
-                .observe_provider_attempt(turn, &accounting)
+            extension
+                .observe_physical_attempt(turn, &accounting)
                 .map_err(|reason| KernelError::ContextResolution(reason.into()))?;
             journal.commit_usd(turn, &accounting)?;
             journal.measure_broker(started);

@@ -101,6 +101,9 @@ observation; it does not grant permission or acquire mutable ownership of anothe
 | `execution_deadline.rs` | Privately retain finite live invocation/ancestor deadline leases, expose their actual minimum and retire released bounds | Trusted parent/child scope → exact live deadline snapshot |
 | `submission_invocation.rs` | Retain the actual encrypted image graph lease and invocation deadline through all physical work, release own clock before post-answer maintenance | Actual run/tenant/turn → private attachment graph + owned deadline |
 | `orchestration_lifetime.rs` | Own actual explicitly requested orchestration liveness; future/error drop cannot leak the old topology flag | Explicit invocation → non-cloneable live lease |
+| `provider_extension.rs` | Optional project-neutral dispatch/observation ports and opaque real lease; absent adapter has no state/allocation/call | Installed trusted adapter → actual lease/terminal observation |
+| `provider_extension_assembly.rs` | Compose no adapter in standalone builds and capture an owned optional gate only from installed feature authority | Trusted composition → optional borrowed extension / immutable owned gate |
+| `legacy_provider_extension.rs` | Compile-only historical adapter; preserve actual permit Drop and physical observation without product types in provider owners | Explicit feature → project-neutral port |
 
 ```mermaid
 flowchart LR

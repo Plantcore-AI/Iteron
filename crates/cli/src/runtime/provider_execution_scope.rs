@@ -8,10 +8,10 @@ use super::effect_journal_owner::EffectJournalOwner;
 use super::failed_action_cache::FailedActionCache;
 use super::hooks::{HookEvent, Hooks, journal::HookEffectJournal};
 use super::permission_policy::OperationPolicy;
-use super::plantcore::PlantcoreRuntime;
 use super::policy_evidence_recorder::PolicyEvidenceRecorder;
 use super::provider_attempt_journal::ProviderAttemptJournal;
 use super::provider_attempt_pump::{ProviderAttemptCompletion, ProviderAttemptTransport};
+use super::provider_extension::ProviderExtensionPort;
 use super::provider_financial_context::ProviderFinancialContext;
 use super::provider_hedge::HedgedProviderDispatch;
 use super::provider_round::ProviderRoundOwner;
@@ -209,7 +209,7 @@ impl ProviderExecutionScope {
         financial: ProviderFinancialContext,
         pricing_now: u64,
         events: &ProviderRouteEvents,
-        plantcore: &mut PlantcoreRuntime,
+        extension: ProviderExtensionPort<'_>,
         governor: Option<ProviderGovernor>,
         control: &SessionControlState,
     ) -> Result<ProviderAttemptCompletion, KernelError> {
@@ -227,7 +227,7 @@ impl ProviderExecutionScope {
                 fault: &mut *journal.fault,
             },
             events,
-            plantcore,
+            extension,
         )?;
         if completed.single_dispatched && !completed.hedged {
             ProviderRouteAdmission {

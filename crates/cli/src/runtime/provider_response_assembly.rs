@@ -24,8 +24,8 @@ impl Agent {
             dispatcher: self.lifecycle_hooks.clone(),
             correlation: self.lifecycle_correlation(Some(turn)),
         };
-        let plantcore = self.plantcore_runtime_enabled();
-        let terminal = self.plantcore_terminal();
+        let extension_governed = self.provider_extension_enabled();
+        let terminal = self.provider_extension_terminal();
         (
             ProviderResponseJournal {
                 tools: ToolExecutionJournal {
@@ -51,7 +51,7 @@ impl Agent {
                 },
                 control: &self.control,
                 usd: self.usd_budget.clone(),
-                plantcore,
+                extension_governed,
                 terminal,
                 retry: self.retry_policy,
             },
