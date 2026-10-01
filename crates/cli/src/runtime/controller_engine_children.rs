@@ -1,7 +1,7 @@
 //! Real legacy Workflow/direct-investigator execution through the installed persistent controller.
 //! The existing resident runtime owns model, tools, physical accounting and cleanup. This adapter
 //! owns only the exact admitted child claim and bounded waits; it never creates another Agent.
-use super::persistent_agents::AgentControlPort;
+use super::persistent_agents::{AgentControlPort, AgentEngineRequest};
 use super::session_spawn_ledger::SessionSpawnLedger;
 use async_trait::async_trait;
 use iteron_agents::{
@@ -28,6 +28,7 @@ const POLL_MS: u64 = 25;
 pub(super) struct ControllerEngineChildren {
     control: Arc<dyn AgentControlPort>,
     parent: AgentIdV1,
+    parent_source: iteron_agents::AgentEngineParentSource,
     workflow_id: String,
     model: String,
     effort: Effort,
@@ -48,8 +49,10 @@ impl ControllerEngineChildren {
         budget: AgentBudgetV1,
         deadline: Instant,
         spawn_ledger: Arc<SessionSpawnLedger>,
+        parent_source: iteron_agents::AgentEngineParentSource,
     ) -> Result<Self, ControllerError> {
         budget.validate().map_err(ControllerError::Invalid)?;
+        parent_source.validate()?;
         if workflow_id.is_empty()
             || workflow_id.len() > 128
             || workflow_id.chars().any(char::is_control)
@@ -84,6 +87,7 @@ impl ControllerEngineChildren {
         Ok(Self {
             control,
             parent,
+            parent_source,
             workflow_id,
             model,
             effort,
@@ -119,6 +123,7 @@ impl ControllerEngineChildren {
             node,
             1,
             None,
+            true,
         )
         .await
     }
@@ -128,28 +133,43 @@ impl ControllerEngineChildren {
         node: u64,
         attempt: u64,
         activity: Option<AgentActivityReporter>,
+        direct: bool,
     ) -> AgentOutcome {
         if call.validate_request_metadata().is_err() || node == 0 || attempt == 0 {
             return AgentOutcome::null(
                 "engine child routing metadata or actual attempt identity is invalid",
             );
         }
-        // The resident runtime currently inherits one exact pinned native generic definition.
-        // Never silently execute a different requested profile/model/effort under that identity.
-        if call
-            .agent_type
-            .as_deref()
-            .is_some_and(|value| value != "generic")
-            || call
-                .model
-                .as_deref()
-                .is_some_and(|value| value != self.model)
-            || call.effort.is_some_and(|value| value != self.effort)
-        {
-            return AgentOutcome::null(
-                "requested child profile/model/effort is not bound to the installed controller runtime",
-            );
-        }
+        let origin = if direct {
+            iteron_agents::AgentEngineOrigin::DirectSubagent {
+                parent: self.parent_source.clone(),
+            }
+        } else {
+            let Ok(task_id) = u32::try_from(node) else {
+                return AgentOutcome::null("actual engine task identity exceeds the native domain");
+            };
+            iteron_agents::AgentEngineOrigin::WorkflowChild {
+                parent: self.parent_source.clone(),
+                workflow_id: self.workflow_id.clone(),
+                task_id,
+            }
+        };
+        let execution = match self.control.prepare_engine_child(
+            AgentActor::Agent(self.parent),
+            &AgentEngineRequest {
+                profile: call.agent_type.clone(),
+                model: call.model.clone().or_else(|| Some(self.model.clone())),
+                effort: call.effort.or(Some(self.effort)),
+            },
+            origin,
+        ) {
+            Ok(execution) => execution,
+            Err(_) => {
+                return AgentOutcome::null(
+                    "requested child profile/model/effort has no admitted native binding",
+                );
+            }
+        };
         if call.cancel.is_cancelled() {
             return AgentOutcome::null("engine child cancelled before admission");
         }
@@ -176,6 +196,7 @@ impl ControllerEngineChildren {
                 node_id: node,
                 attempt,
                 input_digest,
+                execution: Some(execution),
                 deadline_unix_ms: self.deadline_unix_ms,
             };
             let request_id = format!(
@@ -338,7 +359,13 @@ impl AgentSpawner for ControllerEngineChildren {
         identity: AgentInvocationIdentity,
         activity: AgentActivityReporter,
     ) -> AgentOutcome {
-        self.execute(call, identity.index(), identity.attempt(), Some(activity))
-            .await
+        self.execute(
+            call,
+            identity.index(),
+            identity.attempt(),
+            Some(activity),
+            false,
+        )
+        .await
     }
 }

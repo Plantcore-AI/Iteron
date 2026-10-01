@@ -25,7 +25,7 @@ fn main_runtime(runtime: &KernelPersistentRuntime, control: Arc<dyn AgentControl
         .spawner
         .lock()
         .unwrap()
-        .build_persistent_child(&call, &root, None)
+        .build_persistent_child(&call, &root, None, None)
         .unwrap();
     if let Some(fixture) = &runtime.fixture {
         fixture(&mut main);
@@ -299,4 +299,117 @@ async fn failure_after_main_epoch_claim_quarantines_and_releases_the_live_stop_s
             iteron_agents::ControllerError::RecoveryRequired
         ))
     ));
+}
+
+#[tokio::test]
+async fn actual_engine_profile_preserves_effort_parent_and_native_cost_attribution() {
+    use crate::runtime::persistent_agents::AgentEngineRequest;
+    use iteron_agents::{AgentEngineOrigin, AgentEngineParentSource, AgentWorkflowChildBinding};
+    use iteron_protocol::Effort;
+    let workspace = Workspace::new();
+    let provider = Arc::new(ProviderFixture::default());
+    let (host, runtime, _, control) = setup(&workspace, provider.clone(), false);
+    let mut main = main_runtime(&runtime, control.clone());
+    main.run("bind actual Main physical provider scope")
+        .await
+        .unwrap();
+    let parent = AgentEngineParentSource {
+        tenant: main.rollout.tenant().0.clone(),
+        run: main.rollout.run_id().0.clone(),
+        provider_scope_sha256: main.provider_scope(),
+    };
+    let bound = control
+        .prepare_engine_child(
+            AgentActor::Agent(AgentIdV1(1)),
+            &AgentEngineRequest {
+                profile: Some("generic".into()),
+                model: None,
+                effort: Some(Effort::Low),
+            },
+            AgentEngineOrigin::DirectSubagent {
+                parent: parent.clone(),
+            },
+        )
+        .unwrap();
+    assert_eq!(bound.effort, Effort::Low);
+    let now = u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis(),
+    )
+    .unwrap();
+    let admitted = control
+        .spawn_engine_child(
+            AgentActor::Agent(AgentIdV1(1)),
+            "actual-profile-child",
+            AgentCommandV1::Spawn {
+                parent_id: AgentIdV1(1),
+                label: "bound profile".into(),
+                task: "actual profile task".into(),
+                capabilities: iteron_protocol::capability_set::CapabilitySet::only(
+                    iteron_protocol::Capability::ReadOnly,
+                ),
+                budget: super::budget(4),
+                write_paths: vec![],
+            },
+            AgentWorkflowChildBinding {
+                workflow_id: "actual-profile-child".into(),
+                node_id: 1,
+                attempt: 1,
+                input_digest: "a".repeat(64),
+                deadline_unix_ms: now + 10_000,
+                execution: Some(bound),
+            },
+        )
+        .unwrap();
+    until(|| {
+        host.engine_child_completion(&admitted.claim)
+            .unwrap()
+            .is_some()
+    })
+    .await;
+    let child = runtime
+        .residents
+        .lock()
+        .unwrap()
+        .get(&admitted.claim.assigned_agent)
+        .unwrap()
+        .clone();
+    let child = child.lock().await;
+    assert_eq!(child.effort, Effort::Low);
+    assert_eq!(
+        child.projection_attribution,
+        Some(iteron_protocol::CostAttribution::DirectSubagent {
+            parent_run_id: parent.run,
+            sub_run: child.rollout.run_id().0.clone(),
+        })
+    );
+    assert!(
+        host.engine_child_completion(&admitted.claim)
+            .unwrap()
+            .unwrap()
+            .effects_known
+    );
+    let before = provider.requests.load(Ordering::SeqCst);
+    assert!(
+        control
+            .prepare_engine_child(
+                AgentActor::Agent(AgentIdV1(1)),
+                &AgentEngineRequest {
+                    profile: Some("unavailable-profile".into()),
+                    model: None,
+                    effort: None
+                },
+                AgentEngineOrigin::DirectSubagent {
+                    parent: AgentEngineParentSource {
+                        tenant: main.rollout.tenant().0.clone(),
+                        run: main.rollout.run_id().0.clone(),
+                        provider_scope_sha256: main.provider_scope(),
+                    }
+                },
+            )
+            .is_err()
+    );
+    assert_eq!(provider.requests.load(Ordering::SeqCst), before);
 }

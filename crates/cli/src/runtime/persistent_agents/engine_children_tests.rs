@@ -97,6 +97,7 @@ fn binding(wall: u64) -> AgentWorkflowChildBinding {
         node_id: 1,
         attempt: 1,
         input_digest: "a".repeat(64),
+        execution: None,
         deadline_unix_ms: u64::try_from(
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)

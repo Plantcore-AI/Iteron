@@ -16,6 +16,9 @@ impl<J: AgentControllerJournal + Send + 'static> PersistentAgentHost<J> {
         binding: AgentWorkflowChildBinding,
     ) -> Result<AgentWorkflowChildLease, ControllerError> {
         self.shared.runtime.validate_spawn(&spawn)?;
+        if let Some(execution) = &binding.execution {
+            self.shared.runtime.validate_engine_child(execution)?;
+        }
         let now = u64::try_from(
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)

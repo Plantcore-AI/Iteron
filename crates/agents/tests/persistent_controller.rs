@@ -560,6 +560,7 @@ fn workflow_claim_binds_exact_agent_epoch_and_typed_terminal_atomically() {
             cost_microusd: 10,
             wall_ms: 100,
         },
+        execution: None,
         deadline_unix_ms: 10_100,
     };
     let before = controller.revision();
@@ -616,6 +617,7 @@ fn engine_binding() -> iteron_agents::AgentWorkflowChildBinding {
         node_id: 2,
         attempt: 7,
         input_digest: "a".repeat(64),
+        execution: None,
         deadline_unix_ms: 61_000,
     }
 }
@@ -805,4 +807,87 @@ fn engine_wall_clamp_preserves_original_request_identity_and_absolute_bound() {
             .unwrap_err(),
         ControllerError::RequestConflict
     );
+}
+
+#[test]
+fn engine_profile_and_physical_parent_are_bound_in_the_same_durable_claim() {
+    use iteron_agents::{AgentEngineExecution, AgentEngineOrigin, AgentEngineParentSource};
+    use sha2::{Digest, Sha256};
+    let mut hash = Sha256::new();
+    hash.update(b"iteron-persistent-provider-run-v1\0");
+    for value in ["tenant", "physical-parent"] {
+        hash.update((value.len() as u64).to_be_bytes());
+        hash.update(value.as_bytes());
+    }
+    let parent = AgentEngineParentSource {
+        tenant: "tenant".into(),
+        run: "physical-parent".into(),
+        provider_scope_sha256: format!("sha256:{:x}", hash.finalize()),
+    };
+    let mut controller = AgentController::open(Store::default(), config(8)).unwrap();
+    controller
+        .bind_provider_budget(AgentIdV1(1), &parent.provider_scope_sha256)
+        .unwrap();
+    let execution = AgentEngineExecution {
+        profile: "mapper".into(),
+        profile_digest: format!("sha256:{}", "b".repeat(64)),
+        provider_id: "provider".into(),
+        model_id: "model".into(),
+        catalog_digest: format!("sha256:{}", "c".repeat(64)),
+        capability_digest: format!("sha256:{}", "d".repeat(64)),
+        effort: iteron_protocol::Effort::Low,
+        origin: AgentEngineOrigin::DirectSubagent { parent },
+    };
+    let mut binding = engine_binding();
+    binding.execution = Some(execution.clone());
+    let admitted = controller
+        .spawn_workflow_child(
+            AgentActor::Agent(AgentIdV1(1)),
+            "profile-engine",
+            spawn(AgentIdV1(1), "child", vec![]),
+            binding.clone(),
+            60_000,
+        )
+        .unwrap();
+    assert_eq!(
+        controller
+            .runtime_engine_execution(admitted.claim.assigned_agent, admitted.lease.epoch)
+            .unwrap(),
+        Some(execution)
+    );
+    assert_eq!(admitted.claim.execution, binding.execution);
+    let mut changed = binding.clone();
+    changed.execution.as_mut().unwrap().effort = iteron_protocol::Effort::Default;
+    assert_eq!(
+        controller
+            .existing_workflow_child(
+                AgentActor::Agent(AgentIdV1(1)),
+                "profile-engine",
+                &spawn(AgentIdV1(1), "child", vec![]),
+                &changed
+            )
+            .unwrap_err(),
+        ControllerError::RequestConflict
+    );
+    let mut foreign = binding;
+    foreign.execution.as_mut().unwrap().origin = AgentEngineOrigin::DirectSubagent {
+        parent: AgentEngineParentSource {
+            tenant: "tenant".into(),
+            run: "forged".into(),
+            provider_scope_sha256: format!("sha256:{}", "a".repeat(64)),
+        },
+    };
+    let before = controller.revision();
+    assert!(
+        controller
+            .spawn_workflow_child(
+                AgentActor::Agent(AgentIdV1(1)),
+                "forged-profile-engine",
+                spawn(AgentIdV1(1), "child", vec![]),
+                foreign,
+                60_000
+            )
+            .is_err()
+    );
+    assert_eq!(controller.revision(), before);
 }

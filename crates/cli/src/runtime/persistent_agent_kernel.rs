@@ -26,6 +26,7 @@ use std::time::Duration;
 
 type Resident = Arc<tokio::sync::Mutex<Agent>>;
 mod budget;
+mod profiles;
 mod recovery;
 
 pub(super) struct KernelPersistentRuntime {
@@ -94,6 +95,7 @@ impl KernelPersistentRuntime {
         &self,
         view: &AgentViewV1,
         writer_workspace: Option<&std::path::Path>,
+        execution: Option<&iteron_agents::AgentEngineExecution>,
     ) -> Result<Resident, ControllerError> {
         let mut residents = self
             .residents
@@ -109,13 +111,18 @@ impl KernelPersistentRuntime {
             prompt: String::new(),
             label: Some(view.label.clone()),
             phase: Some("persistent".into()),
-            model: None,
-            effort: None,
-            agent_type: Some(if writer_workspace.is_some() {
-                iteron_agents::ISOLATED_WRITER_NAME.into()
-            } else {
-                "generic".into()
-            }),
+            model: execution.map(|binding| binding.model_id.clone()),
+            effort: execution.map(|binding| binding.effort),
+            agent_type: Some(execution.map_or_else(
+                || {
+                    if writer_workspace.is_some() {
+                        iteron_agents::ISOLATED_WRITER_NAME.into()
+                    } else {
+                        "generic".into()
+                    }
+                },
+                |binding| binding.profile.clone(),
+            )),
             schema: None,
             cancel: Default::default(),
         };
@@ -125,7 +132,7 @@ impl KernelPersistentRuntime {
             .spawner
             .lock()
             .map_err(|_| ControllerError::Poisoned)?
-            .build_persistent_child(&call, &construction, writer_workspace)
+            .build_persistent_child(&call, &construction, writer_workspace, execution)
             .map_err(|_| ControllerError::Invalid("persistent child construction failed"))?;
         child.narrow_policy_capabilities(view.capabilities);
         child.authority_ceiling = child.authority_ceiling.intersect(view.capabilities);
@@ -161,6 +168,19 @@ impl KernelPersistentRuntime {
 
 #[async_trait]
 impl PersistentAgentRuntime for KernelPersistentRuntime {
+    fn prepare_engine_child(
+        &self,
+        request: &super::persistent_agents::AgentEngineRequest,
+        origin: iteron_agents::AgentEngineOrigin,
+    ) -> Result<iteron_agents::AgentEngineExecution, ControllerError> {
+        self.prepare_child_profile(request, origin)
+    }
+    fn validate_engine_child(
+        &self,
+        execution: &iteron_agents::AgentEngineExecution,
+    ) -> Result<(), ControllerError> {
+        self.validate_child_profile(execution)
+    }
     fn monetary_remaining(&self) -> Result<Option<u64>, ControllerError> {
         if self.pricing.is_none() {
             return Ok(None);
@@ -235,6 +255,18 @@ impl PersistentAgentRuntime for KernelPersistentRuntime {
         initial: Vec<AgentMailboxMessage>,
         mailbox: LiveAgentMailbox,
     ) -> AgentSettlement {
+        let execution = match mailbox.engine_execution() {
+            Ok(Some(binding)) => {
+                if self.validate_engine_child(&binding).is_err() {
+                    return profiles::refused(
+                        "committed child profile does not match native evidence",
+                    );
+                }
+                Some(binding)
+            }
+            Ok(None) => None,
+            Err(_) => return profiles::refused("committed child profile evidence is unavailable"),
+        };
         let writer_requested = view.capabilities.contains(Capability::ReversibleLocal);
         let _writer_lane = if writer_requested {
             Some(self.writer.lock.lock().await)
@@ -296,6 +328,7 @@ impl PersistentAgentRuntime for KernelPersistentRuntime {
         let resident = match self.resident(
             &lifetime,
             worktree.as_ref().map(PersistentWriterWorktree::path),
+            execution.as_ref(),
         ) {
             Ok(resident) => resident,
             Err(_) => {

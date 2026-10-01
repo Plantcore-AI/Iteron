@@ -17,6 +17,8 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
 mod cohort_binding;
+mod engine_execution;
+pub use engine_execution::{AgentEngineExecution, AgentEngineOrigin, AgentEngineParentSource};
 mod output_funding;
 pub use output_funding::AgentProviderBudgetAllowance;
 mod parent_turn;

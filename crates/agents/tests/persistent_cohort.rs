@@ -424,6 +424,7 @@ fn workflow_allowance_uses_the_exact_node_envelope_including_live_reservations()
             cost_microusd: 30,
             wall_ms: 1000,
         },
+        execution: None,
         deadline_unix_ms: 2000,
     };
     let lease = owner.claim_workflow_task(task, 1000).unwrap();

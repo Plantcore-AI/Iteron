@@ -61,6 +61,7 @@ fn child_provider_governor(
 }
 
 mod activity;
+mod agent_profile;
 mod tunables;
 pub(super) mod worktree;
 
@@ -516,7 +517,11 @@ impl KernelSpawner {
         call: &AgentCall,
         view: &iteron_protocol::agent_control::AgentViewV1,
         writer_workspace: Option<&Path>,
+        execution: Option<&iteron_agents::AgentEngineExecution>,
     ) -> Result<Agent, String> {
+        if let Some(binding) = execution {
+            self.validate_engine_execution(binding)?;
+        }
         let prior_runtime = view.usage.turns > 1
             || view.incarnation > 1
             || view.usage.tokens > 0
@@ -559,7 +564,8 @@ impl KernelSpawner {
             .saturating_sub(view.reserved.cost_microusd) as f64
             / 1_000_000.0;
         self.cx.budget.max_usd = Some(self.cx.budget.max_usd.unwrap_or(ceiling).min(ceiling));
-        let built = self.build_child_in_mode(call, view.agent_id.0, writer_workspace, true);
+        let built =
+            self.build_child_in_mode(call, view.agent_id.0, writer_workspace, true, execution);
         self.cx.budget = previous;
         built
     }
@@ -570,7 +576,7 @@ impl KernelSpawner {
         ordinal: u64,
         writer_workspace: Option<&Path>,
     ) -> Result<Agent, String> {
-        self.build_child_in_mode(call, ordinal, writer_workspace, false)
+        self.build_child_in_mode(call, ordinal, writer_workspace, false, None)
     }
 
     fn build_child_in_mode(
@@ -579,6 +585,7 @@ impl KernelSpawner {
         ordinal: u64,
         writer_workspace: Option<&Path>,
         resume_existing: bool,
+        execution: Option<&iteron_agents::AgentEngineExecution>,
     ) -> Result<Agent, String> {
         let cx = &self.cx;
 
@@ -596,52 +603,8 @@ impl KernelSpawner {
         call.validate_request_metadata()
             .map_err(|error| safe_agent_refusal(error.public_reason()))?;
 
-        // Case-sensitive catalog resolution is an authority decision. Unknown names fail before a
-        // rollout or provider effect exists; in particular, the historical magic name `writer`
-        // can no longer turn model-controlled data into a coding registry.
-        let requested_type = call.agent_type.as_deref().unwrap_or("generic");
-        if cx.plugin_management.as_ref().is_some_and(|owner| {
-            !owner.dispatch_policy().admits(
-                iteron_protocol::extension_dispatch::ExtensionSurfaceV1::Agent,
-                requested_type,
-            )
-        }) {
-            return Err("verified plugin future agent dispatch was revoked".into());
-        }
-        let agent_def = cx
-            .agent_catalog
-            .get(requested_type)
-            .cloned()
-            .ok_or_else(|| "requested agent type is absent from the pinned catalog".to_string())?;
-        agent_def.validate().map_err(|reason| {
-            safe_agent_refusal(&format!("pinned agent definition is invalid: {reason}"))
-        })?;
-        cx.execution_policy
-            .per_agent_model
-            .validate_owner(&cx.provider_id, &cx.model)
-            .map_err(safe_agent_refusal)?;
-        cx.execution_policy
-            .per_agent_tool_profile
-            .validate_owner(&cx.permission_rules)
-            .map_err(safe_agent_refusal)?;
-        let role_routes = cx
-            .execution_policy
-            .role_specific_models
-            .validate_owner(&cx.agent_catalog, &cx.provider_id, &cx.model)
-            .map_err(safe_agent_refusal)?;
-        if agent_def.model.is_some() {
-            let bound_route = format!("{}:{}", cx.provider_id, cx.model);
-            let Some(admitted_route) = role_routes.get(requested_type) else {
-                return Err(safe_agent_refusal(
-                    "agent definition model override is absent from the pinned role-specific model map",
-                ));
-            };
-            if admitted_route != &bound_route {
-                return Err(safe_agent_refusal(
-                    "pinned role-specific model route has no bound provider instance",
-                ));
-            }
-        }
+        let profile = agent_profile::resolve(cx, call)?;
+        let agent_def = profile.definition;
         let is_writer = agent_def.is_isolated_writer();
         if is_writer != writer_workspace.is_some() {
             return Err(safe_agent_refusal(
@@ -758,11 +721,30 @@ impl KernelSpawner {
         // --- Non-durable inherited context. These private fields are set exactly as the in-crate
         //     parent paths set them (this module is a descendant of the crate root, so it shares
         //     `Agent`'s private surface); no new public setter is exposed for them. ---
-        sub.projection_attribution = Some(CostAttribution::WorkflowChild {
-            parent_run_id: cx.parent_run_id.clone(),
-            workflow_id: cx.workflow_id.clone(),
-            task_id: ordinal as u32,
-            sub_run: sub_run.0.clone(),
+        sub.projection_attribution = Some(match execution.map(|binding| &binding.origin) {
+            Some(iteron_agents::AgentEngineOrigin::DirectSubagent { parent }) => {
+                CostAttribution::DirectSubagent {
+                    parent_run_id: parent.run.clone(),
+                    sub_run: sub_run.0.clone(),
+                }
+            }
+            Some(iteron_agents::AgentEngineOrigin::WorkflowChild {
+                parent,
+                workflow_id,
+                task_id,
+            }) => CostAttribution::WorkflowChild {
+                parent_run_id: parent.run.clone(),
+                workflow_id: workflow_id.clone(),
+                task_id: *task_id,
+                sub_run: sub_run.0.clone(),
+            },
+            None => CostAttribution::WorkflowChild {
+                parent_run_id: cx.parent_run_id.clone(),
+                workflow_id: cx.workflow_id.clone(),
+                task_id: u32::try_from(ordinal)
+                    .map_err(|_| "child task identity is outside its bounded domain")?,
+                sub_run: sub_run.0.clone(),
+            },
         });
         sub.runtime_state_dir = cx.runtime_state_dir.clone();
         sub.lifecycle_emitter = cx.lifecycle_emitter.clone();
@@ -851,10 +833,7 @@ impl KernelSpawner {
         // --- Coherent fresh-run runtime policy, BEFORE any durable append (the rollout is still
         //     empty here; route recording below is the first event). A leaf never orchestrates, so
         //     `Ultracode` collapses to `Max` (max thinking budget, no fan). ---
-        let effort = cx
-            .execution_policy
-            .admit_child_effort(call.effort, &cx.effort_policy)
-            .map_err(safe_agent_refusal)?;
+        let effort = profile.effort;
         sub.configure_initial_runtime_policy(
             effort,
             cx.permission_mode,
@@ -874,7 +853,10 @@ impl KernelSpawner {
                 "cli.runtime.workflow_spawner.clock_before_epoch_secs",
                 CLOCK_BEFORE_EPOCH_SECS,
             ));
-        let parent_run = iteron_protocol::RunId(cx.parent_run_id.clone());
+        let parent_run = iteron_protocol::RunId(execution.map_or_else(
+            || cx.parent_run_id.clone(),
+            |binding| binding.origin.parent().run.clone(),
+        ));
         if resume_existing && sub.rollout.next_sequence().0 > 0 {
             let messages = Agent::messages_from_rollout(sub.rollout.path())
                 .map_err(|error| safe_agent_refusal(&error.public_summary()))?;

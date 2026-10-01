@@ -38,10 +38,40 @@ const MAX_PARALLEL_AGENTS: usize = 64;
 const MAX_WAIT_MS: u64 = 60_000;
 const MAX_INPUT_BATCH: usize = 128;
 
+/// Data-only profile proposal. The native host resolves it; it contains no execution authority.
+#[derive(Clone)]
+pub(crate) struct AgentEngineRequest {
+    pub profile: Option<String>,
+    pub model: Option<String>,
+    pub effort: Option<iteron_protocol::Effort>,
+}
+impl AgentEngineRequest {
+    pub(super) fn call(&self) -> iteron_workflow::AgentCall {
+        iteron_workflow::AgentCall {
+            prompt: String::new(),
+            label: None,
+            phase: None,
+            agent_type: self.profile.clone(),
+            model: self.model.clone(),
+            effort: self.effort,
+            schema: None,
+            cancel: Default::default(),
+        }
+    }
+}
+
 /// Transport and model tools bind the actor before calling this port. Actor identity is never
 /// decoded from command JSON. Queries are current observations and must not be memoized.
 #[async_trait]
 pub(crate) trait AgentControlPort: Send + Sync {
+    fn prepare_engine_child(
+        &self,
+        _actor: AgentActor,
+        _request: &AgentEngineRequest,
+        _origin: iteron_agents::AgentEngineOrigin,
+    ) -> Result<iteron_agents::AgentEngineExecution, ControllerError> {
+        Err(ControllerError::Permission)
+    }
     fn spawn_engine_child(
         &self,
         _actor: AgentActor,
@@ -157,6 +187,19 @@ pub(crate) struct AgentSettlement {
 
 #[async_trait]
 pub(crate) trait PersistentAgentRuntime: Send + Sync {
+    fn prepare_engine_child(
+        &self,
+        _request: &AgentEngineRequest,
+        _origin: iteron_agents::AgentEngineOrigin,
+    ) -> Result<iteron_agents::AgentEngineExecution, ControllerError> {
+        Err(ControllerError::Permission)
+    }
+    fn validate_engine_child(
+        &self,
+        _execution: &iteron_agents::AgentEngineExecution,
+    ) -> Result<(), ControllerError> {
+        Err(ControllerError::Permission)
+    }
     /// A repeated id must retain its context. This port must enforce the inherited runtime budget,
     /// apply only epoch-bound inputs and stop its processes before returning a known settlement.
     async fn execute(
@@ -175,6 +218,13 @@ pub(crate) trait PersistentAgentRuntime: Send + Sync {
 }
 
 trait MailboxPort: Send + Sync {
+    fn engine_execution(
+        &self,
+        _id: AgentIdV1,
+        _epoch: AgentEpochV1,
+    ) -> Result<Option<iteron_agents::AgentEngineExecution>, ControllerError> {
+        Ok(None)
+    }
     fn admitted_deadline(
         &self,
         _id: AgentIdV1,
@@ -217,6 +267,11 @@ pub(crate) struct LiveAgentMailbox {
 }
 
 impl LiveAgentMailbox {
+    pub(super) fn engine_execution(
+        &self,
+    ) -> Result<Option<iteron_agents::AgentEngineExecution>, ControllerError> {
+        self.port.engine_execution(self.id, self.epoch)
+    }
     pub(super) fn execution_deadline(&self) -> Result<Instant, ControllerError> {
         let deadline = self.port.admitted_deadline(self.id, self.epoch)?;
         let now = u64::try_from(
@@ -713,6 +768,29 @@ impl<J: AgentControllerJournal + Send + 'static> PersistentAgentHost<J> {
 
 #[async_trait]
 impl<J: AgentControllerJournal + Send + 'static> AgentControlPort for PersistentAgentHost<J> {
+    fn prepare_engine_child(
+        &self,
+        actor: AgentActor,
+        request: &AgentEngineRequest,
+        origin: iteron_agents::AgentEngineOrigin,
+    ) -> Result<iteron_agents::AgentEngineExecution, ControllerError> {
+        self.shared
+            .controller
+            .lock()
+            .map_err(|_| ControllerError::Poisoned)?
+            .validate_engine_origin(actor, &origin)?;
+        self.shared.runtime.prepare_engine_child(request, origin)
+    }
+    fn engine_child_completion(
+        &self,
+        claim: &iteron_agents::AgentWorkflowClaim,
+    ) -> Result<Option<iteron_agents::AgentWorkflowCompletion>, ControllerError> {
+        self.shared
+            .controller
+            .lock()
+            .map_err(|_| ControllerError::Poisoned)?
+            .workflow_completion(claim)
+    }
     fn spawn_engine_child(
         &self,
         actor: AgentActor,
@@ -946,6 +1024,17 @@ impl<J: AgentControllerJournal + Send + 'static> AgentControlPort for Persistent
 }
 
 impl<J: AgentControllerJournal + Send + 'static> MailboxPort for PersistentAgentHost<J> {
+    fn engine_execution(
+        &self,
+        id: AgentIdV1,
+        epoch: AgentEpochV1,
+    ) -> Result<Option<iteron_agents::AgentEngineExecution>, ControllerError> {
+        self.shared
+            .controller
+            .lock()
+            .map_err(|_| ControllerError::Poisoned)?
+            .runtime_engine_execution(id, epoch)
+    }
     fn admitted_deadline(
         &self,
         id: AgentIdV1,

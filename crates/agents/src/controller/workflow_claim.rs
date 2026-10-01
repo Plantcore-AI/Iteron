@@ -13,6 +13,8 @@ pub struct AgentWorkflowClaim {
     pub task: String,
     pub budget: AgentBudgetV1,
     pub deadline_unix_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<AgentEngineExecution>,
 }
 impl AgentWorkflowClaim {
     fn validate(&self) -> Result<(), ControllerError> {
@@ -32,6 +34,9 @@ impl AgentWorkflowClaim {
         }
         iteron_protocol::agent_control::validate_text(&self.task)
             .map_err(ControllerError::Invalid)?;
+        if let Some(execution) = &self.execution {
+            execution.validate()?;
+        }
         self.budget.validate().map_err(ControllerError::Invalid)
     }
     fn key(&self) -> Result<String, ControllerError> {
@@ -55,6 +60,8 @@ pub struct AgentWorkflowChildBinding {
     pub attempt: u64,
     pub input_digest: String,
     pub deadline_unix_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<AgentEngineExecution>,
 }
 #[derive(Debug, Clone)]
 pub struct AgentWorkflowChildLease {
@@ -193,6 +200,19 @@ impl<J: AgentControllerJournal> AgentController<J> {
         binding: &AgentWorkflowChildBinding,
     ) -> Result<(AgentWorkflowClaim, String, String, String), ControllerError> {
         spawn.validate().map_err(ControllerError::Invalid)?;
+        if let Some(execution) = &binding.execution {
+            execution.validate()?;
+            self.validate_engine_origin(actor, &execution.origin)?;
+            if let AgentEngineOrigin::WorkflowChild {
+                workflow_id,
+                task_id,
+                ..
+            } = &execution.origin
+                && (workflow_id != &binding.workflow_id || u64::from(*task_id) != binding.node_id)
+            {
+                return Err(ControllerError::RequestConflict);
+            }
+        }
         let AgentCommandV1::Spawn { task, budget, .. } = &spawn else {
             return Err(ControllerError::Invalid("workflow child requires spawn"));
         };
@@ -205,6 +225,7 @@ impl<J: AgentControllerJournal> AgentController<J> {
             task: task.clone(),
             budget: *budget,
             deadline_unix_ms: binding.deadline_unix_ms,
+            execution: binding.execution.clone(),
         };
         claim.validate()?;
         if request_id.is_empty()
@@ -620,6 +641,17 @@ pub(super) fn validate_claims(snapshot: &AgentControllerSnapshot) -> Result<(), 
             .agents
             .get(&receipt.claim.assigned_agent)
             .ok_or(ControllerError::UnknownAgent)?;
+        if let Some(execution) = &receipt.claim.execution {
+            let scope = &execution.origin.parent().provider_scope_sha256;
+            let owner = snapshot
+                .primary_provider_scope_owner(scope)
+                .or_else(|| snapshot.cohort_root_scope(scope).then_some(AgentIdV1(1)));
+            if record.view.parent_id != owner {
+                return Err(ControllerError::Invalid(
+                    "durable child execution has a foreign native parent",
+                ));
+            }
+        }
         let message = snapshot
             .mailbox
             .message(receipt.message)

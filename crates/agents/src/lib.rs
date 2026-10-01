@@ -32,10 +32,11 @@ mod stage;
 pub use catalog::{AgentCatalog, AgentCatalogRuntimeIdentity, LoadError};
 pub use controller::{
     AgentActor, AgentController, AgentControllerConfig, AgentControllerJournal,
-    AgentControllerSnapshot, AgentProviderBudgetAllowance, AgentProviderBudgetBaseline,
-    AgentProviderBudgetRequest, AgentProviderBudgetTerminal, AgentWorkflowChildBinding,
-    AgentWorkflowChildLease, AgentWorkflowClaim, AgentWorkflowCompletion, AgentWorkflowLease,
-    AgentWorkflowTerminal, AgentWorkspaceWitness,
+    AgentControllerSnapshot, AgentEngineExecution, AgentEngineOrigin, AgentEngineParentSource,
+    AgentProviderBudgetAllowance, AgentProviderBudgetBaseline, AgentProviderBudgetRequest,
+    AgentProviderBudgetTerminal, AgentWorkflowChildBinding, AgentWorkflowChildLease,
+    AgentWorkflowClaim, AgentWorkflowCompletion, AgentWorkflowLease, AgentWorkflowTerminal,
+    AgentWorkspaceWitness,
 };
 pub use controller_error::{ControllerError, ControllerStoreError};
 pub use controller_file::AgentFileJournal;

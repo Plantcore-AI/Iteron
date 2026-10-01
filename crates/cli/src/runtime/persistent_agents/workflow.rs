@@ -21,6 +21,7 @@ pub(super) fn claim(task: ScheduledTaskV1) -> Result<AgentWorkflowClaim, Control
             cost_microusd: task.budget.max_cost_microusd,
             wall_ms: task.budget.max_wall_ms,
         },
+        execution: None,
         deadline_unix_ms: task.deadline_unix_ms,
     })
 }

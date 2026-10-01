@@ -25,6 +25,13 @@ impl<J> WeakMailbox<J> {
     }
 }
 impl<J: AgentControllerJournal + Send + 'static> MailboxPort for WeakMailbox<J> {
+    fn engine_execution(
+        &self,
+        id: AgentIdV1,
+        epoch: AgentEpochV1,
+    ) -> Result<Option<iteron_agents::AgentEngineExecution>, ControllerError> {
+        MailboxPort::engine_execution(&self.host()?, id, epoch)
+    }
     fn admitted_deadline(
         &self,
         id: AgentIdV1,
