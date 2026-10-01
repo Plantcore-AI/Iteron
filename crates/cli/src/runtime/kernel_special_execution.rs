@@ -213,21 +213,50 @@ impl KernelSpecialExecution<'_> {
                 result
             }
         };
-        if let Some(source) = &accounting {
-            source.begin(&mut self.journal, turn, &effect)?;
-        }
-        let result = admitted.complete(&mut self.journal.tool(self.failed_actions), result)?;
-        if let Some(source) = accounting
-            && let Err(error) = source.publish(&mut self.journal, &events, turn, &effect)
-        {
-            return Ok(KernelSpecialResult::AccountingUnavailable {
-                result,
-                reason: error.public_summary(),
-            });
-        }
-        Ok(KernelSpecialResult::Completed(result))
+        complete_known_special(
+            &mut self.journal,
+            self.failed_actions,
+            admitted,
+            result,
+            accounting,
+            &events,
+            turn,
+            &effect,
+        )
     }
 }
+pub(super) fn complete_known_special(
+    journal: &mut KernelDispatchJournal<'_>,
+    failed: &mut FailedActionCache,
+    admitted: KernelToolCall,
+    result: ToolResult,
+    accounting: Option<super::kernel_child_accounting::ChildAccountingSource>,
+    events: &super::stream_tool_events::StreamToolEvents,
+    turn: TurnId,
+    effect: &iteron_protocol::EffectId,
+) -> Result<KernelSpecialResult, KernelError> {
+    let capacity_error = match &accounting {
+        Some(source) => source.begin(journal, turn, effect)?.err(),
+        None => None,
+    };
+    let result = admitted.complete(&mut journal.tool(failed), result)?;
+    if let Some(reason) = capacity_error {
+        return Ok(KernelSpecialResult::AccountingUnavailable {
+            result,
+            reason: reason.into(),
+        });
+    }
+    if let Some(source) = accounting
+        && let Err(error) = source.publish(journal, events, turn, effect)
+    {
+        return Ok(KernelSpecialResult::AccountingUnavailable {
+            result,
+            reason: error.public_summary(),
+        });
+    }
+    Ok(KernelSpecialResult::Completed(result))
+}
+
 fn tool_result(call: &ToolUse, result: Result<String, String>, trust: Trust) -> ToolResult {
     let is_error = result.is_err();
     ToolResult {

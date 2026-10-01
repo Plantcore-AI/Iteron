@@ -241,3 +241,92 @@ async fn dropped_actual_direct_await_preserves_unresolved_physical_intent() {
     );
     assert!(!events.iter().any(|event|matches!(&event.kind,EventKind::ToolDone {result,..} if result.tool_use_id=="dropped-direct")));
 }
+
+#[tokio::test]
+async fn actual_known_child_still_seals_outer_terminal_when_accounting_admission_is_full() {
+    let (mut host, calls) = host("kernel-accounting-pressure");
+    let call = ToolUse {
+        id: "known-at-capacity".into(),
+        name: iteron_tools::DISPATCH_AGENT.into(),
+        input: serde_json::json!({"task":"read"}),
+    };
+    let projection = host.turn_result_projection_budget(
+        ContextBudgetInspection::from_policy(Default::default(), Default::default()),
+        std::slice::from_ref(&call),
+    );
+    let (ports, output) =
+        host.kernel_special_execution(TurnId(1), 0, KernelSpecialKind::Direct, projection);
+    let crate::runtime::kernel_special_execution::KernelSpecialExecution {
+        work,
+        mut journal,
+        mut control,
+        failed_actions,
+        hooks,
+        ..
+    } = ports;
+    let events = output.events.clone();
+    let workspace = journal.workspace().to_owned();
+    let admitted = crate::runtime::kernel_tool_call::KernelToolCall::begin(
+        &mut journal.tool(failed_actions),
+        output,
+        &workspace,
+        TurnId(1),
+        0,
+        &call,
+        Capability::CodeExecuting,
+    )
+    .unwrap();
+    let effect = admitted.effect_id().clone();
+    let crate::runtime::kernel_special_execution::KernelDispatchWork::Direct(work) = work else {
+        unreachable!()
+    };
+    let completion = work
+        .run(
+            TurnId(1),
+            0,
+            "read",
+            &mut journal,
+            &mut control,
+            &events,
+            hooks,
+        )
+        .await
+        .unwrap();
+    for index in 0..64 {
+        journal
+            .begin_child_accounting(&iteron_protocol::EffectId(format!("retained-{index}")))
+            .unwrap();
+    }
+    let (result, source) = completion.into_parts();
+    let result = super::complete_known_special(
+        &mut journal,
+        failed_actions,
+        admitted,
+        super::tool_result(&call, result, Trust::Untrusted),
+        source,
+        &events,
+        TurnId(1),
+        &effect,
+    )
+    .unwrap();
+    assert!(matches!(
+        result,
+        KernelSpecialResult::AccountingUnavailable { .. }
+    ));
+    drop(journal);
+    drop(control);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(host.ledger.provider_attempts, 0);
+    assert!(host.parent_effects_known());
+    assert!(matches!(
+        host.inference_budget_exhaustion(),
+        Err(KernelError::ContextResolution(_))
+    ));
+    let events = iteron_record::replay(host.rollout.path()).unwrap();
+    assert!(events.iter().any(|event|matches!(&event.kind,EventKind::ToolDone {effect_id:Some(_),result,..} if result.tool_use_id==call.id)));
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(&event.kind, EventKind::EffectUnknown { .. }))
+    );
+}

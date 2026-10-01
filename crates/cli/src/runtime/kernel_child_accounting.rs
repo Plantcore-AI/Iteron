@@ -77,15 +77,14 @@ impl ChildAccountingSource {
         journal: &mut KernelDispatchJournal<'_>,
         turn: TurnId,
         effect: &EffectId,
-    ) -> Result<(), KernelError> {
+    ) -> Result<Result<(), &'static str>, KernelError> {
         journal.append(
             turn,
             EventKind::ChildAccountingPendingV1 {
                 effect_id: effect.clone(),
             },
         )?;
-        journal.begin_child_accounting(effect)?;
-        Ok(())
+        Ok(journal.begin_child_accounting(effect))
     }
     pub(super) fn publish(
         self,

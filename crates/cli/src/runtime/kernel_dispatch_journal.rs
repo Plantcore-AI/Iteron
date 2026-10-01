@@ -38,10 +38,8 @@ impl KernelDispatchJournal<'_> {
     pub(super) fn begin_child_accounting(
         &mut self,
         effect: &iteron_protocol::EffectId,
-    ) -> Result<(), KernelError> {
-        self.ledger
-            .begin_child_accounting(effect)
-            .map_err(|reason| KernelError::ContextResolution(reason.into()))
+    ) -> Result<(), &'static str> {
+        self.ledger.begin_child_accounting(effect)
     }
     pub(super) fn resolve_child_accounting(
         &mut self,
