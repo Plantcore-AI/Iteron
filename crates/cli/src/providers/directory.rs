@@ -363,6 +363,12 @@ impl ProviderDirectory {
         self.deferred.is_some()
     }
 
+    pub(crate) fn provider_discovery_pending(&self, provider: &str) -> bool {
+        self.deferred
+            .as_ref()
+            .is_some_and(|owner| owner.is_pending(provider))
+    }
+
     /// Host publication joins the same physical task to its real terminal; selected-route calls
     /// retain their short observation timeout. This does not launch another refresh or retry.
     pub(crate) async fn settle_complete(&mut self) -> bool {

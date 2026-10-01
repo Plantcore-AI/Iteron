@@ -20,6 +20,7 @@ pub(crate) struct ProviderCatalogEntry {
     pub(crate) catalog_enabled: bool,
     pub(crate) catalog_error: Option<String>,
     pub(crate) catalog_stale: bool,
+    pub(crate) discovery_pending: bool,
 }
 impl ProviderCatalogEntry {
     pub(crate) fn id(&self) -> &str {
@@ -53,6 +54,7 @@ pub(crate) struct ProviderCatalogView {
     routes: Arc<BTreeMap<(String, String), CatalogRouteFacts>>,
     inventory_digest: String,
     discovery_pending: bool,
+    discovery_error: Option<String>,
 }
 impl ProviderCatalogView {
     /// Called only by the host after inventory admission. Count and text limits precede copying.
@@ -157,6 +159,7 @@ impl ProviderCatalogView {
                 catalog_enabled: entry.catalog_enabled,
                 catalog_error: entry.catalog_error.as_deref().map(display),
                 catalog_stale: entry.catalog_stale,
+                discovery_pending: directory.provider_discovery_pending(entry.id()),
             });
             let catalog_identity = super::selection_identity::CatalogIdentity::capture(entry);
             let models = entry.catalog.as_ref().into_iter().flat_map(|catalog| {
@@ -211,6 +214,7 @@ impl ProviderCatalogView {
             routes: Arc::new(routes),
             inventory_digest,
             discovery_pending,
+            discovery_error: None,
         })
     }
     /// Trusted host assembly consumes the admitted draft after hashing the matching inventory.
@@ -228,6 +232,14 @@ impl ProviderCatalogView {
     }
     pub(crate) fn discovery_pending(&self) -> bool {
         self.discovery_pending
+    }
+    pub(crate) fn discovery_error(&self) -> Option<&str> {
+        self.discovery_error.as_deref()
+    }
+    /// A failed refresh retains the admitted route snapshot and reports the actual terminal.
+    pub(crate) fn with_discovery_error(mut self, reason: Option<&str>) -> Self {
+        self.discovery_error = reason.map(display);
+        self
     }
     pub(crate) fn entries(&self) -> &[ProviderCatalogEntry] {
         &self.entries
@@ -330,6 +342,11 @@ impl ProviderCatalogView {
         if self.entry(&selection.provider_id).is_none() {
             view.blocked_reason =
                 Some("provider is absent from the captured host inventory".into());
+        } else if !self
+            .routes
+            .contains_key(&(selection.provider_id.clone(), selection.model_id.clone()))
+        {
+            view.blocked_reason = Some("route is absent from the captured host inventory".into());
         }
         view
     }

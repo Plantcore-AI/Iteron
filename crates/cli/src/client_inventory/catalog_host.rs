@@ -97,7 +97,11 @@ impl ClientInventoryOwner {
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
         {
-            return Ok(self.catalog_view());
+            let view = self.catalog_view();
+            return match view.discovery_error() {
+                Some(reason) => Err(reason.to_owned()),
+                None => Ok(view),
+            };
         }
         let mut directory = self
             .live_directory
@@ -105,29 +109,46 @@ impl ClientInventoryOwner {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         if !directory.begin_settle_after_paint() {
-            return Err(
-                "provider discovery was abandoned; restart or inspect the provider configuration"
-                    .into(),
-            );
+            let reason =
+                "provider discovery was abandoned; restart or inspect the provider configuration";
+            self.retain_discovery_failure(reason)?;
+            return Err(reason.into());
         }
         if !directory.discovery_pending() {
             return self.refresh();
         }
         let owner = self.clone();
         tokio::spawn(async move {
-            directory.settle_complete().await;
-            let mut live = owner
-                .live_directory
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            *live = directory;
-            // Invalid provider output leaves the previously admitted snapshot in force. A catalog
-            // that cannot pass the projection bounds never becomes executable through this port.
-            if let Err(reason) = owner.publish_locked(&live) {
-                eprintln!(
-                    "warning: provider inventory refresh refused: {}",
-                    crate::client_inventory::safe(&reason)
-                );
+            let settled = directory.settle_complete().await;
+            let failure = {
+                let mut live = owner
+                    .live_directory
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if settled {
+                    match owner.publish_locked(&directory) {
+                        Ok(_) => {
+                            *live = directory;
+                            None
+                        }
+                        Err(reason) => Some(reason),
+                    }
+                } else {
+                    Some(
+                        "provider discovery did not complete; the admitted inventory was retained"
+                            .into(),
+                    )
+                }
+            };
+            // No invalid catalog enters either executable owner. Close the discovery projection
+            // over the retained admitted directory, rather than leaving a false pending spinner.
+            if let Some(reason) = failure {
+                if let Err(error) = owner.retain_discovery_failure(&reason) {
+                    eprintln!(
+                        "warning: provider inventory terminal could not be published: {}",
+                        crate::client_inventory::safe(&error)
+                    );
+                }
             }
         });
         Ok(self.catalog_view())
@@ -179,13 +200,31 @@ impl ClientInventoryOwner {
         }
         self.publish_locked(&live)
     }
+    fn retain_discovery_failure(&self, reason: &str) -> Result<ProviderCatalogView, String> {
+        let mut live = self
+            .live_directory
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let retained = self.session_directory();
+        let view = self.publish_with_error(&retained, Some(reason))?;
+        *live = retained;
+        Ok(view)
+    }
     fn publish_locked(&self, directory: &ProviderDirectory) -> Result<ProviderCatalogView, String> {
+        self.publish_with_error(directory, self.catalog_view().discovery_error())
+    }
+    fn publish_with_error(
+        &self,
+        directory: &ProviderDirectory,
+        error: Option<&str>,
+    ) -> Result<ProviderCatalogView, String> {
         let draft = ProviderCatalogView::capture(
             directory,
             &self.selected,
             String::new(),
             directory.discovery_pending(),
-        )?;
+        )?
+        .with_discovery_error(error);
         let captured =
             CapturedClientInventory::capture(directory, &self.plugins, &self.selected, &draft)?;
         let view = draft.with_inventory_digest(captured.digest.clone());

@@ -880,6 +880,65 @@ async fn host_first_frame_publishes_discovery_and_factory_from_the_same_admitted
 }
 
 #[tokio::test]
+async fn host_refuses_invalid_discovery_without_leaving_pending_or_installing_its_route() {
+    use iteron_protocol::client_inventory::{ClientInventoryKindV1, ClientInventoryQueryV1};
+    let invalid_model = "x".repeat(513);
+    let body = serde_json::json!({"data":[{"id":invalid_model}]}).to_string();
+    let (api_root, accepts, server) = spawn_counting_json_server(body);
+    let directory = ProviderDirectory::discover_entries_eagerly(
+        vec![policy_entry("invalid-discovery", &api_root)],
+        None,
+        Some(&["invalid-discovery".into()]),
+    )
+    .await
+    .unwrap();
+    let selected = ModelSelection {
+        provider_id: "invalid-discovery".into(),
+        model_id: "held-model".into(),
+    };
+    let owner = crate::client_inventory::ClientInventoryOwner::capture(
+        &directory,
+        &crate::plugin_runtime::RuntimePlugins::default(),
+        &selected,
+    )
+    .unwrap();
+    let mut observer = owner.catalog_subscription();
+    let before = observer.current();
+    assert!(before.discovery_pending());
+    let query = ClientInventoryQueryV1 {
+        kind: ClientInventoryKindV1::Providers,
+        provider_id: None,
+        offset: 0,
+        limit: 25,
+    };
+    assert_eq!(
+        owner.read(&query).unwrap()["records"][0]["discovery_pending"],
+        true
+    );
+    owner.first_frame().unwrap();
+    let after = tokio::time::timeout(Duration::from_secs(3), observer.changed())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!after.discovery_pending());
+    assert!(after.discovery_error().is_some());
+    assert!(
+        before.discovery_pending(),
+        "the old readonly value is immutable"
+    );
+    assert!(after.resolve_model(&invalid_model, None).is_err());
+    let actual = owner.session_directory();
+    assert!(actual.entry("invalid-discovery").unwrap().catalog.is_none());
+    let page = owner.read(&query).unwrap();
+    assert_eq!(page["inventory_digest_sha256"], after.inventory_digest());
+    assert_eq!(page["records"][0]["discovery_pending"], false);
+    assert!(page["records"][0]["discovery_error"].is_string());
+    assert!(owner.first_frame().is_err());
+    server.join().unwrap();
+    assert_eq!(accepts.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
 async fn settle_publishes_the_catalogs_the_launch_deferred() {
     let routed = serde_json::json!({ "data": [{ "id": "routed-model" }] }).to_string();
     let (routed_root, routed_server) = spawn_json_server(routed);

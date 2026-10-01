@@ -47,7 +47,8 @@ impl CapturedClientInventory {
             providers.push(json!({"provider_id":entry.id(),"display_name":safe(entry.display_name()),"enabled":entry.enabled,
                 "catalog_available":entry.catalog.is_some(),"catalog_stale":entry.catalog_stale,
                 "catalog_enabled":entry.catalog_enabled,"catalog_provenance":safe(&entry.catalog_provenance_label()),"model_count":model_count,
-                "discovery_pending":entry.catalog.is_none() && entry.catalog_error.is_none() && entry.catalog_enabled}));
+                "discovery_pending":view.entry(entry.id()).is_some_and(|entry| entry.discovery_pending),
+                "discovery_error":view.discovery_error()}));
             if let Some(catalog) = &entry.catalog {
                 for model in &catalog.models {
                     if models.len() >= MAX_MODELS {
