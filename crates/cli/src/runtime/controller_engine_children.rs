@@ -108,6 +108,78 @@ impl ControllerEngineChildren {
         };
         claims.iter().all(|claim| matches!(self.control.engine_child_completion(claim), Ok(Some(done)) if done.effects_known))
     }
+    pub(super) fn has_admissions(&self) -> bool {
+        self.claims.lock().map_or(true, |claims| !claims.is_empty())
+    }
+    pub(super) fn cancel_all(&self) {
+        let Ok(claims) = self.claims.lock() else {
+            self.unresolved.store(true, Ordering::Release);
+            return;
+        };
+        for claim in claims.iter() {
+            if self
+                .control
+                .command(
+                    AgentActor::Agent(self.parent),
+                    &format!(
+                        "engine-cancel:{}:{}:{}",
+                        claim.assigned_agent.0, claim.node_id, claim.attempt
+                    ),
+                    AgentCommandV1::Close {
+                        agent_id: claim.assigned_agent,
+                        include_descendants: true,
+                    },
+                )
+                .is_err()
+            {
+                self.unresolved.store(true, Ordering::Release);
+            }
+        }
+    }
+    pub(super) fn completed_ledgers(
+        &self,
+    ) -> Result<
+        Vec<(
+            AgentWorkflowClaim,
+            super::child_ledger_evidence::AgentRuntimeLedger,
+            AgentWorkflowTerminal,
+        )>,
+        super::KernelError,
+    > {
+        let claims = self
+            .claims
+            .lock()
+            .map_err(|_| super::KernelError::AgentControl(ControllerError::Poisoned))?;
+        let mut receipts = Vec::with_capacity(claims.len());
+        for claim in claims.iter() {
+            let done = self
+                .control
+                .engine_child_completion(claim)
+                .map_err(super::KernelError::AgentControl)?
+                .ok_or_else(|| {
+                    super::KernelError::ContextResolution("child terminal is not durable".into())
+                })?;
+            if !done.effects_known {
+                return Err(super::KernelError::UnknownEffects { count: 1 });
+            }
+            let receipt = self
+                .control
+                .engine_child_ledger(claim)
+                .map_err(super::KernelError::AgentControl)?
+                .ok_or_else(|| {
+                    super::KernelError::ContextResolution(
+                        "exact native child ledger receipt unavailable".into(),
+                    )
+                })?;
+            if receipt.agent() != done.agent_id || receipt.epoch() != done.epoch {
+                return Err(super::KernelError::AgentControl(
+                    ControllerError::StaleEpoch,
+                ));
+            }
+            receipts.push((claim.clone(), receipt, done.terminal));
+        }
+        Ok(receipts)
+    }
     pub(super) async fn direct(&self, prompt: String, node: u64) -> AgentOutcome {
         self.execute(
             AgentCall {

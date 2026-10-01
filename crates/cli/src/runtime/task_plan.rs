@@ -207,42 +207,28 @@ impl super::Agent {
         turn: iteron_protocol::TurnId,
         call: &iteron_protocol::ToolUse,
     ) -> Result<iteron_protocol::ToolResult, super::KernelError> {
-        if !bounded_input(&call.input) {
-            return Ok(iteron_protocol::ToolResult {
-                tool_use_id: call.id.clone(),
-                content: "task plan input exceeds bounded owner admission".into(),
-                is_error: true,
-                trust: iteron_protocol::Trust::Untrusted,
-                latency_ms: 0,
-            });
-        }
-        let input = serde_json::from_value::<TaskPlanInput>(call.input.clone());
-        let content = match input {
-            Ok(TaskPlanInput::Inspect) => Ok(self.task_plan_snapshot().to_string()),
-            Ok(input) => match self.task_plan.prepare(input) {
-                Ok(prepared) => {
-                    let receipt = self.emit_durable_seq(turn, prepared.event())?;
-                    self.task_plan
-                        .publish(prepared, receipt)
-                        .map_err(|reason| super::KernelError::ContextResolution(reason.into()))?;
-                    Ok(self.task_plan.inspect().to_string())
-                }
-                Err(reason) => Err(reason),
-            },
-            Err(_) => Err("invalid bounded task-plan command"),
+        let mut journal = super::kernel_dispatch_journal::KernelDispatchJournal {
+            workspace: &self.workspace,
+            rollout: &mut self.rollout,
+            ledger: &mut self.ledger,
+            effects: &mut self.effect_journal,
+            record_failed: &mut self.record_failed,
+            diagnostics: &self.diagnostics,
+            money: self.usd_budget.clone(),
+            policy: &mut self.policy_evidence,
+            bootstrap: None,
+            #[cfg(test)]
+            fault: &mut self.fail_next_durable_append,
         };
-        let is_error = content.is_err();
-        Ok(iteron_protocol::ToolResult {
-            tool_use_id: call.id.clone(),
-            content: content.unwrap_or_else(str::to_owned),
-            is_error,
-            trust: iteron_protocol::Trust::Untrusted,
-            latency_ms: 0,
-        })
+        super::task_plan_execution::TaskPlanExecution {
+            owner: &mut self.task_plan,
+            journal: &mut journal,
+        }
+        .execute(turn, call)
     }
 }
 
-fn bounded_input(value: &serde_json::Value) -> bool {
+pub(super) fn bounded_input(value: &serde_json::Value) -> bool {
     use serde_json::Value;
     let Some(object) = value.as_object() else {
         return false;

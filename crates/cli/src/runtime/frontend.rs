@@ -242,7 +242,7 @@ impl FrontendChannelHealth {
         Self::observe(&self.ui_saturated)
     }
 
-    fn workflow_saturated(&self) -> u64 {
+    pub(super) fn workflow_saturated(&self) -> u64 {
         Self::observe(&self.workflow_saturated)
     }
 

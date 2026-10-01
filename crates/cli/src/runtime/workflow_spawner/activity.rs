@@ -94,6 +94,16 @@ impl KernelSpawner {
             }
         };
 
+        if let Some(observer) = &self.cx.kernel_workflow_ledgers {
+            if observer
+                .lock()
+                .map_or(true, |mut owner| owner.begin(ordinal).is_err())
+            {
+                return AgentOutcome::null(
+                    "native workflow accounting admission refused before provider IO",
+                );
+            }
+        }
         // `run_leaf` owns `&mut child` until completion, so its already-existing UI seam is the
         // live per-turn observation point. Drain it alongside the child future: TurnEnd carries
         // authoritative provider usage and ToolStart carries the tool count + bounded human label.
@@ -191,6 +201,32 @@ impl KernelSpawner {
         if let Some(worktree) = writer_worktree.as_mut() {
             self.settle_writer_worktree(worktree, child_done, &mut result)
                 .await;
+        }
+        if let Some(observer) = &self.cx.kernel_workflow_ledgers {
+            let processes = child.settle_persistent_owned_processes().await;
+            let writer_known =
+                writer_worktree.is_none() || matches!(&result, AgentOutcome::Text { .. });
+            let known = processes && writer_known && child.parent_effects_known();
+            let outcome = match &terminal {
+                Ok(iteron_protocol::Outcome::Done) => iteron_protocol::WorkflowChildOutcome::Done,
+                Ok(iteron_protocol::Outcome::Interrupted) => {
+                    iteron_protocol::WorkflowChildOutcome::Interrupted
+                }
+                Ok(iteron_protocol::Outcome::Drained) => {
+                    iteron_protocol::WorkflowChildOutcome::Drained
+                }
+                _ => iteron_protocol::WorkflowChildOutcome::Failed,
+            };
+            if let Ok(mut owner) = observer.lock() {
+                owner.complete(
+                    ordinal,
+                    child.rollout.tenant(),
+                    child.rollout.run_id(),
+                    &child.ledger,
+                    outcome,
+                    known,
+                );
+            }
         }
         if let Some(collector) = &self.cx.child_outcomes {
             collector.lock().unwrap().push((ordinal, terminal));

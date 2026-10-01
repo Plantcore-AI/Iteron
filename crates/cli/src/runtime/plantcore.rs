@@ -598,23 +598,30 @@ impl Agent {
         &mut self,
         input: serde_json::Value,
     ) -> Result<ArtifactDeclaration, String> {
-        if !self.plantcore.enabled {
+        self.plantcore.snapshot_artifact(input).await
+    }
+}
+
+impl PlantcoreRuntime {
+    pub(super) async fn snapshot_artifact(
+        &mut self,
+        input: serde_json::Value,
+    ) -> Result<ArtifactDeclaration, String> {
+        if !self.enabled {
             return Err("publish_artifact is available only in an admitted PlantCore Run".into());
         }
         let arguments: PublishArtifactArguments = serde_json::from_value(input)
             .map_err(|error| format!("invalid publish_artifact arguments: {error}"))?;
         validate_artifact_arguments(&arguments)?;
         let output_root = self
-            .plantcore
             .output_root
             .clone()
             .ok_or_else(|| "PlantCore output root is unavailable".to_owned())?;
         let artifact_policy = self
-            .plantcore
             .artifact_policy
             .clone()
             .ok_or_else(|| "PlantCore artifact policy is unavailable".to_owned())?;
-        let existing_artifacts = self.plantcore.artifacts.clone();
+        let existing_artifacts = self.artifacts.clone();
         let artifact = tokio::task::spawn_blocking(move || {
             snapshot_artifact(
                 &output_root,
@@ -625,8 +632,11 @@ impl Agent {
         })
         .await
         .map_err(|_| "artifact snapshot worker stopped unexpectedly".to_owned())??;
-        self.add_plantcore_artifact(artifact.clone())
-            .map_err(str::to_owned)?;
+        let policy = self
+            .artifact_policy
+            .as_ref()
+            .ok_or("PlantCore artifact policy is absent")?;
+        insert_artifact(&mut self.artifacts, policy, artifact.clone()).map_err(str::to_owned)?;
         Ok(artifact)
     }
 }

@@ -1,557 +1,85 @@
-use super::*;
-
-/// Posture a `Workflow` call takes when the model omits `background`: remain in-turn so the
-/// current response can consume prerequisite evidence. Independent work may explicitly detach.
-const DEFAULT_WORKFLOW_BACKGROUND: bool = false;
-
-/// Manifest `created_at` written when the host clock reads before the Unix epoch; the manifest
-/// stays re-launchable with an unusable stamp rather than failing the tool call.
-const CLOCK_BEFORE_EPOCH_SECS: u64 = 0;
-
-/// Cancellation poll cadence while the parent joins the workflow engine. Bounded so an operator
-/// interrupt reaches the run instead of blocking until the script finishes (invariant #1).
-const WORKFLOW_CONTROL_POLL: Duration = Duration::from_millis(25);
-
+//! Composition wrappers for existing workflow prepare/resume callers. Actual source admission,
+//! allocation, child execution and accounting live in their independent owners.
+use super::Agent;
+#[cfg(test)]
+use super::workflow_preparation::normalize_workflow_script;
 impl Agent {
-    /// Resolve, admit and record a `Workflow` tool call — everything up to, but not including,
-    /// starting the run.
-    ///
-    /// This is the half of the old `launch_workflow` that only needs THIS agent: the script
-    /// (inline or read under the workspace sandbox), the durable route children re-record
-    /// byte-for-byte, the single `extract_meta` parse, a freshly minted run id, the
-    /// [`KernelSpawner`] built from this agent's live route + paths, the aggregate budget, the
-    /// degraded sink fanned out with any attached frontend sink, and the re-launchable manifest
-    /// `iteron workflow list|resume|watch` reads. Every failure that must abort the tool call before
-    /// anything starts happens here, so a returned [`crate::workflow::PreparedWorkflow`] is an
-    /// admitted run with its sidecar already on disk.
-    ///
-    /// What is deliberately NOT here is everything that is only meaningful once a run exists: the
-    /// launch banner, the live card, the interrupt bridge and the join. That is what lets the run be
-    /// started by something other than this turn — see [`crate::workflow::WorkflowLauncher`].
     pub(super) fn prepare_workflow(
         &mut self,
         input: &serde_json::Value,
     ) -> Result<crate::workflow::PreparedWorkflow, String> {
-        self.prepare_workflow_with_resume(input, None)
+        self.prepare_kernel_workflow(input, None)
     }
-
-    /// Rebuild a persisted workflow under its existing run id and journal namespace.
-    ///
-    /// The current session's resolved provider, budgets and authority still construct the child
-    /// spawner; only the script, ambient args, display name and resume cache come from the durable
-    /// sidecars. This is the in-process equivalent of `iteron workflow resume <run-id>` used by the
-    /// interactive workflow panel.
     pub(crate) fn prepare_workflow_resume(
         &mut self,
-        run_id: &str,
+        run: &str,
     ) -> Result<crate::workflow::PreparedWorkflow, String> {
-        if !crate::workflow::valid_run_id(run_id) {
+        if !crate::workflow::valid_run_id(run) {
             return Err("Workflow: invalid run id".into());
         }
-        let workflows_dir = self.runtime_state_dir.join("subagents").join("workflows");
-        let manifest = crate::workflow::load_manifest(&workflows_dir, run_id)
-            .ok_or_else(|| format!("Workflow: run `{run_id}` has no readable manifest"))?;
-        if manifest.run_id != run_id {
-            return Err(format!(
-                "Workflow: run `{run_id}` has a mismatched persisted identity"
-            ));
+        let directory = self.runtime_state_dir.join("subagents").join("workflows");
+        let manifest = crate::workflow::load_manifest(&directory, run)
+            .ok_or("Workflow: persisted manifest unavailable")?;
+        if manifest.run_id != run {
+            return Err("Workflow: mismatched persisted identity".into());
         }
-        let script = crate::workflow::load_script(&workflows_dir, run_id)
-            .ok_or_else(|| format!("Workflow: run `{run_id}` has no persisted script"))?;
-        let input = serde_json::json!({
-            "script": script,
-            "args": manifest.args,
-            "background": true,
-        });
-        self.prepare_workflow_with_resume(&input, Some(run_id))
+        let script = crate::workflow::load_script(&directory, run)
+            .ok_or("Workflow: persisted script unavailable")?;
+        self.prepare_kernel_workflow(
+            &serde_json::json!({"script":script,"args":manifest.args,"background":true}),
+            Some(run),
+        )
     }
-
+    #[cfg(test)]
     pub(super) fn prepare_workflow_with_resume(
         &mut self,
         input: &serde_json::Value,
-        resume_run_id: Option<&str>,
+        resume: Option<&str>,
     ) -> Result<crate::workflow::PreparedWorkflow, String> {
-        if self.execution_policy.task_priority
-            != Some(iteron_workflow::TaskPrioritySchedulingPolicy::owner())
-        {
-            return Err(
-                "Workflow: pinned task-priority policy differs from the physical ready queue"
-                    .into(),
-            );
-        }
-        self.validate_workflow_graph_identity()
-            .map_err(|error| error.public_summary())?;
-        if self.delegation_depth
-            >= iteron_tunables::param_integer(
-                "cli.runtime.max_delegation_depth",
-                MAX_DELEGATION_DEPTH,
-            )
-        {
-            return Err(KernelError::DelegationDepthExceeded.public_summary());
-        }
-        // Resolve exactly one model-authored workflow source. Resume feeds the persisted script
-        // through the same path, so a relaunched run retains identical program bytes.
-        let inline = input
-            .get("script")
-            .and_then(|value| value.as_str())
-            .filter(|value| !value.trim().is_empty());
-        let path = input
-            .get("scriptPath")
-            .and_then(|value| value.as_str())
-            .filter(|value| !value.trim().is_empty());
-        let selector_count =
-            usize::from(inline.is_some()).saturating_add(usize::from(path.is_some()));
-        if selector_count != 1 {
-            return Err(
-                "Workflow: provide exactly one of `script` (inline ESM) or `scriptPath`".into(),
-            );
-        }
-        let script = match (inline, path) {
-            (Some(source), None) => normalize_workflow_script(source),
-            (None, Some(rel)) => {
-                let full = self.workspace.join(rel);
-                let source = std::fs::read_to_string(&full).map_err(|error| {
-                    format!("Workflow: cannot read scriptPath `{rel}`: {error}")
-                })?;
-                normalize_workflow_script(&source)
-            }
-            _ => unreachable!("selector_count enforces one workflow source"),
-        };
-        iteron_workflow::validate_script(&script).map_err(|error| {
-            format!(
-                "Workflow: script rejected before launch: {error}. Fix the ESM and retry \
-                 `Workflow` directly; no run started."
-            )
-        })?;
-        let args = input
-            .get("args")
-            .cloned()
-            .unwrap_or(serde_json::Value::Null);
-        // Detaching is explicit: omitted `background` keeps prerequisite evidence available to the
-        // current turn. Only an installed owner can grant `background: true`; see
-        // `crate::workflow::PreparedWorkflow::background`.
-        let background = input
-            .get("background")
-            .and_then(|value| value.as_bool())
-            .unwrap_or(iteron_tunables::param_bool(
-                "cli.runtime.workflow_prepare.default_workflow_background",
-                DEFAULT_WORKFLOW_BACKGROUND,
-            ));
-
-        // Children re-record the parent's exact durable route byte-for-byte; a run before any route
-        // selection cannot bind one.
-        let Some(route) = self
-            .selected_route
-            .as_ref()
-            .map(|selected| selected.route.clone())
-        else {
-            return Err("Workflow: no model route is selected yet".into());
-        };
-        // One parse: `extract_meta` spins up a QuickJS runtime, and the live tree wants the
-        // DECLARED phases as well as the name so every phase box exists on the first frame.
-        let meta = iteron_workflow::extract_meta(&script);
-        let declared_phases = meta
-            .as_ref()
-            .and_then(|meta| meta.phases.clone())
-            .unwrap_or_default();
-        let workflow_name = meta
-            .and_then(|meta| meta.name)
-            .unwrap_or_else(|| "workflow".into());
-        // Mint a fresh, time-ordered run id the way the standalone `iteron workflow run` path does.
-        // Deriving it from the turn counter made every `Workflow` tool call in ONE assistant
-        // response share an id — hence one journal, one child-rollout namespace, and a second call
-        // that silently replayed the first's cached outcomes instead of running.
-        let run_id = resume_run_id
-            .map(str::to_owned)
-            .unwrap_or_else(|| iteron_workflow::RunId::generate().to_string());
-        let workflows_dir = self.runtime_state_dir.join("subagents").join("workflows");
-
-        let mut cx = self.kernel_spawner_context(&route, &run_id);
-
-        let remaining_turns = self.remaining_inference_turns();
-        if remaining_turns == 0 {
-            return Err("Workflow: parent turn budget is exhausted".into());
-        }
-        cx.budget.max_turns = cx.budget.max_turns.min(remaining_turns).max(1);
-        // The same soft halving `iteron_agents::subagent_budget` gives a general workflow child.
-        cx.budget.max_tokens = self
-            .remaining_provider_tokens()
-            .map(|remaining| self.execution_policy.fan_token_share.floor_u64(remaining))
-            .map(|tokens| {
-                self.execution_policy
-                    .workflow
-                    .max_tokens
-                    .map_or(tokens, |ceiling| tokens.min(ceiling))
-            });
-        cx.budget.max_wall_secs = cx
-            .budget
-            .max_wall_secs
-            .min(self.execution_policy.workflow.max_wall_seconds);
-        let kernel_limits = in_turn_workflow_budget(self.execution_policy)
-            .map_err(|error| format!("Workflow: invalid kernel aggregate budget: {error}"))?;
-        let baseline_engine_limits = iteron_workflow::RunLimits::new(
-            kernel_limits.max_concurrency(),
-            kernel_limits.max_agent_calls(),
-        )
-        .map_err(|error| format!("Workflow: invalid engine aggregate budget: {error}"))?;
-        let baseline_engine_limits =
-            workflow_spawner::governed_workflow_limits(&cx.budget, baseline_engine_limits)
-                .map_err(|error| format!("Workflow: invalid priced engine budget: {error}"))?;
-        let positive_usd_serialized = cx
-            .usd_budget
-            .as_ref()
-            .is_some_and(|budget| budget.requires_pricing());
-        let collaboration_observation = iteron_workflow::CollaborationObservation {
-            version: iteron_workflow::COLLABORATION_SLOT_VERSION,
-            active_workers: baseline_engine_limits.max_agent_calls(),
-            max_concurrency: baseline_engine_limits.max_concurrency(),
-        };
-        let collaboration_opportunity = self
-            .begin_policy_decision(
-                policy_evidence::COLLABORATION_SLOT,
-                Some(TurnId(self.seq_turn)),
-            )
-            .map_err(|error| error.public_summary())?;
-        let selected_concurrency = match iteron_workflow::CollaborationStrategy::select_with(
-            self.compiled_policy_bundle.slots().collaboration.as_ref(),
-            &collaboration_observation,
-            CapabilitySet::only(Capability::ReadOnly).intersect(self.authority_ceiling),
-        ) {
-            Ok(proposal) => {
-                let selected_action = if proposal.concurrency == 1 {
-                    iteron_protocol::PolicyActionV1::CollaborationSerial
-                } else {
-                    iteron_protocol::PolicyActionV1::CollaborationBoundedWidth
-                };
-                self.append_policy_decision(
-                    collaboration_opportunity,
-                    policy_evidence::PolicyDecisionDraft::selected(
-                        policy_evidence::COLLABORATION_SLOT,
-                        &[
-                            iteron_protocol::PolicyActionV1::CollaborationBoundedWidth,
-                            iteron_protocol::PolicyActionV1::CollaborationSerial,
-                        ],
-                        selected_action,
-                        "iteron:collaboration-features-v1",
-                        &(
-                            &collaboration_observation,
-                            proposal.concurrency,
-                            positive_usd_serialized,
-                        ),
-                        &if positive_usd_serialized {
-                            "positive_usd_uses_one_provider_lane_so_a_parallel_batch_cannot_consume_the_remaining_ceiling"
-                        } else {
-                            "strategy_may_only_narrow_worker_concurrency"
-                        },
-                    )
-                    .map_err(|error| error.public_summary())?,
-                )
-                .map_err(|error| error.public_summary())?;
-                proposal.concurrency
-            }
-            Err(_) => {
-                self.append_policy_decision(
-                    collaboration_opportunity,
-                    policy_evidence::PolicyDecisionDraft::baseline_fallback(
-                        policy_evidence::COLLABORATION_SLOT,
-                        &[
-                            iteron_protocol::PolicyActionV1::CollaborationBoundedWidth,
-                            iteron_protocol::PolicyActionV1::CollaborationSerial,
-                        ],
-                        "iteron:collaboration-features-v1",
-                        &collaboration_observation,
-                        &"strategy_refusal_falls_back_to_serial",
-                    )
-                    .map_err(|error| error.public_summary())?,
-                )
-                .map_err(|error| error.public_summary())?;
-                1
-            }
-        };
-        let engine_limits = iteron_workflow::RunLimits::new(
-            selected_concurrency,
-            baseline_engine_limits.max_agent_calls(),
-        )
-        .map_err(|error| format!("Workflow: invalid collaboration budget: {error}"))?;
-        let spawner: std::sync::Arc<dyn iteron_workflow::AgentSpawner> =
-            std::sync::Arc::new(KernelSpawner::new(cx));
-
-        let mut spec = apply_workflow_execution_policy(
-            iteron_workflow::RunSpec::new(script.clone())
-                .with_args(args.clone())
-                .with_run_id(iteron_workflow::RunId::new(run_id.clone()))
-                .with_workflows_dir(workflows_dir.clone())
-                .with_limits(engine_limits)
-                // Prompt artifacts only. With no profile this is `None` and the engine keeps every
-                // compiled string.
-                .with_tunables_profile(self.tunables_profile()),
-            self.execution_policy,
-        );
-        if resume_run_id.is_some() {
-            spec = spec.with_resume_from(iteron_workflow::RunId::new(run_id.clone()));
-        }
-        // A degraded agent resolves to JS `null` and the script's `.filter(Boolean)` deletes it, so
-        // a discarded sink turned an exhausted budget into a plausibly-short result. Keep the
-        // reasons and hand them to the model with the value.
-        let degraded = std::sync::Arc::new(crate::workflow::DegradedAgentSink::new());
-        // ADR-0001 step 1: the same events also drive the operator's live phase→agent tree when a
-        // frontend installed the progress seam. Both sinks are needed at once and the engine takes
-        // exactly one, so they are fanned out; with no frontend attached this is the degraded sink
-        // alone, byte-for-byte the previous behavior.
-        let sink = crate::workflow::in_turn_progress_sink(
-            degraded.clone(),
-            &run_id,
-            self.workflow_progress_tx.clone(),
-        );
-
-        // Persist the re-launchable inputs BEFORE the run starts, exactly like the standalone path:
-        // the kernel writes its journal into the very directory `iteron workflow list` enumerates, so
-        // without the manifest every model-launched run listed forever as unnamed, model-less and
-        // `running`.
-        if resume_run_id.is_none()
-            && let Err(error) = crate::workflow::persist_inputs(
-                &workflows_dir,
-                &crate::workflow::RunManifest {
-                    run_id: run_id.clone(),
-                    name: workflow_name.clone(),
-                    args,
-                    provider_id: route.provider_id.clone(),
-                    model: route.model_id.clone(),
-                    created_at: std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|elapsed| elapsed.as_secs())
-                        .unwrap_or(iteron_tunables::param_integer(
-                            "cli.runtime.workflow_prepare.clock_before_epoch_secs",
-                            CLOCK_BEFORE_EPOCH_SECS,
-                        )),
-                },
-                &script,
-            )
-        {
-            return Err(format!("Workflow: cannot persist run inputs: {error}"));
-        }
-
-        Ok(crate::workflow::PreparedWorkflow {
-            run_id,
-            name: workflow_name,
-            declared_phases,
-            workflows_dir,
-            spec,
-            spawner,
-            sink,
-            degraded,
-            background,
-        })
+        self.prepare_kernel_workflow(input, resume)
     }
-
-    /// In-turn `Workflow` tool handler (kernel interception, the workflow analogue of
-    /// `spawn_subagent`). [`Self::prepare_workflow`] builds the run from THIS agent's live route +
-    /// paths and persists its re-launchable sidecars, the installed
-    /// [`crate::workflow::WorkflowLauncher`] (by default the kernel's own, which is exactly
-    /// [`iteron_workflow::WorkflowEngine::launch`] — background `RunHandle`, review B3) starts it, and
-    /// this method `join`s it within the turn so the model receives the aggregated result. The
-    /// launch banner (run id) is emitted as a `Notice`.
-    ///
-    /// # Detached runs
-    ///
-    /// A run asks to outlive its turn only with `Workflow({background: true})`; omission keeps the
-    /// result inside this call. The request is granted
-    /// only when the installed launcher returns [`crate::workflow::Launched::Detached`] — i.e. only
-    /// where a session-scoped owner exists to hold it. When it is granted this method returns a
-    /// **receipt**, not a result: the run has no value yet, and saying otherwise would report a
-    /// completion that has not happened. The owner settles the card, persists the sidecar and keeps
-    /// the summary; the session delivers it through a task notification and `/workflows` retains it.
-    ///
-    /// When it is NOT granted (no owner installed — every `--output-format` path), the run executes
-    /// in-turn exactly as before and the tool result says the request was not granted. A run is
-    /// never started by nobody.
+    #[cfg(test)]
     pub(super) async fn launch_workflow(
         &mut self,
-        turn_id: TurnId,
+        turn: iteron_protocol::TurnId,
         input: serde_json::Value,
     ) -> Result<String, String> {
-        // `collect` and `cancel` address a run that already exists, so they are answered before
-        // anything is prepared: neither reads a script, mints a run id, or writes a manifest.
-        if let Some(run_id) = workflow_run_id_arg(&input, "collect") {
-            return self.collected_workflow(self.owned_workflow(&run_id, false));
-        }
-        if let Some(run_id) = workflow_run_id_arg(&input, "cancel") {
-            return self.collected_workflow(self.owned_workflow(&run_id, true));
-        }
-        let prepared = if let Some(run_id) = workflow_run_id_arg(&input, "resumeFromRunId") {
-            if input.get("name").is_some()
-                || input.get("script").is_some()
-                || input.get("scriptPath").is_some()
-            {
-                return Err(
-                    "Workflow: `resumeFromRunId` cannot be combined with name/script/scriptPath"
-                        .into(),
-                );
-            }
-            self.prepare_workflow_resume(&run_id)?
-        } else {
-            self.prepare_workflow(&input)?
-        };
-        let background_requested = prepared.background;
-        // Kept across the launch: the run's identity for the banner, the card and the terminal
-        // sidecar, and the degraded sink whose reasons are only readable once the run settles.
-        // `prepared` itself is consumed by the launcher, which may keep it.
-        let run_id = prepared.run_id.clone();
-        let workflow_name = prepared.name.clone();
-        let workflows_dir = prepared.workflows_dir.clone();
-        let declared_phases = prepared.declared_phases.clone();
-        let degraded = prepared.degraded.clone();
-
-        // The launch banner. It names `iteron workflow list` — the surface that can show this run
-        // AFTER the turn, and from another process. A frontend with the progress seam installed
-        // also gets the live tree below; one that does not still gets this line, so the run is never
-        // invisible.
-        self.emit(
-            turn_id,
-            EventKind::Notice {
-                text: format!(
-                    "Workflow `{workflow_name}` launched (run {run_id}); `iteron workflow list` tracks it"
-                ),
+        let preparation = self.kernel_workflow_preparation(turn);
+        let events = self.tool_events(turn);
+        let execution = super::workflow_execution::WorkflowExecution {
+            deadline: self.run_deadline.current(),
+            preparation,
+            launcher: self.workflow_launcher.clone(),
+            progress: super::workflow_execution::WorkflowProgressProjection {
+                sender: self.workflow_progress_tx.clone(),
+                frontend: self.frontend_saturation.clone(),
+                events: events.clone(),
             },
-        );
-
-        // Open the card BEFORE the engine starts, seeded with the script's declared `meta.phases`,
-        // so the first frame already shows the shape of the run instead of growing it phase by
-        // phase. The run id is the correlation key for every later event.
-        self.workflow_progress(crate::workflow::WorkflowRunUiEvent::Started {
-            run_id: run_id.clone(),
-            name: workflow_name.clone(),
-            phases: declared_phases,
-        });
-
-        // Start the run. With no launcher installed this is byte-for-byte the previous line,
-        // `WorkflowEngine::launch(spec, spawner, sink)`; the handle is shared rather than owned so a
-        // launcher that keeps the run can hold the same `RunHandle` this turn is polling.
-        let handle =
-            match crate::workflow::launch_prepared(self.workflow_launcher.as_ref(), prepared) {
-                crate::workflow::Launched::InTurn(handle) => handle,
-                // The owner took it. Everything below this point — the join, the interrupt bridge, the
-                // `Finished` card event, `persist_result` and the aggregated summary — is now the
-                // owner's obligation, because the owner is the only thing still holding the run. Doing
-                // any of it here would race it.
-                crate::workflow::Launched::Detached(run) => {
-                    return Ok(detached_workflow_receipt(&run));
-                }
-            };
-        // Bridge the parent's stop surfaces onto the run's cancellation token. Without this a
-        // multi-minute run ignored Ctrl-C entirely: the operator interrupt reached the parent but
-        // never the engine, and `join()` simply blocked the turn until the script finished.
-        // Polling is fixed and bounded, exactly like `run_child_with_control`.
-        let report = {
-            let mut joined = Box::pin(handle.join());
-            loop {
-                match tokio::time::timeout(
-                    iteron_tunables::param_duration(
-                        "cli.runtime.workflow_prepare.workflow_control_poll",
-                        WORKFLOW_CONTROL_POLL,
-                    ),
-                    &mut joined,
-                )
-                .await
-                {
-                    Ok(report) => break report,
-                    Err(_) => {
-                        // Drain both stop surfaces through the canonical predicate rather than
-                        // reading the out-of-band atomic directly: a queued SQ `Op::Interrupt` on
-                        // an embedder that installed no atomic sets only `interrupt_requested`, and
-                        // an atomic-only check would leave exactly that operator unable to stop the
-                        // run. Drain is deliberately NOT a cancel — like an admitted child, an
-                        // admitted run exits at its own safe point.
-                        let _ = self.collect_inbound_ops(TurnId(self.seq_turn));
-                        if self.requested_control().interrupts() {
-                            handle.cancel();
-                        }
-                    }
-                }
-            }
         };
-
-        // A run that never produced a report is still a directory `iteron workflow list` enumerates:
-        // `persist_inputs` above already created it. Settling it is the same obligation I-35 names,
-        // on the error path — and the journal's new exclusive lock makes that path reachable (a
-        // colliding run id is refused here, not silently interleaved). Without this the failure
-        // would sit in `/workflows` as `running` forever.
-        let report = match report {
-            Ok(report) => report,
-            Err(error) => {
-                let message = format!("Workflow run failed: {error}");
-                let failed = crate::workflow::unreported_run(&run_id, &message);
-                let _ = crate::workflow::persist_result(&workflows_dir, &run_id, &failed);
-                self.workflow_progress(crate::workflow::WorkflowRunUiEvent::Finished {
-                    run_id: run_id.clone(),
-                    terminal: crate::workflow::WorkflowRunTerminal::Failed,
-                });
-                return Err(message);
-            }
-        };
-
-        // `ingest` alone never marks a card finished. Publish exactly one terminal after the
-        // authoritative report exists, so lifecycle observers do not infer success merely because
-        // the engine future resolved.
-        self.workflow_progress(crate::workflow::WorkflowRunUiEvent::Finished {
-            run_id: run_id.clone(),
-            terminal: if report.stopped {
-                crate::workflow::WorkflowRunTerminal::Cancelled
-            } else {
-                crate::workflow::WorkflowRunTerminal::Completed
-            },
-        });
-
-        // Record the terminal outcome so the run lists with its name, model and terminal state.
-        // This is list metadata, not the result: a sidecar that cannot be written must not destroy
-        // a run the operator already paid for, so it degrades to a notice.
-        if let Err(error) = crate::workflow::persist_result(&workflows_dir, &run_id, &report) {
-            self.emit(
-                turn_id,
-                EventKind::Notice {
-                    text: format!("Workflow: cannot persist run result for {run_id}: {error}"),
-                },
-            );
-        }
-
-        // One rendering, shared with the detached path's `collect`, so an in-turn result and a
-        // collected background result cannot drift into two different descriptions of one run.
-        let summary = crate::workflow::run_result_summary(
-            &workflow_name,
-            &run_id,
-            &report,
-            &degraded.reasons(),
+        let projection = self.turn_result_projection_budget(
+            super::context_runtime::ContextBudgetInspection::from_policy(
+                Default::default(),
+                Default::default(),
+            ),
+            &[],
         );
-        if background_requested {
-            // The model asked for a run it could leave; it got one it had to wait for. Saying so is
-            // the difference between "this took a while" and a silently broken assumption about
-            // what the rest of the turn was free to do.
-            return Ok(format!(
-                "NOTE: `background` was requested but this session has no workflow run owner \
-                 installed, so the run executed inside the turn and the result below is complete.\n\n{summary}"
-            ));
-        }
-        Ok(summary)
+        let (mut ports, _) = self.kernel_special_execution(
+            turn,
+            0,
+            super::kernel_special_execution::KernelSpecialKind::Plan,
+            projection,
+        );
+        execution
+            .run(
+                &input,
+                turn,
+                &mut ports.journal,
+                &mut ports.control,
+                &events,
+            )
+            .await
+            .map_err(|error| error.public_summary())?
     }
-}
-
-fn normalize_workflow_script(source: &str) -> String {
-    let trimmed = source.trim();
-    let Some(first_newline) = trimmed.find('\n') else {
-        return source.to_owned();
-    };
-    let opening = &trimmed[..first_newline];
-    if !opening.starts_with("```") || opening[3..].contains('`') {
-        return source.to_owned();
-    }
-    let body_and_fence = &trimmed[first_newline + 1..];
-    let Some(last_newline) = body_and_fence.rfind('\n') else {
-        return source.to_owned();
-    };
-    if body_and_fence[last_newline + 1..].trim() != "```" {
-        return source.to_owned();
-    }
-    body_and_fence[..last_newline].to_owned()
 }
 
 #[cfg(test)]

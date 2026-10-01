@@ -63,6 +63,7 @@ fn child_provider_governor(
 
 mod activity;
 mod agent_profile;
+pub(super) mod direct;
 mod tunables;
 pub(super) mod worktree;
 
@@ -178,6 +179,7 @@ pub struct KernelSpawnerContext {
     /// Per-child bounded-loop ceilings. The engine's Governor bounds CONCURRENCY; this bounds each
     /// child's turns/wall/usd. Defaults to `iteron_agents::subagent_budget_ceiling()`.
     pub budget: Budget,
+    pub(super) execution_deadline: Option<std::time::Instant>,
     /// Optional declaration-order budget slices for a kernel-built fan. When present, spawn ordinal
     /// N receives slice N and an ordinal outside the schedule is refused, preserving one aggregate
     /// fan ceiling instead of multiplying a per-child ceiling by the number of `agent()` calls.
@@ -187,6 +189,8 @@ pub struct KernelSpawnerContext {
     /// back into the writer's shared accounting after the engine joins; standalone workflows have
     /// no live parent ledger and leave it unset.
     pub(super) child_ledgers: Option<ChildLedgerCollector>,
+    pub(super) kernel_workflow_ledgers:
+        Option<Arc<Mutex<super::kernel_workflow_ledgers::KernelWorkflowLedgers>>>,
     /// Typed terminal outcomes for the same parent reconciliation path. The workflow engine's JS
     /// value intentionally collapses every degraded child to `null`; the kernel still needs to
     /// distinguish operator drain/interrupt from budget, harness and provider failures in its
@@ -369,8 +373,10 @@ impl KernelSpawnerContext {
             execution_policy:
                 crate::runtime_tunables::execution_policy::ExecutionRuntimePolicy::fail_closed(),
             budget: iteron_agents::subagent_budget_ceiling(),
+            execution_deadline: None,
             budget_slices: None,
             child_ledgers: None,
+            kernel_workflow_ledgers: None,
             child_outcomes: None,
             drain: None,
             model_context_window: None,
@@ -530,19 +536,41 @@ impl KernelSpawner {
             .saturating_sub(view.reserved.cost_microusd) as f64
             / 1_000_000.0;
         self.cx.budget.max_usd = Some(self.cx.budget.max_usd.unwrap_or(ceiling).min(ceiling));
-        let built =
-            self.build_child_in_mode(call, view.agent_id.0, writer_workspace, true, execution);
+        let built = self.build_child_in_mode(
+            call,
+            view.agent_id.0,
+            writer_workspace,
+            true,
+            execution,
+            None,
+        );
         self.cx.budget = previous;
         built
     }
 
+    pub(super) fn build_direct_child(
+        &self,
+        identity: &direct::DirectChildIdentity,
+    ) -> Result<Agent, String> {
+        let call = AgentCall {
+            prompt: String::new(),
+            label: None,
+            phase: None,
+            model: None,
+            effort: Some(identity.effort),
+            agent_type: Some("generic".into()),
+            schema: None,
+            cancel: Default::default(),
+        };
+        self.build_child_in_mode(&call, 0, None, false, None, Some(identity))
+    }
     fn build_child_in(
         &self,
         call: &AgentCall,
         ordinal: u64,
         writer_workspace: Option<&Path>,
     ) -> Result<Agent, String> {
-        self.build_child_in_mode(call, ordinal, writer_workspace, false, None)
+        self.build_child_in_mode(call, ordinal, writer_workspace, false, None, None)
     }
 
     fn build_child_in_mode(
@@ -552,6 +580,7 @@ impl KernelSpawner {
         writer_workspace: Option<&Path>,
         resume_existing: bool,
         execution: Option<&iteron_agents::AgentEngineExecution>,
+        direct: Option<&direct::DirectChildIdentity>,
     ) -> Result<Agent, String> {
         let cx = &self.cx;
 
@@ -569,7 +598,13 @@ impl KernelSpawner {
         call.validate_request_metadata()
             .map_err(|error| safe_agent_refusal(error.public_reason()))?;
 
-        let profile = agent_profile::resolve(cx, call)?;
+        let profile = match direct {
+            Some(identity) => agent_profile::ResolvedAgentProfile {
+                definition: iteron_agents::AgentDef::generic(),
+                effort: identity.effort,
+            },
+            None => agent_profile::resolve(cx, call)?,
+        };
         let agent_def = profile.definition;
         let is_writer = agent_def.is_isolated_writer();
         if is_writer != writer_workspace.is_some() {
@@ -664,8 +699,14 @@ impl KernelSpawner {
             );
         }
 
-        let sub_run = self.mint_run_id(ordinal);
-        let subagents_dir = cx.runtime_state_dir.join("subagents");
+        let sub_run = direct.map_or_else(
+            || self.mint_run_id(ordinal),
+            |identity| identity.run.clone(),
+        );
+        let subagents_dir = direct.map_or_else(
+            || cx.runtime_state_dir.join("subagents"),
+            |identity| identity.directory.clone(),
+        );
         let rollout = Rollout::open(&subagents_dir, &sub_run, cx.tenant.clone())
             .map_err(|_| "child session record could not be opened".to_string())?;
 
@@ -687,31 +728,44 @@ impl KernelSpawner {
         // --- Non-durable inherited context. These private fields are set exactly as the in-crate
         //     parent paths set them (this module is a descendant of the crate root, so it shares
         //     `Agent`'s private surface); no new public setter is exposed for them. ---
-        sub.projection_attribution = Some(match execution.map(|binding| &binding.origin) {
-            Some(iteron_agents::AgentEngineOrigin::DirectSubagent { parent }) => {
-                CostAttribution::DirectSubagent {
-                    parent_run_id: parent.run.clone(),
-                    sub_run: sub_run.0.clone(),
-                }
-            }
-            Some(iteron_agents::AgentEngineOrigin::WorkflowChild {
-                parent,
-                workflow_id,
-                task_id,
-            }) => CostAttribution::WorkflowChild {
-                parent_run_id: parent.run.clone(),
-                workflow_id: workflow_id.clone(),
-                task_id: *task_id,
+        sub.projection_attribution = Some(match direct {
+            Some(_) => CostAttribution::DirectSubagent {
+                parent_run_id: cx.parent_run_id.clone(),
                 sub_run: sub_run.0.clone(),
             },
-            None => CostAttribution::WorkflowChild {
-                parent_run_id: cx.parent_run_id.clone(),
-                workflow_id: cx.workflow_id.clone(),
-                task_id: u32::try_from(ordinal)
-                    .map_err(|_| "child task identity is outside its bounded domain")?,
-                sub_run: sub_run.0.clone(),
+            None => match execution.map(|binding| &binding.origin) {
+                Some(iteron_agents::AgentEngineOrigin::DirectSubagent { parent }) => {
+                    CostAttribution::DirectSubagent {
+                        parent_run_id: parent.run.clone(),
+                        sub_run: sub_run.0.clone(),
+                    }
+                }
+                Some(iteron_agents::AgentEngineOrigin::WorkflowChild {
+                    parent,
+                    workflow_id,
+                    task_id,
+                }) => CostAttribution::WorkflowChild {
+                    parent_run_id: parent.run.clone(),
+                    workflow_id: workflow_id.clone(),
+                    task_id: *task_id,
+                    sub_run: sub_run.0.clone(),
+                },
+                None => CostAttribution::WorkflowChild {
+                    parent_run_id: cx.parent_run_id.clone(),
+                    workflow_id: cx.workflow_id.clone(),
+                    task_id: u32::try_from(ordinal)
+                        .map_err(|_| "child task identity is outside its bounded domain")?,
+                    sub_run: sub_run.0.clone(),
+                },
             },
         });
+        if let Some(identity) = direct {
+            sub.run_deadline.bind_external(Some(identity.deadline));
+            sub.diagnostics = identity.diagnostics.clone();
+        }
+        if let Some(deadline) = cx.execution_deadline {
+            sub.run_deadline.bind_external(Some(deadline));
+        }
         sub.runtime_state_dir = cx.runtime_state_dir.clone();
         sub.lifecycle_emitter = cx.lifecycle_emitter.clone();
         sub.lifecycle_telemetry = cx.lifecycle_telemetry.clone();
@@ -758,10 +812,13 @@ impl KernelSpawner {
         sub.dependency_skill_dirs = cx.dependency_skill_dirs.clone();
         // A workflow child is exactly one level below the operator. The read-only registry has no
         // dispatch/workflow tool; depth remains a second defense if that registry evolves.
-        sub.delegation_depth = cx
-            .execution_policy
-            .spawn_depth
-            .ok_or_else(|| safe_agent_refusal("pinned spawn-depth policy is inactive"))?;
+        sub.delegation_depth = match direct {
+            Some(identity) => identity.depth,
+            None => cx
+                .execution_policy
+                .spawn_depth
+                .ok_or_else(|| safe_agent_refusal("pinned spawn-depth policy is inactive"))?,
+        };
         if let Some(drain) = &cx.drain {
             sub.control.inherit_drain(drain.clone());
         }

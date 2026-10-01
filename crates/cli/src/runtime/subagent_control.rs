@@ -1,10 +1,5 @@
 use super::*;
 
-/// Poll cadence while the parent awaits an admitted child, so an operator interrupt reaches the
-/// child within one interval instead of at its own completion. Fixed and bounded like the
-/// verification cancellation poll.
-const CHILD_CONTROL_POLL: Duration = Duration::from_millis(25);
-
 impl Agent {
     /// Spawn a READ-ONLY subagent to investigate a subtask, returning its compressed summary
     /// (ADR-001: a subagent is a context-management device, not a teammate; it explores an
@@ -41,55 +36,6 @@ impl Agent {
             .unwrap_or_else(|| std::env::temp_dir().join("core-subagents-refused"))
     }
 
-    /// Await one already-admitted child while continuing to observe the parent SQ. Drain is
-    /// propagated through the shared flag but never cancels the child mid-effect; the child exits
-    /// only at its own safe point, after which the parent records the child terminal before it can
-    /// checkpoint itself. Polling is fixed and bounded just like verification cancellation.
-    ///
-    /// An interrupt, unlike drain, IS a cancel: it is republished onto a call-scoped stop flag the
-    /// child observes mid-stream, so an operator stop drops the child's in-flight provider stream
-    /// within one poll interval. Same defect and same fix as the fan — see
-    /// [`Self::pump_child_stop`]. The flag is scoped to this call because this child is one the turn
-    /// is awaiting; a detached run or a background agent is never reachable from here.
-    pub(super) async fn run_child_with_control(
-        &mut self,
-        child: &mut Agent,
-        task: &str,
-    ) -> Result<Outcome, KernelError> {
-        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        // Seed before the child starts: a stop the operator raised while the parent was still
-        // admitting must make the child refuse at its first safe point, not one poll interval in.
-        self.pump_child_stop(&stop);
-        child.inherit_interrupt(stop.clone());
-        child.inherit_force_cancel(self.control.force_cancel().clone());
-        // A dispatched subagent is read-only + SingleAgent effort, so it never orchestrates:
-        // `run_leaf` is behavior-identical to `run` here and keeps `run_orchestrated` OUT of every
-        // child's call graph, so a caller may own/spawn the child without pulling the parent writer
-        // into a recursive `Send` obligation.
-        let mut execution = Box::pin(child.run_leaf(task));
-        loop {
-            match tokio::time::timeout(
-                iteron_tunables::param_duration(
-                    "cli.runtime.subagent_control.child_control_poll",
-                    CHILD_CONTROL_POLL,
-                ),
-                &mut execution,
-            )
-            .await
-            {
-                Ok(outcome) => {
-                    drop(execution);
-                    let _ = self.collect_inbound_ops(TurnId(self.seq_turn));
-                    child.finalize_policy_run()?;
-                    return outcome;
-                }
-                Err(_) => {
-                    self.pump_child_stop(&stop);
-                }
-            }
-        }
-    }
-
     /// Build the one production child-spawner context shared by user-authored workflows and the
     /// built-in Ultracode fan. Route evidence, policy generation, permission posture, accounting,
     /// workspace and catalog are copied once here so the two callers cannot grow different child
@@ -119,6 +65,7 @@ impl Agent {
         cx.usd_budget = self.usd_budget.clone();
         cx.session_spawn_ledger = self.session_spawn_ledger.clone();
         cx.budget.max_usd = self.effective_max_usd();
+        cx.execution_deadline = self.run_deadline.current();
         cx.default_effort = self.execution_policy.per_agent_effort;
         cx.execution_policy = self.execution_policy;
         cx.permission_mode = self.permission_mode;

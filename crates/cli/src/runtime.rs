@@ -191,9 +191,16 @@ mod plantcore;
 mod plantcore;
 mod provider_effect_identity;
 pub(crate) use plantcore::{DispatchGate, ResumeActivation};
+mod controller_engine_scope;
+mod direct_child_execution;
 mod execution_deadline;
+mod kernel_dispatch_control;
+mod kernel_dispatch_journal;
+mod kernel_special_assembly;
+mod kernel_special_execution;
 mod kernel_tool_assembly;
 mod kernel_tool_call;
+mod kernel_workflow_ledgers;
 mod optional_tool_round;
 mod orchestration_lifetime;
 mod ordered_tool_call;
@@ -234,6 +241,7 @@ mod strategy_runtime;
 mod strong_verification;
 mod subagent_control;
 mod submission_invocation;
+mod task_plan_execution;
 pub mod telemetry;
 mod terminal_diagnostics;
 mod tool_image_replay;
@@ -248,6 +256,8 @@ mod verification_journal;
 mod verification_policy_run;
 mod verification_rollback;
 mod verification_state;
+mod workflow_execution;
+mod workflow_preparation;
 #[cfg(test)]
 use verification_execution::VerifyDispatch;
 mod workflow_collect;
@@ -2484,158 +2494,30 @@ impl Agent {
                     }
                 };
                 let tool_round_execution::PermittedKernelCall {
-                    kind: _,
+                    kind,
                     index: idx,
                     call: tu,
                     capability: cap,
                 } = special;
-                if self.plantcore_runtime_enabled() && tu.name == iteron_tools::PUBLISH_ARTIFACT {
-                    let call =
-                        self.kernel_tool_call(turn_id, idx, &tu, cap, result_projection_budget)?;
-                    let started = Instant::now();
-                    let snapshot = self.snapshot_plantcore_artifact(tu.input.clone()).await;
-                    let (content, is_error) = match snapshot {
-                        Ok(artifact) => (plantcore::artifact_result_content(&artifact), false),
-                        Err(error) => (
-                            serde_json::json!({
-                                "status": "error",
-                                "reason": "artifact_snapshot_failed",
-                                "message": iteron_protocol::text::head(&error, 512),
-                            })
-                            .to_string(),
-                            true,
-                        ),
-                    };
-                    let result = ToolResult {
-                        tool_use_id: tu.id.clone(),
-                        content,
-                        is_error,
-                        trust: Trust::Workspace,
-                        latency_ms: started.elapsed().as_millis() as u64,
-                    };
-                    let result = self.complete_kernel_tool_call(call, result)?;
-                    tool_execution.settle_kernel(idx, result)?;
-                    continue;
-                }
-                // Optional plan changes use the same permission, hook and control admission.
-                if tu.name == iteron_tools::UPDATE_PLAN {
-                    let call =
-                        self.kernel_tool_call(turn_id, idx, &tu, cap, result_projection_budget)?;
-                    let result = self.execute_task_plan(turn_id, &tu)?;
-                    let result = self.complete_kernel_tool_call(call, result)?;
-                    tool_execution.settle_kernel(idx, result)?;
-                    continue;
-                }
-                // Delegation spends provider budget and creates a child rollout. Its ordinary
-                // permission and PreToolUse gates above remain authoritative.
-                if tu.name == iteron_tools::DISPATCH_AGENT {
-                    let subtask = tu
-                        .input
-                        .get("task")
-                        .and_then(|x| x.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    self.emit(
-                        turn_id,
-                        EventKind::Notice {
-                            text: "dispatching read-only subagent".into(),
-                        },
-                    );
-                    // `spawn_subagent` opens the `Subagent` effect around the child itself. This
-                    // admits the *tool call* that asked for it, which is the fact the completion
-                    // needs to name: before I-42 this branch committed a successful `ToolDone`
-                    // with no effect id at all.
-                    let call =
-                        self.kernel_tool_call(turn_id, idx, &tu, cap, result_projection_budget)?;
-                    let (content, is_error) = match self.spawn_subagent(&subtask, idx).await {
-                        Ok(summary) => (summary, false),
-                        Err(error) => (error, true),
-                    };
-                    let r = ToolResult {
-                        tool_use_id: tu.id.clone(),
-                        content,
-                        is_error,
-                        trust: Trust::Workspace,
-                        latency_ms: 0,
-                    };
-                    let result = self.complete_kernel_tool_call(call, r)?;
-                    tool_execution.settle_kernel(idx, result)?;
-                    continue;
-                }
-                // Intercept the in-turn `Workflow` tool (parallels `dispatch_agent` above): launch a
-                // model-requested workflow via the engine + a `KernelSpawner` built from THIS agent's
-                // live route, then return its aggregated result. Governed by the same capability gate
-                // + PreToolUse hook, since it fans out real children that spend provider budget.
-                if tu.name == iteron_tools::WORKFLOW_TOOL {
-                    let input = tu.input.clone();
-                    let workflow_gate = self
-                        .brokered_lifecycle_gate(
-                            turn_id,
-                            "workflow.child_proposed",
-                            LifecyclePayload::default(),
-                        )
-                        .await?;
-                    if let HookDecision::Deny(reason) = workflow_gate.decision {
-                        let r = ToolResult {
-                            tool_use_id: tu.id.clone(),
-                            content: format!("workflow launch blocked by hook: {reason}"),
-                            is_error: true,
-                            trust: Trust::Workspace,
-                            latency_ms: 0,
-                        };
-                        self.commit_refused_tool_result(turn_id, &tu.name, &r)?;
-                        self.ui(tool_end_ui(&tu, &r));
-                        tool_execution.settle_kernel(idx, r)?;
-                        continue;
+                let (execution, output) =
+                    self.kernel_special_execution(turn_id, idx, kind, result_projection_budget);
+                let result = match execution.run(turn_id, idx, &tu, cap, output).await {
+                    Ok(result) => result,
+                    Err(error) => {
+                        if matches!(&error, KernelError::UnknownEffects { .. })
+                            && let Some(outcome) =
+                                self.collect_and_finish_requested_control(turn_id).await?
+                        {
+                            return Ok(outcome);
+                        }
+                        return Err(error);
                     }
-                    // The workflow tool never reaches `Registry::run_effect`, so before #16 it was
-                    // the one admitted, capability-gated, budget-spending dispatch in the turn loop
-                    // that produced a `ToolDone` with no preceding `EffectIntent`. It fans out real
-                    // children; it crosses the boundary under its own class.
-                    //
-                    // #16 admitted the *launch*; it did not admit the tool call, so the terminal
-                    // this branch commits still carried no effect id (I-42). The launch keeps its
-                    // own `Workflow` effect — that is where the boundary's `duration_ms` for the
-                    // fan-out is measured — and the tool call is admitted around it.
-                    let call =
-                        self.kernel_tool_call(turn_id, idx, &tu, cap, result_projection_budget)?;
-                    let wf_class = effect_class::EffectClass::Workflow;
-                    let wf_ordinal = self.next_effect_ordinal(turn_id, wf_class);
-                    let ticket = self.open_kernel_effect(
-                        turn_id,
-                        wf_class,
-                        wf_ordinal,
-                        cap,
-                        ui_approval_arguments(&tu.input),
-                    )?;
-                    let launched = self.launch_workflow(turn_id, input).await;
-                    let settlement = match &launched {
-                        Ok(_) => effects::Settlement::Definite(effect_done_terminal(
-                            turn_id, wf_class, wf_ordinal,
-                        )),
-                        Err(error) => effects::Settlement::Definite(effect_failed_terminal(
-                            turn_id, wf_class, wf_ordinal, error,
-                        )),
-                    };
-                    self.settle_kernel_effect(ticket, settlement)?;
-                    let (content, is_error) = match launched {
-                        Ok(summary) => (summary, false),
-                        Err(error) => (error, true),
-                    };
-                    let r = ToolResult {
-                        tool_use_id: tu.id.clone(),
-                        content,
-                        is_error,
-                        trust: Trust::Workspace,
-                        latency_ms: 0,
-                    };
-                    let result = self.complete_kernel_tool_call(call, r)?;
-                    tool_execution.settle_kernel(idx, result)?;
-                    continue;
-                }
-                return Err(KernelError::EffectBoundary(
-                    "special tool handoff lost its actual executable kind".into(),
-                ));
+                };
+                let result = match result {
+                    kernel_special_execution::KernelSpecialResult::Completed(result)
+                    | kernel_special_execution::KernelSpecialResult::Refused(result) => result,
+                };
+                tool_execution.settle_kernel(idx, result)?;
             }
             let tool_round = tool_execution.into_round()?;
             self.ledger.phase_tools(tools_span.elapsed_ms());
