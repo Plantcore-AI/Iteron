@@ -104,22 +104,17 @@ observation; it does not grant permission or acquire mutable ownership of anothe
 | `provider_extension.rs` | Optional project-neutral dispatch/observation ports and opaque real lease; absent adapter has no state/allocation/call | Installed trusted adapter → actual lease/terminal observation |
 | `provider_extension_assembly.rs` | Compose no adapter in standalone builds and capture an owned optional gate only from installed feature authority | Trusted composition → optional borrowed extension / immutable owned gate |
 | `legacy_provider_extension.rs` | Compile-only historical adapter; preserve actual permit Drop and physical observation without product types in provider owners | Explicit feature → project-neutral port |
-
 | `steering_admission.rs` | Consume the actual bounded inbox only after low-trust evidence and the Message receipt commit; preserve exact pending sources on a refused writer | Host-resolved source → real transcript journal → exact client receipt |
 | `completion_session.rs` | Compose concrete record/control/steering ports and, only for existing explicit verification, the actual gate ports | Transcript + control safe point → existing optional verification |
 | `turn_completion.rs` | Consume one actual model or declaration-complete tool response through steering, guidance and completion decisions | Model decision / tool response → typed action → independent host terminal |
 | `completion_assembly.rs`, `steering_assembly.rs` | Capture disjoint actual scope/state/writer ports; no Agent retained by a domain | Trusted composition → one consumed completion lifetime |
-
 | `tool_round_execution.rs` | Own the complete finite early/batch/ordered phase and the exact pending special call plus actual external lease; cancelled waits cannot rearm it | Real ToolRoundDriver → concrete execution session → typed kernel handoff → exact settled result |
 | `tool_execution_session.rs` | Reborrow the same journal, permission, inbox, hooks and immutable authority through real collection and physical execution | Actual record/control/permission owners → existing physical admission/execution owners |
 | `tool_execution_assembly.rs` | Capture current trusted tool scope and optional real dispatch gate at each phase entry | Agent composition → concrete disjoint execution ports |
-
 | `bundle_adapter/checkpoint.rs` | Own the actual immutable nine-slot objects, BootBundle, compiler receipt and runtime identities as one generation; Agent and KernelSpawnerContext retain one Arc | Complete compiler admission/adoption → borrowed strategy ports and shared child generation |
-
 | `provider_response_commit.rs` | Retain one accepted physical response and USD obligation through usage, existing observer barrier, actual context reconciliation and assistant Message commit | Accepted physical response → exact logical usage journal → SDK/frontend event → confirmed transcript |
 | `provider_usage_journal.rs` | Publish only the authenticated sealed physical projection with its exact usage; physical money is never charged again | Physical usage receipt → typed committed journal → logical token/cost ledger |
 | `context_usage_reconciliation.rs` | Replace only the matching bounded context slot and consume its exact calibration baseline using authoritative usage | Actual native usage → existing context/calibration owner |
-
 | `request_cycle.rs` | Keep the actual recovery candidate, requested policy, observation clock and loop state together; consume the recovery borrow before native admission | Confirmed recovery/control → current signed cap/turn → closed native request + exact loop guard |
 | `request_cycle_assembly.rs` | Freeze actual system/tool projection and trusted current physical bounds; ordinary runs add no investigation state | Current provider/context/compiled policy evidence → request recipe |
 | `provider_turn_entry.rs` | Transfer the actual admitted governor/USD obligations with immutable current execution scope to the model-turn owner | Native request + actual dispatch admission → ProviderTurnDriver seed |
@@ -157,4 +152,4 @@ raw-artifact, frontend and restart journeys.
 
 ### Provider discovery admission
 
-`providers/discovery.rs` owns dormant network work, the unique refresh task, first-paint admission, its activity phase and immutable settled entries. `ProviderDirectory` receives a typed settlement and delegates selected-provider construction; it cannot change the task phase or dispatch another refresh. The admitted native provider forwards physical output-cap and exact request-observation ports to its original adapter. Cache and catalog responsibilities remain separate pending breakdown.
+`providers/discovery.rs` owns dormant network work, the unique refresh task, first-paint admission, its activity phase and immutable settled entries. `ProviderDirectory` receives a typed settlement and delegates selected-provider construction. Private cache storage and retained cache/catalog values have separate owners. `client_inventory/catalog_host.rs` validates a discovery draft before installing a live executable directory; a rejected or abandoned draft retains the admitted directory, ends its actual pending state and exposes a bounded failure observation. Client snapshots cannot start discovery or mint route authority. The first-task gate consumes an actual successful first-frame receipt; failure leaves the task editable. Provider, native socket and first-frame fixtures are written; same-candidate execution remains pending.

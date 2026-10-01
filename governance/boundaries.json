@@ -2983,6 +2983,106 @@
         {
           "kind": "file",
           "path": "crates/cli/src/session_transcript.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/child_ledger_evidence.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/completion_assembly.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/completion_session.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/context_usage_reconciliation.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/controller_engine_children.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/persistent_agent_kernel/profiles.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/persistent_agents/engine_children.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/persistent_agents/engine_children_tests.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/provider_response_commit.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/provider_response_commit_assembly.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/provider_turn_entry.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/provider_usage_journal.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/provider_usage_journal_tests.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/request_cycle.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/request_cycle_assembly.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/request_cycle_tests.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/steering_admission.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/steering_assembly.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/tool_execution_assembly.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/tool_execution_session.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/tool_execution_test_ports.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/tool_round_execution.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/tool_round_execution_tests.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/turn_completion.rs"
+        },
+        {
+          "kind": "file",
+          "path": "crates/cli/src/runtime/turn_completion_tests.rs"
         }
       ],
       "contracts": [
