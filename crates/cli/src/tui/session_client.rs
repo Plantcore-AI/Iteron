@@ -228,6 +228,7 @@ impl Session {
                 agent_catalog: Arc::new(iteron_agents::AgentCatalog::builtin_only()),
                 tunables_checkpoint: None,
                 client_inventory_digest: None,
+                provider_catalog: None,
             },
         }
     }

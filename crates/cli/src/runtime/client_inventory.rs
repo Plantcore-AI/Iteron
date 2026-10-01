@@ -141,7 +141,10 @@ impl RuntimeClientInventory {
                 records,
                 provenance,
                 true,
-                self.bootstrap.as_ref().map(|owner| owner.digest()),
+                self.bootstrap
+                    .as_ref()
+                    .map(|owner| owner.digest())
+                    .as_deref(),
             )
         } else {
             page::<Value>(
@@ -149,7 +152,10 @@ impl RuntimeClientInventory {
                 &[],
                 provenance,
                 false,
-                self.bootstrap.as_ref().map(|owner| owner.digest()),
+                self.bootstrap
+                    .as_ref()
+                    .map(|owner| owner.digest())
+                    .as_deref(),
             )
         };
         if matches!(query.kind, ClientInventoryKindV1::EffectiveConfig) {

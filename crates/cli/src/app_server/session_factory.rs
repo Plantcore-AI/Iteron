@@ -64,7 +64,7 @@ impl SubmissionExclusion {
     }
 }
 pub(super) struct SessionFactory {
-    directory: ProviderDirectory,
+    inventory: Arc<crate::client_inventory::ClientInventoryOwner>,
     runs: PathBuf,
     workspace: PathBuf,
     tenant: TenantId,
@@ -140,7 +140,7 @@ impl SessionFactory {
         let workspace = agent.workspace.canonicalize().ok()?;
         let exclusion = client.session_submission_exclusion()?;
         Some(Arc::new(Self {
-            directory: inventory.session_directory(),
+            inventory,
             runs,
             workspace,
             tenant: agent.rollout.tenant().clone(),
@@ -162,11 +162,12 @@ impl SessionFactory {
             return Err("that session is already live".into());
         }
         let admission = self.exclusion.try_exclude()?;
+        let directory = self.inventory.session_directory();
         let owner = self.clone();
         // This owned worker keeps both queue exclusions and every native lease even if its caller
         // disconnects. No timeout releases admission while physical work can still be running.
         tokio::task::spawn_blocking(move || {
-            owner.prepare_native(origin, command, cancel, admission)
+            owner.prepare_native(origin, command, cancel, admission, directory)
         })
         .await
         .map_err(|_| "native session preparation worker failed".to_owned())?
@@ -177,6 +178,7 @@ impl SessionFactory {
         command: SessionNavigationV1,
         cancel: Option<Arc<AtomicBool>>,
         admission: SubmissionExclusionLease,
+        directory: ProviderDirectory,
     ) -> Result<PreparedSession, String> {
         cancelled(cancel.as_deref())?;
         // Refuse a unavailable current route before the first new-record creation effect.
@@ -186,7 +188,7 @@ impl SessionFactory {
                     .duration_since(std::time::UNIX_EPOCH)
                     .map_err(|_| "new session clock unavailable")?
                     .as_secs(),
-                route: self.build_route(&origin.selection)?,
+                route: self.build_route(&directory, &origin.selection)?,
             }
         } else {
             NativeSessionStart::Existing
@@ -257,7 +259,7 @@ impl SessionFactory {
                 rollout.run_id().0
             ));
         }
-        self.finish_native(origin, rollout, start, scoped, admission)
+        self.finish_native(origin, rollout, start, scoped, admission, &directory)
     }
     fn finish_native(
         &self,
@@ -266,6 +268,7 @@ impl SessionFactory {
         start: NativeSessionStart,
         scoped: Vec<ScopedEvent>,
         admission: SubmissionExclusionLease,
+        directory: &ProviderDirectory,
     ) -> Result<PreparedSession, String> {
         let (fresh, created_at, admitted_route) = match start {
             NativeSessionStart::Fresh { created_at, route } => {
@@ -280,7 +283,7 @@ impl SessionFactory {
                     provider_id,
                     model_id,
                 };
-                if self.directory.validate_selection(&selection, true).is_ok() {
+                if directory.validate_selection(&selection, true).is_ok() {
                     (selection, None)
                 } else {
                     (
@@ -305,7 +308,7 @@ impl SessionFactory {
         let route = match admitted_route {
             Some(route) => route,
             None => self
-                .build_route(&selection)
+                .build_route(directory, &selection)
                 .map_err(|reason| format!("{reason}; retained run {}", rollout.run_id().0))?,
         };
         let projection = crate::session_transcript::project(&scoped);
@@ -320,8 +323,12 @@ impl SessionFactory {
             admission,
         })
     }
-    fn build_route(&self, selection: &RouteSelection) -> Result<ModelSelection, String> {
-        crate::model_route::HostModelSelection::capture(&self.directory, selection)
+    fn build_route(
+        &self,
+        directory: &ProviderDirectory,
+        selection: &RouteSelection,
+    ) -> Result<ModelSelection, String> {
+        crate::model_route::HostModelSelection::capture(directory, selection)
             .map_err(|_| "captured host route cannot construct a provider".to_owned())
     }
     fn verified(&self, run: &RunId) -> Result<Vec<ScopedEvent>, String> {

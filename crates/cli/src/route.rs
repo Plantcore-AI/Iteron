@@ -68,6 +68,16 @@ pub(crate) struct RouteView {
 }
 
 impl RouteView {
+    /// Strip source locators and endpoint path/userinfo before a view crosses into presentation.
+    pub(crate) fn presentation_only(mut self) -> Self {
+        self.api_root = status_api_root(&self.api_root);
+        self.blocked_reason = self
+            .blocked_reason
+            .as_deref()
+            .map(|reason| status_reason(reason, &self.credential));
+        self.credential = status_credential(&self.credential);
+        self
+    }
     /// The view before a route exists. Used only as the pre-attach value of a frontend's field;
     /// the composition root replaces it with the resolved route before the first frame.
     pub fn unresolved() -> Self {

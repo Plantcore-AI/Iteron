@@ -1,6 +1,7 @@
 //! Immutable bootstrap evidence and route handles shared by all operator clients.
 
-use std::sync::Arc;
+mod catalog_host;
+pub(crate) use catalog_host::ClientInventoryOwner;
 
 use iteron_protocol::client_inventory::{
     ClientInventoryKindV1, ClientInventoryQueryV1, ClientModelSelectionV1,
@@ -8,14 +9,13 @@ use iteron_protocol::client_inventory::{
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::plugin_runtime::RuntimePlugins;
 use crate::providers::{ModelSelection, ProviderDirectory};
 
 const MAX_PROVIDERS: usize = 70;
 const MAX_MODELS: usize = 50_001;
 const MAX_ID_BYTES: usize = 512;
 
-pub(crate) struct ClientInventoryOwner {
+struct CapturedClientInventory {
     directory: ProviderDirectory,
     digest: String,
     providers: Vec<Value>,
@@ -23,19 +23,14 @@ pub(crate) struct ClientInventoryOwner {
     plugins: Vec<Value>,
 }
 
-impl ClientInventoryOwner {
-    /// Trusted host composition only: the captured immutable directory, never a client path/config.
-    pub(crate) fn session_directory(&self) -> ProviderDirectory {
-        self.directory.clone()
-    }
-
+impl CapturedClientInventory {
     /// Only the trusted bootstrap supplies these real captured owners. No config or package file
     /// is reopened, no network discovery runs, and no provider is built until a route is selected.
     pub(crate) fn capture(
         directory: &ProviderDirectory,
-        plugins: &RuntimePlugins,
+        plugins: &[Value],
         selected: &ModelSelection,
-    ) -> Result<Arc<Self>, String> {
+    ) -> Result<Self, String> {
         if directory.entries().len() > MAX_PROVIDERS {
             return Err("provider inventory exceeds its hard bound".into());
         }
@@ -77,27 +72,16 @@ impl ClientInventoryOwner {
             }
             models.push(model_record(&directory, selected, true));
         }
-        let plugins = plugins
-            .inventory_snapshot()
-            .into_iter()
-            .map(|plugin| {
-                serde_json::to_value(plugin)
-                    .map_err(|_| "verified plugin inventory serialization failed".to_owned())
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let plugins = plugins.to_vec();
         let bytes = serde_json::to_vec(&(&providers, &models, &plugins))
             .map_err(|_| "bootstrap inventory identity unavailable")?;
-        Ok(Arc::new(Self {
+        Ok(Self {
             directory,
             digest: hex::encode(Sha256::digest(bytes)),
             providers,
             models,
             plugins,
-        }))
-    }
-
-    pub(crate) fn digest(&self) -> &str {
-        &self.digest
+        })
     }
 
     pub(crate) fn read(&self, query: &ClientInventoryQueryV1) -> Option<Value> {

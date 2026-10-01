@@ -359,6 +359,30 @@ impl ProviderDirectory {
         }
     }
 
+    pub(crate) fn discovery_pending(&self) -> bool {
+        self.deferred.is_some()
+    }
+
+    /// Host publication joins the same physical task to its real terminal; selected-route calls
+    /// retain their short observation timeout. This does not launch another refresh or retry.
+    pub(crate) async fn settle_complete(&mut self) -> bool {
+        let Some(owner) = self.deferred.clone() else {
+            return true;
+        };
+        match owner.settle_complete().await {
+            DiscoverySettlement::Settled(entries) => {
+                self.entries = entries;
+                self.deferred = None;
+                true
+            }
+            DiscoverySettlement::Abandoned => {
+                self.deferred = None;
+                false
+            }
+            DiscoverySettlement::Pending => false,
+        }
+    }
+
     /// True when this launch is about to read routing evidence that deferred discovery has not
     /// produced yet, so the caller must [`settle`](Self::settle) first. The common case — a routed
     /// provider that was resolved eagerly, offering the requested model — never waits.

@@ -88,7 +88,7 @@ use messages::event_heap_bytes;
 pub(crate) use messages::{
     AdoptRun, Control, ControlReply, ControlRequest, EventEnvelope, EventEnvelopeError, JobControl,
     McpControl, McpControlReply, MemoryControl, MemoryControlReply, NavigatedSession, ServerEvent,
-    SessionSnapshot, SideRequest, TerminalAuthority, TerminalSummary, WorkflowControl,
+    ProviderCatalogControl, SessionSnapshot, SideRequest, TerminalAuthority, TerminalSummary, WorkflowControl,
     WorkflowControlReply, WorkspaceRewound,
 };
 mod text_spill;

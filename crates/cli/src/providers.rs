@@ -7,6 +7,7 @@
 mod cache_storage;
 mod cache_writeback;
 mod catalog_cache;
+mod catalog_view;
 mod directory;
 mod discovery;
 mod instance_factory;
@@ -17,6 +18,7 @@ use catalog_cache::CatalogCache;
 #[cfg(test)]
 use catalog_cache::{CachedCatalog, CachedCompatibility, CachedModel, CachedSelectability};
 pub(crate) use directory::ProviderDirectory;
+pub(crate) use catalog_view::{ProviderCatalogEntry, ProviderCatalogSubscription, ProviderCatalogView};
 use probe_cache::{
     CachedAvailability, CachedBalance, CachedProbeOutcome, ProbeCache, ProbeDecision, ProbeUpdates,
     probe_identity,

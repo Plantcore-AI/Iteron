@@ -348,6 +348,12 @@ pub(super) fn event_heap_bytes(event: &ServerEvent) -> usize {
 ///
 /// **Folding these into the SQ is a WS1 protocol change, not a WS6 one.** When `Op` grows the
 /// variants, each arm here becomes a `route()` case and this enum shrinks to nothing.
+pub(crate) enum ProviderCatalogControl {
+    FirstFrame,
+    Refresh,
+    Retry(iteron_protocol::client_inventory::ClientModelSelectionV1),
+}
+
 pub(crate) enum Control {
     WorkspaceRewind {
         command: iteron_protocol::workspace_rewind::WorkspaceRewindCommandV1,
@@ -369,6 +375,7 @@ pub(crate) enum Control {
     PersistentAgents(iteron_protocol::client_agent_control::ClientAgentControlV1),
     LiveWorkflow(crate::workflow::live_session::LiveWorkflowCommandV1),
     Inventory(iteron_protocol::client_inventory::ClientInventoryQueryV1),
+    ProviderCatalog(ProviderCatalogControl),
     SelectModelV1(iteron_protocol::client_inventory::ClientModelSelectionV1),
     /// `/effort`
     SetEffort(iteron_protocol::Effort),
@@ -521,6 +528,7 @@ pub(crate) enum ControlReply {
     PersistentAgents(serde_json::Value),
     LiveWorkflow(Box<crate::workflow::live_session::LiveWorkflowReplyV1>),
     Inventory(serde_json::Value),
+    ProviderCatalog(Box<crate::providers::ProviderCatalogView>),
     /// `/status` — runtime policy identity plus live bounded owner health.
     OperatorStatus(Box<OperatorStatusSnapshot>),
     /// The runtime refused, with the operator-facing reason.

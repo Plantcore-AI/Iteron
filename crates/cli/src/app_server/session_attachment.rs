@@ -49,6 +49,7 @@ pub(crate) struct SessionFacts {
     /// retained only for narrow wire tests that construct an unbound Agent.
     pub(crate) tunables_checkpoint: Option<iteron_record::TunablesCheckpoint>,
     pub(crate) client_inventory_digest: Option<String>,
+    pub(crate) provider_catalog: Option<crate::providers::ProviderCatalogSubscription>,
 }
 
 /// Everything a client needs to talk to a running App Server, and nothing more.
@@ -170,6 +171,9 @@ pub(super) fn attach_with_plantcore(
         client_inventory_digest: agent
             .client_inventory_owner()
             .map(|owner| owner.digest().to_owned()),
+        provider_catalog: agent
+            .client_inventory_owner()
+            .map(|owner| owner.catalog_subscription()),
     };
     let initial_state = snapshot_of(&mut agent);
     if let Some(telemetry) = handle.lifecycle_otel.clone() {

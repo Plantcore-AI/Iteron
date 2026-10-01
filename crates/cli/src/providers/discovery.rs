@@ -164,6 +164,16 @@ impl ProviderDiscoveryOwner {
         })
     }
     pub(super) async fn settle(&self) -> DiscoverySettlement {
+        self.settle_with_wait(Some(iteron_tunables::param_duration(
+            "cli.providers.selected_provider_refresh_wait",
+            SELECTED_PROVIDER_REFRESH_WAIT,
+        )))
+        .await
+    }
+    pub(super) async fn settle_complete(&self) -> DiscoverySettlement {
+        self.settle_with_wait(None).await
+    }
+    async fn settle_with_wait(&self, wait: Option<std::time::Duration>) -> DiscoverySettlement {
         if !self.begin_after_paint() {
             self.activity
                 .complete(iteron_protocol::ActivityState::Failed);
@@ -183,25 +193,24 @@ impl ProviderDiscoveryOwner {
                 return DiscoverySettlement::Abandoned;
             }
         };
-        let entries = match tokio::time::timeout(
-            iteron_tunables::param_duration(
-                "cli.providers.selected_provider_refresh_wait",
-                SELECTED_PROVIDER_REFRESH_WAIT,
-            ),
-            &mut handle,
-        )
-        .await
-        {
-            Ok(Ok(entries)) => Arc::new(entries),
-            Ok(Err(_)) => {
+        let completed = if let Some(wait) = wait {
+            match tokio::time::timeout(wait, &mut handle).await {
+                Ok(completed) => completed,
+                Err(_) => {
+                    // The same physical refresh remains joinable; timeout never dispatches twice.
+                    *state = DeferredState::Pending(handle);
+                    return DiscoverySettlement::Pending;
+                }
+            }
+        } else {
+            (&mut handle).await
+        };
+        let entries = match completed {
+            Ok(entries) => Arc::new(entries),
+            Err(_) => {
                 self.activity
                     .complete(iteron_protocol::ActivityState::Failed);
                 return DiscoverySettlement::Abandoned;
-            }
-            Err(_) => {
-                // Timeout leaves the same physical refresh joinable; it never dispatches twice.
-                *state = DeferredState::Pending(handle);
-                return DiscoverySettlement::Pending;
             }
         };
         *state = DeferredState::Settled(entries.clone());

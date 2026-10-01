@@ -49,10 +49,13 @@ impl SessionFactory {
             return Err("rewind belongs to a previous thread/run".into());
         }
         let admission = self.exclusion.try_exclude()?;
+        let directory = self.inventory.session_directory();
         let owner = self.clone();
         let runtime = tokio::runtime::Handle::current();
         tokio::task::spawn_blocking(move || {
-            runtime.block_on(owner.prepare_rewind_native(origin, command, cancel, admission))
+            runtime.block_on(
+                owner.prepare_rewind_native(origin, command, cancel, admission, directory),
+            )
         })
         .await
         .map_err(|_| "native rewind preparation failed".to_owned())?
@@ -63,6 +66,7 @@ impl SessionFactory {
         command: WorkspaceRewindCommandV1,
         cancel: Option<Arc<AtomicBool>>,
         admission: SubmissionExclusionLease,
+        directory: crate::providers::ProviderDirectory,
     ) -> Result<RewindPreparation, String> {
         cancelled(cancel.as_deref())?;
         let scoped = self.verified(&origin.run)?;
@@ -208,7 +212,7 @@ impl SessionFactory {
         // Admit route, fork, writer and replay before any working file can change. A later refusal
         // retains and reports this child; there is no branch-creation rollback claim.
         let (child, admission) = if scope.touches_conversation() {
-            self.build_route(&origin.selection)?;
+            self.build_route(&directory, &origin.selection)?;
             let (run, _) = iteron_record::session::fork_with_checkpoint(
                 &self.runs,
                 &target.run_id,
@@ -228,6 +232,7 @@ impl SessionFactory {
                     NativeSessionStart::Existing,
                     scoped,
                     admission,
+                    &directory,
                 )
             })();
             let child = result.map_err(|reason| format!("{reason}; retained run {}", run.0))?;

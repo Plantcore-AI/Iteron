@@ -13,6 +13,7 @@ pub(super) fn is_immediate_control(control: &Control) -> bool {
             | Control::ActivityCenter(_)
             | Control::OperatorStatus
             | Control::Inventory(_)
+            | Control::ProviderCatalog(_)
             | Control::LiveWorkflow(_)
             | Control::Workflow(WorkflowControl::Inventory | WorkflowControl::Cancel { .. })
             | Control::Job(_)
@@ -323,6 +324,11 @@ pub(super) async fn apply_immediate_control(
         }
         Control::Inventory(query) => {
             let _ = request.reply.send(operator_status.inventory.read(query));
+        }
+        Control::ProviderCatalog(command) => {
+            let _ = request
+                .reply
+                .send(operator_status.inventory.catalog(command));
         }
         Control::LiveWorkflow(command) => {
             operator_status
@@ -658,6 +664,7 @@ pub(super) async fn apply_control(
             return;
         }
         Control::Inventory(query) => operator_status.inventory.read(query),
+        Control::ProviderCatalog(command) => operator_status.inventory.catalog(command),
         Control::SelectModelV1(request) => match agent
             .client_inventory_owner()
             .ok_or("bootstrap inventory is unavailable".to_owned())
