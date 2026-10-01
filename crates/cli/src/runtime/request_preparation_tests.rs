@@ -537,3 +537,5 @@ async fn real_recovery_publishes_seed_before_the_main_request_and_retains_it_on_
     drop(reopened);
     std::fs::remove_dir_all(directory).unwrap();
 }
+
+include!("compaction_coverage_error_tests.rs");

@@ -5,7 +5,7 @@ use super::investigation_convergence::InvestigationConvergence;
 use super::request_cycle::RequestCycleRecipe;
 use super::request_preparation::RequestContent;
 use super::request_recovery_driver::RequestRecoveryScope;
-use super::{Agent, COMPACTION_COVERED_ON_VERIFIER_ERROR, KernelError};
+use super::{Agent, KernelError};
 use iteron_protocol::{ImageContent, Message, TurnId};
 use iteron_provider::output_ceiling::ProviderOutputBudget;
 use std::time::Instant;
@@ -114,10 +114,6 @@ impl Agent {
                 turn,
                 policy: self.compaction,
                 compacted: self.compaction_state.compacted(),
-                covered_on_verifier_error: iteron_tunables::param_bool(
-                    "cli.runtime.compaction_covered_on_verifier_error",
-                    COMPACTION_COVERED_ON_VERIFIER_ERROR,
-                ),
                 events: self.context_preparation_events(),
             },
             started,

@@ -45,7 +45,6 @@ pub(super) struct RequestRecoveryScope {
     pub(super) turn: TurnId,
     pub(super) policy: CompactionPolicy,
     pub(super) compacted: bool,
-    pub(super) covered_on_verifier_error: bool,
     pub(super) events: ContextPreparationEvents,
 }
 
@@ -228,7 +227,7 @@ impl<'a, 'g> RequestRecoveryDriver<'a, 'g> {
             return Err(refused());
         }
         self.current_turn = turn;
-        self.covered = result.unwrap_or(self.scope.covered_on_verifier_error);
+        self.covered = result.unwrap_or(false);
         self.phase = RecoveryPhase::AssessmentReady;
         Ok(())
     }
