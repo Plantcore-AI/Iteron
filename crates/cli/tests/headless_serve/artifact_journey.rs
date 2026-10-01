@@ -5,6 +5,9 @@ use base64::Engine;
 use iteron_protocol::{EventKind, RunId};
 use sha2::{Digest, Sha256};
 
+#[path = "session_navigation_journey.rs"]
+mod session_navigation_journey;
+
 #[path = "maintenance_journey.rs"]
 mod maintenance_journey;
 #[path = "turn_publication_journey.rs"]
