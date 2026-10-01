@@ -46,6 +46,33 @@ fn tcp_navigation_uses_host_ids_checked_origin_and_reopened_physical_fork() {
     let accepted = receive(&mut reader);
     let thread = accepted["session_id"].as_str().unwrap().to_owned();
     let origin = thread.strip_prefix("session-").unwrap().to_owned();
+    for (id, action) in [(896, "first_frame"), (897, "refresh")] {
+        send(
+            &mut connection,
+            control(
+                id,
+                PROTOCOL_VERSION,
+                json!({"type":"provider_catalog_v1","command":{"action":action}}),
+            ),
+        );
+        let catalog = matching_control(&mut reader, id);
+        assert_eq!(catalog["type"], "provider_catalog_v1");
+        assert_eq!(
+            catalog["inventory_digest_sha256"].as_str().unwrap().len(),
+            64
+        );
+        assert!(catalog["providers"].as_u64().unwrap() > 0);
+        assert_eq!(catalog["source"], "host_captured_inventory");
+    }
+    send(
+        &mut connection,
+        control(
+            898,
+            PROTOCOL_VERSION,
+            json!({"type":"provider_catalog_v1","command":{"action":"retry","selection":{"inventory_digest_sha256":"0".repeat(64),"provider_id":PROVIDER_ID,"model_id":MODEL_ID,"catalog_digest_sha256":"0".repeat(64),"capability_digest_sha256":"0".repeat(64)}}}),
+        ),
+    );
+    assert_eq!(matching_control(&mut reader, 898)["type"], "refused");
     send(
         &mut connection,
         json!({"type":"submit","protocol_version":PROTOCOL_VERSION,"op":{"op":"user_input","text":"retained navigation origin"}}),

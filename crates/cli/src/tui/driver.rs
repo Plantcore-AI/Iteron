@@ -2,16 +2,15 @@
 
 use super::{
     App, CEvent, CatchUp, Duration, FIRST_TOKEN_SPINNER_TICK, FRAME_COALESCE, InputThreadControl,
-    Instant, PromptHistoryMode, ProviderDirectory, RouteView, SPINNER_TICK, Session,
-    TERMINAL_READ_SLICE, TermGuard, Terminal, TerminalOptions, VecDeque, Viewport, app_server,
-    apply_server_event, apply_transcript_effect_event, block, cached_workspace_dirty,
-    dispatch_slash_command, draw, finish_attachment_effect, hyperlink, input_dispatch, keymap,
-    local_job_wake, next_wake, notification, product_projection, prompt_history,
-    report_stopped_workflows, restore_terminal, schedule_transcript_viewer_effect,
-    service_input_control, slash_command_body, startup, submit_queued_model_input, submit_turn,
-    terminal_input, theme, transcript_effect, update_keymap_status,
-    wait_for_forced_server_shutdown, wait_for_server_shutdown, wake_until, workflow_region,
-    workspace_command,
+    Instant, PromptHistoryMode, RouteView, SPINNER_TICK, Session, TERMINAL_READ_SLICE, TermGuard,
+    Terminal, TerminalOptions, VecDeque, Viewport, app_server, apply_server_event,
+    apply_transcript_effect_event, block, cached_workspace_dirty, dispatch_slash_command, draw,
+    finish_attachment_effect, hyperlink, input_dispatch, keymap, local_job_wake, next_wake,
+    notification, product_projection, prompt_history, report_stopped_workflows, restore_terminal,
+    schedule_transcript_viewer_effect, service_input_control, slash_command_body, startup,
+    submit_queued_model_input, submit_turn, terminal_input, theme, transcript_effect,
+    update_keymap_status, wait_for_forced_server_shutdown, wait_for_server_shutdown, wake_until,
+    workflow_region, workspace_command,
 };
 
 pub(crate) struct RunConfig {
@@ -48,7 +47,6 @@ pub(crate) struct RunConfig {
 pub async fn run(
     attached: app_server::Attached,
     initial_task: Option<String>,
-    mut providers: ProviderDirectory,
     route: RouteView,
     config: RunConfig,
     mut startup: startup::StartupTiming,
@@ -73,6 +71,11 @@ pub async fn run(
         dispatch_gate: _,
         machine_schema_version: _,
     } = attached;
+    let mut provider_catalog = facts
+        .provider_catalog
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("this session has no captured host provider catalog"))?;
+    let mut providers = provider_catalog.current();
     // History/content-store hydration is independent of input readiness. Resolve it on one bounded
     // worker and adopt the result only after the shell has painted; 10,000 sessions therefore cost
     // the first frame exactly the same as an empty store.
@@ -308,20 +311,12 @@ pub async fn run(
         initial_state,
         facts,
     );
-    // Provider discovery is a presentation enrichment, never an input-path prerequisite.  A clone
-    // owns the deferred join after the first frame and publishes one settled immutable directory;
-    // `/model` remains immediately usable with the eager/cache-backed catalog meanwhile.
-    let (provider_directory_tx, mut provider_directory_rx) = tokio::sync::mpsc::channel(1);
-    // Cross the post-paint boundary synchronously before the initial task can be submitted. This
-    // starts no pre-paint network and prevents route admission from racing a merely scheduled
-    // settler that has not yet moved Dormant discovery to Pending.
-    let _ = providers.begin_settle_after_paint();
-    let mut settling_providers = providers.clone();
-    tokio::spawn(async move {
-        settling_providers.settle().await;
-        let _ = provider_directory_tx.send(settling_providers).await;
-    });
-    let mut provider_directory_open = true;
+    // The first successful paint precedes this operator host signal. Discovery remains solely
+    // host-owned; the initial task waits for admission, never for network catalog completion.
+    let mut provider_first_frame =
+        super::provider_catalog_client::first_frame(session.control_sender());
+    let mut provider_first_frame_pending = true;
+    let mut provider_catalog_open = true;
     let mut events = handle.events;
     let mut last_event_seq = 0;
     let startup_waits_for_initial_answer = initial_task
@@ -395,12 +390,21 @@ pub async fn run(
     let tui_result: anyhow::Result<()> = async {
     loop {
         // Kick off the initial task once the terminal is up.
-        if let Some(task) = first_task.take()
+        if !provider_first_frame_pending
+            && let Some(task) = first_task.take()
             && !task.trim().is_empty()
         {
             startup.mark(startup::StartupPhase::InitialSubmission);
             submit_turn(&mut app, &session, &mut notifier, task);
             redraw = true;
+        }
+
+        if provider_catalog_open {
+            match provider_catalog.try_changed() {
+                Ok(Some(view)) => {providers=view;redraw=true;}
+                Ok(None) => {}
+                Err(_) => {provider_catalog_open=false;app.note(block::NoticeLevel::Warn,"provider catalog observation ended; retained snapshot remains in use");redraw=true;}
+            }
         }
 
         // Drain the EQ (non-blocking). One long-lived subscription for the whole session: the
@@ -735,9 +739,16 @@ pub async fn run(
             },
             effect = transcript_effects.recv(), if effect_active => {
                 if let Some(effect) = effect {
-                    apply_transcript_effect_event(&mut app, &mut session, &providers, effect);
+                    if let Some(effect) = super::provider_catalog_client::complete_retry(&mut app, &session, &mut providers, &mut transcript_effects, &interrupt, effect) {
+                        apply_transcript_effect_event(&mut app, &mut session, &providers, effect);
+                    }
                     redraw = true;
                 }
+            },
+            ready = &mut provider_first_frame, if provider_first_frame_pending => {
+                provider_first_frame_pending=false;
+                match ready {Ok(Ok(())) => {},Ok(Err(reason)) => app.note(block::NoticeLevel::Warn,reason),Err(_) => app.note(block::NoticeLevel::Warn,"provider first-frame observer ended without a receipt")}
+                redraw=true;
             },
             hydrated = history_rx.recv(), if history_open => {
                 history_open = false;
@@ -791,14 +802,6 @@ pub async fn run(
                     startup.flush();
                 }
             },
-            settled = provider_directory_rx.recv(), if provider_directory_open => {
-                provider_directory_open = false;
-                if let Some(settled) = settled {
-                    providers = settled;
-                    app.note(block::NoticeLevel::Info, "provider catalog ready");
-                    redraw = true;
-                }
-            },
             result = input_rx.recv(), if input_open => match result {
                 Some(Ok(terminal_input::ReadResult::Event(event))) => next_input = Some(event),
                 Some(Ok(terminal_input::ReadResult::Probe(update))) => {
@@ -818,6 +821,9 @@ pub async fn run(
                 }
                 Some(Err(error)) => return Err(error.into()),
                 None => input_open = false,
+            },
+            update = provider_catalog.changed(), if provider_catalog_open => {
+                match update {Ok(view) => {providers=view;redraw=true;},Err(_) => {provider_catalog_open=false;}}
             },
             _ = async {
                 if let Some(notification) = viewer_work_notification {

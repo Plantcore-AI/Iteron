@@ -97,7 +97,7 @@ pub(super) fn open_tunables_picker_with_runtime_policy(
 pub(super) fn open_picker(
     app: &mut App,
     session: &Session,
-    directory: &ProviderDirectory,
+    directory: &ProviderCatalogView,
     kind: &str,
 ) {
     if app.run.running() || app.permission_prompt.read().is_some() {
@@ -386,7 +386,7 @@ pub(super) fn schedule_slash_export(
 pub(super) fn apply_transcript_effect_event(
     app: &mut App,
     session: &mut Session,
-    directory: &ProviderDirectory,
+    directory: &ProviderCatalogView,
     event: transcript_effect::Event,
 ) {
     if let Some(shell) = event.shell {
@@ -482,7 +482,7 @@ pub(super) fn apply_transcript_effect_event(
                     provider_id: selection.provider_id.clone(),
                     model_id: snapshot.model.clone(),
                 };
-                app.route = app.route.reselect(directory, &applied);
+                app.route = directory.route_view(&applied, app.route.limits.clone());
                 app.telemetry.bind_model_capacity(context_window_tokens);
                 if changed {
                     clear_last_turn_telemetry_from(app, &snapshot);

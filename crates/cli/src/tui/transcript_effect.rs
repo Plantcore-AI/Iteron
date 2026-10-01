@@ -153,6 +153,9 @@ pub(crate) enum ControlKind {
         capability: iteron_protocol::Capability,
         verdict: iteron_protocol::Verdict,
     },
+    ModelRetry {
+        selection: crate::providers::ModelSelection,
+    },
     Model {
         selection: crate::providers::ModelSelection,
         provider_name: String,
@@ -194,6 +197,7 @@ impl ControlKind {
             Self::PermissionMode(_) => "permission mode change",
             Self::Capability { .. } => "permission rule change",
             Self::Model { .. } => "model change",
+            Self::ModelRetry { .. } => "model retry",
             Self::OperatorStatus { .. } => "runtime status",
             Self::TurnBudget { .. } => "turn budget",
             Self::Memory => "memory control",

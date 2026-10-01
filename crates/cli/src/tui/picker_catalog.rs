@@ -1,5 +1,5 @@
 use super::*;
-use crate::providers::ProviderEntry;
+use crate::providers::ProviderCatalogEntry;
 
 /// The providers `/model` offers, grouped by the service they actually reach.
 ///
@@ -8,10 +8,10 @@ use crate::providers::ProviderEntry;
 /// and the provider the session is currently routing to is always kept even if it would have been
 /// dropped, because the picker must be able to show the operator where he already is.
 fn offered_service_groups<'a>(
-    directory: &'a ProviderDirectory,
+    directory: &'a ProviderCatalogView,
     current_provider: &str,
-) -> Vec<Vec<&'a ProviderEntry>> {
-    let mut groups: Vec<Vec<&ProviderEntry>> = Vec::new();
+) -> Vec<Vec<&'a ProviderCatalogEntry>> {
+    let mut groups: Vec<Vec<&ProviderCatalogEntry>> = Vec::new();
     for entry in directory
         .entries()
         .iter()
@@ -32,7 +32,7 @@ fn offered_service_groups<'a>(
 }
 
 pub(super) fn model_picker_items(
-    directory: &ProviderDirectory,
+    directory: &ProviderCatalogView,
     current_provider: &str,
     current_model: &str,
 ) -> Vec<PickItem> {

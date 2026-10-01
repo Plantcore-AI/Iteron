@@ -1,7 +1,7 @@
 #[cfg(test)]
 use super::session_management;
 use super::{
-    App, PickAction, PickItem, ProviderDirectory, Session, app_server, block, command_dispatch,
+    App, PickAction, PickItem, ProviderCatalogView, Session, app_server, block, command_dispatch,
     start_adopt_session, start_fresh_session, transcript_effect, ui_safe_text,
 };
 use std::path::{Path, PathBuf};
@@ -303,7 +303,7 @@ pub(super) fn start_session_preview(app: &mut App, session: &Session, run: Strin
 pub(super) fn handle_sessions_command(
     app: &mut App,
     session: &mut Session,
-    directory: &ProviderDirectory,
+    directory: &ProviderCatalogView,
     effects: &mut transcript_effect::Supervisor,
     interrupt: &Arc<AtomicBool>,
     argument: &str,

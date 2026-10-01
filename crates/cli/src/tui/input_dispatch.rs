@@ -3,7 +3,7 @@
 use super::{
     App, ApprovalInput, Arc, AtomicBool, AttachmentFollowup, CEvent, CTRL_C_QUIT_WINDOW, Color,
     Effort, InputDestination, InputThreadControl, Instant, KeyCode, KeyEventKind, KeyModifiers,
-    MouseButton, MouseEventKind, Op, Path, PickAction, PickerEvent, ProviderDirectory,
+    MouseButton, MouseEventKind, Op, Path, PickAction, PickerEvent, ProviderCatalogView,
     RESIZE_DEBOUNCE, RunningCtrlCAction, Session, SubmissionAdmission, TermGuard, Terminal,
     VecDeque, apply_theme_selection, apply_vim_action, block, bold, cancel_local_effect_then_turn,
     command_dispatch, external_edit_round_trip, force_cancel_turn, handle_composer_paste,
@@ -19,7 +19,7 @@ use super::{
 pub(super) struct InputContext<'a, B: ratatui::backend::Backend> {
     pub(super) app: &'a mut App,
     pub(super) session: &'a mut Session,
-    pub(super) providers: &'a ProviderDirectory,
+    pub(super) providers: &'a ProviderCatalogView,
     pub(super) transcript_effects: &'a mut transcript_effect::Supervisor,
     pub(super) interrupt: &'a Arc<AtomicBool>,
     pub(super) drain: &'a Arc<AtomicBool>,

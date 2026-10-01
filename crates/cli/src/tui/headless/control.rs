@@ -70,6 +70,9 @@ pub(super) enum WireControl {
     TurnPublicationsV1 {
         command: iteron_protocol::turn_publication::TurnPublicationReadV1,
     },
+    ProviderCatalogV1 {
+        command: super::provider_catalog::ProviderCatalogCommandV1,
+    },
     InventoryV1 {
         query: iteron_protocol::client_inventory::ClientInventoryQueryV1,
     },
@@ -340,6 +343,7 @@ impl WireControl {
             }
             Self::InventoryV1 { query } => Control::Inventory(query),
             Self::SelectModelV1 { selection } => Control::SelectModelV1(selection),
+            Self::ProviderCatalogV1 { command } => Control::ProviderCatalog(command.into_control()),
             Self::LiveWorkflowV1 { command } => Control::LiveWorkflow(command),
             Self::AgentsV1 { command } => Control::PersistentAgents(command),
             Self::ArtifactsV1 { .. } => {
@@ -586,6 +590,9 @@ pub(super) fn reply_value(reply: ControlReply) -> Value {
         ControlReply::PluginManagement(value) => value,
         ControlReply::ActivityCenter(value) => value,
         ControlReply::Inventory(value) => value,
+        ControlReply::ProviderCatalog(view) => {
+            json!({"type":"provider_catalog_v1","inventory_digest_sha256":view.inventory_digest(),"discovery_pending":view.discovery_pending(),"providers":view.entries().len(),"source":"host_captured_inventory"})
+        }
         ControlReply::LiveWorkflow(value) => json!({
             "type": "live_workflow_v1",
             "contract_version": crate::workflow::live_session::LIVE_WORKFLOW_CONTRACT_VERSION,

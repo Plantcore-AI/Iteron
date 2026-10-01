@@ -19,7 +19,7 @@ pub(super) fn apply_server_event<T: notification::NotificationTransport + ?Sized
     writer: &mut T,
     interrupt: &Arc<AtomicBool>,
     drain: &Arc<AtomicBool>,
-    directory: Option<&ProviderDirectory>,
+    directory: Option<&ProviderCatalogView>,
 ) {
     match event {
         app_server::ServerEvent::Ui(event) => apply_live_event(app, event, notifier, writer),
@@ -180,12 +180,12 @@ pub(super) fn apply_server_event<T: notification::NotificationTransport + ?Sized
             if let Some(directory) = directory
                 && !snapshot.provider_id.is_empty()
             {
-                app.route = app.route.reselect(
-                    directory,
+                app.route = directory.route_view(
                     &ModelSelection {
                         provider_id: snapshot.provider_id.clone(),
                         model_id: snapshot.model.clone(),
                     },
+                    app.route.limits.clone(),
                 );
             }
             app.telemetry.refresh_economics(&snapshot);
@@ -376,37 +376,29 @@ pub(super) fn queue_permission_capability(
 pub(super) fn queue_model_selection(
     app: &mut App,
     session: &Session,
-    directory: &ProviderDirectory,
+    directory: &ProviderCatalogView,
     effects: &mut transcript_effect::Supervisor,
     interrupt: &Arc<AtomicBool>,
     selection: ModelSelection,
 ) {
-    let Some(inventory_digest) = session.facts.client_inventory_digest.as_ref() else {
-        app.note(
-            block::NoticeLevel::Warn,
-            "host model inventory is unavailable for this session",
-        );
-        return;
-    };
+    let selection_request =
+        match super::provider_catalog_client::selection_request(directory, &selection) {
+            Ok(request) => request,
+            Err(reason) => {
+                app.note(block::NoticeLevel::Warn, reason);
+                return;
+            }
+        };
     let changed =
         session.model() != selection.model_id || app.route.provider_id != selection.provider_id;
     let provider_name = directory
         .entry(&selection.provider_id)
         .map(|entry| entry.display_name().to_owned())
         .unwrap_or_else(|| selection.provider_id.clone());
-    let (catalog_digest, capability_digest) = directory.selection_digests(&selection);
     let capabilities = directory.selection_capabilities(&selection);
     let request = transcript_effect::Request::Control {
         sender: session.control_sender(),
-        control: app_server::Control::SelectModelV1(
-            iteron_protocol::client_inventory::ClientModelSelectionV1 {
-                inventory_digest_sha256: inventory_digest.clone(),
-                provider_id: selection.provider_id.clone(),
-                model_id: selection.model_id.clone(),
-                catalog_digest_sha256: catalog_digest,
-                capability_digest_sha256: capability_digest,
-            },
-        ),
+        control: app_server::Control::SelectModelV1(selection_request),
         interrupt: interrupt.clone(),
         kind: transcript_effect::ControlKind::Model {
             selection,
@@ -438,7 +430,7 @@ pub(super) fn clear_last_turn_telemetry_from(app: &mut App, state: &app_server::
 /// treated as `provider:model` only when the prefix names a configured provider, preserving model
 /// ids such as OpenAI fine-tunes that themselves contain colons.
 pub(super) fn model_retry_selection(
-    directory: &ProviderDirectory,
+    directory: &ProviderCatalogView,
     current_provider: &str,
     current_model: &str,
     value: &str,

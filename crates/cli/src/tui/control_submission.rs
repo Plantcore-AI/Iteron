@@ -65,7 +65,7 @@ async fn wait_for_server_shutdown_for(
 pub(super) fn dispatch_slash_command(
     app: &mut App,
     session: &mut Session,
-    providers: &ProviderDirectory,
+    providers: &ProviderCatalogView,
     transcript_effects: &mut transcript_effect::Supervisor,
     interrupt: &Arc<AtomicBool>,
     cmd: &str,

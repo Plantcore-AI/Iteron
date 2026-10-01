@@ -96,6 +96,7 @@ mod picker_owner;
 mod plugins;
 mod product_presentation;
 mod product_projection;
+mod provider_catalog_client;
 mod session_adoption;
 mod session_inspection;
 #[cfg(test)]
@@ -130,7 +131,7 @@ use crate::editor::Editor;
 use crate::file_input;
 use crate::image_input::{self, ImageAttachments};
 use crate::paste_input;
-use crate::providers::{ModelSelection, ProviderDirectory};
+use crate::providers::{ModelSelection, ProviderCatalogView};
 use crate::route::RouteView;
 use crate::runtime::{UiEvent, WorkflowUiEvent};
 #[cfg(test)]

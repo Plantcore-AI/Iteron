@@ -173,7 +173,6 @@ pub(crate) async fn drive(launch: FrontendLaunch) -> anyhow::Result<u8> {
         let tui_result = tui::run(
             attached,
             cli.task,
-            provider_directory,
             route,
             tui::RunConfig {
                 completion_notifications: completion_notifications.enabled,

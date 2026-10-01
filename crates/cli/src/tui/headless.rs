@@ -15,6 +15,7 @@ mod connection;
 mod control;
 mod framing;
 mod input;
+mod provider_catalog;
 mod turn_publication;
 
 use self::auth::BearerToken;

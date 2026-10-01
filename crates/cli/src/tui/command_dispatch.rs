@@ -34,7 +34,7 @@ pub(super) fn queue_command_control(
 pub(super) fn handle_registered_command(
     app: &mut App,
     session: &mut Session,
-    directory: &ProviderDirectory,
+    directory: &ProviderCatalogView,
     transcript_effects: &mut transcript_effect::Supervisor,
     interrupt: &Arc<AtomicBool>,
     command: SlashCommand,
@@ -75,24 +75,14 @@ pub(super) fn handle_registered_command(
                         return;
                     }
                 };
-                match directory.clear_model_unavailable_for_retry(&selection) {
-                    Ok(true) => queue_model_selection(
-                        app,
-                        session,
-                        directory,
-                        transcript_effects,
-                        interrupt,
-                        selection,
-                    ),
-                    Ok(false) => app.note(
-                        block::NoticeLevel::Warn,
-                        "that model is not blocked; normal /model selection is unchanged",
-                    ),
-                    Err(error) => app.note(
-                        block::NoticeLevel::Err,
-                        format!("cannot retry model: {error}"),
-                    ),
-                }
+                super::provider_catalog_client::queue_retry(
+                    app,
+                    session,
+                    directory,
+                    transcript_effects,
+                    interrupt,
+                    selection,
+                );
             } else {
                 match directory.resolve_model(arg, Some(&app.route.provider_id)) {
                     Ok(selection) => queue_model_selection(

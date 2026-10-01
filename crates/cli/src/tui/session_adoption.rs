@@ -1,4 +1,4 @@
-use super::{App, ModelSelection, ProviderDirectory, Session, app_server, block, ui_safe_text};
+use super::{App, ModelSelection, ProviderCatalogView, Session, app_server, block, ui_safe_text};
 use std::time::{Duration, Instant};
 
 pub(super) fn format_resume_command(run_id: &str) -> String {
@@ -60,7 +60,7 @@ pub(super) fn recorded_route(
 pub(super) fn start_adopt_session(
     app: &mut App,
     session: &Session,
-    _directory: &ProviderDirectory,
+    _directory: &ProviderCatalogView,
     run_id: String,
 ) {
     queue_navigation(
@@ -77,7 +77,7 @@ pub(super) fn start_adopt_session(
 pub(super) fn start_fresh_session(
     app: &mut App,
     session: &Session,
-    _directory: &ProviderDirectory,
+    _directory: &ProviderCatalogView,
 ) {
     queue_navigation(
         app,
@@ -135,7 +135,7 @@ fn queue_navigation(
 pub(super) fn apply_navigated_session(
     app: &mut App,
     session: &mut Session,
-    directory: &ProviderDirectory,
+    directory: &ProviderCatalogView,
     reply: app_server::NavigatedSession,
 ) {
     let app_server::NavigatedSession {
@@ -171,12 +171,12 @@ pub(super) fn apply_navigated_session(
         fact.context_window_tokens,
         compaction_trigger_tokens,
     );
-    app.route = app.route.reselect(
-        directory,
+    app.route = directory.route_view(
         &ModelSelection {
             provider_id: fact.provider_id.clone(),
             model_id: fact.model_id.clone(),
         },
+        app.route.limits.clone(),
     );
     app.status = if fact.fresh {
         "ready".into()

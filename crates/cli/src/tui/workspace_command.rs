@@ -1,6 +1,6 @@
 //! Private scoped workspace presentation and host restore observation.
 //! Native rewind authorization, provider/record construction and file mutation belong to host.
-use super::{App, ProviderDirectory, Session, block};
+use super::{App, ProviderCatalogView, Session, block};
 use crate::app_server::{Control, ControlReply, ControlRequest, NavigatedSession};
 use iteron_protocol::{RunId, SessionId, product_contract::ThreadSnapshotV1};
 use std::{
@@ -259,7 +259,7 @@ where
 pub(super) fn apply(
     app: &mut App,
     session: &mut Session,
-    directory: &ProviderDirectory,
+    directory: &ProviderCatalogView,
     actions: Vec<Action>,
 ) {
     for action in actions {
