@@ -837,6 +837,7 @@ fn engine_profile_and_physical_parent_are_bound_in_the_same_durable_claim() {
         capability_digest: format!("sha256:{}", "d".repeat(64)),
         effort: iteron_protocol::Effort::Low,
         origin: AgentEngineOrigin::DirectSubagent { parent },
+        native_context: None,
     };
     let mut binding = engine_binding();
     binding.execution = Some(execution.clone());

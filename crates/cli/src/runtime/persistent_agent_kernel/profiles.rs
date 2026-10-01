@@ -9,10 +9,10 @@ impl KernelPersistentRuntime {
         request: &AgentEngineRequest,
         origin: AgentEngineOrigin,
     ) -> Result<AgentEngineExecution, ControllerError> {
-        self.spawner
+        self.generations
             .lock()
             .map_err(|_| ControllerError::Poisoned)?
-            .prepare_engine_execution(request, origin)
+            .prepare(request, origin)
             .map_err(|_| {
                 ControllerError::Invalid("child profile has no admitted native execution binding")
             })
@@ -21,10 +21,11 @@ impl KernelPersistentRuntime {
         &self,
         execution: &AgentEngineExecution,
     ) -> Result<(), ControllerError> {
-        self.spawner
+        self.generations
             .lock()
             .map_err(|_| ControllerError::Poisoned)?
-            .validate_engine_execution(execution)
+            .for_execution(Some(execution))
+            .map(|_| ())
             .map_err(|_| ControllerError::RequestConflict)
     }
 }

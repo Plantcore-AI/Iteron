@@ -18,7 +18,8 @@ use std::time::Instant;
 
 impl Agent {
     pub(super) fn kernel_controller_scope(
-        &self,
+        &mut self,
+        turn: TurnId,
         deadline: Instant,
     ) -> Result<Option<ControllerEngineScope>, String> {
         let host = if let Some(control) = &self.persistent_agents {
@@ -35,6 +36,10 @@ impl Agent {
         } else {
             None
         };
+        if let Some((control, parent)) = &host {
+            self.publish_current_native_context(control, *parent, turn)
+                .map_err(|error| error.public_summary())?;
+        }
         Ok(host.map(|(control, parent)| ControllerEngineScope {
             control,
             parent,
@@ -85,7 +90,7 @@ impl Agent {
             workflows_dir: self.runtime_state_dir.join("subagents").join("workflows"),
             profile: self.tunables_profile(),
             progress: self.workflow_progress_tx.clone(),
-            controller: self.kernel_controller_scope(deadline)?,
+            controller: self.kernel_controller_scope(turn, deadline)?,
         })
     }
     fn kernel_direct_work(
@@ -152,7 +157,7 @@ impl Agent {
         context.budget = budget;
         context.default_effort = self.execution_policy.subagent_effort;
         context.execution_deadline = Some(deadline);
-        if let Some(scope) = self.kernel_controller_scope(deadline)? {
+        if let Some(scope) = self.kernel_controller_scope(turn, deadline)? {
             return scope
                 .children(&context, &run.0)
                 .map(DirectChildWork::Controller);

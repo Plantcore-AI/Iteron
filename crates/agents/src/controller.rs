@@ -23,6 +23,7 @@ mod output_funding;
 pub use output_funding::AgentProviderBudgetAllowance;
 mod epoch_settlement;
 pub use epoch_settlement::AgentTerminalObservation;
+mod native_spawn;
 mod parent_turn;
 mod provider_budget;
 mod snapshot_validation;
@@ -97,6 +98,8 @@ struct AgentRecord {
     wall_used_ms: u64,
     #[serde(default)]
     runtime_started_at_unix_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    native_execution: Option<AgentEngineExecution>,
     reserved_turns: u32,
     reserved_tokens: u64,
     reserved_cost: u64,
@@ -295,6 +298,15 @@ impl<J: AgentControllerJournal> AgentController<J> {
         request_id: &str,
         command: AgentCommandV1,
     ) -> Result<AgentControlReplyV1, ControllerError> {
+        self.execute_inner(actor, request_id, command, None)
+    }
+    fn execute_inner(
+        &mut self,
+        actor: AgentActor,
+        request_id: &str,
+        command: AgentCommandV1,
+        native_execution: Option<AgentEngineExecution>,
+    ) -> Result<AgentControlReplyV1, ControllerError> {
         self.check_live()?;
         self.check_actor(actor)?;
         command.validate().map_err(ControllerError::Invalid)?;
@@ -345,6 +357,10 @@ impl<J: AgentControllerJournal> AgentController<J> {
                         write_paths,
                     },
                 )?;
+                next.agents
+                    .get_mut(&id)
+                    .ok_or(ControllerError::UnknownAgent)?
+                    .native_execution = native_execution;
                 (id, Some(message))
             }
             AgentCommandV1::SendMessage { agent_id, text } => {
@@ -938,6 +954,7 @@ fn record(
         cost_used: 0,
         wall_used_ms: 0,
         runtime_started_at_unix_ms: None,
+        native_execution: None,
         reserved_turns: 0,
         reserved_tokens: 0,
         reserved_cost: 0,

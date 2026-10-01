@@ -375,6 +375,7 @@ pub fn redact_event(event: &Event) -> Event {
         | EventKind::TurnCeilingChanged { .. }
         | EventKind::EffortChanged { .. }
         | EventKind::PolicyChanged { .. }
+        | EventKind::NativeChildContextCapturedV1 { .. }
         | EventKind::Checkpoint { .. }
         | EventKind::Unknown) => kind.clone(),
     };

@@ -206,6 +206,8 @@ mod ordinary_extensions;
 mod permission_policy;
 mod persistent_agent_kernel;
 pub(crate) mod persistent_agents;
+mod persistent_native_context;
+mod persistent_native_generations;
 mod persistent_parent_turn;
 mod persistent_provider_budget;
 mod persistent_writer_settlement;

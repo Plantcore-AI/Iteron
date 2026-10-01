@@ -4,10 +4,11 @@ use super::persistent_agents::{
     AgentControlPort, AgentObservation, AgentSettlement, LiveAgentMailbox, PersistentAgentHost,
     PersistentAgentRuntime,
 };
+use super::persistent_native_generations::NativeGenerations;
 use super::persistent_writer_settlement::{PersistentWriterConfig, PersistentWriterSettlement};
 use super::pricing::SharedUsdBudget;
+use super::workflow_spawner::KernelSpawnerContext;
 use super::workflow_spawner::worktree::persistent::PersistentWriterWorktree;
-use super::workflow_spawner::{KernelSpawner, KernelSpawnerContext};
 use super::{Agent, KernelError};
 use async_trait::async_trait;
 use iteron_agents::{
@@ -31,7 +32,7 @@ mod profiles;
 mod recovery;
 
 pub(super) struct KernelPersistentRuntime {
-    spawner: Mutex<KernelSpawner>,
+    generations: Mutex<NativeGenerations>,
     residents: Mutex<BTreeMap<AgentIdV1, Resident>>,
     completed_ledgers: Mutex<super::child_ledger_evidence::CompletedChildLedgers>,
     control: OnceLock<Weak<dyn AgentControlPort>>,
@@ -69,7 +70,7 @@ impl KernelPersistentRuntime {
                 .map(|ceiling| ceiling.narrow_budget(context.budget.clone())),
             writer_ceiling: context.budget.clone(),
             main_rollout_owners: Mutex::new(Vec::new()),
-            spawner: Mutex::new(KernelSpawner::new(context)),
+            generations: Mutex::new(NativeGenerations::new(context)),
             residents: Mutex::new(BTreeMap::new()),
             completed_ledgers: Mutex::new(Default::default()),
             control: OnceLock::new(),
@@ -121,10 +122,12 @@ impl KernelPersistentRuntime {
         };
         let mut construction = view.clone();
         construction.reserved = Default::default();
-        let mut child = self
-            .spawner
+        let selected = self
+            .generations
             .lock()
             .map_err(|_| ControllerError::Poisoned)?
+            .for_execution(execution)?;
+        let mut child = selected
             .build_persistent_child(&call, &construction, writer_workspace, execution)
             .map_err(|_| ControllerError::Invalid("persistent child construction failed"))?;
         child.narrow_policy_capabilities(view.capabilities);
@@ -171,6 +174,43 @@ impl PersistentAgentRuntime for KernelPersistentRuntime {
             .lock()
             .map_err(|_| ControllerError::Poisoned)?
             .read(id, epoch))
+    }
+    fn native_context_reference(
+        &self,
+        owner: AgentIdV1,
+        source: &iteron_agents::AgentEngineParentSource,
+        context: &KernelSpawnerContext,
+    ) -> Result<
+        Option<iteron_protocol::native_child_context::NativeChildContextRefV1>,
+        ControllerError,
+    > {
+        self.generations
+            .lock()
+            .map_err(|_| ControllerError::Poisoned)?
+            .reference(owner, source, context)
+    }
+    fn install_native_context(
+        &self,
+        owner: AgentIdV1,
+        source: &iteron_agents::AgentEngineParentSource,
+        context: KernelSpawnerContext,
+        publication: &iteron_protocol::native_child_context::NativeChildContextV1,
+        reference: iteron_protocol::native_child_context::NativeChildContextRefV1,
+    ) -> Result<(), ControllerError> {
+        self.generations
+            .lock()
+            .map_err(|_| ControllerError::Poisoned)?
+            .install(owner, context, source, publication, reference)
+    }
+    fn default_child_execution(
+        &self,
+        parent: AgentIdV1,
+        writer: bool,
+    ) -> Result<Option<iteron_agents::AgentEngineExecution>, ControllerError> {
+        self.generations
+            .lock()
+            .map_err(|_| ControllerError::Poisoned)?
+            .default_child(parent, writer)
     }
     fn prepare_engine_child(
         &self,
@@ -278,8 +318,8 @@ impl PersistentAgentRuntime for KernelPersistentRuntime {
             None
         };
         let mut worktree = if writer_requested {
-            let id = match self.spawner.lock() {
-                Ok(spawner) => spawner.mint_run_id(view.agent_id.0).0,
+            let id = match self.generations.lock() {
+                Ok(generations) => generations.bootstrap().mint_run_id(view.agent_id.0).0,
                 Err(_) => return unknown_settlement("Persistent writer identity lock failed"),
             };
             let Some(control) = self.control.get().and_then(Weak::upgrade) else {
@@ -828,7 +868,8 @@ impl Agent {
                 .map_err(KernelError::AgentControl)?,
         );
         runtime.bind(&host).map_err(KernelError::AgentControl)?;
-        self.install_persistent_agents(host, root_id)
+        self.install_persistent_agents(host.clone(), root_id)?;
+        self.publish_current_native_context(&host, root_id, iteron_protocol::TurnId(0))
     }
 
     pub(super) fn install_persistent_agents(

@@ -37,6 +37,15 @@ pub(super) async fn apply(
                 // ledger.
                 agent.ledger.last_turn_usage = None;
             }
+            if let Err(error) = agent.refresh_persistent_native_context(iteron_protocol::TurnId(0))
+            {
+                let _ = events
+                    .publish(ServerEvent::Notice(format!(
+                        "child model configuration unavailable: {}",
+                        error.public_summary()
+                    )))
+                    .await;
+            }
             match agent.bind_selected_rate_card() {
                 Ok(bound) => {
                     if !bound && agent.budget.max_usd.is_some_and(|ceiling| ceiling > 0.0) {

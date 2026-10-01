@@ -60,6 +60,8 @@ impl Agent {
         cx.model_context_window = self.model_context_window;
         cx.model_max_output_tokens = self.model_max_output_tokens;
         cx.tunables_pin = self.tunables_pin.clone();
+        cx.native_policy_source =
+            super::workflow_spawner::NativePolicySource::capture(cx.tunables_pin.as_ref());
         cx.sensitive_env_names = self.sensitive_env_names.clone();
         cx.pricing_port = self.provider_selection.pricing_port().cloned();
         cx.usd_budget = self.usd_budget.clone();

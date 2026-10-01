@@ -7,7 +7,10 @@ use super::{
 use crate::runtime::Agent;
 use iteron_protocol::{EventKind, Outcome};
 
-fn main_runtime(runtime: &KernelPersistentRuntime, control: Arc<dyn AgentControlPort>) -> Agent {
+pub(super) fn main_runtime(
+    runtime: &KernelPersistentRuntime,
+    control: Arc<dyn AgentControlPort>,
+) -> Agent {
     let root = control.host_limits().unwrap().root;
     let call = iteron_workflow::AgentCall {
         prompt: String::new(),
@@ -22,9 +25,10 @@ fn main_runtime(runtime: &KernelPersistentRuntime, control: Arc<dyn AgentControl
     // This is the caller's actual Agent instance. It is never inserted into the resident map and
     // never executed by host.dispatch_ready for root identity.
     let mut main = runtime
-        .spawner
+        .generations
         .lock()
         .unwrap()
+        .bootstrap()
         .build_persistent_child(&call, &root, None, None)
         .unwrap();
     if let Some(fixture) = &runtime.fixture {

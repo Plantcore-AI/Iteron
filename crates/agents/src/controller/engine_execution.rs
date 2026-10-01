@@ -82,10 +82,20 @@ pub struct AgentEngineExecution {
     pub capability_digest: String,
     pub effort: Effort,
     pub origin: AgentEngineOrigin,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_context: Option<iteron_protocol::native_child_context::NativeChildContextRefV1>,
 }
 impl AgentEngineExecution {
     pub fn validate(&self) -> Result<(), ControllerError> {
         self.origin.validate()?;
+        if let Some(reference) = &self.native_context {
+            reference.validate().map_err(ControllerError::Invalid)?;
+            if reference.tenant != self.origin.parent().tenant
+                || reference.run != self.origin.parent().run
+            {
+                return Err(ControllerError::RequestConflict);
+            }
+        }
         if self.profile.is_empty()
             || self.profile.len() > 128
             || !self
@@ -163,7 +173,12 @@ impl<J: super::AgentControllerJournal> super::AgentController<J> {
             .values()
             .filter(|receipt| receipt.claim.assigned_agent == id)
             .filter_map(|receipt| receipt.claim.execution.as_ref());
-        let binding = bindings.next().cloned();
+        let binding = bindings.next().cloned().or_else(|| {
+            self.snapshot
+                .agents
+                .get(&id)
+                .and_then(|record| record.native_execution.clone())
+        });
         if bindings.any(|other| Some(other) != binding.as_ref()) {
             return Err(ControllerError::RecoveryRequired);
         }

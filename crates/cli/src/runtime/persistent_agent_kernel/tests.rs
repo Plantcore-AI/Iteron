@@ -707,3 +707,6 @@ mod output_funding;
 
 #[path = "tests/query_trust.rs"]
 mod query_trust;
+
+#[path = "tests/native_generations.rs"]
+mod native_generations;

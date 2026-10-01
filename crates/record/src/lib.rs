@@ -23,6 +23,7 @@ pub mod bounded_replay;
 pub mod checkpoint;
 pub mod content_store;
 pub mod erasure;
+pub mod native_child_context;
 pub mod policy_bundle;
 pub mod redact;
 pub mod session;
@@ -547,6 +548,11 @@ fn hash_line(prev: &str, seq: u64, payload: &serde_json::Value) -> String {
 /// Frontend setters are not sufficient: records can be produced by embedders, copied between
 /// versions, or be independently hash-valid while carrying a hostile nested field.
 pub(crate) fn validate_event_bounds(event: &Event) -> Result<(), RecordError> {
+    if let EventKind::NativeChildContextCapturedV1 { context } = &event.kind {
+        context.validate().map_err(|reason| {
+            RecordError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, reason))
+        })?;
+    }
     let max_environment_bytes = iteron_tunables::param_integer(
         "protocol.event.max_durable_environment_context_bytes",
         MAX_DURABLE_ENVIRONMENT_CONTEXT_BYTES,

@@ -149,9 +149,10 @@ impl KernelPersistentRuntime {
                 continue;
             }
             let run = self
-                .spawner
+                .generations
                 .lock()
                 .map_err(|_| KernelError::AgentControl(ControllerError::Poisoned))?
+                .bootstrap()
                 .mint_run_id(view.agent_id.0);
             let path = self
                 .writer

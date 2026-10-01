@@ -63,6 +63,9 @@ fn child_provider_governor(
 
 mod activity;
 mod agent_profile;
+pub(super) mod native_context;
+mod native_policy_source;
+pub(crate) use native_policy_source::NativePolicySource;
 mod agent_route_binding;
 pub(super) mod direct;
 #[cfg(all(test, unix))]
@@ -132,7 +135,12 @@ pub(crate) fn safe_agent_refusal(reason: &str) -> String {
 /// Everything a [`KernelSpawner`] needs to build children WITHOUT a live parent `Agent`. The CLI
 /// fills this once from the resolved provider/route/config, then hands it to [`KernelSpawner::new`].
 /// Every field is cheap to clone or share (the provider/pricing/stop handles are `Arc`s).
+#[derive(Clone)]
 pub struct KernelSpawnerContext {
+    pub(crate) native_context_reference:
+        Option<iteron_protocol::native_child_context::NativeChildContextRefV1>,
+    pub(crate) native_policy_source:
+        Result<Option<Arc<native_policy_source::NativePolicySource>>, &'static str>,
     /// Shared provider handle (ADR-001 fan-out: every child uses the SAME provider object).
     pub provider: Arc<dyn Provider>,
     /// Default model id; overridden per call by [`AgentCall::model`].
@@ -354,6 +362,8 @@ impl KernelSpawnerContext {
         ]);
         let compiled_policy_bundle = crate::bundle_adapter::baseline_compiled_bundle();
         KernelSpawnerContext {
+            native_context_reference: None,
+            native_policy_source: Ok(None),
             provider,
             model,
             provider_id,
@@ -633,6 +643,20 @@ impl KernelSpawner {
             agent_route_binding::observation(cx, agent_def.model.clone(), call.model.clone())
                 .map_err(|error| safe_agent_refusal(&error.to_string()))?;
         let native_route = agent_route_binding::select(cx, &model_router_observation);
+        if let Ok(selected) = &native_route
+            && let Some(source) = cx
+                .native_policy_source
+                .as_ref()
+                .map_err(|reason| safe_agent_refusal(reason))?
+        {
+            source
+                .validate_selected(
+                    &agent_def.name,
+                    agent_def.model.as_deref(),
+                    &selected.identity,
+                )
+                .map_err(safe_agent_refusal)?;
+        }
 
         let mut registry = if is_writer {
             let mut registry = Registry::isolated_writer(child_workspace.clone())

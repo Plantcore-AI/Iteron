@@ -34,39 +34,50 @@ pub(super) fn resolve(
     definition
         .validate()
         .map_err(|_| "pinned agent definition is invalid")?;
-    cx.execution_policy
-        .per_agent_model
-        .validate_owner(&cx.provider_id, &cx.model)
-        .map_err(safe_agent_refusal)?;
-    cx.execution_policy
-        .per_agent_tool_profile
-        .validate_owner(&cx.permission_rules)
-        .map_err(safe_agent_refusal)?;
-    if cx.fallback_provider_routes.len() >= iteron_provider::catalog::MAX_RESOLVED_ROUTES {
-        return Err("native child route set exceeds its bound".into());
-    }
-    let native_routes: Vec<_> = cx
-        .fallback_provider_routes
-        .iter()
-        .map(|route| {
-            (
-                route.route.provider_id.as_str(),
-                route.route.model_id.as_str(),
+    if let Some(source) = cx
+        .native_policy_source
+        .as_ref()
+        .map_err(|reason| safe_agent_refusal(reason))?
+    {
+        source.validate(cx).map_err(safe_agent_refusal)?;
+        if definition.model.is_some() && !source.has_role(requested) {
+            return Err("agent definition model has no admitted native role route".into());
+        }
+    } else {
+        cx.execution_policy
+            .per_agent_model
+            .validate_owner(&cx.provider_id, &cx.model)
+            .map_err(safe_agent_refusal)?;
+        cx.execution_policy
+            .per_agent_tool_profile
+            .validate_owner(&cx.permission_rules)
+            .map_err(safe_agent_refusal)?;
+        if cx.fallback_provider_routes.len() >= iteron_provider::catalog::MAX_RESOLVED_ROUTES {
+            return Err("native child route set exceeds its bound".into());
+        }
+        let native_routes: Vec<_> = cx
+            .fallback_provider_routes
+            .iter()
+            .map(|route| {
+                (
+                    route.route.provider_id.as_str(),
+                    route.route.model_id.as_str(),
+                )
+            })
+            .collect();
+        let roles = cx
+            .execution_policy
+            .role_specific_models
+            .validate_owner_with_routes(
+                &cx.agent_catalog,
+                &cx.provider_id,
+                &cx.model,
+                &native_routes,
             )
-        })
-        .collect();
-    let roles = cx
-        .execution_policy
-        .role_specific_models
-        .validate_owner_with_routes(
-            &cx.agent_catalog,
-            &cx.provider_id,
-            &cx.model,
-            &native_routes,
-        )
-        .map_err(safe_agent_refusal)?;
-    if definition.model.is_some() && !roles.contains_key(requested) {
-        return Err("agent definition model has no admitted native role route".into());
+            .map_err(safe_agent_refusal)?;
+        if definition.model.is_some() && !roles.contains_key(requested) {
+            return Err("agent definition model has no admitted native role route".into());
+        }
     }
     let effort = cx
         .execution_policy
@@ -76,10 +87,25 @@ pub(super) fn resolve(
 }
 
 impl KernelSpawner {
-    pub(super) fn prepare_engine_execution(
+    pub(crate) fn prepare_engine_execution(
         &self,
         request: &super::super::persistent_agents::AgentEngineRequest,
         origin: AgentEngineOrigin,
+    ) -> Result<AgentEngineExecution, String> {
+        self.prepare_native_execution(request, origin, false)
+    }
+    pub(crate) fn prepare_ordinary_execution(
+        &self,
+        request: &super::super::persistent_agents::AgentEngineRequest,
+        origin: AgentEngineOrigin,
+    ) -> Result<AgentEngineExecution, String> {
+        self.prepare_native_execution(request, origin, true)
+    }
+    fn prepare_native_execution(
+        &self,
+        request: &super::super::persistent_agents::AgentEngineRequest,
+        origin: AgentEngineOrigin,
+        allow_writer: bool,
     ) -> Result<AgentEngineExecution, String> {
         origin
             .validate()
@@ -89,7 +115,7 @@ impl KernelSpawner {
         }
         let call = request.call();
         let profile = resolve(&self.cx, &call)?;
-        if profile.definition.is_isolated_writer() {
+        if profile.definition.is_isolated_writer() && !allow_writer {
             return Err("engine investigator cannot request isolated writer authority".into());
         }
         let observation = super::agent_route_binding::observation(
@@ -100,6 +126,20 @@ impl KernelSpawner {
         .map_err(|error| safe_agent_refusal(&error.to_string()))?;
         let native = super::agent_route_binding::select(&self.cx, &observation)
             .map_err(|error| safe_agent_refusal(&error.to_string()))?;
+        if let Some(source) = self
+            .cx
+            .native_policy_source
+            .as_ref()
+            .map_err(|reason| safe_agent_refusal(reason))?
+        {
+            source
+                .validate_selected(
+                    &profile.definition.name,
+                    profile.definition.model.as_deref(),
+                    &native.identity,
+                )
+                .map_err(safe_agent_refusal)?;
+        }
         Ok(AgentEngineExecution {
             profile: profile.definition.name.clone(),
             profile_digest: profile.definition.execution_digest(),
@@ -109,9 +149,10 @@ impl KernelSpawner {
             capability_digest: native.identity.capability_digest,
             effort: profile.effort,
             origin,
+            native_context: self.cx.native_context_reference.clone(),
         })
     }
-    pub(super) fn validate_engine_execution(
+    pub(crate) fn validate_engine_execution(
         &self,
         execution: &AgentEngineExecution,
     ) -> Result<(), String> {
@@ -123,7 +164,7 @@ impl KernelSpawner {
             model: Some(execution.model_id.clone()),
             effort: Some(execution.effort),
         };
-        if self.prepare_engine_execution(&request, execution.origin.clone())? != *execution {
+        if self.prepare_native_execution(&request, execution.origin.clone(), true)? != *execution {
             return Err("committed child execution differs from held native evidence".into());
         }
         Ok(())

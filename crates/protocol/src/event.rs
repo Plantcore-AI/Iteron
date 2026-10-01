@@ -1186,6 +1186,11 @@ pub enum EventKind {
     },
     /// Exact host-resolved agent-data intent before initial/steer Message publication. This
     /// lowers trust; Accepted/Delivered/Consumed remain separate controller-owned receipts.
+    /// Actual host configuration publication used by a child; the native transport remains a
+    /// separately held object and cannot be reconstructed from this journal's strings.
+    NativeChildContextCapturedV1 {
+        context: crate::native_child_context::NativeChildContextV1,
+    },
     AgentInputAdmittedV1 {
         admission: crate::agent_input::AgentInputAdmissionV1,
     },

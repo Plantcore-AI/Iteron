@@ -158,6 +158,23 @@ pub(super) fn validate_snapshot(snapshot: &AgentControllerSnapshot) -> Result<()
                 "durable root differs from genesis authority",
             ));
         }
+        if let Some(execution) = &record.native_execution {
+            execution.validate()?;
+            if record.view.parent_id.is_none()
+                || snapshot
+                    .primary_provider_scope_owner(&execution.origin.parent().provider_scope_sha256)
+                    .or_else(|| {
+                        snapshot
+                            .cohort_root_scope(&execution.origin.parent().provider_scope_sha256)
+                            .then_some(AgentIdV1(1))
+                    })
+                    != record.view.parent_id
+            {
+                return Err(ControllerError::Invalid(
+                    "ordinary native child source owner differs",
+                ));
+            }
+        }
         let mut ancestor = *id;
         let mut root_found = false;
         for _ in 0..=MAX_HIERARCHY_DEPTH {

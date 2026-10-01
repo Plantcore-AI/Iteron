@@ -70,6 +70,27 @@ pub(crate) trait AgentControlPort: Send + Sync {
     ) -> Result<Option<super::child_ledger_evidence::AgentRuntimeLedger>, ControllerError> {
         Ok(None)
     }
+    fn native_context_reference(
+        &self,
+        _actor: AgentActor,
+        _source: &iteron_agents::AgentEngineParentSource,
+        _context: &super::workflow_spawner::KernelSpawnerContext,
+    ) -> Result<
+        Option<iteron_protocol::native_child_context::NativeChildContextRefV1>,
+        ControllerError,
+    > {
+        Err(ControllerError::Permission)
+    }
+    fn install_native_context(
+        &self,
+        _actor: AgentActor,
+        _source: iteron_agents::AgentEngineParentSource,
+        _context: super::workflow_spawner::KernelSpawnerContext,
+        _publication: iteron_protocol::native_child_context::NativeChildContextV1,
+        _reference: iteron_protocol::native_child_context::NativeChildContextRefV1,
+    ) -> Result<(), ControllerError> {
+        Err(ControllerError::Permission)
+    }
     fn prepare_engine_child(
         &self,
         _actor: AgentActor,
@@ -199,6 +220,34 @@ pub(crate) trait PersistentAgentRuntime: Send + Sync {
         _id: AgentIdV1,
         _epoch: AgentEpochV1,
     ) -> Result<Option<super::child_ledger_evidence::AgentRuntimeLedger>, ControllerError> {
+        Ok(None)
+    }
+    fn native_context_reference(
+        &self,
+        _owner: AgentIdV1,
+        _source: &iteron_agents::AgentEngineParentSource,
+        _context: &super::workflow_spawner::KernelSpawnerContext,
+    ) -> Result<
+        Option<iteron_protocol::native_child_context::NativeChildContextRefV1>,
+        ControllerError,
+    > {
+        Err(ControllerError::Permission)
+    }
+    fn install_native_context(
+        &self,
+        _owner: AgentIdV1,
+        _source: &iteron_agents::AgentEngineParentSource,
+        _context: super::workflow_spawner::KernelSpawnerContext,
+        _publication: &iteron_protocol::native_child_context::NativeChildContextV1,
+        _reference: iteron_protocol::native_child_context::NativeChildContextRefV1,
+    ) -> Result<(), ControllerError> {
+        Err(ControllerError::Permission)
+    }
+    fn default_child_execution(
+        &self,
+        _parent: AgentIdV1,
+        _writer: bool,
+    ) -> Result<Option<iteron_agents::AgentEngineExecution>, ControllerError> {
         Ok(None)
     }
     fn prepare_engine_child(
@@ -815,6 +864,59 @@ impl<J: AgentControllerJournal + Send + 'static> AgentControlPort for Persistent
         }
         Ok(receipt)
     }
+    fn native_context_reference(
+        &self,
+        actor: AgentActor,
+        source: &iteron_agents::AgentEngineParentSource,
+        context: &super::workflow_spawner::KernelSpawnerContext,
+    ) -> Result<
+        Option<iteron_protocol::native_child_context::NativeChildContextRefV1>,
+        ControllerError,
+    > {
+        let controller = self
+            .shared
+            .controller
+            .lock()
+            .map_err(|_| ControllerError::Poisoned)?;
+        controller.validate_engine_origin(
+            actor,
+            &iteron_agents::AgentEngineOrigin::DirectSubagent {
+                parent: source.clone(),
+            },
+        )?;
+        let AgentActor::Agent(owner) = actor else {
+            return Err(ControllerError::Permission);
+        };
+        self.shared
+            .runtime
+            .native_context_reference(owner, source, context)
+    }
+    fn install_native_context(
+        &self,
+        actor: AgentActor,
+        source: iteron_agents::AgentEngineParentSource,
+        context: super::workflow_spawner::KernelSpawnerContext,
+        publication: iteron_protocol::native_child_context::NativeChildContextV1,
+        reference: iteron_protocol::native_child_context::NativeChildContextRefV1,
+    ) -> Result<(), ControllerError> {
+        let controller = self
+            .shared
+            .controller
+            .lock()
+            .map_err(|_| ControllerError::Poisoned)?;
+        controller.validate_engine_origin(
+            actor,
+            &iteron_agents::AgentEngineOrigin::DirectSubagent {
+                parent: source.clone(),
+            },
+        )?;
+        let AgentActor::Agent(owner) = actor else {
+            return Err(ControllerError::Permission);
+        };
+        self.shared
+            .runtime
+            .install_native_context(owner, &source, context, &publication, reference)
+    }
     fn prepare_engine_child(
         &self,
         actor: AgentActor,
@@ -985,7 +1087,24 @@ impl<J: AgentControllerJournal + Send + 'static> AgentControlPort for Persistent
                 .controller
                 .lock()
                 .map_err(|_| ControllerError::Poisoned)?;
-            let reply = controller.execute(actor, request_id, command)?;
+            if let Some(prior) = controller.ordinary_spawn_receipt(actor, request_id, &command)? {
+                return Ok(prior);
+            }
+            let binding = if let AgentCommandV1::Spawn {
+                parent_id,
+                capabilities,
+                ..
+            } = &command
+            {
+                self.shared.runtime.default_child_execution(
+                    *parent_id,
+                    capabilities.contains(Capability::ReversibleLocal),
+                )?
+            } else {
+                None
+            };
+            let reply =
+                controller.execute_with_native_child(actor, request_id, command, binding)?;
             self.notify(controller.revision());
             reply
         };
