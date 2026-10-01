@@ -63,7 +63,11 @@ fn child_provider_governor(
 
 mod activity;
 mod agent_profile;
+mod agent_route_binding;
 pub(super) mod direct;
+#[cfg(all(test, unix))]
+#[path = "workflow_spawner/agent_route_binding_tests.rs"]
+mod native_route_tests;
 mod tunables;
 pub(super) mod worktree;
 
@@ -622,15 +626,12 @@ impl KernelSpawner {
             ));
         }
 
-        // Gather the complete bounded observation now, but evaluate it only after the child owns
-        // a durable rollout. A refusal is still a real trainable-policy decision and must not
-        // disappear merely because no provider turn will follow it.
+        // Resolve only already-held native routes. The actual decision receipt is published
+        // after child genesis, including refusal; pure selection starts no provider IO.
         let model_router_observation =
-            iteron_provider::catalog::ModelRouterObservation::single_route(
-                cx.model.clone(),
-                agent_def.model.clone(),
-                call.model.clone(),
-            );
+            agent_route_binding::observation(cx, agent_def.model.clone(), call.model.clone())
+                .map_err(|error| safe_agent_refusal(&error.to_string()))?;
+        let native_route = agent_route_binding::select(cx, &model_router_observation);
 
         let mut registry = if is_writer {
             let mut registry = Registry::isolated_writer(child_workspace.clone())
@@ -711,10 +712,15 @@ impl KernelSpawner {
             .map_err(|_| "child session record could not be opened".to_string())?;
 
         let mut sub = Agent::new_with_tunables_pin(
-            cx.provider.clone(),
+            native_route
+                .as_ref()
+                .map_or_else(|_| cx.provider.clone(), |route| route.provider.clone()),
             registry,
             rollout,
-            cx.model.clone(),
+            native_route.as_ref().map_or_else(
+                |_| cx.model.clone(),
+                |route| route.identity.model_id.clone(),
+            ),
             agent_def.system.clone(),
             budget.clone(),
             tunables_pin,
@@ -825,8 +831,12 @@ impl KernelSpawner {
 
         // --- Public-surface inherited context ---
         sub.workspace = child_workspace.clone();
-        sub.model_context_window = cx.model_context_window;
-        sub.model_max_output_tokens = cx.model_max_output_tokens;
+        sub.model_context_window = native_route
+            .as_ref()
+            .map_or(cx.model_context_window, |route| route.context_window);
+        sub.model_max_output_tokens = native_route
+            .as_ref()
+            .map_or(cx.model_max_output_tokens, |route| route.output_cap);
         // Hooks are trusted operator-owned host policy, not capabilities offered to the model.
         // Dropping them here silently bypassed canonical Gate hooks for WorkflowEngine children.
         sub.install_hooks(cx.hooks.clone()).map_err(|error| {
@@ -901,18 +911,14 @@ impl KernelSpawner {
         let model_router_opportunity = sub
             .begin_policy_decision(super::policy_evidence::MODEL_ROUTER_SLOT, None)
             .map_err(|error| safe_agent_refusal(&error.public_summary()))?;
-        let routed = match iteron_provider::catalog::ModelRouterStrategy::route_with(
-            cx.compiled_policy_bundle.slots().model_router.as_ref(),
-            &model_router_observation,
-            cx.authority_ceiling,
-        ) {
+        let routed = match native_route {
             Ok(routed) => {
                 let draft = super::policy_evidence::PolicyDecisionDraft::selected(
                     super::policy_evidence::MODEL_ROUTER_SLOT,
                     &[iteron_protocol::PolicyActionV1::ModelRouterBoundParentRoute],
                     iteron_protocol::PolicyActionV1::ModelRouterBoundParentRoute,
                     "iteron:model-router-features-v1",
-                    &(&model_router_observation, &routed.model),
+                    &(&model_router_observation, &routed.identity.model_id),
                     &"selected_model_must_have_caller_resolved_route_evidence",
                 )
                 .map_err(|error| safe_agent_refusal(&error.public_summary()))?;
@@ -936,7 +942,17 @@ impl KernelSpawner {
                 return Err(safe_agent_refusal(&error.to_string()));
             }
         };
-        sub.model = routed.model;
+        if execution.is_some_and(|binding| {
+            binding.provider_id != routed.identity.provider_id
+                || binding.model_id != routed.identity.model_id
+                || binding.catalog_digest != routed.identity.catalog_digest
+                || binding.capability_digest != routed.identity.capability_digest
+                || binding.effort != profile.effort
+        }) {
+            return Err(
+                "actual native child route differs from its durable execution binding".into(),
+            );
+        }
 
         // --- Route + pricing. Public API; `record_model_selection` appends the first durable event
         //     (RouteSelected) to the child rollout. Pricing is optional and only load-bearing when a
@@ -945,10 +961,10 @@ impl KernelSpawner {
             sub.set_pricing_port(port.clone());
         }
         sub.record_model_selection(
-            cx.provider_id.clone(),
-            sub.model.clone(),
-            cx.catalog_digest.clone(),
-            cx.capability_digest.clone(),
+            routed.identity.provider_id,
+            routed.identity.model_id,
+            routed.identity.catalog_digest,
+            routed.identity.capability_digest,
         )
         .map_err(|error| {
             safe_agent_refusal(&format!(
@@ -958,7 +974,7 @@ impl KernelSpawner {
         })?;
         sub.set_provider_controls(cx.provider_controls)
             .map_err(|error| safe_agent_refusal(&error.public_summary()))?;
-        sub.install_fallback_provider_routes(cx.fallback_provider_routes.clone())
+        sub.install_fallback_provider_routes(routed.fallbacks)
             .map_err(|error| safe_agent_refusal(&error.public_summary()))?;
         let shared_governor = child_provider_governor(cx)?;
         // The shared owner contains the complete composition-time route set. The child's actual

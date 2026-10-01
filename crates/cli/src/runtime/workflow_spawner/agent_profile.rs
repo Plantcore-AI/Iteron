@@ -71,25 +71,26 @@ impl KernelSpawner {
         if origin.parent().tenant != self.cx.tenant.0 {
             return Err("engine source belongs to another tenant".into());
         }
-        if request
-            .model
-            .as_deref()
-            .is_some_and(|model| model != self.cx.model)
-        {
-            return Err("requested child model has no bound native provider route".into());
-        }
         let call = request.call();
         let profile = resolve(&self.cx, &call)?;
         if profile.definition.is_isolated_writer() {
             return Err("engine investigator cannot request isolated writer authority".into());
         }
+        let observation = super::agent_route_binding::observation(
+            &self.cx,
+            profile.definition.model.clone(),
+            call.model.clone(),
+        )
+        .map_err(|error| safe_agent_refusal(&error.to_string()))?;
+        let native = super::agent_route_binding::select(&self.cx, &observation)
+            .map_err(|error| safe_agent_refusal(&error.to_string()))?;
         Ok(AgentEngineExecution {
             profile: profile.definition.name.clone(),
             profile_digest: profile.definition.execution_digest(),
-            provider_id: self.cx.provider_id.clone(),
-            model_id: self.cx.model.clone(),
-            catalog_digest: self.cx.catalog_digest.clone(),
-            capability_digest: self.cx.capability_digest.clone(),
+            provider_id: native.identity.provider_id,
+            model_id: native.identity.model_id,
+            catalog_digest: native.identity.catalog_digest,
+            capability_digest: native.identity.capability_digest,
             effort: profile.effort,
             origin,
         })
