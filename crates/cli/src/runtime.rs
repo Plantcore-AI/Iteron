@@ -52,7 +52,11 @@ mod provider_turn_assembly;
 mod provider_turn_driver;
 mod provider_turn_evidence;
 mod request_accounting;
+mod request_admission;
+mod request_admission_assembly;
+mod request_admission_journal;
 mod request_context_evidence;
+mod request_context_publication;
 mod request_inclusion;
 mod request_manifest;
 mod request_manifest_runtime;
@@ -2140,7 +2144,7 @@ impl Agent {
                     request_recovery_driver::RequestRecoveryWork::Complete => break,
                 }
             }
-            let mut request_preparation = recovery.into_preparation()?;
+            let request_preparation = recovery.into_preparation()?;
             // Summarization is itself an admitted provider turn. Once it quiesces, observe control
             // again before admitting the main-model request; otherwise Drain received during a
             // long summary could be followed by one additional provider turn.
@@ -2157,13 +2161,8 @@ impl Agent {
                 agent_loop = agent_loop::AgentLoopGuard::begin(turn_id);
                 self.observe_session_memory_activation(turn_id, relevance_task);
             }
-            // Provider usage is aggregate and cannot isolate image tokens. Let image turns inform
-            // their own conservative admission, but never train a multiplier later applied to a
-            // text-only request.
-            if self.input_image_evidence.is_none() {
-                self.remember_token_estimate_baseline(turn_id, request_preparation.baseline());
-            }
-
+            // Auxiliary physical work has settled. Bind this one undispatched request to
+            // the current signed funding/native cap before its context and effect gates.
             let request_max_tokens = self.funded_provider_output_ceiling(
                 iteron_provider::output_ceiling::ProviderOutputBudget {
                     model: &self.model,
@@ -2171,118 +2170,48 @@ impl Agent {
                     thinking_budget: self.effort_thinking_budget(self.effort),
                 },
             )?;
-            request_preparation
-                .bind_route_budget(self.execution_context_window(), request_max_tokens)?;
-            let context_estimate = request_preparation.estimate();
-            let context_budget_inspection = request_preparation.inspection();
-
-            // ---- turn-atomic budget check (ADR-008): checked at turn admission, no mid-turn
-            // preempt; a breach stops cleanly at this safe point, never mid-effect. ----
+            let mut request_admission = request_admission::RequestAdmission::new(
+                request_preparation,
+                turn_id,
+                self.execution_context_window(),
+                request_max_tokens,
+            )?;
+            // Image-inclusive usage must not train later text-only request calibration.
+            if self.input_image_evidence.is_none() {
+                self.remember_token_estimate_baseline(turn_id, request_admission.baseline());
+            }
             if let Some(reason) = self.inference_budget_exhaustion()? {
                 return self.finish(turn_id, Outcome::BudgetExhausted(reason)).await;
             }
             if submitted_turn.error_streak() >= self.budget.max_consecutive_tool_errors {
                 return self.finish(turn_id, Outcome::Stuck).await;
             }
-
-            self.emit(
-                turn_id,
-                EventKind::Phase {
-                    phase: Phase::Model,
-                },
-            );
             let local_prepare_activity = self
                 .activity
                 .span(turn_activity::ActivityStage::LocalPrepare, Some(turn_id));
-            agent_loop.transition(AgentLoopState::AwaitingModel)?;
-            self.ledger.record_kernel_tokens(
-                u64::try_from(
-                    context_estimate
-                        .system_tokens
-                        .saturating_add(context_estimate.tool_tokens)
-                        .saturating_add(context_estimate.framing_tokens),
-                )
-                .unwrap_or(u64::MAX),
-            );
-            if let Some(KernelError::ContextWindowExceeded {
-                estimated_input_tokens,
-                reserved_output_tokens,
-                context_window_tokens,
-            }) = request_preparation.window_refusal()
-            {
-                self.observe_context_window_denied(
-                    turn_id,
-                    estimated_input_tokens
-                        .saturating_add(u64::from(reserved_output_tokens))
-                        .saturating_sub(context_window_tokens),
-                );
-            }
-            request_preparation.validate()?;
-
-            let context_gates = [(
-                "context.segment.budget_requested",
-                LifecyclePayload {
-                    magnitude: Some(
-                        u64::try_from(context_estimate.total_tokens).unwrap_or(u64::MAX),
-                    ),
-                    ..LifecyclePayload::default()
-                },
-            )];
-            for (event_id, payload) in context_gates {
-                let report = self
-                    .brokered_lifecycle_gate(turn_id, event_id, payload)
-                    .await?;
-                if let HookDecision::Deny(reason) = report.decision {
-                    return Err(KernelError::ContextResolution(reason));
-                }
-            }
+            let (journal, events) = self.request_admission_ports(turn_id);
+            request_admission.validate(journal, &events, &mut agent_loop)?;
+            let payload = request_admission.request_gate()?;
+            let report = self
+                .brokered_lifecycle_gate(turn_id, "context.segment.budget_requested", payload)
+                .await?;
+            request_admission.gate_completed(report.decision)?;
             if let Some(outcome) = self.collect_and_finish_requested_control(turn_id).await? {
                 return Ok(outcome);
             }
-
-            self.observe_context_request(
-                turn_id,
-                decision_observability::ContextRequestObservation {
-                    system: &request_preparation.request().system,
-                    messages: &request_preparation.request().messages,
-                    tools: &request_preparation.request().tools,
-                    images: input_images,
-                    estimate: context_estimate,
-                    output_reserved_tokens: request_max_tokens,
-                    elapsed_us: elapsed_us(context_observation_started),
-                },
-            );
-            self.lifecycle_event(
-                "model.route_requested",
-                Some(turn_id),
-                LifecyclePayload::default(),
-            );
-            self.lifecycle_event(
-                "model.request_prepared",
-                Some(turn_id),
-                LifecyclePayload {
-                    count: Some(
-                        u64::try_from(request_preparation.request().messages.len())
-                            .unwrap_or(u64::MAX),
-                    ),
-                    magnitude: Some(
-                        u64::try_from(context_estimate.total_tokens).unwrap_or(u64::MAX),
-                    ),
-                    ..LifecyclePayload::default()
-                },
-            );
-
-            self.admit_tool_image_context(&request_preparation.request().messages, input_images)?;
-            let (req, requested_max_tokens) =
-                request_preparation.into_request(request_preparation::RequestConfiguration {
-                    // Internal compaction may have durably selected a fallback. Bind the actual
-                    // resident route controls only after that physical work and its safe point.
-                    model: self.model.clone(),
-                    cache_system: self.provider_cache_system_enabled(),
-                    thinking_budget: self.effort_thinking_budget(self.effort),
-                    reasoning_effort: self.effort_reasoning(self.effort),
-                    controls: self.provider_controls,
-                })?;
+            request_admission.control_passed()?;
+            self.admit_tool_image_context(request_admission.messages(), input_images)?;
+            let publication = self.request_context_publication(request_admission.messages());
+            let request_admission::AdmittedModelRequest {
+                request: req,
+                requested_max_tokens,
+                estimate: context_estimate,
+                inspection: context_budget_inspection,
+            } = request_admission.complete(
+                self.request_configuration(),
+                publication,
+                elapsed_us(context_observation_started),
+            )?;
             let effort_application = self.provider.effort_application(&req);
             local_prepare_activity.complete();
 

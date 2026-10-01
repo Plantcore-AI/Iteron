@@ -26,14 +26,12 @@ const ABSENT_CANDIDATE_SCORE_PPM: i64 = 0;
 /// Rank reported for a candidate the audit's rank vector has no entry for.
 const ABSENT_CANDIDATE_RANK: u32 = 0;
 
-/// Headroom below `window / this` raises the context high-watermark event — one order of magnitude
-/// left is the last point at which an operator can still act before compaction is forced.
-const CONTEXT_HIGH_WATERMARK_DIVISOR: u64 = 10;
 use iteron_obs::lifecycle::LifecycleCorrelation;
 use iteron_protocol::context::{ContextSegment, ContextSource};
 use iteron_protocol::{LifecyclePayload, TurnId, Usage};
 use sha2::{Digest, Sha256};
 
+#[cfg(test)]
 pub(super) use super::request_context_evidence::ContextRequestObservation;
 
 #[derive(Clone, Copy)]
@@ -188,23 +186,6 @@ impl Agent {
     /// succeeded. "Used" proves request inclusion; it does not prove remote processing.
     pub(super) fn observe_memory_provider_refusal(&mut self, turn: TurnId) {
         self.memory_request_exposure(turn).refused();
-    }
-
-    pub(super) fn observe_context_window_denied(&self, turn: TurnId, excess_tokens: u64) {
-        for event_id in [
-            "context.window.overflow_predicted",
-            "context.segment.budget_denied",
-        ] {
-            self.lifecycle_event(
-                event_id,
-                Some(turn),
-                LifecyclePayload {
-                    magnitude: Some(excess_tokens),
-                    reason_code: Some("context_window_exhausted".into()),
-                    ..LifecyclePayload::default()
-                },
-            );
-        }
     }
 
     pub(crate) fn set_lifecycle_emitter(
@@ -473,133 +454,14 @@ impl Agent {
         );
     }
 
+    #[cfg(test)]
     pub(super) fn observe_context_request(
         &self,
         turn: TurnId,
         observation: ContextRequestObservation<'_>,
     ) {
-        let estimate = observation.estimate;
-        let output_reserved_tokens = observation.output_reserved_tokens;
-        let elapsed_us = observation.elapsed_us;
-        let messages = observation.messages;
-        let tools = observation.tools;
-        let execution_window = self.execution_context_window();
-        let request = self.context_source_evidence.build_request(
-            turn,
-            super::request_context_evidence::RequestContextScope {
-                execution_window,
-                request_trust: self.governing_turn_trust(messages),
-                estimator: &self.context_estimator,
-                file: self.input_file_evidence,
-                image: self.input_image_evidence,
-            },
-            observation,
-        );
-        let ledger = request.ledger;
-        for (event_id, payload) in request.observations {
-            self.lifecycle_event(event_id, Some(turn), payload);
-        }
-        let segment_count = u64::try_from(ledger.segments.len()).unwrap_or(u64::MAX);
-        let stable_prefix_tokens = ledger.cache.stable_prefix_tokens;
-        let headroom = ledger.headroom_tokens();
-        self.context_ledgers.publish(ledger);
-        for event_id in ["context.segment.created", "context.segment.ordered"] {
-            self.lifecycle_event(
-                event_id,
-                Some(turn),
-                LifecyclePayload {
-                    count: Some(segment_count),
-                    ..LifecyclePayload::default()
-                },
-            );
-        }
-        self.lifecycle_event(
-            "context.segment.budget_granted",
-            Some(turn),
-            LifecyclePayload {
-                magnitude: Some(u64::try_from(estimate.total_tokens).unwrap_or(u64::MAX)),
-                ..LifecyclePayload::default()
-            },
-        );
-        if let Some(window) = execution_window {
-            self.lifecycle_event(
-                "context.window.capacity_resolved",
-                Some(turn),
-                LifecyclePayload {
-                    magnitude: Some(window),
-                    ..LifecyclePayload::default()
-                },
-            );
-        }
-        self.lifecycle_event(
-            "context.window.output_reserved",
-            Some(turn),
-            LifecyclePayload {
-                magnitude: Some(u64::from(output_reserved_tokens)),
-                ..LifecyclePayload::default()
-            },
-        );
-        if let Some(headroom) = headroom {
-            self.lifecycle_event(
-                "context.window.headroom_updated",
-                Some(turn),
-                LifecyclePayload {
-                    magnitude: Some(headroom),
-                    ..LifecyclePayload::default()
-                },
-            );
-            if execution_window.is_some_and(|window| {
-                headroom.saturating_mul(iteron_tunables::param_integer(
-                    "cli.runtime.decision_observability.context_high_watermark_divisor",
-                    CONTEXT_HIGH_WATERMARK_DIVISOR,
-                )) < window
-            }) {
-                self.lifecycle_event(
-                    "context.window.high_watermark",
-                    Some(turn),
-                    LifecyclePayload {
-                        magnitude: Some(headroom),
-                        ..LifecyclePayload::default()
-                    },
-                );
-            }
-        }
-        self.lifecycle_event(
-            "context.tool_schema.admitted",
-            Some(turn),
-            LifecyclePayload {
-                count: Some(u64::try_from(tools.len()).unwrap_or(u64::MAX)),
-                magnitude: Some(u64::try_from(estimate.tool_tokens).unwrap_or(u64::MAX)),
-                ..LifecyclePayload::default()
-            },
-        );
-        self.lifecycle_event(
-            "context.stable_prefix.computed",
-            Some(turn),
-            LifecyclePayload {
-                magnitude: Some(stable_prefix_tokens),
-                ..LifecyclePayload::default()
-            },
-        );
-        self.lifecycle_event(
-            "context.cache_region.classified",
-            Some(turn),
-            LifecyclePayload {
-                magnitude: Some(stable_prefix_tokens),
-                reason_code: Some("cache_candidate".into()),
-                ..LifecyclePayload::default()
-            },
-        );
-        self.lifecycle_event(
-            "context.request.serialized",
-            Some(turn),
-            LifecyclePayload {
-                count: Some(u64::try_from(messages.len()).unwrap_or(u64::MAX)),
-                duration_us: Some(elapsed_us),
-                magnitude: Some(u64::try_from(estimate.total_tokens).unwrap_or(u64::MAX)),
-                ..LifecyclePayload::default()
-            },
-        );
+        self.request_context_publication(observation.messages)
+            .publish(turn, observation);
     }
 
     pub(super) fn observe_context_usage(&mut self, turn: TurnId, usage: Usage) {
