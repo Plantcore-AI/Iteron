@@ -76,7 +76,11 @@ impl Agent {
             )
             .await;
         match response {
-            Ok(response) => {
+            Ok(physical_response) => {
+                let super::provider_attempt_journal::ProviderPhysicalResponse {
+                    result: response,
+                    usage_evidence,
+                } = physical_response;
                 let complete = self.record_provider_usage(
                     turn,
                     response.usage,

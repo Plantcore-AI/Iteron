@@ -151,7 +151,11 @@ impl Agent {
         };
         let (response, model_started) = response;
         match response {
-            Ok(res) => {
+            Ok(physical_response) => {
+                let super::provider_attempt_journal::ProviderPhysicalResponse {
+                    result: res,
+                    usage_evidence,
+                } = physical_response;
                 let stream_timing = match first_item_at {
                     Some(first) => StreamTiming {
                         ttft_ms: Some(iteron_obs::duration_ms_ceil(

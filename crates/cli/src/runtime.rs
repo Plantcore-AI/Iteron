@@ -2435,7 +2435,6 @@ impl Agent {
                         evidence,
                         memory,
                         hedge.take(),
-                        usd_attempt.projected_at_unix_secs(),
                     )
                     .await?
                 {
@@ -2486,6 +2485,7 @@ impl Agent {
                 result: turn_res,
                 recovered: stream_recovered,
                 tools: returned_tools,
+                usage_evidence,
             } = match response {
                 provider_response_recovery::ProviderResponseResolution::Accepted(response) => {
                     *response

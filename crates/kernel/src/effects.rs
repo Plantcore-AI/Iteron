@@ -399,6 +399,7 @@ pub struct EffectTicket {
     effect_id: EffectId,
     kind: String,
     provider_route_attempt: Option<iteron_protocol::ProviderRouteAttemptIdentity>,
+    provider_pricing_at_unix_secs: Option<u64>,
     /// When the write-ahead intent became durable. The ticket is the only object that already
     /// survives from admission to terminal, which makes it the correct — and only — carrier for a
     /// measurement of the whole admitted lifetime. Holding it here is what lets ONE seam measure
@@ -430,6 +431,11 @@ impl EffectTicket {
     /// Physical route identity authenticated by the durable provider intent.
     pub fn provider_route_attempt(&self) -> Option<&iteron_protocol::ProviderRouteAttemptIdentity> {
         self.provider_route_attempt.as_ref()
+    }
+    /// Timestamp checked by the host's actual physical admission and retained in its durable
+    /// provider intent. It is absent for historical/non-provider tickets; no setter exists.
+    pub fn provider_pricing_at_unix_secs(&self) -> Option<u64> {
+        self.provider_pricing_at_unix_secs
     }
 }
 
@@ -545,6 +551,13 @@ where
         workspace,
         provider_route_attempt,
     } = effect;
+    let provider_pricing_at_unix_secs = (kind == "provider" && provider_route_attempt.is_some())
+        .then(|| {
+            audit_arguments
+                .get("provider_pricing_at_unix_secs")
+                .and_then(serde_json::Value::as_u64)
+        })
+        .flatten();
     let intent_sequence = log.append_effect(&Event {
         seq: Seq::ZERO,
         turn,
@@ -564,6 +577,7 @@ where
         effect_id,
         kind,
         provider_route_attempt,
+        provider_pricing_at_unix_secs,
         // Started AFTER the intent is durable, so the measurement covers the executor and not the
         // fsync that authorised it. A reader comparing effects across runs must not see one class
         // absorb the log's write latency because its intent happened to be larger.
@@ -600,6 +614,7 @@ where
         effect_id,
         kind,
         provider_route_attempt,
+        provider_pricing_at_unix_secs: _,
         opened_at,
     } = ticket;
     let expected_id = effect_id.clone();

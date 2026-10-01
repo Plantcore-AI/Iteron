@@ -579,13 +579,11 @@ impl Agent {
                     rate_limit,
                     result,
                 } => {
-                    let projected_at_unix_secs = self.pricing_now();
-                    let (accounting, safe) = self.provider_attempt_journal().settle_observed(
+                    let (accounting, safe, _) = self.provider_attempt_journal().settle_observed(
                         ticket,
                         super::provider_attempt_journal::ProviderObservedAttempt {
                             route_id,
                             result: &result,
-                            projected_at_unix_secs,
                         },
                     )?;
                     monetary_followup_safe &= safe;

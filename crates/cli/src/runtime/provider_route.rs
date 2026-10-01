@@ -282,7 +282,7 @@ impl Agent {
         on_item: &mut (dyn FnMut(StreamItem) + Send),
         primary_route_permit: Option<iteron_provider::AttemptPermit>,
         use_hedge: bool,
-    ) -> Result<iteron_provider::TurnResult, KernelError> {
+    ) -> Result<super::provider_attempt_journal::ProviderPhysicalResponse, KernelError> {
         let estimated_input = self.context_estimator.estimate_uncached(
             &physical.request.system,
             &physical.request.messages,
@@ -327,7 +327,7 @@ impl Agent {
                 }
                 on_item(item);
             };
-            let (result, monetary_followup_safe) = if use_hedge {
+            let (result, monetary_followup_safe, usage_evidence) = if use_hedge {
                 let primary_permit = route_turn.take_route_permit();
                 let request_manifests = self.request_manifest_factory();
                 let dispatch = self
@@ -356,7 +356,11 @@ impl Agent {
                 for item in dispatch.items {
                     guarded(item);
                 }
-                (dispatch.result, monetary_followup_safe)
+                (
+                    dispatch.result,
+                    monetary_followup_safe,
+                    super::provider_attempt_journal::ProviderLogicalUsageEvidence::HedgedAggregate,
+                )
             } else {
                 if !route_turn.first_attempt() {
                     let permit = self
@@ -485,15 +489,13 @@ impl Agent {
                 let ticket = route_turn
                     .take_ticket()
                     .expect("provider intent remains open until settlement");
-                let projected_at_unix_secs = self.pricing_now();
                 let broker_started = Instant::now();
-                let (accounting, monetary_followup_safe) =
+                let (accounting, monetary_followup_safe, receipt) =
                     self.provider_attempt_journal().settle_observed(
                         ticket,
                         super::provider_attempt_journal::ProviderObservedAttempt {
                             route_id: route_turn.route_id(),
                             result: &result,
-                            projected_at_unix_secs,
                         },
                     )?;
                 self.observe_plantcore_provider_attempt(turn, &accounting)
@@ -509,7 +511,11 @@ impl Agent {
                 )?;
                 drop(route_turn.take_route_permit());
                 drop(route_turn.take_dispatch_permit());
-                (result, monetary_followup_safe)
+                (
+                    result,
+                    monetary_followup_safe,
+                    super::provider_attempt_journal::ProviderLogicalUsageEvidence::Single(receipt),
+                )
             };
             route_turn.settled();
             let failover = result
@@ -593,9 +599,21 @@ impl Agent {
                         class.label(),
                         "fallback_chain_exhausted",
                     )?;
-                    return result;
+                    return result.map(|result| {
+                        super::provider_attempt_journal::ProviderPhysicalResponse {
+                            result,
+                            usage_evidence,
+                        }
+                    });
                 }
-                super::provider_route_turn::ProviderRouteNext::Terminal => return result,
+                super::provider_route_turn::ProviderRouteNext::Terminal => {
+                    return result.map(|result| {
+                        super::provider_attempt_journal::ProviderPhysicalResponse {
+                            result,
+                            usage_evidence,
+                        }
+                    });
+                }
             }
         }
     }
