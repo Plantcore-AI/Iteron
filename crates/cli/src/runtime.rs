@@ -38,6 +38,8 @@ mod provider_dispatch;
 mod provider_execution_scope;
 mod provider_financial_source;
 mod provider_followup;
+mod provider_response_assembly;
+mod provider_response_recovery;
 mod provider_round;
 mod provider_route_binding;
 mod provider_stream_attempt;
@@ -2444,13 +2446,8 @@ impl Agent {
             if !provider_drive.refused() && !provider_drive.inclusion_confirmed() {
                 self.observe_memory_inclusion_unconfirmed(turn_id);
             }
-            let provider_turn_driver::CompletedProviderTurn {
-                route: mut route_turn,
-                round: mut provider_round,
-                execution: execution_scope,
-                result: provider_result,
-            } = provider_drive.finish(provider_result)?;
-            if let Some(snapshot) = provider_round.take_quota() {
+            let mut completed = provider_drive.finish(provider_result)?;
+            if let Some(snapshot) = completed.round.take_quota() {
                 self.last_rate_limit = Some(snapshot);
                 self.lifecycle_event(
                     "model.quota_updated",
@@ -2458,176 +2455,35 @@ impl Agent {
                     LifecyclePayload::default(),
                 );
             }
-            let mut stream_recovered = false;
-            let pre_output_retry_exhausted =
-                provider_route::retryable_before_semantic_output_provider_error(
-                    &provider_result,
-                    provider_round.observations().semantic_output_observed(),
-                )
-                .is_some();
-            let turn_res = match provider_result {
-                Ok(result) => result,
-                Err(ref error)
-                    if !self.plantcore_runtime_enabled()
-                        && !provider_round.tools().has_contract_error()
-                        && !pre_output_retry_exhausted
-                        && submitted_turn.stream_recoveries().saturating_add(1)
-                            < self.retry_policy.max_attempts
-                        && provider_route::recoverable_response_stream_error(error) =>
-                {
-                    let delay = iteron_sched::full_jitter(
-                        &self.retry_policy,
-                        submitted_turn.stream_recoveries(),
-                        route_turn.continuation_random(),
-                    );
-                    let delay = match error {
-                        KernelError::Provider(error) => {
-                            error.retry_after().map_or(delay, |hint| hint.max(delay))
-                        }
-                        _ => delay,
-                    };
-                    submitted_turn.note_stream_recovery();
-                    self.activity.retry(
-                        turn_id,
-                        submitted_turn.stream_recoveries(),
-                        self.retry_policy.max_attempts,
-                        delay,
-                    );
-                    let prepare_recovery: Result<(), KernelError> = async {
-                        self.admit_followup_after_route_attempt_set(false)?;
-                        self.emit_durable(turn_id, EventKind::Notice {
-                            text: "provider stream disconnected; continuing from completed output and tool calls; interrupted usage remains unknown".into(),
-                        })?;
-                        self.wait_provider_retry(delay).await
-                    }.await;
-                    if let Err(recovery_error) = prepare_recovery {
-                        self.abort_early_pure_tools(
-                            turn_id,
-                            &mut provider_round.take_early_for_cleanup(),
-                        )
-                        .await?;
-                        self.preserve_interrupted_stream(
-                            turn_id,
-                            messages,
-                            provider_round.observations().text(),
-                            provider_round.observations().thinking(),
-                        );
-                        return Err(recovery_error);
-                    }
-                    self.ledger.record_provider_retries(
-                        1,
-                        u64::try_from(delay.as_millis().max(1)).unwrap_or(u64::MAX),
-                    );
-                    // Preserve only complete calls. The existing collection path settles their
-                    // running tasks and records results before the next request is constructed.
-                    // The physical provider effect above remains failed/unknown, not successful.
-                    let calls = provider_round.declared_calls();
-                    let has_calls = !calls.is_empty();
-                    let mut blocks = Vec::new();
-                    if !provider_round.observations().text().is_empty() {
-                        blocks.push(Block::Text {
-                            text: format!(
-                                "{}\n\n{INTERRUPTED_STREAM_MARKER}",
-                                provider_round.observations().text()
-                            ),
-                        });
-                    }
-                    blocks.extend(calls.into_iter().map(Block::ToolUse));
-                    stream_recovered = true;
-                    iteron_provider::TurnResult {
-                        blocks,
-                        stop_reason: if has_calls {
-                            StopReason::ToolUse
-                        } else {
-                            StopReason::PauseTurn
-                        },
-                        usage: UsageReport::provider_omitted(),
-                    }
-                }
-                Err(error) => {
-                    // Physical route terminals already committed exact Known/Unknown cost truth
-                    // before this branch. A proven provider failure (or a proved pre-dispatch
-                    // refusal) must not be reclassified as unknown merely because it is returned
-                    // to the logical turn.
-                    // A streaming adapter can fail after emitting a complete pure tool call.
-                    // Dropping JoinHandles would detach those reads and let work outlive the
-                    // failed turn. Abort *and await* them before crossing the turn boundary.
-                    self.abort_early_pure_tools(
-                        turn_id,
-                        &mut provider_round.take_early_for_cleanup(),
-                    )
+            let (journal, scope) = self.provider_response_ports(turn_id);
+            let response =
+                provider_response_recovery::ProviderResponseRecoveryOwner::new(completed)
+                    .resolve(journal, scope, &mut submitted_turn, messages)
                     .await?;
-                    // Before the error leaves: keep what the model already said (I-39).
-                    self.preserve_interrupted_stream(
-                        turn_id,
-                        messages,
-                        provider_round.observations().text(),
-                        provider_round.observations().thinking(),
-                    );
-                    self.emit_plantcore_turn_usage(turn_id)?;
+            let provider_response_recovery::AcceptedProviderResponse {
+                route: route_turn,
+                round: mut provider_round,
+                execution: execution_scope,
+                result: turn_res,
+                recovered: stream_recovered,
+                tools: returned_tools,
+            } = match response {
+                provider_response_recovery::ProviderResponseResolution::Accepted(response) => {
+                    *response
+                }
+                provider_response_recovery::ProviderResponseResolution::Failed(failure) => {
+                    if failure.observe_physical_usage {
+                        self.emit_plantcore_turn_usage(turn_id)?;
+                    }
                     if let Some(outcome) =
                         self.collect_and_finish_requested_control(turn_id).await?
                     {
                         return Ok(outcome);
                     }
-                    if let Some(terminal) = self.plantcore_terminal() {
-                        return match terminal {
-                            plantcore::PlantcoreTerminal::Budget(reason) => {
-                                self.finish(turn_id, Outcome::BudgetExhausted(reason)).await
-                            }
-                            plantcore::PlantcoreTerminal::UsageUnavailable => {
-                                self.finish(turn_id, Outcome::HarnessError).await
-                            }
-                        };
+                    if let Some(terminal) = failure.terminal {
+                        return self.finish(turn_id, terminal).await;
                     }
-                    if matches!(
-                        error,
-                        KernelError::Provider(iteron_provider::ProviderError::DeadlineExceeded)
-                    ) {
-                        return self
-                            .finish(turn_id, Outcome::BudgetExhausted("max_wall_secs"))
-                            .await;
-                    }
-                    if let KernelError::InferenceBudgetExhausted(reason) = error {
-                        return if reason == "usage_unavailable" {
-                            self.finish(turn_id, Outcome::HarnessError).await
-                        } else {
-                            self.finish(turn_id, Outcome::BudgetExhausted(reason)).await
-                        };
-                    }
-                    return Err(error);
-                }
-            };
-            if let Some(error) = provider_round.take_contract_error() {
-                // The provider route terminal already committed its exact physical charge. A
-                // malformed tool projection invalidates the semantic turn, not the billing
-                // receipt, so preserve the known monetary state while failing the turn.
-                self.abort_early_pure_tools(turn_id, &mut provider_round.take_early_for_cleanup())
-                    .await?;
-                if let Some(outcome) = self.collect_and_finish_requested_control(turn_id).await? {
-                    return Ok(outcome);
-                }
-                return Err(iteron_provider::ProviderError::Decode(error.to_string()).into());
-            }
-            // The stream completion callback is the dispatch boundary while TurnResult is the
-            // transcript boundary. They must describe the exact same ordered calls; otherwise a
-            // provider adapter could execute one projection and durably commit another.
-            let returned_tools = match provider_round.validated_tools(&turn_res) {
-                Ok(tools) => tools,
-                Err(error) => {
-                    // Stream/transcript disagreement is a provider contract failure after an exact
-                    // physical terminal. It cannot erase or weaken that already-verified charge.
-                    self.abort_early_pure_tools(
-                        turn_id,
-                        &mut provider_round.take_early_for_cleanup(),
-                    )
-                    .await?;
-                    if let Some(outcome) =
-                        self.collect_and_finish_requested_control(turn_id).await?
-                    {
-                        return Ok(outcome);
-                    }
-                    return Err(error);
+                    return Err(failure.error);
                 }
             };
             // The obs field is named for the behaviour it used to measure (an inline serial tail);
@@ -3550,37 +3406,10 @@ impl Agent {
         &mut self,
         turn: TurnId,
     ) -> early_tool_collection::EarlyToolCollection<'_> {
-        let events = self.tool_events(turn);
-        let hooks = hook_execution::HookExecutionScope {
-            turn,
-            workspace: self.workspace.as_path(),
-            hooks: &self.hooks,
-            command_journal: self.hook_effect_journal.clone(),
-            interrupt: self.control.interrupt().cloned(),
-            drain: self.control.drain().clone(),
-            activity: self.activity.clone(),
-            emitter: self.lifecycle_emitter.clone(),
-            dispatcher: self.lifecycle_hooks.clone(),
-            correlation: self.lifecycle_correlation(Some(turn)),
-        };
+        let (journal, scope) = self.provider_response_ports(turn);
         early_tool_collection::EarlyToolCollection {
-            journal: tool_execution_journal::ToolExecutionJournal {
-                rollout: &mut self.rollout,
-                effects: &mut self.effect_journal,
-                ledger: &mut self.ledger,
-                failed_actions: &mut self.failed_actions,
-                record_failed: &mut self.record_failed,
-                diagnostics: &self.diagnostics,
-                #[cfg(test)]
-                fault: &mut self.fail_next_durable_append,
-            },
-            scope: early_tool_collection::EarlyToolCollectionScope {
-                turn,
-                registry: &self.registry,
-                hooks,
-                events,
-                deadline: self.run_deadline,
-            },
+            journal: journal.tools,
+            scope: scope.early,
         }
     }
 
