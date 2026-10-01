@@ -7,9 +7,23 @@ use super::*;
 pub(crate) struct TurnSubmission {
     envelope: SqEnvelope,
     pub(crate) expected_product_turn_id: Option<iteron_protocol::product_contract::ProductTurnId>,
+    agent_input: Option<super::persistent_agents::input_admission::AgentInputActivation>,
 }
 
 impl TurnSubmission {
+    pub(super) fn agent_steer(
+        text: String,
+        activation: super::persistent_agents::input_admission::AgentInputActivation,
+    ) -> Self {
+        let mut submission = Self::current(Op::Steer { text });
+        submission.agent_input = Some(activation);
+        submission
+    }
+    pub(super) fn take_agent_input(
+        &mut self,
+    ) -> Option<super::persistent_agents::input_admission::AgentInputActivation> {
+        self.agent_input.take()
+    }
     pub(crate) fn current(op: Op) -> Self {
         SqEnvelope::current(op).into()
     }
@@ -49,6 +63,7 @@ impl From<SqEnvelope> for TurnSubmission {
         Self {
             envelope,
             expected_product_turn_id: None,
+            agent_input: None,
         }
     }
 }
@@ -96,6 +111,7 @@ pub(super) struct PendingSteer {
     pub(super) client_visible: bool,
     pub(super) submission_id: Option<SubmissionId>,
     pub(super) memory: Option<super::memory_activation::MemoryActivation>,
+    pub(super) agent_input: Option<super::persistent_agents::input_admission::AgentInputActivation>,
 }
 
 /// One message reclaimed at the run boundary. The source bit is authoritative for frontend
@@ -108,12 +124,25 @@ pub(crate) struct UnadmittedSteer {
 }
 
 impl PendingSteer {
+    pub(super) fn agent(
+        text: String,
+        activation: super::persistent_agents::input_admission::AgentInputActivation,
+    ) -> Self {
+        Self {
+            text,
+            client_visible: false,
+            submission_id: None,
+            memory: None,
+            agent_input: Some(activation),
+        }
+    }
     pub(super) fn user(text: String) -> Self {
         Self {
             text,
             client_visible: true,
             submission_id: None,
             memory: None,
+            agent_input: None,
         }
     }
 
@@ -123,6 +152,7 @@ impl PendingSteer {
             client_visible: false,
             submission_id: None,
             memory: None,
+            agent_input: None,
         }
     }
 
@@ -132,6 +162,7 @@ impl PendingSteer {
             client_visible: false,
             submission_id: None,
             memory: Some(activation),
+            agent_input: None,
         }
     }
 
@@ -147,6 +178,7 @@ impl PendingSteer {
                 client_visible: true,
                 submission_id: (submission_id.0 != 0).then_some(submission_id),
                 memory: None,
+                agent_input: None,
             }
         }
     }
@@ -299,6 +331,15 @@ impl Agent {
             if steer.text.trim().is_empty() {
                 continue;
             }
+            let resolved_agent = if let Some(activation) = &steer.agent_input {
+                Some(
+                    activation
+                        .resolve(self.persistent_mailbox.as_ref(), &steer.text)
+                        .map_err(KernelError::AgentControl)?,
+                )
+            } else {
+                None
+            };
             let resolved_memory = if let Some(activation) = &steer.memory {
                 let Some(workspace) = self.memory_workspace.as_deref() else {
                     continue;
@@ -339,13 +380,34 @@ impl Agent {
             let runtime_notification = steer.memory.is_none()
                 && !steer.client_visible
                 && text.starts_with(RUNTIME_NOTIFICATION_PREFIX);
-            let message = if runtime_notification || resolved_memory.is_some() {
+            let message = if let Some(resolved) = &resolved_agent {
+                Message::user_text(resolved.text.clone())
+            } else if runtime_notification || resolved_memory.is_some() {
                 Message::user_text(text)
             } else {
                 Message::user_text(super::persistent_agents::prepared_mailbox::steer_text(
                     &text,
                 ))
             };
+            if let Some(admission) = resolved_agent
+                .as_ref()
+                .and_then(|resolved| resolved.admission.as_ref())
+            {
+                self.emit_durable(
+                    turn,
+                    EventKind::AgentInputAdmittedV1 {
+                        admission: admission.clone(),
+                    },
+                )?;
+                self.observed_trust = self.observed_trust.min(Trust::Untrusted);
+                self.persistent_mailbox
+                    .as_ref()
+                    .ok_or(KernelError::AgentControl(
+                        iteron_agents::ControllerError::StaleEpoch,
+                    ))?
+                    .confirm_source_admission(admission)
+                    .map_err(KernelError::AgentControl)?;
+            }
             if let Some(resolved) = &resolved_memory {
                 // Persist low-trust admission intent before Message: a torn two-append tail can
                 // only become more conservative on replay, never mint operator authority.

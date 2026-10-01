@@ -1151,6 +1151,11 @@ pub enum EventKind {
         mode: crate::PermissionMode,
         rules: crate::PermissionRules,
     },
+    /// Exact host-resolved agent-data intent before initial/steer Message publication. This
+    /// lowers trust; Accepted/Delivered/Consumed remain separate controller-owned receipts.
+    AgentInputAdmittedV1 {
+        admission: crate::agent_input::AgentInputAdmissionV1,
+    },
     /// Host-resolved low-trust reference admission intent, written before its Message.
     /// This is not request consumption and never replaces the stable context snapshot.
     MemoryReferenceAdmittedV1 {

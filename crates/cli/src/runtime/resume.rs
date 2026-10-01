@@ -305,6 +305,11 @@ impl Agent {
                     match event.kind {
                         EventKind::ToolDone { result, .. } => vec![result.trust],
                         EventKind::ToolImageObservedV1 { .. } => vec![Trust::Untrusted],
+                        kind @ EventKind::AgentInputAdmittedV1 { .. } => {
+                            super::persistent_agents::input_admission::replay_reference_trust(&kind)
+                                .into_iter()
+                                .collect()
+                        }
                         kind @ EventKind::MemoryReferenceAdmittedV1 { .. } => {
                             super::memory_activation::replay_reference_trust(&kind)
                                 .into_iter()
@@ -587,6 +592,11 @@ impl Agent {
             match &event.kind {
                 EventKind::ToolDone { result, .. } => vec![result.trust],
                 EventKind::ToolImageObservedV1 { .. } => vec![Trust::Untrusted],
+                kind @ EventKind::AgentInputAdmittedV1 { .. } => {
+                    super::persistent_agents::input_admission::replay_reference_trust(&kind)
+                        .into_iter()
+                        .collect()
+                }
                 kind @ EventKind::MemoryReferenceAdmittedV1 { .. } => {
                     super::memory_activation::replay_reference_trust(kind)
                         .into_iter()

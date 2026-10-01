@@ -593,6 +593,9 @@ pub(crate) fn validate_event_bounds(event: &Event) -> Result<(), RecordError> {
         policy_bundle::validate_policy_bundle_snapshot(snapshot)?;
     }
     match &event.kind {
+        EventKind::AgentInputAdmittedV1 { admission } => admission
+            .validate()
+            .map_err(|reason| RecordError::InvalidEventSchema { reason })?,
         EventKind::PolicyDecision { evidence } => evidence.validate().map_err(|_| {
             RecordError::InvalidEventSchema {
                 reason: "policy decision evidence is invalid or outside its content-free bounds",

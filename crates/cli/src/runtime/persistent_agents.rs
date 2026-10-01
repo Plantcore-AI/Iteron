@@ -17,6 +17,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::{Semaphore, watch};
 
+#[path = "persistent_agents/input_admission.rs"]
+pub(super) mod input_admission;
 #[path = "persistent_agents/parent_turn.rs"]
 mod parent_turn;
 #[path = "persistent_agents/prepared_mailbox.rs"]
@@ -232,7 +234,7 @@ impl LiveAgentMailbox {
             .witnesses
             .lock()
             .map_err(|_| ControllerError::Poisoned)?;
-        witnesses.register_envelope(input.id, envelope.clone())?;
+        witnesses.register_envelope(input.id, envelope.clone(), input.sender.is_some())?;
         Ok(envelope)
     }
 

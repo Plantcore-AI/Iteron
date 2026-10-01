@@ -18,7 +18,7 @@ use iteron_protocol::agent_control::{
     AgentCommandV1, AgentControlReplyV1, AgentEpochV1, AgentIdV1, AgentMessageIdV1, AgentViewV1,
 };
 use iteron_protocol::capability_set::CapabilitySet;
-use iteron_protocol::{Capability, EventKind, Op, Purity, ToolResult, ToolSpec, Trust};
+use iteron_protocol::{Capability, EventKind, Purity, ToolResult, ToolSpec, Trust};
 use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
@@ -356,6 +356,21 @@ impl PersistentAgentRuntime for KernelPersistentRuntime {
                 // provider retries and empty replay within run_leaf retain that epoch's context.
                 // Isolated children without an installed memory namespace take the no-IO path.
                 child.begin_user_memory_decision();
+                if let Some(admission) = mailbox
+                    .source_admission(&initial, &task)
+                    .map_err(KernelError::AgentControl)?
+                {
+                    child.emit_durable(
+                        iteron_protocol::TurnId(child.seq_turn),
+                        EventKind::AgentInputAdmittedV1 {
+                            admission: admission.clone(),
+                        },
+                    )?;
+                    child.observed_trust = child.observed_trust.min(Trust::Untrusted);
+                    mailbox
+                        .confirm_source_admission(&admission)
+                        .map_err(KernelError::AgentControl)?;
+                }
                 child.run_leaf(&task).await
             };
             tokio::pin!(execution);
@@ -368,13 +383,14 @@ impl PersistentAgentRuntime for KernelPersistentRuntime {
                         }
                         if let Ok(inputs) = mailbox.receive() {
                             for input in inputs {
-                                let Ok(text) = mailbox.render_steer(&input) else {
+                                let Ok((text, activation)) = mailbox.steer_activation(&input)
+                                else {
                                     stop.store(true, Ordering::Release);
                                     break;
                                 };
                                 if tx
-                                    .try_send(super::inbound_control::TurnSubmission::current(
-                                        Op::Steer { text },
+                                    .try_send(super::inbound_control::TurnSubmission::agent_steer(
+                                        text, activation,
                                     ))
                                     .is_err()
                                 {

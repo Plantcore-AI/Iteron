@@ -117,6 +117,21 @@ impl Agent {
         let inputs = mailbox.receive().map_err(KernelError::AgentControl)?;
         for input in inputs {
             let text = mailbox.render(&input).map_err(KernelError::AgentControl)?;
+            if let Some(admission) = mailbox
+                .source_admission(std::slice::from_ref(&input), &text)
+                .map_err(KernelError::AgentControl)?
+            {
+                self.emit_durable(
+                    turn,
+                    EventKind::AgentInputAdmittedV1 {
+                        admission: admission.clone(),
+                    },
+                )?;
+                self.observed_trust = self.observed_trust.min(Trust::Untrusted);
+                mailbox
+                    .confirm_source_admission(&admission)
+                    .map_err(KernelError::AgentControl)?;
+            }
             let message = Message::user_text(text);
             self.emit_durable(
                 turn,

@@ -229,7 +229,7 @@ impl ApprovalWait<'_> {
             )
             .await
             {
-                Ok(Some(envelope)) => {
+                Ok(Some(mut envelope)) => {
                     if stale_product_epoch(self.inbox.product_turn(), &envelope) {
                         if envelope.submission_id.0 != 0 {
                             self.events.present(UiEvent::SubmissionRejected {
@@ -239,6 +239,7 @@ impl ApprovalWait<'_> {
                         }
                         continue;
                     }
+                    let agent_input = envelope.take_agent_input();
                     let (id, op) = match envelope.into_current_identified() {
                         Ok(value) => value,
                         Err(_) => {
@@ -329,7 +330,11 @@ impl ApprovalWait<'_> {
                             break;
                         }
                         Op::Steer { text } => {
-                            self.retain(PendingSteer::from_steer(text, id), request.turn)
+                            let steer = match agent_input {
+                                Some(activation) => PendingSteer::agent(text, activation),
+                                None => PendingSteer::from_steer(text, id),
+                            };
+                            self.retain(steer, request.turn)
                         }
                         Op::UserInput { text } => {
                             self.retain(PendingSteer::user(text), request.turn)

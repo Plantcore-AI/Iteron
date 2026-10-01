@@ -689,3 +689,6 @@ mod memory_epochs;
 
 #[path = "tests/native_mailbox.rs"]
 mod native_mailbox;
+
+#[path = "tests/agent_input_trust.rs"]
+mod agent_input_trust;

@@ -102,6 +102,10 @@ impl SessionSubmissionInbox {
                 // A sealed host receipt survives as typed state in the same Agent. Exporting it
                 // as an ordinary text notification would lose scope/version admission proof.
                 retained.push_back(steer);
+            } else if steer.agent_input.is_some() {
+                // This controller epoch did not admit the input. Never export its sealed source
+                // as an ordinary operator submission in a later epoch; controller owns expiry.
+                continue;
             } else {
                 entries.push(UnadmittedSteer {
                     text: steer.text,
@@ -126,20 +130,25 @@ impl SessionSubmissionInbox {
             let Some(receiver) = self.receiver.as_mut() else {
                 break;
             };
-            let Ok(envelope) = receiver.try_recv() else {
+            let Ok(mut envelope) = receiver.try_recv() else {
                 break;
             };
             if stale_product_epoch(self.active_product_turn, &envelope) {
                 receipt.stale.push(envelope.submission_id);
                 continue;
             }
+            let agent_input = envelope.take_agent_input();
             let Ok((id, op)) = envelope.into_current_identified() else {
                 receipt.versions += 1;
                 continue;
             };
             match op {
                 Op::Steer { text } => {
-                    if self.push(PendingSteer::from_steer(text, id)).is_err() {
+                    let steer = match agent_input {
+                        Some(activation) => PendingSteer::agent(text, activation),
+                        None => PendingSteer::from_steer(text, id),
+                    };
+                    if self.push(steer).is_err() {
                         receipt.saturated.push(id);
                     }
                 }
