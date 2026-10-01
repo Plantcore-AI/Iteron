@@ -110,6 +110,10 @@ observation; it does not grant permission or acquire mutable ownership of anothe
 | `turn_completion.rs` | Consume one actual model or declaration-complete tool response through steering, guidance and completion decisions | Model decision / tool response → typed action → independent host terminal |
 | `completion_assembly.rs`, `steering_assembly.rs` | Capture disjoint actual scope/state/writer ports; no Agent retained by a domain | Trusted composition → one consumed completion lifetime |
 
+| `tool_round_execution.rs` | Own the complete finite early/batch/ordered phase and the exact pending special call plus actual external lease; cancelled waits cannot rearm it | Real ToolRoundDriver → concrete execution session → typed kernel handoff → exact settled result |
+| `tool_execution_session.rs` | Reborrow the same journal, permission, inbox, hooks and immutable authority through real collection and physical execution | Actual record/control/permission owners → existing physical admission/execution owners |
+| `tool_execution_assembly.rs` | Capture current trusted tool scope and optional real dispatch gate at each phase entry | Agent composition → concrete disjoint execution ports |
+
 ```mermaid
 flowchart LR
     Journal[Journal admission owner] -->|already admitted ToolIntent| Batch[DeferredBatchExecutor]
@@ -144,4 +148,3 @@ raw-artifact, frontend and restart journeys.
 ### Provider discovery admission
 
 `providers/discovery.rs` owns dormant network work, the unique refresh task, first-paint admission, its activity phase and immutable settled entries. `ProviderDirectory` receives a typed settlement and delegates selected-provider construction; it cannot change the task phase or dispatch another refresh. The admitted native provider forwards physical output-cap and exact request-observation ports to its original adapter. Cache and catalog responsibilities remain separate pending breakdown.
-
