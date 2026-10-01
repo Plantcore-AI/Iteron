@@ -1,6 +1,6 @@
 use super::{
-    App, CostState, Editor, Effort, PermissionMode, RouteView, block, hyperlink, mouse_capture,
-    theme, transcript_viewer, ui_safe_text, workflow_region, workflows_panel,
+    App, Editor, Effort, PermissionMode, RouteView, block, hyperlink, mouse_capture, theme,
+    transcript_viewer, ui_safe_text, workflow_region, workflows_panel,
 };
 use ratatui::style::{Color, Style};
 #[cfg(test)]
@@ -61,14 +61,7 @@ impl App {
             effort: Effort::default(),
             model: String::new(),
             route: RouteView::unresolved(),
-            cost: CostState::Zero,
-            last_turn_usage: None,
-            last_context: None,
-            model_context_window: None,
-            reserved_output_tokens: None,
-            compaction_trigger_tokens: iteron_ctx::CompactionPolicy::default().trigger_tokens,
-            effort_application: None,
-            turns: 0,
+            telemetry: super::session_telemetry::SessionTelemetry::default(),
             permission_prompt: super::permission_prompt::PermissionPromptOwner::default(),
             completions: super::completion_owner::CompletionOwner::default(),
             pickers: super::picker_owner::PickerOwner::default(),

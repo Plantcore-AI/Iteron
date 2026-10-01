@@ -3,16 +3,13 @@
 use super::*;
 use crate::file_input::ContextKind;
 
-/// Input tokens assumed for the context-window chip before any turn has reported a usage figure.
-/// Zero is the only honest floor here; guessing higher would understate the remaining window.
-const UNREPORTED_INPUT_TOKENS: u64 = 0;
 const PREVIEW_BYTES: usize = 4 * 1024;
 const PREVIEW_LINES: usize = 24;
 
 pub(super) fn handle(app: &mut App, session: &Session, arg: &str) {
     let input = arg.trim();
     if input.is_empty() || input == "stats" {
-        show_stats(app, session);
+        show_stats(app);
         return;
     }
     if input == "list" {
@@ -290,9 +287,9 @@ fn show_help(app: &mut App) {
     );
 }
 
-fn show_stats(app: &mut App, session: &Session) {
+fn show_stats(app: &mut App) {
     let mut rows = Vec::new();
-    if let Some(context) = app.last_context {
+    if let Some(context) = app.telemetry.context() {
         rows.extend([
             kv(
                 "request estimate",
@@ -314,16 +311,17 @@ fn show_stats(app: &mut App, session: &Session) {
                     fmt_token_count(context.framing_tokens as u64)
                 ),
             ),
-            block::PanelRow::Note(
-                "estimate: deterministic UTF-8 bytes/3.5 plus wire framing".into(),
-            ),
+            block::PanelRow::Note(format!(
+                "estimate: {}",
+                estimate_provenance_label(context.provenance)
+            )),
         ]);
     } else {
         rows.push(block::PanelRow::Note(
-            "no provider request has completed in this UI session yet".into(),
+            "request estimate unavailable for the current route/effort".into(),
         ));
     }
-    if let Some(usage) = app.last_turn_usage {
+    if let Some(usage) = app.telemetry.usage() {
         rows.extend([
             kv(
                 "provider-reported input",
@@ -352,33 +350,33 @@ fn show_stats(app: &mut App, session: &Session) {
             ),
         ]);
     }
-    match app.model_context_window.filter(|window| *window > 0) {
-        Some(window) => {
-            let estimated_input = app
-                .last_context
-                .map(|context| context.total_tokens as u64)
-                .unwrap_or(iteron_tunables::param_integer(
-                    "cli.tui.context_chips.unreported_input_tokens",
-                    UNREPORTED_INPUT_TOKENS,
+    match app.telemetry.window().filter(|window| *window > 0) {
+        Some(window) => match app.telemetry.admission_headroom() {
+            Some(remaining) => {
+                let pct_left = remaining as f64 / window as f64 * 100.0;
+                rows.push(kv(
+                    "model context window",
+                    &format!(
+                        "{} · {} admission headroom ({pct_left:.0}%)",
+                        fmt_token_count(window),
+                        fmt_token_count(remaining)
+                    ),
                 ));
-            let reserve = u64::from(app.reserved_output_tokens.unwrap_or_default());
-            let remaining = window.saturating_sub(estimated_input.saturating_add(reserve));
-            let pct_left = remaining as f64 / window as f64 * 100.0;
-            rows.push(kv(
+                if let Some(reserve) = app.telemetry.reserve() {
+                    rows.push(kv(
+                        "reserved output",
+                        &format!("{} tokens", fmt_token_count(u64::from(reserve))),
+                    ));
+                }
+            }
+            None => rows.push(kv(
                 "model context window",
                 &format!(
-                    "{} · {} admission headroom ({pct_left:.0}%)",
-                    fmt_token_count(window),
-                    fmt_token_count(remaining)
+                    "{} · request admission headroom not observed",
+                    fmt_token_count(window)
                 ),
-            ));
-            if app.last_context.is_some() {
-                rows.push(kv(
-                    "reserved output",
-                    &format!("{} tokens", fmt_token_count(reserve)),
-                ));
-            }
-        }
+            )),
+        },
         None => rows.push(kv(
             "model context window",
             "unknown (not proven for this exact route)",
@@ -388,10 +386,10 @@ fn show_stats(app: &mut App, session: &Session) {
         "compaction trigger",
         &format!(
             "{} tokens (policy threshold, not the model window)",
-            fmt_token_count(session.compaction_trigger_tokens() as u64)
+            fmt_token_count(u64::try_from(app.telemetry.trigger()).unwrap_or(u64::MAX))
         ),
     ));
-    if let Some(application) = app.effort_application {
+    if let Some(application) = app.telemetry.effort() {
         rows.push(kv(
             "effort applied",
             &effort_application_detail(application),
@@ -402,6 +400,26 @@ fn show_stats(app: &mut App, session: &Session) {
             .into(),
     ));
     app.panel("◔", "context — last provider turn", rows);
+}
+
+fn estimate_provenance_label(provenance: iteron_ctx::TokenEstimateProvenance) -> &'static str {
+    match provenance {
+        iteron_ctx::TokenEstimateProvenance::HeuristicBytesPerToken35 => {
+            "legacy UTF-8 bytes/3.5 admission estimate"
+        }
+        iteron_ctx::TokenEstimateProvenance::ConservativeByteUpperBound => {
+            "conservative byte/scalar admission bound"
+        }
+        iteron_ctx::TokenEstimateProvenance::OpenAiBpeApproximation => {
+            "legacy OpenAI BPE approximation"
+        }
+        iteron_ctx::TokenEstimateProvenance::AnthropicBpeApproximation => {
+            "legacy Anthropic BPE approximation"
+        }
+        iteron_ctx::TokenEstimateProvenance::SentencePieceApproximation => {
+            "legacy SentencePiece approximation"
+        }
+    }
 }
 
 fn parse_index(raw: &str) -> Option<usize> {

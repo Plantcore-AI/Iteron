@@ -19,6 +19,7 @@ use frame_render::ensure_stream_doc;
 use frame_render::{draw, route_label, workflow_region_cap};
 
 mod session_client;
+mod session_telemetry;
 pub(crate) use session_client::Session;
 mod picker;
 use picker::{PickAction, PickItem, Picker, PickerEvent};
@@ -176,7 +177,9 @@ use event_actions::{
     queue_permission_mode, queue_workflows_panel_action, show_tunable_detail,
 };
 use event_projection::{apply_event, apply_live_event};
+#[cfg(test)]
 use iteron_ctx::ContextEstimate;
+#[cfg(test)]
 use iteron_obs::CostState;
 use iteron_protocol::{
     Capability, Effort, Op, PermissionMode, PermissionRules, ReasoningEffort, SubmissionId, Usage,
@@ -358,7 +361,7 @@ fn visual_selected_effort(effort: Effort) -> String {
 /// picker alone. Mapping and non-exact enforcement stay visible instead of being prettified away.
 ///
 fn effort_status_label(app: &App) -> String {
-    match app.effort_application {
+    match app.telemetry.effort() {
         Some(EffortApplication::Exact { requested }) => visual_reasoning_effort(requested),
         Some(EffortApplication::Mapped { requested, sent }) => {
             if requested == sent {
@@ -670,23 +673,7 @@ struct App {
     /// provenance and the run's effective limits. Every display reads this and derives nothing of
     /// its own, so what is on screen is the request that goes out (I-26).
     route: RouteView,
-    /// Cumulative run economics. Unknown is first-class; the UI never formats an unverified rate.
-    cost: CostState,
-    /// Provider-reported usage for the most recently completed direct model request. This is not
-    /// merged with children and is never accumulated into a fake current-context number.
-    last_turn_usage: Option<Usage>,
-    /// Preflight estimate for the exact request projection that produced `last_turn_usage`.
-    last_context: Option<ContextEstimate>,
-    /// Catalog-advertised context window for the selected model. Unknown remains `None`; the
-    /// compaction trigger is a policy threshold and must never be substituted here.
-    model_context_window: Option<u64>,
-    /// Output allowance reserved by the exact request admission that produced the last telemetry.
-    reserved_output_tokens: Option<u32>,
-    compaction_trigger_tokens: usize,
-    /// What the selected adapter actually did with the semantic effort request on the last turn.
-    effort_application: Option<EffortApplication>,
-    /// Completed model turns this session; wide active shelves and `/status` may disclose it.
-    turns: u32,
+    telemetry: session_telemetry::SessionTelemetry,
     permission_prompt: permission_prompt::PermissionPromptOwner,
     completions: completion_owner::CompletionOwner,
     pickers: picker_owner::PickerOwner,

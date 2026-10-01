@@ -58,14 +58,16 @@ pub(super) fn apply_event(app: &mut App, ev: UiEvent) {
             // A provider turn is a semantic token boundary. Release the last held word only after
             // scrubbing the complete token; keep it in the live block until Done/tool framing.
             app.assistant.finish_boundaries();
-            app.cost = cost;
-            app.last_turn_usage = Some(usage);
-            app.last_context = Some(context);
-            app.model_context_window = model_context_window;
-            app.reserved_output_tokens = Some(reserved_output_tokens);
-            app.compaction_trigger_tokens = compaction_trigger_tokens;
-            app.effort_application = Some(effort);
-            app.turns = app.turns.saturating_add(1);
+            app.telemetry
+                .observe_provider_turn(super::session_telemetry::ProviderTurnTelemetry {
+                    cost,
+                    usage,
+                    context,
+                    model_context_window,
+                    reserved_output_tokens,
+                    compaction_trigger_tokens,
+                    effort,
+                });
             app.status = "provider turn complete · continuing…".into();
         }
         UiEvent::Workflow(event) => app.workflow_event(event),

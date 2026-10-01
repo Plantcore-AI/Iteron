@@ -165,8 +165,12 @@ pub(super) fn apply_navigated_session(
     app.mode = snapshot.mode;
     app.effort = snapshot.effort;
     app.model = snapshot.model.clone();
-    app.cost = snapshot.cost.clone();
-    app.turns = if fact.fresh { 0 } else { fact.turns };
+    app.telemetry.bind_run(
+        &snapshot,
+        if fact.fresh { 0 } else { fact.turns },
+        fact.context_window_tokens,
+        compaction_trigger_tokens,
+    );
     app.route = app.route.reselect(
         directory,
         &ModelSelection {
@@ -174,8 +178,6 @@ pub(super) fn apply_navigated_session(
             model_id: fact.model_id.clone(),
         },
     );
-    app.model_context_window = fact.context_window_tokens;
-    super::clear_last_turn_telemetry_from(app, &snapshot);
     app.status = if fact.fresh {
         "ready".into()
     } else {

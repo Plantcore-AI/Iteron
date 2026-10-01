@@ -399,8 +399,8 @@ pub(super) fn apply_transcript_effect_event(
                 transcript_effect::ControlKind::Compact,
                 Some(app_server::ControlReply::Compacted { report, snapshot }),
             ) => {
-                app.cost = snapshot.cost.clone();
-                app.last_turn_usage = snapshot.last_turn_usage;
+                app.telemetry.refresh_economics(&snapshot);
+                app.telemetry.invalidate_request(&snapshot);
                 session.adopt(*snapshot);
                 app.push(
                     fg(Color::Green),
@@ -483,7 +483,7 @@ pub(super) fn apply_transcript_effect_event(
                     model_id: snapshot.model.clone(),
                 };
                 app.route = app.route.reselect(directory, &applied);
-                app.model_context_window = context_window_tokens;
+                app.telemetry.bind_model_capacity(context_window_tokens);
                 if changed {
                     clear_last_turn_telemetry_from(app, &snapshot);
                 }

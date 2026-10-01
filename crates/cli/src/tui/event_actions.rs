@@ -259,6 +259,9 @@ pub(super) fn apply_server_event<T: notification::NotificationTransport + ?Sized
                 );
             }
 
+            let route_changed = snapshot.provider_id != session.state.provider_id
+                || snapshot.model != session.state.model;
+            let effort_changed = snapshot.effort != session.state.effort;
             app.mode = snapshot.mode;
             app.effort = snapshot.effort;
             app.model = snapshot.model.clone();
@@ -277,8 +280,14 @@ pub(super) fn apply_server_event<T: notification::NotificationTransport + ?Sized
                     },
                 );
             }
-            app.cost = snapshot.cost.clone();
-            app.last_turn_usage = snapshot.last_turn_usage;
+            app.telemetry.refresh_economics(&snapshot);
+            if route_changed || effort_changed {
+                app.telemetry.invalidate_request(&snapshot);
+            }
+            if route_changed {
+                app.telemetry
+                    .bind_model_capacity(directory.and_then(|_| app.route.context_window_tokens));
+            }
             session.adopt(*snapshot);
 
             // A durable append/record refusal latches the current writer fail-closed. Re-sending
@@ -514,10 +523,7 @@ pub(super) fn queue_model_selection(
 /// does that on its own side when it applies the transition, so the frontend only has to stop
 /// displaying values that no longer describe anything.
 pub(super) fn clear_last_turn_telemetry_from(app: &mut App, state: &app_server::SessionSnapshot) {
-    app.last_turn_usage = state.last_turn_usage;
-    app.last_context = None;
-    app.reserved_output_tokens = None;
-    app.effort_application = None;
+    app.telemetry.invalidate_request(state);
 }
 
 /// Resolve an explicit model-leaf retry without weakening normal selection. A qualified value is

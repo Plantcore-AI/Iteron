@@ -27,7 +27,7 @@ pub(super) fn render_lr_line(
 }
 
 pub(super) fn effort_status_accent(app: &App) -> status_line::Accent {
-    match app.effort_application {
+    match app.telemetry.effort() {
         Some(EffortApplication::Mapped { requested, sent }) if requested != sent => {
             status_line::Accent::Warning
         }
@@ -44,7 +44,7 @@ pub(super) fn effort_status_accent(app: &App) -> status_line::Accent {
 /// activity affordances remain separate groups, but model/tokens/cost/context/session have one
 /// renderer and one unknown-value policy across the product.
 pub(super) fn canonical_statusline(app: &App) -> String {
-    let tokens = app.last_turn_usage.map(|usage| {
+    let tokens = app.telemetry.usage().map(|usage| {
         usage
             .input
             .saturating_add(usage.output)
@@ -65,21 +65,10 @@ pub(super) fn canonical_statusline_with_tokens(app: &App, tokens: Option<u64>) -
             .expect("the built-in status fields are closed and valid")
     });
     let model = route_label(app);
-    let context = app
-        .model_context_window
-        .filter(|window| *window > 0)
-        .map(|window| {
-            let used = app
-                .last_context
-                .map(|context| context.total_tokens as u64)
-                .or_else(|| app.last_turn_usage.map(request_input_tokens))
-                .unwrap_or_default()
-                .saturating_add(u64::from(app.reserved_output_tokens.unwrap_or_default()));
-            let left = window.saturating_sub(used).saturating_mul(100) / window;
-            u8::try_from(left.min(100)).unwrap_or(100)
-        });
+    let context = app.telemetry.context_remaining_percent();
     let cost_milli = app
-        .cost
+        .telemetry
+        .cost()
         .usd()
         .filter(|value| value.is_finite() && *value >= 0.0)
         .map(|value| (value * 1_000.0).round() as u64);
@@ -143,9 +132,9 @@ pub(super) fn status_right_groups(app: &App, density: surface::Density) -> Vec<s
             Accent::Progress,
         ));
     }
-    if density == surface::Density::Wide && app.turns > 0 {
+    if density == surface::Density::Wide && app.telemetry.turns() > 0 {
         groups.push(Group::single(
-            format!("turn {}", app.turns),
+            format!("turn {}", app.telemetry.turns()),
             Accent::Metadata,
         ));
     }
@@ -168,7 +157,7 @@ pub(super) fn status_right_groups(app: &App, density: surface::Density) -> Vec<s
         ));
     }
     if density != surface::Density::Compact
-        && let Some(usage) = app.last_turn_usage
+        && let Some(usage) = app.telemetry.usage()
     {
         groups.push(Group::single(
             format!("cache {:.0}%", usage.cache_hit_ratio() * 100.0),

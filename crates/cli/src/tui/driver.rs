@@ -225,7 +225,12 @@ pub async fn run(
     app.mode = initial_state.mode;
     app.effort = initial_state.effort;
     app.model = initial_state.model.clone();
-    app.model_context_window = facts.initial_model_context_window;
+    app.telemetry.bind_run(
+        &initial_state,
+        0,
+        facts.initial_model_context_window,
+        facts.compaction_trigger_tokens,
+    );
     app.route = route;
 
     // Arm the response demultiplexer before the query exists, then enqueue both exact query frames

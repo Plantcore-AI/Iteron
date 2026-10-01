@@ -2339,15 +2339,17 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         // running + a pending approval
         app.running = true;
         app.spin = 3;
-        app.cost = CostState::Known {
-            amount_microusd: 120_000,
-            rate_card_digest: "sha256:test-rate-card".into(),
-        };
-        app.last_turn_usage = Some(Usage {
-            input: 60,
-            cache_read: 40,
-            ..Usage::default()
-        });
+        apply_event(
+            &mut app,
+            turn_end(
+                0.12,
+                Usage {
+                    input: 60,
+                    cache_read: 40,
+                    ..Usage::default()
+                },
+            ),
+        );
         app.permission_prompt.present(Pending {
             id: SubmissionId(1),
             tool: "edit".into(),
@@ -2763,14 +2765,22 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         );
         assert!(bits.iter().all(|bit| bit != "◉ max · ultracode"));
         app.effort = Effort::High;
-        app.effort_application = Some(EffortApplication::Mapped {
-            requested: ReasoningEffort::High,
-            sent: ReasoningEffort::Max,
-        });
+        let mut observed = turn_end(0.0, Usage::default());
+        if let UiEvent::TurnEnd { effort, .. } = &mut observed {
+            *effort = EffortApplication::Mapped {
+                requested: ReasoningEffort::High,
+                sent: ReasoningEffort::Max,
+            };
+        }
+        apply_event(&mut app, observed);
         assert_eq!(effort_status_label(&app), "◉ max ← high requested");
-        app.effort_application = Some(EffortApplication::Unsupported {
-            requested: ReasoningEffort::High,
-        });
+        let mut observed = turn_end(0.0, Usage::default());
+        if let UiEvent::TurnEnd { effort, .. } = &mut observed {
+            *effort = EffortApplication::Unsupported {
+                requested: ReasoningEffort::High,
+            };
+        }
+        apply_event(&mut app, observed);
         assert_eq!(effort_status_label(&app), "● high · not enforced");
     }
 
@@ -4659,9 +4669,9 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
                 },
             ),
         );
-        assert_eq!(app.cost.usd(), Some(0.05));
+        assert_eq!(app.telemetry.cost().usd(), Some(0.05));
         assert_eq!(
-            app.last_turn_usage.map(|usage| usage.cache_hit_ratio()),
+            app.telemetry.usage().map(|usage| usage.cache_hit_ratio()),
             Some(0.5)
         );
         app.track_steer("first".into(), SubmissionId(1));
@@ -5912,10 +5922,10 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
     fn turn_counter_increments_on_turn_end() {
         // The usage projection increments once per completed provider turn.
         let mut app = App::new();
-        assert_eq!(app.turns, 0);
+        assert_eq!(app.telemetry.turns(), 0);
         apply_event(&mut app, turn_end(0.01, Usage::default()));
         apply_event(&mut app, turn_end(0.03, Usage::default()));
-        assert_eq!(app.turns, 2, "turns++ per completed turn");
+        assert_eq!(app.telemetry.turns(), 2, "turns++ per completed turn");
     }
 
     #[test]
@@ -7190,23 +7200,19 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
             ..Usage::default()
         };
         let mut app = App::new();
-        app.last_turn_usage = Some(usage);
-        app.last_context = Some(ContextEstimate {
-            system_tokens: 1,
-            tool_tokens: 2,
-            conversation_tokens: 3,
-            tool_result_tokens: 0,
-            lsp_result_tokens: 0,
-            transcript_tokens: 3,
-            framing_tokens: 4,
-            total_tokens: 10,
-            provenance: iteron_ctx::TokenEstimateProvenance::HeuristicBytesPerToken35,
-            components: None,
-        });
-        app.model_context_window = Some(200_000);
-        app.effort_application = Some(EffortApplication::Unsupported {
-            requested: iteron_protocol::ReasoningEffort::High,
-        });
+        let mut observed = turn_end(0.0, usage);
+        if let UiEvent::TurnEnd {
+            model_context_window,
+            effort,
+            ..
+        } = &mut observed
+        {
+            *model_context_window = Some(200_000);
+            *effort = EffortApplication::Unsupported {
+                requested: ReasoningEffort::High,
+            };
+        }
+        apply_event(&mut app, observed);
         // The runtime clears the ledger's last-turn usage on a model change (see
         // `app_server::apply_control`) and reports the result on the snapshot; the frontend adopts
         // whatever the snapshot says rather than deciding for itself.
@@ -7230,10 +7236,10 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
 
         clear_last_turn_telemetry_from(&mut app, &state);
 
-        assert!(app.last_turn_usage.is_none());
-        assert!(app.last_context.is_none());
-        assert_eq!(app.model_context_window, Some(200_000));
-        assert!(app.effort_application.is_none());
+        assert!(app.telemetry.usage().is_none());
+        assert!(app.telemetry.context().is_none());
+        assert_eq!(app.telemetry.window(), Some(200_000));
+        assert!(app.telemetry.effort().is_none());
     }
 
     #[test]
@@ -7296,16 +7302,19 @@ ant-api03-AbCdEfGhIjKlMnOpQrStUvWx";
         let mut app = App::new();
         app.running = true;
         app.status = "thinking".into();
-        app.cost = CostState::Known {
-            amount_microusd: 80_000,
-            rate_card_digest: "sha256:test-rate-card".into(),
-        };
-        app.last_turn_usage = Some(Usage {
-            input: 39,
-            cache_read: 61,
-            ..Usage::default()
-        });
-        app.turns = 4;
+        for _ in 0..4 {
+            apply_event(
+                &mut app,
+                turn_end(
+                    0.08,
+                    Usage {
+                        input: 39,
+                        cache_read: 61,
+                        ..Usage::default()
+                    },
+                ),
+            );
+        }
         app.effort = Effort::Ultracode;
         app.run_started = Some(Instant::now());
         let mut term = Terminal::new(TestBackend::new(120, 12)).unwrap();
