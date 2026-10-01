@@ -1,5 +1,4 @@
 use super::provider_attempt_journal::ProviderLogicalUsageEvidence;
-use super::provider_logical_usage::{LogicalUsageScope, exact_projection};
 use super::*;
 
 /// Wall-clock stamp reported when the host clock reads before the Unix epoch; accounting keeps an
@@ -84,18 +83,7 @@ pub(super) fn provider_run_notice_key_from_text(text: &str) -> Option<String> {
 }
 
 impl Agent {
-    fn close_usd_if_physical_charge_is_unproved(&self, turn: TurnId) {
-        let physical_charge_known = self.usd_budget.as_ref().is_some_and(|budget| {
-            budget.has_known_provider_charge_for(self.rollout.tenant(), self.rollout.run_id(), turn)
-        });
-        if !physical_charge_known {
-            self.mark_usd_unknown();
-        }
-    }
-
-    /// Commit authoritative usage and its optional signed monetary projection before updating the
-    /// in-memory ledger. The pricing strategy is pure and injected; this code performs no price
-    /// lookup, filesystem read, network request, or extra provider call.
+    /// Publish the logical projection of an already sealed physical usage receipt.
     pub(super) fn complete_provider_turn(
         &mut self,
         turn: TurnId,
@@ -105,111 +93,16 @@ impl Agent {
         stream: StreamTiming,
         cache_creation_reported: bool,
     ) -> Result<(), KernelError> {
-        let projection = exact_projection(
-            usage_evidence,
-            LogicalUsageScope {
-                tenant: self.rollout.tenant(),
-                run: self.rollout.run_id(),
-                turn,
-                attribution: &self.projection_attribution,
-            },
-            usage,
-            self.provider_selection
-                .pricing_port()
-                .map(|port| port.as_ref()),
-        )?;
-        let unpriceable_cache_creation = !cache_creation_reported;
-        if let Err(error) = self.emit_durable(
+        self.provider_usage_journal(turn).complete(
             turn,
-            EventKind::TurnEnd {
-                usage,
-                ttft_ms: stream.ttft_ms,
-                decode_ms: stream.decode_ms,
-                stream_items: stream.stream_items,
-            },
-        ) {
-            // The per-route terminal and exact charge are already durable/load-bearing. Losing
-            // this logical turn projection is a record failure, not uncertainty about billing.
-            self.close_usd_if_physical_charge_is_unproved(turn);
-            return Err(error);
-        }
-        if unpriceable_cache_creation {
-            // Say why, on the record, before the ledger reports an unpriced turn. A silent
-            // downgrade to "unknown" is indistinguishable from a missing rate card.
-            if let Err(error) = self.emit_durable(
-                turn,
-                EventKind::Notice {
-                    text: iteron_tunables::param_str(
-                        "cli.runtime.unpriceable_cache_creation_notice",
-                        UNPRICEABLE_CACHE_CREATION_NOTICE,
-                    )
-                    .into(),
-                },
-            ) {
-                self.close_usd_if_physical_charge_is_unproved(turn);
-                return Err(error);
-            }
-            self.ui(UiEvent::Notice(
-                iteron_tunables::param_str(
-                    "cli.runtime.unpriceable_cache_creation_notice",
-                    UNPRICEABLE_CACHE_CREATION_NOTICE,
-                )
-                .into(),
-            ));
-        }
-        self.ledger.turn(&usage, model_ms);
-        if let Some(projection) = &projection {
-            if let Err(error) = self.emit_durable(
-                turn,
-                EventKind::CostProjected {
-                    projection: projection.clone(),
-                },
-            ) {
-                self.close_usd_if_physical_charge_is_unproved(turn);
-                return Err(error);
-            }
-            let Some(port) = self.provider_selection.pricing_port() else {
-                self.close_usd_if_physical_charge_is_unproved(turn);
-                return Err(KernelError::PricingLedger(
-                    "signed projection lost its pricing authority",
-                ));
-            };
-            let identity = projection
-                .identity
-                .as_ref()
-                .ok_or(KernelError::PricingLedger(
-                    "physical terminal projection lost its authenticated identity",
-                ))?;
-            match iteron_obs::admit_verified_projection_by_digest(
-                port.as_ref(),
-                identity,
-                projection,
-                &mut self.ledger,
-            ) {
-                Ok(()) => {}
-                Err(ProjectionAdmissionError::Pricing(error)) => {
-                    self.close_usd_if_physical_charge_is_unproved(turn);
-                    return Err(error.into());
-                }
-                Err(ProjectionAdmissionError::Ledger(reason)) => {
-                    self.close_usd_if_physical_charge_is_unproved(turn);
-                    return Err(KernelError::PricingLedger(reason));
-                }
-            }
-            // The logical projection remains the operator-facing turn/accounting evidence, but
-            // the shared hard ceiling was already charged by the physical route terminal before
-            // this point. Charging the winner here would count it twice after retry/fallback.
-        } else {
-            self.close_usd_if_physical_charge_is_unproved(turn);
-        }
-        Ok(())
+            usage,
+            model_ms,
+            usage_evidence,
+            stream,
+            cache_creation_reported,
+        )
     }
 
-    /// Record the billing evidence for one otherwise-successful provider response.
-    ///
-    /// A missing provider report is not a zero-token turn. Keep the durable `TurnStart`
-    /// unmatched so replay reaches the same `BillingEvidenceMissing` state, and continue with the
-    /// assistant transcript because the semantic response itself completed successfully.
     pub(super) fn record_provider_usage(
         &mut self,
         turn: TurnId,
@@ -218,33 +111,8 @@ impl Agent {
         usage_evidence: &ProviderLogicalUsageEvidence,
         stream: StreamTiming,
     ) -> Result<Option<iteron_protocol::Usage>, KernelError> {
-        match report {
-            UsageReport::Complete(usage) | UsageReport::CacheCreationUnreported(usage) => {
-                self.complete_provider_turn(
-                    turn,
-                    usage,
-                    model_ms,
-                    usage_evidence,
-                    stream,
-                    report.cache_creation_reported(),
-                )?;
-                Ok(Some(usage))
-            }
-            UsageReport::Incomplete { .. } => {
-                if let Err(error) = self.emit_durable(
-                    turn,
-                    EventKind::Notice {
-                        text: INCOMPLETE_USAGE_NOTICE.into(),
-                    },
-                ) {
-                    self.mark_usd_unknown();
-                    return Err(error);
-                }
-                self.ledger.turn_without_usage(model_ms);
-                self.mark_usd_unknown();
-                Ok(None)
-            }
-        }
+        self.provider_usage_journal(turn)
+            .record(turn, report, model_ms, usage_evidence, stream)
     }
 
     pub(super) fn mark_usd_unknown(&self) {

@@ -37,6 +37,7 @@ mod tool_execution_journal;
 mod approval_wait;
 mod completion_assembly;
 mod completion_session;
+mod context_usage_reconciliation;
 mod control_ingress;
 mod control_terminal;
 mod kernel_effect_bridge;
@@ -53,6 +54,8 @@ mod provider_financial_source;
 mod provider_followup;
 mod provider_funding_assembly;
 mod provider_response_assembly;
+mod provider_response_commit;
+mod provider_response_commit_assembly;
 mod provider_response_recovery;
 mod provider_round;
 mod provider_route_binding;
@@ -62,6 +65,7 @@ mod provider_transport_attempt;
 mod provider_turn_assembly;
 mod provider_turn_driver;
 mod provider_turn_evidence;
+mod provider_usage_journal;
 mod request_accounting;
 mod request_admission;
 mod request_admission_assembly;
@@ -2296,15 +2300,7 @@ impl Agent {
                 provider_response_recovery::ProviderResponseRecoveryOwner::new(completed)
                     .resolve(journal, scope, &mut submitted_turn, messages)
                     .await?;
-            let provider_response_recovery::AcceptedProviderResponse {
-                route: route_turn,
-                round: mut provider_round,
-                execution: execution_scope,
-                result: turn_res,
-                recovered: stream_recovered,
-                tools: returned_tools,
-                usage_evidence,
-            } = match response {
+            let accepted_response = match response {
                 provider_response_recovery::ProviderResponseResolution::Accepted(response) => {
                     *response
                 }
@@ -2323,100 +2319,56 @@ impl Agent {
                     return Err(failure.error);
                 }
             };
-            // The obs field is named for the behaviour it used to measure (an inline serial tail);
-            // it now counts the calls that queued for a permit. Same question — "did the cap bind
-            // this turn?" — answered without the serialisation that used to be its only symptom.
-
-            // Provider-active time only: local preparation, admission/fsync, retry backoff and
-            // failover selection have their own clocks and cannot inflate `model_ms`.
-            let model_ms = iteron_obs::duration_ms_ceil(route_turn.active());
-            let stream_elapsed = provider_round.stream_started().elapsed();
-            // Measured only if the stream actually produced an item. An attempt that failed before
-            // its first byte leaves every field `None` rather than reporting a zero it did not see.
-            let stream_timing = provider_round
-                .observations()
-                .timing(provider_round.stream_started());
-            self.last_assistant_text = turn_res.text();
-            self.run_assistant_text.push_str(&self.last_assistant_text);
-
-            let complete_usage = match self.record_provider_usage(
-                turn_id,
-                turn_res.usage,
-                model_ms,
-                &usage_evidence,
-                stream_timing,
-            ) {
-                Ok(usage) => usage,
-                Err(error) => {
-                    self.abort_early_pure_tools(
-                        turn_id,
-                        &mut provider_round.take_early_for_cleanup(),
-                    )
-                    .await?;
-                    return Err(error);
-                }
-            };
+            let mut response_commit = provider_response_commit::ProviderResponseCommit::new(
+                accepted_response,
+                usd_attempt,
+            );
+            response_commit
+                .record_usage(self.provider_commit_session(
+                    turn_id,
+                    context_estimate,
+                    context_budget_inspection,
+                    effort_application,
+                ))
+                .await?;
             if let Err(error) = self.emit_plantcore_turn_usage(turn_id) {
-                self.abort_early_pure_tools(turn_id, &mut provider_round.take_early_for_cleanup())
+                response_commit
+                    .abort(self.provider_commit_session(
+                        turn_id,
+                        context_estimate,
+                        context_budget_inspection,
+                        effort_application,
+                    ))
                     .await?;
                 return Err(error);
             }
-            if let Some(usage) = complete_usage {
-                usd_attempt.complete();
-                self.lifecycle_event(
-                    "model.usage_reported",
-                    Some(turn_id),
-                    LifecyclePayload {
-                        magnitude: Some(usage.input.saturating_add(usage.output)),
-                        ..LifecyclePayload::default()
-                    },
-                );
-                self.observe_context_usage(turn_id, usage);
-                self.lifecycle_event(
-                    "model.usage_reconciled",
-                    Some(turn_id),
-                    LifecyclePayload {
-                        magnitude: Some(usage.input.saturating_add(usage.output)),
-                        ..LifecyclePayload::default()
-                    },
-                );
-                let mut observed_context = context_estimate;
-                observed_context.components = Some(context_budget_inspection.usage());
-                self.ui(UiEvent::TurnEnd {
-                    cost: self.ledger.cost_state(),
-                    usage,
-                    context: observed_context,
-                    model_context_window: self.model_context_window,
-                    reserved_output_tokens: route_turn.request().max_tokens,
-                    compaction_trigger_tokens: self.compaction.effective_trigger_tokens(
-                        self.execution_context_window(),
-                        route_turn.request().max_tokens,
+            let event = response_commit.reconcile(self.provider_commit_session(
+                turn_id,
+                context_estimate,
+                context_budget_inspection,
+                effort_application,
+            ))?;
+            self.ui(event);
+            response_commit
+                .commit_assistant(
+                    self.provider_commit_session(
+                        turn_id,
+                        context_estimate,
+                        context_budget_inspection,
+                        effort_application,
                     ),
-                    effort: effort_application,
-                });
-            } else {
-                self.ui(UiEvent::Notice(
-                    iteron_tunables::param_str(
-                        "cli.runtime.incomplete_usage_notice",
-                        INCOMPLETE_USAGE_NOTICE,
-                    )
-                    .into(),
-                ));
-            }
-
-            // Record the assistant message verbatim (append-only; ADR-002 R2), to the rollout
-            // and the working set in lockstep.
-            let assistant = Message {
-                role: Role::Assistant,
-                content: turn_res.blocks.clone(),
-            };
-            if (!stream_recovered || !assistant.content.is_empty())
-                && let Err(error) = self.commit_message(turn_id, messages, assistant)
-            {
-                self.abort_early_pure_tools(turn_id, &mut provider_round.take_early_for_cleanup())
-                    .await?;
-                return Err(error);
-            }
+                    messages,
+                )
+                .await?;
+            let stream_elapsed = response_commit.stream_elapsed();
+            let provider_response_recovery::AcceptedProviderResponse {
+                round: mut provider_round,
+                execution: execution_scope,
+                result: turn_res,
+                recovered: stream_recovered,
+                tools: returned_tools,
+                ..
+            } = response_commit.complete()?;
 
             // Recording scenarios may hold this durable post-Provider boundary until their driver
             // observes the Control command. No tool from this response has been dispatched yet.
