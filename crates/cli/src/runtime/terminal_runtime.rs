@@ -90,7 +90,7 @@ impl Agent {
         // The Plantcore worker owns its durable outbox. An ordinary session must commit its
         // existing Git recovery point before the absorbing drain terminal can be acknowledged.
         if !self.plantcore_runtime_enabled() {
-            if !self.verification_policy.checkpoint.before_drain {
+            if !self.verification_state.policy.checkpoint.before_drain {
                 return Err(KernelError::ContextResolution("resolved verification checkpoint policy attempted to disable the mandatory drain recovery point".into()));
             }
             self.checkpoint_at_turn_end(turn, true)?;
@@ -110,7 +110,7 @@ impl Agent {
         }
         let best_effort_checkpoint = outcome != Outcome::Drained
             && (self.verify_command.is_some() || outcome == Outcome::Interrupted)
-            && self.verification_policy.checkpoint.turn_boundary
+            && self.verification_state.policy.checkpoint.turn_boundary
             && (self.effect_journal.workspace_mutated() || outcome == Outcome::Interrupted)
             && self.verification_checkpoint_interval_elapsed(turn);
         // Usually initialized by actual admission. The same physical recovery owner remains

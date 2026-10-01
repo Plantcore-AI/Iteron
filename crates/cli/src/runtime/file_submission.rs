@@ -66,7 +66,7 @@ impl Agent {
         iteron_protocol::input::validate_file_submission(text, images, files)
             .map_err(KernelError::InvalidSubmission)?;
         self.stage_follow_up_transcript().await?;
-        self.verify_attempts = 0;
+        self.verification_state.attempts = 0;
         self.run_files(text, images, files).await
     }
 }

@@ -208,6 +208,7 @@ mod session_transcript;
 mod side_conversation;
 mod strategy_ports;
 mod strategy_runtime;
+mod strong_verification;
 mod subagent_control;
 mod submission_invocation;
 pub mod telemetry;
@@ -219,6 +220,13 @@ pub(crate) mod tool_output_spill;
 mod transcript;
 mod tunables_pin;
 mod verification;
+mod verification_execution;
+mod verification_journal;
+mod verification_policy_run;
+mod verification_rollback;
+mod verification_state;
+#[cfg(test)]
+use verification_execution::VerifyDispatch;
 mod workflow_collect;
 mod workflow_prepare;
 mod workflow_spawner;
@@ -451,40 +459,6 @@ struct OrchestrationAllocation {
     active_workers: usize,
     fan_wall_secs: u64,
     writer_wall_reserved_secs: u64,
-}
-
-/// What the verifier dispatch proved, which is a different question from what it decided.
-///
-/// The caller only ever wants the [`iteron_verify::Verdict`]; the boundary needs to know whether that
-/// verdict was *observed* from the oracle, *synthesised* after dropping a running oracle, or
-/// synthesised without ever having started one. Collapsing the three made a cancellation before
-/// dispatch indistinguishable from a kill mid-dispatch, and only the second is an unknown effect.
-enum VerifyDispatch {
-    /// The oracle produced this verdict itself. Proven terminal.
-    Observed(iteron_verify::Verdict),
-    /// The oracle future was polled at least once and then dropped. No terminal is observable.
-    Dropped(iteron_verify::Verdict),
-    /// The oracle future was never polled, so no process was started. Proven non-event.
-    NotDispatched(iteron_verify::Verdict),
-}
-
-impl VerifyDispatch {
-    fn from_drop(dispatched: bool, verdict: iteron_verify::Verdict) -> Self {
-        if dispatched {
-            VerifyDispatch::Dropped(verdict)
-        } else {
-            VerifyDispatch::NotDispatched(verdict)
-        }
-    }
-
-    #[cfg(test)]
-    fn verdict(&self) -> &iteron_verify::Verdict {
-        match self {
-            VerifyDispatch::Observed(verdict)
-            | VerifyDispatch::Dropped(verdict)
-            | VerifyDispatch::NotDispatched(verdict) => verdict,
-        }
-    }
 }
 
 #[derive(Default)]
@@ -1249,7 +1223,7 @@ pub struct Agent {
     pub verify_preconfined: bool,
     /// Immutable verification selection/quorum/quarantine/recovery policy decoded from the same
     /// run-genesis tunables checkpoint as `verify_command`.
-    verification_policy: iteron_verify::VerificationRuntimePolicy,
+    verification_state: verification_state::VerificationStateOwner,
     /// Immutable routing, child-allocation, report, and workflow aggregate owner decoded from the
     /// same run checkpoint. The unpinned constructor starts fail-closed.
     execution_policy: crate::runtime_tunables::execution_policy::ExecutionRuntimePolicy,
@@ -1263,12 +1237,6 @@ pub struct Agent {
     /// optional environment proposal decoded from the same immutable checkpoint.
     effective_content:
         Option<crate::runtime_tunables::effective_content::EffectiveContentIdentities>,
-    /// Content-free command digests quarantined after contradictory physical verifier outcomes.
-    /// Absolute deadlines come from typed rollout receipts, so resume never restarts or silently
-    /// extends the quarantine window.
-    verification_quarantine: std::collections::BTreeMap<String, u64>,
-    /// Lazy replay guard for the typed quarantine receipts in the currently-owned rollout.
-    verification_quarantine_restored: bool,
     workspace_checkpoints: workspace_checkpoint::WorkspaceCheckpointOwner,
     /// Did the operator ASK for orchestration in the words of this submission?
     ///
@@ -1277,10 +1245,6 @@ pub struct Agent {
     /// the session's persisted effort or its thinking budget, because a word in a prompt must not
     /// silently move the operator to a different billing tier.
     turn_orchestration_requested: bool,
-    /// Most recent pre-submission workspace state eligible for an operator-authorised verification
-    /// rollback. The append-only journal records the snapshot identity; this handle never rewrites
-    /// conversation history.
-    verification_rollback_point: Option<iteron_record::Snapshot>,
     /// DANGEROUS opt-in (CLI `--dangerously-bypass-permissions`, used by the internal team edition).
     /// When true the capability gate is skipped entirely: every tool auto-approves so the agent
     /// never prompts. Plan mode still hard-denies (read-only explore), and an explicit
@@ -1301,8 +1265,6 @@ pub struct Agent {
     /// proposals are pure; this bounded set advances only after WAL commit and is restored only
     /// from this physical run, so failure/fork/route changes cannot consume another run's notice.
     committed_provider_run_notices: std::collections::BTreeSet<String>,
-    /// Guard so a wrong verify gate cannot loop forever (bounded, invariant #1).
-    verify_attempts: u32,
     verification_tasks: std::sync::Arc<bounded_verify::VerificationTaskRegistry>,
     /// Fault-injection seam for verification-gate tests. Production always constructs the real
     /// sandbox-backed oracle in `run_verify`; the TCB exposes no runtime fault switch.
@@ -1537,7 +1499,7 @@ impl Agent {
         content: &iteron_protocol::ContentSegments,
     ) -> Result<Outcome, KernelError> {
         self.stage_follow_up_transcript().await?;
-        self.verify_attempts = 0;
+        self.verification_state.attempts = 0;
         self.run_content(content).await
     }
 

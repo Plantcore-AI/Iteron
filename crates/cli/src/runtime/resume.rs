@@ -957,7 +957,7 @@ impl Agent {
         self.session_spawn_ledger = adopted_spawn_ledger;
         self.deferred_tool_eager_limit = effective_core.deferred_tool_eager_limit;
         self.execution_policy = effective_core.execution;
-        self.verification_policy = effective_core.verification;
+        self.verification_state.policy = effective_core.verification;
         self.verify_command = effective_core.verify_command;
         self.compaction = effective_core.compaction;
         self.context_budget_policy =
@@ -1005,9 +1005,7 @@ impl Agent {
         self.last_assistant_text.clear();
         self.failed_actions.clear();
         self.inbox.clear();
-        self.verify_attempts = 0;
-        self.verification_quarantine.clear();
-        self.verification_quarantine_restored = false;
+        self.verification_state.adopt();
         if previous.run_id() == self.rollout.run_id() && previous.tenant() == self.rollout.tenant()
         {
             self.compaction_state

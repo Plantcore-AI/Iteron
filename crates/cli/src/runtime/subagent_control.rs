@@ -129,7 +129,7 @@ impl Agent {
         cx.install_compiled_policy_bundle(self.compiled_policy_bundle.clone());
         cx.retry_policy = self.retry_policy;
         cx.verify_command = self.verify_command.clone();
-        cx.verification_feedback = self.verification_policy.feedback;
+        cx.verification_feedback = self.verification_state.policy.feedback;
         cx.provider_controls = self.provider_controls;
         if let Some(governor) = &self.provider_governor {
             cx.provider_governor_policy = governor.policy().clone();

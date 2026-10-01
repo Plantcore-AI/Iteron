@@ -197,25 +197,21 @@ impl Agent {
             workspace: std::path::PathBuf::from("."),
             verify_command: None,
             verify_preconfined: false,
-            verification_policy: iteron_verify::VerificationRuntimePolicy::default(),
+            verification_state: super::verification_state::VerificationStateOwner::default(),
             execution_policy:
                 crate::runtime_tunables::execution_policy::ExecutionRuntimePolicy::fail_closed(),
             app_server_queue_policy: crate::queue_policy::FrontendQueuePolicy::owner(),
             binary_media_policy: crate::image_input::BinaryMediaInspectionPolicy::owner(),
             multimodal_decode_envelope: crate::image_input::multimodal_decode_envelope(),
             effective_content: None,
-            verification_quarantine: std::collections::BTreeMap::new(),
-            verification_quarantine_restored: false,
             workspace_checkpoints: workspace_checkpoint::WorkspaceCheckpointOwner::default(),
             turn_orchestration_requested: false,
-            verification_rollback_point: None,
             bypass_permissions: false,
             sensitive_env_names: Vec::new(),
             #[cfg(test)]
             pricing_now_unix_secs: None,
             transcript_state: super::session_transcript::SessionTranscriptOwner::default(),
             committed_provider_run_notices: std::collections::BTreeSet::new(),
-            verify_attempts: 0,
             verification_tasks: bounded_verify::VerificationTaskRegistry::new(),
             #[cfg(test)]
             verify_oracle: None,
@@ -344,7 +340,7 @@ impl Agent {
         agent.tool_output_spill = Some(applied.tool_output_spill);
         agent.context_estimator.pin_policy(applied.token_estimator);
         agent.execution_policy = applied.execution;
-        agent.verification_policy.feedback = applied.verification_feedback;
+        agent.verification_state.policy.feedback = applied.verification_feedback;
         agent.effective_content = Some(applied.content);
         agent.app_server_queue_policy = applied.app_server_queue;
         agent.binary_media_policy = applied.binary_media;
@@ -502,7 +498,7 @@ impl Agent {
         self.tool_output_spill = Some(applied.tool_output_spill);
         self.context_estimator.pin_policy(applied.token_estimator);
         self.execution_policy = applied.execution;
-        self.verification_policy.feedback = applied.verification_feedback;
+        self.verification_state.policy.feedback = applied.verification_feedback;
         self.effective_content = Some(applied.content);
         self.app_server_queue_policy = applied.app_server_queue;
         self.binary_media_policy = applied.binary_media;

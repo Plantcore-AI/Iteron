@@ -57,7 +57,7 @@ impl SideConversation {
                 .stage_follow_up_transcript()
                 .await
                 .map_err(|error| error.public_summary())?;
-            self.agent.verify_attempts = 0;
+            self.agent.verification_state.attempts = 0;
         }
         let outcome = self
             .agent
