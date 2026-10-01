@@ -118,11 +118,8 @@ impl Agent {
         source_turn: TurnId,
         body_digest: [u8; 32],
     ) {
-        if self.session_memory_visibility.len() == iteron_ctx::MAX_MEMORY_TRACE_VISIBILITY {
-            self.session_memory_visibility.pop_front();
-        }
         self.session_memory_visibility
-            .push_back(MemoryVisibilityEvidence {
+            .schedule(MemoryVisibilityEvidence {
                 fact_id: memory_fact_id(body_digest),
                 fact_digest_sha256: body_digest,
                 source_turn,
@@ -135,18 +132,7 @@ impl Agent {
     /// distinct from `Used`: a control request can still stop the turn before a provider transport
     /// is admitted, in which case claiming provider exposure would be false.
     pub(super) fn observe_session_memory_activation(&mut self, turn: TurnId, task: &str) {
-        let scheduled = self
-            .session_memory_visibility
-            .iter_mut()
-            .filter(|evidence| {
-                evidence.destination_turn == turn
-                    && evidence.state == MemoryVisibilityState::Scheduled
-            })
-            .map(|evidence| {
-                evidence.state = MemoryVisibilityState::Activated;
-                evidence.clone()
-            })
-            .collect::<Vec<_>>();
+        let scheduled = self.session_memory_visibility.activate(turn);
         if scheduled.is_empty() {
             return;
         }
@@ -200,125 +186,8 @@ impl Agent {
 
     /// The actual native serialized buffer contains this context and its retained publication
     /// succeeded. "Used" proves request inclusion; it does not prove remote processing.
-    pub(super) fn observe_memory_provider_exposure(&mut self, turn: TurnId) {
-        let used = self
-            .session_memory_visibility
-            .iter_mut()
-            .filter(|evidence| {
-                evidence.destination_turn == turn
-                    && evidence.state == MemoryVisibilityState::Activated
-            })
-            .map(|evidence| {
-                evidence.state = MemoryVisibilityState::Used;
-                evidence.clone()
-            })
-            .collect::<Vec<_>>();
-        for evidence in &used {
-            iteron_ctx::MemoryObserver::observe(
-                &self.memory_traces,
-                turn,
-                iteron_ctx::MemoryObservation::Visibility(evidence.clone()),
-            );
-            iteron_ctx::MemoryObserver::observe(
-                &self.memory_traces,
-                turn,
-                iteron_ctx::MemoryObservation::Attribution(iteron_ctx::MemoryAttributionEvidence {
-                    fact_id: evidence.fact_id,
-                    cited: false,
-                    used_by_tool: false,
-                    later_turns_visible: 1,
-                }),
-            );
-        }
-
-        // Attribute stable recalled memory only after the actual prepared-buffer proof.
-        let recalled = self
-            .memory_traces
-            .snapshot()
-            .traces
-            .into_iter()
-            .find(|trace| trace.turn_id == turn)
-            .filter(|trace| trace.injection.is_some() && trace.attribution.is_empty())
-            .map(|trace| trace.selected)
-            .unwrap_or_default();
-        for selection in &recalled {
-            iteron_ctx::MemoryObserver::observe(
-                &self.memory_traces,
-                turn,
-                iteron_ctx::MemoryObservation::Attribution(iteron_ctx::MemoryAttributionEvidence {
-                    fact_id: selection.fact_id,
-                    cited: false,
-                    used_by_tool: false,
-                    later_turns_visible: 0,
-                }),
-            );
-        }
-        let count = u64::try_from(used.len().saturating_add(recalled.len())).unwrap_or(u64::MAX);
-        if count > 0 {
-            for event_id in ["memory.recall.used", "memory.attribution.recorded"] {
-                self.lifecycle_event(
-                    event_id,
-                    Some(turn),
-                    LifecyclePayload {
-                        count: Some(count),
-                        reason_code: Some("serialized_request_inclusion_confirmed".into()),
-                        ..LifecyclePayload::default()
-                    },
-                );
-            }
-        }
-    }
-
     pub(super) fn observe_memory_provider_refusal(&mut self, turn: TurnId) {
-        self.observe_memory_without_inclusion(turn, "provider_dispatch_refused");
-    }
-
-    pub(super) fn observe_memory_inclusion_unconfirmed(&mut self, turn: TurnId) {
-        self.observe_memory_without_inclusion(turn, "serialized_request_inclusion_unconfirmed");
-    }
-
-    fn observe_memory_without_inclusion(&mut self, turn: TurnId, reason: &'static str) {
-        let mut count = 0u64;
-        for evidence in self
-            .session_memory_visibility
-            .iter_mut()
-            .filter(|evidence| {
-                evidence.destination_turn == turn
-                    && evidence.state == MemoryVisibilityState::Activated
-            })
-        {
-            evidence.state = MemoryVisibilityState::Unused;
-            count = count.saturating_add(1);
-            iteron_ctx::MemoryObserver::observe(
-                &self.memory_traces,
-                turn,
-                iteron_ctx::MemoryObservation::Visibility(evidence.clone()),
-            );
-        }
-        let recalled = self
-            .memory_traces
-            .snapshot()
-            .traces
-            .into_iter()
-            .find(|trace| trace.turn_id == turn)
-            .and_then(|trace| trace.injection)
-            .map(|injection| u64::from(injection.fact_count))
-            .unwrap_or(iteron_tunables::param_integer(
-                "cli.runtime.decision_observability.no_recalled_facts",
-                NO_RECALLED_FACTS,
-            ));
-        count = count.saturating_add(recalled);
-        if count > 0 {
-            self.lifecycle_event(
-                "memory.recall.unused",
-                Some(turn),
-                LifecyclePayload {
-                    count: Some(count),
-                    reason_code: Some(reason.into()),
-                    ..LifecyclePayload::default()
-                },
-            );
-        }
+        self.memory_request_exposure(turn).refused();
     }
 
     pub(super) fn observe_context_window_denied(&self, turn: TurnId, excess_tokens: u64) {

@@ -33,6 +33,7 @@ mod approval_wait;
 mod control_ingress;
 mod control_terminal;
 mod kernel_effect_bridge;
+mod memory_request_exposure;
 mod model_response;
 mod permission_transaction;
 mod provider_dispatch;
@@ -1216,7 +1217,7 @@ pub struct Agent {
     /// Operator-added facts scheduled for direct visibility in a later turn of this resident
     /// session. The durable project store remains authority; this bounded queue only proves when
     /// the live transcript made a new fact visible without restarting.
-    session_memory_visibility: std::collections::VecDeque<iteron_ctx::MemoryVisibilityEvidence>,
+    session_memory_visibility: memory_request_exposure::MemoryVisibilityOwner,
     lifecycle_emitter: Option<iteron_obs::lifecycle::LifecycleEmitter>,
     lifecycle_telemetry: Option<iteron_obs::otel::lifecycle::LifecycleTelemetryRuntime>,
     /// Bounded Observe/Augment Hook projection for lifecycle events owned by the agent loop.
@@ -2402,8 +2403,8 @@ impl Agent {
                 .min(INTERRUPTED_STREAM_MAX_BYTES),
             };
             let pricing_now = self.pricing_now();
-            let (journal, environment, resident, plantcore) =
-                self.provider_turn_ports(context_tokens);
+            let (journal, environment, resident, plantcore, _, _) =
+                self.provider_turn_ports(context_tokens, argument_trust, &submitted_turn);
             let mut provider_drive = provider_turn_driver::ProviderTurnDriver::begin(
                 start,
                 journal,
@@ -2421,54 +2422,49 @@ impl Agent {
             if hook_gates_reads {
                 self.effect_journal.note_workspace_mutation();
             }
+            let mut hedge = None;
             let provider_result = loop {
-                let started = Instant::now();
-                let hedged = match provider_drive.hedge_spec() {
-                    Some(spec) => Some(
-                        self.execute_hedged_provider_turn(
-                            turn_id,
-                            spec.provider,
-                            spec.route,
-                            spec.request,
-                            spec.deadline,
-                            spec.transition,
-                            spec.retry_index,
-                            spec.first_attempt,
-                            spec.permit,
-                            spec.manifests,
-                        )
-                        .await?,
-                    ),
-                    None => None,
-                };
-                let (journal, evidence) =
-                    self.provider_turn_execution_ports(argument_trust, &submitted_turn);
-                provider_drive
-                    .execute(journal, evidence, hedged, started)
-                    .await?;
-                if provider_drive.inclusion_confirmed() {
-                    self.observe_memory_provider_exposure(turn_id);
-                }
-                let pricing_now = self.pricing_now();
-                let (journal, environment, resident, plantcore) =
-                    self.provider_turn_ports(context_tokens);
-                if let Some(result) = provider_drive
-                    .advance(
+                let (journal, environment, resident, plantcore, evidence, memory) =
+                    self.provider_turn_ports(context_tokens, argument_trust, &submitted_turn);
+                match provider_drive
+                    .pump(
                         journal,
                         environment,
                         resident,
                         plantcore,
-                        pricing_now,
+                        evidence,
+                        memory,
+                        hedge.take(),
                         usd_attempt.projected_at_unix_secs(),
                     )
                     .await?
                 {
-                    break result;
+                    provider_turn_driver::ProviderPumpProgress::Completed(result) => break result,
+                    provider_turn_driver::ProviderPumpProgress::AwaitHedge => {
+                        let started = Instant::now();
+                        let spec = provider_drive
+                            .hedge_spec()
+                            .ok_or(KernelError::InvalidRoute(
+                                "physical hedge handoff lost its retained provider request",
+                            ))?;
+                        let dispatch = self
+                            .execute_hedged_provider_turn(
+                                turn_id,
+                                spec.provider,
+                                spec.route,
+                                spec.request,
+                                spec.deadline,
+                                spec.transition,
+                                spec.retry_index,
+                                spec.first_attempt,
+                                spec.permit,
+                                spec.manifests,
+                            )
+                            .await?;
+                        hedge = Some((dispatch, started));
+                    }
                 }
             };
-            if !provider_drive.refused() && !provider_drive.inclusion_confirmed() {
-                self.observe_memory_inclusion_unconfirmed(turn_id);
-            }
             let mut completed = provider_drive.finish(provider_result)?;
             if let Some(snapshot) = completed.round.take_quota() {
                 self.last_rate_limit = Some(snapshot);

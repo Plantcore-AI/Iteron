@@ -191,7 +191,8 @@ impl Agent {
             input_image_evidence: None,
             context_ledgers: iteron_ctx::ContextLedgerStore::default(),
             memory_traces: iteron_ctx::MemoryTraceStore::default(),
-            session_memory_visibility: std::collections::VecDeque::new(),
+            session_memory_visibility:
+                super::memory_request_exposure::MemoryVisibilityOwner::default(),
             lifecycle_emitter: None,
             lifecycle_telemetry: None,
             lifecycle_hooks: None,
